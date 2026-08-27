@@ -176,5 +176,6 @@ export * from "./memory/index.js";
 export * from "./images/index.js";
 export * from "./models/index.js";
 export * from "./providers/index.js";
+export * from "./tasks/index.js";
 export * from "./tools/index.js";
 export * from "./workspace/index.js";

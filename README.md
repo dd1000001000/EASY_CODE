@@ -246,7 +246,7 @@ Switch modes during a session:
 
 ### Agent tools
 
-The model can use up to eight tools. `read_image` is exposed only to models explicitly marked as vision-capable.
+The model can use up to nine tools. `read_image` is exposed only to models explicitly marked as vision-capable.
 
 | Tool | Capability |
 | --- | --- |
@@ -256,6 +256,7 @@ The model can use up to eight tools. `read_image` is exposed only to models expl
 | `update_file` | Replace or remove exact text in a previously read file, with hash checks |
 | `delete_file` | Delete the exact previously read file version, with path and hash checks |
 | `run_command` | Run policy-controlled commands using structured `program + args[]` input |
+| `manage_tasks` | Optionally create and advance a persistent single-agent task DAG |
 | `compact_context` | Submit a cumulative summary and advance the context-compaction boundary |
 | `manage_memory` | Search and stage automatic long-term-memory additions, revisions, or retirement |
 
@@ -267,6 +268,14 @@ The model can use up to eight tools. `read_image` is exposed only to models expl
 - `update_file` and `delete_file` check the SHA-256 recorded by the last read, preventing silent changes after an editor or another process modifies the file.
 - Successful creates, updates, and deletions print a line-numbered diff: additions in green and removals in red.
 - `/changes` shows the current thread's file changes.
+
+### Optional task orchestration
+
+In Code mode, or after Auto mode chooses `direct_code`, the model may call `manage_tasks` for a genuinely complex objective. It creates a fixed-structure DAG containing task IDs, dependencies, inputs, expected artifacts, completion checks, and failure handling. The model decides whether orchestration is useful; plans, simple explanations, small fixes, and short linear work continue without a DAG.
+
+After a DAG is created, Runtime—not the prompt—enforces its execution: only one task can be `in_progress`, dependency-blocked tasks cannot start, workspace and command tools require an active task, and a task can be completed only after recording one concise evidence statement per declared check. Runtime validates the transition and evidence structure; the model must still ground each statement in actual tool results. A normal final answer is rejected while the DAG remains active. A real external blocker can pause the graph, and a later turn can resume it after the condition is resolved. Auto mode continues an unfinished graph in Code mode, and `/mode plan` is rejected until the graph is completed.
+
+The current graph is thread-scoped short-term state. Its declared operation and post-transition snapshot are written atomically with the matching tool-result event; recovery replays the operation and rejects a mismatched snapshot. `/resume` restores it, and a compact control view is reinjected into every model request even after context compaction. `/tasks` is a read-only user view; only the model-facing tool changes DAG state. This first version deliberately executes nodes serially and does not start additional agents.
 
 ### Commands and npm
 
@@ -300,7 +309,7 @@ Clipboard screenshots are copied to EASY CODE's private data directory outside t
 ### Context, memory, and threads
 
 - Character, output, and image budgets bound each model request. The model can call `compact_context` to produce a cumulative working summary; a request-only hard-limit fallback remains available.
-- Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, and the working summary.
+- Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, the current task DAG, and the working summary.
 - Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts. Each memory is one atomic sentence of at most 120 characters. After searching, the model can issue several `remember` calls together to preserve up to eight independent facts in one turn; the complete set commits atomically instead of becoming one long paragraph.
 - Long-term retrieval is hybrid: 384-dimensional semantic similarity and FTS5 lexical matches are reranked together. SQLite persists both memory rows and Float32 embeddings; Orama is a disposable, generation-versioned in-process Top-K index.
 - Embeddings are produced locally by the pinned [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) quantized model. Existing memories from older database versions are backfilled automatically on first retrieval.
@@ -330,6 +339,7 @@ EASY CODE reads `EASYCODE.md` from the user configuration directory and from the
 /image clipboard           Read an image from the clipboard
 /image clear               Clear pending images
 /changes                   Show file changes in the current thread
+/tasks                     Show the current model-managed task DAG
 /tools                     Show currently available tools
 /permissions               Show command permissions and sandbox status
 /commands                  Show recent commands

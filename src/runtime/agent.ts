@@ -13,6 +13,7 @@ import {
   type MemoryMutationRequest,
   type ModelProvider,
   type SessionState,
+  type TaskGraph,
   type ToolExecutionResult,
   type ToolName,
 } from "../core/types.js";
@@ -26,11 +27,20 @@ import {
   nextThreadImageNumber,
 } from "../images/labels.js";
 import { validateProviderImageAttachments } from "../models/catalog.js";
+import {
+  activeTask,
+  cloneTaskGraph,
+  taskGraphOperationSchema,
+  taskGraphView,
+  validateTaskGraphTransition,
+  type TaskGraphTransitionOperation,
+} from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
 import { jsonForModel, safeJsonParse } from "../utils/json.js";
 import { determineAutoRoute } from "./auto-router.js";
 
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
+const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
 
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
@@ -40,6 +50,7 @@ export interface AgentRuntimeDependencies {
     mode: AgentMode;
     workspaceSummary: string;
     memories: ReadonlyArray<Readonly<LongTermMemory>>;
+    taskGraph?: Readonly<TaskGraph>;
   }) => Promise<string>;
   getWorkspaceSummary: () => Promise<string>;
   searchMemories: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
@@ -102,6 +113,59 @@ function availableTools(tools: AgentTool[], mode: AgentMode): AgentTool[] {
   );
 }
 
+const TASK_WORK_TOOLS = new Set<ToolName>([
+  "read_file",
+  "read_image",
+  "create_file",
+  "update_file",
+  "delete_file",
+  "run_command",
+]);
+
+function taskGraphToolError(
+  graph: Readonly<TaskGraph> | undefined,
+  toolName: ToolName,
+  turnId: string,
+): string | undefined {
+  if (!graph) return undefined;
+  if (graph.status === "completed") {
+    if (
+      graph.updatedByTurnId === turnId &&
+      TASK_WORK_TOOLS.has(toolName)
+    ) {
+      return "The task DAG was completed in this turn. Return the final result before starting unrelated work.";
+    }
+    return undefined;
+  }
+  if (toolName === "manage_memory") {
+    return "Long-term memory maintenance must wait until the task DAG is completed.";
+  }
+  if (!TASK_WORK_TOOLS.has(toolName)) return undefined;
+  const current = activeTask(graph);
+  if (current) return undefined;
+  if (graph.status === "blocked") {
+    return "The task DAG is blocked. Resume its blocked node before using work tools.";
+  }
+  return "Start one unblocked DAG task with manage_tasks before using work tools.";
+}
+
+function incompleteTaskGraphReminder(graph: Readonly<TaskGraph>): string {
+  const view = taskGraphView(graph);
+  return (
+    "RUNTIME_TASK_DAG_ENFORCEMENT: The task DAG is still active, so a final answer is not allowed. " +
+    (view.currentTask
+      ? `Continue task ${view.currentTask}, then mark it complete with verified evidence or block it with a concrete external reason.`
+      : `Start one available task with manage_tasks. Startable tasks: ${view.startableTasks.join(", ") || "none"}.`)
+  );
+}
+
+function terminalTaskGraphText(graph: Readonly<TaskGraph> | undefined): string {
+  const blockedTask = graph?.tasks.find((task) => task.status === "blocked");
+  return graph?.status === "blocked"
+    ? `The task DAG is blocked${blockedTask?.blocker ? `: ${blockedTask.blocker}` : "."}`
+    : "The task DAG completed all declared tasks and completion checks.";
+}
+
 function resultForModel(result: ToolExecutionResult): string {
   return jsonForModel({
     ok: result.ok,
@@ -153,17 +217,25 @@ export class AgentRuntime {
     let effectiveMode: AgentMode = state.mode;
     let autoReason = "";
     if (state.mode === "auto") {
-      this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
-      const routingInput = inputImages.length
-        ? `${userInput}\n\n[${inputImages.length} image attachment(s) are included.]`
-        : userInput;
-      const route = await determineAutoRoute(
-        this.dependencies.provider,
-        routingInput,
-        options.signal,
-        inputImages,
-        state.thinkingEffort,
-      );
+      const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
+      const route = unfinishedGraph
+        ? {
+            route: "direct_code" as const,
+            reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
+          }
+        : await (async () => {
+            this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
+            const routingInput = inputImages.length
+              ? `${userInput}\n\n[${inputImages.length} image attachment(s) are included.]`
+              : userInput;
+            return determineAutoRoute(
+              this.dependencies.provider,
+              routingInput,
+              options.signal,
+              inputImages,
+              state.thinkingEffort,
+            );
+          })();
       effectiveMode = route.route === "plan_only" ? "plan" : "code";
       autoReason = route.reason;
       await this.dependencies.appendEvent({
@@ -186,6 +258,8 @@ export class AgentRuntime {
 
     let stepLimit = options.maxSteps;
     let memoryFinalizationAllowanceGranted = false;
+    let taskDagFinalizationOnly = false;
+    let taskDagFinalResponseAllowanceGranted = false;
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -202,7 +276,13 @@ export class AgentRuntime {
       const systemPrompt = await this.dependencies.buildSystemPrompt({
         mode: effectiveMode,
         workspaceSummary,
-        memories
+        memories,
+        ...(state.taskGraph && (
+          state.taskGraph.status !== "completed" ||
+          state.taskGraph.updatedByTurnId === turnId
+        )
+          ? { taskGraph: state.taskGraph }
+          : {}),
       });
       const messages = this.dependencies.contextManager.build({
         systemPrompt,
@@ -210,7 +290,11 @@ export class AgentRuntime {
         maxContextChars: options.maxContextChars
       });
 
-      const enabledTools = [...toolMap.values()];
+      const enabledTools = taskDagFinalizationOnly
+        ? state.taskGraph?.status === "completed"
+          ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
+          : []
+        : [...toolMap.values()];
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
       );
@@ -245,12 +329,30 @@ export class AgentRuntime {
         );
       }
 
+      const suppressFinalizationToolCalls =
+        taskDagFinalizationOnly &&
+        Boolean(response.message.tool_calls?.length) &&
+        !(
+          state.taskGraph?.status === "completed" &&
+          response.message.tool_calls?.every(
+            (call) => call.function.name === "manage_memory",
+          )
+        );
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: response.message.content,
-        tool_calls: response.message.tool_calls,
+        content: suppressFinalizationToolCalls
+          ? response.message.content?.trim() || terminalTaskGraphText(state.taskGraph)
+          : response.message.content,
+        tool_calls: suppressFinalizationToolCalls
+          ? undefined
+          : response.message.tool_calls,
         reasoning_content: response.message.reasoning_content
       };
+      if (suppressFinalizationToolCalls) {
+        this.dependencies.onStatus?.(
+          "Ignored tools other than memory maintenance during task-DAG finalization.",
+        );
+      }
       state.messages.push(assistantMessage);
       await this.dependencies.appendEvent({
         threadId: state.threadId,
@@ -285,19 +387,44 @@ export class AgentRuntime {
         }
       }
 
-      const calls = response.message.tool_calls ?? [];
+      const calls = assistantMessage.tool_calls ?? [];
       if (calls.length === 0) {
         const text =
-          response.message.content?.trim() ||
+          assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
+        if (state.taskGraph?.status === "active") {
+          const reminder: Extract<ChatMessage, { role: "user" }> = {
+            role: "user",
+            content: incompleteTaskGraphReminder(state.taskGraph),
+          };
+          state.messages.push(reminder);
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `step_${step}`,
+            type: "message.user.synthetic",
+            phase: "completed",
+            payload: reminder,
+          });
+          this.dependencies.onStatus?.(
+            "The model attempted to finish while the task DAG was incomplete; continuing.",
+          );
+          continue;
+        }
         this.dependencies.onText?.(text);
-        const reason = effectiveMode === "plan" ? "planned" : "success";
+        const reason = state.taskGraph?.status === "blocked"
+          ? "blocked"
+          : effectiveMode === "plan"
+            ? "planned"
+            : "success";
         const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
         return this.finish(state, turnId, `${prefix}${text}`, reason, step, memoryContext);
       }
 
       const compactContextIsExclusive =
         calls.length === 1 && calls[0]?.function.name === "compact_context";
+      const manageTasksBatched =
+        calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
       const compactContextHasNewHistory =
         state.messages.length - 1 > state.compactedMessageCount;
       const stepImageAttachments: ImageAttachment[] = [];
@@ -306,6 +433,8 @@ export class AgentRuntime {
       for (const call of calls) {
         const toolName = call.function.name as ToolName;
         const tool = toolMap.get(toolName);
+        const taskIdAtCall = activeTask(state.taskGraph)?.id;
+        let taskGraphOperation: TaskGraphTransitionOperation | undefined;
         let result: ToolExecutionResult;
 
         await this.dependencies.appendEvent({
@@ -317,7 +446,13 @@ export class AgentRuntime {
           payload: call
         });
 
-        if (toolName === "compact_context" && !compactContextIsExclusive) {
+        if (manageTasksBatched) {
+          result = {
+            ok: false,
+            summary: "manage_tasks must be the only tool call in a model response.",
+            error: "manage_tasks_must_be_exclusive",
+          };
+        } else if (toolName === "compact_context" && !compactContextIsExclusive) {
           result = {
             ok: false,
             summary: "compact_context must be the only tool call in a model response.",
@@ -337,7 +472,17 @@ export class AgentRuntime {
           };
         } else {
           try {
-            const input = safeJsonParse(call.function.arguments);
+            const graphError = taskGraphToolError(state.taskGraph, toolName, turnId);
+            if (graphError) throw new Error(graphError);
+            const rawInput = safeJsonParse(call.function.arguments);
+            let input: unknown = rawInput;
+            if (toolName === "manage_tasks") {
+              const parsedOperation = taskGraphOperationSchema.parse(rawInput);
+              input = parsedOperation;
+              if (parsedOperation.action !== "list") {
+                taskGraphOperation = parsedOperation;
+              }
+            }
             this.dependencies.onStatus?.(`Tool: ${tool.name}`);
             const toolContext = {
               workspaceRoot: state.workspaceRoot,
@@ -349,6 +494,9 @@ export class AgentRuntime {
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,
               maxOutputChars: options.maxOutputChars,
+              ...(state.taskGraph
+                ? { taskGraph: cloneTaskGraph(state.taskGraph) }
+                : {}),
               recordCommand: (entry: CommandAuditEntry) => {
                 state.commands.push(entry);
                 this.dependencies.recordCommand?.(turnId, entry);
@@ -415,6 +563,33 @@ export class AgentRuntime {
           };
         }
 
+        let taskGraphUpdate: TaskGraph | undefined;
+        if (result.ok && result.taskGraphUpdate) {
+          try {
+            if (toolName !== "manage_tasks" || !taskGraphOperation) {
+              throw new Error("Only a state-changing manage_tasks call may update the task DAG");
+            }
+            taskGraphUpdate = validateTaskGraphTransition(
+              state.taskGraph,
+              taskGraphOperation,
+              result.taskGraphUpdate,
+              turnId,
+            );
+          } catch (error) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid task DAG transition.",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        } else if (result.ok && taskGraphOperation) {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing task DAG transition.",
+            error: "manage_tasks did not return an authoritative task DAG update",
+          };
+        }
+
         const toolMessage: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
@@ -428,8 +603,20 @@ export class AgentRuntime {
           stepId: `step_${step}`,
           type: "tool.result",
           phase: result.ok ? "completed" : "failed",
-          payload: { callId: call.id, tool: call.function.name, message: toolMessage }
+          payload: {
+            callId: call.id,
+            tool: call.function.name,
+            message: toolMessage,
+            ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
+            ...(taskGraphUpdate && taskGraphOperation
+              ? { taskGraph: taskGraphUpdate, taskGraphOperation }
+              : {}),
+          }
         });
+        if (taskGraphUpdate) {
+          state.taskGraph = taskGraphUpdate;
+          state.updatedAt = new Date().toISOString();
+        }
         if (result.ok && result.imageAttachments?.length) {
           stepImageAttachments.push(...result.imageAttachments);
         }
@@ -494,6 +681,20 @@ export class AgentRuntime {
         memoryFinalizationAllowanceGranted = true;
         this.dependencies.onStatus?.(
           `Reserved ${MEMORY_FINALIZATION_STEP_ALLOWANCE} finalization step(s) after memory maintenance.`,
+        );
+      }
+      if (
+        state.taskGraph &&
+        (state.taskGraph.status === "completed" || state.taskGraph.status === "blocked") &&
+        state.taskGraph.updatedByTurnId === turnId &&
+        step === stepLimit &&
+        !taskDagFinalResponseAllowanceGranted
+      ) {
+        stepLimit += TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE;
+        taskDagFinalResponseAllowanceGranted = true;
+        taskDagFinalizationOnly = true;
+        this.dependencies.onStatus?.(
+          "Reserved one final response step after the task DAG reached a terminal state.",
         );
       }
     }

@@ -246,7 +246,7 @@ easy-code --resume <thread-id>
 
 ### Agent 工具
 
-模型最多可以调用八个工具；`read_image` 只会提供给代码中已确认支持视觉的模型。
+模型最多可以调用九个工具；`read_image` 只会提供给代码中已确认支持视觉的模型。
 
 | 工具 | 功能 |
 | --- | --- |
@@ -256,6 +256,7 @@ easy-code --resume <thread-id>
 | `update_file` | 精确替换或删除已读取文件中的代码，并检查内容哈希 |
 | `delete_file` | 删除已经读取且路径、内容哈希仍然匹配的整个文件 |
 | `run_command` | 使用结构化 `program + args[]` 运行受策略控制的命令 |
+| `manage_tasks` | 按需创建和推进可持久恢复的单 Agent 任务 DAG |
 | `compact_context` | 由模型提交累计摘要并推进上下文压缩边界 |
 | `manage_memory` | 搜索并暂存长期记忆的新建、修订或退休操作 |
 
@@ -267,6 +268,14 @@ easy-code --resume <thread-id>
 - `update_file` 和 `delete_file` 会校验最近读取时的 SHA-256；文件被编辑器或其他进程改动后不会静默修改。
 - 新建、更新或删除文件后，终端会显示带旧/新行号的 Diff：新增行绿色，删除行红色。
 - `/changes` 可以查看当前 Thread 的文件变化。
+
+### 可选任务编排
+
+在 Code mode 中，或 Auto mode 已选择 `direct_code` 后，模型可以针对真正复杂的目标调用 `manage_tasks`。它会创建一张结构固定的 DAG，其中包含任务 ID、依赖、输入、预期产物、完成检查和失败处理。是否启用编排由模型根据复杂度决定；只制定计划、简单解释、小范围修复和短线性任务仍然直接执行，不会强制建立 DAG。
+
+DAG 创建后由 Runtime 而不是提示词强制执行：同时最多一个任务处于 `in_progress`，依赖未完成的节点不能启动，文件及命令工具必须绑定到活动节点，并且每条完成检查都必须记录一项简短、具体的证据后才能标记完成。Runtime 会校验状态转换和证据结构，模型仍须依据真实工具结果填写证据。DAG 仍为 `active` 时，模型直接给最终答案会被拒绝。如果遇到真实的外部条件阻塞，可以暂停图；条件解决后，后续 Turn 可恢复该节点继续执行。Auto mode 会以 Code mode 继续尚未完成的 DAG；在 DAG 完成前，`/mode plan` 会被拒绝。
+
+当前 DAG 属于 Thread 级短期状态。声明的操作和转换后的完整快照会与对应工具结果原子写入同一条事件；恢复时会重新执行该操作，并拒绝与合法结果不一致的快照。`/resume` 可以恢复 DAG，上下文压缩后仍会向每次模型请求注入紧凑的权威控制视图。用户可通过只读的 `/tasks` 查看，只有模型工具能够改变 DAG。首版严格串行执行节点，不会启动额外智能体。
 
 ### 命令和 npm
 
@@ -300,7 +309,7 @@ easy-code --resume <thread-id>
 ### 上下文、记忆和 Thread
 
 - 上下文由字符、输出和图片预算控制。模型可以调用 `compact_context` 生成可继续工作的累计摘要；超过硬限制时还有请求级兜底截断。
-- 短期记忆与当前 Thread 绑定，包括对话、工具结果、文件版本、变更集和 Working Summary。
+- 短期记忆与当前 Thread 绑定，包括对话、工具结果、文件版本、变更集、当前任务 DAG 和 Working Summary。
 - 长期记忆按工作区隔离。模型通过 `manage_memory` 搜索、记住、修订或退休持久偏好、约定、决策、已验证架构和稳定环境信息。每条记忆只保存一个不超过 120 字符的原子事实；完成搜索后，模型可以并列调用多次 `remember`，在一个 Turn 中保存最多八条独立事实，最后整组原子提交，而不是合并成长段落。
 - 长期记忆采用混合检索：把 384 维语义相似度和 FTS5 关键词结果一起重排。SQLite 持久保存记忆行和 Float32 向量，Orama 是可以随时重建、按 generation 跨进程失效的内存 Top-K 索引。
 - 向量由固定版本的量化模型 [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) 在本地生成。旧数据库中的既有记忆会在第一次检索时自动补齐向量。
@@ -330,6 +339,7 @@ EASY CODE 会读取用户配置目录中的 `EASYCODE.md`，以及工作区根�
 /image clipboard           读取剪贴板图片
 /image clear               清除尚未发送的图片
 /changes                   查看当前 Thread 的文件变化
+/tasks                     查看当前模型管理的任务 DAG
 /tools                     查看当前工具
 /permissions               查看命令权限和沙箱状态
 /commands                  查看最近命令

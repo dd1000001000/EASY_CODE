@@ -8,8 +8,10 @@ import {
   type FileVersion,
   type ImageAttachment,
   type SessionState,
+  type TaskGraph,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
+import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 
 export interface SerializedSessionState {
   readonly threadId: string;
@@ -25,6 +27,7 @@ export interface SerializedSessionState {
   readonly filesRead: Array<[string, FileVersion]>;
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
+  readonly taskGraph?: TaskGraph;
   readonly workingSummary: string;
   readonly compactedMessageCount: number;
   readonly createdAt: string;
@@ -169,6 +172,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
       ...command,
       args: [...command.args],
     })),
+    ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     workingSummary: state.workingSummary,
     compactedMessageCount: state.compactedMessageCount,
     createdAt: state.createdAt,
@@ -193,6 +197,7 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Array.isArray(value.filesRead) ||
     !Array.isArray(value.changes) ||
     !Array.isArray(value.commands) ||
+    (value.taskGraph !== undefined && !isTaskGraph(value.taskGraph)) ||
     typeof value.workingSummary !== "string" ||
     (value.compactedMessageCount !== undefined &&
       (!Number.isInteger(value.compactedMessageCount) ||
@@ -245,6 +250,9 @@ export function deserializeSessionState(value: unknown): SessionState {
       ...item,
       args: [...item.args],
     })),
+    ...(isTaskGraph(value.taskGraph)
+      ? { taskGraph: cloneTaskGraph(value.taskGraph) }
+      : {}),
     // Checkpoints created before model-controlled compaction used workingSummary as a
     // transient overflow cache and had no boundary. Dropping that derived value avoids
     // injecting it alongside the same full message history after an upgrade.

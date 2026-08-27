@@ -8,6 +8,7 @@ import { ReadFileTool } from "./read-file.js";
 import { ReadImageTool } from "./read-image.js";
 import { RunCommandTool } from "./run-command.js";
 import { ManageMemoryTool } from "./manage-memory.js";
+import { ManageTasksTool } from "./manage-tasks.js";
 import { UpdateFileTool } from "./update-file.js";
 
 export class ToolRegistry {
@@ -42,6 +43,7 @@ export function createDefaultTools(
     new UpdateFileTool(workspaceManager),
     new DeleteFileTool(workspaceManager),
     new RunCommandTool(workspaceManager),
+    new ManageTasksTool(),
     new CompactContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
   ];

@@ -14,6 +14,11 @@ import {
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
+import {
+  cloneTaskGraph,
+  taskGraphOperationSchema,
+  validateTaskGraphTransition,
+} from "../tasks/task-graph.js";
 import { EventJournal, type AppendEventInput } from "./event-journal.js";
 import {
   deserializeSessionState,
@@ -185,24 +190,41 @@ export class ThreadStore {
         ...command,
         args: [...command.args],
       })),
+      ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     };
     state.updatedAt = snapshot.updatedAt;
 
-    this.storage.db.transaction(() => {
-      if (journal.read().length === 0 || !this.threadExists(state.threadId)) {
-        throw new Error(`Cannot save unknown thread: ${state.threadId}`);
+    let checkpointEvent: EventRecord | undefined;
+    try {
+      this.storage.db.transaction(() => {
+        if (journal.read().length === 0 || !this.threadExists(state.threadId)) {
+          throw new Error(`Cannot save unknown thread: ${state.threadId}`);
+        }
+        checkpointEvent = journal.append({
+          type: "thread_checkpoint",
+          payload: { state: serializeSessionState(snapshot) },
+          turnId: snapshot.activeTurnId,
+        });
+        this.projectState(snapshot, "active");
+        this.projectEvent(checkpointEvent, journal.filePath);
+        for (const command of snapshot.commands) {
+          this.projectToolAudit(snapshot.threadId, snapshot.activeTurnId, command);
+        }
+      })();
+    } catch (error) {
+      if (!checkpointEvent) throw error;
+      const committed = journal.read().some(
+        (candidate) => candidate.eventId === checkpointEvent?.eventId,
+      );
+      if (!committed) throw error;
+      try {
+        const events = journal.read();
+        const recovered = this.recoverFromEvents(state.threadId, events);
+        this.reconcileProjection(recovered, events, journal.filePath);
+      } catch {
+        // The checkpoint is durable; a later get/recover retries projection.
       }
-      const event = journal.append({
-        type: "thread_checkpoint",
-        payload: { state: serializeSessionState(snapshot) },
-        turnId: snapshot.activeTurnId,
-      });
-      this.projectState(snapshot, "active");
-      this.projectEvent(event, journal.filePath);
-      for (const command of snapshot.commands) {
-        this.projectToolAudit(snapshot.threadId, snapshot.activeTurnId, command);
-      }
-    })();
+    }
   }
 
   list(options: ThreadListOptions = {}): ThreadSummary[] {
@@ -245,14 +267,49 @@ export class ThreadStore {
 
   appendEvent(threadId: string, input: AppendEventInput): EventRecord {
     const journal = this.journal(threadId);
-    let event!: EventRecord;
-    this.storage.db.transaction(() => {
-      if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
-      event = journal.append(input);
-      this.projectEvent(event, journal.filePath);
-      this.projectAuxiliaryEvent(threadId, event);
-      this.touchThread(threadId, event.timestamp);
-    })();
+    let event: EventRecord | undefined;
+    try {
+      this.storage.db.transaction(() => {
+        if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
+        const priorEvents = journal.read();
+        if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
+        const payload = asPayloadRecord(input.payload);
+        if (input.type === "tool.result" && payload && "taskGraph" in payload) {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          this.replayTaskGraphResult(
+            priorState,
+            {
+              type: input.type,
+              phase: input.phase,
+              turnId: input.turnId,
+              eventId: input.eventId ?? "pending_tool_result",
+            },
+            payload,
+          );
+        }
+        // Keep append inside the database write transaction: its cross-process
+        // lock serializes EventJournal's scan/sequence/append critical section.
+        event = journal.append(input);
+        this.projectEvent(event, journal.filePath);
+        this.projectAuxiliaryEvent(threadId, event);
+        this.touchThread(threadId, event.timestamp);
+      })();
+    } catch (error) {
+      // The fsynced JSONL journal is the source of truth. SQLite cannot roll it
+      // back, so a projection error after append is still a committed event.
+      if (!event) throw error;
+      const committed = journal.read().find((candidate) => candidate.eventId === event?.eventId);
+      if (!committed) throw error;
+      try {
+        const events = journal.read();
+        const recovered = this.recoverFromEvents(threadId, events);
+        this.reconcileProjection(recovered, events, journal.filePath);
+      } catch {
+        // Recovery on the next get/recover call retries this derived projection.
+      }
+      return committed;
+    }
+    if (!event) throw new Error("Thread event append did not produce a durable event");
     return event;
   }
 
@@ -435,7 +492,19 @@ export class ThreadStore {
         if (!payload || !("state" in payload)) {
           throw new Error(`Missing state in ${event.type} event`);
         }
-        state = deserializeSessionState(payload.state);
+        const checkpoint = deserializeSessionState(payload.state);
+        if (event.type === "thread_checkpoint" && state) {
+          if (state.taskGraph) {
+            // Checkpoints are derived snapshots. Only replayed manage_tasks
+            // transitions may advance or replace the authoritative DAG.
+            checkpoint.taskGraph = cloneTaskGraph(state.taskGraph);
+          } else if (checkpoint.taskGraph) {
+            throw new Error(
+              `Thread checkpoint ${event.eventId} introduced a task DAG without a legal transition`,
+            );
+          }
+        }
+        state = checkpoint;
         continue;
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
@@ -478,6 +547,9 @@ export class ThreadStore {
       ) {
         appendMessageIfNew(state, event.payload);
       } else if (event.type === "tool.result" && payload) {
+        if ("taskGraph" in payload) {
+          state.taskGraph = this.replayTaskGraphResult(state, event, payload);
+        }
         if (isChatMessage(payload.message) && payload.message.role === "tool") {
           appendMessageIfNew(state, payload.message);
         } else {
@@ -524,6 +596,38 @@ export class ThreadStore {
       throw new Error(`Recovered thread id ${state.threadId} does not match ${threadId}`);
     }
     return state;
+  }
+
+  private replayTaskGraphResult(
+    state: Readonly<SessionState>,
+    event: Pick<EventRecord, "type" | "phase" | "turnId" | "eventId">,
+    payload: Record<string, unknown>,
+  ): NonNullable<SessionState["taskGraph"]> {
+    if (
+      event.type !== "tool.result" ||
+      event.phase !== "completed" ||
+      payload.tool !== "manage_tasks" ||
+      typeof event.turnId !== "string" ||
+      !event.turnId ||
+      !("taskGraphOperation" in payload)
+    ) {
+      throw new Error(`Invalid task DAG source in tool.result event ${event.eventId}`);
+    }
+    const parsed = taskGraphOperationSchema.safeParse(payload.taskGraphOperation);
+    if (!parsed.success || parsed.data.action === "list") {
+      throw new Error(`Invalid task DAG operation in tool.result event ${event.eventId}`);
+    }
+    try {
+      return validateTaskGraphTransition(
+        state.taskGraph,
+        parsed.data,
+        payload.taskGraph,
+        event.turnId,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Invalid task DAG transition in tool.result event ${event.eventId}: ${message}`);
+    }
   }
 
   private threadExists(threadId: string): boolean {

@@ -1,4 +1,5 @@
 import type { EasyCodeConfig, SessionState } from "../core/types.js";
+import { cloneTaskGraph } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
 
 export function createSessionState(
@@ -33,6 +34,7 @@ export function cloneSessionState(state: SessionState): SessionState {
     messages: [...state.messages],
     filesRead: new Map(state.filesRead),
     changes: [...state.changes],
-    commands: [...state.commands]
+    commands: [...state.commands],
+    ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
   };
 }

@@ -64,6 +64,7 @@ import { AgentRuntime } from "./runtime/agent.js";
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import { createDefaultTools } from "./tools/registry.js";
 import { ThreadStore, type ThreadLease } from "./threads/thread-store.js";
+import { taskGraphView } from "./tasks/task-graph.js";
 import { WorkspaceManager } from "./workspace/manager.js";
 
 export interface EasyCodeAppOptions {
@@ -269,7 +270,17 @@ export class EasyCodeApp {
         const previousProvider = state.provider;
         const previousModel = state.model;
         const previousThinkingEffort = state.thinkingEffort;
-        state.mode = options.mode ?? state.mode;
+        const resumedMode = options.mode ?? state.mode;
+        if (
+          resumedMode === "plan" &&
+          state.taskGraph &&
+          state.taskGraph.status !== "completed"
+        ) {
+          throw new Error(
+            "Cannot resume an active or blocked task DAG in Plan mode. Use Code/Auto mode until it is completed.",
+          );
+        }
+        state.mode = resumedMode;
         state.thinkingEffort = options.thinkingEffort ?? state.thinkingEffort;
         const selectedProvider = options.provider ?? state.provider;
         state.provider = selectedProvider;
@@ -467,6 +478,15 @@ export class EasyCodeApp {
         if (!mode || !["plan", "auto", "code"].includes(mode)) {
           throw new Error("Usage: /mode plan|auto|code");
         }
+        if (
+          mode === "plan" &&
+          this.state.taskGraph &&
+          this.state.taskGraph.status !== "completed"
+        ) {
+          throw new Error(
+            "Cannot switch to Plan mode while a task DAG is active or blocked. Complete or resolve it in Code/Auto mode first.",
+          );
+        }
         this.state.mode = mode;
         this.config.mode = mode;
         this.dirty = true;
@@ -548,6 +568,15 @@ export class EasyCodeApp {
         this.syncWorkspaceState();
         const changes = this.state.changes;
         this.terminal.write(changes.length ? `${json(changes)}\n` : "This thread has no file changes.\n");
+        return false;
+      }
+      case "tasks": {
+        if (command.args.length) throw new Error("Usage: /tasks");
+        this.terminal.write(
+          this.state.taskGraph
+            ? `${json(taskGraphView(this.state.taskGraph))}\n`
+            : "This thread has no task DAG.\n",
+        );
         return false;
       }
       case "tools":
@@ -729,12 +758,13 @@ export class EasyCodeApp {
       provider,
       tools,
       contextManager: new ContextManager(),
-      buildSystemPrompt: async ({ mode, workspaceSummary, memories }) =>
+      buildSystemPrompt: async ({ mode, workspaceSummary, memories, taskGraph }) =>
         buildSystemPrompt({
           config: effectiveConfig,
           mode,
           workspaceSummary,
           memories,
+          ...(taskGraph ? { taskGraph } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
       searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
@@ -1220,6 +1250,18 @@ export class EasyCodeApp {
         stepLimit: this.activeStepLimit(),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
+        taskDag: this.state.taskGraph
+          ? (() => {
+              const view = taskGraphView(this.state.taskGraph as NonNullable<SessionState["taskGraph"]>);
+              return {
+                id: view.id,
+                status: view.status,
+                progress: `${view.completed}/${view.total}`,
+                currentTask: view.currentTask,
+                startableTasks: view.startableTasks,
+              };
+            })()
+          : null,
         apiKeyConfigured: Boolean(providerConfig.apiKey),
         workspace: this.workspace.root,
         approvalPolicy: this.config.approvalPolicy,
