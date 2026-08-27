@@ -64,15 +64,15 @@ export function renderStartupModelSelector(
   color = true,
 ): string[] {
   const palette = new Chalk({ level: color ? 1 : 0 });
-  const lines = [palette.bold.cyan("请选择 EASY CODE 使用的模型")];
+  const lines = [palette.bold.cyan("Select a model for EASY CODE")];
   choices.forEach((choice, index) => {
     const selected = index === selectedIndex;
     const marker = selected ? "›" : " ";
-    const status = choice.apiKeyConfigured ? "API Key 已配置" : "需要 API Key";
+    const status = choice.apiKeyConfigured ? "API key configured" : "API key required";
     const text = `${marker} ${providerLabel(choice.provider)} / ${safeLabel(choice.model)}  [${status}]`;
     lines.push(selected ? palette.bold.white(text) : palette.gray(text));
   });
-  lines.push(palette.dim("使用 ↑/↓ 切换，Enter 确认，Esc 取消"));
+  lines.push(palette.dim("Use ↑/↓ to move, Enter to confirm, or Esc to cancel"));
   return lines;
 }
 

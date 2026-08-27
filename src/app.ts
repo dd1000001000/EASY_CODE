@@ -58,13 +58,13 @@ function samePath(left: string, right: string): boolean {
 }
 
 function messagePreview(message: ChatMessage): string {
-  const role = message.role === "user" ? "用户" : message.role === "assistant" ? "助手" : "工具";
+  const role = message.role === "user" ? "User" : message.role === "assistant" ? "Assistant" : "Tool";
   let content = message.content ?? "";
   if (!content && message.role === "assistant" && message.tool_calls?.length) {
-    content = `[调用工具：${message.tool_calls.map((call) => call.function.name).join(", ")}]`;
+    content = `[Tool calls: ${message.tool_calls.map((call) => call.function.name).join(", ")}]`;
   }
   const compact = redactSensitiveInformation(content.replace(/\s+/gu, " ").trim()).slice(0, 240);
-  return `${role}: ${compact || "(空)"}`;
+  return `${role}: ${compact || "(empty)"}`;
 }
 
 function json(value: unknown): string {
@@ -76,7 +76,7 @@ function repairInterruptedTurn(threadStore: ThreadStore, state: SessionState): b
   if (!turnId) return false;
   const message: ChatMessage = {
     role: "assistant",
-    content: "上一次 EASY CODE 进程在该轮完成前退出；此轮已标记为中断。",
+    content: "The previous EASY CODE process exited before this turn completed; the turn has been marked as interrupted.",
   };
   state.messages.push(message);
   threadStore.appendEvent(state.threadId, {
@@ -247,7 +247,7 @@ export class EasyCodeApp {
         this.config.mode = mode;
         this.dirty = true;
         this.save();
-        this.terminal.success(`Mode 已切换为 ${mode}`);
+        this.terminal.success(`Mode switched to ${mode}`);
         return false;
       }
       case "provider": {
@@ -265,7 +265,7 @@ export class EasyCodeApp {
         this.config.provider = provider;
         this.dirty = true;
         this.save();
-        this.terminal.success(`Provider 已切换为 ${provider}/${this.state.model}`);
+        this.terminal.success(`Provider switched to ${provider}/${this.state.model}`);
         return false;
       }
       case "model": {
@@ -284,7 +284,7 @@ export class EasyCodeApp {
         this.config[provider].model = model;
         this.dirty = true;
         this.save();
-        this.terminal.success(`模型已切换为 ${provider}/${model}`);
+        this.terminal.success(`Model switched to ${provider}/${model}`);
         return false;
       }
       case "status":
@@ -302,7 +302,7 @@ export class EasyCodeApp {
       case "changes": {
         this.syncWorkspaceState();
         const changes = this.state.changes;
-        this.terminal.write(changes.length ? `${json(changes)}\n` : "本 Thread 尚无文件变更。\n");
+        this.terminal.write(changes.length ? `${json(changes)}\n` : "This thread has no file changes.\n");
         return false;
       }
       case "tools":
@@ -313,7 +313,7 @@ export class EasyCodeApp {
         return false;
       case "commands": {
         const commands = this.state.commands.slice(-20);
-        this.terminal.write(commands.length ? `${json(commands)}\n` : "本 Thread 尚无命令记录。\n");
+        this.terminal.write(commands.length ? `${json(commands)}\n` : "This thread has no command history.\n");
         return false;
       }
       case "context":
@@ -329,13 +329,13 @@ export class EasyCodeApp {
         const threadId = command.args[0];
         if (!threadId || command.args.length !== 1) throw new Error("Usage: /resume <thread-id>");
         await this.resumeThread(threadId);
-        this.terminal.success(`已恢复 Thread ${this.state.threadId}`);
+        this.terminal.success(`Resumed thread ${this.state.threadId}`);
         return false;
       }
       case "new":
         if (command.args.length) throw new Error("Usage: /new");
         await this.newThread();
-        this.terminal.success(`已新建 Thread ${this.state.threadId}`);
+        this.terminal.success(`Created thread ${this.state.threadId}`);
         return false;
       case "clear":
         if (process.stdout.isTTY) this.terminal.write("\u001Bc");
@@ -347,7 +347,7 @@ export class EasyCodeApp {
       case "quit":
         return true;
       default:
-        throw new Error(`未知指令 /${command.name}；使用 /help 查看可用指令。`);
+        throw new Error(`Unknown command /${command.name}; use /help to view available commands.`);
     }
   }
 
@@ -371,7 +371,7 @@ export class EasyCodeApp {
     const onInterrupt = (): void => {
       interruptCount += 1;
       if (interruptCount === 1) {
-        this.terminal.info("正在中断当前任务…");
+        this.terminal.info("Interrupting the current task...");
         controller.abort();
       } else {
         process.removeListener("SIGINT", onInterrupt);
@@ -436,13 +436,13 @@ export class EasyCodeApp {
           try {
             this.terminal.fileDiff(result.presentation);
           } catch {
-            this.terminal.info("文件已成功修改，但 diff 预览无法渲染。");
+            this.terminal.info("The file was updated successfully, but the diff preview could not be rendered.");
           }
         }
       },
       requestApproval: async (request) => {
         if (this.assumeYes) {
-          this.terminal.info(`已按 --yes 批准：${request.title}`);
+          this.terminal.info(`Approved by --yes: ${request.title}`);
           return true;
         }
         return this.terminal.approve(request);
@@ -465,7 +465,7 @@ export class EasyCodeApp {
         provider,
       );
       if (!selected) {
-        this.terminal.info("已取消启动模型选择。");
+        this.terminal.info("Startup model selection canceled.");
         return false;
       }
       provider = selected;
@@ -474,21 +474,21 @@ export class EasyCodeApp {
     if (!this.config[provider].apiKey) {
       if (!this.credentialStore) {
         throw new Error(
-          `尚未配置 ${provider} API Key，且当前无法写入系统凭据存储。` +
-            `请运行 easy-code config set ${provider}.api-key，或设置对应环境变量。`,
+          `No ${provider} API key is configured, and the system credential store is unavailable. ` +
+            `Run easy-code config set ${provider}.api-key or set the corresponding environment variable.`,
         );
       }
       this.terminal.info(
-        `${provider === "qwen" ? "Qwen" : "DeepSeek"} 尚未配置 API Key。`,
+        `No API key is configured for ${provider === "qwen" ? "Qwen" : "DeepSeek"}.`,
       );
       let value: string;
       try {
         value = await this.terminal.readSecret(
-          `请输入 ${provider === "qwen" ? "Qwen" : "DeepSeek"} API Key（输入不会显示）: `,
+          `Enter the ${provider === "qwen" ? "Qwen" : "DeepSeek"} API key (input is hidden): `,
         );
       } catch (error) {
         if (error instanceof Error && error.message === "API key input was canceled.") {
-          this.terminal.info("已取消 API Key 输入。");
+          this.terminal.info("API key input canceled.");
           return false;
         }
         throw error;
@@ -496,7 +496,7 @@ export class EasyCodeApp {
       const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
       this.config[provider].apiKey = normalized;
       this.terminal.success(
-        `已将 ${apiKeyConfigKey(provider)} 保存到操作系统凭据存储。`,
+        `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
       );
     }
 
@@ -511,7 +511,7 @@ export class EasyCodeApp {
       this.save();
     }
     this.terminal.success(
-      `已选择 ${provider === "qwen" ? "Qwen" : "DeepSeek"} / ${this.state.model}`,
+      `Selected ${provider === "qwen" ? "Qwen" : "DeepSeek"} / ${this.state.model}`,
     );
     return true;
   }
@@ -560,7 +560,7 @@ export class EasyCodeApp {
         completed: result.reason === "success" || result.reason === "planned",
       });
     } catch (error) {
-      this.terminal.info(`长期记忆提取已跳过：${error instanceof Error ? error.message : String(error)}`);
+      this.terminal.info(`Long-term memory extraction skipped: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -675,12 +675,12 @@ export class EasyCodeApp {
   private requireProviderApiKey(provider: ProviderName): void {
     if (this.config[provider].apiKey) return;
     const environment = provider === "qwen"
-      ? "QWEN_API_KEY（也支持 DASHSCOPE_API_KEY）"
+      ? "QWEN_API_KEY (DASHSCOPE_API_KEY is also supported)"
       : "DEEPSEEK_API_KEY";
     throw new Error(
-      `尚未配置 ${provider} API Key。请运行 ` +
-      `easy-code config set ${provider}.api-key（保存到系统钥匙串），` +
-      `或设置环境变量 ${environment}，然后重启 EASY CODE。`,
+      `No ${provider} API key is configured. Run ` +
+      `easy-code config set ${provider}.api-key (saved to the system credential store), ` +
+      `or set the ${environment} environment variable, then restart EASY CODE.`,
     );
   }
 
@@ -735,10 +735,10 @@ export class EasyCodeApp {
       });
       if (args[1]) {
         const memory = memories.find((entry) => entry.id === args[1]);
-        if (!memory) throw new Error(`长期记忆不存在：${args[1]}`);
+        if (!memory) throw new Error(`Long-term memory not found: ${args[1]}`);
         this.terminal.write(`${json(memory)}\n`);
       } else {
-        this.terminal.write(memories.length ? `${json(memories)}\n` : "当前工作区尚无长期记忆。\n");
+        this.terminal.write(memories.length ? `${json(memories)}\n` : "This workspace has no long-term memories.\n");
       }
       return;
     }
@@ -751,7 +751,7 @@ export class EasyCodeApp {
       workspaceId: workspaceIdFromRoot(this.workspace.root),
       limit: 50,
     });
-    this.terminal.write(sessions.length ? `${json(sessions)}\n` : "当前工作区尚无历史 Thread。\n");
+    this.terminal.write(sessions.length ? `${json(sessions)}\n` : "This workspace has no previous threads.\n");
   }
 
   private prompt(): string {

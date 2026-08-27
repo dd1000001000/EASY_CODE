@@ -6,9 +6,9 @@
 
 ## 当前 MVP 实现摘要
 
-- CLI 已支持交互模式和 `easy-code run` 单次模式、三种工作模式、Qwen/DeepSeek、四个模型工具、Thread 恢复、自动上下文压缩及只读记忆视图。
+- CLI 已支持交互模式和 `easy-code run` 单次模式、三种工作模式、Qwen/DeepSeek、四个模型工具、Thread 恢复、自动上下文压缩及只读记忆视图。普通交互启动会显示 Qwen/DeepSeek 模型选择器，选中项为白色、其他项为灰色；缺少所选 Provider Key 时通过隐藏输入验证并写入系统凭据存储。
 - 最低兼容版本为 Node.js 16.20；Node.js 16 已 EOL，新安装推荐 Node.js 22 或 24。`package.json#engines` 提供 npm 兼容性声明，CLI 入口另有运行时版本守卫，对低于 16.20 的版本明确报错退出。
-- REPL 使用回调式 `node:readline` 封装 Promise，以兼容 Node.js 16；终端依赖为 `commander` 与 `chalk`，当前没有使用 `readline/promises` 或 `ora`。
+- 启动选择器和隐藏 Key 输入在创建 REPL 前使用有界 raw-mode 输入，随后 REPL 使用回调式 `node:readline` 封装 Promise，以兼容 Node.js 16；终端依赖为 `commander` 与 `chalk`，当前没有使用 `readline/promises` 或 `ora`。
 - 会话 JSONL 可以重建 Thread/Turn/Item 和工具审计等 SQLite 查询投影；长期记忆正文当前直接保存在 SQLite，不能仅靠 Thread JSONL 恢复。
 - SQLite 当前使用 npm 包自带的 `node-sqlite3-wasm@0.8.60`，数据库部分不依赖 Node 原生 ABI 插件或本地 C++ 工具链。系统凭据存储由 `@napi-rs/keyring@1.3.0` 的平台预编译 N-API 二进制提供。安装 EASY CODE 自身时，`scripts/postinstall.cjs` 打开内存 SQLite，并创建普通表和 FTS5 虚拟表进行自检；实际持久数据目录和 schema 在第一次运行 App 时创建。这一包自身检查与 Agent 安装工作区依赖时强制的 `--ignore-scripts` 是两条不同路径。
 - 持久 SQLite 操作由 `PID + hostname + token` 的跨进程 advisory lock 串行化；只有同主机 PID 被确认死亡后才把 stale owner 隔离为按 token 固定且保留的 tombstone，并回收 WASM VFS 空锁目录，强制退出后的 rollback journal 可在下次启动时安全恢复。固定 tombstone 用于阻止并发恢复的 ABA 竞态；活进程和未知所有者的锁不会被删除。
@@ -85,11 +85,15 @@ EASY CODE 是一个只运行在终端中的轻量级编程 Agent。第一阶段�
 easy-code
 ```
 
+普通交互启动先显示 Qwen 和 DeepSeek 的当前模型及 Key 状态。用户使用上下方向键循环切换，Enter 确认，Esc 或 Ctrl+C 取消；选中项为白色，其他项为灰色。若所选 Provider 缺少 Key，CLI 通过隐藏输入读取并验证，成功写入系统凭据存储后才原子切换当前 Provider/模型。
+
 在指定仓库启动：
 
 ```bash
 easy-code --workspace /path/to/project
 ```
+
+显式传入 `--provider`、`--model` 或 `--resume` 时不显示选择菜单，但交互启动仍会为缺失的目标 Key 提供隐藏输入。`easy-code run` 始终保持非交互：不显示菜单、不读取 Key，缺少 Key 时直接失败并给出配置方式。
 
 单次执行：
 

@@ -68,11 +68,11 @@ export class Terminal {
   }
 
   async approve(request: ApprovalRequest): Promise<boolean> {
-    this.write(chalk.yellow(`\n需要确认：${request.title}\n`));
+    this.write(chalk.yellow(`\nApproval required: ${request.title}\n`));
     this.write(`${request.description}\n`);
-    if (request.commandPreview) this.write(chalk.gray(`命令：${request.commandPreview}\n`));
+    if (request.commandPreview) this.write(chalk.gray(`Command: ${request.commandPreview}\n`));
     if (!this.isInteractive()) return false;
-    const response = await this.question("允许这一次操作？[y/N] ");
+    const response = await this.question("Allow this operation once? [y/N] ");
     if (response === null) return false;
     const answer = response.trim().toLowerCase();
     return answer === "y" || answer === "yes" || answer === "是";
@@ -133,5 +133,5 @@ export class Terminal {
 
 export function printBanner(terminal: Terminal): void {
   terminal.write(chalk.bold.cyan("\nEASY CODE") + chalk.gray(" — local CLI coding agent\n"));
-  terminal.write(chalk.gray("输入 /help 查看命令，/exit 退出。\n\n"));
+  terminal.write(chalk.gray("Type /help for commands, or /exit to quit.\n\n"));
 }

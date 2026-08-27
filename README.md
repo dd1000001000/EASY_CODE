@@ -75,6 +75,8 @@ easy-code config list
 easy-code config unset qwen.api-key
 ```
 
+普通交互启动 `easy-code` 时也会先显示 Qwen 和 DeepSeek 的模型选择器。若所选 Provider 尚未配置 Key，EASY CODE 会立即使用隐藏输入读取并验证 Key，然后保存到操作系统凭据存储。原有 `easy-code config set ...` 配置方式仍完整保留。
+
 Windows 使用 Credential Manager，macOS 使用 Keychain。Linux 会先尝试 Secret Service；不可用时，底层库会回退到内核 keyutils，后者可能只在当前登录会话内有效。无桌面会话、容器或受限 Linux 环境若无法使用凭据存储，请改用环境变量。
 
 也可以直接使用环境变量；环境变量的优先级高于系统凭据存储：
@@ -120,7 +122,9 @@ cd your-project
 easy-code
 ```
 
-EASY CODE 不会打开新的终端窗口；交互式 Agent 会占用当前终端，并显示类似 `EASY CODE [auto qwen/qwen3-coder-plus] >` 的提示符。Shell 中查看 CLI 帮助使用 `easy-code --help`；`/help` 只能在 Agent 提示符出现后输入，不能写成 `easy-code /help`。
+EASY CODE 不会打开新的终端窗口；交互式 Agent 会占用当前终端。普通 `easy-code` 启动时先列出 Qwen 与 DeepSeek 的当前模型和 Key 状态，使用上下方向键切换、Enter 确认、Esc 取消；选中项显示为白色，其他项显示为灰色。确认后会显示类似 `EASY CODE [auto qwen/qwen3-coder-plus] >` 的提示符。Shell 中查看 CLI 帮助使用 `easy-code --help`；`/help` 只能在 Agent 提示符出现后输入，不能写成 `easy-code /help`。
+
+显式传入 `--provider`、`--model` 或 `--resume` 时会跳过启动选择菜单，以保留明确的命令行意图；若目标 Provider 缺少 Key，交互模式仍会隐藏提示输入。`easy-code run` 不显示菜单也不交互读取 Key，缺少 Key 时会直接给出配置说明，适合脚本和 CI。
 
 或者显式指定工作区和 Provider：
 

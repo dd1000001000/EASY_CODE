@@ -88,7 +88,7 @@ export class AgentRuntime {
     let effectiveMode: AgentMode = state.mode;
     let autoReason = "";
     if (state.mode === "auto") {
-      this.dependencies.onStatus?.("Auto mode 正在判断本轮路径…");
+      this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
       const route = await determineAutoRoute(this.dependencies.provider, userInput, options.signal);
       effectiveMode = route.route === "plan_only" ? "plan" : "code";
       autoReason = route.reason;
@@ -99,7 +99,7 @@ export class AgentRuntime {
         phase: "completed",
         payload: route
       });
-      this.dependencies.onStatus?.(`Auto mode：${route.route} — ${route.reason}`);
+      this.dependencies.onStatus?.(`Auto mode: ${route.route} — ${route.reason}`);
     }
 
     const memories = await this.dependencies.searchMemories(userInput);
@@ -110,7 +110,7 @@ export class AgentRuntime {
 
     for (let step = 1; step <= options.maxSteps; step += 1) {
       if (options.signal?.aborted) {
-        return this.finish(state, turnId, "任务已被用户中断。", "interrupted", step - 1);
+        return this.finish(state, turnId, "The task was interrupted by the user.", "interrupted", step - 1);
       }
 
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
@@ -126,7 +126,9 @@ export class AgentRuntime {
       });
 
       const enabledTools = [...toolMap.values()];
-      this.dependencies.onStatus?.(`步骤 ${step}/${options.maxSteps}：请求 ${this.dependencies.provider.model}`);
+      this.dependencies.onStatus?.(
+        `Step ${step}/${options.maxSteps}: requesting ${this.dependencies.provider.model}`
+      );
 
       let response;
       try {
@@ -149,7 +151,7 @@ export class AgentRuntime {
         return this.finish(
           state,
           turnId,
-          interrupted ? "任务已被用户中断。" : `模型请求失败：${message}`,
+          interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
           interrupted ? "interrupted" : "failed",
           step
         );
@@ -173,10 +175,12 @@ export class AgentRuntime {
 
       const calls = response.message.tool_calls ?? [];
       if (calls.length === 0) {
-        const text = response.message.content?.trim() || "任务已结束，但模型没有返回说明。";
+        const text =
+          response.message.content?.trim() ||
+          "The task ended, but the model did not provide an explanation.";
         this.dependencies.onText?.(text);
         const reason = effectiveMode === "plan" ? "planned" : "success";
-        const prefix = state.mode === "auto" && autoReason ? `Auto 决策：${autoReason}\n\n` : "";
+        const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
         return this.finish(state, turnId, `${prefix}${text}`, reason, step);
       }
 
@@ -197,13 +201,13 @@ export class AgentRuntime {
         if (!tool) {
           result = {
             ok: false,
-            summary: `工具 ${call.function.name} 在当前模式不可用。`,
+            summary: `Tool ${call.function.name} is not available in the current mode.`,
             error: "tool_not_available"
           };
         } else {
           try {
             const input = safeJsonParse(call.function.arguments);
-            this.dependencies.onStatus?.(`工具：${tool.name}`);
+            this.dependencies.onStatus?.(`Tool: ${tool.name}`);
             result = await tool.execute(input, {
               workspaceRoot: state.workspaceRoot,
               mode: effectiveMode,
@@ -222,7 +226,7 @@ export class AgentRuntime {
           } catch (error) {
             result = {
               ok: false,
-              summary: `工具 ${call.function.name} 执行失败。`,
+              summary: `Tool ${call.function.name} failed.`,
               error: error instanceof Error ? error.message : String(error)
             };
           }
@@ -250,7 +254,7 @@ export class AgentRuntime {
     return this.finish(
       state,
       turnId,
-      `达到最大步骤数 ${options.maxSteps}，任务尚未确认完成。`,
+      `Reached the maximum of ${options.maxSteps} steps before the task could be confirmed complete.`,
       "limit_reached",
       options.maxSteps
     );
@@ -258,7 +262,7 @@ export class AgentRuntime {
       const interrupted = Boolean(options.signal?.aborted);
       const message = error instanceof Error ? error.message : String(error);
       const result: AgentRunResult = {
-        text: interrupted ? "任务已被用户中断。" : `Agent 运行失败：${message}`,
+        text: interrupted ? "The task was interrupted by the user." : `Agent run failed: ${message}`,
         reason: interrupted ? "interrupted" : "failed",
         steps: 0,
         threadId: state.threadId,
