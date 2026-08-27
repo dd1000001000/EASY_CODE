@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local CLI coding agent for Alibaba Qwen and DeepSeek. It can read, create, update, and delete code inside a guarded workspace, run commands, manage context and memory, and send images to vision-capable models.
+EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and GLM. It can read, create, update, and delete code inside a guarded workspace, run commands, manage context and memory, and send images to vision-capable models.
 
 The current release is an MVP with a terminal-only interface. It does not open a separate desktop window.
 
@@ -10,7 +10,7 @@ The current release is an MVP with a terminal-only interface. It does not open a
 
 - Windows, macOS, or Linux.
 - Node.js `>=16.20.0` and npm. A currently maintained Node.js LTS release is recommended.
-- An Alibaba Qwen or DeepSeek API key.
+- An Alibaba Qwen, DeepSeek, or GLM API key.
 - Optional: VS Code `>=1.93` for native image-paste shortcuts in the integrated terminal.
 
 EASY CODE uses SQLite WASM as the durable source of truth for threads and long-term memory, plus an embedded Orama vector index for semantic Top-K retrieval. A local multilingual embedding model runs through ONNX Runtime; no Python environment, external vector database, Redis, or model server is required.
@@ -75,6 +75,7 @@ The recommended setup stores keys in the operating system credential store:
 ```bash
 easy-code config set qwen.api-key
 easy-code config set deepseek.api-key
+easy-code config set glm.api-key
 easy-code config list
 ```
 
@@ -83,6 +84,8 @@ easy-code config list
 ```bash
 easy-code config get qwen.api-key
 easy-code config unset qwen.api-key
+easy-code config get glm.api-key
+easy-code config unset glm.api-key
 ```
 
 Environment variables are also supported:
@@ -91,12 +94,14 @@ Environment variables are also supported:
 | --- | --- |
 | Alibaba Qwen | `QWEN_API_KEY` or `DASHSCOPE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
+| GLM | `ZAI_API_KEY` (recommended), `GLM_API_KEY`, or `ZHIPUAI_API_KEY` |
 
 PowerShell:
 
 ```powershell
 $env:QWEN_API_KEY = "your-api-key"
 $env:DEEPSEEK_API_KEY = "your-api-key"
+$env:ZAI_API_KEY = "your-api-key"
 ```
 
 macOS/Linux:
@@ -104,6 +109,7 @@ macOS/Linux:
 ```bash
 export QWEN_API_KEY="your-api-key"
 export DEEPSEEK_API_KEY="your-api-key"
+export ZAI_API_KEY="your-api-key"
 ```
 
 During the first interactive launch, EASY CODE prompts for a missing key after you select a provider. It validates the input and credential-store round trip locally; provider access, region availability, and model entitlement are confirmed by the first API request.
@@ -121,10 +127,11 @@ easy-code
 
 EASY CODE stays in the current terminal instead of opening another agent window. A normal startup works as follows:
 
-1. Select `DeepSeek` or `Alibaba Qwen`.
+1. Select `DeepSeek`, `Alibaba Qwen`, or `GLM`.
 2. Select a model from that provider.
-3. Move with the Up/Down arrow keys, press Enter to confirm, or Esc to cancel.
-4. Enter a task at a prompt such as `EASY CODE [auto qwen/qwen3.7-max] >`.
+3. Select the thinking effort: `none`, `low`, `medium`, or `high`.
+4. Move with the Up/Down arrow keys, press Enter to confirm, or Esc to cancel.
+5. Enter a task at a prompt such as `EASY CODE [auto qwen/qwen3.7-max thinking:medium] >`.
 
 `/help` is an in-agent command and only works after the EASY CODE prompt appears. To inspect CLI arguments from your shell, use:
 
@@ -132,10 +139,10 @@ EASY CODE stays in the current terminal instead of opening another agent window.
 easy-code --help
 ```
 
-Start with an explicit workspace, provider, model, and mode:
+Start with an explicit workspace, provider, model, thinking effort, and mode:
 
 ```bash
-easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --mode code
+easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinking-effort high --mode code
 ```
 
 Run one non-interactive task and exit, which is useful for scripts and CI:
@@ -155,8 +162,9 @@ Common top-level options:
 | Option | Purpose |
 | --- | --- |
 | `-w, --workspace <path>` | Workspace root; defaults to the current directory |
-| `--provider qwen\|deepseek` | Model provider |
+| `--provider qwen\|deepseek\|glm` | Model provider |
 | `--model <id>` | Model for the active provider |
+| `--thinking-effort none\|low\|medium\|high` | Thinking effort; defaults to `medium` |
 | `--mode plan\|auto\|code` | Working mode; defaults to `auto` |
 | `--approval safe\|ask\|never` | Command approval policy |
 | `-y, --yes` | Automatically approve policy-allowed prompts |
@@ -179,8 +187,25 @@ Common top-level options:
 | Alibaba Qwen | `qwen3-max` | No |
 | Alibaba Qwen | `qwen3-vl-plus` | Yes |
 | Alibaba Qwen | `qwen3-vl-flash` | Yes |
+| GLM | `glm-5.3-flash` | Yes |
+| GLM | `glm-5.3` | No |
+| GLM | `glm-5.2` | No |
 
 This is EASY CODE's built-in model catalog, not live provider model discovery. Actual availability still depends on the provider service, account, region, and model entitlement. EASY CODE reports the provider's API error if a listed model is unavailable to the current account.
+
+Within the GLM catalog, only `glm-5.3-flash` accepts image input. `glm-5.3` and `glm-5.2` are text-only in EASY CODE.
+
+### Thinking effort
+
+After choosing a model, the interactive selector asks for one of four normalized thinking-effort levels: `none`, `low`, `medium`, or `high`. The selection is kept with the active thread and is used when building every model request, including Auto mode routing. It can also be set at startup with `--thinking-effort`; when omitted, the default is `medium`.
+
+The four choices remain available for every model. EASY CODE sends only fields documented for the exact provider/model combination. If a model does not support configurable thinking, the selection is retained for the UI and thread but no thinking parameter is sent, so it has no effect.
+
+Provider behavior:
+
+- Alibaba Qwen: `none` disables thinking on supported hybrid-thinking models. `low`, `medium`, and `high` enable thinking with EASY CODE budgets of 4,096, 16,384, and 32,768 reasoning tokens respectively. These are output ceilings, not guarantees that the model will use the full budget. `qwen3.6-max` currently receives no thinking parameters because its exact model ID is not documented for this capability.
+- DeepSeek: `none` disables thinking for `deepseek-v4-flash` and `deepseek-v4-pro`; `low` and `high` use the matching provider effort. DeepSeek treats `medium` as `high`. The experimental vision model currently receives no thinking parameters.
+- GLM: `glm-5.2` can disable thinking with `none` and accepts the other three efforts, although GLM maps `low` and `medium` to its `high` effort. `glm-5.3` and `glm-5.3-flash` always think, so choosing `none` is retained but sends no disabling parameter; their `medium` selection maps to `high`.
 
 Switch providers or models while the agent is running:
 
@@ -189,11 +214,13 @@ Switch providers or models while the agent is running:
 /model <model-id>
 /model qwen <model-id>
 /model deepseek <model-id>
+/model glm glm-5.3-flash
 /provider qwen
 /provider deepseek
+/provider glm
 ```
 
-`/model` opens the two-level Provider → Model selector again. EASY CODE asks for configuration if the selected provider has no API key.
+`/model` opens the Provider → Model → Thinking effort selector again. The argument forms such as `/model <model-id>` switch directly and keep the current effort. EASY CODE asks for configuration if the selected provider has no API key.
 
 ## Working modes
 
@@ -270,7 +297,7 @@ Clipboard screenshots are copied to EASY CODE's private data directory outside t
 
 - Character, output, and image budgets bound each model request. The model can call `compact_context` to produce a cumulative working summary; a request-only hard-limit fallback remains available.
 - Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, and the working summary.
-- Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts.
+- Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts. Each memory is one atomic sentence of at most 120 characters. After searching, the model can issue several `remember` calls together to preserve up to eight independent facts in one turn; the complete set commits atomically instead of becoming one long paragraph.
 - Long-term retrieval is hybrid: 384-dimensional semantic similarity and FTS5 lexical matches are reranked together. SQLite persists both memory rows and Float32 embeddings; Orama is a disposable, generation-versioned in-process Top-K index.
 - Embeddings are produced locally by the pinned [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) quantized model. Existing memories from older database versions are backfilled automatically on first retrieval.
 - Memory mutations are staged during a turn and committed atomically only after `success` or `planned`; failed, interrupted, and step-limited turns discard them. Revisions preserve superseded rows, while forgetting marks a row expired instead of physically deleting its audit history.
@@ -288,7 +315,7 @@ EASY CODE reads `EASYCODE.md` from the user configuration directory and from the
 
 ```text
 /mode plan|auto|code       Switch working mode
-/provider qwen|deepseek    Switch provider
+/provider qwen|deepseek|glm  Switch provider
 /model                     Open provider and model selectors
 /model <model>             Switch model for the current provider
 /model <provider> <model>  Switch provider and model

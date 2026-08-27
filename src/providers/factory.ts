@@ -4,6 +4,7 @@ import type {
   ProviderName,
 } from "../core/types.js";
 import { DeepSeekProvider } from "./deepseek.js";
+import { GlmProvider } from "./glm.js";
 import { modelSupportsVision } from "../models/catalog.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { QwenProvider } from "./qwen.js";
@@ -30,7 +31,12 @@ export function createProvider(
       modelSupportsVision(providerName, providerConfig.model),
   };
 
-  return providerName === "qwen"
-    ? new QwenProvider(providerConfig, effectiveRuntime)
-    : new DeepSeekProvider(providerConfig, effectiveRuntime);
+  switch (providerName) {
+    case "qwen":
+      return new QwenProvider(providerConfig, effectiveRuntime);
+    case "deepseek":
+      return new DeepSeekProvider(providerConfig, effectiveRuntime);
+    case "glm":
+      return new GlmProvider(providerConfig, effectiveRuntime);
+  }
 }

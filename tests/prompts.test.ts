@@ -43,6 +43,7 @@ describe("system prompt builder", () => {
         cacheDir: path.join(temporary, "cache"),
       });
       config.qwen.apiKey = "this-must-not-enter-the-prompt";
+      config.glm.apiKey = "glm-key-must-not-enter-the-prompt";
       const prompt = await buildSystemPrompt({
         config,
         mode: "plan",
@@ -98,9 +99,13 @@ describe("system prompt builder", () => {
       assert.match(prompt, /It must be cumulative/);
       assert.match(prompt, /delete_file deletes a previously read regular workspace file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
+      assert.match(prompt, /Store memory as atomic facts/);
+      assert.match(prompt, /several remember tool calls together/);
+      assert.match(prompt, /up to eight changes per turn/);
       assert.match(prompt, /not a user-editing interface/);
       assert.match(prompt, /Before your final answer.*durable memory/);
       assert.doesNotMatch(prompt, /this-must-not-enter-the-prompt/);
+      assert.doesNotMatch(prompt, /glm-key-must-not-enter-the-prompt/);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

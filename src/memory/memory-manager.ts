@@ -1,7 +1,8 @@
-import type {
-  AgentRunResult,
-  LongTermMemory,
-  MemoryMutationRequest,
+import {
+  MAX_MEMORY_MUTATIONS_PER_TURN,
+  type AgentRunResult,
+  type LongTermMemory,
+  type MemoryMutationRequest,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
@@ -60,7 +61,8 @@ export const MEMORY_CATEGORIES = [
 ] as const satisfies readonly LongTermMemory["category"][];
 
 export const MIN_MEMORY_CONTENT_CHARS = 8;
-export const MAX_MEMORY_CONTENT_CHARS = 1_000;
+/** Keep one memory small enough to represent one independently retrievable fact. */
+export const MAX_MEMORY_CONTENT_CHARS = 120;
 export const MAX_MEMORY_REASON_CHARS = 500;
 export const MAX_MEMORY_SEARCH_CHARS = 500;
 
@@ -138,7 +140,6 @@ export const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{
 
 const SAFE_CONTEXT_ID = /^[\p{L}\p{N}._:-]{1,160}$/u;
 const MAX_LEGACY_EVIDENCE_CHARS = 8_000;
-const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 const MAX_EVIDENCE_HISTORY_ENTRIES = 24;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
 const TENTATIVE_MEMORY = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;

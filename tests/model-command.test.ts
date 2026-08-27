@@ -8,9 +8,10 @@ import { EasyCodeApp } from "../src/app.js";
 import type {
   ModelSelectorChoice,
   ProviderSelectorChoice,
+  ThinkingEffortSelectorChoice,
 } from "../src/cli/model-selector.js";
 import { Terminal } from "../src/cli/terminal.js";
-import type { ProviderName } from "../src/core/types.js";
+import type { ProviderName, ThinkingEffort } from "../src/core/types.js";
 import { createStorage } from "../src/storage/index.js";
 import { ThreadStore } from "../src/threads/index.js";
 import { describe, it } from "./harness.js";
@@ -20,11 +21,16 @@ const TEST_ENVIRONMENT = [
   "EASY_CODE_DATA_DIR",
   "EASY_CODE_CACHE_DIR",
   "EASY_CODE_PROVIDER",
+  "EASY_CODE_THINKING_EFFORT",
   "QWEN_API_KEY",
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
+  "ZAI_API_KEY",
+  "GLM_API_KEY",
+  "ZHIPUAI_API_KEY",
   "QWEN_MODEL",
   "DEEPSEEK_MODEL",
+  "GLM_MODEL",
 ] as const;
 
 interface AppFixture {
@@ -39,12 +45,17 @@ interface AppFixture {
 class ScriptedModelTerminal extends Terminal {
   providerChoices: readonly ProviderSelectorChoice[] = [];
   modelChoices: readonly ModelSelectorChoice[] = [];
+  thinkingChoices: readonly ThinkingEffortSelectorChoice[] = [];
+  initialThinkingEffort?: ThinkingEffort;
+  thinkingProviderLabel?: string;
+  thinkingModel?: string;
 
   constructor(
     input: PassThrough,
     output: PassThrough,
     private readonly providerSelection: ProviderName | undefined,
     private readonly modelSelection: string | undefined,
+    private readonly thinkingSelection: ThinkingEffort | undefined,
   ) {
     super(input, output);
   }
@@ -67,11 +78,28 @@ class ScriptedModelTerminal extends Terminal {
     this.modelChoices = choices;
     return this.modelSelection;
   }
+
+  override async selectThinkingEffort(
+    providerName: string,
+    model: string,
+    choices: readonly ThinkingEffortSelectorChoice[],
+    initialEffort: ThinkingEffort,
+  ): Promise<ThinkingEffort | undefined> {
+    this.thinkingProviderLabel = providerName;
+    this.thinkingModel = model;
+    this.thinkingChoices = choices;
+    this.initialThinkingEffort = initialEffort;
+    return this.thinkingSelection;
+  }
 }
 
 async function createAppFixture(
-  keys: { qwen?: string; deepseek?: string },
-  selection?: { provider?: ProviderName; model?: string },
+  keys: { qwen?: string; deepseek?: string; glm?: string },
+  selection?: {
+    provider?: ProviderName;
+    model?: string;
+    thinkingEffort?: ThinkingEffort;
+  },
 ): Promise<AppFixture> {
   const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-model-command-"));
   const workspace = path.join(root, "workspace");
@@ -83,13 +111,19 @@ async function createAppFixture(
   process.env.EASY_CODE_DATA_DIR = path.join(root, "data");
   process.env.EASY_CODE_CACHE_DIR = path.join(root, "cache");
   process.env.EASY_CODE_PROVIDER = "qwen";
+  delete process.env.EASY_CODE_THINKING_EFFORT;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.QWEN_MODEL;
   delete process.env.DEEPSEEK_MODEL;
+  delete process.env.GLM_MODEL;
+  delete process.env.GLM_API_KEY;
+  delete process.env.ZHIPUAI_API_KEY;
   if (keys.qwen) process.env.QWEN_API_KEY = keys.qwen;
   else delete process.env.QWEN_API_KEY;
   if (keys.deepseek) process.env.DEEPSEEK_API_KEY = keys.deepseek;
   else delete process.env.DEEPSEEK_API_KEY;
+  if (keys.glm) process.env.ZAI_API_KEY = keys.glm;
+  else delete process.env.ZAI_API_KEY;
 
   const input = new PassThrough();
   const output = new PassThrough();
@@ -104,6 +138,7 @@ async function createAppFixture(
         output,
         selection.provider,
         selection.model,
+        selection.thinkingEffort,
       )
     : new Terminal(input, output);
 
@@ -152,7 +187,7 @@ function restoreEnvironment(
 }
 
 function assertMissingKey(
-  provider: "qwen" | "deepseek",
+  provider: ProviderName,
 ): (error: unknown) => boolean {
   return (error: unknown): boolean => {
     assert.ok(error instanceof Error);
@@ -176,6 +211,10 @@ describe("/model", () => {
       await assert.rejects(
         fixture.app.handleSlashCommand("/provider deepseek"),
         assertMissingKey("deepseek"),
+      );
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/model glm glm-5.3-flash"),
+        assertMissingKey("glm"),
       );
       await assert.rejects(
         fixture.app.handleSlashCommand("/model qwen deepseek-v4-pro"),
@@ -230,10 +269,37 @@ describe("/model", () => {
     }
   });
 
-  it("opens the provider menu first and then the selected provider's model menu", async () => {
+  it("switches to GLM labels canonically and applies its vision matrix", async () => {
+    const fixture = await createAppFixture({
+      qwen: "qwen-test-key",
+      glm: "glm-test-key",
+    });
+    try {
+      await fixture.app.handleSlashCommand("/model glm GLM-5.3-Flash");
+      await fixture.app.handleSlashCommand("/status");
+      assert.match(fixture.output(), /Zhipu GLM \/ glm-5\.3-flash/u);
+      assert.match(fixture.output(), /"provider": "glm"/u);
+      assert.match(fixture.output(), /"vision": true/u);
+
+      const offset = fixture.output().length;
+      await fixture.app.handleSlashCommand("/model GLM-5.3");
+      await fixture.app.handleSlashCommand("/status");
+      const textOnly = fixture.output().slice(offset);
+      assert.match(textOnly, /Zhipu GLM \/ glm-5\.3/u);
+      assert.match(textOnly, /"vision": false/u);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("opens provider, model, and thinking menus and saves an unsupported effort choice", async () => {
     const fixture = await createAppFixture(
       { qwen: "qwen-test-key", deepseek: "deepseek-test-key" },
-      { provider: "deepseek", model: "deepseek-v4-flash-vision-exp" },
+      {
+        provider: "deepseek",
+        model: "deepseek-v4-flash-vision-exp",
+        thinkingEffort: "high",
+      },
     );
     try {
       await fixture.app.handleSlashCommand("/model");
@@ -242,7 +308,7 @@ describe("/model", () => {
       const terminal = fixture.terminal as ScriptedModelTerminal;
       assert.deepEqual(
         terminal.providerChoices.map((choice) => choice.label),
-        ["DeepSeek", "Alibaba Qwen"],
+        ["DeepSeek", "Alibaba Qwen", "Zhipu GLM"],
       );
       assert.deepEqual(
         terminal.modelChoices.map((choice) => choice.id),
@@ -252,8 +318,25 @@ describe("/model", () => {
           "deepseek-v4-flash-vision-exp",
         ],
       );
-      assert.match(fixture.output(), /DeepSeek \/ deepseek-v4-flash-vision-exp/u);
+      assert.equal(terminal.thinkingProviderLabel, "DeepSeek");
+      assert.equal(terminal.thinkingModel, "deepseek-v4-flash-vision-exp");
+      assert.equal(terminal.initialThinkingEffort, "medium");
+      assert.deepEqual(
+        terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
+        [
+          { id: "none", applied: false },
+          { id: "low", applied: false },
+          { id: "medium", applied: false },
+          { id: "high", applied: false },
+        ],
+      );
+      assert.match(
+        fixture.output(),
+        /DeepSeek \/ deepseek-v4-flash-vision-exp \/ thinking high \(saved, not applied\)/u,
+      );
       assert.match(fixture.output(), /"provider": "deepseek"/u);
+      assert.match(fixture.output(), /"thinkingEffort": "high"/u);
+      assert.match(fixture.output(), /"thinkingApplied": false/u);
     } finally {
       fixture.close();
     }
@@ -270,6 +353,37 @@ describe("/model", () => {
       assert.match(fixture.output(), /Model selection canceled/u);
       assert.match(fixture.output(), /"provider": "qwen"/u);
       assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
+      assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("keeps provider, model, and effort unchanged when the thinking stage is canceled", async () => {
+    const fixture = await createAppFixture(
+      { qwen: "qwen-test-key", deepseek: "deepseek-test-key" },
+      {
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        thinkingEffort: undefined,
+      },
+    );
+    try {
+      await fixture.app.handleSlashCommand("/model");
+      await fixture.app.handleSlashCommand("/status");
+
+      const terminal = fixture.terminal as ScriptedModelTerminal;
+      assert.equal(terminal.thinkingModel, "deepseek-v4-pro");
+      assert.deepEqual(
+        terminal.thinkingChoices.map((choice) => choice.id),
+        ["none", "low", "medium", "high"],
+      );
+      assert.match(fixture.output(), /Model selection canceled/u);
+      assert.match(fixture.output(), /"provider": "qwen"/u);
+      assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
+      assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
+      assert.match(fixture.output(), /"thinkingApplied": true/u);
+      assert.doesNotMatch(fixture.output(), /Model switched to DeepSeek/u);
     } finally {
       fixture.close();
     }

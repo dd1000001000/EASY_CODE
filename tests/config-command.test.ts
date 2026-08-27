@@ -70,10 +70,14 @@ function commandRun(
 }
 
 describe("config commands", () => {
-  it("accepts only the two exact provider API-key keys", () => {
+  it("accepts only the three exact provider API-key keys", () => {
     assert.deepEqual(parseApiKeyConfigKey("qwen.api-key"), {
       key: "qwen.api-key",
       provider: "qwen",
+    });
+    assert.deepEqual(parseApiKeyConfigKey("glm.api-key"), {
+      key: "glm.api-key",
+      provider: "glm",
     });
     assert.throws(() => parseApiKeyConfigKey("qwen.api_key"), /Valid keys/u);
     assert.throws(() => parseApiKeyConfigKey("deepseek.apiKey"), /Valid keys/u);
@@ -134,6 +138,24 @@ describe("config commands", () => {
 
     assert.equal(store.values.get("deepseek"), secret);
     assert.doesNotMatch(command.output.value + command.errorOutput.value, new RegExp(secret, "u"));
+  });
+
+  it("stores a GLM key under the dedicated keyring entry", async () => {
+    const store = new MemoryCredentialStore();
+    const secret = "glm-super-secret";
+    const command = commandRun(["config", "set", "glm.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from([`${secret}\n`]),
+    });
+    await command.run;
+
+    assert.equal(store.values.get("glm"), secret);
+    assert.match(command.output.value, /Stored glm\.api-key/u);
+    assert.doesNotMatch(
+      command.output.value + command.errorOutput.value,
+      new RegExp(secret, "u"),
+    );
   });
 
   it("fails a set whose operating-system read-back cannot be verified", async () => {
@@ -218,12 +240,13 @@ describe("config commands", () => {
 
       const listed = commandRun(["config", "list"], {
         credentialStore: store,
-        env: { QWEN_API_KEY: secrets[0] },
+        env: { QWEN_API_KEY: secrets[0], ZAI_API_KEY: "glm-environment-secret" },
         userConfigPath,
       });
       await listed.run;
       assert.match(listed.output.value, /qwen\.api-key=\[configured\] \(environment variable QWEN_API_KEY\)/u);
       assert.match(listed.output.value, /deepseek\.api-key=\[configured\] \(operating system credential store\)/u);
+      assert.match(listed.output.value, /glm\.api-key=\[configured\] \(environment variable ZAI_API_KEY\)/u);
 
       store.values.delete("qwen");
       const legacy = commandRun(["config", "get", "qwen.api-key"], {
@@ -294,22 +317,27 @@ describe("credential configuration loading", () => {
       await mkdir(configDir, { recursive: true });
       await writeFile(
         path.join(configDir, "config.toml"),
-        `[qwen]\napi_key = "legacy-qwen"\n[deepseek]\napi_key = "legacy-deepseek"\n`,
+        `[qwen]\napi_key = "legacy-qwen"\n[deepseek]\napi_key = "legacy-deepseek"\n[glm]\napi_key = "legacy-glm"\n`,
         "utf8",
       );
       store.values.set("qwen", "keyring-qwen");
       store.values.set("deepseek", "keyring-deepseek");
+      store.values.set("glm", "keyring-glm");
 
       const withEnvironment = await loadEasyCodeConfig({
         workspaceRoot: temporary,
         configDir,
         dataDir: path.join(temporary, "data"),
         cacheDir: path.join(temporary, "cache"),
-        env: { QWEN_API_KEY: "environment-qwen" },
+        env: {
+          QWEN_API_KEY: "environment-qwen",
+          ZAI_API_KEY: "environment-glm",
+        },
         credentialStore: store,
       });
       assert.equal(withEnvironment.qwen.apiKey, "environment-qwen");
       assert.equal(withEnvironment.deepseek.apiKey, "keyring-deepseek");
+      assert.equal(withEnvironment.glm.apiKey, "environment-glm");
 
       const withoutEnvironment = await loadEasyCodeConfig({
         workspaceRoot: temporary,
@@ -321,6 +349,7 @@ describe("credential configuration loading", () => {
       });
       assert.equal(withoutEnvironment.qwen.apiKey, "keyring-qwen");
       assert.equal(withoutEnvironment.deepseek.apiKey, "keyring-deepseek");
+      assert.equal(withoutEnvironment.glm.apiKey, "keyring-glm");
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

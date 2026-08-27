@@ -43,14 +43,14 @@ export function registerConfigCommands(
     .description("inspect or update user API-key configuration")
     .addHelpText(
       "after",
-      "\nOnly qwen.api-key and deepseek.api-key are supported. " +
+      "\nOnly qwen.api-key, deepseek.api-key, and glm.api-key are supported. " +
         "Keys are stored in the operating system credential store, never in workspace configuration.\n",
     );
 
   config
     .command("set")
     .description("store a provider API key in the operating system credential store")
-    .argument("<key>", "qwen.api-key or deepseek.api-key")
+    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
     .allowExcessArguments(false)
     .addHelpText(
       "after",
@@ -82,7 +82,7 @@ export function registerConfigCommands(
   config
     .command("get")
     .description("show whether one provider API key is configured (never prints the key)")
-    .argument("<key>", "qwen.api-key or deepseek.api-key")
+    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
     .allowExcessArguments(false)
     .action(async (rawKey: string) => {
       const { key, provider } = parseApiKeyConfigKey(rawKey);
@@ -94,7 +94,7 @@ export function registerConfigCommands(
   config
     .command("unset")
     .description("delete a provider API key from the operating system credential store")
-    .argument("<key>", "qwen.api-key or deepseek.api-key")
+    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
     .allowExcessArguments(false)
     .action(async (rawKey: string) => {
       const { key, provider } = parseApiKeyConfigKey(rawKey);
@@ -125,7 +125,7 @@ export function registerConfigCommands(
     .allowExcessArguments(false)
     .action(async () => {
       const resources = resolveRuntime(runtime);
-      for (const provider of ["qwen", "deepseek"] as const) {
+      for (const provider of ["qwen", "deepseek", "glm"] as const) {
         const status = await apiKeyStatus(provider, resources);
         writeLine(
           resources.output,
@@ -209,10 +209,11 @@ function environmentApiKeySource(
   provider: ProviderName,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
-  const names =
-    provider === "qwen"
-      ? (["QWEN_API_KEY", "DASHSCOPE_API_KEY"] as const)
-      : (["DEEPSEEK_API_KEY"] as const);
+  const names = provider === "qwen"
+    ? (["QWEN_API_KEY", "DASHSCOPE_API_KEY"] as const)
+    : provider === "deepseek"
+      ? (["DEEPSEEK_API_KEY"] as const)
+      : (["ZAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY"] as const);
   return names.find((name) => Boolean(env[name]?.trim()));
 }
 

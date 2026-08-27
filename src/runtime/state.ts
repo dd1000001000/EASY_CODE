@@ -12,6 +12,7 @@ export function createSessionState(
     mode: config.mode,
     provider: config.provider,
     model: provider.model,
+    thinkingEffort: config.thinkingEffort,
     workspaceRoot: config.workspaceRoot,
     constraints: [],
     messages: [],

@@ -1,6 +1,9 @@
 export type AgentMode = "plan" | "auto" | "code";
-export type ProviderName = "qwen" | "deepseek";
+export type ProviderName = "qwen" | "deepseek" | "glm";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
+export const THINKING_EFFORTS = ["none", "low", "medium", "high"] as const;
+export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
+export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 
 export type ToolName =
   | "read_file"
@@ -89,6 +92,8 @@ export interface ModelRequest {
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
+  /** User-selected normalized effort; unsupported provider/model combinations ignore it. */
+  thinkingEffort?: ThinkingEffort;
 }
 
 export interface ModelProvider {
@@ -108,6 +113,7 @@ export interface ProviderConfig {
 export interface EasyCodeConfig {
   provider: ProviderName;
   mode: AgentMode;
+  thinkingEffort: ThinkingEffort;
   approvalPolicy: ApprovalPolicyName;
   workspaceRoot: string;
   dataDir: string;
@@ -119,6 +125,7 @@ export interface EasyCodeConfig {
   commandTimeoutMs: number;
   qwen: ProviderConfig;
   deepseek: ProviderConfig;
+  glm: ProviderConfig;
 }
 
 export interface ToolExecutionResult {
@@ -149,6 +156,8 @@ export type LongTermMemoryCategory =
   | "architecture"
   | "decision"
   | "environment";
+
+export const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 
 export type MemoryMutationRequest =
   | {
@@ -249,6 +258,7 @@ export interface SessionState {
   mode: AgentMode;
   provider: ProviderName;
   model: string;
+  thinkingEffort: ThinkingEffort;
   workspaceRoot: string;
   goal?: string;
   constraints: string[];

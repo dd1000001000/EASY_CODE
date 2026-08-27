@@ -78,10 +78,10 @@ export function parseApiKeyConfigKey(value: string): {
   key: ApiKeyConfigKey;
   provider: ProviderName;
 } {
-  const match = /^(qwen|deepseek)\.api-key$/u.exec(value.trim());
+  const match = /^(qwen|deepseek|glm)\.api-key$/u.exec(value.trim());
   if (!match) {
     throw new Error(
-      "Unsupported configuration key. Valid keys: qwen.api-key, deepseek.api-key.",
+      "Unsupported configuration key. Valid keys: qwen.api-key, deepseek.api-key, glm.api-key.",
     );
   }
   const provider = match[1] as ProviderName;

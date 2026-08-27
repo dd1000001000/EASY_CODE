@@ -1,18 +1,19 @@
-import type {
-  AgentMode,
-  AgentRunResult,
-  AgentTool,
-  ApprovalHandler,
-  ChatMessage,
-  CommandAuditEntry,
-  EventRecord,
-  ImageAttachment,
-  LongTermMemory,
-  MemoryMutationRequest,
-  ModelProvider,
-  SessionState,
-  ToolExecutionResult,
-  ToolName
+import {
+  MAX_MEMORY_MUTATIONS_PER_TURN,
+  type AgentMode,
+  type AgentRunResult,
+  type AgentTool,
+  type ApprovalHandler,
+  type ChatMessage,
+  type CommandAuditEntry,
+  type EventRecord,
+  type ImageAttachment,
+  type LongTermMemory,
+  type MemoryMutationRequest,
+  type ModelProvider,
+  type SessionState,
+  type ToolExecutionResult,
+  type ToolName,
 } from "../core/types.js";
 import { ContextManager } from "../context/manager.js";
 import {
@@ -28,7 +29,6 @@ import { createId } from "../utils/ids.js";
 import { jsonForModel, safeJsonParse } from "../utils/json.js";
 import { determineAutoRoute } from "./auto-router.js";
 
-const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
 
 export interface AgentRuntimeDependencies {
@@ -159,6 +159,7 @@ export class AgentRuntime {
         routingInput,
         options.signal,
         inputImages,
+        state.thinkingEffort,
       );
       effectiveMode = route.route === "plan_only" ? "plan" : "code";
       autoReason = route.reason;
@@ -217,7 +218,8 @@ export class AgentRuntime {
           messages,
           currentTurnImageIds: turnImages.map((image) => image.id),
           tools: enabledTools.map((tool) => tool.definition),
-          signal: options.signal
+          signal: options.signal,
+          thinkingEffort: state.thinkingEffort,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

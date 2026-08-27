@@ -15,8 +15,8 @@ export type ModelCommandRequest =
     };
 
 const MODEL_COMMAND_USAGE =
-  "Usage: /model | /model <model-id> | /model <qwen|deepseek> <model-id>";
-const PROVIDERS: readonly ProviderName[] = ["qwen", "deepseek"];
+  "Usage: /model | /model <model-id> | /model <qwen|deepseek|glm> <model-id>";
+const PROVIDERS: readonly ProviderName[] = ["qwen", "deepseek", "glm"];
 
 export function parseSlashCommand(input: string): SlashCommand | null {
   const trimmed = input.trim();
@@ -66,10 +66,12 @@ export const HELP_TEXT = `
 EASY CODE commands
 
   /mode plan|auto|code       Switch working mode
-  /provider qwen|deepseek    Switch provider
+  /provider qwen|deepseek|glm
+                              Switch provider
   /model                     Open the provider and model selector
   /model <model>             Switch the current provider's model
-  /model qwen|deepseek <id>  Switch both provider and model
+  /model qwen|deepseek|glm <id>
+                              Switch both provider and model
   /status                    Show current status
   /workspace                 Show workspace summary
   /workspace refresh         Refresh the workspace inventory

@@ -8,13 +8,20 @@ import { Command, Option } from "commander";
 
 import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
 import { registerConfigCommands } from "./config/config-command.js";
-import type { AgentMode, ApprovalPolicyName, ProviderName } from "./core/types.js";
+import {
+  THINKING_EFFORTS,
+  type AgentMode,
+  type ApprovalPolicyName,
+  type ProviderName,
+  type ThinkingEffort,
+} from "./core/types.js";
 
 interface CliOptions {
   workspace?: string;
   provider?: ProviderName;
   model?: string;
   mode?: AgentMode;
+  thinkingEffort?: ThinkingEffort;
   approval?: ApprovalPolicyName;
   yes?: boolean;
   resume?: string;
@@ -70,6 +77,7 @@ function appOptions(
     provider: options.provider,
     model: options.model,
     mode: options.mode,
+    thinkingEffort: options.thinkingEffort,
     approvalPolicy: options.approval,
     assumeYes: options.yes,
     resumeThreadId: options.resume,
@@ -94,9 +102,13 @@ async function withApp(
 function addCommonOptions(command: Command): Command {
   return command
     .option("-w, --workspace <path>", "workspace root (default: current directory)")
-    .addOption(new Option("--provider <name>", "model provider").choices(["qwen", "deepseek"]))
+    .addOption(new Option("--provider <name>", "model provider").choices(["qwen", "deepseek", "glm"]))
     .option("--model <id>", "provider model id")
     .addOption(new Option("--mode <mode>", "working mode").choices(["plan", "auto", "code"]))
+    .addOption(
+      new Option("--thinking-effort <effort>", "model thinking effort")
+        .choices([...THINKING_EFFORTS]),
+    )
     .addOption(
       new Option("--approval <policy>", "command approval policy")
         .choices(["safe", "ask", "never"]),
@@ -116,7 +128,7 @@ export async function main(argv = process.argv): Promise<void> {
   const program = addCommonOptions(
     new Command()
       .name("easy-code")
-      .description("EASY CODE — local CLI coding agent for Alibaba Qwen and DeepSeek")
+      .description("EASY CODE — local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM")
       .version("0.1.0")
       .showHelpAfterError(),
   );

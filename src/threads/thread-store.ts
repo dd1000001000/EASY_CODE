@@ -1,13 +1,15 @@
 import { hostname } from "node:os";
 
-import type {
-  AgentMode,
-  AgentRunResult,
-  ChatMessage,
-  CommandAuditEntry,
-  EventRecord,
-  ProviderName,
-  SessionState,
+import {
+  DEFAULT_THINKING_EFFORT,
+  type AgentMode,
+  type AgentRunResult,
+  type ChatMessage,
+  type CommandAuditEntry,
+  type EventRecord,
+  type ProviderName,
+  type SessionState,
+  type ThinkingEffort,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
@@ -26,6 +28,7 @@ export interface ThreadCreateInput {
   readonly mode: AgentMode;
   readonly provider: ProviderName;
   readonly model: string;
+  readonly thinkingEffort?: ThinkingEffort;
   readonly goal?: string;
   readonly constraints?: readonly string[];
   readonly messages?: readonly ChatMessage[];
@@ -125,6 +128,7 @@ export class ThreadStore {
       mode: input.mode,
       provider: input.provider,
       model: input.model,
+      thinkingEffort: input.thinkingEffort ?? DEFAULT_THINKING_EFFORT,
       workspaceRoot: input.workspaceRoot,
       goal: input.goal,
       constraints: [...(input.constraints ?? [])],

@@ -34,6 +34,12 @@ describe("parseSlashCommand", () => {
       provider: "qwen",
       model: "qwen-custom",
     });
+    assert.deepEqual(parseModelCommand(["glm", "GLM-5.3-Flash"]), {
+      action: "switch",
+      provider: "glm",
+      model: "GLM-5.3-Flash",
+    });
+    assert.throws(() => parseModelCommand(["glm"]), /Usage: \/model/u);
     assert.throws(
       () => parseModelCommand(["unknown-provider", "model"]),
       /Usage: \/model/u,
@@ -46,5 +52,6 @@ describe("parseSlashCommand", () => {
 
   it("documents the model command", () => {
     assert.match(HELP_TEXT, /\/model/u);
+    assert.match(HELP_TEXT, /qwen\|deepseek\|glm/u);
   });
 });

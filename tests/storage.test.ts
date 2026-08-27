@@ -779,12 +779,13 @@ describe("storage", () => {
         threadId: "thread_restore",
         workspaceRoot: path.join(dataDir, "workspace"),
         mode: "auto",
-        provider: "qwen",
-        model: "qwen-test",
+        provider: "glm",
+        model: "glm-5.3-flash",
         goal: "test recovery",
         messages: [{ role: "user", content: "hello" }, assistantMessage],
       });
       state.mode = "code";
+      state.thinkingEffort = "high";
       state.workingSummary = "verified summary";
       state.compactedMessageCount = 2;
       state.filesRead.set("src/a.ts", {
@@ -802,14 +803,19 @@ describe("storage", () => {
       );
 
       const recovered = threads.recover("thread_restore");
+      assert.equal(recovered.provider, "glm");
+      assert.equal(recovered.model, "glm-5.3-flash");
       assert.equal(recovered.mode, "code");
+      assert.equal(recovered.thinkingEffort, "high");
       assert.equal(recovered.workingSummary, "verified summary");
       assert.equal(recovered.compactedMessageCount, 2);
       const legacyCheckpoint = serializeSessionState(recovered) as unknown as Record<string, unknown>;
       delete legacyCheckpoint.compactedMessageCount;
+      delete legacyCheckpoint.thinkingEffort;
       const migratedLegacyCheckpoint = deserializeSessionState(legacyCheckpoint);
       assert.equal(migratedLegacyCheckpoint.compactedMessageCount, 0);
       assert.equal(migratedLegacyCheckpoint.workingSummary, "");
+      assert.equal(migratedLegacyCheckpoint.thinkingEffort, "medium");
       assert.equal(recovered.filesRead.get("src/a.ts")?.hash, "abc");
       assert.deepEqual(recovered.messages.slice(-2), [
         { role: "user", content: "continue" },

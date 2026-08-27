@@ -104,7 +104,7 @@ export class ManageMemoryTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Search and maintain workspace-scoped long-term memory. Use search before writing. Remember only concise, durable user preferences, project conventions, verified architecture, explicit decisions, or stable environment facts that will help future tasks. Never store secrets, guesses, transient task state, raw tool output, or facts useful only in the current turn. remember safely upserts exact content; revise keeps the old record as superseded; forget expires a record without deleting its audit history.",
+        "Search and maintain workspace-scoped long-term memory. Use search before writing. Store one short, self-contained sentence per memory, at most 120 characters. When several independent durable facts were established, issue several remember calls together in the same response so each gets its own category, vector, evidence, and lifecycle; a turn may stage at most eight changes. Never combine a paragraph or list into one memory, but keep conditions together when separating them would make a fact inaccurate. Remember only durable user preferences, project conventions, verified architecture, explicit decisions, or stable environment facts that will help future tasks. Never store secrets, guesses, transient task state, raw tool output, or facts useful only in the current turn. remember safely upserts exact content; revise keeps the old record as superseded; forget expires a record without deleting its audit history.",
       strict: true,
       parameters: {
         type: "object",
@@ -114,7 +114,7 @@ export class ManageMemoryTool implements AgentTool {
             type: "string",
             enum: ["search", "remember", "revise", "forget"],
             description:
-              "search retrieves memories; remember creates or upserts; revise supersedes; forget expires.",
+              "search retrieves memories; remember creates one atomic fact; revise supersedes; forget expires.",
           },
           query: {
             type: "string",
@@ -136,7 +136,7 @@ export class ManageMemoryTool implements AgentTool {
             type: "string",
             minLength: MIN_MEMORY_CONTENT_CHARS,
             maxLength: MAX_MEMORY_CONTENT_CHARS,
-            description: "Required for remember and revise. One self-contained durable fact; no secrets.",
+            description: "Required for remember and revise. One short, self-contained durable fact; no secrets, lists, or bundled claims.",
           },
           category: {
             type: "string",

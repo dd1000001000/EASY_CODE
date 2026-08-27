@@ -99,6 +99,78 @@ describe("manage_memory model tool", () => {
     }
   });
 
+  it("stages several short facts independently after one search", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-batch-workspace-"));
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-batch-data-"));
+    const storage = createStorage(dataDir);
+    try {
+      const workspace = await WorkspaceManager.create(workspaceRoot);
+      const manager = new MemoryManager(storage);
+      const tool = new ManageMemoryTool(manager, workspace);
+      const toolContext = context(workspaceRoot);
+      const searched = await tool.execute(
+        { action: "search", query: "TypeScript SQLite Windows" },
+        toolContext,
+      );
+      assert.equal(searched.ok, true);
+
+      const facts = [
+        {
+          category: "preference" as const,
+          content: "The user prefers strict TypeScript.",
+          reason: "The user explicitly stated this lasting preference.",
+        },
+        {
+          category: "architecture" as const,
+          content: "SQLite is the durable local storage layer.",
+          reason: "The completed implementation verifies this architecture.",
+        },
+        {
+          category: "environment" as const,
+          content: "The project supports Windows, macOS, and Linux.",
+          reason: "The supported-platform checks passed in this turn.",
+        },
+      ];
+      const mutations: MemoryMutationRequest[] = [];
+      for (const fact of facts) {
+        const staged = await tool.execute(
+          { action: "remember", ...fact },
+          toolContext,
+        );
+        assert.equal(staged.ok, true);
+        mutations.push(staged.memoryMutation as MemoryMutationRequest);
+      }
+      assert.equal(manager.list(workspaceIdFromRoot(workspace.root)).length, 0);
+
+      const committed = manager.applyModelMutations({
+        workspaceId: workspaceIdFromRoot(workspace.root),
+        threadId: toolContext.threadId,
+        turnId: toolContext.turnId,
+        outcome: "success",
+        mutations,
+      });
+      assert.equal(committed.applied, 3);
+      assert.equal(committed.memoryIds.length, 3);
+      assert.equal(manager.list(workspaceIdFromRoot(workspace.root)).length, 3);
+
+      const tooLong = await tool.execute(
+        {
+          action: "remember",
+          category: "convention",
+          content: "x".repeat(121),
+          reason: "The user requested an oversized compound memory.",
+        },
+        toolContext,
+      );
+      assert.equal(tooLong.ok, false);
+      assert.match(tooLong.error ?? "", /120/iu);
+    } finally {
+      storage.close();
+      await rm(workspaceRoot, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("requires searched IDs, enforces plan categories, secrets, and workspace isolation", async () => {
     const workspaceA = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-a-"));
     const workspaceB = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-b-"));

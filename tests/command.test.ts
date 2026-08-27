@@ -108,6 +108,15 @@ describe("command runtime", () => {
       sanitizeCommandOutput("cmd /c set TOKEN=top-secret-token-value").includes("top-secret-token-value"),
       false,
     );
+    for (const assignment of [
+      "GLM_API_KEY=glm-secret-value",
+      "ZAI_API_KEY=zai-secret-value",
+      "ZHIPUAI_API_KEY=zhipu-secret-value",
+    ]) {
+      const sanitized = sanitizeCommandOutput(assignment);
+      assert.match(sanitized, /\[REDACTED\]/u);
+      assert.doesNotMatch(sanitized, /secret-value/u);
+    }
     assert.equal(sanitizeCommandOutput("left\u202Eright"), "left\\u{202e}right");
   });
 
@@ -385,11 +394,17 @@ describe("command runtime", () => {
       TEMP: process.env.TEMP,
       QWEN_API_KEY: "secret",
       DEEPSEEK_API_KEY: "secret",
+      GLM_API_KEY: "secret",
+      ZAI_API_KEY: "secret",
+      ZHIPUAI_API_KEY: "secret",
       NODE_OPTIONS: "--require bad.js",
       SAFE_CUSTOM: "also omitted",
     });
     assert.equal(environment.QWEN_API_KEY, undefined);
     assert.equal(environment.DEEPSEEK_API_KEY, undefined);
+    assert.equal(environment.GLM_API_KEY, undefined);
+    assert.equal(environment.ZAI_API_KEY, undefined);
+    assert.equal(environment.ZHIPUAI_API_KEY, undefined);
     assert.equal(environment.NODE_OPTIONS, undefined);
     assert.equal(environment.SAFE_CUSTOM, undefined);
     assert.equal(environment.CI, "1");

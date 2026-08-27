@@ -11,6 +11,8 @@ import path from "node:path";
 import {
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_GLM_BASE_URL,
+  DEFAULT_GLM_MODEL,
   DEFAULT_QWEN_BASE_URL,
   DEFAULT_QWEN_MODEL,
   createDefaultEasyCodeConfig,
@@ -47,6 +49,10 @@ base_url = "https://user-qwen.example/v1/"
 
 [deepseek]
 model = "user-deepseek"
+
+[glm]
+model = "user-glm"
+base_url = "https://user-glm.example/v4/"
 `,
         "utf8",
       );
@@ -68,29 +74,35 @@ model = "workspace-qwen"
         cacheDir: path.join(temporary, "cache"),
         env: {
           EASY_CODE_PROVIDER: "qwen",
+          EASY_CODE_THINKING_EFFORT: "high",
           EASY_CODE_MAX_STEPS: "24",
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
+          ZAI_API_KEY: "glm-env-key",
         },
         credentialStore: false,
       });
 
       assert.equal(config.provider, "qwen");
       assert.equal(config.mode, "code");
+      assert.equal(config.thinkingEffort, "high");
       assert.equal(config.maxSteps, 24);
       assert.equal(config.qwen.apiKey, "qwen-env-key");
       assert.equal(config.qwen.model, "workspace-qwen");
       assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
       assert.equal(config.deepseek.model, "user-deepseek");
       assert.equal(config.deepseek.apiKey, "deepseek-env-key");
+      assert.equal(config.glm.model, "user-glm");
+      assert.equal(config.glm.baseUrl, "https://user-glm.example/v4");
+      assert.equal(config.glm.apiKey, "glm-env-key");
       assert.equal(config.workspaceRoot, path.resolve(workspace));
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("provides the required Qwen and DeepSeek defaults and key alias", async () => {
+  it("provides the required Qwen, DeepSeek, and GLM defaults and key aliases", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-defaults-"));
     try {
       const config = await loadEasyCodeConfig({
@@ -98,14 +110,21 @@ model = "workspace-qwen"
         configDir: path.join(temporary, "config"),
         dataDir: path.join(temporary, "data"),
         cacheDir: path.join(temporary, "cache"),
-        env: { DASHSCOPE_API_KEY: "dashscope-key" },
+        env: {
+          DASHSCOPE_API_KEY: "dashscope-key",
+          GLM_API_KEY: "glm-alias-key",
+        },
         credentialStore: false,
       });
       assert.equal(config.qwen.baseUrl, DEFAULT_QWEN_BASE_URL);
+      assert.equal(config.thinkingEffort, "medium");
       assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
       assert.equal(config.qwen.apiKey, "dashscope-key");
       assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
       assert.equal(config.deepseek.model, DEFAULT_DEEPSEEK_MODEL);
+      assert.equal(config.glm.baseUrl, DEFAULT_GLM_BASE_URL);
+      assert.equal(config.glm.model, DEFAULT_GLM_MODEL);
+      assert.equal(config.glm.apiKey, "glm-alias-key");
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -148,7 +167,7 @@ model = "workspace-qwen"
       await mkdir(workspaceConfigDir, { recursive: true });
       await writeFile(
         path.join(workspaceConfigDir, "config.toml"),
-        `[qwen]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
+        `[glm]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
         "utf8",
       );
       await assert.rejects(
@@ -225,6 +244,7 @@ describe("OpenAI-compatible providers", () => {
       messages: [{ role: "user", content: "Inspect the entry point" }],
       tools: [tool],
       maxTokens: 512,
+      thinkingEffort: "medium",
     });
 
     assert.equal(captured.length, 1);
@@ -234,14 +254,54 @@ describe("OpenAI-compatible providers", () => {
       model?: string;
       tools?: unknown[];
       max_tokens?: number;
+      enable_thinking?: boolean;
+      thinking_budget?: number;
     };
     assert.equal(requestBody.model, DEFAULT_QWEN_MODEL);
     assert.equal(requestBody.tools?.length, 1);
     assert.equal(requestBody.max_tokens, 512);
+    assert.equal(requestBody.enable_thinking, true);
+    assert.equal(requestBody.thinking_budget, 16_384);
     assert.equal(response.message.tool_calls?.[0]?.id, "call_1");
     assert.equal(response.message.reasoning_content, "inspect first");
     assert.equal(response.finishReason, "tool_calls");
     assert.equal(response.usage?.totalTokens, 18);
+  });
+
+  it("omits thinking fields when the exact catalog model does not support them", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    let captured: JsonPostRequest | undefined;
+    const provider = createProvider(
+      config,
+      "deepseek",
+      "deepseek-v4-flash-vision-exp",
+      {
+        transport: async (request) => {
+          captured = request;
+          return {
+            statusCode: 200,
+            headers: {},
+            body: JSON.stringify({
+              choices: [{
+                finish_reason: "stop",
+                message: { role: "assistant", content: "done" },
+              }],
+            }),
+          };
+        },
+      },
+    );
+    await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+      thinkingEffort: "high",
+    });
+
+    const body = JSON.parse(captured?.body ?? "{}") as Record<string, unknown>;
+    assert.equal("thinking" in body, false);
+    assert.equal("reasoning_effort" in body, false);
+    assert.equal("enable_thinking" in body, false);
+    assert.equal("thinking_budget" in body, false);
   });
 
   it("retries only up to maxRetries and honors model overrides", async () => {
@@ -288,6 +348,70 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.message.content, "done");
     assert.equal(attempts, 3);
     assert.deepEqual(delays, [400, 800]);
+  });
+
+  it("routes GLM through the official OpenAI-compatible endpoint", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.glm.apiKey = "glm-test-key";
+    let captured: JsonPostRequest | undefined;
+    const provider = createProvider(config, "glm", "glm-5.3-flash", {
+      transport: async (request) => {
+        captured = request;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{
+              finish_reason: "tool_calls",
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning_content: "I will inspect the file.",
+                tool_calls: [{
+                  id: "call_glm_1",
+                  type: "function",
+                  function: { name: "read_file", arguments: '{"path":"README.md"}' },
+                }],
+              },
+            }],
+          }),
+        };
+      },
+    });
+    const tool: ToolDefinition = {
+      type: "function",
+      function: {
+        name: "read_file",
+        description: "Read a file",
+        parameters: { type: "object" },
+        strict: true,
+      },
+    };
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "Inspect the README" }],
+      tools: [tool],
+      thinkingEffort: "high",
+    });
+
+    assert.equal(provider.name, "glm");
+    assert.equal(
+      captured?.url.href,
+      `${DEFAULT_GLM_BASE_URL}/chat/completions`,
+    );
+    assert.equal(captured?.headers.authorization, "Bearer glm-test-key");
+    const body = JSON.parse(captured?.body ?? "{}") as {
+      model?: string;
+      tools?: Array<{ function?: { strict?: boolean } }>;
+      thinking?: { type?: string };
+      reasoning_effort?: string;
+    };
+    assert.equal(body.model, "glm-5.3-flash");
+    assert.equal(body.tools?.length, 1);
+    assert.equal(body.tools?.[0]?.function?.strict, undefined);
+    assert.deepEqual(body.thinking, { type: "enabled" });
+    assert.equal(body.reasoning_effort, "high");
+    assert.equal(response.message.tool_calls?.[0]?.function.name, "read_file");
+    assert.equal(response.message.reasoning_content, "I will inspect the file.");
   });
 
   it("redacts credentials from API and transport errors", async () => {

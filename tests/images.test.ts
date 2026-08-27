@@ -866,6 +866,55 @@ describe("image attachments", () => {
     assert.match(body, /data:image\/png;base64/u);
   });
 
+  it("sends images only with the GLM-5.3-Flash vision model", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.glm.apiKey = "test-key";
+    const attachment: ImageAttachment = {
+      id: "image_00000000-0000-4000-8000-000000000005",
+      label: "Image #1",
+      mediaType: "image/png",
+      storageKey:
+        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000005.png",
+      sha256: "5".repeat(64),
+      byteSize: PNG_1X1.length,
+      width: 1,
+      height: 1,
+    };
+    let flashBody = "";
+    const flash = createProvider(config, "glm", "glm-5.3-flash", {
+      loadImage: async () => PNG_1X1,
+      transport: async (request) => {
+        flashBody = request.body;
+        return successResponse();
+      },
+    });
+    await flash.complete({
+      messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
+      currentTurnImageIds: [attachment.id],
+    });
+    assert.match(flashBody, /"model":"glm-5\.3-flash"/u);
+    assert.match(flashBody, /"type":"image_url"/u);
+    assert.match(flashBody, /data:image\/png;base64/u);
+
+    for (const model of ["glm-5.3", "glm-5.2"] as const) {
+      let textBody = "";
+      const textOnly = createProvider(config, "glm", model, {
+        loadImage: async () => {
+          throw new Error(`${model} must not load image bytes`);
+        },
+        transport: async (request) => {
+          textBody = request.body;
+          return successResponse();
+        },
+      });
+      await textOnly.complete({
+        messages: [{ role: "user", content: "Historical image", images: [attachment] }],
+      });
+      assert.match(textBody, new RegExp(`${model} cannot receive images`, "u"));
+      assert.doesNotMatch(textBody, /data:image/u);
+    }
+  });
+
   it("validates Qwen image constraints before loading bytes", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.qwen.apiKey = "test-key";

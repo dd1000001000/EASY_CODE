@@ -1,10 +1,13 @@
-import type {
-  ChatMessage,
-  CommandAuditEntry,
-  FileChangeRecord,
-  FileVersion,
-  ImageAttachment,
-  SessionState,
+import {
+  DEFAULT_THINKING_EFFORT,
+  THINKING_EFFORTS,
+  type ThinkingEffort,
+  type ChatMessage,
+  type CommandAuditEntry,
+  type FileChangeRecord,
+  type FileVersion,
+  type ImageAttachment,
+  type SessionState,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 
@@ -14,6 +17,7 @@ export interface SerializedSessionState {
   readonly mode: SessionState["mode"];
   readonly provider: SessionState["provider"];
   readonly model: string;
+  readonly thinkingEffort: ThinkingEffort;
   readonly workspaceRoot: string;
   readonly goal?: string;
   readonly constraints: string[];
@@ -151,6 +155,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     mode: state.mode,
     provider: state.provider,
     model: state.model,
+    thinkingEffort: state.thinkingEffort,
     workspaceRoot: state.workspaceRoot,
     goal: state.goal,
     constraints: [...state.constraints],
@@ -176,8 +181,10 @@ export function deserializeSessionState(value: unknown): SessionState {
   if (
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
-    !["qwen", "deepseek"].includes(String(value.provider)) ||
+    !["qwen", "deepseek", "glm"].includes(String(value.provider)) ||
     typeof value.model !== "string" ||
+    (value.thinkingEffort !== undefined &&
+      !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort)) ||
     typeof value.workspaceRoot !== "string" ||
     !Array.isArray(value.constraints) ||
     !value.constraints.every((item) => typeof item === "string") ||
@@ -220,6 +227,12 @@ export function deserializeSessionState(value: unknown): SessionState {
     mode: value.mode as SessionState["mode"],
     provider: value.provider as SessionState["provider"],
     model: value.model,
+    // Checkpoints written before thinking-effort selection was introduced do
+    // not contain this field, so upgrade them to the configured product default.
+    thinkingEffort:
+      value.thinkingEffort === undefined
+        ? DEFAULT_THINKING_EFFORT
+        : value.thinkingEffort as ThinkingEffort,
     workspaceRoot: value.workspaceRoot,
     goal: typeof value.goal === "string" ? value.goal : undefined,
     constraints: [...value.constraints] as string[],

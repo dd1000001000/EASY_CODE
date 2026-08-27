@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ImageAttachment,
   ModelProvider,
+  ThinkingEffort,
 } from "../core/types.js";
 
 export interface AutoRouteResult {
@@ -28,6 +29,7 @@ export async function determineAutoRoute(
   userInput: string,
   signal?: AbortSignal,
   images: readonly ImageAttachment[] = [],
+  thinkingEffort?: ThinkingEffort,
 ): Promise<AutoRouteResult> {
   const fallback = fallbackRoute(userInput);
   const messages: ChatMessage[] = [
@@ -51,7 +53,12 @@ export async function determineAutoRoute(
   ];
 
   try {
-    const response = await provider.complete({ messages, signal, temperature: 0 });
+    const response = await provider.complete({
+      messages,
+      signal,
+      temperature: 0,
+      thinkingEffort,
+    });
     const content = response.message.content ?? "";
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) return fallback;

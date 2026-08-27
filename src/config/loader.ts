@@ -33,6 +33,7 @@ interface ProviderConfigLayer extends UnknownRecord {
 interface EasyCodeConfigLayer {
   provider?: unknown;
   mode?: unknown;
+  thinkingEffort?: unknown;
   approvalPolicy?: unknown;
   dataDir?: unknown;
   configDir?: unknown;
@@ -43,6 +44,7 @@ interface EasyCodeConfigLayer {
   commandTimeoutMs?: unknown;
   qwen?: ProviderConfigLayer;
   deepseek?: ProviderConfigLayer;
+  glm?: ProviderConfigLayer;
 }
 
 export interface LoadEasyCodeConfigOptions {
@@ -109,10 +111,13 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
   const nestedDeepSeek = recordAt(providers, "deepseek");
   const directQwen = recordAt(value, "qwen");
   const directDeepSeek = recordAt(value, "deepseek");
+  const nestedGlm = recordAt(providers, "glm");
+  const directGlm = recordAt(value, "glm");
 
   return compact({
     provider: value.provider,
     mode: value.mode,
+    thinkingEffort: field(value, "thinkingEffort", "thinking_effort"),
     approvalPolicy: field(value, "approvalPolicy", "approval_policy"),
     dataDir: firstDefined(
       field(value, "dataDir", "data_dir"),
@@ -144,6 +149,7 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
     ),
     qwen: providerLayer({ ...nestedQwen, ...directQwen }),
     deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
+    glm: providerLayer({ ...nestedGlm, ...directGlm }),
   });
 }
 
@@ -168,6 +174,7 @@ function applyLayer(
   const topLevel = compact({
     provider: layer.provider,
     mode: layer.mode,
+    thinkingEffort: layer.thinkingEffort,
     approvalPolicy: layer.approvalPolicy,
     dataDir: layer.dataDir,
     configDir: layer.configDir,
@@ -183,6 +190,7 @@ function applyLayer(
     ...topLevel,
     qwen: applyProviderLayer(base.qwen, layer.qwen),
     deepseek: applyProviderLayer(base.deepseek, layer.deepseek),
+    glm: applyProviderLayer(base.glm, layer.glm),
   } as EasyCodeConfig;
 }
 
@@ -220,10 +228,12 @@ function assertSafeWorkspaceLayer(
   if (layer.deepseek?.apiKey !== undefined) {
     forbidden.push("deepseek.api_key");
   }
+  if (layer.glm?.apiKey !== undefined) forbidden.push("glm.api_key");
   if (layer.qwen?.baseUrl !== undefined) forbidden.push("qwen.base_url");
   if (layer.deepseek?.baseUrl !== undefined) {
     forbidden.push("deepseek.base_url");
   }
+  if (layer.glm?.baseUrl !== undefined) forbidden.push("glm.base_url");
   if (layer.configDir !== undefined) forbidden.push("config_dir");
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
   if (layer.cacheDir !== undefined) forbidden.push("cache_dir");
@@ -265,6 +275,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
   return compact({
     provider: envValue(env, "EASY_CODE_PROVIDER"),
     mode: envValue(env, "EASY_CODE_MODE"),
+    thinkingEffort: envValue(env, "EASY_CODE_THINKING_EFFORT"),
     approvalPolicy: envValue(env, "EASY_CODE_APPROVAL_POLICY"),
     dataDir: envValue(env, "EASY_CODE_DATA_DIR"),
     configDir: envValue(env, "EASY_CODE_CONFIG_DIR"),
@@ -286,6 +297,13 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
       model: envValue(env, "DEEPSEEK_MODEL"),
       timeoutMs: envInteger(env, "DEEPSEEK_TIMEOUT_MS"),
       maxRetries: envInteger(env, "DEEPSEEK_MAX_RETRIES"),
+    }),
+    glm: compact({
+      apiKey: envValue(env, "ZAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY"),
+      baseUrl: envValue(env, "GLM_BASE_URL", "ZAI_BASE_URL", "ZHIPUAI_BASE_URL"),
+      model: envValue(env, "GLM_MODEL"),
+      timeoutMs: envInteger(env, "GLM_TIMEOUT_MS"),
+      maxRetries: envInteger(env, "GLM_MAX_RETRIES"),
     }),
   });
 }
@@ -312,13 +330,15 @@ async function credentialLayer(
     }
   };
 
-  const [qwenApiKey, deepseekApiKey] = await Promise.all([
+  const [qwenApiKey, deepseekApiKey, glmApiKey] = await Promise.all([
     read("qwen", environment.qwen?.apiKey),
     read("deepseek", environment.deepseek?.apiKey),
+    read("glm", environment.glm?.apiKey),
   ]);
   return {
     qwen: compact({ apiKey: qwenApiKey }),
     deepseek: compact({ apiKey: deepseekApiKey }),
+    glm: compact({ apiKey: glmApiKey }),
   };
 }
 
@@ -336,6 +356,10 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
     deepseek: {
       ...config.deepseek,
       baseUrl: config.deepseek.baseUrl.replace(/\/+$/, ""),
+    },
+    glm: {
+      ...config.glm,
+      baseUrl: config.glm.baseUrl.replace(/\/+$/, ""),
     },
   };
 }

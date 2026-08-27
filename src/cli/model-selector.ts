@@ -2,7 +2,7 @@ import { StringDecoder } from "node:string_decoder";
 
 import { Chalk } from "chalk";
 
-import type { ProviderName } from "../core/types.js";
+import type { ProviderName, ThinkingEffort } from "../core/types.js";
 import type { VisionSupport } from "../models/catalog.js";
 
 export interface ProviderSelectorChoice {
@@ -15,6 +15,12 @@ export interface ModelSelectorChoice {
   readonly id: string;
   readonly label: string;
   readonly vision?: VisionSupport;
+}
+
+export interface ThinkingEffortSelectorChoice {
+  readonly id: ThinkingEffort;
+  readonly label: string;
+  readonly applied: boolean;
 }
 
 export interface ModelSelectorInput extends NodeJS.ReadableStream {
@@ -40,6 +46,10 @@ export interface ProviderSelectorOptions extends SelectorOptions {
 
 export interface ModelChoiceSelectorOptions extends SelectorOptions {
   readonly initialModel?: string;
+}
+
+export interface ThinkingEffortSelectorOptions extends SelectorOptions {
+  readonly initialEffort: ThinkingEffort;
 }
 
 const HIDE_CURSOR = "\u001B[?25l";
@@ -122,6 +132,24 @@ export function renderModelSelector(
   );
 }
 
+export function renderThinkingEffortSelector(
+  providerName: string,
+  model: string,
+  choices: readonly ThinkingEffortSelectorChoice[],
+  selectedIndex: number,
+  color = true,
+): string[] {
+  return renderMenu(
+    `Select thinking effort for ${providerName} / ${model}`,
+    choices.map((choice) =>
+      choice.applied
+        ? choice.label
+        : `${choice.label}  [saved but not applied]`),
+    selectedIndex,
+    color,
+  );
+}
+
 export function selectProvider(
   choices: readonly ProviderSelectorChoice[],
   options: ProviderSelectorOptions,
@@ -160,6 +188,32 @@ export function selectModel(
   ).then((index) => (index === undefined ? undefined : choices[index]?.id));
 }
 
+export function selectThinkingEffort(
+  providerName: string,
+  model: string,
+  choices: readonly ThinkingEffortSelectorChoice[],
+  options: ThinkingEffortSelectorOptions,
+): Promise<ThinkingEffort | undefined> {
+  const initialIndex = Math.max(
+    0,
+    choices.findIndex((choice) => choice.id === options.initialEffort),
+  );
+  return selectIndex(
+    choices.length,
+    initialIndex,
+    (selectedIndex) =>
+      renderThinkingEffortSelector(
+        providerName,
+        model,
+        choices,
+        selectedIndex,
+        options.color ?? true,
+      ),
+    options,
+    `No thinking efforts are available for ${providerName} / ${model}.`,
+  ).then((index) => (index === undefined ? undefined : choices[index]?.id));
+}
+
 function selectIndex(
   choiceCount: number,
   initialIndex: number,
@@ -169,7 +223,7 @@ function selectIndex(
 ): Promise<number | undefined> {
   if (choiceCount === 0) throw new Error(emptyMessage);
   if (!options.input.isTTY || !options.output.isTTY || typeof options.input.setRawMode !== "function") {
-    throw new Error("Model selection requires an interactive TTY.");
+    throw new Error("Interactive selection requires a TTY.");
   }
 
   let selectedIndex = Math.max(0, Math.min(initialIndex, choiceCount - 1));
@@ -271,7 +325,7 @@ function selectIndex(
     };
     const onEnd = (): void => finish(undefined);
     const onClose = (): void => finish(undefined);
-    const onError = (): void => finish(undefined, new Error("Unable to read the model selection."));
+    const onError = (): void => finish(undefined, new Error("Unable to read the interactive selection."));
 
     try {
       options.output.write(HIDE_CURSOR);

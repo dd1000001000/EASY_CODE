@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-EASY CODE 是一个支持 Alibaba Qwen 和 DeepSeek 的本地 CLI 编程 Agent。它可以在受控工作区内读取、新建、更新和删除代码，运行命令，管理上下文与记忆，并向视觉模型发送图片。
+EASY CODE 是一个支持 Alibaba Qwen、DeepSeek 和 GLM 的本地 CLI 编程 Agent。它可以在受控工作区内读取、新建、更新和删除代码，运行命令，管理上下文与记忆，并向视觉模型发送图片。
 
 当前版本是 MVP，仅提供终端界面，不会打开单独的桌面窗口。
 
@@ -10,7 +10,7 @@ EASY CODE 是一个支持 Alibaba Qwen 和 DeepSeek 的本地 CLI 编程 Agent�
 
 - Windows、macOS 或 Linux。
 - Node.js `>=16.20.0` 和 npm。建议使用仍受维护的 Node.js LTS。
-- Alibaba Qwen 或 DeepSeek API Key。
+- Alibaba Qwen、DeepSeek 或 GLM API Key。
 - 可选：VS Code `>=1.93`，用于在集成终端中通过系统原生粘贴快捷键输入图片。
 
 EASY CODE 使用 SQLite WASM 持久保存 Thread 和长期记忆，并用嵌入式 Orama 向量索引完成语义 Top-K 检索。本地多语言向量模型通过 ONNX Runtime 运行，不需要 Python、外部向量数据库、Redis 或模型服务。
@@ -75,6 +75,7 @@ CI 或托管环境可设置 `EASY_CODE_SKIP_VSCODE_EXTENSION=1` 跳过扩展安�
 ```bash
 easy-code config set qwen.api-key
 easy-code config set deepseek.api-key
+easy-code config set glm.api-key
 easy-code config list
 ```
 
@@ -83,6 +84,8 @@ easy-code config list
 ```bash
 easy-code config get qwen.api-key
 easy-code config unset qwen.api-key
+easy-code config get glm.api-key
+easy-code config unset glm.api-key
 ```
 
 也可以使用环境变量：
@@ -91,12 +94,14 @@ easy-code config unset qwen.api-key
 | --- | --- |
 | Alibaba Qwen | `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
+| GLM | `ZAI_API_KEY`（推荐）、`GLM_API_KEY` 或 `ZHIPUAI_API_KEY` |
 
 PowerShell 示例：
 
 ```powershell
 $env:QWEN_API_KEY = "your-api-key"
 $env:DEEPSEEK_API_KEY = "your-api-key"
+$env:ZAI_API_KEY = "your-api-key"
 ```
 
 macOS/Linux 示例：
@@ -104,6 +109,7 @@ macOS/Linux 示例：
 ```bash
 export QWEN_API_KEY="your-api-key"
 export DEEPSEEK_API_KEY="your-api-key"
+export ZAI_API_KEY="your-api-key"
 ```
 
 首次交互启动时，如果选中的 Provider 尚未配置 Key，EASY CODE 也会提示隐藏输入并保存。这里会检查输入和凭据存储读回；账户权限、区域和模型是否真正可用，会在第一次 API 请求时由 Provider 确认。
@@ -121,10 +127,11 @@ easy-code
 
 EASY CODE 会占用当前终端，不会弹出另一个 Agent 窗口。普通启动流程如下：
 
-1. 选择 `DeepSeek` 或 `Alibaba Qwen`。
+1. 选择 `DeepSeek`、`Alibaba Qwen` 或 `GLM`。
 2. 选择该 Provider 下的模型。
-3. 使用上下方向键移动，按 Enter 确认，按 Esc 取消。
-4. 在 `EASY CODE [auto qwen/qwen3.7-max] >` 一类提示符后输入任务。
+3. 选择思考强度：`none`、`low`、`medium` 或 `high`。
+4. 使用上下方向键移动，按 Enter 确认，按 Esc 取消。
+5. 在 `EASY CODE [auto qwen/qwen3.7-max thinking:medium] >` 一类提示符后输入任务。
 
 `/help` 是 Agent 内部命令，只能在提示符出现后输入。查看程序参数应在 Shell 中运行：
 
@@ -132,10 +139,10 @@ EASY CODE 会占用当前终端，不会弹出另一个 Agent 窗口。普通启
 easy-code --help
 ```
 
-显式指定工作区、Provider、模型和模式：
+显式指定工作区、Provider、模型、思考强度和模式：
 
 ```bash
-easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --mode code
+easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinking-effort high --mode code
 ```
 
 运行一次任务并退出，适合脚本或 CI：
@@ -155,8 +162,9 @@ easy-code --resume <thread-id>
 | 参数 | 作用 |
 | --- | --- |
 | `-w, --workspace <path>` | 指定工作区，默认为当前目录 |
-| `--provider qwen\|deepseek` | 指定 Provider |
+| `--provider qwen\|deepseek\|glm` | 指定 Provider |
 | `--model <id>` | 指定当前 Provider 的模型 |
+| `--thinking-effort none\|low\|medium\|high` | 指定思考强度，默认为 `medium` |
 | `--mode plan\|auto\|code` | 指定工作模式，默认为 `auto` |
 | `--approval safe\|ask\|never` | 指定命令审批策略 |
 | `-y, --yes` | 自动批准策略允许但原本需要询问的命令 |
@@ -179,8 +187,25 @@ easy-code --resume <thread-id>
 | Alibaba Qwen | `qwen3-max` | 不支持 |
 | Alibaba Qwen | `qwen3-vl-plus` | 支持 |
 | Alibaba Qwen | `qwen3-vl-flash` | 支持 |
+| GLM | `glm-5.3-flash` | 支持 |
+| GLM | `glm-5.3` | 不支持 |
+| GLM | `glm-5.2` | 不支持 |
 
 这是 EASY CODE 当前内置的模型目录，不是 Provider 的实时模型发现结果。模型能否实际调用仍取决于 Provider 服务、账户、区域和模型权限；失败时会显示 API 返回的错误。
+
+在 GLM 模型中，只有 `glm-5.3-flash` 支持图片输入；`glm-5.3` 和 `glm-5.2` 在 EASY CODE 中仅支持文本。
+
+### 思考强度
+
+选择模型后，交互菜单会继续要求选择 `none`、`low`、`medium` 或 `high` 四档标准化思考强度。该选择会随当前 Thread 保存，并用于构造包括 Auto mode 路由在内的每次模型请求。也可以在启动时使用 `--thinking-effort` 指定；未指定时默认为 `medium`。
+
+所有模型都会显示这四个选项。EASY CODE 只会向 Provider 发送该精确模型已经明确支持的字段。如果模型不支持可配置思考，选择仍会保留在界面和 Thread 中，但请求不会携带思考参数，因此不会生效。
+
+各 Provider 的行为：
+
+- Alibaba Qwen：对于支持混合思考的模型，`none` 会关闭思考；`low`、`medium`、`high` 会开启思考，并分别使用 EASY CODE 定义的 4,096、16,384、32,768 个推理 Token 上限。这些值是输出上限，不表示模型一定会用满。由于 `qwen3.6-max` 的精确模型 ID 尚未被官方文档列入该能力，目前不会向它发送思考参数。
+- DeepSeek：对于 `deepseek-v4-flash` 和 `deepseek-v4-pro`，`none` 会关闭思考，`low` 和 `high` 使用同名 Provider 档位；DeepSeek 会把 `medium` 按 `high` 处理。实验性视觉模型目前不会收到思考参数。
+- GLM：`glm-5.2` 可通过 `none` 关闭思考，也接受另外三档，但 GLM 会把 `low` 和 `medium` 映射为自身的 `high`。`glm-5.3` 和 `glm-5.3-flash` 始终进行思考，因此选择 `none` 时只保留该选择，不发送关闭参数；它们的 `medium` 会映射为 `high`。
 
 运行中可以切换 Provider 或模型：
 
@@ -189,11 +214,13 @@ easy-code --resume <thread-id>
 /model <model-id>
 /model qwen <model-id>
 /model deepseek <model-id>
+/model glm glm-5.3-flash
 /provider qwen
 /provider deepseek
+/provider glm
 ```
 
-直接输入 `/model` 会重新打开 Provider → Model 两级菜单。如果目标 Provider 缺少 API Key，EASY CODE 会提示配置。
+直接输入 `/model` 会重新打开 Provider → Model → 思考强度三级菜单；`/model <model-id>` 等带参数形式会直接切换并保留当前思考强度。如果目标 Provider 缺少 API Key，EASY CODE 会提示配置。
 
 ## 三种工作模式
 
@@ -270,7 +297,7 @@ easy-code --resume <thread-id>
 
 - 上下文由字符、输出和图片预算控制。模型可以调用 `compact_context` 生成可继续工作的累计摘要；超过硬限制时还有请求级兜底截断。
 - 短期记忆与当前 Thread 绑定，包括对话、工具结果、文件版本、变更集和 Working Summary。
-- 长期记忆按工作区隔离。模型通过 `manage_memory` 搜索、记住、修订或退休持久偏好、约定、决策、已验证架构和稳定环境信息。
+- 长期记忆按工作区隔离。模型通过 `manage_memory` 搜索、记住、修订或退休持久偏好、约定、决策、已验证架构和稳定环境信息。每条记忆只保存一个不超过 120 字符的原子事实；完成搜索后，模型可以并列调用多次 `remember`，在一个 Turn 中保存最多八条独立事实，最后整组原子提交，而不是合并成长段落。
 - 长期记忆采用混合检索：把 384 维语义相似度和 FTS5 关键词结果一起重排。SQLite 持久保存记忆行和 Float32 向量，Orama 是可以随时重建、按 generation 跨进程失效的内存 Top-K 索引。
 - 向量由固定版本的量化模型 [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) 在本地生成。旧数据库中的既有记忆会在第一次检索时自动补齐向量。
 - 记忆修改会在当前 Turn 中暂存，只有结果为 `success` 或 `planned` 时才原子提交；失败、中断或达到步骤上限的 Turn 会丢弃候选。修订会保留被取代的旧记录，遗忘只会把记录标记为过期，不会物理删除审计历史。
@@ -288,7 +315,7 @@ EASY CODE 会读取用户配置目录中的 `EASYCODE.md`，以及工作区根�
 
 ```text
 /mode plan|auto|code       切换工作模式
-/provider qwen|deepseek    切换 Provider
+/provider qwen|deepseek|glm  切换 Provider
 /model                     打开 Provider 和模型选择菜单
 /model <model>             切换当前 Provider 的模型
 /model <provider> <model>  同时切换 Provider 和模型

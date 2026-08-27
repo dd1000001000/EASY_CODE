@@ -8,9 +8,16 @@ export interface ModelCatalogEntry {
    * bytes until the provider documents that exact model identifier.
    */
   readonly vision: VisionSupport;
+  readonly thinking: ThinkingProfile;
 }
 
 export type VisionSupport = "supported" | "unsupported" | "unknown";
+export type ThinkingProfile =
+  | "unsupported"
+  | "qwen_budget"
+  | "deepseek_effort"
+  | "glm_forced_effort"
+  | "glm_optional_effort";
 
 export interface ProviderCatalogEntry {
   readonly provider: ProviderName;
@@ -23,39 +30,50 @@ const DEEPSEEK_MODELS: readonly ModelCatalogEntry[] = [
     id: "deepseek-v4-flash",
     label: "deepseek-v4-flash",
     vision: "unsupported",
+    thinking: "deepseek_effort",
   },
   {
     id: "deepseek-v4-pro",
     label: "deepseek-v4-pro",
     vision: "unsupported",
+    thinking: "deepseek_effort",
   },
   {
     id: "deepseek-v4-flash-vision-exp",
     label: "deepseek-v4-flash-vision-exp",
     vision: "supported",
+    thinking: "unsupported",
   },
 ];
 
 const QWEN_MODELS: readonly ModelCatalogEntry[] = [
-  { id: "qwen3.7-max", label: "Qwen3.7-Max", vision: "unsupported" },
-  { id: "qwen3.7-plus", label: "Qwen3.7-Plus", vision: "supported" },
-  { id: "qwen3.6-max", label: "Qwen3.6-Max", vision: "unsupported" },
-  { id: "qwen3.6-plus", label: "Qwen3.6-Plus", vision: "supported" },
-  { id: "qwen3.5-plus", label: "Qwen3.5-Plus", vision: "supported" },
-  { id: "qwen3.5-flash", label: "Qwen3.5-Flash", vision: "supported" },
-  { id: "qwen3-max", label: "Qwen3-Max", vision: "unsupported" },
-  { id: "qwen3-vl-plus", label: "Qwen3-VL-Plus", vision: "supported" },
-  { id: "qwen3-vl-flash", label: "Qwen3-VL-Flash", vision: "supported" },
+  { id: "qwen3.7-max", label: "Qwen3.7-Max", vision: "unsupported", thinking: "qwen_budget" },
+  { id: "qwen3.7-plus", label: "Qwen3.7-Plus", vision: "supported", thinking: "qwen_budget" },
+  { id: "qwen3.6-max", label: "Qwen3.6-Max", vision: "unsupported", thinking: "unsupported" },
+  { id: "qwen3.6-plus", label: "Qwen3.6-Plus", vision: "supported", thinking: "qwen_budget" },
+  { id: "qwen3.5-plus", label: "Qwen3.5-Plus", vision: "supported", thinking: "qwen_budget" },
+  { id: "qwen3.5-flash", label: "Qwen3.5-Flash", vision: "supported", thinking: "qwen_budget" },
+  { id: "qwen3-max", label: "Qwen3-Max", vision: "unsupported", thinking: "qwen_budget" },
+  { id: "qwen3-vl-plus", label: "Qwen3-VL-Plus", vision: "supported", thinking: "qwen_budget" },
+  { id: "qwen3-vl-flash", label: "Qwen3-VL-Flash", vision: "supported", thinking: "qwen_budget" },
+];
+
+const GLM_MODELS: readonly ModelCatalogEntry[] = [
+  { id: "glm-5.3-flash", label: "GLM-5.3-Flash", vision: "supported", thinking: "glm_forced_effort" },
+  { id: "glm-5.3", label: "GLM-5.3", vision: "unsupported", thinking: "glm_forced_effort" },
+  { id: "glm-5.2", label: "GLM-5.2", vision: "unsupported", thinking: "glm_optional_effort" },
 ];
 
 export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { provider: "deepseek", label: "DeepSeek", models: DEEPSEEK_MODELS },
   { provider: "qwen", label: "Alibaba Qwen", models: QWEN_MODELS },
+  { provider: "glm", label: "Zhipu GLM", models: GLM_MODELS },
 ];
 
 export const DEFAULT_MODEL_IDS: Readonly<Record<ProviderName, string>> = {
   qwen: "qwen3.7-max",
   deepseek: "deepseek-v4-pro",
+  glm: "glm-5.3",
 };
 
 export function providerCatalogEntry(provider: ProviderName): ProviderCatalogEntry {

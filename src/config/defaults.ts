@@ -1,7 +1,12 @@
 import path from "node:path";
 import envPaths from "env-paths";
 
-import type { EasyCodeConfig, ProviderConfig } from "../core/types.js";
+import {
+  DEFAULT_THINKING_EFFORT,
+  type EasyCodeConfig,
+  type ProviderConfig,
+  type ProviderName,
+} from "../core/types.js";
 import { DEFAULT_MODEL_IDS } from "../models/catalog.js";
 
 export const DEFAULT_QWEN_BASE_URL =
@@ -9,6 +14,8 @@ export const DEFAULT_QWEN_BASE_URL =
 export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen;
 export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek;
+export const DEFAULT_GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
+export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm;
 
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 export const DEFAULT_PROVIDER_MAX_RETRIES = 2;
@@ -29,21 +36,18 @@ export function resolveEasyCodePaths(appName = "easy-code"): EasyCodePaths {
 }
 
 export function createDefaultProviderConfig(
-  provider: "qwen" | "deepseek",
+  provider: ProviderName,
 ): ProviderConfig {
-  return provider === "qwen"
-    ? {
-        baseUrl: DEFAULT_QWEN_BASE_URL,
-        model: DEFAULT_QWEN_MODEL,
-        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
-        maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
-      }
-    : {
-        baseUrl: DEFAULT_DEEPSEEK_BASE_URL,
-        model: DEFAULT_DEEPSEEK_MODEL,
-        timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
-        maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
-      };
+  const defaults = provider === "qwen"
+    ? { baseUrl: DEFAULT_QWEN_BASE_URL, model: DEFAULT_QWEN_MODEL }
+    : provider === "deepseek"
+      ? { baseUrl: DEFAULT_DEEPSEEK_BASE_URL, model: DEFAULT_DEEPSEEK_MODEL }
+      : { baseUrl: DEFAULT_GLM_BASE_URL, model: DEFAULT_GLM_MODEL };
+  return {
+    ...defaults,
+    timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+    maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
+  };
 }
 
 export function createDefaultEasyCodeConfig(
@@ -53,6 +57,7 @@ export function createDefaultEasyCodeConfig(
   return {
     provider: "qwen",
     mode: "auto",
+    thinkingEffort: DEFAULT_THINKING_EFFORT,
     approvalPolicy: "safe",
     workspaceRoot: path.resolve(workspaceRoot),
     dataDir: path.resolve(paths.dataDir),
@@ -64,5 +69,6 @@ export function createDefaultEasyCodeConfig(
     commandTimeoutMs: 120_000,
     qwen: createDefaultProviderConfig("qwen"),
     deepseek: createDefaultProviderConfig("deepseek"),
+    glm: createDefaultProviderConfig("glm"),
   };
 }

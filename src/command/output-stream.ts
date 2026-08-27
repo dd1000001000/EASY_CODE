@@ -6,7 +6,7 @@ const ANSI_CSI = /\u001B\[[0-?]*[ -/]*[@-~]/gu;
 const UNSAFE_TERMINAL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u2028-\u202E\u2060-\u2069\uFEFF]/gu;
 
 const SECRET_REPLACEMENTS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\b(?:qwen|deepseek|openai|anthropic)[-_]?(?:api[-_]?)?key\s*[:=]\s*[^\s,;]+/giu, "[REDACTED]"],
+  [/\b(?:qwen|deepseek|glm|zai|zhipuai|openai|anthropic)[-_]?(?:api[-_]?)?key\s*[:=]\s*[^\s,;]+/giu, "[REDACTED]"],
   [/\b(?:api[-_]?key|access[-_]?token|auth[-_]?token|token|authorization|password|passwd|secret)\s*[:=]\s*[^\s,;]+/giu, "[REDACTED]"],
   [/\bBearer\s+[A-Za-z0-9._~+\/-]{8,}={0,2}/giu, "[REDACTED]"],
   [/\bsk-[A-Za-z0-9_-]{12,}\b/gu, "[REDACTED]"],

@@ -21,6 +21,7 @@ function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
     mode,
     provider: "qwen",
     model: "mock",
+    thinkingEffort: "medium",
     workspaceRoot: process.cwd(),
     constraints: [],
     messages: [],
@@ -43,6 +44,7 @@ describe("AgentRuntime", () => {
       async complete(request) {
         requestCount += 1;
         assert.deepEqual(request.currentTurnImageIds, []);
+        assert.equal(request.thinkingEffort, "medium");
         return { message: { role: "assistant", content: "Text still works.", tool_calls: [] } };
       },
     };
@@ -106,6 +108,7 @@ describe("AgentRuntime", () => {
       model: "qwen3-vl-plus",
       async complete(request) {
         requestCount += 1;
+        assert.equal(request.thinkingEffort, "medium");
         if (requestCount === 1) {
           assert.equal(imageCommittedBeforeRouting, true);
           routerSawImage = request.messages.some(
@@ -757,14 +760,14 @@ describe("AgentRuntime", () => {
             message: {
               role: "assistant",
               content: null,
-              tool_calls: [{
-                id: "call_memory",
-                type: "function",
+              tool_calls: [0, 1, 2].map((index) => ({
+                id: `call_memory_${index}`,
+                type: "function" as const,
                 function: {
                   name: "manage_memory",
-                  arguments: JSON.stringify({ action: "remember" }),
+                  arguments: JSON.stringify({ action: "remember", index }),
                 },
-              }],
+              })),
             },
           };
         }
@@ -782,16 +785,31 @@ describe("AgentRuntime", () => {
           parameters: { type: "object" },
         },
       },
-      async execute() {
-        return {
-          ok: true,
-          summary: "staged",
-          memoryMutation: {
-            action: "remember",
-            category: "convention",
+      async execute(input) {
+        const facts = [
+          {
+            category: "convention" as const,
             content: "The project always uses strict TypeScript.",
             reason: "The user established this durable convention.",
           },
+          {
+            category: "architecture" as const,
+            content: "SQLite stores durable local data.",
+            reason: "The completed implementation verifies this architecture.",
+          },
+          {
+            category: "environment" as const,
+            content: "Node.js 16.20 is the minimum runtime.",
+            reason: "The package metadata verifies the supported runtime.",
+          },
+        ];
+        const index = (input as { index: number }).index;
+        const fact = facts[index];
+        assert.ok(fact);
+        return {
+          ok: true,
+          summary: `staged atomic fact ${index + 1}`,
+          memoryMutation: { action: "remember" as const, ...fact },
         };
       },
     };
@@ -810,8 +828,11 @@ describe("AgentRuntime", () => {
         commitCount += 1;
         assert.equal(eventTypes.at(-1), "turn.completed");
         assert.equal(input.outcome, "success");
-        assert.equal(input.mutations.length, 1);
-        return { applied: 1, memoryIds: ["memory_test"] };
+        assert.equal(input.mutations.length, 3);
+        return {
+          applied: 3,
+          memoryIds: ["memory_test_a", "memory_test_b", "memory_test_c"],
+        };
       },
     });
 
@@ -828,6 +849,96 @@ describe("AgentRuntime", () => {
     assert.equal(requestCount, 2);
     assert.equal(commitCount, 1);
     assert.ok(eventTypes.indexOf("turn.completed") < eventTypes.indexOf("memory.committed"));
+  });
+
+  it("accepts at most eight parallel atomic memory facts in one turn", async () => {
+    let requestCount = 0;
+    let committedMutations = 0;
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: Array.from({ length: 9 }, (_, index) => ({
+                id: `call_atomic_memory_${index}`,
+                type: "function" as const,
+                function: {
+                  name: "manage_memory" as const,
+                  arguments: JSON.stringify({ index }),
+                },
+              })),
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const memoryTool: AgentTool = {
+      name: "manage_memory",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "manage_memory",
+          description: "memory",
+          parameters: { type: "object" },
+        },
+      },
+      async execute(input) {
+        const index = (input as { index: number }).index;
+        return {
+          ok: true,
+          summary: `staged fact ${index}`,
+          memoryMutation: {
+            action: "remember",
+            category: "convention",
+            content: `Atomic memory fact number ${index}.`,
+            reason: `Verified evidence for atomic fact ${index}.`,
+          },
+        };
+      },
+    };
+    const currentState = state();
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [memoryTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      commitMemoryMutations: async (input) => {
+        committedMutations = input.mutations.length;
+        return {
+          applied: input.mutations.length,
+          memoryIds: input.mutations.map((_, index) => `memory_${index}`),
+        };
+      },
+    });
+
+    const result = await runtime.run(currentState, "Remember the verified conventions", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(committedMutations, 8);
+    assert.equal(
+      currentState.messages.some(
+        (message) =>
+          message.role === "tool" && message.content.includes("memory_mutation_limit_reached"),
+      ),
+      true,
+    );
   });
 
   it("persists a synthetic final reply before completing a turn", async () => {
