@@ -199,6 +199,8 @@ Within the GLM catalog, only `glm-5.3-flash` accepts image input. `glm-5.3` and 
 
 After choosing a model, the interactive selector asks for one of four normalized thinking-effort levels: `none`, `low`, `medium`, or `high`. The selection is kept with the active thread and is used when building every model request, including Auto mode routing. It can also be set at startup with `--thinking-effort`; when omitted, the default is `medium`.
 
+The selection also sets the maximum model-request steps for each user task: `none` and `low` allow 40 steps, `medium` allows 80, and `high` allows 120. This agent-loop budget follows the saved selection even when the chosen model does not support thinking parameters. An explicit `max_steps` configuration or `EASY_CODE_MAX_STEPS` environment variable acts only as a lower hard ceiling and cannot raise a tier above its built-in budget.
+
 The four choices remain available for every model. EASY CODE sends only fields documented for the exact provider/model combination. If a model does not support configurable thinking, the selection is retained for the UI and thread but no thinking parameter is sent, so it has no effect.
 
 Provider behavior:
@@ -291,7 +293,7 @@ Other terminals may intercept paste shortcuts before they reach the CLI. Use the
 /image clear
 ```
 
-You can also attach files with `--image <path>`. EASY CODE accepts complete, non-animated PNG, JPEG, WebP, and static GIF files, with at most five images per task. Only models marked “Yes” in the model table receive images. Qwen applies additional size and format limits and does not accept GIF.
+You can also attach files with `--image <path>`. EASY CODE accepts complete, non-animated PNG, JPEG, WebP, and static GIF files. A thread and an individual model request can contain up to 99 images, subject to the existing 20 MiB combined-size and 80-million-pixel safety limits. Only models marked “Yes” in the model table receive images. Qwen applies additional size and format limits and does not accept GIF.
 
 Clipboard screenshots are copied to EASY CODE's private data directory outside the workspace. Thread journals and SQLite store controlled references and metadata, not image Base64.
 

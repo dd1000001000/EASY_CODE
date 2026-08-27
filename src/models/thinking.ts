@@ -17,6 +17,21 @@ const QWEN_THINKING_BUDGETS: Readonly<Record<Exclude<ThinkingEffort, "none">, nu
   high: 32_768,
 };
 
+export const THINKING_EFFORT_STEP_LIMITS: Readonly<Record<ThinkingEffort, number>> = {
+  none: 40,
+  low: 40,
+  medium: 80,
+  high: 120,
+};
+
+/** Return the effort budget, optionally reduced by a configured hard ceiling. */
+export function thinkingEffortStepLimit(
+  effort: ThinkingEffort,
+  hardCeiling = Number.POSITIVE_INFINITY,
+): number {
+  return Math.min(THINKING_EFFORT_STEP_LIMITS[effort], hardCeiling);
+}
+
 /** Whether EASY CODE can translate this exact selection into documented API fields. */
 export function thinkingEffortIsApplied(
   provider: ProviderName,

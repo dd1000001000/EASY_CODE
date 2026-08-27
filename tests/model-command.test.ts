@@ -22,6 +22,7 @@ const TEST_ENVIRONMENT = [
   "EASY_CODE_CACHE_DIR",
   "EASY_CODE_PROVIDER",
   "EASY_CODE_THINKING_EFFORT",
+  "EASY_CODE_MAX_STEPS",
   "QWEN_API_KEY",
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
@@ -112,6 +113,7 @@ async function createAppFixture(
   process.env.EASY_CODE_CACHE_DIR = path.join(root, "cache");
   process.env.EASY_CODE_PROVIDER = "qwen";
   delete process.env.EASY_CODE_THINKING_EFFORT;
+  delete process.env.EASY_CODE_MAX_STEPS;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.QWEN_MODEL;
   delete process.env.DEEPSEEK_MODEL;
@@ -337,6 +339,7 @@ describe("/model", () => {
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
       assert.match(fixture.output(), /"thinkingApplied": false/u);
+      assert.match(fixture.output(), /"stepLimit": 120/u);
     } finally {
       fixture.close();
     }
@@ -383,6 +386,7 @@ describe("/model", () => {
       assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
       assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
       assert.match(fixture.output(), /"thinkingApplied": true/u);
+      assert.match(fixture.output(), /"stepLimit": 80/u);
       assert.doesNotMatch(fixture.output(), /Model switched to DeepSeek/u);
     } finally {
       fixture.close();

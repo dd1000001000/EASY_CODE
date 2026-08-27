@@ -322,7 +322,7 @@ describe("image-aware CLI prompt", () => {
     assert.match(result?.text ?? "", /Image paste failed/u);
   });
 
-  it("keeps text-only prompts usable after Image #999", async () => {
+  it("keeps text-only prompts usable after Image #99", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     output.resume();
@@ -331,7 +331,7 @@ describe("image-aware CLI prompt", () => {
       input,
       output,
       prompt: "> ",
-      initialImageCount: 999,
+      initialImageCount: 99,
       captureImage: async (index) => {
         captureCount += 1;
         return attachment(index);

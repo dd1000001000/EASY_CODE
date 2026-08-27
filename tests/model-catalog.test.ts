@@ -11,7 +11,9 @@ import {
   validateProviderImageAttachments,
 } from "../src/models/catalog.js";
 import {
+  THINKING_EFFORT_STEP_LIMITS,
   thinkingEffortIsApplied,
+  thinkingEffortStepLimit,
   thinkingRequestParameters,
 } from "../src/models/thinking.js";
 import { describe, it } from "./harness.js";
@@ -144,6 +146,21 @@ describe("model catalog", () => {
       thinkingEffortIsApplied("qwen", "qwen3.6-max", "high"),
       false,
     );
+  });
+
+  it("maps thinking effort to the agent step budget", () => {
+    assert.deepEqual(THINKING_EFFORT_STEP_LIMITS, {
+      none: 40,
+      low: 40,
+      medium: 80,
+      high: 120,
+    });
+    assert.equal(thinkingEffortStepLimit("none"), 40);
+    assert.equal(thinkingEffortStepLimit("low"), 40);
+    assert.equal(thinkingEffortStepLimit("medium"), 80);
+    assert.equal(thinkingEffortStepLimit("high"), 120);
+    assert.equal(thinkingEffortStepLimit("high", 60), 60);
+    assert.equal(thinkingEffortStepLimit("low", 200), 40);
   });
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {

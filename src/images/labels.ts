@@ -1,7 +1,7 @@
 import type { ChatMessage, ImageAttachment } from "../core/types.js";
 
 const IMAGE_LABEL = /^Image #([1-9][0-9]{0,2})$/u;
-export const MAX_THREAD_IMAGE_NUMBER = 999;
+export const MAX_THREAD_IMAGE_NUMBER = 99;
 
 export function imageLabelNumber(image: Pick<ImageAttachment, "label">): number {
   const match = IMAGE_LABEL.exec(image.label);
@@ -36,6 +36,8 @@ export function assertThreadImageNumberAvailable(imageNumber: number): void {
     throw new Error("Image number must be a positive integer.");
   }
   if (imageNumber > MAX_THREAD_IMAGE_NUMBER) {
-    throw new Error("This thread has reached the 999 image attachment limit.");
+    throw new Error(
+      `This thread has reached the ${MAX_THREAD_IMAGE_NUMBER} image attachment limit.`,
+    );
   }
 }
