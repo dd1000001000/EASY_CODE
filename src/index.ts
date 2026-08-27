@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { Command, Option } from "commander";
@@ -47,7 +48,13 @@ export function isDirectExecution(
 ): boolean {
   if (!entryPath || !moduleUrl.startsWith("file:")) return false;
   const normalize = (value: string): string => {
-    const resolved = path.resolve(value);
+    const absolute = path.resolve(value);
+    let resolved = absolute;
+    try {
+      resolved = realpathSync.native(absolute);
+    } catch {
+      // Keep the lexical path for synthetic/nonexistent paths used by callers.
+    }
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
   return normalize(entryPath) === normalize(fileURLToPath(moduleUrl));
