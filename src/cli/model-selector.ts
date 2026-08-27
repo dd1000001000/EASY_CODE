@@ -3,11 +3,18 @@ import { StringDecoder } from "node:string_decoder";
 import { Chalk } from "chalk";
 
 import type { ProviderName } from "../core/types.js";
+import type { VisionSupport } from "../models/catalog.js";
 
-export interface StartupModelChoice {
-  provider: ProviderName;
-  model: string;
-  apiKeyConfigured: boolean;
+export interface ProviderSelectorChoice {
+  readonly provider: ProviderName;
+  readonly label: string;
+  readonly apiKeyConfigured: boolean;
+}
+
+export interface ModelSelectorChoice {
+  readonly id: string;
+  readonly label: string;
+  readonly vision?: VisionSupport;
 }
 
 export interface ModelSelectorInput extends NodeJS.ReadableStream {
@@ -21,16 +28,23 @@ export interface ModelSelectorOutput extends NodeJS.WritableStream {
   readonly isTTY?: boolean;
 }
 
-export interface ModelSelectorOptions {
-  input: ModelSelectorInput;
-  output: ModelSelectorOutput;
-  initialProvider: ProviderName;
-  color?: boolean;
+interface SelectorOptions {
+  readonly input: ModelSelectorInput;
+  readonly output: ModelSelectorOutput;
+  readonly color?: boolean;
+}
+
+export interface ProviderSelectorOptions extends SelectorOptions {
+  readonly initialProvider: ProviderName;
+}
+
+export interface ModelChoiceSelectorOptions extends SelectorOptions {
+  readonly initialModel?: string;
 }
 
 const HIDE_CURSOR = "\u001B[?25l";
 const SHOW_CURSOR = "\u001B[?25h";
-const MAX_MODEL_LABEL_CODE_POINTS = 96;
+const MAX_LABEL_CODE_POINTS = 96;
 
 function safeLabel(value: string): string {
   let result = "";
@@ -49,51 +63,121 @@ function safeLabel(value: string): string {
       : character;
   }
   const characters = Array.from(result);
-  return characters.length <= MAX_MODEL_LABEL_CODE_POINTS
+  return characters.length <= MAX_LABEL_CODE_POINTS
     ? result
-    : `${characters.slice(0, MAX_MODEL_LABEL_CODE_POINTS).join("")}…`;
+    : `${characters.slice(0, MAX_LABEL_CODE_POINTS).join("")}…`;
 }
 
-function providerLabel(provider: ProviderName): string {
-  return provider === "qwen" ? "Qwen" : "DeepSeek";
-}
-
-export function renderStartupModelSelector(
-  choices: readonly StartupModelChoice[],
+function renderMenu(
+  title: string,
+  rows: readonly string[],
   selectedIndex: number,
-  color = true,
+  color: boolean,
 ): string[] {
   const palette = new Chalk({ level: color ? 1 : 0 });
-  const lines = [palette.bold.cyan("Select a model for EASY CODE")];
-  choices.forEach((choice, index) => {
+  const lines = [palette.bold.cyan(title)];
+  rows.forEach((row, index) => {
     const selected = index === selectedIndex;
-    const marker = selected ? "›" : " ";
-    const status = choice.apiKeyConfigured ? "API key configured" : "API key required";
-    const text = `${marker} ${providerLabel(choice.provider)} / ${safeLabel(choice.model)}  [${status}]`;
+    const text = `${selected ? "›" : " "} ${safeLabel(row)}`;
     lines.push(selected ? palette.bold.white(text) : palette.gray(text));
   });
   lines.push(palette.dim("Use ↑/↓ to move, Enter to confirm, or Esc to cancel"));
   return lines;
 }
 
-export function selectStartupModel(
-  choices: readonly StartupModelChoice[],
-  options: ModelSelectorOptions,
-): Promise<ProviderName | undefined> {
-  if (choices.length === 0) throw new Error("No startup models are available.");
-  if (!options.input.isTTY || !options.output.isTTY || typeof options.input.setRawMode !== "function") {
-    throw new Error("The startup model selector requires an interactive TTY.");
-  }
+export function renderProviderSelector(
+  choices: readonly ProviderSelectorChoice[],
+  selectedIndex: number,
+  color = true,
+): string[] {
+  return renderMenu(
+    "Select a provider for EASY CODE",
+    choices.map((choice) => {
+      const status = choice.apiKeyConfigured ? "API key configured" : "API key required";
+      return `${choice.label}  [${status}]`;
+    }),
+    selectedIndex,
+    color,
+  );
+}
 
-  let selectedIndex = Math.max(
+export function renderModelSelector(
+  providerName: string,
+  choices: readonly ModelSelectorChoice[],
+  selectedIndex: number,
+  color = true,
+): string[] {
+  return renderMenu(
+    `Select a model from ${providerName}`,
+    choices.map((choice) => {
+      const name = choice.label === choice.id
+        ? choice.label
+        : `${choice.label}  [${choice.id}]`;
+      if (choice.vision === "supported") return `${name}  [vision]`;
+      if (choice.vision === "unknown") return `${name}  [vision unverified]`;
+      return name;
+    }),
+    selectedIndex,
+    color,
+  );
+}
+
+export function selectProvider(
+  choices: readonly ProviderSelectorChoice[],
+  options: ProviderSelectorOptions,
+): Promise<ProviderName | undefined> {
+  const initialIndex = Math.max(
     0,
     choices.findIndex((choice) => choice.provider === options.initialProvider),
   );
-  const lineCount = choices.length + 2;
+  return selectIndex(
+    choices.length,
+    initialIndex,
+    (selectedIndex) =>
+      renderProviderSelector(choices, selectedIndex, options.color ?? true),
+    options,
+    "No providers are available.",
+  ).then((index) => (index === undefined ? undefined : choices[index]?.provider));
+}
+
+export function selectModel(
+  providerName: string,
+  choices: readonly ModelSelectorChoice[],
+  options: ModelChoiceSelectorOptions,
+): Promise<string | undefined> {
+  const normalizedInitial = options.initialModel?.toLowerCase();
+  const initialIndex = Math.max(
+    0,
+    choices.findIndex((choice) => choice.id.toLowerCase() === normalizedInitial),
+  );
+  return selectIndex(
+    choices.length,
+    initialIndex,
+    (selectedIndex) =>
+      renderModelSelector(providerName, choices, selectedIndex, options.color ?? true),
+    options,
+    `No models are available for ${providerName}.`,
+  ).then((index) => (index === undefined ? undefined : choices[index]?.id));
+}
+
+function selectIndex(
+  choiceCount: number,
+  initialIndex: number,
+  renderLines: (selectedIndex: number) => string[],
+  options: SelectorOptions,
+  emptyMessage: string,
+): Promise<number | undefined> {
+  if (choiceCount === 0) throw new Error(emptyMessage);
+  if (!options.input.isTTY || !options.output.isTTY || typeof options.input.setRawMode !== "function") {
+    throw new Error("Model selection requires an interactive TTY.");
+  }
+
+  let selectedIndex = Math.max(0, Math.min(initialIndex, choiceCount - 1));
+  const lineCount = choiceCount + 2;
   let rendered = false;
 
   const render = (): void => {
-    const lines = renderStartupModelSelector(choices, selectedIndex, options.color ?? true);
+    const lines = renderLines(selectedIndex);
     if (rendered) options.output.write(`\u001B[${lineCount}A`);
     for (const line of lines) {
       if (rendered) options.output.write("\u001B[2K\r");
@@ -134,12 +218,12 @@ export function selectStartupModel(
         // Selection is already settled; output cleanup is best effort.
       }
     };
-    const finish = (provider?: ProviderName, error?: Error): void => {
+    const finish = (index?: number, error?: Error): void => {
       if (settled) return;
       settled = true;
       cleanup();
       if (error) reject(error);
-      else resolve(provider);
+      else resolve(index);
     };
     const startEscapeTimer = (): void => {
       clearEscapeTimer();
@@ -147,7 +231,7 @@ export function selectStartupModel(
       escapeTimer.unref?.();
     };
     const move = (offset: number): void => {
-      selectedIndex = (selectedIndex + offset + choices.length) % choices.length;
+      selectedIndex = (selectedIndex + offset + choiceCount) % choiceCount;
       render();
     };
     const onData = (chunk: Buffer | string): void => {
@@ -180,14 +264,14 @@ export function selectStartupModel(
           return;
         }
         if (character === "\r" || character === "\n") {
-          finish(choices[selectedIndex]?.provider);
+          finish(selectedIndex);
           return;
         }
       }
     };
     const onEnd = (): void => finish(undefined);
     const onClose = (): void => finish(undefined);
-    const onError = (): void => finish(undefined, new Error("Unable to read the startup model selection."));
+    const onError = (): void => finish(undefined, new Error("Unable to read the model selection."));
 
     try {
       options.output.write(HIDE_CURSOR);
@@ -199,7 +283,7 @@ export function selectStartupModel(
       input.once("error", onError);
       input.resume();
     } catch {
-      finish(undefined, new Error("Unable to start the model selector."));
+      finish(undefined, new Error("Unable to start the model selection."));
     }
   });
 }

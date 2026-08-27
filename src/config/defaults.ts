@@ -2,12 +2,13 @@ import path from "node:path";
 import envPaths from "env-paths";
 
 import type { EasyCodeConfig, ProviderConfig } from "../core/types.js";
+import { DEFAULT_MODEL_IDS } from "../models/catalog.js";
 
 export const DEFAULT_QWEN_BASE_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1";
-export const DEFAULT_QWEN_MODEL = "qwen3-coder-plus";
+export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen;
 export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
+export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek;
 
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 export const DEFAULT_PROVIDER_MAX_RETRIES = 2;

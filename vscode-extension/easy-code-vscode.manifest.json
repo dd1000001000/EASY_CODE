@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "extensionVersion": "0.1.0",
+  "vsix": {
+    "file": "easy-code-vscode.vsix",
+    "bytes": 8951,
+    "sha256": "1cdbbf75058cd9c14a7509b686ba2ede0385cfd1f739dc499827a69f6222cfd6"
+  },
+  "sourceHashAlgorithm": "sha256-utf8-normalized-lf",
+  "sources": {
+    ".vscodeignore": "6e0bf1b536f157ecd380ccfc25231a1539abe96c978d82ef30839852c9f112b5",
+    "LICENSE": "1a38a0a349b719ae552d87eb9d02e78a1a3e40e60049b9a24b6d4176633cded0",
+    "README.md": "c36bf4a25f9a680c518ea4f5567c27861445efb90fb36eda404bb7840939ed0d",
+    "extension.js": "74d967dcd83f61643f3484ec8dbd863ae7618bddd56bd625e9a52101e0c4537e",
+    "lib/clipboard.js": "0386b6282982889433daa01fe93f8fef068d8c73e784d1d0da5d5184afbb59f5",
+    "lib/command-detection.js": "2c4f71dd2d7a16532d7fa6dcfb4beb4621d8b6f788210a82cfe98ccf5ea65f38",
+    "package.json": "f65139417920f32cf50853767099a504f971d9892071997183e413f6c6a269f4"
+  }
+}

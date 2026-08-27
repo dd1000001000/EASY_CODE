@@ -1,3 +1,5 @@
+import { hostname } from "node:os";
+
 import type {
   AgentMode,
   AgentRunResult,
@@ -53,7 +55,24 @@ export interface TurnStartResult {
   readonly event: EventRecord;
 }
 
-export type UserChatMessage = { role: "user"; content: string };
+export interface ThreadLease {
+  readonly threadId: string;
+  readonly ownerPid: number;
+  readonly ownerHostname: string;
+  readonly ownerToken: string;
+  readonly acquiredAt: string;
+}
+
+export interface ThreadLeaseAcquireOptions {
+  /** Primarily useful for deterministic dead-process recovery tests. */
+  readonly processId?: number;
+  readonly ownerHostname?: string;
+  readonly ownerToken?: string;
+  readonly now?: () => Date;
+  readonly isProcessAlive?: (processId: number) => boolean;
+}
+
+export type UserChatMessage = Extract<ChatMessage, { role: "user" }>;
 
 interface ThreadRow {
   id: string;
@@ -66,6 +85,14 @@ interface ThreadRow {
   status: string;
   created_at: string;
   updated_at: string;
+}
+
+interface ThreadLeaseRow {
+  thread_id: string;
+  owner_pid: number;
+  owner_hostname: string;
+  owner_token: string;
+  acquired_at: string;
 }
 
 function asPayloadRecord(payload: unknown): Record<string, unknown> | undefined {
@@ -92,10 +119,6 @@ export class ThreadStore {
   create(input: ThreadCreateInput): SessionState {
     const threadId = input.threadId ?? createId("thread");
     const journal = this.journal(threadId);
-    if (journal.read().length > 0 || this.threadExists(threadId)) {
-      throw new Error(`Thread already exists: ${threadId}`);
-    }
-
     const now = new Date().toISOString();
     const state: SessionState = {
       threadId,
@@ -110,15 +133,20 @@ export class ThreadStore {
       changes: [],
       commands: [],
       workingSummary: "",
+      compactedMessageCount: 0,
       createdAt: now,
       updatedAt: now,
     };
 
-    const event = journal.append({
-      type: "thread_created",
-      payload: { state: serializeSessionState(state) },
-    });
+    let event!: EventRecord;
     this.storage.db.transaction(() => {
+      if (journal.read().length > 0 || this.threadExists(threadId)) {
+        throw new Error(`Thread already exists: ${threadId}`);
+      }
+      event = journal.append({
+        type: "thread_created",
+        payload: { state: serializeSessionState(state) },
+      });
       this.projectState(state, "active");
       this.projectEvent(event, journal.filePath);
     })();
@@ -142,9 +170,6 @@ export class ThreadStore {
 
   save(state: SessionState): void {
     const journal = this.journal(state.threadId);
-    if (journal.read().length === 0) {
-      throw new Error(`Cannot save unknown thread: ${state.threadId}`);
-    }
     const snapshot: SessionState = {
       ...state,
       updatedAt: new Date().toISOString(),
@@ -159,12 +184,15 @@ export class ThreadStore {
     };
     state.updatedAt = snapshot.updatedAt;
 
-    const event = journal.append({
-      type: "thread_checkpoint",
-      payload: { state: serializeSessionState(snapshot) },
-      turnId: snapshot.activeTurnId,
-    });
     this.storage.db.transaction(() => {
+      if (journal.read().length === 0 || !this.threadExists(state.threadId)) {
+        throw new Error(`Cannot save unknown thread: ${state.threadId}`);
+      }
+      const event = journal.append({
+        type: "thread_checkpoint",
+        payload: { state: serializeSessionState(snapshot) },
+        turnId: snapshot.activeTurnId,
+      });
       this.projectState(snapshot, "active");
       this.projectEvent(event, journal.filePath);
       for (const command of snapshot.commands) {
@@ -212,15 +240,107 @@ export class ThreadStore {
   }
 
   appendEvent(threadId: string, input: AppendEventInput): EventRecord {
-    if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
     const journal = this.journal(threadId);
-    const event = journal.append(input);
+    let event!: EventRecord;
     this.storage.db.transaction(() => {
+      if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
+      event = journal.append(input);
       this.projectEvent(event, journal.filePath);
       this.projectAuxiliaryEvent(threadId, event);
       this.touchThread(threadId, event.timestamp);
     })();
     return event;
+  }
+
+  acquireThreadLease(
+    threadId: string,
+    options: ThreadLeaseAcquireOptions = {},
+  ): ThreadLease {
+    const ownerPid = options.processId ?? process.pid;
+    const ownerHostname = options.ownerHostname ?? hostname();
+    const ownerToken = options.ownerToken ?? createId("thread_lease");
+    const acquiredAt = (options.now ?? (() => new Date()))().toISOString();
+    const isProcessAlive = options.isProcessAlive ?? processIsAlive;
+    const lease: ThreadLease = {
+      threadId,
+      ownerPid,
+      ownerHostname,
+      ownerToken,
+      acquiredAt,
+    };
+    assertValidThreadLease(lease);
+
+    this.storage.db.transaction(() => {
+      if (!this.threadExists(threadId)) {
+        const journal = this.journal(threadId);
+        const events = journal.read();
+        if (events.length === 0) throw new Error(`Thread not found: ${threadId}`);
+        const recovered = this.recoverFromEvents(threadId, events);
+        this.projectRecoveredThread(recovered, events, journal.filePath);
+      }
+
+      const existing = this.storage.db
+        .prepare<[string], ThreadLeaseRow>(
+          `SELECT thread_id, owner_pid, owner_hostname, owner_token, acquired_at
+             FROM thread_leases
+            WHERE thread_id = ?`,
+        )
+        .get(threadId);
+      if (existing) {
+        assertValidThreadLeaseRow(existing);
+        const ownerState = existing.owner_hostname === ownerHostname
+          ? (isProcessAlive(existing.owner_pid) ? "alive" : "dead")
+          : "unknown";
+        if (ownerState !== "dead") {
+          throw new Error(
+            `Thread ${threadId} is already active in another EASY CODE process ` +
+            `(PID ${existing.owner_pid} on ${existing.owner_hostname}). Close it before resuming.`,
+          );
+        }
+        const removed = this.storage.db
+          .prepare<[string, string]>(
+            "DELETE FROM thread_leases WHERE thread_id = ? AND owner_token = ?",
+          )
+          .run(threadId, existing.owner_token);
+        if (removed.changes !== 1) {
+          throw new Error(`Thread lease ownership changed while recovering ${threadId}`);
+        }
+      }
+
+      this.storage.db
+        .prepare(
+          `INSERT INTO thread_leases(
+             thread_id, owner_pid, owner_hostname, owner_token, acquired_at
+           ) VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(threadId, ownerPid, ownerHostname, ownerToken, acquiredAt);
+    })();
+    return lease;
+  }
+
+  releaseThreadLease(lease: ThreadLease): void {
+    assertValidThreadLease(lease);
+    this.storage.db.transaction(() => {
+      const removed = this.storage.db
+        .prepare<[string, number, string, string]>(
+          `DELETE FROM thread_leases
+            WHERE thread_id = ?
+              AND owner_pid = ?
+              AND owner_hostname = ?
+              AND owner_token = ?`,
+        )
+        .run(
+          lease.threadId,
+          lease.ownerPid,
+          lease.ownerHostname,
+          lease.ownerToken,
+        );
+      if (removed.changes !== 1) {
+        throw new Error(
+          `Cannot release thread lease for ${lease.threadId}: ownership no longer matches`,
+        );
+      }
+    })();
   }
 
   startTurn(
@@ -335,11 +455,19 @@ export class ThreadStore {
           appendMessageIfNew(state, payload.message);
         }
       } else if (event.type === "message.user" && event.turnId) {
-        const content = payload?.content;
-        if (typeof content === "string") {
+        if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           state.activeTurnId = event.turnId;
-          appendMessageIfNew(state, { role: "user", content });
+          appendMessageIfNew(state, payload.message);
+        } else if (typeof payload?.content === "string") {
+          state.activeTurnId = event.turnId;
+          appendMessageIfNew(state, { role: "user", content: payload.content });
         }
+      } else if (
+        event.type === "message.user.synthetic" &&
+        isChatMessage(event.payload) &&
+        event.payload.role === "user"
+      ) {
+        appendMessageIfNew(state, event.payload);
       } else if (
         (event.type === "message.assistant" || event.type === "message.assistant.synthetic") &&
         isChatMessage(event.payload)
@@ -361,6 +489,19 @@ export class ThreadStore {
         }
       } else if (event.type === "turn.completed") {
         state.activeTurnId = undefined;
+      } else if (event.type === "context.compacted" && payload) {
+        const summary = payload.summary;
+        const compactedMessageCount = payload.compactedMessageCount;
+        if (
+          typeof summary === "string" &&
+          typeof compactedMessageCount === "number" &&
+          Number.isInteger(compactedMessageCount) &&
+          compactedMessageCount >= state.compactedMessageCount &&
+          compactedMessageCount <= state.messages.length
+        ) {
+          state.workingSummary = summary;
+          state.compactedMessageCount = compactedMessageCount;
+        }
       } else if (event.type === "tool_audit" && payload) {
         const entry = payload.entry as CommandAuditEntry | undefined;
         if (
@@ -397,15 +538,23 @@ export class ThreadStore {
     journalPath: string,
   ): void {
     this.storage.db.transaction(() => {
-      this.projectState(state, "active");
-      for (const event of events) {
-        this.projectEvent(event, journalPath);
-        this.projectAuxiliaryEvent(state.threadId, event);
-      }
-      // Auxiliary events rebuild turn/audit rows. The recovered snapshot remains
-      // authoritative for the thread's final mode and active-turn pointer.
-      this.projectState(state, "active");
+      this.projectRecoveredThread(state, events, journalPath);
     })();
+  }
+
+  private projectRecoveredThread(
+    state: SessionState,
+    events: readonly EventRecord[],
+    journalPath: string,
+  ): void {
+    this.projectState(state, "active");
+    for (const event of events) {
+      this.projectEvent(event, journalPath);
+      this.projectAuxiliaryEvent(state.threadId, event);
+    }
+    // Auxiliary events rebuild turn/audit rows. The recovered snapshot remains
+    // authoritative for the thread's final mode and active-turn pointer.
+    this.projectState(state, "active");
   }
 
   private projectAuxiliaryEvent(threadId: string, event: EventRecord): void {
@@ -425,11 +574,16 @@ export class ThreadStore {
       return;
     }
     if (event.type === "message.user" && event.turnId && payload) {
-      if (typeof payload.content === "string") {
+      const message = isChatMessage(payload.message) && payload.message.role === "user"
+        ? payload.message
+        : typeof payload.content === "string"
+          ? { role: "user" as const, content: payload.content }
+          : undefined;
+      if (message) {
         this.projectTurnStarted(
           threadId,
           event.turnId,
-          { role: "user", content: payload.content },
+          message,
           event.timestamp,
         );
         this.storage.db
@@ -492,7 +646,7 @@ export class ThreadStore {
   private projectTurnStarted(
     threadId: string,
     turnId: string,
-    message: { role: "user"; content: string },
+    message: UserChatMessage,
     startedAt: string,
   ): void {
     this.storage.db
@@ -669,4 +823,49 @@ export class ThreadStore {
       .prepare("UPDATE threads SET updated_at = ? WHERE id = ?")
       .run(timestamp, threadId);
   }
+}
+
+function processIsAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    // EPERM means the process exists but this user cannot signal it. Treat all
+    // ambiguous failures as alive so a lease is never stolen unsafely.
+    return true;
+  }
+}
+
+function assertValidThreadLease(lease: ThreadLease): void {
+  if (!lease.threadId || lease.threadId.includes("\u0000")) {
+    throw new Error("Invalid thread lease thread id");
+  }
+  if (!Number.isSafeInteger(lease.ownerPid) || lease.ownerPid <= 0) {
+    throw new Error("Invalid thread lease owner PID");
+  }
+  if (
+    !lease.ownerHostname ||
+    lease.ownerHostname.length > 255 ||
+    /[\u0000\r\n]/u.test(lease.ownerHostname)
+  ) {
+    throw new Error("Invalid thread lease owner hostname");
+  }
+  if (!/^thread_lease_[0-9a-f-]{36}$/iu.test(lease.ownerToken)) {
+    throw new Error("Invalid thread lease ownership token");
+  }
+  if (!lease.acquiredAt || !Number.isFinite(Date.parse(lease.acquiredAt))) {
+    throw new Error("Invalid thread lease acquisition time");
+  }
+}
+
+function assertValidThreadLeaseRow(row: ThreadLeaseRow): void {
+  assertValidThreadLease({
+    threadId: row.thread_id,
+    ownerPid: row.owner_pid,
+    ownerHostname: row.owner_hostname,
+    ownerToken: row.owner_token,
+    acquiredAt: row.acquired_at,
+  });
 }

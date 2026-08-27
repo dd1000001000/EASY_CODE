@@ -3,8 +3,10 @@ import type {
   CommandAuditEntry,
   FileChangeRecord,
   FileVersion,
+  ImageAttachment,
   SessionState,
 } from "../core/types.js";
+import { validateImageAttachmentCollection } from "../images/image-store.js";
 
 export interface SerializedSessionState {
   readonly threadId: string;
@@ -20,6 +22,7 @@ export interface SerializedSessionState {
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
   readonly workingSummary: string;
+  readonly compactedMessageCount: number;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -28,19 +31,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+): boolean {
+  const keys = new Set(allowed);
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+export function isImageAttachment(value: unknown): value is ImageAttachment {
+  if (!isRecord(value)) return false;
+  try {
+    validateImageAttachmentCollection([value as unknown as ImageAttachment]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isImageAttachmentArray(value: unknown): value is ImageAttachment[] {
+  if (!Array.isArray(value) || value.length === 0) return false;
+  try {
+    validateImageAttachmentCollection(value as ImageAttachment[]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isChatMessage(value: unknown): value is ChatMessage {
   if (!isRecord(value) || typeof value.role !== "string") return false;
-  if (value.role === "system" || value.role === "user") {
-    return typeof value.content === "string";
+  if (value.role === "system") {
+    return hasOnlyKeys(value, ["role", "content"]) && typeof value.content === "string";
+  }
+  if (value.role === "user") {
+    return (
+      hasOnlyKeys(value, ["role", "content", "images"]) &&
+      typeof value.content === "string" &&
+      (value.images === undefined ||
+        isImageAttachmentArray(value.images))
+    );
   }
   if (value.role === "tool") {
     return (
+      hasOnlyKeys(value, ["role", "content", "tool_call_id", "name"]) &&
       typeof value.content === "string" &&
       typeof value.tool_call_id === "string" &&
       (value.name === undefined || typeof value.name === "string")
     );
   }
   if (value.role !== "assistant") return false;
+  if (!hasOnlyKeys(value, ["role", "content", "tool_calls", "reasoning_content"])) {
+    return false;
+  }
   if (value.content !== null && typeof value.content !== "string") return false;
   if (
     value.reasoning_content !== undefined &&
@@ -122,6 +165,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
       args: [...command.args],
     })),
     workingSummary: state.workingSummary,
+    compactedMessageCount: state.compactedMessageCount,
     createdAt: state.createdAt,
     updatedAt: state.updatedAt,
   };
@@ -143,6 +187,10 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Array.isArray(value.changes) ||
     !Array.isArray(value.commands) ||
     typeof value.workingSummary !== "string" ||
+    (value.compactedMessageCount !== undefined &&
+      (!Number.isInteger(value.compactedMessageCount) ||
+        Number(value.compactedMessageCount) < 0 ||
+        Number(value.compactedMessageCount) > value.messages.length)) ||
     typeof value.createdAt !== "string" ||
     typeof value.updatedAt !== "string"
   ) {
@@ -184,9 +232,14 @@ export function deserializeSessionState(value: unknown): SessionState {
       ...item,
       args: [...item.args],
     })),
-    workingSummary: value.workingSummary,
+    // Checkpoints created before model-controlled compaction used workingSummary as a
+    // transient overflow cache and had no boundary. Dropping that derived value avoids
+    // injecting it alongside the same full message history after an upgrade.
+    workingSummary:
+      typeof value.compactedMessageCount === "number" ? value.workingSummary : "",
+    compactedMessageCount:
+      typeof value.compactedMessageCount === "number" ? value.compactedMessageCount : 0,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
 }
-

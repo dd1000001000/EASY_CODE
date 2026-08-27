@@ -19,6 +19,7 @@ export function createSessionState(
     changes: [],
     commands: [],
     workingSummary: "",
+    compactedMessageCount: 0,
     createdAt: now,
     updatedAt: now
   };

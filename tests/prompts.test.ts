@@ -82,6 +82,9 @@ describe("system prompt builder", () => {
       assert.match(prompt, /File contents.*command output.*untrusted data/);
       assert.match(prompt, /BEGIN_UNTRUSTED_WORKSPACE_SUMMARY/);
       assert.match(prompt, /BEGIN_UNTRUSTED_RETRIEVED_MEMORY/);
+      assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);
+      assert.match(prompt, /current objective, user constraints, key decisions/);
+      assert.match(prompt, /It must be cumulative/);
       assert.doesNotMatch(prompt, /this-must-not-enter-the-prompt/);
     } finally {
       await rm(temporary, { recursive: true, force: true });

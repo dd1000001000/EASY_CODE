@@ -2,6 +2,8 @@ export { EventJournal, type AppendEventInput } from "./event-journal.js";
 export {
   ThreadStore,
   type ThreadCreateInput,
+  type ThreadLease,
+  type ThreadLeaseAcquireOptions,
   type ThreadListOptions,
   type ThreadSummary,
   type TurnStartResult,
@@ -12,6 +14,7 @@ export {
   deserializeChatMessages,
   deserializeSessionState,
   isChatMessage,
+  isImageAttachment,
   serializeChatMessage,
   serializeChatMessages,
   serializeSessionState,

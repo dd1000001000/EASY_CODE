@@ -1,0 +1,80 @@
+{
+  "name": "easy-code-image-paste",
+  "displayName": "EASY CODE Image Paste",
+  "description": "Paste clipboard images into EASY CODE from the VS Code integrated terminal.",
+  "version": "0.1.0",
+  "publisher": "dd1000001000",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dd1000001000/EASY_CODE.git"
+  },
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "easy-code",
+    "terminal",
+    "clipboard",
+    "image"
+  ],
+  "main": "./extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:easyCode.pasteImage",
+    "onCommand:easyCode.enableTerminalImagePaste",
+    "onCommand:easyCode.disableTerminalImagePaste"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "easyCode.pasteImage",
+        "title": "Paste Clipboard Image",
+        "category": "EASY CODE"
+      },
+      {
+        "command": "easyCode.enableTerminalImagePaste",
+        "title": "Enable Image Paste for Current Terminal",
+        "category": "EASY CODE"
+      },
+      {
+        "command": "easyCode.disableTerminalImagePaste",
+        "title": "Disable Image Paste for Current Terminal",
+        "category": "EASY CODE"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "easyCode.pasteImage",
+        "key": "ctrl+v",
+        "when": "terminalFocus && easyCode.imagePasteEnabled && isWindows"
+      },
+      {
+        "command": "easyCode.pasteImage",
+        "key": "ctrl+shift+v",
+        "when": "terminalFocus && easyCode.imagePasteEnabled && isLinux"
+      },
+      {
+        "command": "easyCode.pasteImage",
+        "key": "cmd+v",
+        "when": "terminalFocus && easyCode.imagePasteEnabled && isMac"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node ./test/run-tests.js",
+    "package": "vsce package --no-dependencies --out easy-code-vscode.vsix"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "2.32.0"
+  },
+  "overrides": {
+    "cheerio": "1.0.0-rc.12"
+  }
+}

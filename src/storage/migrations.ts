@@ -121,6 +121,18 @@ const MIGRATIONS: readonly Migration[] = [
         ON tool_audit(thread_id, timestamp);
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE thread_leases (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
+        owner_hostname TEXT NOT NULL,
+        owner_token TEXT NOT NULL UNIQUE,
+        acquired_at TEXT NOT NULL
+      );
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {
