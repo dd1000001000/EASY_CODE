@@ -1,7 +1,7 @@
 {
   "name": "easy-code-agent",
   "version": "0.1.0",
-  "description": "EASY CODE - a local CLI coding agent for Qwen and DeepSeek",
+  "description": "EASY CODE - a local CLI coding agent for Alibaba Qwen and DeepSeek",
   "type": "module",
   "bin": {
     "easy-code": "dist/index.js"
@@ -11,19 +11,26 @@
   "files": [
     "dist",
     "scripts/postinstall.cjs",
+    "scripts/install-vscode-extension.cjs",
+    "scripts/verify-vscode-extension.cjs",
+    "vscode-extension/easy-code-vscode.manifest.json",
+    "vscode-extension/easy-code-vscode.vsix",
     "npm-shrinkwrap.json",
     "README.md",
-    "PLAN.md"
+    "README_zh.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "npm run build && node dist/index.js",
     "start": "node dist/index.js",
-    "test": "npm run build:test && node scripts/run-tests.cjs",
+    "test": "npm run build:test && node scripts/run-tests.cjs && npm run test:vscode",
+    "test:vscode": "npm --prefix vscode-extension test",
     "build:test": "tsc -p tsconfig.test.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "postinstall": "node scripts/postinstall.cjs",
-    "prepack": "npm run build"
+    "vscode:install": "node scripts/install-vscode-extension.cjs",
+    "package:vscode": "npm --prefix vscode-extension ci --ignore-scripts --include=dev && npm --prefix vscode-extension run package && node scripts/verify-vscode-extension.cjs --write",
+    "prepack": "npm run build && node scripts/verify-vscode-extension.cjs"
   },
   "engines": {
     "node": ">=16.20.0"

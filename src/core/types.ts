@@ -4,9 +4,11 @@ export type ApprovalPolicyName = "safe" | "ask" | "never";
 
 export type ToolName =
   | "read_file"
+  | "read_image"
   | "create_file"
   | "update_file"
-  | "run_command";
+  | "run_command"
+  | "compact_context";
 
 export interface FunctionToolCall {
   id: string;
@@ -17,8 +19,32 @@ export interface FunctionToolCall {
   };
 }
 
+export type SupportedImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif";
+
+/**
+ * Durable metadata for an image copied into EASY CODE's private attachment store.
+ * Image bytes are deliberately excluded so checkpoints, journals, and SQLite never
+ * contain Base64 payloads.
+ */
+export interface ImageAttachment {
+  id: string;
+  label: string;
+  mediaType: SupportedImageMediaType;
+  storageKey: string;
+  sha256: string;
+  byteSize: number;
+  width: number;
+  height: number;
+  sourceName?: string;
+}
+
 export type ChatMessage =
-  | { role: "system" | "user"; content: string }
+  | { role: "system"; content: string }
+  | { role: "user"; content: string; images?: ImageAttachment[] }
   | {
       role: "assistant";
       content: string | null;
@@ -51,6 +77,12 @@ export interface ProviderResponse {
 
 export interface ModelRequest {
   messages: ChatMessage[];
+  /**
+   * Image IDs introduced by the active turn. Providers use this boundary to
+   * keep current input validation strict while safely omitting older images
+   * that are incompatible after a provider or model switch.
+   */
+  currentTurnImageIds?: readonly string[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
   temperature?: number;
@@ -94,6 +126,17 @@ export interface ToolExecutionResult {
   error?: string;
   /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
   presentation?: ToolPresentation;
+  /** Local-only context transition. AgentRuntime deliberately excludes the submitted summary from tool messages. */
+  contextCompaction?: ContextCompactionRequest;
+  /**
+   * Local image references that Runtime promotes into a synthetic multimodal user
+   * message after all matching textual tool results have been appended.
+   */
+  imageAttachments?: ImageAttachment[];
+}
+
+export interface ContextCompactionRequest {
+  summary: string;
 }
 
 export interface FileDiffPresentation {
@@ -126,6 +169,10 @@ export interface ToolContext {
   commandTimeoutMs: number;
   maxOutputChars: number;
   recordCommand?: (entry: CommandAuditEntry) => void;
+  attachImage?: (input: {
+    absolutePath: string;
+    sourceName?: string;
+  }) => Promise<ImageAttachment>;
 }
 
 export interface AgentTool {
@@ -177,6 +224,8 @@ export interface SessionState {
   changes: FileChangeRecord[];
   commands: CommandAuditEntry[];
   workingSummary: string;
+  /** Number of leading messages represented by workingSummary and omitted from future model requests. */
+  compactedMessageCount: number;
   createdAt: string;
   updatedAt: string;
 }

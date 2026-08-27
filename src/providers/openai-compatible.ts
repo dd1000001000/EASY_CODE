@@ -2,13 +2,25 @@ import { z } from "zod";
 
 import type {
   ChatMessage,
+  ImageAttachment,
   ModelProvider,
   ModelRequest,
   ProviderConfig,
   ProviderName,
   ProviderResponse,
 } from "../core/types.js";
-import { ProviderError, redactSensitiveText } from "./errors.js";
+import {
+  validateImageAttachmentCollection,
+} from "../images/image-store.js";
+import {
+  providerImageCompatibilityIssue,
+  validateProviderImageAttachments,
+} from "../models/catalog.js";
+import {
+  ProviderError,
+  redactImageDataUrls,
+  redactSensitiveText,
+} from "./errors.js";
 import {
   HttpTransportError,
   postJsonWithNode,
@@ -17,6 +29,7 @@ import {
 } from "./http-transport.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
 
 const functionToolCallSchema = z.object({
   id: z.string().min(1),
@@ -55,11 +68,25 @@ export interface ProviderRuntimeOptions {
   sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
   maxResponseBytes?: number;
+  /** Resolve a validated local attachment immediately before an API request. */
+  loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
+  /** Unknown models default to false in the provider factory. */
+  visionSupported?: boolean;
 }
+
+type CompletionContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+type CompletionMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string | CompletionContentPart[] }
+  | Extract<ChatMessage, { role: "assistant" }>
+  | Extract<ChatMessage, { role: "tool" }>;
 
 interface CompletionBody {
   model: string;
-  messages: ChatMessage[];
+  messages: CompletionMessage[];
   stream: false;
   tools?: ModelRequest["tools"];
   temperature?: number;
@@ -79,6 +106,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   ) => Promise<void>;
   private readonly random: () => number;
   private readonly maxResponseBytes: number;
+  private readonly loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
+  private readonly visionSupported: boolean;
 
   constructor(
     name: ProviderName,
@@ -95,6 +124,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.random = runtime.random ?? Math.random;
     this.maxResponseBytes =
       runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    this.loadImage = runtime.loadImage;
+    this.visionSupported = runtime.visionSupported ?? false;
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
@@ -110,7 +141,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     const body: CompletionBody = {
       model: this.model,
-      messages: request.messages,
+      messages: await this.toCompletionMessages(
+        request.messages,
+        request.currentTurnImageIds,
+      ),
       stream: false,
     };
     if (request.tools?.length) body.tools = request.tools;
@@ -171,6 +205,139 @@ export class OpenAICompatibleProvider implements ModelProvider {
     );
   }
 
+  private async toCompletionMessages(
+    messages: readonly ChatMessage[],
+    currentTurnImageIds?: readonly string[],
+  ): Promise<CompletionMessage[]> {
+    let providerMessages = messages;
+    if (this.visionSupported) {
+      try {
+        const originalImages = messages.flatMap((message) =>
+          message.role === "user" ? message.images ?? [] : [],
+        );
+        // Validate durable metadata even when a provider-specific constraint
+        // causes an older attachment to be omitted. Aggregate limits are
+        // checked after filtering because omitted bytes never reach the API.
+        for (const image of originalImages) validateImageAttachmentCollection([image]);
+        if (currentTurnImageIds !== undefined) {
+          const currentImageIds = new Set(currentTurnImageIds);
+          providerMessages = messages.map((message) => {
+            if (message.role !== "user" || !message.images?.length) return message;
+            const compatible: ImageAttachment[] = [];
+            const omitted: Array<{ image: ImageAttachment; issue: string }> = [];
+            for (const image of message.images) {
+              const issue = providerImageCompatibilityIssue(this.name, image);
+              if (!currentImageIds.has(image.id) && issue) {
+                omitted.push({ image, issue });
+              } else {
+                compatible.push(image);
+              }
+            }
+            if (omitted.length === 0) return message;
+            return {
+              role: "user",
+              content: appendHistoricalImageOmissionNote(message.content, omitted),
+              ...(compatible.length ? { images: compatible } : {}),
+            };
+          });
+        }
+        const requestImages = providerMessages.flatMap((message) =>
+          message.role === "user" ? message.images ?? [] : [],
+        );
+        validateImageAttachmentCollection(requestImages);
+        validateProviderImageAttachments(this.name, requestImages);
+      } catch (error) {
+        throw this.error(
+          error instanceof Error ? error.message : String(error),
+          "invalid_images",
+        );
+      }
+    }
+
+    const output: CompletionMessage[] = [];
+    for (const message of providerMessages) {
+      if (message.role !== "user") {
+        output.push({ ...message });
+        continue;
+      }
+
+      const images = message.images ?? [];
+      if (images.length === 0) {
+        output.push({ role: "user", content: message.content });
+        continue;
+      }
+      if (!this.visionSupported) {
+        const omitted = images
+          .map((image) => `[${image.label} omitted: ${this.model} cannot receive images]`)
+          .join("\n");
+        output.push({
+          role: "user",
+          content: [message.content, omitted].filter(Boolean).join("\n\n"),
+        });
+        continue;
+      }
+      if (!this.loadImage) {
+        throw this.error("No local image loader is configured.", "invalid_config");
+      }
+
+      const hydrated = new Map<string, {
+        readonly attachment: ImageAttachment;
+        readonly image: Extract<CompletionContentPart, { type: "image_url" }>;
+        used: boolean;
+      }>();
+      for (const attachment of images) {
+        const data = await this.loadImage(attachment);
+        if (data.length !== attachment.byteSize) {
+          throw this.error(
+            `Stored ${attachment.label} no longer matches its metadata.`,
+            "image_integrity_error",
+          );
+        }
+        hydrated.set(`[${attachment.label}]`, {
+          attachment,
+          image: {
+            type: "image_url",
+            image_url: {
+              url: `data:${attachment.mediaType};base64,${data.toString("base64")}`,
+            },
+          },
+          used: false,
+        });
+      }
+
+      const content: CompletionContentPart[] = [];
+      const orderedText: CompletionContentPart[] = [];
+      const markerPattern = /\[Image #[1-9][0-9]{0,2}\]/gu;
+      let cursor = 0;
+      for (const match of message.content.matchAll(markerPattern)) {
+        const marker = match[0];
+        const position = match.index;
+        const item = hydrated.get(marker);
+        if (!item || item.used || position === undefined) continue;
+        if (position > cursor) {
+          orderedText.push({ type: "text", text: message.content.slice(cursor, position) });
+        }
+        orderedText.push({ type: "text", text: marker }, item.image);
+        item.used = true;
+        cursor = position + marker.length;
+      }
+      if (cursor < message.content.length) {
+        orderedText.push({ type: "text", text: message.content.slice(cursor) });
+      }
+
+      // Images queued through /image or --image do not necessarily have an
+      // inline marker. Preserve the previous behavior by placing those before
+      // the user's text while still interleaving explicitly referenced images.
+      for (const [marker, item] of hydrated) {
+        if (item.used) continue;
+        content.push({ type: "text", text: marker }, item.image);
+      }
+      content.push(...orderedText);
+      output.push({ role: "user", content });
+    }
+    return output;
+  }
+
   private parseResponse(response: JsonPostResponse): ProviderResponse {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryable = retryableStatus(response.statusCode);
@@ -219,13 +386,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     const message: Extract<ChatMessage, { role: "assistant" }> = {
       role: "assistant",
-      content: choice.message.content ?? null,
+      content: choice.message.content === undefined || choice.message.content === null
+        ? null
+        : redactImageDataUrls(choice.message.content),
     };
     if (choice.message.tool_calls) {
       message.tool_calls = choice.message.tool_calls;
     }
     if (choice.message.reasoning_content !== undefined) {
-      message.reasoning_content = choice.message.reasoning_content;
+      message.reasoning_content = choice.message.reasoning_content === null
+        ? null
+        : redactImageDataUrls(choice.message.reasoning_content);
     }
 
     const result: ProviderResponse = {
@@ -295,6 +466,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const base = Math.min(500 * 2 ** attempt, 5_000);
     return Math.round(base * (0.8 + this.random() * 0.4));
   }
+}
+
+function appendHistoricalImageOmissionNote(
+  content: string,
+  omitted: readonly { image: ImageAttachment; issue: string }[],
+): string {
+  const details = omitted
+    .map(({ issue }) => issue)
+    .join(" ");
+  const prefix = "[Historical image attachment(s) omitted from this provider request: ";
+  const suffix = " Local thread history is unchanged.]";
+  const available = MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS - prefix.length - suffix.length;
+  const boundedDetails = details.length <= available
+    ? details
+    : `${details.slice(0, Math.max(0, available - 1))}…`;
+  const note = `${prefix}${boundedDetails}${suffix}`;
+  return [content, note].filter(Boolean).join("\n\n");
 }
 
 function validateProviderConfig(

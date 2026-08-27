@@ -4,6 +4,7 @@ import type {
   ProviderName,
 } from "../core/types.js";
 import { DeepSeekProvider } from "./deepseek.js";
+import { modelSupportsVision } from "../models/catalog.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { QwenProvider } from "./qwen.js";
 
@@ -24,6 +25,9 @@ export function createProvider(
   const effectiveRuntime: ProviderRuntimeOptions = {
     ...runtime,
     maxResponseBytes: runtime?.maxResponseBytes ?? responseLimit,
+    visionSupported:
+      runtime?.visionSupported ??
+      modelSupportsVision(providerName, providerConfig.model),
   };
 
   return providerName === "qwen"

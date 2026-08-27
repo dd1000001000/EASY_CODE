@@ -1,7 +1,9 @@
 import type { AgentTool, ToolName } from "../core/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
+import { CompactContextTool } from "./compact-context.js";
 import { CreateFileTool } from "./create-file.js";
 import { ReadFileTool } from "./read-file.js";
+import { ReadImageTool } from "./read-image.js";
 import { RunCommandTool } from "./run-command.js";
 import { UpdateFileTool } from "./update-file.js";
 
@@ -29,13 +31,14 @@ export class ToolRegistry {
 export function createDefaultTools(workspaceManager: WorkspaceManager): AgentTool[] {
   return [
     new ReadFileTool(workspaceManager),
+    new ReadImageTool(workspaceManager),
     new CreateFileTool(workspaceManager),
     new UpdateFileTool(workspaceManager),
     new RunCommandTool(workspaceManager),
+    new CompactContextTool(),
   ];
 }
 
 export function createDefaultToolRegistry(workspaceManager: WorkspaceManager): ToolRegistry {
   return new ToolRegistry(createDefaultTools(workspaceManager));
 }
-

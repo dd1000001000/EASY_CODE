@@ -5,7 +5,9 @@ import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
 import {
   CreateFileTool,
+  CompactContextTool,
   ReadFileTool,
+  ReadImageTool,
   UpdateFileTool,
   createDefaultTools,
 } from "../src/tools/index.js";
@@ -36,13 +38,69 @@ function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext 
 }
 
 describe("workspace file tools", () => {
-  it("exports exactly the four default tools", async () => {
+  it("exports the workspace tools and runtime context tool", async () => {
     await withWorkspace(async (_root, manager) => {
       assert.deepEqual(
         createDefaultTools(manager).map((tool) => tool.name),
-        ["read_file", "create_file", "update_file", "run_command"],
+        ["read_file", "read_image", "create_file", "update_file", "run_command", "compact_context"],
       );
     });
+  });
+
+  it("loads a workspace image through the runtime attachment boundary", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "diagram.png"), Buffer.from("image bytes"));
+      const tool = new ReadImageTool(manager);
+      let attachedPath = "";
+      const result = await tool.execute(
+        { path: "diagram.png" },
+        {
+          ...context(root, "plan"),
+          attachImage: async ({ absolutePath }) => {
+            attachedPath = absolutePath;
+            return {
+              id: "image_00000000-0000-4000-8000-000000000000",
+              label: "Image #1",
+              mediaType: "image/png",
+              storageKey:
+                "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000000.png",
+              sha256: "0".repeat(64),
+              byteSize: 11,
+              width: 1,
+              height: 1,
+            };
+          },
+        },
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(attachedPath, path.join(manager.root, "diagram.png"));
+      assert.equal(result.imageAttachments?.[0]?.label, "Image #1");
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(result.data as object, "storageKey"),
+        false,
+      );
+    });
+  });
+
+  it("accepts a bounded context summary without exposing it in model-facing data", async () => {
+    const tool = new CompactContextTool();
+    const accepted = await tool.execute(
+      { summary: "Objective: continue safely. Next step: run tests." },
+      context(process.cwd()),
+    );
+    const rejected = await tool.execute(
+      { summary: "", extra: true },
+      context(process.cwd()),
+    );
+
+    assert.equal(tool.mutating, false);
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.contextCompaction?.summary.includes("continue safely"), true);
+    assert.deepEqual(accepted.data, {
+      summaryChars: "Objective: continue safely. Next step: run tests.".length,
+    });
+    assert.equal(rejected.ok, false);
   });
 
   it("reads a line range and tracks the full-file SHA-256 version", async () => {

@@ -1,0 +1,166 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+
+const {
+  isEasyCodeCommand,
+  isEasyCodePackageScript,
+  tokenizeCommandLine,
+} = require("../lib/command-detection");
+const {
+  clipboardHasImage,
+  parseLinuxClipboardTypes,
+  parseMacClipboardInfo,
+  parseWindowsClipboardResult,
+  resolveExecutable,
+} = require("../lib/clipboard");
+
+const tests = [];
+const test = (name, run) => tests.push({ name, run });
+
+test("recognizes direct and package-manager EASY CODE commands", () => {
+  assert.equal(isEasyCodeCommand("easy-code"), true);
+  assert.equal(isEasyCodeCommand("easy-code --image ./screen.png"), true);
+  assert.equal(isEasyCodeCommand('"C:\\Program Files\\nodejs\\easy-code.cmd"'), true);
+  assert.equal(isEasyCodeCommand('& "C:\\Tools\\easy-code.ps1"'), true);
+  assert.equal(isEasyCodeCommand("npx --yes easy-code@latest"), true);
+  assert.equal(isEasyCodeCommand("npm exec -- easy-code"), true);
+  assert.equal(isEasyCodeCommand("pnpm dlx easy-code-agent"), true);
+  assert.equal(isEasyCodeCommand("yarn dlx easy-code"), true);
+  assert.equal(isEasyCodeCommand("QWEN_API_KEY=secret easy-code"), true);
+  assert.equal(isEasyCodeCommand("env QWEN_API_KEY=secret easy-code"), true);
+  assert.equal(isEasyCodeCommand("env -i QWEN_API_KEY=secret easy-code"), true);
+  assert.equal(isEasyCodeCommand("cross-env QWEN_API_KEY=secret easy-code"), true);
+});
+
+test("recognizes package scripts only when they launch EASY CODE", () => {
+  assert.equal(
+    isEasyCodePackageScript("npm start", {
+      name: "sample",
+      scripts: { start: "easy-code --mode auto" },
+    }),
+    true,
+  );
+  assert.equal(
+    isEasyCodePackageScript("npm run agent", {
+      name: "sample",
+      scripts: { agent: "env QWEN_API_KEY=secret easy-code" },
+    }),
+    true,
+  );
+  assert.equal(
+    isEasyCodePackageScript("npm start", {
+      name: "easy-code-agent",
+      scripts: { start: "node dist/index.js" },
+    }),
+    true,
+  );
+  assert.equal(
+    isEasyCodePackageScript("npm start", {
+      name: "sample",
+      scripts: { start: "vite" },
+    }),
+    false,
+  );
+});
+
+test("does not activate for mentions or similarly named commands", () => {
+  assert.equal(isEasyCodeCommand("echo easy-code"), false);
+  assert.equal(isEasyCodeCommand("easy-code-helper"), false);
+  assert.equal(isEasyCodeCommand("code README-easy-code.md"), false);
+  assert.equal(isEasyCodeCommand("npx another-package easy-code"), false);
+  assert.equal(isEasyCodeCommand(""), false);
+});
+
+test("tokenizes quoted executable paths without losing Windows separators", () => {
+  assert.deepEqual(tokenizeCommandLine('"C:\\Program Files\\EASY CODE\\easy-code.cmd" --help'), [
+    "C:\\Program Files\\EASY CODE\\easy-code.cmd",
+    "--help",
+  ]);
+});
+
+test("parses Windows clipboard boolean output", () => {
+  assert.equal(parseWindowsClipboardResult("True\r\n"), true);
+  assert.equal(parseWindowsClipboardResult("False\r\n"), false);
+  assert.equal(parseWindowsClipboardResult("warning\ntrue\n"), true);
+});
+
+test("parses macOS clipboard image descriptors", () => {
+  assert.equal(parseMacClipboardInfo("«class PNGf», 48122, TIFF picture, 92001"), true);
+  assert.equal(parseMacClipboardInfo("JPEG picture, 48122"), true);
+  assert.equal(parseMacClipboardInfo("Unicode text, 14"), false);
+});
+
+test("parses Linux clipboard MIME targets", () => {
+  assert.equal(parseLinuxClipboardTypes("text/plain\nimage/png\n"), true);
+  assert.equal(parseLinuxClipboardTypes("image/jpeg\ntext/html\n"), true);
+  assert.equal(parseLinuxClipboardTypes("text/plain;charset=utf-8\n"), false);
+  for (const unsupported of ["image/jpg", "image/bmp", "image/tiff", "image/heic", "image/avif"]) {
+    assert.equal(parseLinuxClipboardTypes(`${unsupported}\n`), false);
+  }
+});
+
+test("uses fixed platform helpers without a shell", async () => {
+  const calls = [];
+  const hasImage = await clipboardHasImage({
+    platform: "win32",
+    env: { SystemRoot: "C:\\Windows", PATH: "ignored" },
+    runProgram: async (program, args, options) => {
+      calls.push({ program, args, options });
+      return "true";
+    },
+  });
+  assert.equal(hasImage, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].program, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+  assert.ok(calls[0].args.includes("-STA"));
+  assert.equal(Object.hasOwn(calls[0].options.env, "PATH"), false);
+});
+
+test("falls back from Wayland to X11 helper discovery", async () => {
+  const calls = [];
+  const hasImage = await clipboardHasImage({
+    platform: "linux",
+    env: { PATH: "/usr/bin", DISPLAY: ":0" },
+    resolveExecutable: (name) => `/usr/bin/${name}`,
+    runProgram: async (program, args) => {
+      calls.push({ program, args });
+      if (program.endsWith("wl-paste")) throw new Error("no Wayland display");
+      return "image/webp\n";
+    },
+  });
+  assert.equal(hasImage, true);
+  assert.deepEqual(
+    calls.map((call) => call.program),
+    ["/usr/bin/wl-paste", "/usr/bin/xclip"],
+  );
+});
+
+test("does not resolve a Linux clipboard helper from the workspace", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "easy-code-extension-helper-"));
+  try {
+    const binary = path.join(root, "wl-paste");
+    fs.writeFileSync(binary, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    assert.equal(resolveExecutable("wl-paste", root, [root]), undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+(async () => {
+  let failures = 0;
+  for (const { name, run } of tests) {
+    try {
+      await run();
+      process.stdout.write(`✓ ${name}\n`);
+    } catch (error) {
+      failures += 1;
+      process.stderr.write(`✗ ${name}\n${error?.stack ?? error}\n`);
+    }
+  }
+  if (failures) process.exitCode = 1;
+  else process.stdout.write(`\n${tests.length}/${tests.length} tests passed.\n`);
+})();

@@ -1,0 +1,5 @@
+.gitignore
+test/**
+*.vsix
+easy-code-vscode.manifest.json
+npm-debug.log*

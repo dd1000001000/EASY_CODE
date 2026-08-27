@@ -7,7 +7,7 @@ export interface SlashCommand {
 }
 
 export type ModelCommandRequest =
-  | { action: "show" }
+  | { action: "select" }
   | {
       action: "switch";
       provider?: ProviderName;
@@ -33,7 +33,7 @@ export function parseSlashCommand(input: string): SlashCommand | null {
 
 /** Parse /model without conflating provider names with arbitrary model IDs. */
 export function parseModelCommand(args: readonly string[]): ModelCommandRequest {
-  if (args.length === 0) return { action: "show" };
+  if (args.length === 0) return { action: "select" };
   if (args.length > 2) throw new Error(MODEL_COMMAND_USAGE);
 
   const first = args[0];
@@ -67,12 +67,15 @@ EASY CODE commands
 
   /mode plan|auto|code       Switch working mode
   /provider qwen|deepseek    Switch provider
-  /model                     Show provider, model, and API key status
+  /model                     Open the provider and model selector
   /model <model>             Switch the current provider's model
   /model qwen|deepseek <id>  Switch both provider and model
   /status                    Show current status
   /workspace                 Show workspace summary
   /workspace refresh         Refresh the workspace inventory
+  /image <path>              Queue an image file for the next task
+  /image clipboard           Queue the current clipboard image
+  /image clear               Remove all queued, unsent images
   /changes                   Show file changes in this thread
   /tools                     Show available tools
   /permissions               Show command permissions and sandbox status

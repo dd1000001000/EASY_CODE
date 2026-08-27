@@ -27,6 +27,14 @@ export class ProviderError extends Error {
   }
 }
 
+/** Remove inline image payloads before provider text can reach logs or durable state. */
+export function redactImageDataUrls(input: string): string {
+  return input.replace(
+    /data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/_=-]+/giu,
+    "[REDACTED_IMAGE_DATA_URL]",
+  );
+}
+
 /** Redact common credential shapes before an error crosses the provider boundary. */
 export function redactSensitiveText(
   input: unknown,
@@ -38,7 +46,7 @@ export function redactSensitiveText(
     if (secret) value = value.split(secret).join("[REDACTED]");
   }
 
-  value = value
+  value = redactImageDataUrls(value)
     .replace(/(bearer\s+)[a-z0-9._~+/=-]+/gi, "$1[REDACTED]")
     .replace(
       /((?:api[_-]?key|access[_-]?token|token|password|secret)\s*["']?\s*[:=]\s*["']?)[^\s,"'}&]+/gi,

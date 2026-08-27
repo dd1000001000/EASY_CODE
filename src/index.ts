@@ -18,6 +18,7 @@ interface CliOptions {
   approval?: ApprovalPolicyName;
   yes?: boolean;
   resume?: string;
+  image?: string[];
 }
 
 const MINIMUM_NODE_VERSION = [16, 20, 0] as const;
@@ -72,6 +73,7 @@ function appOptions(
     approvalPolicy: options.approval,
     assumeYes: options.yes,
     resumeThreadId: options.resume,
+    imagePaths: options.image,
     startupInteraction,
   };
 }
@@ -85,7 +87,7 @@ async function withApp(
   try {
     await action(app);
   } finally {
-    app.close();
+    await app.closeAsync();
   }
 }
 
@@ -100,7 +102,13 @@ function addCommonOptions(command: Command): Command {
         .choices(["safe", "ask", "never"]),
     )
     .option("-y, --yes", "automatically approve every policy-allowed command prompt, including shells")
-    .option("--resume <thread-id>", "resume a saved Thread");
+    .option("--resume <thread-id>", "resume a saved Thread")
+    .option(
+      "-i, --image <path>",
+      "queue an image for the first task (repeatable)",
+      (value: string, previous: string[]) => [...previous, value],
+      [],
+    );
 }
 
 export async function main(argv = process.argv): Promise<void> {
@@ -108,7 +116,7 @@ export async function main(argv = process.argv): Promise<void> {
   const program = addCommonOptions(
     new Command()
       .name("easy-code")
-      .description("EASY CODE — local CLI coding agent for Qwen and DeepSeek")
+      .description("EASY CODE — local CLI coding agent for Alibaba Qwen and DeepSeek")
       .version("0.1.0")
       .showHelpAfterError(),
   );
@@ -153,6 +161,8 @@ export * from "./app.js";
 export * from "./config/index.js";
 export * from "./core/types.js";
 export * from "./memory/index.js";
+export * from "./images/index.js";
+export * from "./models/index.js";
 export * from "./providers/index.js";
 export * from "./tools/index.js";
 export * from "./workspace/index.js";

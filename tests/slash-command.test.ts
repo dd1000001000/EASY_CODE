@@ -19,11 +19,11 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("fix the bug"), null);
   });
 
-  it("parses model inspection and provider-aware switching", () => {
-    assert.deepEqual(parseModelCommand([]), { action: "show" });
-    assert.deepEqual(parseModelCommand(["qwen3-coder-plus"]), {
+  it("parses model selection and provider-aware direct switching", () => {
+    assert.deepEqual(parseModelCommand([]), { action: "select" });
+    assert.deepEqual(parseModelCommand(["qwen3.7-plus"]), {
       action: "switch",
-      model: "qwen3-coder-plus",
+      model: "qwen3.7-plus",
     });
     assert.throws(
       () => parseModelCommand(["DEEPSEEK"]),

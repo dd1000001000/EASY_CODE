@@ -3,6 +3,7 @@ import path from "node:path";
 import chalk from "chalk";
 
 import { Terminal, printBanner } from "./cli/terminal.js";
+import type { PromptSubmission } from "./cli/prompt-input.js";
 import {
   HELP_TEXT,
   parseModelCommand,
@@ -22,17 +23,39 @@ import type {
   ApprovalPolicyName,
   ChatMessage,
   EasyCodeConfig,
+  ImageAttachment,
   ProviderName,
   SessionState,
 } from "./core/types.js";
+import {
+  ImageStore,
+  MAX_IMAGES_PER_MODEL_REQUEST,
+  SystemClipboardImageReader,
+  assertThreadImageNumberAvailable,
+  nextThreadImageNumber,
+  prepareDataDirectoryOutsideWorkspace,
+  validateImageAttachmentCollection,
+  type ClipboardImageReader,
+} from "./images/index.js";
 import { MemoryManager } from "./memory/memory-manager.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
+import {
+  DEFAULT_MODEL_IDS,
+  PROVIDER_CATALOG,
+  modelsForProvider,
+  providerLabel,
+  requireCatalogModel,
+  requireVisionModel,
+  resolveCatalogModel,
+  modelSupportsVision,
+  validateProviderImageAttachments,
+} from "./models/catalog.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { AgentRuntime } from "./runtime/agent.js";
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import { createDefaultTools } from "./tools/registry.js";
-import { ThreadStore } from "./threads/thread-store.js";
+import { ThreadStore, type ThreadLease } from "./threads/thread-store.js";
 import { WorkspaceManager } from "./workspace/manager.js";
 
 export interface EasyCodeAppOptions {
@@ -47,6 +70,10 @@ export interface EasyCodeAppOptions {
   terminal?: Terminal;
   /** Dependency injection for isolated tests; false disables keyring reads. */
   credentialStore?: ApiKeyCredentialStore | false;
+  /** Images queued before the first prompt; the option may be repeated by the CLI. */
+  imagePaths?: readonly string[];
+  /** Dependency injection for clipboard tests. */
+  clipboardImageReader?: ClipboardImageReader;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -64,16 +91,68 @@ function messagePreview(message: ChatMessage): string {
     content = `[Tool calls: ${message.tool_calls.map((call) => call.function.name).join(", ")}]`;
   }
   const compact = redactSensitiveInformation(content.replace(/\s+/gu, " ").trim()).slice(0, 240);
-  return `${role}: ${compact || "(empty)"}`;
+  const labels = message.role === "user" && message.images?.length
+    ? ` [${message.images.map((image) => image.label).join(", ")}]`
+    : "";
+  return `${role}: ${compact || "(empty)"}${labels}`;
 }
 
 function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function repairInterruptedTurn(threadStore: ThreadStore, state: SessionState): boolean {
+function stripPasteFailureMarkers(value: string): string {
+  return value.replace(/\s*\[Image paste failed\]\s*/gu, " ").trim();
+}
+
+function stripImageMarkers(
+  value: string,
+  images: readonly ImageAttachment[],
+): string {
+  let result = value;
+  for (const image of images) {
+    result = result.replaceAll(`[${image.label}]`, " ");
+  }
+  return stripPasteFailureMarkers(result).replace(/\s+/gu, " ").trim();
+}
+
+export function repairInterruptedTurn(threadStore: ThreadStore, state: SessionState): boolean {
   const turnId = state.activeTurnId;
   if (!turnId) return false;
+
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    const candidate = state.messages[index];
+    if (candidate?.role !== "assistant" || !candidate.tool_calls?.length) continue;
+    const completedCallIds = new Set(
+      state.messages
+        .slice(index + 1)
+        .filter((message): message is Extract<ChatMessage, { role: "tool" }> =>
+          message.role === "tool")
+        .map((message) => message.tool_call_id),
+    );
+    for (const call of candidate.tool_calls) {
+      if (completedCallIds.has(call.id)) continue;
+      const toolMessage: Extract<ChatMessage, { role: "tool" }> = {
+        role: "tool",
+        tool_call_id: call.id,
+        name: call.function.name,
+        content: JSON.stringify({
+          ok: false,
+          summary: "Tool execution was interrupted before a result was recorded.",
+          error: "interrupted",
+        }),
+      };
+      state.messages.push(toolMessage);
+      threadStore.appendEvent(state.threadId, {
+        turnId,
+        type: "tool.result",
+        phase: "interrupted",
+        payload: { callId: call.id, tool: call.function.name, message: toolMessage },
+      });
+    }
+    break;
+  }
+
   const message: ChatMessage = {
     role: "assistant",
     content: "The previous EASY CODE process exited before this turn completed; the turn has been marked as interrupted.",
@@ -102,6 +181,9 @@ export class EasyCodeApp {
   private readonly contextManager = new ContextManager();
   private readonly memoryManager: MemoryManager;
   private readonly threadStore: ThreadStore;
+  private threadLease: ThreadLease | undefined;
+  private readonly imageStore: ImageStore;
+  private pendingImages: ImageAttachment[] = [];
   private closed = false;
   private dirty = false;
 
@@ -110,15 +192,19 @@ export class EasyCodeApp {
     private readonly storage: EasyCodeStorage,
     workspace: WorkspaceManager,
     state: SessionState,
+    threadLease: ThreadLease,
     private readonly terminal: Terminal,
     private readonly assumeYes: boolean,
     private readonly credentialStore: ApiKeyCredentialStore | undefined,
     private readonly startupInteraction: "none" | "select-model" | "ensure-api-key",
+    private readonly clipboardImageReader: ClipboardImageReader,
   ) {
     this.workspace = workspace;
     this.state = state;
+    this.threadLease = threadLease;
     this.memoryManager = new MemoryManager(storage);
     this.threadStore = new ThreadStore(storage);
+    this.imageStore = new ImageStore(config.dataDir);
   }
 
   static async create(options: EasyCodeAppOptions = {}): Promise<EasyCodeApp> {
@@ -133,14 +219,21 @@ export class EasyCodeApp {
     if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
 
     let storage: EasyCodeStorage | undefined;
+    let threadStore: ThreadStore | undefined;
+    let threadLease: ThreadLease | undefined;
     try {
-      storage = createStorage(config.dataDir);
-      const threadStore = new ThreadStore(storage);
       const workspace = await WorkspaceManager.create(config.workspaceRoot);
+      config.dataDir = await prepareDataDirectoryOutsideWorkspace(
+        config.dataDir,
+        workspace.root,
+      );
+      storage = createStorage(config.dataDir);
+      threadStore = new ThreadStore(storage);
       let state: SessionState;
       let shouldCheckpoint = false;
 
       if (options.resumeThreadId) {
+        threadLease = threadStore.acquireThreadLease(options.resumeThreadId);
         state = threadStore.recover(options.resumeThreadId);
         if (!samePath(state.workspaceRoot, workspace.root)) {
           throw new Error(
@@ -153,7 +246,11 @@ export class EasyCodeApp {
         state.mode = options.mode ?? state.mode;
         const selectedProvider = options.provider ?? state.provider;
         state.provider = selectedProvider;
-        state.model = options.model ?? (options.provider ? config[selectedProvider].model : state.model);
+        state.model = options.model
+          ? requireCatalogModel(selectedProvider, options.model).id
+          : options.provider
+            ? config[selectedProvider].model
+            : state.model;
         const repairedInterruptedTurn = repairInterruptedTurn(threadStore, state);
         shouldCheckpoint =
           previousMode !== state.mode ||
@@ -163,13 +260,16 @@ export class EasyCodeApp {
       } else {
         const selectedProvider = options.provider ?? config.provider;
         const selectedMode = options.mode ?? config.mode;
-        const selectedModel = options.model ?? config[selectedProvider].model;
+        const selectedModel = options.model
+          ? requireCatalogModel(selectedProvider, options.model).id
+          : config[selectedProvider].model;
         state = threadStore.create({
           workspaceRoot: workspace.root,
           mode: selectedMode,
           provider: selectedProvider,
           model: selectedModel,
         });
+        threadLease = threadStore.acquireThreadLease(state.threadId);
       }
 
       config.workspaceRoot = workspace.root;
@@ -177,19 +277,56 @@ export class EasyCodeApp {
       config.mode = state.mode;
       config[state.provider].model = state.model;
       if (shouldCheckpoint) threadStore.save(state);
-      return new EasyCodeApp(
+      const app = new EasyCodeApp(
         config,
         storage,
         workspace,
         state,
+        threadLease,
         terminal,
         options.assumeYes ?? false,
         credentialStore,
         options.startupInteraction ?? "none",
+        options.clipboardImageReader ?? new SystemClipboardImageReader({
+          currentDirectory: workspace.root,
+        }),
       );
+      try {
+        await app.imageStore.initialize();
+        for (const imagePath of options.imagePaths ?? []) {
+          await app.queueImagePath(imagePath, false);
+        }
+      } catch (error) {
+        await app.clearPendingImages();
+        await app.imageStore.shutdown().catch(() => undefined);
+        throw error;
+      }
+      return app;
     } catch (error) {
-      storage?.close();
-      terminal.close();
+      const cleanupErrors: unknown[] = [];
+      if (threadLease && threadStore) {
+        try {
+          threadStore.releaseThreadLease(threadLease);
+        } catch (cleanupError) {
+          cleanupErrors.push(cleanupError);
+        }
+      }
+      try {
+        storage?.close();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        terminal.close();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      if (cleanupErrors.length) {
+        throw new AggregateError(
+          [error, ...cleanupErrors],
+          "EASY CODE creation failed and resource cleanup also failed",
+        );
+      }
       throw error;
     }
   }
@@ -203,15 +340,59 @@ export class EasyCodeApp {
     this.printStatus();
 
     while (!this.closed) {
-      const response = await this.terminal.question(this.prompt());
-      if (response === null) return;
-      const input = response.trim();
-      if (!input) continue;
+      const promptImages: ImageAttachment[] = [];
+      let promptOpen = true;
+      let response: PromptSubmission | null;
+      try {
+        response = await this.terminal.readPrompt(this.prompt(), {
+          initialImageCount:
+            nextThreadImageNumber(this.state.messages, this.pendingImages) - 1,
+          captureImage: async (index, signal) => {
+            const attachment = await this.captureClipboardImage(
+              index,
+              [...this.pendingImages, ...promptImages],
+              signal,
+            );
+            if (!promptOpen) {
+              await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
+              throw new Error("The prompt was closed before the clipboard image finished loading.");
+            }
+            promptImages.push(attachment);
+            return attachment;
+          },
+        });
+      } catch (error) {
+        await this.discardImages(promptImages);
+        throw error;
+      } finally {
+        promptOpen = false;
+      }
+      if (response === null) {
+        await this.discardImages(promptImages);
+        await this.clearPendingImages();
+        return;
+      }
+      for (const error of response.pasteErrors) {
+        this.terminal.error(`Image paste failed: ${error}`);
+      }
+      const input = stripPasteFailureMarkers(response.text);
+      const images = [...this.pendingImages, ...response.images];
+      if (!input && images.length === 0) continue;
 
-      const slash = parseSlashCommand(input);
+      // Image markers are removed only while recognizing slash commands. They
+      // remain in normal prompts so the provider can preserve the user's
+      // intended ordering when several screenshots are referenced.
+      const commandInput = stripImageMarkers(input, response.images);
+      const slash = parseSlashCommand(commandInput);
       if (slash) {
+        if (response.images.length) {
+          this.pendingImages.push(...response.images);
+          this.terminal.info(
+            `Queued ${response.images.map((image) => image.label).join(", ")} for the next task.`,
+          );
+        }
         try {
-          const shouldExit = await this.handleSlashCommand(input);
+          const shouldExit = await this.handleSlashCommand(commandInput);
           if (shouldExit) return;
         } catch (error) {
           this.terminal.error(error instanceof Error ? error.message : String(error));
@@ -220,8 +401,13 @@ export class EasyCodeApp {
       }
 
       try {
-        await this.executePrompt(input);
+        await this.executePrompt(
+          input || "Analyze the attached image(s).",
+          images,
+        );
+        this.pendingImages = [];
       } catch (error) {
+        this.pendingImages = images;
         this.terminal.error(error instanceof Error ? error.message : String(error));
       }
     }
@@ -229,8 +415,15 @@ export class EasyCodeApp {
 
   async runOnce(prompt: string): Promise<AgentRunResult> {
     const normalized = prompt.trim();
-    if (!normalized) throw new Error("A non-empty prompt is required");
-    return this.executePrompt(normalized);
+    if (!normalized && this.pendingImages.length === 0) {
+      throw new Error("A non-empty prompt or at least one image is required");
+    }
+    const result = await this.executePrompt(
+      normalized || "Analyze the attached image(s).",
+      this.pendingImages,
+    );
+    this.pendingImages = [];
+    return result;
   }
 
   async handleSlashCommand(input: string): Promise<boolean> {
@@ -260,31 +453,27 @@ export class EasyCodeApp {
           throw new Error("Usage: /provider qwen|deepseek");
         }
         this.requireProviderApiKey(provider);
-        this.state.provider = provider;
-        this.state.model = this.config[provider].model;
-        this.config.provider = provider;
-        this.dirty = true;
-        this.save();
-        this.terminal.success(`Provider switched to ${provider}/${this.state.model}`);
+        const model = requireCatalogModel(provider, this.config[provider].model).id;
+        this.commitModelSelection(provider, model, "Provider switched to");
         return false;
       }
       case "model": {
         const request = parseModelCommand(command.args);
-        if (request.action === "show") {
-          this.printModel();
+        if (request.action === "select") {
+          const selection = await this.selectProviderAndModel();
+          if (!selection) {
+            this.terminal.info("Model selection canceled.");
+            return false;
+          }
+          if (!(await this.ensureProviderApiKey(selection.provider))) return false;
+          this.commitModelSelection(selection.provider, selection.model);
           return false;
         }
 
         const provider = request.provider ?? this.state.provider;
-        const model = request.model;
+        const model = requireCatalogModel(provider, request.model).id;
         this.requireProviderApiKey(provider);
-        this.state.provider = provider;
-        this.state.model = model;
-        this.config.provider = provider;
-        this.config[provider].model = model;
-        this.dirty = true;
-        this.save();
-        this.terminal.success(`Model switched to ${provider}/${model}`);
+        this.commitModelSelection(provider, model);
         return false;
       }
       case "status":
@@ -297,6 +486,26 @@ export class EasyCodeApp {
           ? await this.workspace.refreshManifest()
           : this.workspace.getManifestSummary();
         this.terminal.write(`${json(summary)}\n`);
+        return false;
+      }
+      case "image": {
+        if (!command.rawArgs) throw new Error("Usage: /image <path|clipboard|clear>");
+        if (command.rawArgs.toLowerCase() === "clear") {
+          const count = this.pendingImages.length;
+          await this.clearPendingImages();
+          this.terminal.success(`Cleared ${count} queued image(s).`);
+          return false;
+        }
+        this.requireCurrentModelVision();
+        if (command.rawArgs.toLowerCase() === "clipboard") {
+          const attachment = await this.captureClipboardImage(
+            nextThreadImageNumber(this.state.messages, this.pendingImages),
+          );
+          this.pendingImages.push(attachment);
+          this.terminal.success(`Queued ${attachment.label} from the clipboard.`);
+          return false;
+        }
+        await this.queueImagePath(command.rawArgs, true);
         return false;
       }
       case "changes": {
@@ -328,12 +537,14 @@ export class EasyCodeApp {
       case "resume": {
         const threadId = command.args[0];
         if (!threadId || command.args.length !== 1) throw new Error("Usage: /resume <thread-id>");
+        await this.clearPendingImages();
         await this.resumeThread(threadId);
         this.terminal.success(`Resumed thread ${this.state.threadId}`);
         return false;
       }
       case "new":
         if (command.args.length) throw new Error("Usage: /new");
+        await this.clearPendingImages();
         await this.newThread();
         this.terminal.success(`Created thread ${this.state.threadId}`);
         return false;
@@ -345,6 +556,7 @@ export class EasyCodeApp {
         return false;
       case "exit":
       case "quit":
+        await this.clearPendingImages();
         return true;
       default:
         throw new Error(`Unknown command /${command.name}; use /help to view available commands.`);
@@ -354,16 +566,54 @@ export class EasyCodeApp {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    const cleanupErrors: unknown[] = [];
     try {
       this.save();
-    } finally {
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (this.threadLease) {
+      try {
+        this.threadStore.releaseThreadLease(this.threadLease);
+        this.threadLease = undefined;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
       this.storage.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
       this.terminal.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    if (cleanupErrors.length === 1) throw cleanupErrors[0];
+    if (cleanupErrors.length > 1) {
+      throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
     }
   }
 
-  private async executePrompt(userInput: string): Promise<AgentRunResult> {
+  async closeAsync(): Promise<void> {
+    if (this.closed) return;
+    try {
+      await this.clearPendingImages();
+      await this.imageStore.shutdown();
+    } finally {
+      this.close();
+    }
+  }
+
+  private async executePrompt(
+    userInput: string,
+    images: readonly ImageAttachment[] = [],
+  ): Promise<AgentRunResult> {
     this.requireProviderApiKey(this.state.provider);
+    if (images.length) this.requireCurrentModelVision();
+    validateImageAttachmentCollection(images);
+    validateProviderImageAttachments(this.state.provider, images);
     this.dirty = true;
     const turnStartedAt = Date.now();
     const controller = new AbortController();
@@ -382,7 +632,7 @@ export class EasyCodeApp {
 
     try {
       const runtime = this.createRuntime();
-      const result = await runtime.run(this.state, userInput, {
+      const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.config.maxSteps,
         maxContextChars: this.config.maxContextChars,
         maxOutputChars: this.config.maxOutputChars,
@@ -392,7 +642,10 @@ export class EasyCodeApp {
       });
 
       this.syncWorkspaceState();
-      this.captureLongTermMemory(userInput, result, turnStartedAt);
+      const memoryInput = images.length
+        ? `${userInput}\n[${images.length} image attachment(s)]`
+        : userInput;
+      this.captureLongTermMemory(memoryInput, result, turnStartedAt);
       this.terminal.write(`\n${result.text.trim()}\n\n`);
       return result;
     } finally {
@@ -403,12 +656,21 @@ export class EasyCodeApp {
 
   private createRuntime(): AgentRuntime {
     const effectiveConfig = this.effectiveConfig();
-    const provider = createProvider(effectiveConfig, this.state.provider, this.state.model);
+    const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
+    const provider = createProvider(
+      effectiveConfig,
+      this.state.provider,
+      this.state.model,
+      { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
+    );
     const workspaceId = workspaceIdFromRoot(this.workspace.root);
+    const tools = createDefaultTools(this.workspace).filter(
+      (tool) => tool.name !== "read_image" || visionCapable,
+    );
 
     return new AgentRuntime({
       provider,
-      tools: createDefaultTools(this.workspace),
+      tools,
       contextManager: new ContextManager(),
       buildSystemPrompt: async ({ mode, workspaceSummary, memories }) =>
         buildSystemPrompt({
@@ -429,6 +691,11 @@ export class EasyCodeApp {
         this.threadStore.recordToolAudit(this.state.threadId, turnId, entry);
         this.dirty = true;
       },
+      commitImages: async (threadId, attachments) => {
+        for (const attachment of attachments) {
+          await this.imageStore.commit(threadId, attachment);
+        }
+      },
       onToolCompleted: async (_state, _toolName, result) => {
         this.syncWorkspaceState();
         this.save();
@@ -448,72 +715,228 @@ export class EasyCodeApp {
         return this.terminal.approve(request);
       },
       onStatus: (status) => this.terminal.info(status),
+      ...(visionCapable
+        ? {
+            attachImage: (input: {
+              threadId: string;
+              label: string;
+              absolutePath: string;
+              sourceName?: string;
+            }) => this.imageStore.importFile(
+              input.threadId,
+              input.label,
+              input.absolutePath,
+              input.sourceName,
+              this.workspace.root,
+            ),
+            discardImage: (threadId: string, attachment: ImageAttachment) =>
+              this.imageStore.remove(threadId, attachment),
+          }
+        : {}),
     });
+  }
+
+  private requireCurrentModelVision(): void {
+    requireVisionModel(this.state.provider, this.state.model);
+  }
+
+  private async captureClipboardImage(
+    index: number,
+    currentImages: readonly ImageAttachment[] = this.pendingImages,
+    signal?: AbortSignal,
+  ): Promise<ImageAttachment> {
+    this.requireCurrentModelVision();
+    if (currentImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
+      throw new Error(`A task can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
+    }
+    assertThreadImageNumberAvailable(index);
+    const data = await this.clipboardImageReader.readImage(signal);
+    const attachment = await this.imageStore.importBuffer(
+      this.state.threadId,
+      `Image #${index}`,
+      data,
+      "clipboard",
+    );
+    try {
+      validateImageAttachmentCollection([...currentImages, attachment]);
+      validateProviderImageAttachments(this.state.provider, [attachment]);
+      return attachment;
+    } catch (error) {
+      await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async queueImagePath(rawPath: string, announce: boolean): Promise<ImageAttachment> {
+    if (this.pendingImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
+      throw new Error(`A task can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
+    }
+    let normalized = rawPath.trim();
+    if (
+      normalized.length >= 2 &&
+      ((normalized.startsWith('"') && normalized.endsWith('"')) ||
+        (normalized.startsWith("'") && normalized.endsWith("'")))
+    ) {
+      normalized = normalized.slice(1, -1);
+    }
+    if (!normalized) throw new Error("Image path must not be empty.");
+    const absolutePath = path.isAbsolute(normalized)
+      ? normalized
+      : path.resolve(this.workspace.root, normalized);
+    const imageNumber = nextThreadImageNumber(this.state.messages, this.pendingImages);
+    assertThreadImageNumberAvailable(imageNumber);
+    const attachment = await this.imageStore.importFile(
+      this.state.threadId,
+      `Image #${imageNumber}`,
+      absolutePath,
+      path.basename(normalized),
+    );
+    try {
+      validateImageAttachmentCollection([...this.pendingImages, attachment]);
+      validateProviderImageAttachments(this.state.provider, [attachment]);
+    } catch (error) {
+      await this.imageStore.remove(this.state.threadId, attachment).catch(() => undefined);
+      throw error;
+    }
+    this.pendingImages.push(attachment);
+    if (announce) {
+      this.terminal.success(
+        `Queued ${attachment.label}: ${attachment.width}x${attachment.height} ${attachment.mediaType}.`,
+      );
+    }
+    return attachment;
+  }
+
+  private async discardImages(images: readonly ImageAttachment[]): Promise<void> {
+    await Promise.all(images.map((image) =>
+      this.imageStore.remove(this.state.threadId, image).catch(() => undefined),
+    ));
+  }
+
+  private async clearPendingImages(): Promise<void> {
+    const images = this.pendingImages;
+    this.pendingImages = [];
+    await this.discardImages(images);
   }
 
   private async prepareInteractiveStartup(): Promise<boolean> {
     if (this.startupInteraction === "none") return true;
 
-    let provider = this.state.provider;
+    let selection = {
+      provider: this.state.provider,
+      model: this.state.model,
+    };
     if (this.startupInteraction === "select-model") {
-      const selected = await this.terminal.selectStartupModel(
-        (["qwen", "deepseek"] as const).map((candidate) => ({
-          provider: candidate,
-          model: this.config[candidate].model,
-          apiKeyConfigured: Boolean(this.config[candidate].apiKey),
-        })),
-        provider,
-      );
+      const selected = await this.selectProviderAndModel();
       if (!selected) {
         this.terminal.info("Startup model selection canceled.");
         return false;
       }
-      provider = selected;
+      selection = selected;
     }
 
-    if (!this.config[provider].apiKey) {
-      if (!this.credentialStore) {
-        throw new Error(
-          `No ${provider} API key is configured, and the system credential store is unavailable. ` +
-            `Run easy-code config set ${provider}.api-key or set the corresponding environment variable.`,
-        );
-      }
-      this.terminal.info(
-        `No API key is configured for ${provider === "qwen" ? "Qwen" : "DeepSeek"}.`,
-      );
-      let value: string;
-      try {
-        value = await this.terminal.readSecret(
-          `Enter the ${provider === "qwen" ? "Qwen" : "DeepSeek"} API key (input is hidden): `,
-        );
-      } catch (error) {
-        if (error instanceof Error && error.message === "API key input was canceled.") {
-          this.terminal.info("API key input canceled.");
-          return false;
-        }
-        throw error;
-      }
-      const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
-      this.config[provider].apiKey = normalized;
+    if (!(await this.ensureProviderApiKey(selection.provider))) return false;
+
+    if (this.startupInteraction === "select-model") {
+      this.commitModelSelection(selection.provider, selection.model, "Selected");
+    } else {
       this.terminal.success(
-        `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
+        `Selected ${providerLabel(selection.provider)} / ${selection.model}`,
       );
     }
+    return true;
+  }
 
-    if (
-      this.startupInteraction === "select-model" &&
-      (this.state.provider !== provider || this.state.model !== this.config[provider].model)
-    ) {
-      this.state.provider = provider;
-      this.state.model = this.config[provider].model;
-      this.config.provider = provider;
-      this.dirty = true;
-      this.save();
+  private async selectProviderAndModel(): Promise<{
+    provider: ProviderName;
+    model: string;
+  } | undefined> {
+    const provider = await this.terminal.selectProvider(
+      PROVIDER_CATALOG.map((entry) => ({
+        provider: entry.provider,
+        label: entry.label,
+        apiKeyConfigured: Boolean(this.config[entry.provider].apiKey),
+      })),
+      this.state.provider,
+    );
+    if (!provider) return undefined;
+
+    const configuredModel = this.config[provider].model;
+    const initialModel = resolveCatalogModel(provider, configuredModel)?.id ??
+      DEFAULT_MODEL_IDS[provider];
+    const model = await this.terminal.selectModel(
+      providerLabel(provider),
+      modelsForProvider(provider),
+      initialModel,
+    );
+    if (!model) return undefined;
+    return { provider, model: requireCatalogModel(provider, model).id };
+  }
+
+  private async ensureProviderApiKey(provider: ProviderName): Promise<boolean> {
+    if (this.config[provider].apiKey) return true;
+    if (!this.credentialStore) {
+      throw new Error(
+        `No ${provider} API key is configured, and the system credential store is unavailable. ` +
+          `Run easy-code config set ${provider}.api-key or set the corresponding environment variable.`,
+      );
     }
+    this.terminal.info(`No API key is configured for ${providerLabel(provider)}.`);
+    let value: string;
+    try {
+      value = await this.terminal.readSecret(
+        `Enter the ${providerLabel(provider)} API key (input is hidden): `,
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "API key input was canceled.") {
+        this.terminal.info("API key input canceled.");
+        return false;
+      }
+      throw error;
+    }
+    const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
+    this.config[provider].apiKey = normalized;
     this.terminal.success(
-      `Selected ${provider === "qwen" ? "Qwen" : "DeepSeek"} / ${this.state.model}`,
+      `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
     );
     return true;
+  }
+
+  private commitModelSelection(
+    provider: ProviderName,
+    model: string,
+    verb = "Model switched to",
+  ): void {
+    const canonicalModel = requireCatalogModel(provider, model).id;
+    const previous = {
+      stateProvider: this.state.provider,
+      stateModel: this.state.model,
+      configProvider: this.config.provider,
+      configModel: this.config[provider].model,
+      dirty: this.dirty,
+    };
+    try {
+      this.state.provider = provider;
+      this.state.model = canonicalModel;
+      this.config.provider = provider;
+      this.config[provider].model = canonicalModel;
+      this.dirty = true;
+      this.save();
+    } catch (error) {
+      this.state.provider = previous.stateProvider;
+      this.state.model = previous.stateModel;
+      this.config.provider = previous.configProvider;
+      this.config[provider].model = previous.configModel;
+      this.dirty = previous.dirty;
+      throw error;
+    }
+    this.terminal.success(`${verb} ${providerLabel(provider)} / ${canonicalModel}`);
+    if (this.pendingImages.length && !modelSupportsVision(provider, canonicalModel)) {
+      this.terminal.info(
+        `${this.pendingImages.length} queued image(s) remain attached, but this model cannot receive them. ` +
+          "Choose an image-capable model before submitting the task.",
+      );
+    }
   }
 
   private effectiveConfig(): EasyCodeConfig {
@@ -597,19 +1020,36 @@ export class EasyCodeApp {
     }
   }
 
-  private async resetWorkspace(): Promise<void> {
-    this.workspace = await WorkspaceManager.create(this.config.workspaceRoot);
-  }
-
   private async newThread(): Promise<void> {
     this.save();
-    await this.resetWorkspace();
-    this.state = this.threadStore.create({
-      workspaceRoot: this.workspace.root,
+    const previousLease = this.requireThreadLease();
+    const nextWorkspace = await WorkspaceManager.create(this.config.workspaceRoot);
+    const nextState = this.threadStore.create({
+      workspaceRoot: nextWorkspace.root,
       mode: this.state.mode,
       provider: this.state.provider,
       model: this.state.model,
     });
+    let nextLease: ThreadLease | undefined;
+    try {
+      nextLease = this.threadStore.acquireThreadLease(nextState.threadId);
+      this.threadStore.releaseThreadLease(previousLease);
+    } catch (error) {
+      if (nextLease) {
+        try {
+          this.threadStore.releaseThreadLease(nextLease);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "Could not switch threads and the new thread lease could not be released",
+          );
+        }
+      }
+      throw error;
+    }
+    this.workspace = nextWorkspace;
+    this.state = nextState;
+    this.threadLease = nextLease;
     this.dirty = false;
   }
 
@@ -619,19 +1059,50 @@ export class EasyCodeApp {
       return;
     }
     this.save();
-    const recovered = this.threadStore.recover(threadId);
-    if (!samePath(recovered.workspaceRoot, this.workspace.root)) {
-      throw new Error(
-        `Thread ${threadId} belongs to ${recovered.workspaceRoot}; restart with --workspace for that directory.`,
-      );
+    const previousLease = this.requireThreadLease();
+    let nextLease: ThreadLease | undefined;
+    let recovered: SessionState;
+    let nextWorkspace: WorkspaceManager;
+    let repairedInterruptedTurn: boolean;
+    try {
+      nextLease = this.threadStore.acquireThreadLease(threadId);
+      recovered = this.threadStore.recover(threadId);
+      if (!samePath(recovered.workspaceRoot, this.workspace.root)) {
+        throw new Error(
+          `Thread ${threadId} belongs to ${recovered.workspaceRoot}; restart with --workspace for that directory.`,
+        );
+      }
+      nextWorkspace = await WorkspaceManager.create(recovered.workspaceRoot);
+      repairedInterruptedTurn = repairInterruptedTurn(this.threadStore, recovered);
+      this.threadStore.releaseThreadLease(previousLease);
+    } catch (error) {
+      if (nextLease) {
+        try {
+          this.threadStore.releaseThreadLease(nextLease);
+        } catch (cleanupError) {
+          throw new AggregateError(
+            [error, cleanupError],
+            "Could not resume the thread and its lease could not be released",
+          );
+        }
+      }
+      throw error;
     }
+    this.threadLease = nextLease;
     this.state = recovered;
+    this.workspace = nextWorkspace;
     this.config.mode = recovered.mode;
     this.config.provider = recovered.provider;
     this.config[recovered.provider].model = recovered.model;
-    await this.resetWorkspace();
-    this.dirty = repairInterruptedTurn(this.threadStore, this.state);
+    this.dirty = repairedInterruptedTurn;
     this.save();
+  }
+
+  private requireThreadLease(): ThreadLease {
+    if (!this.threadLease) {
+      throw new Error("The active thread lease is unavailable");
+    }
+    return this.threadLease;
   }
 
   private save(): void {
@@ -650,24 +1121,13 @@ export class EasyCodeApp {
         mode: this.state.mode,
         provider: this.state.provider,
         model: this.state.model,
+        vision: modelSupportsVision(this.state.provider, this.state.model),
+        pendingImages: this.pendingImages.map((image) => image.label),
         apiKeyConfigured: Boolean(providerConfig.apiKey),
         workspace: this.workspace.root,
         approvalPolicy: this.config.approvalPolicy,
         autoApprovePrompts: this.assumeYes,
         database: this.storage.databasePath,
-      })}\n`,
-    );
-  }
-
-  private printModel(): void {
-    this.terminal.write(
-      `${json({
-        provider: this.state.provider,
-        model: this.state.model,
-        keyConfigured: {
-          qwen: Boolean(this.config.qwen.apiKey),
-          deepseek: Boolean(this.config.deepseek.apiKey),
-        },
       })}\n`,
     );
   }
@@ -687,7 +1147,14 @@ export class EasyCodeApp {
   private printTools(): void {
     const tools = createDefaultTools(this.workspace).map((tool) => ({
       name: tool.name,
-      available: this.state.mode !== "plan" || tool.name === "read_file" || tool.name === "run_command",
+      available:
+        (tool.name !== "read_image" ||
+          modelSupportsVision(this.state.provider, this.state.model)) &&
+        (this.state.mode !== "plan" ||
+          tool.name === "read_file" ||
+          tool.name === "read_image" ||
+          tool.name === "run_command" ||
+          tool.name === "compact_context"),
       mutating: tool.mutating,
     }));
     this.terminal.write(`${json(tools)}\n`);
@@ -719,6 +1186,11 @@ export class EasyCodeApp {
           goal: this.state.goal,
           constraints: this.state.constraints,
           workingSummary: redactSensitiveInformation(this.state.workingSummary),
+          compactedMessageCount: this.state.compactedMessageCount,
+          activeMessageCount: Math.max(
+            0,
+            this.state.messages.length - this.state.compactedMessageCount,
+          ),
           recentMessages: this.state.messages.slice(-8).map(messagePreview),
           filesRead: [...this.state.filesRead.values()],
           changeCount: this.state.changes.length,

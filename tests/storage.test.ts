@@ -13,13 +13,16 @@ import {
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { repairInterruptedTurn } from "../src/app.js";
 import { describe, it } from "./harness.js";
 import { createStorage } from "../src/storage/index.js";
 import { SqliteDatabase } from "../src/storage/sqlite-database.js";
 import {
   deserializeChatMessage,
+  deserializeSessionState,
   EventJournal,
   serializeChatMessage,
+  serializeSessionState,
   ThreadStore,
 } from "../src/threads/index.js";
 
@@ -86,6 +89,7 @@ describe("storage", () => {
         "memories",
         "memories_fts",
         "tool_audit",
+        "thread_leases",
       ]) {
         assert.ok(tables.includes(required), `missing table ${required}`);
       }
@@ -101,7 +105,7 @@ describe("storage", () => {
               "SELECT COUNT(*) AS count FROM schema_migrations",
             )
             .get()?.count,
-          1,
+          2,
         );
       } finally {
         reopened.close();
@@ -483,6 +487,270 @@ describe("storage", () => {
     }
   });
 
+  it("serializes direct ThreadStore journal appends across processes", async () => {
+    const dataDir = temporaryDataDir();
+    const threadId = "thread_concurrent_journal";
+    const storageModule = new URL("../src/storage/index.js", import.meta.url).href;
+    const threadsModule = new URL("../src/threads/index.js", import.meta.url).href;
+    const workerCount = 4;
+    const eventsPerWorker = 12;
+    const initial = createStorage(dataDir);
+    try {
+      new ThreadStore(initial).create({
+        threadId,
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
+    } finally {
+      initial.close();
+    }
+
+    const childScript = [
+      "const { createStorage } = await import(process.argv[1]);",
+      "const { ThreadStore } = await import(process.argv[2]);",
+      "const storage = createStorage(process.argv[3]);",
+      "const threads = new ThreadStore(storage);",
+      "for (let index = 0; index < Number(process.argv[6]); index += 1) {",
+      "  threads.appendEvent(process.argv[4], {",
+      "    type: 'concurrent_probe',",
+      "    payload: { worker: process.argv[5], index },",
+      "  });",
+      "}",
+      "storage.close();",
+    ].join("\n");
+
+    try {
+      const workers = Array.from({ length: workerCount }, (_, index) =>
+        spawn(
+          process.execPath,
+          [
+            "--input-type=module",
+            "-e",
+            childScript,
+            storageModule,
+            threadsModule,
+            dataDir,
+            threadId,
+            String(index),
+            String(eventsPerWorker),
+          ],
+          { stdio: ["ignore", "ignore", "pipe"] },
+        ),
+      );
+      const results = await Promise.all(workers.map(async (child) => {
+        let stderr = "";
+        child.stderr?.on("data", (chunk: Buffer | string) => {
+          stderr += chunk.toString();
+        });
+        const [code, signal] = await once(child, "exit") as [
+          number | null,
+          NodeJS.Signals | null,
+        ];
+        return { code, signal, stderr };
+      }));
+      for (const result of results) {
+        assert.equal(
+          result.code,
+          0,
+          `journal worker failed (${String(result.signal)}):\n${result.stderr}`,
+        );
+      }
+
+      const reopened = createStorage(dataDir);
+      try {
+        const events = new ThreadStore(reopened).journal(threadId).read();
+        const expectedCount = 1 + workerCount * eventsPerWorker;
+        assert.equal(events.length, expectedCount);
+        assert.deepEqual(
+          events.map((event) => event.sequence),
+          Array.from({ length: expectedCount }, (_, index) => index + 1),
+        );
+        assert.equal(
+          reopened.db
+            .prepare<[string], { count: number }>(
+              "SELECT COUNT(*) AS count FROM item_index WHERE thread_id = ?",
+            )
+            .get(threadId)?.count,
+          expectedCount,
+        );
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces exclusive thread leases and releases them normally", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({
+        threadId: "thread_lease_normal",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
+      const first = threads.acquireThreadLease("thread_lease_normal");
+      assert.throws(
+        () => threads.acquireThreadLease("thread_lease_normal"),
+        /already active.*PID/iu,
+      );
+      threads.releaseThreadLease(first);
+      const second = threads.acquireThreadLease("thread_lease_normal");
+      assert.notEqual(second.ownerToken, first.ownerToken);
+      threads.releaseThreadLease(second);
+      assert.equal(
+        storage.db
+          .prepare<[], { count: number }>(
+            "SELECT COUNT(*) AS count FROM thread_leases",
+          )
+          .get()?.count,
+        0,
+      );
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("blocks a live cross-process thread owner and recovers after that process dies", async () => {
+    const dataDir = temporaryDataDir();
+    const threadId = "thread_lease_process";
+    const storageModule = new URL("../src/storage/index.js", import.meta.url).href;
+    const threadsModule = new URL("../src/threads/index.js", import.meta.url).href;
+    const setup = createStorage(dataDir);
+    try {
+      new ThreadStore(setup).create({
+        threadId,
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
+    } finally {
+      setup.close();
+    }
+    const childScript = [
+      "const { createStorage } = await import(process.argv[1]);",
+      "const { ThreadStore } = await import(process.argv[2]);",
+      "const storage = createStorage(process.argv[3]);",
+      "new ThreadStore(storage).acquireThreadLease(process.argv[4]);",
+      "process.stdout.write('EASY_CODE_THREAD_LEASED\\n');",
+      "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);",
+    ].join("\n");
+    const child = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        childScript,
+        storageModule,
+        threadsModule,
+        dataDir,
+        threadId,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let contender: ReturnType<typeof createStorage> | undefined;
+    try {
+      await waitForOutput(child, "EASY_CODE_THREAD_LEASED\n");
+      contender = createStorage(dataDir);
+      const threads = new ThreadStore(contender);
+      assert.throws(
+        () => threads.acquireThreadLease(threadId),
+        new RegExp(`already active.*PID ${child.pid}`, "iu"),
+      );
+
+      const exited = once(child, "exit");
+      assert.equal(child.kill(), true);
+      await exited;
+      const recovered = threads.acquireThreadLease(threadId);
+      assert.equal(recovered.ownerPid, process.pid);
+      threads.releaseThreadLease(recovered);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill();
+        await exited;
+      }
+      contender?.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("recovers a dead-PID lease without allowing the stale token to delete its replacement", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({
+        threadId: "thread_lease_recovery",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
+      const exited = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+      assert.equal(exited.status, 0);
+      assert.ok(exited.pid);
+      const stale = threads.acquireThreadLease("thread_lease_recovery", {
+        processId: exited.pid,
+      });
+      const replacement = threads.acquireThreadLease("thread_lease_recovery", {
+        isProcessAlive: (processId) => {
+          assert.equal(processId, exited.pid);
+          return false;
+        },
+      });
+
+      assert.throws(
+        () => threads.releaseThreadLease(stale),
+        /ownership no longer matches/u,
+      );
+      assert.throws(
+        () => threads.acquireThreadLease("thread_lease_recovery"),
+        /already active/u,
+      );
+      threads.releaseThreadLease(replacement);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not steal a lease owned on another host", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({
+        threadId: "thread_lease_remote",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen-test",
+      });
+      const remote = threads.acquireThreadLease("thread_lease_remote", {
+        ownerHostname: "remote-host.example.invalid",
+      });
+      assert.throws(
+        () => threads.acquireThreadLease("thread_lease_remote", {
+          isProcessAlive: () => false,
+        }),
+        /already active.*remote-host/iu,
+      );
+      threads.releaseThreadLease(remote);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("serializes ChatMessage and recovers threads from the journal", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
@@ -515,6 +783,7 @@ describe("storage", () => {
       });
       state.mode = "code";
       state.workingSummary = "verified summary";
+      state.compactedMessageCount = 2;
       state.filesRead.set("src/a.ts", {
         path: "src/a.ts",
         hash: "abc",
@@ -532,6 +801,12 @@ describe("storage", () => {
       const recovered = threads.recover("thread_restore");
       assert.equal(recovered.mode, "code");
       assert.equal(recovered.workingSummary, "verified summary");
+      assert.equal(recovered.compactedMessageCount, 2);
+      const legacyCheckpoint = serializeSessionState(recovered) as unknown as Record<string, unknown>;
+      delete legacyCheckpoint.compactedMessageCount;
+      const migratedLegacyCheckpoint = deserializeSessionState(legacyCheckpoint);
+      assert.equal(migratedLegacyCheckpoint.compactedMessageCount, 0);
+      assert.equal(migratedLegacyCheckpoint.workingSummary, "");
       assert.equal(recovered.filesRead.get("src/a.ts")?.hash, "abc");
       assert.deepEqual(recovered.messages.slice(-2), [
         { role: "user", content: "continue" },
@@ -543,7 +818,11 @@ describe("storage", () => {
       // thread. A journal recovery rebuilds the missing projection rows.
       storage.db.prepare("DELETE FROM threads WHERE id = ?").run("thread_restore");
       assert.equal(threads.list().length, 0);
+      const rebuiltLease = threads.acquireThreadLease("thread_restore");
+      threads.releaseThreadLease(rebuiltLease);
+      assert.equal(threads.list()[0]?.threadId, "thread_restore");
       assert.equal(threads.rebuildProjection("thread_restore").workingSummary, "verified summary");
+      assert.equal(threads.rebuildProjection("thread_restore").compactedMessageCount, 2);
       assert.equal(threads.list()[0]?.threadId, "thread_restore");
 
       const indexed = storage.db
@@ -681,6 +960,16 @@ describe("storage", () => {
         },
       });
       threads.appendEvent("thread_bounded_tool", {
+        type: "context.compacted",
+        turnId,
+        phase: "completed",
+        payload: {
+          summary: "Objective: finish after restoring this compacted thread.",
+          compactedMessageCount: 3,
+          summaryChars: 55,
+        },
+      });
+      threads.appendEvent("thread_bounded_tool", {
         type: "message.assistant",
         turnId,
         payload: { role: "assistant", content: "done" },
@@ -693,12 +982,98 @@ describe("storage", () => {
 
       const recovered = threads.recover("thread_bounded_tool");
       assert.deepEqual(recovered.messages[2], boundedToolMessage);
+      assert.equal(
+        recovered.workingSummary,
+        "Objective: finish after restoring this compacted thread.",
+      );
+      assert.equal(recovered.compactedMessageCount, 3);
       assert.equal(recovered.activeTurnId, undefined);
       assert.equal(
         storage.db
           .prepare<[string], { status: string }>("SELECT status FROM turns WHERE id = ?")
           .get(turnId)?.status,
         "completed",
+      );
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs missing tool results before closing an interrupted turn", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({
+        threadId: "thread_interrupted_tools",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+      });
+      const turnId = "turn_interrupted_tools";
+      threads.appendEvent("thread_interrupted_tools", {
+        type: "message.user",
+        turnId,
+        payload: {
+          content: "inspect files",
+          message: { role: "user", content: "inspect files" },
+        },
+      });
+      threads.appendEvent("thread_interrupted_tools", {
+        type: "message.assistant",
+        turnId,
+        payload: {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_completed",
+              type: "function",
+              function: { name: "read_file", arguments: "{}" },
+            },
+            {
+              id: "call_missing",
+              type: "function",
+              function: { name: "read_file", arguments: "{}" },
+            },
+          ],
+        },
+      });
+      threads.appendEvent("thread_interrupted_tools", {
+        type: "tool.result",
+        turnId,
+        payload: {
+          callId: "call_completed",
+          tool: "read_file",
+          message: {
+            role: "tool",
+            tool_call_id: "call_completed",
+            name: "read_file",
+            content: '{"ok":true}',
+          },
+        },
+      });
+
+      const state = threads.recover("thread_interrupted_tools");
+      assert.equal(repairInterruptedTurn(threads, state), true);
+      assert.equal(state.activeTurnId, undefined);
+      assert.equal(state.messages.at(-2)?.role, "tool");
+      const repairedTool = state.messages.at(-2);
+      if (repairedTool?.role === "tool") {
+        assert.equal(repairedTool.tool_call_id, "call_missing");
+        assert.match(repairedTool.content, /interrupted/u);
+      }
+      assert.equal(state.messages.at(-1)?.role, "assistant");
+
+      const recovered = threads.recover("thread_interrupted_tools");
+      assert.equal(recovered.activeTurnId, undefined);
+      assert.equal(
+        recovered.messages.some(
+          (message) => message.role === "tool" && message.tool_call_id === "call_missing",
+        ),
+        true,
       );
     } finally {
       storage.close();

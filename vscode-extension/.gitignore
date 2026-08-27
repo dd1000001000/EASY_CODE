@@ -1,0 +1,4 @@
+node_modules/
+*.vsix
+!easy-code-vscode.vsix
+npm-debug.log*
