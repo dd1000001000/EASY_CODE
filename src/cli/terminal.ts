@@ -105,6 +105,7 @@ export class Terminal {
         index: number,
         signal?: AbortSignal,
       ) => Promise<ImageAttachment>;
+      captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
     },
   ): Promise<PromptSubmission | null> {
     if (this.closed) return null;
@@ -130,6 +131,7 @@ export class Terminal {
         initialImageCount: options.initialImageCount,
         signal: promptController.signal,
         captureImage: options.captureImage,
+        captureText: options.captureText,
         onShowThinking: (id) => {
           const shown = id === "last"
             ? this.showLatestReasoning()

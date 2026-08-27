@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "extensionVersion": "0.1.1",
+  "extensionVersion": "0.1.2",
   "vsix": {
     "file": "easy-code-vscode.vsix",
-    "bytes": 10527,
-    "sha256": "d2138582e8292f632eecb9d076fa1c7155b44abc7d22109fff02268eca6700d9"
+    "bytes": 10729,
+    "sha256": "8e8fc121ace17536f8c81a55fb494065ce0baea21b5807fc7164c28fabb66122"
   },
   "sourceHashAlgorithm": "sha256-utf8-normalized-lf",
   "sources": {
     ".vscodeignore": "6e0bf1b536f157ecd380ccfc25231a1539abe96c978d82ef30839852c9f112b5",
     "LICENSE": "1a38a0a349b719ae552d87eb9d02e78a1a3e40e60049b9a24b6d4176633cded0",
     "README.md": "d7196f94b0343b25b5d7802f7211e12a392e702133453080bf059bcdef721bd9",
-    "extension.js": "4f6a543ddc3e3e42003874440fe525efd69fff43845091639fc4dbc8b198a25b",
+    "extension.js": "42a6cb090bf4a088974b33598d11b06b5c13b22795e21929e24b995566df28e2",
     "lib/clipboard.js": "0386b6282982889433daa01fe93f8fef068d8c73e784d1d0da5d5184afbb59f5",
     "lib/command-detection.js": "2c4f71dd2d7a16532d7fa6dcfb4beb4621d8b6f788210a82cfe98ccf5ea65f38",
-    "package.json": "a9818c6469c3c9e4ae060b5f67708a5658b81849b4cc16ca07e6b84153452f29"
+    "package.json": "5a8d4c572173367121d2ae0433e4055d1a68f1df9e6bbdf18ed5886fe85445c1"
   }
 }

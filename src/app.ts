@@ -401,6 +401,8 @@ export class EasyCodeApp {
             promptImages.push(attachment);
             return attachment;
           },
+          captureText: async (signal) =>
+            this.clipboardImageReader.readText?.(signal),
         });
       } catch (error) {
         await this.discardImages(promptImages);

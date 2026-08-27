@@ -16,6 +16,8 @@ import { MAX_IMAGE_BYTES } from "./image-store.js";
 
 export interface ClipboardImageReader {
   readImage(signal?: AbortSignal): Promise<Buffer>;
+  /** Optional text fallback for ambiguous native paste key sequences. */
+  readText?(signal?: AbortSignal): Promise<string | undefined>;
 }
 
 export interface ClipboardCommandOptions {
@@ -112,6 +114,48 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
     }
   }
 
+  async readText(signal?: AbortSignal): Promise<string | undefined> {
+    throwIfAborted(signal);
+    const privateDirectory = await mkdtemp(
+      path.join(os.tmpdir(), "easy-code-clipboard-"),
+    );
+    const execution: ClipboardExecutionContext = {
+      cwd: privateDirectory,
+      env: createClipboardEnvironment(
+        this.platform,
+        this.sourceEnv,
+        privateDirectory,
+        this.currentDirectory,
+      ),
+      signal,
+    };
+    try {
+      let data: Buffer;
+      if (this.platform === "win32") {
+        data = await this.readPowerShellClipboardText(
+          await this.resolveWindowsPowerShell(),
+          execution,
+        );
+      } else if (this.platform === "darwin") {
+        data = await this.runCommand(
+          await this.resolveFixedProgram("/usr/bin/pbpaste"),
+          [],
+          this.commandOptions(1024 * 1024, execution),
+        );
+      } else if (this.platform === "linux") {
+        data = this.sourceEnv.WSL_DISTRO_NAME || this.sourceEnv.WSL_INTEROP
+          ? await this.tryWslTextThenLinux(execution)
+          : await this.readLinuxClipboardText(execution);
+      } else {
+        return undefined;
+      }
+      const text = data.toString("utf8").replace(/^\uFEFF/u, "");
+      return text || undefined;
+    } finally {
+      await rm(privateDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
   private async tryWslThenLinux(execution: ClipboardExecutionContext): Promise<Buffer> {
     try {
       const program = await this.resolveWslPowerShell();
@@ -154,6 +198,24 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
       program,
       ["-STA", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
       this.commandOptions(MAX_IMAGE_BYTES, execution),
+    );
+  }
+
+  private readPowerShellClipboardText(
+    program: string,
+    execution: ClipboardExecutionContext,
+  ): Promise<Buffer> {
+    const script = [
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$text = [System.Windows.Forms.Clipboard]::GetText()",
+      "if ([string]::IsNullOrEmpty($text)) { exit 3 }",
+      "$bytes = [System.Text.Encoding]::UTF8.GetBytes($text)",
+      "[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
+    ].join("; ");
+    return this.runCommand(
+      program,
+      ["-STA", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+      this.commandOptions(1024 * 1024, execution),
     );
   }
 
@@ -227,6 +289,62 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
     }
     throw new Error(
       "Unable to read an image from the Linux clipboard. Install wl-clipboard " +
+        "for Wayland or xclip for X11. " + (errors.at(-1) ?? ""),
+    );
+  }
+
+  private async tryWslTextThenLinux(execution: ClipboardExecutionContext): Promise<Buffer> {
+    try {
+      return await this.readPowerShellClipboardText(
+        await this.resolveWslPowerShell(),
+        execution,
+      );
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      return this.readLinuxClipboardText(execution);
+    }
+  }
+
+  private async readLinuxClipboardText(execution: ClipboardExecutionContext): Promise<Buffer> {
+    const errors: string[] = [];
+    try {
+      const program = await this.resolveUnixHelper("wl-paste");
+      const types = await this.runCommand(
+        program,
+        ["--list-types"],
+        this.commandOptions(64 * 1024, execution),
+      );
+      const mediaType = chooseClipboardTextType(types.toString("utf8"));
+      if (!mediaType) throw new Error("The Wayland clipboard does not contain text.");
+      return await this.runCommand(
+        program,
+        ["--no-newline", "--type", mediaType],
+        this.commandOptions(1024 * 1024, execution),
+      );
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      errors.push(errorMessage(error));
+    }
+    try {
+      const program = await this.resolveUnixHelper("xclip");
+      const types = await this.runCommand(
+        program,
+        ["-selection", "clipboard", "-t", "TARGETS", "-o"],
+        this.commandOptions(64 * 1024, execution),
+      );
+      const mediaType = chooseClipboardTextType(types.toString("utf8"));
+      if (!mediaType) throw new Error("The X11 clipboard does not contain text.");
+      return await this.runCommand(
+        program,
+        ["-selection", "clipboard", "-t", mediaType, "-o"],
+        this.commandOptions(1024 * 1024, execution),
+      );
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      errors.push(errorMessage(error));
+    }
+    throw new Error(
+      "Unable to read text from the Linux clipboard. Install wl-clipboard " +
         "for Wayland or xclip for X11. " + (errors.at(-1) ?? ""),
     );
   }
@@ -354,6 +472,27 @@ export function chooseClipboardMediaType(value: string): string | undefined {
   return ["image/png", "image/jpeg", "image/webp", "image/gif"].find((type) =>
     available.has(type),
   );
+}
+
+export function chooseClipboardTextType(value: string): string | undefined {
+  const available = new Map(
+    value
+      .split(/[\r\n,]+/u)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => [entry.toLowerCase(), entry]),
+  );
+  for (const candidate of [
+    "text/plain;charset=utf-8",
+    "utf8_string",
+    "text/plain",
+    "text",
+    "string",
+  ]) {
+    const original = available.get(candidate);
+    if (original) return original;
+  }
+  return undefined;
 }
 
 export function createClipboardEnvironment(

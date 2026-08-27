@@ -15,6 +15,7 @@ const {
   resolveExecutable,
 } = require("../lib/clipboard");
 const {
+  clipboardContainsText,
   createThinkingLinkProvider,
   findThinkingMarkers,
   showThinkingSequence,
@@ -103,6 +104,13 @@ test("parses Linux clipboard MIME targets", () => {
   for (const unsupported of ["image/jpg", "image/bmp", "image/tiff", "image/heic", "image/avif"]) {
     assert.equal(parseLinuxClipboardTypes(`${unsupported}\n`), false);
   }
+});
+
+test("prefers native text paste when the clipboard contains text", () => {
+  assert.equal(clipboardContainsText("copied source code"), true);
+  assert.equal(clipboardContainsText("   "), true);
+  assert.equal(clipboardContainsText(""), false);
+  assert.equal(clipboardContainsText(undefined), false);
 });
 
 test("uses fixed platform helpers without a shell", async () => {
