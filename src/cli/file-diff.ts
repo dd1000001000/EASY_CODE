@@ -226,7 +226,12 @@ export function renderFileDiff(
   let output = palette.bold(`\nFile changed: ${safePath}\n`);
 
   if (presentation.before === "" && presentation.after === "") {
-    return output + palette.dim("[Empty file created]\n\n");
+    const description = presentation.operation === "delete"
+      ? "[Empty file deleted]"
+      : presentation.operation === "update"
+        ? "[Empty file unchanged]"
+        : "[Empty file created]";
+    return output + palette.dim(`${description}\n\n`);
   }
 
   let patch: ParsedDiff | undefined;

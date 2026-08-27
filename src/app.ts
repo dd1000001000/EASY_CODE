@@ -37,8 +37,10 @@ import {
   validateImageAttachmentCollection,
   type ClipboardImageReader,
 } from "./images/index.js";
+import { LocalEmbeddingModel } from "./memory/embedding-model.js";
 import { MemoryManager } from "./memory/memory-manager.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
+import { MemoryVectorIndex } from "./memory/vector-index.js";
 import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
@@ -202,7 +204,23 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.state = state;
     this.threadLease = threadLease;
-    this.memoryManager = new MemoryManager(storage);
+    // The postinstall hook and runtime intentionally share the same stable
+    // per-user model cache, independent of workspace/user config layering.
+    const embeddingModel = new LocalEmbeddingModel();
+    const vectorIndex = new MemoryVectorIndex(storage, embeddingModel);
+    let reportedVectorFailure = false;
+    this.memoryManager = new MemoryManager(storage, {
+      vectorIndex,
+      onVectorError: (error) => {
+        if (reportedVectorFailure) return;
+        reportedVectorFailure = true;
+        const detail = error instanceof Error ? error.message : String(error);
+        terminal.info(
+          `Semantic memory search is unavailable (${detail}). ` +
+          "EASY CODE is using lexical fallback; reinstall without --ignore-scripts to repair the local embedding model.",
+        );
+      },
+    });
     this.threadStore = new ThreadStore(storage);
     this.imageStore = new ImageStore(config.dataDir);
   }
@@ -615,7 +633,6 @@ export class EasyCodeApp {
     validateImageAttachmentCollection(images);
     validateProviderImageAttachments(this.state.provider, images);
     this.dirty = true;
-    const turnStartedAt = Date.now();
     const controller = new AbortController();
     let interruptCount = 0;
     const onInterrupt = (): void => {
@@ -642,10 +659,6 @@ export class EasyCodeApp {
       });
 
       this.syncWorkspaceState();
-      const memoryInput = images.length
-        ? `${userInput}\n[${images.length} image attachment(s)]`
-        : userInput;
-      this.captureLongTermMemory(memoryInput, result, turnStartedAt);
       this.terminal.write(`\n${result.text.trim()}\n\n`);
       return result;
     } finally {
@@ -664,7 +677,7 @@ export class EasyCodeApp {
       { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
     );
     const workspaceId = workspaceIdFromRoot(this.workspace.root);
-    const tools = createDefaultTools(this.workspace).filter(
+    const tools = createDefaultTools(this.workspace, this.memoryManager).filter(
       (tool) => tool.name !== "read_image" || visionCapable,
     );
 
@@ -680,8 +693,16 @@ export class EasyCodeApp {
           memories,
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      searchMemories: async (query) =>
-        this.memoryManager.search(workspaceId, query).map((memory) => memory.content),
+      searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
+      commitMemoryMutations: async (input) =>
+        this.memoryManager.applyModelMutationsWithEmbeddings({
+          workspaceRoot: input.workspaceRoot,
+          threadId: input.threadId,
+          turnId: input.turnId,
+          outcome: input.outcome,
+          userInput: input.userInput,
+          mutations: input.mutations,
+        }),
       appendEvent: async (event) => {
         const { threadId, ...input } = event;
         this.threadStore.appendEvent(threadId, input);
@@ -951,42 +972,6 @@ export class EasyCodeApp {
     return config;
   }
 
-  private captureLongTermMemory(
-    userInput: string,
-    result: AgentRunResult,
-    turnStartedAt: number,
-  ): void {
-    try {
-      const hasAssistantEvidence =
-        this.workspace.getReadVersions().some(
-          (version) => Date.parse(version.readAt) >= turnStartedAt,
-        ) ||
-        this.state.changes.some(
-          (change) =>
-            Date.parse(change.timestamp) >= turnStartedAt &&
-            change.status === "verified",
-        ) ||
-        this.state.commands.some(
-          (command) =>
-            Date.parse(command.timestamp) >= turnStartedAt &&
-            command.status === "exited" &&
-            command.exitCode === 0,
-        );
-      this.memoryManager.captureFromTurn({
-        workspaceRoot: this.workspace.root,
-        threadId: this.state.threadId,
-        turnId: result.turnId,
-        userMessage: userInput,
-        assistantMessage: result.text,
-        assistantEvidence: hasAssistantEvidence,
-        outcome: result.reason,
-        completed: result.reason === "success" || result.reason === "planned",
-      });
-    } catch (error) {
-      this.terminal.info(`Long-term memory extraction skipped: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   private syncWorkspaceState(): void {
     const currentVersions = new Map(
       this.workspace.getReadVersions().map((version) => [version.path, version]),
@@ -1145,7 +1130,7 @@ export class EasyCodeApp {
   }
 
   private printTools(): void {
-    const tools = createDefaultTools(this.workspace).map((tool) => ({
+    const tools = createDefaultTools(this.workspace, this.memoryManager).map((tool) => ({
       name: tool.name,
       available:
         (tool.name !== "read_image" ||
@@ -1154,7 +1139,8 @@ export class EasyCodeApp {
           tool.name === "read_file" ||
           tool.name === "read_image" ||
           tool.name === "run_command" ||
-          tool.name === "compact_context"),
+          tool.name === "compact_context" ||
+          tool.name === "manage_memory"),
       mutating: tool.mutating,
     }));
     this.terminal.write(`${json(tools)}\n`);

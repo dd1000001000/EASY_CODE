@@ -143,6 +143,21 @@ describe("file diff UI", () => {
     assert.doesNotMatch(output, /│ \+/u);
   });
 
+  it("distinguishes deleting an empty file from creating one", () => {
+    const output = renderFileDiff(
+      {
+        type: "file_diff",
+        operation: "delete",
+        path: "empty.txt",
+        before: "",
+        after: "",
+      },
+      { color: false },
+    );
+    assert.match(output, /Empty file deleted/u);
+    assert.doesNotMatch(output, /Empty file created/u);
+  });
+
   it("honors NO_COLOR even for a TTY-like output", () => {
     class TtyOutput extends PassThrough {
       readonly isTTY = true;

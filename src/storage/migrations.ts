@@ -133,6 +133,98 @@ const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE memory_embeddings (
+        memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+        pooling TEXT NOT NULL,
+        embedding_version INTEGER NOT NULL CHECK(embedding_version > 0),
+        content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+        embedding BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK(length(embedding) = dimensions * 4)
+      );
+
+      CREATE INDEX memory_embeddings_model_idx
+        ON memory_embeddings(model, revision, dimensions, pooling, embedding_version);
+
+      CREATE TABLE memory_vector_state (
+        workspace_id TEXT PRIMARY KEY,
+        generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TRIGGER memories_vector_state_insert AFTER INSERT ON memories BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        VALUES (new.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER memories_vector_state_update
+      AFTER UPDATE OF workspace_id, category, content, normalized_content, confidence, status
+      ON memories BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        VALUES (new.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        SELECT old.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE old.workspace_id <> new.workspace_id
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER memories_vector_state_delete AFTER DELETE ON memories BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        VALUES (old.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER memory_embeddings_vector_state_insert
+      AFTER INSERT ON memory_embeddings BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        SELECT workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM memories WHERE id = new.memory_id
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER memory_embeddings_vector_state_update
+      AFTER UPDATE OF model, revision, dimensions, pooling, embedding_version,
+                      content_hash, embedding
+      ON memory_embeddings BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        SELECT workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM memories WHERE id = new.memory_id
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER memory_embeddings_vector_state_delete
+      AFTER DELETE ON memory_embeddings BEGIN
+        INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+        SELECT workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM memories WHERE id = old.memory_id
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          generation = memory_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

@@ -7,6 +7,8 @@ import type {
   CommandAuditEntry,
   EventRecord,
   ImageAttachment,
+  LongTermMemory,
+  MemoryMutationRequest,
   ModelProvider,
   SessionState,
   ToolExecutionResult,
@@ -26,6 +28,9 @@ import { createId } from "../utils/ids.js";
 import { jsonForModel, safeJsonParse } from "../utils/json.js";
 import { determineAutoRoute } from "./auto-router.js";
 
+const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
+const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
+
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   tools: AgentTool[];
@@ -33,10 +38,18 @@ export interface AgentRuntimeDependencies {
   buildSystemPrompt: (input: {
     mode: AgentMode;
     workspaceSummary: string;
-    memories: string[];
+    memories: ReadonlyArray<Readonly<LongTermMemory>>;
   }) => Promise<string>;
   getWorkspaceSummary: () => Promise<string>;
-  searchMemories: (query: string) => Promise<string[]>;
+  searchMemories: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
+  commitMemoryMutations?: (input: {
+    workspaceRoot: string;
+    threadId: string;
+    turnId: string;
+    outcome: "success" | "planned";
+    userInput: string;
+    mutations: readonly MemoryMutationRequest[];
+  }) => Promise<{ applied: number; memoryIds: string[] }>;
   appendEvent: (event: Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">) => Promise<void>;
   requestApproval: ApprovalHandler;
   recordCommand?: (turnId: string, entry: CommandAuditEntry) => void;
@@ -81,7 +94,8 @@ function availableTools(tools: AgentTool[], mode: AgentMode): AgentTool[] {
       tool.name === "read_file" ||
       tool.name === "read_image" ||
       tool.name === "run_command" ||
-      tool.name === "compact_context",
+      tool.name === "compact_context" ||
+      tool.name === "manage_memory",
   );
 }
 
@@ -107,6 +121,10 @@ export class AgentRuntime {
     validateImageAttachmentCollection(inputImages);
     validateProviderImageAttachments(this.dependencies.provider.name, inputImages);
     const turnId = createId("turn");
+    const memoryContext = {
+      userInput,
+      mutations: [] as MemoryMutationRequest[],
+    };
     state.activeTurnId = turnId;
     state.goal = userInput || "Analyze the attached image(s).";
     state.updatedAt = new Date().toISOString();
@@ -162,9 +180,18 @@ export class AgentRuntime {
       toolMap.set(tool.name, tool);
     }
 
-    for (let step = 1; step <= options.maxSteps; step += 1) {
+    let stepLimit = options.maxSteps;
+    let memoryFinalizationAllowanceGranted = false;
+    for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
-        return this.finish(state, turnId, "The task was interrupted by the user.", "interrupted", step - 1);
+        return this.finish(
+          state,
+          turnId,
+          "The task was interrupted by the user.",
+          "interrupted",
+          step - 1,
+          memoryContext,
+        );
       }
 
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
@@ -181,7 +208,7 @@ export class AgentRuntime {
 
       const enabledTools = [...toolMap.values()];
       this.dependencies.onStatus?.(
-        `Step ${step}/${options.maxSteps}: requesting ${this.dependencies.provider.model}`
+        `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
       );
 
       let response;
@@ -208,7 +235,8 @@ export class AgentRuntime {
           turnId,
           interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
           interrupted ? "interrupted" : "failed",
-          step
+          step,
+          memoryContext,
         );
       }
 
@@ -236,7 +264,7 @@ export class AgentRuntime {
         this.dependencies.onText?.(text);
         const reason = effectiveMode === "plan" ? "planned" : "success";
         const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
-        return this.finish(state, turnId, `${prefix}${text}`, reason, step);
+        return this.finish(state, turnId, `${prefix}${text}`, reason, step, memoryContext);
       }
 
       const compactContextIsExclusive =
@@ -244,6 +272,7 @@ export class AgentRuntime {
       const compactContextHasNewHistory =
         state.messages.length - 1 > state.compactedMessageCount;
       const stepImageAttachments: ImageAttachment[] = [];
+      let successfulMemoryToolCall = false;
 
       for (const call of calls) {
         const toolName = call.function.name as ToolName;
@@ -344,6 +373,19 @@ export class AgentRuntime {
           }
         }
 
+        if (
+          toolName === "manage_memory" &&
+          result.ok &&
+          result.memoryMutation &&
+          memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
+        ) {
+          result = {
+            ok: false,
+            summary: `A turn can stage at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory changes.`,
+            error: "memory_mutation_limit_reached",
+          };
+        }
+
         const toolMessage: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
@@ -385,6 +427,12 @@ export class AgentRuntime {
               `into ${compaction.summaryChars} characters.`,
           );
         }
+        if (toolName === "manage_memory" && result.ok && result.memoryMutation) {
+          memoryContext.mutations.push(result.memoryMutation);
+        }
+        if (toolName === "manage_memory" && result.ok) {
+          successfulMemoryToolCall = true;
+        }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
       }
 
@@ -408,14 +456,26 @@ export class AgentRuntime {
         });
         await this.dependencies.commitImages?.(state.threadId, stepImageAttachments);
       }
+      if (
+        successfulMemoryToolCall &&
+        step === stepLimit &&
+        !memoryFinalizationAllowanceGranted
+      ) {
+        stepLimit += MEMORY_FINALIZATION_STEP_ALLOWANCE;
+        memoryFinalizationAllowanceGranted = true;
+        this.dependencies.onStatus?.(
+          `Reserved ${MEMORY_FINALIZATION_STEP_ALLOWANCE} finalization step(s) after memory maintenance.`,
+        );
+      }
     }
 
     return this.finish(
       state,
       turnId,
-      `Reached the maximum of ${options.maxSteps} steps before the task could be confirmed complete.`,
+      `Reached the maximum of ${stepLimit} steps before the task could be confirmed complete.`,
       "limit_reached",
-      options.maxSteps
+      stepLimit,
+      memoryContext,
     );
     } catch (error) {
       const interrupted = Boolean(options.signal?.aborted);
@@ -434,7 +494,8 @@ export class AgentRuntime {
             turnId,
             result.text,
             result.reason,
-            result.steps
+            result.steps,
+            memoryContext,
           );
         } catch {
           state.activeTurnId = undefined;
@@ -450,11 +511,16 @@ export class AgentRuntime {
     turnId: string,
     text: string,
     reason: AgentRunResult["reason"],
-    steps: number
+    steps: number,
+    memoryContext: {
+      userInput: string;
+      mutations: readonly MemoryMutationRequest[];
+    },
   ): Promise<AgentRunResult> {
     state.activeTurnId = undefined;
     state.updatedAt = new Date().toISOString();
     const lastMessage = state.messages[state.messages.length - 1];
+    const result = { text, reason, steps, threadId: state.threadId, turnId };
     if (
       !lastMessage ||
       lastMessage.role !== "assistant" ||
@@ -471,7 +537,6 @@ export class AgentRuntime {
         payload: syntheticMessage
       });
     }
-    const result = { text, reason, steps, threadId: state.threadId, turnId };
     await this.dependencies.appendEvent({
       threadId: state.threadId,
       turnId,
@@ -479,6 +544,51 @@ export class AgentRuntime {
       phase: "completed",
       payload: { reason, steps }
     });
+
+    if (
+      memoryContext.mutations.length > 0 &&
+      this.dependencies.commitMemoryMutations &&
+      (reason === "success" || reason === "planned")
+    ) {
+      try {
+        const committed = await this.dependencies.commitMemoryMutations({
+          workspaceRoot: state.workspaceRoot,
+          threadId: state.threadId,
+          turnId,
+          outcome: reason,
+          userInput: memoryContext.userInput,
+          mutations: memoryContext.mutations,
+        });
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "memory.committed",
+          phase: "completed",
+          payload: committed,
+        }).catch(() => undefined);
+        this.dependencies.onStatus?.(
+          `Committed ${committed.applied} long-term memory change(s).`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "memory.commit_failed",
+          phase: "failed",
+          payload: { message },
+        }).catch(() => undefined);
+        this.dependencies.onStatus?.(`Long-term memory maintenance was not saved: ${message}`);
+      }
+    } else if (memoryContext.mutations.length > 0) {
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "memory.discarded",
+        phase: "completed",
+        payload: { count: memoryContext.mutations.length, reason },
+      }).catch(() => undefined);
+    }
     return result;
   }
 }

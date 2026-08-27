@@ -42,7 +42,15 @@ describe("workspace file tools", () => {
     await withWorkspace(async (_root, manager) => {
       assert.deepEqual(
         createDefaultTools(manager).map((tool) => tool.name),
-        ["read_file", "read_image", "create_file", "update_file", "run_command", "compact_context"],
+        [
+          "read_file",
+          "read_image",
+          "create_file",
+          "update_file",
+          "delete_file",
+          "run_command",
+          "compact_context",
+        ],
       );
     });
   });
@@ -139,6 +147,7 @@ describe("workspace file tools", () => {
       assert.equal(second.ok, false);
       assert.deepEqual(first.presentation, {
         type: "file_diff",
+        operation: "create",
         path: "src/new.ts",
         before: "",
         after: "export {};\n",
@@ -168,6 +177,7 @@ describe("workspace file tools", () => {
       assert.equal(updated.ok, true);
       assert.deepEqual(updated.presentation, {
         type: "file_diff",
+        operation: "update",
         path: "code.ts",
         before: "const value = 1;\n",
         after: "const value = 2;\n",

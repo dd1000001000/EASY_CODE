@@ -94,6 +94,7 @@ export class CreateFileTool implements AgentTool {
         bytesWritten: Buffer.byteLength(parsed.content, "utf8"),
       }, {
         type: "file_diff",
+        operation: "create",
         path: relative,
         before: "",
         after: parsed.content,
