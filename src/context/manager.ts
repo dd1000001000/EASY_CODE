@@ -20,13 +20,13 @@ function summarizeMessages(messages: ChatMessage[]): string {
   for (const message of messages) {
     if (message.role === "tool") {
       const compact = message.content.replace(/\s+/g, " ").slice(0, 240);
-      lines.push(`- 工具结果：${compact}`);
+      lines.push(`- Tool result: ${compact}`);
       continue;
     }
 
     const compact = (message.content ?? "").replace(/\s+/g, " ").slice(0, 300);
     if (!compact) continue;
-    lines.push(`- ${message.role === "user" ? "用户" : "助手"}：${compact}`);
+    lines.push(`- ${message.role === "user" ? "User" : "Assistant"}: ${compact}`);
   }
   return lines.slice(-24).join("\n");
 }
@@ -134,7 +134,8 @@ export class ContextManager {
       const summaryMessage: ChatMessage = {
         role: "user",
         content:
-          "下面是 EASY CODE 自动生成的较早会话摘要，仅作为上下文，最新用户消息、文件和命令结果优先：\n" +
+          "The following is an automatically generated summary of the earlier EASY CODE conversation. " +
+          "Use it only as context; prioritize the latest user messages, files, and command results:\n" +
           input.state.workingSummary
       };
       const remainingForSummary = Math.max(0, budget - cleanSelected.reduce(

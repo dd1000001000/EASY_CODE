@@ -63,28 +63,28 @@ function isModelId(value: string | undefined): value is string {
 }
 
 export const HELP_TEXT = `
-EASY CODE 命令
+EASY CODE commands
 
-  /mode plan|auto|code       切换工作模式
-  /provider qwen|deepseek    切换 Provider
-  /model                     查看 Provider、模型和 Key 状态
-  /model <model>             切换当前 Provider 的模型
-  /model qwen|deepseek <id>  同时切换 Provider 和模型
-  /status                    查看当前状态
-  /workspace                 查看工作区摘要
-  /workspace refresh         刷新工作区清单
-  /changes                   查看本 Thread 的文件变化
-  /tools                     查看当前工具
-  /permissions               查看命令权限与沙箱状态
-  /commands                  查看最近命令
-  /context                   查看上下文预算
-  /memory short              查看自动短期记忆
-  /memory long               查看自动长期记忆
-  /memory long <id>          查看一条长期记忆
-  /sessions                  列出历史 Thread
-  /resume <id>               恢复 Thread
-  /new                       新建 Thread
-  /clear                     清屏
-  /help                      显示帮助
-  /exit                      保存并退出
+  /mode plan|auto|code       Switch working mode
+  /provider qwen|deepseek    Switch provider
+  /model                     Show provider, model, and API key status
+  /model <model>             Switch the current provider's model
+  /model qwen|deepseek <id>  Switch both provider and model
+  /status                    Show current status
+  /workspace                 Show workspace summary
+  /workspace refresh         Refresh the workspace inventory
+  /changes                   Show file changes in this thread
+  /tools                     Show available tools
+  /permissions               Show command permissions and sandbox status
+  /commands                  Show recent commands
+  /context                   Show context budget
+  /memory short              Show automatic short-term memory
+  /memory long               Show automatic long-term memory
+  /memory long <id>          Show one long-term memory entry
+  /sessions                  List previous threads
+  /resume <id>               Resume a thread
+  /new                       Start a new thread
+  /clear                     Clear the screen
+  /help                      Show help
+  /exit                      Save and exit
 `;

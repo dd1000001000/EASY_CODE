@@ -186,7 +186,7 @@ function renderFallback(
   const oldBudget = Math.min(before.length, Math.ceil(maxLines / 2));
   const newBudget = Math.min(after.length, maxLines - oldBudget);
   let output = palette.yellow(
-    "差异规模超过安全计算上限；以下按删除前/新增后内容显示有界摘要。\n",
+    "Diff exceeds the safe computation limit; showing a bounded summary of removed and added content.\n",
   );
   for (let index = 0; index < oldBudget; index += 1) {
     output += renderRow(
@@ -206,7 +206,7 @@ function renderFallback(
   }
   const omitted = before.length + after.length - oldBudget - newBudget;
   if (omitted > 0) {
-    output += palette.yellow(`… 已省略 ${omitted} 行；使用 read_file 查看完整文件。\n`);
+    output += palette.yellow(`… ${omitted} lines omitted; use read_file to view the complete file.\n`);
   }
   return output;
 }
@@ -223,10 +223,10 @@ export function renderFileDiff(
     before: privateKeyLineNumbers(presentation.before),
     after: privateKeyLineNumbers(presentation.after),
   };
-  let output = palette.bold(`\n文件变更：${safePath}\n`);
+  let output = palette.bold(`\nFile changed: ${safePath}\n`);
 
   if (presentation.before === "" && presentation.after === "") {
-    return output + palette.dim("[已创建空文件]\n\n");
+    return output + palette.dim("[Empty file created]\n\n");
   }
 
   let patch: ParsedDiff | undefined;
@@ -252,7 +252,7 @@ export function renderFileDiff(
     return `${output}${renderFallback(presentation, palette, maxLines, sensitiveLines)}\n`;
   }
   if (patch.hunks.length === 0) {
-    return `${output}${palette.dim("文件末尾换行或行分隔符发生变化。\n")}\n`;
+    return `${output}${palette.dim("Only the final newline or line separators changed.\n")}\n`;
   }
 
   const totalRows = patch.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
@@ -270,7 +270,7 @@ export function renderFileDiff(
 
   if (renderedRows < totalRows) {
     output += palette.yellow(
-      `… diff 已截断，省略 ${totalRows - renderedRows} 行；使用 read_file 查看完整文件。\n`,
+      `… Diff truncated; ${totalRows - renderedRows} lines omitted. Use read_file to view the complete file.\n`,
     );
   }
   return `${output}\n`;

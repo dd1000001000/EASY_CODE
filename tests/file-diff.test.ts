@@ -90,7 +90,7 @@ describe("file diff UI", () => {
       },
       { color: false, maxLines: 2 },
     );
-    assert.match(output, /diff 已截断，省略 2 行/u);
+    assert.match(output, /Diff truncated; 2 lines omitted/u);
     assert.match(output, /\+ one/u);
     assert.doesNotMatch(output, /\+ three/u);
   });
@@ -106,8 +106,8 @@ describe("file diff UI", () => {
       },
       { color: false, maxLines: 3 },
     );
-    assert.match(output, /差异规模超过安全计算上限/u);
-    assert.match(output, /已省略 9998 行/u);
+    assert.match(output, /Diff exceeds the safe computation limit/u);
+    assert.match(output, /9998 lines omitted/u);
   });
 
   it("escapes terminal controls and bidi markers before rendering", () => {
@@ -139,7 +139,7 @@ describe("file diff UI", () => {
       { type: "file_diff", path: "empty.txt", before: "", after: "" },
       { color: false },
     );
-    assert.match(output, /已创建空文件/u);
+    assert.match(output, /Empty file created/u);
     assert.doesNotMatch(output, /│ \+/u);
   });
 

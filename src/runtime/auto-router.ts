@@ -15,8 +15,8 @@ const PLAN_HINTS = [
 function fallbackRoute(userInput: string): AutoRouteResult {
   const planOnly = PLAN_HINTS.some((pattern) => pattern.test(userInput));
   return planOnly
-    ? { route: "plan_only", reason: "任务包含计划、调查或高风险操作信号。" }
-    : { route: "direct_code", reason: "需求看起来明确且可以在工作区内验证。" };
+    ? { route: "plan_only", reason: "The request indicates planning, investigation, or a high-risk operation." }
+    : { route: "direct_code", reason: "The request appears clear and can be verified within the workspace." };
 }
 
 export async function determineAutoRoute(
@@ -29,10 +29,12 @@ export async function determineAutoRoute(
     {
       role: "system",
       content:
-        "你是 EASY CODE 的 Auto Router。只判断本轮应直接编码还是只给计划。" +
-        "当需求明确、变更可逆、范围在工作区且可验证时选择 direct_code；" +
-        "当存在会改变产品方向的歧义、删除/部署/系统修改/凭据缺失等风险时选择 plan_only。" +
-        "只输出一行 JSON：{\"route\":\"plan_only|direct_code\",\"reason\":\"简短原因\"}。"
+        "You are the EASY CODE Auto Router. Decide only whether this request should be handled by " +
+        "coding directly or by providing a plan only. Choose direct_code when the request is clear, " +
+        "the changes are reversible, the scope is within the workspace, and the result can be verified. " +
+        "Choose plan_only when there is ambiguity that could change the product direction or risk involving " +
+        "deletion, deployment, system changes, or missing credentials. Output exactly one line of JSON: " +
+        "{\"route\":\"plan_only|direct_code\",\"reason\":\"brief reason\"}."
     },
     { role: "user", content: userInput }
   ];
