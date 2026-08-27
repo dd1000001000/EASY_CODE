@@ -50,13 +50,22 @@ interface InstallerModule {
 interface PostinstallModule {
   runPostinstall(options?: {
     loadDatabase?: () => unknown;
+    prepareModel?: () => Promise<{
+      modelDirectory: string;
+      manifest: { dimension: number; maxSequenceLength: number };
+      downloaded: string[];
+      reused: string[];
+    }>;
+    validateStack?: (model: unknown) => Promise<unknown>;
     installExtension?: () => InstallResult;
     stdout?: { write(message: string): unknown };
     stderr?: { write(message: string): unknown };
-  }): {
+  }): Promise<{
     sqliteReady: boolean;
+    modelReady: boolean;
+    vectorStackReady: boolean;
     extensionResult?: InstallResult;
-  };
+  }>;
 }
 
 interface VsixVerifierModule {
@@ -221,12 +230,17 @@ describe("VS Code extension installer", () => {
     }
   });
 
-  it("does not install the VS Code extension when SQLite validation fails", () => {
+  it("does not prepare the model or install the VS Code extension when SQLite validation fails", async () => {
+    let modelPrepareCalled = false;
     let extensionInstallCalled = false;
     let stderr = "";
-    const result = postinstall.runPostinstall({
+    const result = await postinstall.runPostinstall({
       loadDatabase: () => {
         throw new Error("sqlite fixture failed");
+      },
+      prepareModel: async () => {
+        modelPrepareCalled = true;
+        throw new Error("model preparation should not run");
       },
       installExtension: () => {
         extensionInstallCalled = true;
@@ -240,8 +254,95 @@ describe("VS Code extension installer", () => {
       },
     });
     assert.equal(result.sqliteReady, false);
+    assert.equal(result.modelReady, false);
+    assert.equal(result.vectorStackReady, false);
+    assert.equal(modelPrepareCalled, false);
     assert.equal(extensionInstallCalled, false);
     assert.match(stderr, /sqlite fixture failed/u);
+  });
+
+  it("prepares and validates required memory dependencies before installing the extension", async () => {
+    const order: string[] = [];
+    let stdout = "";
+    const result = await postinstall.runPostinstall({
+      prepareModel: async () => {
+        order.push("model");
+        return {
+          modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),
+          manifest: { dimension: 384, maxSequenceLength: 128 },
+          downloaded: ["onnx/model_quantized.onnx"],
+          reused: ["tokenizer.json"],
+        };
+      },
+      validateStack: async () => {
+        order.push("runtime");
+      },
+      installExtension: () => {
+        order.push("extension");
+        return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
+      },
+      stdout: {
+        write: (message) => {
+          stdout += message;
+        },
+      },
+      stderr: { write: () => undefined },
+    });
+
+    assert.deepEqual(order, ["model", "runtime", "extension"]);
+    assert.equal(result.sqliteReady, true);
+    assert.equal(result.modelReady, true);
+    assert.equal(result.vectorStackReady, true);
+    assert.match(stdout, /1 downloaded, 1 reused/u);
+    assert.match(stdout, /vector search, tokenizer, and ONNX inference are ready/u);
+  });
+
+  it("fails required model/runtime checks without leaving a partial extension install", async () => {
+    let validationCalled = false;
+    let extensionInstallCalled = false;
+    let stderr = "";
+    const preparationFailure = await postinstall.runPostinstall({
+      prepareModel: async () => {
+        throw new Error("model fixture failed");
+      },
+      validateStack: async () => {
+        validationCalled = true;
+      },
+      installExtension: () => {
+        extensionInstallCalled = true;
+        return { skipped: false, installed: [], failed: [] };
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: (message) => { stderr += message; } },
+    });
+    assert.equal(preparationFailure.modelReady, false);
+    assert.equal(preparationFailure.vectorStackReady, false);
+    assert.equal(validationCalled, false);
+    assert.equal(extensionInstallCalled, false);
+    assert.match(stderr, /model fixture failed/u);
+
+    stderr = "";
+    const runtimeFailure = await postinstall.runPostinstall({
+      prepareModel: async () => ({
+        modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),
+        manifest: { dimension: 384, maxSequenceLength: 128 },
+        downloaded: [],
+        reused: [],
+      }),
+      validateStack: async () => {
+        throw new Error("runtime fixture failed");
+      },
+      installExtension: () => {
+        extensionInstallCalled = true;
+        return { skipped: false, installed: [], failed: [] };
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: (message) => { stderr += message; } },
+    });
+    assert.equal(runtimeFailure.modelReady, true);
+    assert.equal(runtimeFailure.vectorStackReady, false);
+    assert.equal(extensionInstallCalled, false);
+    assert.match(stderr, /runtime fixture failed/u);
   });
 
   it("verifies that the bundled VSIX matches its generated manifest and sources", () => {

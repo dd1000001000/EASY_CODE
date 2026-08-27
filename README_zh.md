@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-EASY CODE 是一个支持 Alibaba Qwen 和 DeepSeek 的本地 CLI 编程 Agent。它可以在受控工作区内读取、新建和更新代码，运行命令，管理上下文与记忆，并向视觉模型发送图片。
+EASY CODE 是一个支持 Alibaba Qwen 和 DeepSeek 的本地 CLI 编程 Agent。它可以在受控工作区内读取、新建、更新和删除代码，运行命令，管理上下文与记忆，并向视觉模型发送图片。
 
 当前版本是 MVP，仅提供终端界面，不会打开单独的桌面窗口。
 
@@ -13,7 +13,7 @@ EASY CODE 是一个支持 Alibaba Qwen 和 DeepSeek 的本地 CLI 编程 Agent�
 - Alibaba Qwen 或 DeepSeek API Key。
 - 可选：VS Code `>=1.93`，用于在集成终端中通过系统原生粘贴快捷键输入图片。
 
-EASY CODE 使用随 npm 包安装的 SQLite WASM 保存会话、检索索引和长期记忆，不需要另外安装或启动 MySQL、PostgreSQL、Redis 或 SQLite 服务。
+EASY CODE 使用 SQLite WASM 持久保存 Thread 和长期记忆，并用嵌入式 Orama 向量索引完成语义 Top-K 检索。本地多语言向量模型通过 ONNX Runtime 运行，不需要 Python、外部向量数据库、Redis 或模型服务。
 
 ## 安装
 
@@ -51,7 +51,16 @@ npm run build
 npm start -- --workspace /path/to/project
 ```
 
-普通 npm 安装会完成 SQLite 自检，并尝试为当前用户自动安装随包提供的 VS Code 图片粘贴扩展。若安装时使用了 `--ignore-scripts`，或者自动检测不到便携版/自定义位置的 VS Code，可在 EASY CODE 目录手动运行：
+普通 npm 安装会依次完成 SQLite 自检，把固定版本的量化向量模型资源（约 135 MB）下载到 EASY CODE 的系统用户缓存，校验精确大小和 SHA-256，实际运行一次本地 ONNX/向量检索自检，然后尝试安装随包提供的 VS Code 图片粘贴扩展。安装完成后的向量推理完全离线，记忆文本不会发送给 Hugging Face。
+
+正常安装不要使用 `--ignore-scripts`，否则会跳过必需的模型准备。在 EASY CODE 源码目录可以使用以下命令修复或校验本地记忆模型：
+
+```bash
+npm run memory:install
+npm run memory:verify
+```
+
+如果自动检测不到便携版或自定义位置的 VS Code，可运行：
 
 ```bash
 npm run vscode:install
@@ -206,7 +215,7 @@ easy-code --resume <thread-id>
 
 ### Agent 工具
 
-模型最多可以调用六个工具；`read_image` 只会提供给代码中已确认支持视觉的模型。
+模型最多可以调用八个工具；`read_image` 只会提供给代码中已确认支持视觉的模型。
 
 | 工具 | 功能 |
 | --- | --- |
@@ -214,16 +223,18 @@ easy-code --resume <thread-id>
 | `read_image` | 读取并校验工作区图片，发送给视觉模型 |
 | `create_file` | 新建文件；目标已存在时不会覆盖 |
 | `update_file` | 精确替换或删除已读取文件中的代码，并检查内容哈希 |
+| `delete_file` | 删除已经读取且路径、内容哈希仍然匹配的整个文件 |
 | `run_command` | 使用结构化 `program + args[]` 运行受策略控制的命令 |
 | `compact_context` | 由模型提交累计摘要并推进上下文压缩边界 |
+| `manage_memory` | 搜索并暂存长期记忆的新建、修订或退休操作 |
 
-当前没有独立的 `delete_file` 工具。`update_file` 可以删除代码行，但不会把整个文件作为删除工具目标。
+`delete_file` 必须携带 `read_file` 返回的 SHA-256。未读取文件、过期哈希、目录、链接、工作区逃逸路径，以及 Plan mode 中的删除都会被拒绝。
 
 ### 工作区和代码变更
 
 - 文件工具只能访问工作区内的路径；绝对路径、`..` 穿越、符号链接和 Windows junction 逃逸会被拒绝。
-- `update_file` 会校验最近读取时的 SHA-256；文件被编辑器或其他进程改动后不会静默覆盖。
-- 新建或更新文件后，终端会显示带旧/新行号的 Diff：新增行绿色，删除行红色。
+- `update_file` 和 `delete_file` 会校验最近读取时的 SHA-256；文件被编辑器或其他进程改动后不会静默修改。
+- 新建、更新或删除文件后，终端会显示带旧/新行号的 Diff：新增行绿色，删除行红色。
 - `/changes` 可以查看当前 Thread 的文件变化。
 
 ### 命令和 npm
@@ -259,9 +270,12 @@ easy-code --resume <thread-id>
 
 - 上下文由字符、输出和图片预算控制。模型可以调用 `compact_context` 生成可继续工作的累计摘要；超过硬限制时还有请求级兜底截断。
 - 短期记忆与当前 Thread 绑定，包括对话、工具结果、文件版本、变更集和 Working Summary。
-- 长期记忆按工作区隔离，从已完成且有证据的任务中自动提取稳定信息。
-- 记忆完全自动维护；用户可以通过 `/memory short` 和 `/memory long` 查看，但不能手动添加、修改或删除。
-- Thread 使用追加式 JSONL 保存原始事件，SQLite WASM/FTS5 保存可检索投影和长期记忆；支持列出和恢复会话。
+- 长期记忆按工作区隔离。模型通过 `manage_memory` 搜索、记住、修订或退休持久偏好、约定、决策、已验证架构和稳定环境信息。
+- 长期记忆采用混合检索：把 384 维语义相似度和 FTS5 关键词结果一起重排。SQLite 持久保存记忆行和 Float32 向量，Orama 是可以随时重建、按 generation 跨进程失效的内存 Top-K 索引。
+- 向量由固定版本的量化模型 [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) 在本地生成。旧数据库中的既有记忆会在第一次检索时自动补齐向量。
+- 记忆修改会在当前 Turn 中暂存，只有结果为 `success` 或 `planned` 时才原子提交；失败、中断或达到步骤上限的 Turn 会丢弃候选。修订会保留被取代的旧记录，遗忘只会把记录标记为过期，不会物理删除审计历史。
+- 记忆仍然完全自动维护；用户可以通过 `/memory short` 和 `/memory long` 查看，但没有手动添加、修改或删除记忆的命令。
+- Thread 使用追加式 JSONL 保存原始事件，SQLite WASM/FTS5 保存可检索投影、长期记忆和持久向量；支持列出和恢复会话。
 - 跨进程锁和 Thread lease 会阻止两个 EASY CODE 进程同时恢复同一个 Thread。
 
 ### 系统提示词和项目约定
@@ -315,6 +329,7 @@ EASY CODE 有工作区路径保护、命令分类、审批、环境变量过滤�
 - 找不到 `easy-code`：确认 npm 全局 bin 目录已加入 `PATH`，或在本地依赖场景使用 `npx easy-code`。
 - 缺少 API Key、401 或 403：运行 `easy-code config list`，确认当前 Provider、Key、账户和区域匹配。
 - 图片快捷键无反应：确认已安装 `dd1000001000.easy-code-image-paste`，必要时运行 `npm run vscode:install` 并执行 VS Code 的 `Developer: Reload Window`；备用入口是 `/image clipboard`。
+- 语义记忆降级为关键词检索：重新安装且不要使用 `--ignore-scripts`；也可以在 EASY CODE 源码目录依次运行 `npm run memory:install` 和 `npm run memory:verify`。
 - 命令被拒绝：运行 `/permissions` 查看模式和审批策略。Plan mode 不允许写入或执行构建；需要无人值守审批时用 `--yes`，但硬性拒绝仍然有效。
 - Node.js 版本过低：运行 `node --version`，最低版本是 `16.20.0`；切换 Node.js 后重新执行 `npm install`。
 

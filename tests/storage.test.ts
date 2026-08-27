@@ -88,6 +88,8 @@ describe("storage", () => {
         "item_index",
         "memories",
         "memories_fts",
+        "memory_embeddings",
+        "memory_vector_state",
         "tool_audit",
         "thread_leases",
       ]) {
@@ -105,8 +107,9 @@ describe("storage", () => {
               "SELECT COUNT(*) AS count FROM schema_migrations",
             )
             .get()?.count,
-          2,
+          3,
         );
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 3);
       } finally {
         reopened.close();
       }

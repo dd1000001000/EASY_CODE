@@ -7,8 +7,10 @@ export type ToolName =
   | "read_image"
   | "create_file"
   | "update_file"
+  | "delete_file"
   | "run_command"
-  | "compact_context";
+  | "compact_context"
+  | "manage_memory";
 
 export interface FunctionToolCall {
   id: string;
@@ -128,6 +130,8 @@ export interface ToolExecutionResult {
   presentation?: ToolPresentation;
   /** Local-only context transition. AgentRuntime deliberately excludes the submitted summary from tool messages. */
   contextCompaction?: ContextCompactionRequest;
+  /** Local-only durable-memory request, staged until the turn completes successfully. */
+  memoryMutation?: MemoryMutationRequest;
   /**
    * Local image references that Runtime promotes into a synthetic multimodal user
    * message after all matching textual tool results have been appended.
@@ -139,8 +143,37 @@ export interface ContextCompactionRequest {
   summary: string;
 }
 
+export type LongTermMemoryCategory =
+  | "preference"
+  | "convention"
+  | "architecture"
+  | "decision"
+  | "environment";
+
+export type MemoryMutationRequest =
+  | {
+      action: "remember";
+      category: LongTermMemoryCategory;
+      content: string;
+      reason: string;
+    }
+  | {
+      action: "revise";
+      memoryId: string;
+      category: LongTermMemoryCategory;
+      content: string;
+      reason: string;
+    }
+  | {
+      action: "forget";
+      memoryId: string;
+      reason: string;
+    };
+
 export interface FileDiffPresentation {
   type: "file_diff";
+  /** Explicit operation disambiguates empty-file creation from deletion. */
+  operation?: "create" | "update" | "delete";
   path: string;
   before: string;
   after: string;
@@ -190,7 +223,7 @@ export interface FileVersion {
 
 export interface FileChangeRecord {
   path: string;
-  operation: "create" | "update" | "generated" | "deleted_by_command";
+  operation: "create" | "update" | "delete" | "generated" | "deleted_by_command";
   beforeHash?: string;
   afterHash?: string;
   source: "file_tool" | "command";
@@ -246,7 +279,7 @@ export interface EventRecord {
 export interface LongTermMemory {
   id: string;
   workspaceId: string;
-  category: "preference" | "convention" | "architecture" | "decision" | "environment";
+  category: LongTermMemoryCategory;
   content: string;
   confidence: number;
   status: "active" | "needs_verification" | "superseded" | "expired";

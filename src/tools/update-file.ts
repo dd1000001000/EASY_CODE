@@ -188,6 +188,7 @@ export class UpdateFileTool implements AgentTool {
         bytesWritten: updatedBuffer.length,
       }, {
         type: "file_diff",
+        operation: "update",
         path: relative,
         before: original,
         after: updated,

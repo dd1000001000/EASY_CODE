@@ -237,7 +237,7 @@ describe("AgentRuntime", () => {
     assert.doesNotMatch(secondRequestToolContent, new RegExp(uiOnlyMarker, "u"));
   });
 
-  it("does not expose mutating tools in plan mode", async () => {
+  it("exposes only plan-safe tools and automatic memory maintenance in plan mode", async () => {
     let seenToolNames: string[] = [];
     const provider: ModelProvider = {
       name: "qwen",
@@ -247,7 +247,16 @@ describe("AgentRuntime", () => {
         return { message: { role: "assistant", content: "计划", tool_calls: [] } };
       }
     };
-    const tools = ["read_file", "read_image", "create_file", "update_file", "run_command", "compact_context"].map(
+    const tools = [
+      "read_file",
+      "read_image",
+      "create_file",
+      "update_file",
+      "delete_file",
+      "run_command",
+      "compact_context",
+      "manage_memory",
+    ].map(
       (name): AgentTool => ({
         name: name as AgentTool["name"],
         mutating: name !== "read_file",
@@ -283,7 +292,13 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never"
     });
 
-    assert.deepEqual(seenToolNames, ["read_file", "read_image", "run_command", "compact_context"]);
+    assert.deepEqual(seenToolNames, [
+      "read_file",
+      "read_image",
+      "run_command",
+      "compact_context",
+      "manage_memory",
+    ]);
   });
 
   it("promotes read_image output into a synthetic multimodal user message", async () => {
@@ -726,5 +741,211 @@ describe("AgentRuntime", () => {
       ),
       true,
     );
+  });
+
+  it("reserves a final response step and commits staged memory only after turn completion", async () => {
+    let requestCount = 0;
+    let commitCount = 0;
+    const eventTypes: string[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_memory",
+                type: "function",
+                function: {
+                  name: "manage_memory",
+                  arguments: JSON.stringify({ action: "remember" }),
+                },
+              }],
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const memoryTool: AgentTool = {
+      name: "manage_memory",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "manage_memory",
+          description: "memory",
+          parameters: { type: "object" },
+        },
+      },
+      async execute() {
+        return {
+          ok: true,
+          summary: "staged",
+          memoryMutation: {
+            action: "remember",
+            category: "convention",
+            content: "The project always uses strict TypeScript.",
+            reason: "The user established this durable convention.",
+          },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [memoryTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        eventTypes.push(event.type);
+      },
+      requestApproval: async () => false,
+      commitMemoryMutations: async (input) => {
+        commitCount += 1;
+        assert.equal(eventTypes.at(-1), "turn.completed");
+        assert.equal(input.outcome, "success");
+        assert.equal(input.mutations.length, 1);
+        return { applied: 1, memoryIds: ["memory_test"] };
+      },
+    });
+
+    const result = await runtime.run(state(), "Use strict TypeScript from now on", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(result.steps, 2);
+    assert.equal(requestCount, 2);
+    assert.equal(commitCount, 1);
+    assert.ok(eventTypes.indexOf("turn.completed") < eventTypes.indexOf("memory.committed"));
+  });
+
+  it("persists a synthetic final reply before completing a turn", async () => {
+    const eventTypes: string[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        throw new Error("provider unavailable");
+      },
+    };
+    const currentState = state();
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        eventTypes.push(event.type);
+      },
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, "Inspect the project", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "failed");
+    const finalAssistantIndex = eventTypes.lastIndexOf("message.assistant");
+    const turnCompletedIndex = eventTypes.indexOf("turn.completed");
+    assert.ok(finalAssistantIndex >= 0);
+    assert.ok(finalAssistantIndex < turnCompletedIndex);
+    assert.equal(currentState.messages.at(-1)?.role, "assistant");
+  });
+
+  it("discards staged memory when a later model step fails", async () => {
+    let requestCount = 0;
+    let commitCount = 0;
+    const eventTypes: string[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_memory_before_failure",
+                type: "function",
+                function: { name: "manage_memory", arguments: "{}" },
+              }],
+            },
+          };
+        }
+        throw new Error("provider failed after staging memory");
+      },
+    };
+    const memoryTool: AgentTool = {
+      name: "manage_memory",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "manage_memory",
+          description: "memory",
+          parameters: { type: "object" },
+        },
+      },
+      async execute() {
+        return {
+          ok: true,
+          summary: "staged",
+          memoryMutation: {
+            action: "remember",
+            category: "environment",
+            content: "The project uses Node.js 20 in production.",
+            reason: "Verified from the repository configuration.",
+          },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [memoryTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        eventTypes.push(event.type);
+      },
+      requestApproval: async () => false,
+      commitMemoryMutations: async () => {
+        commitCount += 1;
+        return { applied: 1, memoryIds: ["must_not_commit"] };
+      },
+    });
+
+    const result = await runtime.run(state(), "Inspect the environment", {
+      maxSteps: 2,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "failed");
+    assert.equal(commitCount, 0);
+    assert.ok(eventTypes.includes("memory.discarded"));
+    assert.ok(eventTypes.indexOf("turn.completed") < eventTypes.indexOf("memory.discarded"));
   });
 });

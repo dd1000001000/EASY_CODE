@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local CLI coding agent for Alibaba Qwen and DeepSeek. It can read, create, and update code inside a guarded workspace, run commands, manage context and memory, and send images to vision-capable models.
+EASY CODE is a local CLI coding agent for Alibaba Qwen and DeepSeek. It can read, create, update, and delete code inside a guarded workspace, run commands, manage context and memory, and send images to vision-capable models.
 
 The current release is an MVP with a terminal-only interface. It does not open a separate desktop window.
 
@@ -13,7 +13,7 @@ The current release is an MVP with a terminal-only interface. It does not open a
 - An Alibaba Qwen or DeepSeek API key.
 - Optional: VS Code `>=1.93` for native image-paste shortcuts in the integrated terminal.
 
-EASY CODE uses SQLite WASM, installed with the npm package, for threads, search indexes, and long-term memory. You do not need to install or run MySQL, PostgreSQL, Redis, or a separate SQLite service.
+EASY CODE uses SQLite WASM as the durable source of truth for threads and long-term memory, plus an embedded Orama vector index for semantic Top-K retrieval. A local multilingual embedding model runs through ONNX Runtime; no Python environment, external vector database, Redis, or model server is required.
 
 ## Installation
 
@@ -51,7 +51,16 @@ npm run build
 npm start -- --workspace /path/to/project
 ```
 
-A normal npm installation verifies the bundled SQLite WASM runtime and tries to install the bundled image-paste extension for the current user's VS Code. If installation used `--ignore-scripts`, or a portable/custom VS Code installation was not detected, run this from the EASY CODE directory:
+A normal npm installation verifies SQLite, downloads the pinned quantized embedding assets (about 135 MB) into EASY CODE's per-user operating-system cache, checks their exact size and SHA-256, runs a real local ONNX/vector-search self-test, and then tries to install the bundled VS Code image-paste extension. Inference is offline after installation; memory text is not sent to Hugging Face.
+
+Do not use `--ignore-scripts` for a normal installation, because it skips required model preparation. To repair or verify the local memory model from an EASY CODE source checkout, run:
+
+```bash
+npm run memory:install
+npm run memory:verify
+```
+
+If a portable/custom VS Code installation was not detected, run:
 
 ```bash
 npm run vscode:install
@@ -206,7 +215,7 @@ Switch modes during a session:
 
 ### Agent tools
 
-The model can use up to six tools. `read_image` is exposed only to models explicitly marked as vision-capable.
+The model can use up to eight tools. `read_image` is exposed only to models explicitly marked as vision-capable.
 
 | Tool | Capability |
 | --- | --- |
@@ -214,16 +223,18 @@ The model can use up to six tools. `read_image` is exposed only to models explic
 | `read_image` | Validate and attach a workspace image to a vision model |
 | `create_file` | Create a file without overwriting an existing target |
 | `update_file` | Replace or remove exact text in a previously read file, with hash checks |
+| `delete_file` | Delete the exact previously read file version, with path and hash checks |
 | `run_command` | Run policy-controlled commands using structured `program + args[]` input |
 | `compact_context` | Submit a cumulative summary and advance the context-compaction boundary |
+| `manage_memory` | Search and stage automatic long-term-memory additions, revisions, or retirement |
 
-There is no separate `delete_file` tool. `update_file` can remove code lines, but it is not a whole-file deletion tool.
+`delete_file` requires the SHA-256 returned by `read_file`. It refuses unread files, stale hashes, directories, links, workspace escapes, and all deletions in Plan mode.
 
 ### Workspace and code changes
 
 - File tools stay inside the workspace. Absolute paths, `..` traversal, and symlink or Windows junction escapes are rejected.
-- `update_file` checks the SHA-256 recorded by the last read, preventing silent overwrites after an editor or another process changes the file.
-- Successful creates and updates print a line-numbered diff: additions in green and removals in red.
+- `update_file` and `delete_file` check the SHA-256 recorded by the last read, preventing silent changes after an editor or another process modifies the file.
+- Successful creates, updates, and deletions print a line-numbered diff: additions in green and removals in red.
 - `/changes` shows the current thread's file changes.
 
 ### Commands and npm
@@ -259,9 +270,12 @@ Clipboard screenshots are copied to EASY CODE's private data directory outside t
 
 - Character, output, and image budgets bound each model request. The model can call `compact_context` to produce a cumulative working summary; a request-only hard-limit fallback remains available.
 - Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, and the working summary.
-- Long-term memory is isolated by workspace and automatically extracts stable, evidenced information from completed tasks.
-- Memory is fully automatic. Users can inspect it with `/memory short` and `/memory long`, but cannot manually add, edit, or delete it.
-- Append-only JSONL stores original thread events; SQLite WASM/FTS5 stores searchable projections and long-term memory. Threads can be listed and resumed.
+- Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts.
+- Long-term retrieval is hybrid: 384-dimensional semantic similarity and FTS5 lexical matches are reranked together. SQLite persists both memory rows and Float32 embeddings; Orama is a disposable, generation-versioned in-process Top-K index.
+- Embeddings are produced locally by the pinned [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) quantized model. Existing memories from older database versions are backfilled automatically on first retrieval.
+- Memory mutations are staged during a turn and committed atomically only after `success` or `planned`; failed, interrupted, and step-limited turns discard them. Revisions preserve superseded rows, while forgetting marks a row expired instead of physically deleting its audit history.
+- Memory remains automatic. Users can inspect it with `/memory short` and `/memory long`, but there is no user command for adding, editing, or deleting it.
+- Append-only JSONL stores original thread events; SQLite WASM/FTS5 stores searchable projections, long-term memory, and persistent vectors. Threads can be listed and resumed.
 - Cross-process locks and thread leases prevent two EASY CODE processes from resuming the same thread concurrently.
 
 ### System prompt and project instructions
@@ -315,6 +329,7 @@ EASY CODE provides workspace path guards, command classification, approvals, env
 - `easy-code` is not found: ensure npm's global binary directory is on `PATH`, or use `npx easy-code` for a local dependency.
 - Missing API key, 401, or 403: run `easy-code config list` and verify that the provider, key, account, and region match.
 - Image shortcut does nothing: confirm that `dd1000001000.easy-code-image-paste` is installed. If needed, run `npm run vscode:install`, then VS Code's `Developer: Reload Window`. `/image clipboard` is the fallback.
+- Semantic memory falls back to lexical search: reinstall without `--ignore-scripts`, or run `npm run memory:install` followed by `npm run memory:verify` from the EASY CODE source checkout.
 - A command is denied: run `/permissions` to inspect the mode and approval policy. Plan mode blocks writes and builds. Use `--yes` only when unattended approval is intended; hard-deny rules still apply.
 - Node.js is too old: run `node --version`. The minimum is `16.20.0`; rerun `npm install` after changing Node.js versions.
 
