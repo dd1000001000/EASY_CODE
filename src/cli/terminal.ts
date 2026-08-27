@@ -1,5 +1,6 @@
 import readline from "node:readline";
 import chalk from "chalk";
+import { sanitizeCommandOutput } from "../command/output-stream.js";
 import type {
   ApprovalRequest,
   FileDiffPresentation,
@@ -31,6 +32,20 @@ import {
 } from "./model-selector.js";
 
 export class Terminal {
+  private static readonly ACTIVITY_FRAMES = [
+    "⠋",
+    "⠙",
+    "⠹",
+    "⠸",
+    "⠼",
+    "⠴",
+    "⠦",
+    "⠧",
+    "⠇",
+    "⠏",
+  ] as const;
+  private static readonly ACTIVITY_INTERVAL_MS = 80;
+
   private rl?: readline.Interface;
   private closed = false;
   private promptActive = false;
@@ -38,6 +53,11 @@ export class Terminal {
   private activePromptController?: AbortController;
   private readlineInputFilter?: PrivateOscInputFilter;
   private readonly reasoning = new ReasoningRegistry();
+  private activityTimer?: NodeJS.Timeout;
+  private activityStartedAt = 0;
+  private activityFrameIndex = 0;
+  private activityText = "";
+  private activityVisible = false;
 
   constructor(
     private readonly input: PromptInput = process.stdin,
@@ -208,7 +228,52 @@ export class Terminal {
   }
 
   write(text: string): void {
+    this.stopActivity();
     this.output.write(text);
+  }
+
+  /** Show a transient TTY spinner until the pending operation completes. */
+  startActivity(text: string): void {
+    this.stopActivity();
+    if (!this.canAnimateActivity()) return;
+
+    const sanitized = sanitizeCommandOutput(text)
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 160);
+    this.activityText = sanitized || "Waiting for the model response";
+    this.activityStartedAt = Date.now();
+    this.activityFrameIndex = 0;
+    try {
+      this.renderActivity();
+    } catch {
+      this.resetActivityState();
+      return;
+    }
+
+    this.activityTimer = setInterval(() => {
+      try {
+        if (!this.canAnimateActivity()) {
+          this.stopActivity();
+          return;
+        }
+        this.activityFrameIndex =
+          (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
+        this.renderActivity();
+      } catch {
+        this.resetActivityState();
+      }
+    }, Terminal.ACTIVITY_INTERVAL_MS);
+    this.activityTimer.unref();
+  }
+
+  /** Clear the transient spinner without adding a blank line. */
+  stopActivity(): void {
+    const wasVisible = this.activityVisible;
+    this.resetActivityState();
+    if (wasVisible) {
+      this.output.write("\r\u001B[2K");
+    }
   }
 
   info(text: string): void {
@@ -256,6 +321,7 @@ export class Terminal {
 
   close(): void {
     if (this.closed) return;
+    this.stopActivity();
     this.closed = true;
     this.activePromptController?.abort();
     this.activePromptController = undefined;
@@ -323,6 +389,60 @@ export class Terminal {
       forceColor !== "0" &&
       (Boolean((this.output as NodeJS.WriteStream).isTTY) || Boolean(forceColor))
     );
+  }
+
+  private canAnimateActivity(): boolean {
+    const ci = process.env.CI?.trim().toLowerCase();
+    const output = this.output as NodeJS.WriteStream;
+    return Boolean(
+      !this.closed &&
+      output.isTTY &&
+      !output.destroyed &&
+      !output.writableEnded &&
+      process.env.TERM !== "dumb" &&
+      ci !== "1" &&
+      ci !== "true",
+    );
+  }
+
+  private renderActivity(): void {
+    const frame = Terminal.ACTIVITY_FRAMES[this.activityFrameIndex] ?? "•";
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((Date.now() - this.activityStartedAt) / 1_000),
+    );
+    const elapsed = elapsedSeconds < 60
+      ? `${elapsedSeconds}s`
+      : `${Math.floor(elapsedSeconds / 60)}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`;
+    const prefix = `${frame} `;
+    const suffix = ` · ${elapsed}`;
+    const columns = Number((this.output as NodeJS.WriteStream).columns);
+    const maxWidth = Number.isFinite(columns) && columns > 0
+      ? Math.max(8, Math.floor(columns) - 1)
+      : 120;
+    const labelWidth = Math.max(0, maxWidth - prefix.length - suffix.length);
+    const label = this.activityText.length <= labelWidth
+      ? this.activityText
+      : labelWidth >= 4
+        ? `${this.activityText.slice(0, labelWidth - 3)}...`
+        : "";
+    const text = label
+      ? `${prefix}${label}${suffix}`
+      : `${frame} ${elapsed}`.slice(0, maxWidth);
+    const rendered = this.colorEnabled() ? chalk.gray(text) : text;
+    this.output.write(`\r\u001B[2K${rendered}`);
+    this.activityVisible = true;
+  }
+
+  private resetActivityState(): void {
+    if (this.activityTimer) {
+      clearInterval(this.activityTimer);
+      this.activityTimer = undefined;
+    }
+    this.activityVisible = false;
+    this.activityText = "";
+    this.activityStartedAt = 0;
+    this.activityFrameIndex = 0;
   }
 }
 
