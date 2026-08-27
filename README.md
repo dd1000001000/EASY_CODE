@@ -207,6 +207,8 @@ Provider behavior:
 - DeepSeek: `none` disables thinking for `deepseek-v4-flash` and `deepseek-v4-pro`; `low` and `high` use the matching provider effort. DeepSeek treats `medium` as `high`. The experimental vision model currently receives no thinking parameters.
 - GLM: `glm-5.2` can disable thinking with `none` and accepts the other three efforts, although GLM maps `low` and `medium` to its `high` effort. `glm-5.3` and `glm-5.3-flash` always think, so choosing `none` is retained but sends no disabling parameter; their `medium` selection maps to `high`.
 
+When the selected effort is not `none` and the provider returns `reasoning_content`, EASY CODE prints the existing gray `Thinking #2` marker followed by a gray one-line preview of up to 160 characters. Longer content ends with `...`. Use `/thinking`, `/thinking <id>`, or `Ctrl+T` to show the expanded bounded content. In the VS Code integrated terminal, the bundled extension can also make the marker clickable, but clicking is optional. Both the preview and expanded output are sanitized and redacted before they are written to the terminal. Non-interactive `easy-code run` output does not include this interactive presentation.
+
 Switch providers or models while the agent is running:
 
 ```text
@@ -333,6 +335,7 @@ EASY CODE reads `EASYCODE.md` from the user configuration directory and from the
 /memory short              Show automatic short-term memory
 /memory long               List automatic long-term memories
 /memory long <id>          Show one long-term memory
+/thinking [id|last]        Show expanded model thinking
 /sessions                  List saved threads
 /resume <id>               Resume a thread
 /new                       Start a new thread

@@ -36,6 +36,145 @@ function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
 }
 
 describe("AgentRuntime", () => {
+  it("notifies the UI only for main-model thinking when thinking is enabled", async () => {
+    let requestCount = 0;
+    const notifications: string[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: '{"route":"direct_code","reason":"A scoped task."}',
+              reasoning_content: "internal router thinking",
+            },
+          };
+        }
+        return {
+          message: {
+            role: "assistant",
+            content: "done",
+            reasoning_content: "visible main-model thinking",
+            tool_calls: [],
+          },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      onReasoning: (notification) => {
+        assert.equal(notification.type, "reasoning");
+        assert.equal(notification.thinkingEffort, "medium");
+        notifications.push(notification.text);
+      },
+    });
+
+    const result = await runtime.run(state("auto"), "Complete the task", {
+      maxSteps: 2,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.deepEqual(notifications, ["visible main-model thinking"]);
+  });
+
+  it("does not notify the UI when thinking effort is none", async () => {
+    let notificationCount = 0;
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        return {
+          message: {
+            role: "assistant",
+            content: "done",
+            reasoning_content: "provider returned this anyway",
+            tool_calls: [],
+          },
+        };
+      },
+    };
+    const currentState = state();
+    currentState.thinkingEffort = "none";
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      onReasoning: () => {
+        notificationCount += 1;
+      },
+    });
+
+    await runtime.run(currentState, "Complete the task", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(notificationCount, 0);
+  });
+
+  it("keeps a throwing reasoning presentation hook from interrupting the turn", async () => {
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete() {
+        return {
+          message: {
+            role: "assistant",
+            content: "done despite UI failure",
+            reasoning_content: "thinking",
+            tool_calls: [],
+          },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      onReasoning: () => {
+        throw new Error("renderer failed");
+      },
+    });
+
+    const result = await runtime.run(state(), "Complete the task", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(result.text, "done despite UI failure");
+  });
+
   it("continues text-only turns after the thread reaches Image #999", async () => {
     let requestCount = 0;
     const provider: ModelProvider = {

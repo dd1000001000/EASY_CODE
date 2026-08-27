@@ -431,6 +431,7 @@ export class EasyCodeApp {
         await this.executePrompt(
           input || "Analyze the attached image(s).",
           images,
+          true,
         );
         this.pendingImages = [];
       } catch (error) {
@@ -563,6 +564,31 @@ export class EasyCodeApp {
       case "memory":
         this.printMemory(command.args);
         return false;
+      case "thinking": {
+        if (command.args.length > 1) {
+          throw new Error("Usage: /thinking [id|last]");
+        }
+        const rawTarget = command.args[0]?.toLowerCase();
+        let target: number | "last" = "last";
+        if (rawTarget && rawTarget !== "last") {
+          if (!/^[1-9][0-9]{0,15}$/u.test(rawTarget)) {
+            throw new Error("Usage: /thinking [id|last]");
+          }
+          const id = Number(rawTarget);
+          if (!Number.isSafeInteger(id)) {
+            throw new Error("Usage: /thinking [id|last]");
+          }
+          target = id;
+        }
+        if (!this.terminal.showReasoning(target)) {
+          this.terminal.info(
+            target === "last"
+              ? "No Thinking content is available in this thread."
+              : `Thinking block #${target} is not available in this thread.`,
+          );
+        }
+        return false;
+      }
       case "sessions":
         this.printSessions();
         return false;
@@ -641,6 +667,7 @@ export class EasyCodeApp {
   private async executePrompt(
     userInput: string,
     images: readonly ImageAttachment[] = [],
+    presentReasoning = false,
   ): Promise<AgentRunResult> {
     this.requireProviderApiKey(this.state.provider);
     if (images.length) this.requireCurrentModelVision();
@@ -662,7 +689,7 @@ export class EasyCodeApp {
     process.on("SIGINT", onInterrupt);
 
     try {
-      const runtime = this.createRuntime();
+      const runtime = this.createRuntime(presentReasoning);
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.config.maxSteps,
         maxContextChars: this.config.maxContextChars,
@@ -681,7 +708,7 @@ export class EasyCodeApp {
     }
   }
 
-  private createRuntime(): AgentRuntime {
+  private createRuntime(presentReasoning: boolean): AgentRuntime {
     const effectiveConfig = this.effectiveConfig();
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
     const provider = createProvider(
@@ -750,6 +777,18 @@ export class EasyCodeApp {
         return this.terminal.approve(request);
       },
       onStatus: (status) => this.terminal.info(status),
+      ...(presentReasoning
+        ? {
+            onReasoning: ({ text }: { text: string }) => {
+              try {
+                this.terminal.addReasoning(text);
+              } catch {
+                // Reasoning presentation is transient and must never interrupt
+                // a persisted model response or its pending tool calls.
+              }
+            },
+          }
+        : {}),
       ...(visionCapable
         ? {
             attachImage: (input: {
@@ -1089,6 +1128,7 @@ export class EasyCodeApp {
     this.state = nextState;
     this.threadLease = nextLease;
     this.dirty = false;
+    this.terminal.clearReasoning();
   }
 
   private async resumeThread(threadId: string): Promise<void> {
@@ -1134,6 +1174,7 @@ export class EasyCodeApp {
     this.config.provider = recovered.provider;
     this.config[recovered.provider].model = recovered.model;
     this.dirty = repairedInterruptedTurn;
+    this.terminal.clearReasoning();
     this.save();
   }
 

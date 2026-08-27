@@ -53,5 +53,6 @@ describe("parseSlashCommand", () => {
   it("documents the model command", () => {
     assert.match(HELP_TEXT, /\/model/u);
     assert.match(HELP_TEXT, /qwen\|deepseek\|glm/u);
+    assert.match(HELP_TEXT, /\/thinking \[id\|last\]/u);
   });
 });

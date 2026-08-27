@@ -14,6 +14,11 @@ const {
   parseWindowsClipboardResult,
   resolveExecutable,
 } = require("../lib/clipboard");
+const {
+  createThinkingLinkProvider,
+  findThinkingMarkers,
+  showThinkingSequence,
+} = require("../extension");
 
 const tests = [];
 const test = (name, run) => tests.push({ name, run });
@@ -148,6 +153,86 @@ test("does not resolve a Linux clipboard helper from the workspace", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("parses only paired EASY CODE thinking markers", () => {
+  const line = "prefix ▶ Thinking #42 · completed in 1.2s · /thinking 42 suffix";
+  assert.deepEqual(findThinkingMarkers(line), [{
+    startIndex: line.indexOf("Thinking #42"),
+    length: "Thinking #42".length,
+    id: "42",
+  }]);
+
+  assert.deepEqual(
+    findThinkingMarkers("▶ Thinking #42 · completed · /thinking 43"),
+    [],
+  );
+  assert.deepEqual(
+    findThinkingMarkers("Thinking #42 · completed · /thinking 42"),
+    [],
+  );
+  assert.deepEqual(
+    findThinkingMarkers("▶ Thinking #042 · completed · /thinking 042"),
+    [],
+  );
+});
+
+test("builds a fixed show-thinking OSC sequence from numeric IDs", () => {
+  assert.equal(
+    showThinkingSequence("42"),
+    "\x1b]6973;easy-code;show-thinking;42\x07",
+  );
+  assert.throws(() => showThinkingSequence("42;echo owned"), TypeError);
+  assert.throws(() => showThinkingSequence("0"), TypeError);
+  assert.throws(() => showThinkingSequence("9999999999999999"), TypeError);
+  assert.throws(() => showThinkingSequence("1".repeat(20)), TypeError);
+});
+
+test("thinking links are scoped to an identified EASY CODE terminal", () => {
+  const terminal = {
+    sent: [],
+    sendText(text, addNewLine) {
+      this.sent.push({ text, addNewLine });
+    },
+  };
+  const enabledTerminals = new Set([terminal]);
+  const provider = createThinkingLinkProvider((candidate) => enabledTerminals.has(candidate));
+  const line = "▶ Thinking #7 · 315 tokens · /thinking 7";
+
+  const links = provider.provideTerminalLinks(
+    { line, terminal },
+    { isCancellationRequested: false },
+  );
+  assert.equal(links.length, 1);
+  assert.equal(line.slice(links[0].startIndex, links[0].startIndex + links[0].length), "Thinking #7");
+
+  provider.handleTerminalLink(links[0]);
+  assert.deepEqual(terminal.sent, [{
+    text: "\x1b]6973;easy-code;show-thinking;7\x07",
+    addNewLine: false,
+  }]);
+
+  enabledTerminals.delete(terminal);
+  provider.handleTerminalLink(links[0]);
+  assert.equal(terminal.sent.length, 1, "a stale link must be inert after EASY CODE exits");
+
+  provider.handleTerminalLink({ ...links[0] });
+  assert.equal(terminal.sent.length, 1, "a forged link object must be inert");
+});
+
+test("thinking link provider ignores other terminals and cancellation", () => {
+  const provider = createThinkingLinkProvider(() => false);
+  const context = {
+    line: "▶ Thinking #9 · completed · /thinking 9",
+    terminal: { sendText: () => assert.fail("must not send") },
+  };
+  assert.deepEqual(provider.provideTerminalLinks(context, { isCancellationRequested: false }), []);
+
+  const enabledProvider = createThinkingLinkProvider(() => true);
+  assert.deepEqual(
+    enabledProvider.provideTerminalLinks(context, { isCancellationRequested: true }),
+    [],
+  );
 });
 
 (async () => {

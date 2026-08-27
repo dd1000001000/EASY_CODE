@@ -207,6 +207,8 @@ easy-code --resume <thread-id>
 - DeepSeek：对于 `deepseek-v4-flash` 和 `deepseek-v4-pro`，`none` 会关闭思考，`low` 和 `high` 使用同名 Provider 档位；DeepSeek 会把 `medium` 按 `high` 处理。实验性视觉模型目前不会收到思考参数。
 - GLM：`glm-5.2` 可通过 `none` 关闭思考，也接受另外三档，但 GLM 会把 `low` 和 `medium` 映射为自身的 `high`。`glm-5.3` 和 `glm-5.3-flash` 始终进行思考，因此选择 `none` 时只保留该选择，不发送关闭参数；它们的 `medium` 会映射为 `high`。
 
+当所选强度不是 `none`，并且 Provider 返回了 `reasoning_content` 时，EASY CODE 会保留灰色的 `Thinking #2` 标记，并在下一行用灰色自动显示最多 160 个字符的单行预览；内容更长时以 `...` 结尾。可以使用 `/thinking`、`/thinking <id>` 或 `Ctrl+T` 查看展开后的受限内容。在 VS Code 集成终端中，随 npm 安装的扩展仍可让标记变为可点击链接，但现在无需依赖点击。预览和展开内容都会先进行控制字符清理与敏感信息脱敏。非交互式 `easy-code run` 不输出这套交互展示。
+
 运行中可以切换 Provider 或模型：
 
 ```text
@@ -333,6 +335,7 @@ EASY CODE 会读取用户配置目录中的 `EASYCODE.md`，以及工作区根�
 /memory short              查看自动短期记忆
 /memory long               查看自动长期记忆
 /memory long <id>          查看一条长期记忆
+/thinking [id|last]        展示展开后的模型 Thinking
 /sessions                  列出历史 Thread
 /resume <id>               恢复 Thread
 /new                       新建 Thread

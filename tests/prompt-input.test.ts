@@ -5,6 +5,7 @@ import type { ImageAttachment } from "../src/core/types.js";
 import {
   readPrompt,
   VSCODE_IMAGE_PASTE_SEQUENCE,
+  vscodeShowThinkingSequence,
 } from "../src/cli/prompt-input.js";
 import { Terminal } from "../src/cli/terminal.js";
 import { describe, it } from "./harness.js";
@@ -23,6 +24,10 @@ class TtyInput extends PassThrough {
 
 class TtyOutput extends PassThrough {
   readonly isTTY = true;
+  constructor(readonly columns = 80) {
+    super();
+  }
+  readonly rows = 24;
 }
 
 function attachment(index: number): ImageAttachment {
@@ -113,6 +118,146 @@ describe("image-aware CLI prompt", () => {
     assert.ok(result);
     assert.match(result.text, /\[Image #1\]/u);
     assert.deepEqual(result.images.map((image) => image.label), ["Image #1"]);
+  });
+
+  it("uses Ctrl+T to show the latest thinking without changing typed input", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const shown: Array<number | "last"> = [];
+    let markExpanded: (() => void) | undefined;
+    const expanded = new Promise<void>((resolve) => {
+      markExpanded = resolve;
+    });
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onShowThinking: (id) => {
+        shown.push(id);
+        output.write("expanded thinking\n");
+        markExpanded?.();
+      },
+    });
+
+    input.write(Buffer.from("draft"));
+    input.write(Buffer.from([0x14]));
+    await expanded;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const afterExpansion = transcript.slice(transcript.indexOf("expanded thinking"));
+    assert.match(afterExpansion, /> draft/u);
+    input.write(Buffer.from("!\r"));
+    const result = await promise;
+
+    assert.equal(result?.text, "draft!");
+    assert.deepEqual(shown, ["last"]);
+    assert.equal(input.rawModeTransitions.at(-1), false);
+  });
+
+  it("handles a fragmented VS Code thinking link without leaking protocol bytes", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const shown: Array<number | "last"> = [];
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onShowThinking: (id) => {
+        shown.push(id);
+      },
+    });
+    const sequence = Buffer.from(vscodeShowThinkingSequence(42));
+
+    input.write("keep");
+    input.write(sequence.subarray(0, 9));
+    input.write(sequence.subarray(9, 24));
+    input.write(sequence.subarray(24));
+    input.write(" me\r");
+    const result = await promise;
+
+    assert.equal(result?.text, "keep me");
+    assert.deepEqual(shown, [42]);
+  });
+
+  it("redraws a wrapped input buffer after expansion", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput(10);
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let markExpanded: (() => void) | undefined;
+    const expanded = new Promise<void>((resolve) => {
+      markExpanded = resolve;
+    });
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onShowThinking: () => {
+        output.write("wrapped expansion\n");
+        markExpanded?.();
+      },
+    });
+
+    input.write("abcdefghijk");
+    input.write(Buffer.from([0x14]));
+    await expanded;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.match(transcript, /wrapped expansion\n> abcdefghijk/u);
+    input.write("X\r");
+
+    assert.equal((await promise)?.text, "abcdefghijkX");
+  });
+
+  it("swallows private Thinking OSC during approval and secret input", async () => {
+    const approvalInput = new TtyInput();
+    const approvalOutput = new TtyOutput();
+    approvalOutput.resume();
+    const approvalTerminal = new Terminal(approvalInput, approvalOutput);
+    const approval = approvalTerminal.question("Approve? ");
+    approvalInput.write(`${vscodeShowThinkingSequence(7)}y\r`);
+    assert.equal(await approval, "y");
+    approvalTerminal.close();
+
+    const secretInput = new TtyInput();
+    const secretOutput = new TtyOutput();
+    secretOutput.resume();
+    const secretTerminal = new Terminal(secretInput, secretOutput);
+    const secret = secretTerminal.readSecret("Key: ");
+    secretInput.write(`${vscodeShowThinkingSequence(8)}actual-secret\r`);
+    assert.equal(await secret, "actual-secret");
+    assert.equal(secretInput.rawModeTransitions.at(-1), false);
+    secretTerminal.close();
+  });
+
+  it("does not render interactive Thinking UI when either stream is not a TTY", () => {
+    const input = new TtyInput();
+    const output = new PassThrough();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const terminal = new Terminal(input, output);
+
+    assert.equal(terminal.isInteractive(), false);
+    assert.equal(terminal.addReasoning("must remain hidden"), 1);
+    assert.equal(terminal.showReasoning("last"), false);
+    assert.equal(transcript, "");
+    terminal.close();
   });
 
   it("does not treat Alt+V as an image paste shortcut", async () => {

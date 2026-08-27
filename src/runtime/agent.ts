@@ -1,6 +1,7 @@
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
+  type AgentReasoningNotification,
   type AgentRunResult,
   type AgentTool,
   type ApprovalHandler,
@@ -60,6 +61,8 @@ export interface AgentRuntimeDependencies {
   ) => Promise<void>;
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
+  /** Transient presentation only; reasoning is persisted in its assistant message. */
+  onReasoning?: (notification: AgentReasoningNotification) => void;
   attachImage?: (input: {
     threadId: string;
     label: string;
@@ -257,6 +260,30 @@ export class AgentRuntime {
         phase: "completed",
         payload: assistantMessage
       });
+      const reasoningText = response.message.reasoning_content;
+      const thinkingEffort = state.thinkingEffort;
+      if (
+        thinkingEffort !== "none" &&
+        reasoningText !== undefined &&
+        reasoningText !== null &&
+        reasoningText.trim().length > 0
+      ) {
+        try {
+          this.dependencies.onReasoning?.({
+            type: "reasoning",
+            text: reasoningText,
+            threadId: state.threadId,
+            turnId,
+            step,
+            provider: this.dependencies.provider.name,
+            model: this.dependencies.provider.model,
+            thinkingEffort,
+          });
+        } catch {
+          // This hook is ephemeral presentation only. A broken UI must not
+          // interrupt the durable assistant message or its pending tool calls.
+        }
+      }
 
       const calls = response.message.tool_calls ?? [];
       if (calls.length === 0) {

@@ -429,6 +429,39 @@ describe("/model", () => {
   });
 });
 
+describe("thinking commands", () => {
+  it("shows indexed thinking and invalidates old blocks when the thread changes", async () => {
+    const fixture = await createAppFixture(
+      { qwen: "configured-for-test" },
+      {},
+    );
+    try {
+      const firstId = fixture.terminal.addReasoning("First private reasoning block.");
+      assert.equal(firstId, 1);
+      await fixture.app.handleSlashCommand("/thinking");
+      assert.match(fixture.output(), /▼ Thinking #1[\s\S]*First private reasoning block\./u);
+
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/thinking 0"),
+        /Usage: \/thinking \[id\|last\]/u,
+      );
+      await fixture.app.handleSlashCommand("/new");
+      await fixture.app.handleSlashCommand(`/thinking ${firstId}`);
+      assert.match(
+        fixture.output(),
+        /Thinking block #1 is not available in this thread\./u,
+      );
+
+      const secondId = fixture.terminal.addReasoning("Second thread reasoning.");
+      assert.equal(secondId, 2);
+      await fixture.app.handleSlashCommand("/thinking last");
+      assert.match(fixture.output(), /▼ Thinking #2[\s\S]*Second thread reasoning\./u);
+    } finally {
+      fixture.close();
+    }
+  });
+});
+
 describe("thread leases", () => {
   it("transfers ownership for /new and /resume and releases it on close", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });

@@ -25,6 +25,18 @@ export function sanitizeCommandOutput(value: string): string {
   });
 }
 
+/**
+ * Canonicalize untrusted prose before matching secrets. This intentionally
+ * removes, rather than escapes, invisible controls so they cannot be inserted
+ * inside labels such as `api_key` to defeat a later redaction pass.
+ */
+export function stripTerminalControls(value: string): string {
+  return value
+    .replace(ANSI_OSC, "")
+    .replace(ANSI_CSI, "")
+    .replace(UNSAFE_TERMINAL_CHARACTERS, "");
+}
+
 /** Bounded, streaming output retention with head/tail diagnostics. */
 export class OutputCollector {
   private readonly decoder = new StringDecoder("utf8");

@@ -86,6 +86,7 @@ EASY CODE commands
   /memory short              Show automatic short-term memory
   /memory long               Show automatic long-term memory
   /memory long <id>          Show one long-term memory entry
+  /thinking [id|last]        Show the expanded model thinking
   /sessions                  List previous threads
   /resume <id>               Resume a thread
   /new                       Start a new thread

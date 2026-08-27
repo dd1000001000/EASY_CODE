@@ -351,7 +351,7 @@ describe("VS Code extension installer", () => {
 
   it("verifies that the bundled VSIX matches its generated manifest and sources", () => {
     const result = vsixVerifier.verifyBundledVsix({ packageRoot: process.cwd() });
-    assert.equal(result.extensionVersion, "0.1.0");
+    assert.equal(result.extensionVersion, "0.1.1");
     assert.equal(result.sourcesVerified, true);
   });
 

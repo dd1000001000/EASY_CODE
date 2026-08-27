@@ -9,9 +9,16 @@ import type {
 import { readSecretInput } from "../config/secret-input.js";
 import { renderFileDiff } from "./file-diff.js";
 import {
+  PrivateOscInputFilter,
   readPrompt,
+  type PromptInput,
   type PromptSubmission,
 } from "./prompt-input.js";
+import {
+  ReasoningRegistry,
+  renderReasoningBody,
+  renderReasoningMarker,
+} from "./reasoning.js";
 import {
   selectModel,
   selectProvider,
@@ -27,25 +34,33 @@ export class Terminal {
   private rl?: readline.Interface;
   private closed = false;
   private promptActive = false;
+  private guardedInputActive = false;
   private activePromptController?: AbortController;
+  private readlineInputFilter?: PrivateOscInputFilter;
+  private readonly reasoning = new ReasoningRegistry();
 
   constructor(
-    private readonly input: NodeJS.ReadableStream = process.stdin,
+    private readonly input: PromptInput = process.stdin,
     private readonly output: NodeJS.WritableStream = process.stdout
   ) {}
 
   isInteractive(): boolean {
-    return Boolean((this.input as NodeJS.ReadStream).isTTY);
+    return Boolean(
+      this.input.isTTY &&
+      (this.output as NodeJS.WriteStream).isTTY,
+    );
   }
 
   question(prompt: string): Promise<string | null> {
     if (this.closed) return Promise.resolve(null);
-    if (this.promptActive) throw new Error("A terminal prompt is already active.");
+    if (this.promptActive || this.guardedInputActive) {
+      throw new Error("A terminal prompt is already active.");
+    }
     const rl = this.ensureReadline();
     return new Promise((resolve) => {
       let settled = false;
       const onClose = (): void => {
-        if (this.rl === rl) this.rl = undefined;
+        this.releaseReadlineInput(rl);
         if (settled) return;
         settled = true;
         this.closed = true;
@@ -55,8 +70,8 @@ export class Terminal {
       rl.question(prompt, (answer) => {
         if (settled) return;
         settled = true;
-        if (this.rl === rl) this.rl = undefined;
         rl.close();
+        this.releaseReadlineInput(rl);
         resolve(answer);
       });
     });
@@ -73,7 +88,7 @@ export class Terminal {
     },
   ): Promise<PromptSubmission | null> {
     if (this.closed) return null;
-    if (this.rl || this.promptActive) {
+    if (this.rl || this.promptActive || this.guardedInputActive) {
       throw new Error("A terminal prompt is already active.");
     }
     if (
@@ -95,6 +110,18 @@ export class Terminal {
         initialImageCount: options.initialImageCount,
         signal: promptController.signal,
         captureImage: options.captureImage,
+        onShowThinking: (id) => {
+          const shown = id === "last"
+            ? this.showLatestReasoning()
+            : this.showReasoning(id);
+          if (!shown) {
+            this.info(
+              id === "last"
+                ? "No Thinking content is available in this thread."
+                : `Thinking block #${id} is not available in this thread.`,
+            );
+          }
+        },
       });
       if (result === null) this.closed = true;
       return result;
@@ -106,58 +133,66 @@ export class Terminal {
     }
   }
 
-  selectProvider(
+  async selectProvider(
     choices: readonly ProviderSelectorChoice[],
     initialProvider: ProviderSelectorChoice["provider"],
   ): Promise<ProviderSelectorChoice["provider"] | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive) throw new Error("Provider selection cannot start while a prompt is active.");
-    return selectProvider(choices, {
-      input: this.input as ModelSelectorInput,
-      output: this.output as ModelSelectorOutput,
-      initialProvider,
-      color: this.colorEnabled(),
-    });
+    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Provider selection cannot start while a prompt is active.");
+    return this.withPrivateProtocolFilteredInput((input) =>
+      selectProvider(choices, {
+        input: input as ModelSelectorInput,
+        output: this.output as ModelSelectorOutput,
+        initialProvider,
+        color: this.colorEnabled(),
+      }),
+    );
   }
 
-  selectModel(
+  async selectModel(
     providerName: string,
     choices: readonly ModelSelectorChoice[],
     initialModel?: string,
   ): Promise<string | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive) throw new Error("Model selection cannot start while a prompt is active.");
-    return selectModel(providerName, choices, {
-      input: this.input as ModelSelectorInput,
-      output: this.output as ModelSelectorOutput,
-      initialModel,
-      color: this.colorEnabled(),
-    });
+    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Model selection cannot start while a prompt is active.");
+    return this.withPrivateProtocolFilteredInput((input) =>
+      selectModel(providerName, choices, {
+        input: input as ModelSelectorInput,
+        output: this.output as ModelSelectorOutput,
+        initialModel,
+        color: this.colorEnabled(),
+      }),
+    );
   }
 
-  selectThinkingEffort(
+  async selectThinkingEffort(
     providerName: string,
     model: string,
     choices: readonly ThinkingEffortSelectorChoice[],
     initialEffort: ThinkingEffort,
   ): Promise<ThinkingEffort | undefined> {
     if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive) throw new Error("Thinking effort selection cannot start while a prompt is active.");
-    return selectThinkingEffort(providerName, model, choices, {
-      input: this.input as ModelSelectorInput,
-      output: this.output as ModelSelectorOutput,
-      initialEffort,
-      color: this.colorEnabled(),
-    });
+    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Thinking effort selection cannot start while a prompt is active.");
+    return this.withPrivateProtocolFilteredInput((input) =>
+      selectThinkingEffort(providerName, model, choices, {
+        input: input as ModelSelectorInput,
+        output: this.output as ModelSelectorOutput,
+        initialEffort,
+        color: this.colorEnabled(),
+      }),
+    );
   }
 
-  readSecret(prompt: string): Promise<string> {
+  async readSecret(prompt: string): Promise<string> {
     if (this.closed) return Promise.reject(new Error("Terminal input is closed."));
-    if (this.rl || this.promptActive) throw new Error("Secret input must be read before the prompt is opened.");
-    return readSecretInput(
-      this.input as ModelSelectorInput,
-      this.output,
-      prompt,
+    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Secret input must be read before the prompt is opened.");
+    return this.withPrivateProtocolFilteredInput((input) =>
+      readSecretInput(
+        input as ModelSelectorInput,
+        this.output,
+        prompt,
+      ),
     );
   }
 
@@ -192,28 +227,93 @@ export class Terminal {
     this.write(renderFileDiff(presentation, { color: this.colorEnabled() }));
   }
 
+  /** Store provider thinking safely and print only its collapsed marker. */
+  addReasoning(text: string): number {
+    const block = this.reasoning.add(text);
+    if (this.isInteractive()) {
+      this.write(renderReasoningMarker(block, { color: this.colorEnabled() }));
+    }
+    return block.id;
+  }
+
+  /** Append one bounded, sanitized thinking block. Missing IDs are silent. */
+  showReasoning(id: number | "last"): boolean {
+    if (!this.isInteractive()) return false;
+    const block = this.reasoning.get(id);
+    if (!block) return false;
+    this.write(renderReasoningBody(block, { color: this.colorEnabled() }));
+    return true;
+  }
+
+  showLatestReasoning(): boolean {
+    return this.showReasoning("last");
+  }
+
+  /** Drop the current Thread's blocks without reusing IDs from old markers. */
+  clearReasoning(): void {
+    this.reasoning.clear();
+  }
+
   close(): void {
     if (this.closed) return;
     this.closed = true;
     this.activePromptController?.abort();
     this.activePromptController = undefined;
-    this.rl?.close();
-    this.rl = undefined;
+    const rl = this.rl;
+    rl?.close();
+    if (rl) this.releaseReadlineInput(rl);
   }
 
   private ensureReadline(): readline.Interface {
     if (this.closed) throw new Error("Terminal input is closed.");
     if (!this.rl) {
-      const rl = readline.createInterface({
-        input: this.input,
-        output: this.output,
-        terminal:
-          Boolean((this.input as NodeJS.ReadStream).isTTY) &&
-          Boolean((this.output as NodeJS.WriteStream).isTTY),
-      });
-      this.rl = rl;
+      const inputFilter = new PrivateOscInputFilter(this.input);
+      this.input.pipe(inputFilter);
+      try {
+        const rl = readline.createInterface({
+          input: inputFilter,
+          output: this.output,
+          terminal:
+            Boolean(this.input.isTTY) &&
+            Boolean((this.output as NodeJS.WriteStream).isTTY),
+        });
+        this.rl = rl;
+        this.readlineInputFilter = inputFilter;
+      } catch (error) {
+        this.input.unpipe(inputFilter);
+        inputFilter.destroy();
+        throw error;
+      }
     }
     return this.rl;
+  }
+
+  private releaseReadlineInput(rl: readline.Interface): void {
+    if (this.rl !== rl) return;
+    this.rl = undefined;
+    const inputFilter = this.readlineInputFilter;
+    this.readlineInputFilter = undefined;
+    if (!inputFilter) return;
+    this.input.unpipe(inputFilter);
+    if (!inputFilter.destroyed) inputFilter.destroy();
+  }
+
+  private async withPrivateProtocolFilteredInput<T>(
+    action: (input: PrivateOscInputFilter) => Promise<T>,
+  ): Promise<T> {
+    if (this.guardedInputActive) {
+      throw new Error("A terminal input operation is already active.");
+    }
+    this.guardedInputActive = true;
+    const inputFilter = new PrivateOscInputFilter(this.input);
+    this.input.pipe(inputFilter);
+    try {
+      return await action(inputFilter);
+    } finally {
+      this.input.unpipe(inputFilter);
+      if (!inputFilter.destroyed) inputFilter.destroy();
+      this.guardedInputActive = false;
+    }
   }
 
   private colorEnabled(): boolean {

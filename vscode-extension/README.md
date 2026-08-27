@@ -1,8 +1,8 @@
-# EASY CODE Image Paste
+# EASY CODE Terminal Integration
 
-This UI extension lets the VS Code integrated terminal notify EASY CODE when the system clipboard contains an image. It never sends image bytes through the terminal.
+This UI extension adds native image paste and clickable thinking markers to EASY CODE in the VS Code integrated terminal.
 
-## Behavior
+## Image paste
 
 - Windows: `Ctrl+V`
 - Linux: `Ctrl+Shift+V`
@@ -26,6 +26,24 @@ When an image is present, the extension sends only this fixed control sequence t
 ```text
 ESC ] 6973 ; easy-code ; paste-image BEL
 ```
+
+It never sends image bytes through the terminal.
+
+## Thinking markers
+
+EASY CODE can print a marker such as:
+
+```text
+▶ Thinking #42 · completed in 1.2s · /thinking 42
+```
+
+The extension makes `Thinking #42` clickable. Activating a current or historical marker sends its paired numeric ID back to the same terminal with no trailing newline:
+
+```text
+ESC ] 6973 ; easy-code ; show-thinking ; 42 BEL
+```
+
+Terminal links are offered only while that terminal is identified as an EASY CODE terminal through shell execution tracking or the explicit enable command. A marker must use the exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler emits only the fixed private OSC sequence above; marker text can never become a shell command.
 
 ## Development
 
