@@ -244,6 +244,8 @@ Switch modes during a session:
 
 ## Current features
 
+When EASY CODE is waiting for a model API response in an interactive terminal, it shows a gray spinner with elapsed time. The indicator covers both Auto-mode routing and every agent-loop model request, and is cleared on success, error, or interruption. Piped and CI output stays static.
+
 ### Agent tools
 
 The model can use up to nine tools. `read_image` is exposed only to models explicitly marked as vision-capable.

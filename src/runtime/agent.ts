@@ -72,6 +72,9 @@ export interface AgentRuntimeDependencies {
   ) => Promise<void>;
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
+  /** Transient presentation lifecycle around each provider API request. */
+  onModelRequestStart?: (text: string) => void;
+  onModelRequestEnd?: () => void;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
   onReasoning?: (notification: AgentReasoningNotification) => void;
   attachImage?: (input: {
@@ -223,17 +226,20 @@ export class AgentRuntime {
             route: "direct_code" as const,
             reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
           }
-        : await (async () => {
+          : await (async () => {
             this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
             const routingInput = inputImages.length
               ? `${userInput}\n\n[${inputImages.length} image attachment(s) are included.]`
               : userInput;
-            return determineAutoRoute(
-              this.dependencies.provider,
-              routingInput,
-              options.signal,
-              inputImages,
-              state.thinkingEffort,
+            return this.withModelRequestActivity(
+              `Waiting for ${this.dependencies.provider.model} response`,
+              () => determineAutoRoute(
+                this.dependencies.provider,
+                routingInput,
+                options.signal,
+                inputImages,
+                state.thinkingEffort,
+              ),
             );
           })();
       effectiveMode = route.route === "plan_only" ? "plan" : "code";
@@ -301,13 +307,16 @@ export class AgentRuntime {
 
       let response;
       try {
-        response = await this.dependencies.provider.complete({
-          messages,
-          currentTurnImageIds: turnImages.map((image) => image.id),
-          tools: enabledTools.map((tool) => tool.definition),
-          signal: options.signal,
-          thinkingEffort: state.thinkingEffort,
-        });
+        response = await this.withModelRequestActivity(
+          `Waiting for ${this.dependencies.provider.model} response`,
+          () => this.dependencies.provider.complete({
+            messages,
+            currentTurnImageIds: turnImages.map((image) => image.id),
+            tools: enabledTools.map((tool) => tool.definition),
+            signal: options.signal,
+            thinkingEffort: state.thinkingEffort,
+          }),
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await this.dependencies.appendEvent({
@@ -733,6 +742,26 @@ export class AgentRuntime {
         }
       }
       return result;
+    }
+  }
+
+  private async withModelRequestActivity<T>(
+    text: string,
+    request: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      this.dependencies.onModelRequestStart?.(text);
+    } catch {
+      // Transient terminal presentation must never prevent an API request.
+    }
+    try {
+      return await request();
+    } finally {
+      try {
+        this.dependencies.onModelRequestEnd?.();
+      } catch {
+        // A broken presentation hook must not replace a model result or error.
+      }
     }
   }
 

@@ -810,6 +810,8 @@ export class EasyCodeApp {
         return this.terminal.approve(request);
       },
       onStatus: (status) => this.terminal.info(status),
+      onModelRequestStart: (text) => this.terminal.startActivity(text),
+      onModelRequestEnd: () => this.terminal.stopActivity(),
       ...(presentReasoning
         ? {
             onReasoning: ({ text }: { text: string }) => {
