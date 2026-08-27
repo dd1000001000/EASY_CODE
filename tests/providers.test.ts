@@ -1,0 +1,412 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import {
+  DEFAULT_DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_QWEN_BASE_URL,
+  DEFAULT_QWEN_MODEL,
+  createDefaultEasyCodeConfig,
+  loadEasyCodeConfig,
+} from "../src/config/index.js";
+import type { ToolDefinition } from "../src/core/types.js";
+import {
+  HttpTransportError,
+  ProviderError,
+  createProvider,
+  postJsonWithNode,
+  type JsonPostRequest,
+  type JsonPostTransport,
+} from "../src/providers/index.js";
+import { describe, it } from "./harness.js";
+
+describe("configuration", () => {
+  it("loads defaults, user TOML, workspace TOML, and environment in order", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-config-"));
+    const workspace = path.join(temporary, "workspace");
+    const configDir = path.join(temporary, "user-config");
+    try {
+      await mkdir(path.join(workspace, ".easycode"), { recursive: true });
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        path.join(configDir, "config.toml"),
+        `provider = "deepseek"
+mode = "plan"
+max_steps = 12
+
+[qwen]
+model = "user-qwen"
+base_url = "https://user-qwen.example/v1/"
+
+[deepseek]
+model = "user-deepseek"
+`,
+        "utf8",
+      );
+      await writeFile(
+        path.join(workspace, ".easycode", "config.toml"),
+        `mode = "code"
+max_steps = 18
+
+[qwen]
+model = "workspace-qwen"
+`,
+        "utf8",
+      );
+
+      const config = await loadEasyCodeConfig({
+        workspaceRoot: workspace,
+        configDir,
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+        env: {
+          EASY_CODE_PROVIDER: "qwen",
+          EASY_CODE_MAX_STEPS: "24",
+          QWEN_API_KEY: "qwen-env-key",
+          DASHSCOPE_API_KEY: "fallback-key",
+          DEEPSEEK_API_KEY: "deepseek-env-key",
+        },
+        credentialStore: false,
+      });
+
+      assert.equal(config.provider, "qwen");
+      assert.equal(config.mode, "code");
+      assert.equal(config.maxSteps, 24);
+      assert.equal(config.qwen.apiKey, "qwen-env-key");
+      assert.equal(config.qwen.model, "workspace-qwen");
+      assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
+      assert.equal(config.deepseek.model, "user-deepseek");
+      assert.equal(config.deepseek.apiKey, "deepseek-env-key");
+      assert.equal(config.workspaceRoot, path.resolve(workspace));
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("provides the required Qwen and DeepSeek defaults and key alias", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-defaults-"));
+    try {
+      const config = await loadEasyCodeConfig({
+        workspaceRoot: temporary,
+        configDir: path.join(temporary, "config"),
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+        env: { DASHSCOPE_API_KEY: "dashscope-key" },
+        credentialStore: false,
+      });
+      assert.equal(config.qwen.baseUrl, DEFAULT_QWEN_BASE_URL);
+      assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
+      assert.equal(config.qwen.apiKey, "dashscope-key");
+      assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
+      assert.equal(config.deepseek.model, DEFAULT_DEEPSEEK_MODEL);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("does not echo TOML contents when parsing fails", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-invalid-"));
+    const configDir = path.join(temporary, "config");
+    try {
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        path.join(configDir, "config.toml"),
+        `[qwen]\napi_key = "never-print-this" trailing-invalid`,
+        "utf8",
+      );
+      await assert.rejects(
+        loadEasyCodeConfig({
+          workspaceRoot: temporary,
+          configDir,
+          dataDir: path.join(temporary, "data"),
+          cacheDir: path.join(temporary, "cache"),
+          env: {},
+          credentialStore: false,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.doesNotMatch(error.message, /never-print-this/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace attempts to redirect credentials or provider traffic", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-trust-root-"));
+    const workspaceConfigDir = path.join(temporary, ".easycode");
+    try {
+      await mkdir(workspaceConfigDir, { recursive: true });
+      await writeFile(
+        path.join(workspaceConfigDir, "config.toml"),
+        `[qwen]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
+        "utf8",
+      );
+      await assert.rejects(
+        loadEasyCodeConfig({
+          workspaceRoot: temporary,
+          configDir: path.join(temporary, "user-config"),
+          dataDir: path.join(temporary, "data"),
+          cacheDir: path.join(temporary, "cache"),
+          env: {},
+          credentialStore: false,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /trust-root fields/);
+          assert.doesNotMatch(error.message, /workspace-secret|attacker\.invalid/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("OpenAI-compatible providers", () => {
+  it("sends and parses native Chat Completions tool_calls", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.qwen.apiKey = "test-qwen-key";
+    const captured: JsonPostRequest[] = [];
+    const transport: JsonPostTransport = async (request) => {
+      captured.push(request);
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          choices: [
+            {
+              finish_reason: "tool_calls",
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning_content: "inspect first",
+                tool_calls: [
+                  {
+                    id: "call_1",
+                    type: "function",
+                    function: {
+                      name: "read_file",
+                      arguments: '{"path":"src/index.ts"}',
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 11,
+            completion_tokens: 7,
+            total_tokens: 18,
+          },
+        }),
+      };
+    };
+    const tool: ToolDefinition = {
+      type: "function",
+      function: {
+        name: "read_file",
+        description: "Read a file",
+        parameters: { type: "object" },
+      },
+    };
+    const provider = createProvider(config, "qwen", undefined, { transport });
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "Inspect the entry point" }],
+      tools: [tool],
+      maxTokens: 512,
+    });
+
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0]?.url.href, `${DEFAULT_QWEN_BASE_URL}/chat/completions`);
+    assert.equal(captured[0]?.headers.authorization, "Bearer test-qwen-key");
+    const requestBody = JSON.parse(captured[0]?.body ?? "{}") as {
+      model?: string;
+      tools?: unknown[];
+      max_tokens?: number;
+    };
+    assert.equal(requestBody.model, DEFAULT_QWEN_MODEL);
+    assert.equal(requestBody.tools?.length, 1);
+    assert.equal(requestBody.max_tokens, 512);
+    assert.equal(response.message.tool_calls?.[0]?.id, "call_1");
+    assert.equal(response.message.reasoning_content, "inspect first");
+    assert.equal(response.finishReason, "tool_calls");
+    assert.equal(response.usage?.totalTokens, 18);
+  });
+
+  it("retries only up to maxRetries and honors model overrides", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    config.deepseek.maxRetries = 2;
+    let attempts = 0;
+    const delays: number[] = [];
+    const transport: JsonPostTransport = async (request) => {
+      attempts += 1;
+      assert.equal(request.url.href, "https://api.deepseek.com/chat/completions");
+      if (attempts < 3) {
+        return {
+          statusCode: 503,
+          headers: {},
+          body: JSON.stringify({ error: { message: "temporarily unavailable" } }),
+        };
+      }
+      return {
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          choices: [
+            {
+              finish_reason: "stop",
+              message: { role: "assistant", content: "done" },
+            },
+          ],
+        }),
+      };
+    };
+    const provider = createProvider(config, "deepseek", "deepseek-test-model", {
+      transport,
+      random: () => 0,
+      sleep: async (delay) => {
+        delays.push(delay);
+      },
+    });
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.equal(provider.model, "deepseek-test-model");
+    assert.equal(response.message.content, "done");
+    assert.equal(attempts, 3);
+    assert.deepEqual(delays, [400, 800]);
+  });
+
+  it("redacts credentials from API and transport errors", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    const secret = "sk-super-secret-value";
+    config.qwen.apiKey = secret;
+    config.qwen.maxRetries = 0;
+    const provider = createProvider(config, "qwen", undefined, {
+      transport: async () => ({
+        statusCode: 401,
+        headers: {},
+        body: JSON.stringify({
+          error: { message: `invalid Bearer ${secret}; token=${secret}` },
+        }),
+      }),
+    });
+
+    await assert.rejects(
+      provider.complete({ messages: [{ role: "user", content: "hello" }] }),
+      (error: unknown) => {
+        assert.ok(error instanceof ProviderError);
+        assert.doesNotMatch(error.message, new RegExp(secret));
+        assert.match(error.message, /\[REDACTED\]/);
+        assert.equal(error.statusCode, 401);
+        return true;
+      },
+    );
+  });
+});
+
+describe("Node HTTP JSON transport", () => {
+  it("enforces the response byte cap", async () => {
+    await withServer(
+      (_request, response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("x".repeat(256));
+      },
+      async (url) => {
+        await assert.rejects(
+          postJsonWithNode({
+            url,
+            headers: { "content-type": "application/json" },
+            body: "{}",
+            timeoutMs: 1_000,
+            maxResponseBytes: 32,
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof HttpTransportError);
+            assert.equal(error.kind, "response_too_large");
+            return true;
+          },
+        );
+      },
+    );
+  });
+
+  it("supports AbortSignal without Node 18 APIs", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      postJsonWithNode({
+        url: new URL("http://127.0.0.1:1/chat/completions"),
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        timeoutMs: 1_000,
+        maxResponseBytes: 1_024,
+        signal: controller.signal,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof HttpTransportError);
+        assert.equal(error.kind, "aborted");
+        return true;
+      },
+    );
+  });
+
+  it("enforces a total request timeout", async () => {
+    await withServer(
+      (_request, response) => {
+        setTimeout(() => {
+          if (!response.destroyed) response.end('{"ok":true}');
+        }, 100);
+      },
+      async (url) => {
+        await assert.rejects(
+          postJsonWithNode({
+            url,
+            headers: { "content-type": "application/json" },
+            body: "{}",
+            timeoutMs: 10,
+            maxResponseBytes: 1_024,
+          }),
+          (error: unknown) => {
+            assert.ok(error instanceof HttpTransportError);
+            assert.equal(error.kind, "timeout");
+            return true;
+          },
+        );
+      },
+    );
+  });
+});
+
+async function withServer(
+  handler: (request: IncomingMessage, response: ServerResponse) => void,
+  run: (url: URL) => Promise<void>,
+): Promise<void> {
+  const server = createServer(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    await run(new URL(`http://127.0.0.1:${address.port}/chat/completions`));
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}

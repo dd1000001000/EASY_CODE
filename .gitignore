@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-test/
+coverage/
+*.log
+.env
+.easycode/
+.easy-code-command-*/
+.node16-install-test/
+.npm-cache-test/
+*.db
+*.db-shm
+*.db-wal
+test-api-key.txt
