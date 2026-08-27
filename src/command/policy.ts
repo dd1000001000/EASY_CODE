@@ -3,6 +3,7 @@ import type { AgentMode } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { analyzeNpmInstall } from "./npm-installer.js";
+import { inspectExplicitShellInvocation } from "./shell.js";
 import type {
   CommandCapability,
   CommandPolicyDecision,
@@ -10,18 +11,7 @@ import type {
   RunCommandInput,
 } from "./types.js";
 
-const SHELL_PROGRAMS = new Set([
-  "sh",
-  "bash",
-  "zsh",
-  "fish",
-  "dash",
-  "cmd",
-  "powershell",
-  "pwsh",
-  "wscript",
-  "cscript",
-]);
+const SCRIPT_HOSTS = new Set(["wscript", "cscript"]);
 
 const SYSTEM_PROGRAMS = new Set([
   "sudo",
@@ -178,8 +168,25 @@ export class CommandPolicy {
     const name = executableName(command);
     const lowerArgs = command.args.map((argument) => argument.toLowerCase());
 
-    if (SHELL_PROGRAMS.has(name)) {
-      return decision("deny", "destructive", "Shell execution is not exposed by run_command", "deny.shell");
+    if (SCRIPT_HOSTS.has(name)) {
+      return decision("deny", "destructive", "Windows Script Host execution is disabled", "deny.script_host");
+    }
+    const shell = inspectExplicitShellInvocation(name, command.args);
+    if (shell && !shell.valid) {
+      return decision(
+        "deny",
+        "shell_exec",
+        shell.reason ?? "Invalid explicit shell invocation",
+        "deny.shell_protocol",
+      );
+    }
+    if (shell) {
+      return modeDecision(
+        mode,
+        "shell_exec",
+        "Executes an explicit shell command as the current OS user without an OS sandbox",
+        "ask.shell_exec",
+      );
     }
     if (SYSTEM_PROGRAMS.has(name)) {
       return decision("deny", "system_write", "System-level package and configuration commands are disabled", "deny.system");

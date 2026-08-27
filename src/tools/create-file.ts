@@ -92,6 +92,11 @@ export class CreateFileTool implements AgentTool {
         path: relative,
         contentHash: hash,
         bytesWritten: Buffer.byteLength(parsed.content, "utf8"),
+      }, {
+        type: "file_diff",
+        path: relative,
+        before: "",
+        after: parsed.content,
       });
     } catch (error) {
       if (createdTarget) {

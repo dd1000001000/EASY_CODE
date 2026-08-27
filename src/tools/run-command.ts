@@ -30,7 +30,7 @@ export class RunCommandTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Run one controlled program with a structured argv array inside the workspace. Shell command strings are not supported.",
+        "Run one controlled program with a structured argv array inside the workspace. Explicit one-shot shells are supported in Auto/Code mode (for example cmd /c, PowerShell -Command, or sh -c) and require approval unless EASY CODE was started with --yes.",
       strict: true,
       parameters: {
         type: "object",
@@ -79,4 +79,3 @@ export class RunCommandTool implements AgentTool {
     }
   }
 }
-

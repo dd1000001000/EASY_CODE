@@ -96,3 +96,27 @@ export function validateApiKey(value: string): string {
   }
   return normalized;
 }
+
+/** Store one API key and require an exact read-back before reporting success. */
+export async function storeVerifiedApiKey(
+  credentialStore: ApiKeyCredentialStore,
+  provider: ProviderName,
+  value: string,
+): Promise<string> {
+  const normalized = validateApiKey(value);
+  await credentialStore.set(provider, normalized);
+  let verified: string | undefined;
+  try {
+    verified = await credentialStore.get(provider);
+  } catch {
+    // Return one generic verification failure without exposing native keyring
+    // errors that could include credential metadata.
+  }
+  if (verified !== normalized) {
+    throw new Error(
+      `The operating system credential store did not verify the ${apiKeyConfigKey(provider)} write. ` +
+        "Use the provider API-key environment variable or retry after unlocking the keyring.",
+    );
+  }
+  return normalized;
+}

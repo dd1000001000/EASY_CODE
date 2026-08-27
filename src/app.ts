@@ -8,7 +8,12 @@ import {
   parseModelCommand,
   parseSlashCommand,
 } from "./cli/slash-command.js";
-import type { ApiKeyCredentialStore } from "./config/credentials.js";
+import {
+  SystemKeyringCredentialStore,
+  apiKeyConfigKey,
+  storeVerifiedApiKey,
+  type ApiKeyCredentialStore,
+} from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
 import { ContextManager } from "./context/manager.js";
 import type {
@@ -38,6 +43,7 @@ export interface EasyCodeAppOptions {
   approvalPolicy?: ApprovalPolicyName;
   assumeYes?: boolean;
   resumeThreadId?: string;
+  startupInteraction?: "none" | "select-model" | "ensure-api-key";
   terminal?: Terminal;
   /** Dependency injection for isolated tests; false disables keyring reads. */
   credentialStore?: ApiKeyCredentialStore | false;
@@ -106,6 +112,8 @@ export class EasyCodeApp {
     state: SessionState,
     private readonly terminal: Terminal,
     private readonly assumeYes: boolean,
+    private readonly credentialStore: ApiKeyCredentialStore | undefined,
+    private readonly startupInteraction: "none" | "select-model" | "ensure-api-key",
   ) {
     this.workspace = workspace;
     this.state = state;
@@ -114,9 +122,12 @@ export class EasyCodeApp {
   }
 
   static async create(options: EasyCodeAppOptions = {}): Promise<EasyCodeApp> {
+    const credentialStore = options.credentialStore === false
+      ? undefined
+      : options.credentialStore ?? new SystemKeyringCredentialStore();
     const config = await loadEasyCodeConfig({
       workspaceRoot: options.workspaceRoot,
-      credentialStore: options.credentialStore,
+      credentialStore: credentialStore ?? false,
     });
     const terminal = options.terminal ?? new Terminal();
     if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
@@ -173,6 +184,8 @@ export class EasyCodeApp {
         state,
         terminal,
         options.assumeYes ?? false,
+        credentialStore,
+        options.startupInteraction ?? "none",
       );
     } catch (error) {
       storage?.close();
@@ -185,6 +198,7 @@ export class EasyCodeApp {
     if (!this.terminal.isInteractive()) {
       throw new Error("Interactive mode requires a TTY; use `easy-code run \"<task>\"` for non-interactive use.");
     }
+    if (!(await this.prepareInteractiveStartup())) return;
     printBanner(this.terminal);
     this.printStatus();
 
@@ -415,9 +429,16 @@ export class EasyCodeApp {
         this.threadStore.recordToolAudit(this.state.threadId, turnId, entry);
         this.dirty = true;
       },
-      onToolCompleted: async () => {
+      onToolCompleted: async (_state, _toolName, result) => {
         this.syncWorkspaceState();
         this.save();
+        if (result.ok && result.presentation?.type === "file_diff") {
+          try {
+            this.terminal.fileDiff(result.presentation);
+          } catch {
+            this.terminal.info("文件已成功修改，但 diff 预览无法渲染。");
+          }
+        }
       },
       requestApproval: async (request) => {
         if (this.assumeYes) {
@@ -428,6 +449,71 @@ export class EasyCodeApp {
       },
       onStatus: (status) => this.terminal.info(status),
     });
+  }
+
+  private async prepareInteractiveStartup(): Promise<boolean> {
+    if (this.startupInteraction === "none") return true;
+
+    let provider = this.state.provider;
+    if (this.startupInteraction === "select-model") {
+      const selected = await this.terminal.selectStartupModel(
+        (["qwen", "deepseek"] as const).map((candidate) => ({
+          provider: candidate,
+          model: this.config[candidate].model,
+          apiKeyConfigured: Boolean(this.config[candidate].apiKey),
+        })),
+        provider,
+      );
+      if (!selected) {
+        this.terminal.info("已取消启动模型选择。");
+        return false;
+      }
+      provider = selected;
+    }
+
+    if (!this.config[provider].apiKey) {
+      if (!this.credentialStore) {
+        throw new Error(
+          `尚未配置 ${provider} API Key，且当前无法写入系统凭据存储。` +
+            `请运行 easy-code config set ${provider}.api-key，或设置对应环境变量。`,
+        );
+      }
+      this.terminal.info(
+        `${provider === "qwen" ? "Qwen" : "DeepSeek"} 尚未配置 API Key。`,
+      );
+      let value: string;
+      try {
+        value = await this.terminal.readSecret(
+          `请输入 ${provider === "qwen" ? "Qwen" : "DeepSeek"} API Key（输入不会显示）: `,
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "API key input was canceled.") {
+          this.terminal.info("已取消 API Key 输入。");
+          return false;
+        }
+        throw error;
+      }
+      const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
+      this.config[provider].apiKey = normalized;
+      this.terminal.success(
+        `已将 ${apiKeyConfigKey(provider)} 保存到操作系统凭据存储。`,
+      );
+    }
+
+    if (
+      this.startupInteraction === "select-model" &&
+      (this.state.provider !== provider || this.state.model !== this.config[provider].model)
+    ) {
+      this.state.provider = provider;
+      this.state.model = this.config[provider].model;
+      this.config.provider = provider;
+      this.dirty = true;
+      this.save();
+    }
+    this.terminal.success(
+      `已选择 ${provider === "qwen" ? "Qwen" : "DeepSeek"} / ${this.state.model}`,
+    );
+    return true;
   }
 
   private effectiveConfig(): EasyCodeConfig {
@@ -613,9 +699,10 @@ export class EasyCodeApp {
         workspaceBoundary: this.workspace.root,
         mode: this.state.mode,
         approvalPolicy: this.config.approvalPolicy,
+        autoApprovePrompts: this.assumeYes,
         osSandbox: false,
         commandBoundary:
-          "structured argv only; no shell; restricted environment; destructive/system/remote commands denied",
+          "structured argv; explicit one-shot shells require exact approval (or --yes); restricted environment; direct destructive/system/remote commands denied",
         npmInstall:
           "project-local registry packages at exact versions only; lifecycle scripts disabled; global installs denied",
         note: "Commands execute as the current OS user after EASY CODE policy and approval checks.",

@@ -5,6 +5,7 @@ import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { buildCommandEnvironment } from "./environment.js";
 import { analyzeNpmInstall } from "./npm-installer.js";
+import { normalizeExplicitShellArgs } from "./shell.js";
 import type { ResolvedCommand, RunCommandInput } from "./types.js";
 
 const MAX_ARGUMENTS = 256;
@@ -58,7 +59,11 @@ export class CommandResolver {
       : this.workspace.pathGuard.toRelative(cwdAbsolute);
     const executablePath = await this.resolveExecutable(input.program, cwdAbsolute, environment);
 
-    let args = [...(input.args ?? [])];
+    let args = normalizeExplicitShellArgs(
+      this.basename(executablePath),
+      input.args ?? [],
+    );
+    this.validateArguments(args);
     let approvalMaterialHash: string | undefined;
     if (this.basename(executablePath) === "npm") {
       const install = analyzeNpmInstall(args);
@@ -91,7 +96,10 @@ export class CommandResolver {
     if (path.isAbsolute(input.program) || /^[a-zA-Z]:[\\/]/u.test(input.program)) {
       throw new Error("Absolute executable paths are not accepted from the model");
     }
-    const args = input.args ?? [];
+    this.validateArguments(input.args ?? []);
+  }
+
+  private validateArguments(args: readonly string[]): void {
     if (args.length > MAX_ARGUMENTS) throw new Error(`Command has more than ${MAX_ARGUMENTS} arguments`);
     let total = 0;
     for (const argument of args) {

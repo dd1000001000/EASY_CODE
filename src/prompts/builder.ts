@@ -43,7 +43,7 @@ const TOOL_RULES = `Tool behavior:
 - read_file reads bounded workspace text and returns a version hash.
 - create_file creates a new workspace file and must not overwrite an existing file.
 - update_file applies a checked update to a previously read file using its expected hash.
-- run_command executes an argument-vector command under Runtime policy. Prefer existing project scripts. Command intent is descriptive only; Runtime independently classifies and constrains every process.
+- run_command executes an argument-vector command under Runtime policy. Prefer existing project scripts. In Auto/Code mode an explicit one-shot shell may be requested with cmd /c, PowerShell -Command, or sh -c; never request an interactive, login, or encoded shell. Shell execution requires exact approval unless the user started EASY CODE with --yes. Command intent is descriptive only; Runtime independently classifies and constrains every process.
 - Inspect before editing, keep changes scoped, and verify relevant changes when the active mode permits it.
 - Treat tool failures, conflicts, timeouts, truncation, and partial results explicitly; do not invent missing output.`;
 

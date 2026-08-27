@@ -1,6 +1,10 @@
 import { realpath } from "node:fs/promises";
 import path from "node:path";
-import type { ToolContext, ToolExecutionResult } from "../core/types.js";
+import type {
+  ToolContext,
+  ToolExecutionResult,
+  ToolPresentation,
+} from "../core/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 
 export function toolFailure(error: unknown, summary = "Tool execution failed"): ToolExecutionResult {
@@ -8,8 +12,17 @@ export function toolFailure(error: unknown, summary = "Tool execution failed"): 
   return { ok: false, summary, error: message };
 }
 
-export function toolSuccess(summary: string, data?: unknown): ToolExecutionResult {
-  return data === undefined ? { ok: true, summary } : { ok: true, summary, data };
+export function toolSuccess(
+  summary: string,
+  data?: unknown,
+  presentation?: ToolPresentation,
+): ToolExecutionResult {
+  return {
+    ok: true,
+    summary,
+    ...(data === undefined ? {} : { data }),
+    ...(presentation === undefined ? {} : { presentation }),
+  };
 }
 
 export async function assertMatchingWorkspace(
@@ -29,4 +42,3 @@ export function assertWritableMode(context: ToolContext): void {
     throw new Error("File mutation is disabled in plan mode");
   }
 }
-

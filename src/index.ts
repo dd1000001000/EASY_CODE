@@ -60,7 +60,10 @@ export function isDirectExecution(
   return normalize(entryPath) === normalize(fileURLToPath(moduleUrl));
 }
 
-function appOptions(options: CliOptions): EasyCodeAppOptions {
+function appOptions(
+  options: CliOptions,
+  startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
+): EasyCodeAppOptions {
   return {
     workspaceRoot: options.workspace,
     provider: options.provider,
@@ -69,14 +72,16 @@ function appOptions(options: CliOptions): EasyCodeAppOptions {
     approvalPolicy: options.approval,
     assumeYes: options.yes,
     resumeThreadId: options.resume,
+    startupInteraction,
   };
 }
 
 async function withApp(
   options: CliOptions,
   action: (app: EasyCodeApp) => Promise<void>,
+  startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
 ): Promise<void> {
-  const app = await EasyCodeApp.create(appOptions(options));
+  const app = await EasyCodeApp.create(appOptions(options, startupInteraction));
   try {
     await action(app);
   } finally {
@@ -94,7 +99,7 @@ function addCommonOptions(command: Command): Command {
       new Option("--approval <policy>", "command approval policy")
         .choices(["safe", "ask", "never"]),
     )
-    .option("-y, --yes", "approve every command prompt that policy allows")
+    .option("-y, --yes", "automatically approve every policy-allowed command prompt, including shells")
     .option("--resume <thread-id>", "resume a saved Thread");
 }
 
@@ -109,7 +114,12 @@ export async function main(argv = process.argv): Promise<void> {
   );
 
   program.action(async (options: CliOptions) => {
-    await withApp(options, async (app) => app.runInteractive());
+    const explicitSelection = Boolean(options.provider || options.model || options.resume);
+    await withApp(
+      options,
+      async (app) => app.runInteractive(),
+      explicitSelection ? "ensure-api-key" : "select-model",
+    );
   });
 
   program
