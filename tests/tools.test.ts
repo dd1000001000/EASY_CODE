@@ -79,6 +79,13 @@ describe("workspace file tools", () => {
 
       assert.equal(first.ok, true);
       assert.equal(second.ok, false);
+      assert.deepEqual(first.presentation, {
+        type: "file_diff",
+        path: "src/new.ts",
+        before: "",
+        after: "export {};\n",
+      });
+      assert.equal(second.presentation, undefined);
       assert.equal(await readFile(path.join(root, "src", "new.ts"), "utf8"), "export {};\n");
       assert.equal(manager.getChangeSet().filter((change) => change.operation === "create").length, 1);
     });
@@ -101,6 +108,12 @@ describe("workspace file tools", () => {
         context(root),
       );
       assert.equal(updated.ok, true);
+      assert.deepEqual(updated.presentation, {
+        type: "file_diff",
+        path: "code.ts",
+        before: "const value = 1;\n",
+        after: "const value = 2;\n",
+      });
       assert.equal(await readFile(path.join(root, "code.ts"), "utf8"), "const value = 2;\n");
       assert.notEqual((updated.data as { contentHash: string }).contentHash, hash);
       assert.equal(manager.getChangeSet().at(-1)?.status, "verified");
@@ -124,6 +137,7 @@ describe("workspace file tools", () => {
         context(root),
       );
       assert.equal(ambiguous.ok, false);
+      assert.equal(ambiguous.presentation, undefined);
 
       await writeFile(path.join(root, "code.ts"), "user changed this\n", "utf8");
       const conflict = await updater.execute(
@@ -135,6 +149,7 @@ describe("workspace file tools", () => {
         context(root),
       );
       assert.equal(conflict.ok, false);
+      assert.equal(conflict.presentation, undefined);
       assert.match(conflict.error ?? "", /changed after it was read/iu);
       assert.equal(await readFile(path.join(root, "code.ts"), "utf8"), "user changed this\n");
       assert.equal(manager.getChangeSet().at(-1)?.status, "conflict");
@@ -168,4 +183,3 @@ describe("workspace file tools", () => {
     }
   });
 });
-

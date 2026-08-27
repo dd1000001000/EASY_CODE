@@ -115,7 +115,8 @@ export class UpdateFileTool implements AgentTool {
         throw new Error("File changed after it was read; read it again before updating");
       }
 
-      let updated = originalBuffer.toString("utf8");
+      const original = originalBuffer.toString("utf8");
+      let updated = original;
       for (const [index, edit] of parsed.edits.entries()) {
         const occurrences = countOccurrences(updated, edit.oldText);
         if (occurrences === 0) {
@@ -185,6 +186,11 @@ export class UpdateFileTool implements AgentTool {
         contentHash: afterHash,
         editsApplied: parsed.edits.length,
         bytesWritten: updatedBuffer.length,
+      }, {
+        type: "file_diff",
+        path: relative,
+        before: original,
+        after: updated,
       });
     } catch (error) {
       if (temporaryPath) {
@@ -210,4 +216,3 @@ export class UpdateFileTool implements AgentTool {
     });
   }
 }
-

@@ -7,6 +7,10 @@ import {
   buildCommandEnvironment,
   CommandPolicy,
   CommandResolver,
+  inspectExplicitShellInvocation,
+  normalizeExplicitShellArgs,
+  sanitizeCommandOutput,
+  type RunCommandInput,
 } from "../src/command/index.js";
 import { RunCommandTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
@@ -63,7 +67,50 @@ function context(
   };
 }
 
+function explicitShellInput(command: string): RunCommandInput {
+  return process.platform === "win32"
+    ? {
+        program: "cmd",
+        args: ["/s", "/c", command],
+        intent: "run",
+        reason: "Run an explicit one-shot Windows shell command",
+      }
+    : {
+        program: "sh",
+        args: ["-c", command],
+        intent: "run",
+        reason: "Run an explicit one-shot POSIX shell command",
+      };
+}
+
 describe("command runtime", () => {
+  it("normalizes shell hosts and rejects encoded or login protocols", () => {
+    assert.deepEqual(
+      normalizeExplicitShellArgs("cmd", ["/c", "dir"]),
+      ["/d", "/c", "dir"],
+    );
+    assert.deepEqual(
+      normalizeExplicitShellArgs("cmd", ["/c", "dir", "/d"]),
+      ["/d", "/c", "dir", "/d"],
+    );
+    assert.deepEqual(
+      normalizeExplicitShellArgs("powershell", ["-Command", "Get-ChildItem"]),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem"],
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("powershell", ["-EncodedCommand", "ZQBjAGgAbwA="])?.valid,
+      false,
+    );
+    assert.equal(inspectExplicitShellInvocation("bash", ["-lc", "pwd"])?.valid, false);
+    assert.equal(inspectExplicitShellInvocation("sh", ["-c", "pwd"])?.valid, true);
+    assert.equal(inspectExplicitShellInvocation("zsh", ["-c", "pwd"]), undefined);
+    assert.equal(
+      sanitizeCommandOutput("cmd /c set TOKEN=top-secret-token-value").includes("top-secret-token-value"),
+      false,
+    );
+    assert.equal(sanitizeCommandOutput("left\u202Eright"), "left\\u{202e}right");
+  });
+
   it("allows a recipe-based Node version inspection in plan mode", async () => {
     await withWorkspace(async (root, manager) => {
       const audit: CommandAuditEntry[] = [];
@@ -93,6 +140,131 @@ describe("command runtime", () => {
       const output = result.data as { stdout: { text: string }; executed: { program: string } };
       assert.match(output.stdout.text, /^\d+\.\d+/u);
       assert.match(output.executed.program, /npm(?:\.cmd)?$/iu);
+    });
+  });
+
+  it("runs an explicit one-shot shell after exact approval", async () => {
+    await withWorkspace(async (root, manager) => {
+      const approvals: ApprovalRequest[] = [];
+      const tool = new RunCommandTool(manager);
+      const result = await tool.execute(
+        explicitShellInput("echo easy-code-shell-ok"),
+        context(root, { mode: "code", approve: true, approvals }),
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(approvals.length, 1);
+      assert.match(approvals[0]?.description ?? "", /exact approval=/u);
+      assert.equal(approvals[0]?.risk, "destructive");
+      const output = result.data as {
+        stdout: { text: string };
+        policyDecision: { capability: string; effect: string; matchedRule: string };
+        executed: { args: string[] };
+      };
+      assert.match(output.stdout.text, /easy-code-shell-ok/u);
+      assert.equal(output.policyDecision.capability, "shell_exec");
+      assert.equal(output.policyDecision.effect, "ask");
+      assert.equal(output.policyDecision.matchedRule, "ask.shell_exec");
+      if (process.platform === "win32") {
+        assert.equal(output.executed.args[0]?.toLowerCase(), "/d");
+      }
+    });
+  });
+
+  it("binds the exact shell script into the approval fingerprint", async () => {
+    await withWorkspace(async (_root, manager) => {
+      const resolver = new CommandResolver(manager);
+      const policy = new CommandPolicy();
+      const first = await resolver.resolve(explicitShellInput("echo first"));
+      const second = await resolver.resolve(explicitShellInput("echo second"));
+      const firstDecision = policy.classify(explicitShellInput("echo first"), first, "code");
+      const secondDecision = policy.classify(explicitShellInput("echo second"), second, "code");
+
+      assert.notEqual(
+        policy.approvalFingerprint(first, firstDecision),
+        policy.approvalFingerprint(second, secondDecision),
+      );
+    });
+  });
+
+  it("keeps explicit shells out of plan mode and disabled approval sessions", async () => {
+    await withWorkspace(async (root, manager) => {
+      const tool = new RunCommandTool(manager);
+      const planApprovals: ApprovalRequest[] = [];
+      const plan = await tool.execute(
+        explicitShellInput("echo must-not-run"),
+        context(root, { mode: "plan", approve: true, approvals: planApprovals }),
+      );
+      assert.equal(plan.ok, false);
+      assert.equal(planApprovals.length, 0);
+      assert.equal(
+        (plan.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
+        "mode.plan",
+      );
+
+      const neverApprovals: ApprovalRequest[] = [];
+      const never = await tool.execute(
+        explicitShellInput("echo must-not-run"),
+        context(root, {
+          mode: "code",
+          approvalPolicy: "never",
+          approve: true,
+          approvals: neverApprovals,
+        }),
+      );
+      assert.equal(never.ok, false);
+      assert.equal(neverApprovals.length, 0);
+      assert.match(
+        (never.data as { policyDecision: { reason: string } }).policyDecision.reason,
+        /approval prompts are disabled/u,
+      );
+    });
+  });
+
+  it("rejects interactive shell protocols and redacts secrets from approval previews", async () => {
+    await withWorkspace(async (root, manager) => {
+      const tool = new RunCommandTool(manager);
+      const invalid = process.platform === "win32"
+        ? { program: "cmd", args: ["/k"], intent: "run" as const }
+        : { program: "sh", args: ["-i"], intent: "run" as const };
+      const invalidResult = await tool.execute(invalid, context(root, { approve: true }));
+      assert.equal(invalidResult.ok, false);
+      assert.equal(
+        (invalidResult.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
+        "deny.shell_protocol",
+      );
+
+      const secret = "shell-preview-secret-value";
+      const bidi = "\u202E";
+      const approvals: ApprovalRequest[] = [];
+      const rejected = await tool.execute(
+        explicitShellInput(`echo TOKEN=${secret} --token ${secret} left${bidi}right`),
+        context(root, { approve: false, approvals }),
+      );
+      assert.equal(rejected.ok, false);
+      assert.equal(approvals.length, 1);
+      assert.doesNotMatch(approvals[0]?.commandPreview ?? "", new RegExp(secret, "u"));
+      assert.doesNotMatch(approvals[0]?.commandPreview ?? "", new RegExp(bidi, "u"));
+      assert.match(approvals[0]?.commandPreview ?? "", /\[REDACTED\]/u);
+      assert.equal((approvals[0]?.commandPreview ?? "").includes("\\\\u{202e}"), true);
+    });
+  });
+
+  it("redacts shell assignments from output, executed args, and command audit", async () => {
+    await withWorkspace(async (root, manager) => {
+      const secret = "shell-audit-secret-value";
+      const audit: CommandAuditEntry[] = [];
+      const tool = new RunCommandTool(manager);
+      const result = await tool.execute(
+        explicitShellInput(`echo TOKEN=${secret}`),
+        context(root, { approve: true, audit }),
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(audit.length, 1);
+      assert.doesNotMatch(JSON.stringify(result.data), new RegExp(secret, "u"));
+      assert.doesNotMatch(JSON.stringify(audit), new RegExp(secret, "u"));
+      assert.match(JSON.stringify(result.data), /\[REDACTED\]/u);
     });
   });
 

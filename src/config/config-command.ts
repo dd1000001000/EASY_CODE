@@ -7,7 +7,7 @@ import {
   SystemKeyringCredentialStore,
   apiKeyConfigKey,
   parseApiKeyConfigKey,
-  validateApiKey,
+  storeVerifiedApiKey,
   type ApiKeyConfigKey,
   type ApiKeyCredentialStore,
 } from "./credentials.js";
@@ -65,21 +65,7 @@ export function registerConfigCommands(
         resources.errorOutput,
         `API key for ${provider}: `,
       );
-      const normalized = validateApiKey(value);
-      await resources.credentialStore.set(provider, normalized);
-      let verified: string | undefined;
-      try {
-        verified = await resources.credentialStore.get(provider);
-      } catch {
-        // Fall through to one generic verification failure without exposing a
-        // native keyring error that could contain credential metadata.
-      }
-      if (verified !== normalized) {
-        throw new Error(
-          `The operating system credential store did not verify the ${key} write. ` +
-            "Use the provider API-key environment variable or retry after unlocking the keyring.",
-        );
-      }
+      await storeVerifiedApiKey(resources.credentialStore, provider, value);
       writeLine(
         resources.output,
         `Stored ${key} in the operating system credential store.`,

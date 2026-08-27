@@ -92,7 +92,18 @@ export interface ToolExecutionResult {
   summary: string;
   data?: unknown;
   error?: string;
+  /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
+  presentation?: ToolPresentation;
 }
+
+export interface FileDiffPresentation {
+  type: "file_diff";
+  path: string;
+  before: string;
+  after: string;
+}
+
+export type ToolPresentation = FileDiffPresentation;
 
 export interface ApprovalRequest {
   id: string;

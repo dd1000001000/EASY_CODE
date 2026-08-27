@@ -179,19 +179,25 @@ easy-code --workspace ./your-project --provider deepseek --mode code run "修复
 | `read_file` | 分段读取工作区内的 UTF-8 文本，并记录内容哈希；读取有大小和行数上限。 |
 | `create_file` | 在工作区内新建 UTF-8 文件；目标已存在时失败，不会覆盖。 |
 | `update_file` | 对已经读取的文件做精确文本替换；写入前校验 SHA-256，文件被外部修改时拒绝覆盖。 |
-| `run_command` | 在工作区目录中运行一个可执行程序及其参数数组；不接受 Shell 命令字符串。 |
+| `run_command` | 在工作区目录中以结构化参数数组运行程序；Auto/Code mode 也支持显式的一次性 `cmd /c`、PowerShell `-Command` 或 `sh -c`。 |
 
 文件路径必须是工作区相对路径。绝对路径、`..` 路径穿越，以及通过符号链接或 Windows junction 逃逸工作区都会被拒绝。文件修改会进入当前会话的 Change Set，可用 `/changes` 查看。
 
+`create_file` 或 `update_file` 成功后，CLI 会立即显示带旧/新行号的代码 diff：新增行使用绿色 `+`，删除行使用红色 `-`，并保留少量未修改上下文。非 TTY、`NO_COLOR` 或不支持颜色的终端仍会显示行号和 `+/-` 标记。预览有行数、单行长度和差异计算上限，超限时会明确标记截断；文件内容在着色前会经过终端控制字符和敏感信息过滤。`run_command` 当前只记录命令造成的文件路径变化，尚不保留命令前后的完整文本，因此命令间接修改文件时不会生成逐行 diff。
+
 ### 命令执行和 npm 安装
 
-`run_command` 使用 `program + args[]` 的结构化调用，不会把模型文本交给 Shell。策略会在执行前把命令分类为 `allow`、`ask` 或 `deny`：
+`run_command` 使用 `program + args[]` 的结构化调用，底层始终保持 `shell: false`。普通程序会直接启动；需要 Shell 语法时，模型必须显式调用受支持的一次性协议，例如 Windows 的 `{ program: "cmd", args: ["/c", "dir"] }`、PowerShell 的 `-Command`，或 macOS/Linux 的 `sh -c`。EASY CODE 会为 `cmd` 禁用 AutoRun，为 PowerShell 禁用 Profile 和交互模式；登录 Shell、交互 Shell、PowerShell 编码命令及 Windows Script Host 仍被拒绝。
+
+显式 Shell 能以当前操作系统用户身份执行任意命令，因此在 Auto/Code mode 中固定分类为高风险 `ask`，并绑定可执行文件、完整参数、工作目录和环境摘要进行一次性精确审批。使用 `easy-code --yes` 启动时，这类审批会由 Agent 自动同意，从而实现无人值守执行；Plan mode 始终拒绝 Shell。
+
+策略会在执行前把命令分类为 `allow`、`ask` 或 `deny`：
 
 - `safe`：允许已知的只读检查，以及 Auto/Code mode 下严格限定、禁用生命周期脚本的工作区本地 npm 安装；运行仓库代码等风险命令需要一次性精确审批；硬性禁用项仍拒绝。
 - `ask`：所有本来可执行的命令都要求确认。
 - `never`：不显示审批请求；所有策略结果为 `ask` 的命令直接拒绝，策略结果为 `allow` 的操作仍会执行，包括安全检查以及 Auto/Code mode 下符合严格规则的本地 npm 安装。
 
-当前硬性禁止 Shell、Shell 操作符、破坏性命令、提权、系统包管理器、`npx`、直接远程命令和全局 npm 安装。运行仓库代码、解释器脚本、构建或测试时，因为没有 OS 级沙箱，会要求精确的一次性审批。
+当前硬性禁止不符合上述协议的 Shell、Windows Script Host、直接破坏性命令、提权、系统包管理器、`npx`、直接远程命令和全局 npm 安装。运行 Shell、仓库代码、解释器脚本、构建或测试时，因为没有 OS 级沙箱，会要求精确的一次性审批；`--yes` 会自动批准这些原本可审批的操作，但不会绕过硬性拒绝或 Plan mode。
 
 Agent 可以执行受限的工作区本地 npm 安装。直接传入包规格时必须使用正常 Registry 包名和精确版本，例如 `package-name@1.2.3`；直接传入的版本范围、Git/HTTP URL、tarball、file/link 依赖和 alias 会被拒绝。裸 `npm install` 与不带包规格的 `npm ci` 也允许，其最终依赖版本由现有 `package.json` 和 lockfile 决定，因此现有 manifest 中的普通 semver 范围可能仍会参与解析。
 
@@ -205,6 +211,7 @@ EASY CODE 当前有工作区路径保护、环境变量过滤、命令分类、�
 
 - `read_file`、`create_file` 和 `update_file` 的路径受 EASY CODE 的工作区守卫限制。
 - 一旦命令获准执行，子进程仍以启动 EASY CODE 的操作系统用户身份运行。应用级审批不是容器、虚拟机、macOS sandbox、Windows AppContainer 或 Linux namespace。
+- 显式 Shell 可以在命令字符串内部调用删除、网络、提权或系统工具，顶层程序分类无法可靠解析所有 Shell 语义；使用 `--yes` 即表示接受该工作区内模型生成 Shell 命令的完整用户级权限风险。
 - 命令可能利用自身能力访问网络或工作区外资源；“已审批”只表示用户接受了显示的精确调用，不代表进程已被内核隔离。
 - 文件写入工具不会逐文件弹出命令审批。在修改前需要人工审查时，请先使用 Plan mode。
 
@@ -359,7 +366,7 @@ node scripts/postinstall.cjs
 
 ### 命令被拒绝
 
-运行 `/permissions` 查看当前模式和审批策略。Plan mode 只允许安全调查；`never` 会拒绝所有需要批准的命令；Shell、系统安装、破坏性操作和远程命令无论是否确认都会被策略拒绝。请改用结构化、作用域更小的程序和参数，不要尝试用 Shell 包装绕过策略。
+运行 `/permissions` 查看当前模式、审批策略和 `autoApprovePrompts`。Plan mode 只允许安全调查；`never` 会拒绝所有需要批准的命令。显式 Shell 只能在 Auto/Code mode 使用一次性协议，并需要确认；如果确实希望模型自动执行，请重新使用 `easy-code --yes` 启动。系统安装、直接破坏性操作和远程命令仍有硬性规则，但获得批准的 Shell 本身具备当前用户权限，请只在可信工作区使用。
 
 ### 文件更新冲突
 

@@ -1,20 +1,23 @@
 import readline from "node:readline";
 import chalk from "chalk";
-import type { ApprovalRequest } from "../core/types.js";
+import type { ApprovalRequest, FileDiffPresentation } from "../core/types.js";
+import { readSecretInput } from "../config/secret-input.js";
+import { renderFileDiff } from "./file-diff.js";
+import {
+  selectStartupModel,
+  type ModelSelectorInput,
+  type ModelSelectorOutput,
+  type StartupModelChoice,
+} from "./model-selector.js";
 
 export class Terminal {
-  private readonly rl: readline.Interface;
+  private rl?: readline.Interface;
   private closed = false;
 
   constructor(
     private readonly input: NodeJS.ReadableStream = process.stdin,
     private readonly output: NodeJS.WritableStream = process.stdout
-  ) {
-    this.rl = readline.createInterface({ input, output, terminal: Boolean(process.stdout.isTTY) });
-    this.rl.once("close", () => {
-      this.closed = true;
-    });
-  }
+  ) {}
 
   isInteractive(): boolean {
     return Boolean((this.input as NodeJS.ReadStream).isTTY);
@@ -22,6 +25,7 @@ export class Terminal {
 
   question(prompt: string): Promise<string | null> {
     if (this.closed) return Promise.resolve(null);
+    const rl = this.ensureReadline();
     return new Promise((resolve) => {
       let settled = false;
       const onClose = (): void => {
@@ -29,14 +33,38 @@ export class Terminal {
         settled = true;
         resolve(null);
       };
-      this.rl.once("close", onClose);
-      this.rl.question(prompt, (answer) => {
+      rl.once("close", onClose);
+      rl.question(prompt, (answer) => {
         if (settled) return;
         settled = true;
-        this.rl.removeListener("close", onClose);
+        rl.removeListener("close", onClose);
         resolve(answer);
       });
     });
+  }
+
+  selectStartupModel(
+    choices: readonly StartupModelChoice[],
+    initialProvider: StartupModelChoice["provider"],
+  ): Promise<StartupModelChoice["provider"] | undefined> {
+    if (this.closed) return Promise.resolve(undefined);
+    if (this.rl) throw new Error("The startup model must be selected before the prompt is opened.");
+    return selectStartupModel(choices, {
+      input: this.input as ModelSelectorInput,
+      output: this.output as ModelSelectorOutput,
+      initialProvider,
+      color: this.colorEnabled(),
+    });
+  }
+
+  readSecret(prompt: string): Promise<string> {
+    if (this.closed) return Promise.reject(new Error("Terminal input is closed."));
+    if (this.rl) throw new Error("Secret input must be read before the prompt is opened.");
+    return readSecretInput(
+      this.input as ModelSelectorInput,
+      this.output,
+      prompt,
+    );
   }
 
   async approve(request: ApprovalRequest): Promise<boolean> {
@@ -66,8 +94,40 @@ export class Terminal {
     this.write(chalk.red(text) + "\n");
   }
 
+  fileDiff(presentation: FileDiffPresentation): void {
+    this.write(renderFileDiff(presentation, { color: this.colorEnabled() }));
+  }
+
   close(): void {
-    if (!this.closed) this.rl.close();
+    if (this.closed) return;
+    if (this.rl) this.rl.close();
+    else this.closed = true;
+  }
+
+  private ensureReadline(): readline.Interface {
+    if (this.closed) throw new Error("Terminal input is closed.");
+    if (!this.rl) {
+      this.rl = readline.createInterface({
+        input: this.input,
+        output: this.output,
+        terminal:
+          Boolean((this.input as NodeJS.ReadStream).isTTY) &&
+          Boolean((this.output as NodeJS.WriteStream).isTTY),
+      });
+      this.rl.once("close", () => {
+        this.closed = true;
+      });
+    }
+    return this.rl;
+  }
+
+  private colorEnabled(): boolean {
+    const forceColor = process.env.FORCE_COLOR;
+    return (
+      !Object.prototype.hasOwnProperty.call(process.env, "NO_COLOR") &&
+      forceColor !== "0" &&
+      (Boolean((this.output as NodeJS.WriteStream).isTTY) || Boolean(forceColor))
+    );
   }
 }
 

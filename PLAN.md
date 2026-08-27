@@ -12,9 +12,10 @@
 - 会话 JSONL 可以重建 Thread/Turn/Item 和工具审计等 SQLite 查询投影；长期记忆正文当前直接保存在 SQLite，不能仅靠 Thread JSONL 恢复。
 - SQLite 当前使用 npm 包自带的 `node-sqlite3-wasm@0.8.60`，数据库部分不依赖 Node 原生 ABI 插件或本地 C++ 工具链。系统凭据存储由 `@napi-rs/keyring@1.3.0` 的平台预编译 N-API 二进制提供。安装 EASY CODE 自身时，`scripts/postinstall.cjs` 打开内存 SQLite，并创建普通表和 FTS5 虚拟表进行自检；实际持久数据目录和 schema 在第一次运行 App 时创建。这一包自身检查与 Agent 安装工作区依赖时强制的 `--ignore-scripts` 是两条不同路径。
 - 持久 SQLite 操作由 `PID + hostname + token` 的跨进程 advisory lock 串行化；只有同主机 PID 被确认死亡后才把 stale owner 隔离为按 token 固定且保留的 tombstone，并回收 WASM VFS 空锁目录，强制退出后的 rollback journal 可在下次启动时安全恢复。固定 tombstone 用于阻止并发恢复的 ABA 竞态；活进程和未知所有者的锁不会被删除。
-- 命令执行只有应用级策略和 Process Boundary：结构化 argv、`shell: false`、受限环境、关闭 stdin、超时、中断、输出限制及工作区前后快照。当前没有 OS 级沙箱或网络隔离，获准进程以启动 EASY CODE 的当前用户身份运行。
+- 命令执行只有应用级策略和 Process Boundary：结构化 argv、底层 `shell: false`、受限环境、关闭 stdin、超时、中断、输出限制及工作区前后快照。Auto/Code mode 可通过显式的一次性 `cmd /c`、PowerShell `-Command` 或 `sh -c` 使用 Shell；它固定需要精确审批，`--yes` 可自动批准。当前没有 OS 级沙箱或网络隔离，获准进程以启动 EASY CODE 的当前用户身份运行。
 - npm 安装由 `run_command` 识别、规范化和加固后直接启动 npm。当前没有独立托管工具目录、独立 `NpmInstaller` 执行后端、Registry 网络沙箱或安装完整性数据库。
 - API Key 推荐由 `easy-code config set qwen.api-key` 或 `easy-code config set deepseek.api-key` 写入操作系统凭据存储；环境变量优先级更高，旧版用户级 `config.toml` 仅保留读取兼容，工作区 `.easycode/config.toml` 禁止设置 Key。`get/list` 只显示状态和来源，不能显示秘密；`set` 只从隐藏 TTY 或标准输入读取，不接受明文 argv。脱敏和敏感信息过滤是纵深防御，无法阻止用户主动把 Key 输入聊天，而聊天内容会进入会话事件日志。
+- `create_file` 和 `update_file` 成功后会在终端显示有界的统一 diff，包含旧/新行号、绿色新增行、红色删除行和上下文。非 TTY/`NO_COLOR` 保留纯文本标记；不可信代码在着色前会过滤终端控制符、双向文本控制符和疑似秘密。UI presentation 不进入模型消息或 Event Log。`run_command` 的快照当前只有路径、哈希和大小，命令间接修改文件时仍只能报告路径级 delta。
 
 ## 0. 本轮架构修订
 
@@ -24,7 +25,7 @@
 - 会话统一建模为 `Thread -> Turn -> Step -> Item`，其中 Step 是 EASY CODE 的内部循环层。当前消息、工具生命周期、状态检查点和命令审计进入追加式事件流；独立审批 requested/responded 事件和完整流式输出事件仍是后续审计增强。
 - 优先使用 Qwen/DeepSeek 的原生 Function Calling；只有目标模型不支持工具调用时，才启用经过严格 Schema 校验的 JSON 兼容协议。
 - 当前 `ModePolicy`、`CommandPolicy`、审批回调和 Process Boundary 是独立代码边界；独立的 OS `SandboxBackend` 是后续目标。系统提示词描述行为，但不能授予权限。
-- 新增并正式定义 `run_command` Agent 工具。MVP 只接受“可执行程序 + 参数数组”，不接受 Shell 字符串；它具有风险重分类、审批、有界流式收集、超时、中断、环境变量过滤和工作区前后快照。实时逐块终端展示和完整 Artifact 保留是后续目标。
+- 新增并正式定义 `run_command` Agent 工具。它只接受“可执行程序 + 参数数组”；Shell 必须作为显式可执行程序通过受限的一次性协议调用，不启用 Node 隐式 Shell。它具有风险重分类、审批、有界流式收集、超时、中断、环境变量过滤和工作区前后快照。实时逐块终端展示和完整 Artifact 保留是后续目标。
 - 会话 JSONL Event Log 是 Thread 消息、工具活动和审计投影的事实源；SQLite 同时承担可重建查询投影和当前不可由 JSONL 重建的长期记忆。删除或损坏 SQLite 会丢失长期记忆，现阶段必须依赖数据目录备份。
 - 短期记忆拆分为可恢复的 `SessionState`、压缩检查点 `WorkingSummary` 和每次请求临时生成的 `ModelContext`，避免把摘要误当成不可推翻的事实。
 
@@ -970,7 +971,7 @@ type RunCommandInput = {
 };
 ```
 
-MVP 只接受单个程序名和结构化参数数组，并始终以 `shell: false` 运行。模型不能提交完整 Shell 字符串，也不能请求开启 Shell，因此不支持 `&&`、`||`、`;`、管道、重定向、命令替换和后台执行。需要多个步骤时调用多次工具；未来若增加 Shell，必须作为单独的高风险协议并逐次审批。
+MVP 只接受单个程序名和结构化参数数组，并始终以 `shell: false` 启动目标进程。模型可以把 `cmd`、PowerShell 或 POSIX Shell 作为显式程序调用，但必须使用受限的一次性协议（`/c`、`-Command`、`-c`）；交互、登录、编码命令和 Windows Script Host 被拒绝。显式 Shell 在 Auto/Code mode 固定为高风险逐次审批，`--yes` 可自动批准，Plan mode 始终拒绝。
 
 `intent` 和 `reason` 都是模型声明，Runtime 必须重新解析和分类：
 
@@ -1044,7 +1045,7 @@ Tool Schema 校验
 - 裸命令名当前只通过受控 PATH、Windows `PATHEXT` 和工作区内逐级查找的 `node_modules/.bin` 解析；托管工具目录属于后续目标。
 - 相对可执行路径解析后必须位于工作区内；审批和审计记录解析后的绝对路径，而不是模型原始字符串。
 - `cwd` 必须是已存在的工作区相对目录；`realpath` 后再次验证没有通过 symlink、junction、UNC、设备路径或盘符逃逸。
-- 识别 `sh -c`、`bash -c`、`cmd /c`、PowerShell `-Command/-EncodedCommand`、`node -e`、`python -c`、裸 `npx` 和可隐式下载的 `npm exec` 等二次解释入口，MVP 默认拒绝。
+- 识别 `sh -c`、`bash -c`、`cmd /c`、PowerShell `-Command/-EncodedCommand`、`node -e`、`python -c`、裸 `npx` 和可隐式下载的 `npm exec` 等二次解释入口。只允许受限的一次性 Shell 协议并升级为高风险审批；编码/交互 Shell、直接解释器 eval、裸 `npx` 和隐式下载仍拒绝。
 - `npm test`、`npm run`、编译器、测试框架和 lint 工具都会执行工作区代码，不能因为命令名称看似安全就分类为只读调查。
 - 解析 `npm run <script>` 时读取实际 script 内容和有效 `.npmrc`/`script-shell` 配置，将其哈希放入审批指纹；npm 内部使用 Shell 不等于模型获得任意 Shell 权限。
 
@@ -1107,7 +1108,7 @@ Agent 发起的 npm 安装始终保留 `--ignore-scripts`，不执行用户项�
 
 Plan mode 只允许 recipe allowlist 中真正安全的 `safe_inspect`，不运行 `npm test` 或其他仓库代码。当前没有 OS 沙箱：Auto direct-code 和 Code 中的 `workspace_exec` 默认升级为 `ask`；符合加固规则的 `registry_install` 为 `allow`，但仍以当前 OS 用户直接运行。未来接入 OS Sandbox 后，才可以讨论沙箱内自动执行 `workspace_exec` 或网络隔离安装。
 
-当前 Recipe/审批依据解析后的程序、参数形态、cwd 和受控环境，而不是只维护二进制名称 allowlist；当前没有可绑定的 OS 网络配置。明显的 Shell、解释器 inline eval、删除和系统命令会被拒绝，但一旦用户批准工作区代码，该进程仍可能修改源文件或访问工作区外资源。前后快照只能把工作区内可见变化加入 Change Set，不能阻止这些行为；网络能力和允许写入范围必须等 OS Sandbox 实现后再纳入 Recipe。
+当前 Recipe/审批依据解析后的程序、参数形态、cwd 和受控环境，而不是只维护二进制名称 allowlist；当前没有可绑定的 OS 网络配置。交互/登录/编码 Shell、解释器 inline eval、直接删除和系统命令会被拒绝；受限的一次性 Shell 则升级为高风险审批。一旦用户或 `--yes` 批准 Shell/工作区代码，该进程仍可能修改源文件或访问工作区外资源。前后快照只能把工作区内可见变化加入 Change Set，不能阻止这些行为；网络能力和允许写入范围必须等 OS Sandbox 实现后再纳入 Recipe。
 
 安全要求：
 
@@ -1485,7 +1486,8 @@ easy-code/
 - 未读取的文件不能通过 `update_file` 修改
 - 日志中的 API Key 脱敏
 - 仓库文件中的 Prompt Injection
-- Shell 元字符、`sh -c`、`cmd /c`、PowerShell `-Command`、解释器 `-e/-c` 等二次执行入口默认拒绝
+- `sh -c`、`cmd /c`、PowerShell `-Command` 在 Auto/Code mode 需要精确审批且 `--yes` 可自动批准；Plan、交互/登录/编码 Shell 必须拒绝
+- Shell 审批预览、审计参数和输出中的凭据必须脱敏，审批指纹随完整脚本、cwd 或环境摘要变化
 - stdout/stderr 中的凭据和危险 ANSI/OSC 序列在落盘与展示前被过滤
 - 禁止命令行绕过文件工具修改源文件
 - 依赖混淆、恶意相似包名和 lifecycle script 风险
@@ -1544,7 +1546,7 @@ easy-code/
 - 模式切换命令固定为 `/mode plan|auto|code`
 - 默认不允许工作区外文件写入
 - Agent 工具固定为 `read_file`、`create_file`、`update_file`、`run_command`
-- `run_command` 首版固定为结构化程序 + argv，模型不能开启 Shell 或提交 Shell 命令字符串
+- `run_command` 固定为结构化程序 + argv；模型只能通过显式的一次性 Shell 可执行程序请求 Shell 语义，底层不启用隐式 Shell
 - Auto/Code mode 默认允许严格策略下的工作区本地 npm 安装；全局和系统级安装在 MVP 中禁止
 - 自动 npm 安装：直接包规格必须精确；裸 `npm install`/`npm ci` 允许并由现有 manifest/lockfile 决定版本。所有安装固定补充 `--ignore-scripts --no-audit --no-fund`，仅直接包规格补充 `--save-exact`；Agent 发起的安装不执行依赖 lifecycle scripts
 - 无可靠 OS 沙箱时，执行工作区或第三方代码升级为逐次确认；Plan 只允许 recipe 化安全调查

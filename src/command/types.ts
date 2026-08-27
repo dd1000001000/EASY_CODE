@@ -15,6 +15,7 @@ export interface RunCommandInput {
 export type CommandCapability =
   | "safe_inspect"
   | "workspace_exec"
+  | "shell_exec"
   | "registry_install"
   | "system_write"
   | "external_write"

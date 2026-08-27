@@ -31,6 +31,10 @@ function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
 
 describe("AgentRuntime", () => {
   it("executes a tool call and returns the final response", async () => {
+    const uiOnlyMarker = "UI_ONLY_DIFF_CONTENT";
+    let requestCount = 0;
+    let secondRequestToolContent = "";
+    let completedPresentation: ToolExecutionResult["presentation"];
     const responses: ProviderResponse[] = [
       {
         message: {
@@ -50,7 +54,12 @@ describe("AgentRuntime", () => {
     const provider: ModelProvider = {
       name: "qwen",
       model: "mock",
-      async complete() {
+      async complete(request) {
+        requestCount += 1;
+        if (requestCount === 2) {
+          secondRequestToolContent =
+            [...request.messages].reverse().find((message) => message.role === "tool")?.content ?? "";
+        }
         const response = responses.shift();
         if (!response) throw new Error("unexpected call");
         return response;
@@ -64,7 +73,17 @@ describe("AgentRuntime", () => {
         function: { name: "read_file", description: "read", parameters: { type: "object" } }
       },
       async execute(): Promise<ToolExecutionResult> {
-        return { ok: true, summary: "read", data: { content: "hello" } };
+        return {
+          ok: true,
+          summary: "read",
+          data: { content: "hello" },
+          presentation: {
+            type: "file_diff",
+            path: "a.ts",
+            before: uiOnlyMarker,
+            after: "changed",
+          },
+        };
       }
     };
     const runtime = new AgentRuntime({
@@ -75,7 +94,10 @@ describe("AgentRuntime", () => {
       getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [],
       appendEvent: async () => undefined,
-      requestApproval: async () => false
+      requestApproval: async () => false,
+      onToolCompleted: async (_state, _toolName, toolResult) => {
+        completedPresentation = toolResult.presentation;
+      },
     });
 
     const result = await runtime.run(state(), "读取文件", {
@@ -88,6 +110,8 @@ describe("AgentRuntime", () => {
 
     assert.equal(result.reason, "success");
     assert.equal(result.text, "完成");
+    assert.equal(completedPresentation?.type, "file_diff");
+    assert.doesNotMatch(secondRequestToolContent, new RegExp(uiOnlyMarker, "u"));
   });
 
   it("does not expose mutating tools in plan mode", async () => {
