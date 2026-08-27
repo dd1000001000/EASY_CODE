@@ -59,6 +59,8 @@ export async function determineAutoRoute(
       temperature: 0,
       thinkingEffort,
     });
+    // Auto Router deliberation is intentionally internal. Only main-agent
+    // responses are eligible for AgentRuntime's onReasoning UI notification.
     const content = response.message.content ?? "";
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) return fallback;

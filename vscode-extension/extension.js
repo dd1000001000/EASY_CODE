@@ -1,7 +1,5 @@
 "use strict";
 
-const vscode = require("vscode");
-
 const { clipboardHasImage } = require("./lib/clipboard");
 const {
   isEasyCodeCommand,
@@ -11,11 +9,95 @@ const {
 
 const CONTEXT_KEY = "easyCode.imagePasteEnabled";
 const PASTE_IMAGE_SEQUENCE = "\x1b]6973;easy-code;paste-image\x07";
+const SHOW_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;show-thinking;";
+const THINKING_MARKER_PREFIX = "▶ ";
+const THINKING_LINK_PREFIX = "Thinking #";
+const THINKING_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
+
+function vscodeApi() {
+  // Keep the VS Code host dependency lazy so the protocol parser and link
+  // provider can be unit-tested with plain Node.js.
+  return require("vscode");
+}
+
+/**
+ * Parse only EASY CODE's paired, visible thinking marker. Requiring the same
+ * decimal ID at both ends prevents an unrelated "Thinking" message from
+ * becoming a terminal link.
+ *
+ * @param {string} line
+ * @returns {Array<{ startIndex: number, length: number, id: string }>}
+ */
+function findThinkingMarkers(line) {
+  if (typeof line !== "string") return [];
+
+  const matches = [];
+  // This RegExp is deliberately local: VS Code may invoke terminal link
+  // providers concurrently, so no mutable global RegExp state is shared.
+  const markerPattern = /▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g;
+  for (const match of line.matchAll(markerPattern)) {
+    const id = match[1];
+    if (id !== match[2] || !Number.isSafeInteger(Number(id))) continue;
+    matches.push({
+      startIndex: match.index + THINKING_MARKER_PREFIX.length,
+      length: THINKING_LINK_PREFIX.length + id.length,
+      id,
+    });
+  }
+  return matches;
+}
+
+/**
+ * @param {string | number} id
+ */
+function showThinkingSequence(id) {
+  const value = String(id);
+  if (
+    !THINKING_ID_PATTERN.test(value) ||
+    !Number.isSafeInteger(Number(value))
+  ) {
+    throw new TypeError("EASY CODE thinking IDs must be positive decimal integers.");
+  }
+  return `${SHOW_THINKING_SEQUENCE_PREFIX}${value}\x07`;
+}
+
+/**
+ * @param {(terminal: import('vscode').Terminal | undefined) => boolean} isEnabled
+ * @returns {import('vscode').TerminalLinkProvider}
+ */
+function createThinkingLinkProvider(isEnabled) {
+  // Metadata never comes from a command string and is retained only for link
+  // objects created by this provider. A forged object passed to the handler is
+  // therefore inert even if it copies visible link properties.
+  const linkMetadata = new WeakMap();
+
+  return {
+    provideTerminalLinks(context, token) {
+      if (token?.isCancellationRequested || !isEnabled(context?.terminal)) return [];
+      return findThinkingMarkers(context.line).map((marker) => {
+        const link = {
+          startIndex: marker.startIndex,
+          length: marker.length,
+          tooltip: `Show EASY CODE thinking #${marker.id}`,
+        };
+        linkMetadata.set(link, { id: marker.id, terminal: context.terminal });
+        return link;
+      });
+    },
+
+    handleTerminalLink(link) {
+      const metadata = linkMetadata.get(link);
+      if (!metadata || !isEnabled(metadata.terminal)) return;
+      metadata.terminal.sendText(showThinkingSequence(metadata.id), false);
+    },
+  };
+}
 
 /**
  * @param {import('vscode').ExtensionContext} context
  */
 function activate(context) {
+  const vscode = vscodeApi();
   /** @type {Map<import('vscode').Terminal, Set<import('vscode').TerminalShellExecution>>} */
   const automaticExecutions = new Map();
   /** @type {Map<import('vscode').Terminal, boolean>} */
@@ -70,6 +152,7 @@ function activate(context) {
   };
 
   context.subscriptions.push(
+    vscode.window.registerTerminalLinkProvider(createThinkingLinkProvider(isEnabled)),
     vscode.window.onDidStartTerminalShellExecution((event) => {
       void trackExecution(event);
     }),
@@ -148,11 +231,16 @@ function activate(context) {
 }
 
 function deactivate() {
+  const vscode = vscodeApi();
   return vscode.commands.executeCommand("setContext", CONTEXT_KEY, false);
 }
 
 module.exports = {
   activate,
+  createThinkingLinkProvider,
   deactivate,
+  findThinkingMarkers,
   PASTE_IMAGE_SEQUENCE,
+  showThinkingSequence,
+  SHOW_THINKING_SEQUENCE_PREFIX,
 };

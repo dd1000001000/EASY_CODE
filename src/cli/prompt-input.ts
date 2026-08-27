@@ -30,11 +30,17 @@ export interface ReadPromptOptions {
     index: number,
     signal?: AbortSignal,
   ) => Promise<ImageAttachment>;
+  readonly onShowThinking?: (
+    id: number | "last",
+  ) => void | Promise<void>;
 }
 
 const ESCAPE = 0x1b;
 const CTRL_C = 0x03;
+const CTRL_T = 0x14;
 const CTRL_V = 0x16;
+const OSC_BEL = 0x07;
+const MAX_PRIVATE_OSC_BYTES = 160;
 /**
  * Private input sequence sent by the bundled VS Code extension. It is framed
  * like an OSC message so it cannot be confused with text or a real key emitted
@@ -42,13 +48,190 @@ const CTRL_V = 0x16;
  * owns the active integrated terminal.
  */
 export const VSCODE_IMAGE_PASTE_SEQUENCE = "\u001B]6973;easy-code;paste-image\u0007";
+export const VSCODE_SHOW_THINKING_SEQUENCE_PREFIX =
+  "\u001B]6973;easy-code;show-thinking;";
+
+export function vscodeShowThinkingSequence(id: number): string {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("Thinking block ID must be a positive safe integer");
+  }
+  return `${VSCODE_SHOW_THINKING_SEQUENCE_PREFIX}${id}\u0007`;
+}
 
 const IMAGE_PASTE_SEQUENCES = [
-  Buffer.from(VSCODE_IMAGE_PASTE_SEQUENCE),
   Buffer.from("\u001B[118;5u"), // Ctrl+V
   Buffer.from("\u001B[118;6u"), // Ctrl+Shift+V
   Buffer.from("\u001B[118;9u"), // Super/Command+V
 ] as const;
+
+const PRIVATE_OSC_PREFIX = Buffer.from("\u001B]6973;easy-code;");
+
+type PrivateOscParseResult =
+  | { readonly status: "none" }
+  | { readonly status: "partial" }
+  | {
+      readonly status: "complete";
+      readonly length: number;
+      readonly action:
+        | { readonly type: "paste-image" }
+        | { readonly type: "show-thinking"; readonly id: number }
+        | { readonly type: "ignore" };
+    };
+
+function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
+  const tail = input.subarray(offset);
+  const comparedLength = Math.min(tail.length, PRIVATE_OSC_PREFIX.length);
+  if (
+    !tail.subarray(0, comparedLength).equals(
+      PRIVATE_OSC_PREFIX.subarray(0, comparedLength),
+    )
+  ) {
+    return { status: "none" };
+  }
+  if (tail.length < PRIVATE_OSC_PREFIX.length) return { status: "partial" };
+
+  const terminator = tail.indexOf(OSC_BEL, PRIVATE_OSC_PREFIX.length);
+  if (terminator === -1) {
+    if (tail.length <= MAX_PRIVATE_OSC_BYTES) return { status: "partial" };
+    return {
+      status: "complete",
+      length: tail.length,
+      action: { type: "ignore" },
+    };
+  }
+
+  const length = terminator + 1;
+  if (length > MAX_PRIVATE_OSC_BYTES) {
+    return { status: "complete", length, action: { type: "ignore" } };
+  }
+  const payload = tail
+    .subarray(PRIVATE_OSC_PREFIX.length, terminator)
+    .toString("utf8");
+  if (payload === "paste-image") {
+    return { status: "complete", length, action: { type: "paste-image" } };
+  }
+  const thinking = /^show-thinking;([1-9][0-9]{0,15})$/u.exec(payload);
+  if (thinking) {
+    const id = Number(thinking[1]);
+    if (Number.isSafeInteger(id)) {
+      return {
+        status: "complete",
+        length,
+        action: { type: "show-thinking", id },
+      };
+    }
+  }
+  return { status: "complete", length, action: { type: "ignore" } };
+}
+
+/**
+ * Swallow EASY CODE's private VS Code protocol while another input UI (for
+ * example an approval or secret prompt) owns stdin. Ordinary keys and escape
+ * sequences pass through unchanged, including when split across chunks.
+ */
+export class PrivateOscInputFilter extends Transform implements PromptInput {
+  private pendingSequence = Buffer.alloc(0);
+  private pendingPrivateOsc = false;
+  private escapeTimer?: ReturnType<typeof setTimeout>;
+
+  constructor(private readonly source: PromptInput) {
+    super();
+  }
+
+  get isTTY(): boolean {
+    return Boolean(this.source.isTTY);
+  }
+
+  get isRaw(): boolean {
+    return Boolean(this.source.isRaw);
+  }
+
+  setRawMode(mode: boolean): this {
+    this.source.setRawMode?.(mode);
+    return this;
+  }
+
+  override _transform(
+    chunk: Buffer | string,
+    encoding: BufferEncoding,
+    callback: TransformCallback,
+  ): void {
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+    const input = this.pendingSequence.length
+      ? Buffer.concat([this.pendingSequence, data])
+      : data;
+    if (this.pendingSequence.length) {
+      this.clearEscapeTimer();
+      this.pendingSequence = Buffer.alloc(0);
+      this.pendingPrivateOsc = false;
+    }
+
+    const output: number[] = [];
+    let offset = 0;
+    while (offset < input.length) {
+      const byte = input[offset];
+      if (byte === ESCAPE) {
+        const privateOsc = parsePrivateOsc(input, offset);
+        if (privateOsc.status === "complete") {
+          // A private message is meaningful only to the main EASY CODE prompt.
+          // This filter is used by every other input UI, so always consume it.
+          offset += privateOsc.length;
+          continue;
+        }
+        if (privateOsc.status === "partial") {
+          const tail = input.subarray(offset);
+          this.pendingSequence = Buffer.from(tail);
+          this.pendingPrivateOsc =
+            tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d;
+          this.startEscapeTimer(this.pendingPrivateOsc ? 250 : 60);
+          break;
+        }
+      }
+      if (byte !== undefined) output.push(byte);
+      offset += 1;
+    }
+    callback(undefined, output.length ? Buffer.from(output) : undefined);
+  }
+
+  override _flush(callback: TransformCallback): void {
+    this.clearEscapeTimer();
+    if (!this.pendingSequence.length) {
+      callback();
+      return;
+    }
+    const pending = this.pendingSequence;
+    this.pendingSequence = Buffer.alloc(0);
+    const discard = this.pendingPrivateOsc;
+    this.pendingPrivateOsc = false;
+    callback(undefined, discard ? undefined : pending);
+  }
+
+  override _destroy(
+    error: Error | null,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.clearEscapeTimer();
+    callback(error);
+  }
+
+  private startEscapeTimer(delayMs: number): void {
+    this.clearEscapeTimer();
+    this.escapeTimer = setTimeout(() => {
+      if (!this.pendingSequence.length || this.destroyed) return;
+      const pending = this.pendingSequence;
+      this.pendingSequence = Buffer.alloc(0);
+      const discard = this.pendingPrivateOsc;
+      this.pendingPrivateOsc = false;
+      if (!discard) this.push(pending);
+    }, delayMs);
+    this.escapeTimer.unref?.();
+  }
+
+  private clearEscapeTimer(): void {
+    if (this.escapeTimer) clearTimeout(this.escapeTimer);
+    this.escapeTimer = undefined;
+  }
+}
 
 /**
  * A TTY proxy that turns an image-paste hotkey into visible `[Image #N]`
@@ -61,6 +244,7 @@ class ImagePasteInputProxy extends Transform {
   readonly pasteErrors: string[] = [];
 
   private pendingSequence = Buffer.alloc(0);
+  private pendingPrivateOsc = false;
   private escapeTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
@@ -70,6 +254,9 @@ class ImagePasteInputProxy extends Transform {
       index: number,
       signal?: AbortSignal,
     ) => Promise<ImageAttachment>,
+    private readonly onShowThinking?: (
+      id: number | "last",
+    ) => void | Promise<void>,
     private readonly signal?: AbortSignal,
   ) {
     super();
@@ -101,7 +288,9 @@ class ImagePasteInputProxy extends Transform {
     if (this.pendingSequence.length) {
       const pending = this.pendingSequence;
       this.pendingSequence = Buffer.alloc(0);
-      callback(undefined, pending);
+      const discard = this.pendingPrivateOsc;
+      this.pendingPrivateOsc = false;
+      callback(undefined, discard ? undefined : pending);
       return;
     }
     callback();
@@ -119,6 +308,7 @@ class ImagePasteInputProxy extends Transform {
     if (this.pendingSequence.length) {
       this.clearEscapeTimer();
       this.pendingSequence = Buffer.alloc(0);
+      this.pendingPrivateOsc = false;
     }
     const output: number[] = [];
     let offset = 0;
@@ -130,7 +320,22 @@ class ImagePasteInputProxy extends Transform {
         offset += 1;
         continue;
       }
+      if (byte === CTRL_T) {
+        await this.onShowThinking?.("last");
+        offset += 1;
+        continue;
+      }
       if (byte === ESCAPE) {
+        const privateOsc = parsePrivateOsc(input, offset);
+        if (privateOsc.status === "complete") {
+          if (privateOsc.action.type === "paste-image") {
+            output.push(...Buffer.from(await this.captureMarker(), "utf8"));
+          } else if (privateOsc.action.type === "show-thinking") {
+            await this.onShowThinking?.(privateOsc.action.id);
+          }
+          offset += privateOsc.length;
+          continue;
+        }
         const enhanced = IMAGE_PASTE_SEQUENCES.find((sequence) =>
           input.subarray(offset, offset + sequence.length).equals(sequence),
         );
@@ -141,13 +346,16 @@ class ImagePasteInputProxy extends Transform {
         }
         const tail = input.subarray(offset);
         const mayBePasteSequence =
+          privateOsc.status === "partial" ||
           tail.length === 1 ||
           IMAGE_PASTE_SEQUENCES.some(
             (sequence) => tail.length < sequence.length && sequence.subarray(0, tail.length).equals(tail),
           );
         if (mayBePasteSequence) {
           this.pendingSequence = Buffer.from(tail);
-          this.startEscapeTimer();
+          this.pendingPrivateOsc =
+            tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d;
+          this.startEscapeTimer(this.pendingPrivateOsc ? 250 : 60);
           break;
         }
       }
@@ -175,14 +383,16 @@ class ImagePasteInputProxy extends Transform {
     }
   }
 
-  private startEscapeTimer(): void {
+  private startEscapeTimer(delayMs: number): void {
     this.clearEscapeTimer();
     this.escapeTimer = setTimeout(() => {
       if (!this.pendingSequence.length || this.destroyed) return;
       const pending = this.pendingSequence;
       this.pendingSequence = Buffer.alloc(0);
-      this.push(pending);
-    }, 60);
+      const discard = this.pendingPrivateOsc;
+      this.pendingPrivateOsc = false;
+      if (!discard) this.push(pending);
+    }, delayMs);
     this.escapeTimer.unref?.();
   }
 
@@ -212,13 +422,50 @@ export function readPrompt(
   const wasRaw = Boolean(input.isRaw);
   const wasFlowing = input.readableFlowing === true;
   const captureController = new AbortController();
+  let promptActive = true;
+  let rl!: readline.Interface;
+  const showThinking = options.onShowThinking
+    ? async (id: number | "last"): Promise<void> => {
+        const savedLine = rl.line;
+        const savedCursor = rl.cursor;
+        const savedPosition = rl.getCursorPos();
+        const mutableReadline = rl as unknown as { cursor: number };
+        mutableReadline.cursor = savedLine.length;
+        const endPosition = rl.getCursorPos();
+        mutableReadline.cursor = savedCursor;
+
+        // Remove every visual row occupied by a wrapped edit buffer, without
+        // changing readline's logical line or cursor.
+        if (savedPosition.rows > 0) {
+          readline.moveCursor(options.output, 0, -savedPosition.rows);
+        }
+        readline.cursorTo(options.output, 0);
+        readline.clearScreenDown(options.output);
+        try {
+          await options.onShowThinking?.(id);
+        } finally {
+          if (promptActive) {
+            // readline.prompt() does not reliably repaint its existing edit
+            // buffer after out-of-band output, so draw the unchanged buffer
+            // explicitly and then restore its visual cursor position.
+            options.output.write(`${options.prompt}${savedLine}`);
+            const rowsUp = Math.max(0, endPosition.rows - savedPosition.rows);
+            if (rowsUp > 0) {
+              readline.moveCursor(options.output, 0, -rowsUp);
+            }
+            readline.cursorTo(options.output, savedPosition.cols);
+          }
+        }
+      }
+    : undefined;
   const proxy = new ImagePasteInputProxy(
     input,
     initialImageCount,
     options.captureImage,
+    showThinking,
     captureController.signal,
   );
-  const rl = readline.createInterface({
+  rl = readline.createInterface({
     input: proxy,
     output: options.output,
     terminal: true,
@@ -228,8 +475,10 @@ export function readPrompt(
     let settled = false;
 
     const cleanup = (): void => {
+      promptActive = false;
       captureController.abort();
       rl.removeListener("close", onClose);
+      rl.removeListener("line", onLine);
       proxy.removeListener("error", onError);
       options.signal?.removeEventListener("abort", onAbort);
       input.removeListener("data", onRawInput);
@@ -268,6 +517,7 @@ export function readPrompt(
       });
     };
     const onClose = (): void => finish(undefined, undefined, false);
+    const onLine = (answer: string): void => finish(answer);
     const onError = (): void => finish(undefined, new Error("Unable to read terminal input."));
     const onAbort = (): void => finish();
     const onRawInput = (chunk: Buffer | string): void => {
@@ -276,6 +526,7 @@ export function readPrompt(
     };
 
     rl.once("close", onClose);
+    rl.once("line", onLine);
     proxy.once("error", onError);
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) {
@@ -287,6 +538,9 @@ export function readPrompt(
     // deliberately holds the Transform callback so Enter stays ordered behind
     // it, but Ctrl+C must still be able to abort that read immediately.
     input.on("data", onRawInput);
-    rl.question(options.prompt, (answer) => finish(answer));
+    // Keep the prompt and submitted line owned by the interface itself so an
+    // inline Thinking expansion can inspect and redraw the current edit buffer.
+    rl.setPrompt(options.prompt);
+    rl.prompt();
   });
 }

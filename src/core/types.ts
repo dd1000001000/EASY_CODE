@@ -80,6 +80,22 @@ export interface ProviderResponse {
   finishReason?: string | null;
 }
 
+/**
+ * Ephemeral UI notification for reasoning returned by a main agent request.
+ * The text remains durably represented only by the matching assistant
+ * ChatMessage; consumers must not persist this notification as a second copy.
+ */
+export interface AgentReasoningNotification {
+  readonly type: "reasoning";
+  readonly text: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly step: number;
+  readonly provider: ProviderName;
+  readonly model: string;
+  readonly thinkingEffort: Exclude<ThinkingEffort, "none">;
+}
+
 export interface ModelRequest {
   messages: ChatMessage[];
   /**

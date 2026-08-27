@@ -1,8 +1,8 @@
 {
   "name": "easy-code-image-paste",
-  "displayName": "EASY CODE Image Paste",
-  "description": "Paste clipboard images into EASY CODE from the VS Code integrated terminal.",
-  "version": "0.1.0",
+  "displayName": "EASY CODE Terminal Integration",
+  "description": "Paste clipboard images and open thinking details from EASY CODE in the VS Code integrated terminal.",
+  "version": "0.1.1",
   "publisher": "dd1000001000",
   "license": "MIT",
   "repository": {
@@ -19,7 +19,8 @@
     "easy-code",
     "terminal",
     "clipboard",
-    "image"
+    "image",
+    "thinking"
   ],
   "main": "./extension.js",
   "extensionKind": [
