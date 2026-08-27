@@ -12,6 +12,7 @@ export type ToolName =
   | "update_file"
   | "delete_file"
   | "run_command"
+  | "manage_tasks"
   | "compact_context"
   | "manage_memory";
 
@@ -155,6 +156,8 @@ export interface ToolExecutionResult {
   contextCompaction?: ContextCompactionRequest;
   /** Local-only durable-memory request, staged until the turn completes successfully. */
   memoryMutation?: MemoryMutationRequest;
+  /** Runtime-owned task-DAG transition. It is persisted separately from model-visible data. */
+  taskGraphUpdate?: TaskGraph;
   /**
    * Local image references that Runtime promotes into a synthetic multimodal user
    * message after all matching textual tool results have been appended.
@@ -226,6 +229,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   commandTimeoutMs: number;
   maxOutputChars: number;
+  /** Read-only authoritative snapshot used by manage_tasks to propose one transition. */
+  taskGraph?: Readonly<TaskGraph>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
     absolutePath: string;
@@ -268,6 +273,42 @@ export interface CommandAuditEntry {
   summary: string;
 }
 
+export type TaskNodeStatus = "pending" | "in_progress" | "completed" | "blocked";
+export type TaskGraphStatus = "active" | "completed" | "blocked";
+
+export interface TaskCompletionEvidence {
+  check: string;
+  evidence: string;
+}
+
+export interface TaskNode {
+  id: string;
+  title: string;
+  description: string;
+  dependencies: string[];
+  inputs: string[];
+  expectedArtifacts: string[];
+  completionChecks: string[];
+  failureHandling: string;
+  owner: "main_agent";
+  status: TaskNodeStatus;
+  completionEvidence?: TaskCompletionEvidence[];
+  blocker?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TaskGraph {
+  id: string;
+  goal: string;
+  status: TaskGraphStatus;
+  createdByTurnId: string;
+  updatedByTurnId: string;
+  tasks: TaskNode[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionState {
   threadId: string;
   activeTurnId?: string;
@@ -282,6 +323,8 @@ export interface SessionState {
   filesRead: Map<string, FileVersion>;
   changes: FileChangeRecord[];
   commands: CommandAuditEntry[];
+  /** Optional model-created DAG for one complex objective; Runtime owns all transitions. */
+  taskGraph?: TaskGraph;
   workingSummary: string;
   /** Number of leading messages represented by workingSummary and omitted from future model requests. */
   compactedMessageCount: number;

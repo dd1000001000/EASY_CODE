@@ -11,8 +11,9 @@ import type {
   ThinkingEffortSelectorChoice,
 } from "../src/cli/model-selector.js";
 import { Terminal } from "../src/cli/terminal.js";
-import type { ProviderName, ThinkingEffort } from "../src/core/types.js";
+import type { ProviderName, SessionState, ThinkingEffort } from "../src/core/types.js";
 import { createStorage } from "../src/storage/index.js";
+import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { ThreadStore } from "../src/threads/index.js";
 import { describe, it } from "./harness.js";
 
@@ -401,6 +402,133 @@ describe("/model", () => {
         assertMissingKey("qwen"),
       );
     } finally {
+      fixture.close();
+    }
+  });
+
+  it("keeps the user-facing task DAG command read-only", async () => {
+    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
+    try {
+      await fixture.app.handleSlashCommand("/tasks");
+      assert.match(fixture.output(), /This thread has no task DAG/u);
+      const internal = fixture.app as unknown as { state: SessionState };
+      internal.state.taskGraph = applyTaskGraphOperation(undefined, {
+        action: "create",
+        goal: "Show this graph without changing it",
+        tasks: [{
+          id: "inspect",
+          title: "Inspect",
+          description: "Inspect the current state",
+          dependencies: [],
+          inputs: ["Thread state"],
+          expectedArtifacts: ["Read-only output"],
+          completionChecks: ["The state is displayed"],
+          failureHandling: "Block if state cannot be read",
+        }],
+      }, { turnId: "turn_cli_tasks" });
+      const before = JSON.stringify(internal.state.taskGraph);
+      await fixture.app.handleSlashCommand("/tasks");
+      assert.match(fixture.output(), /Show this graph without changing it/u);
+      assert.equal(JSON.stringify(internal.state.taskGraph), before);
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/tasks complete"),
+        /Usage: \/tasks/u,
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("refuses Plan mode while a task DAG is unfinished", async () => {
+    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
+    try {
+      const internal = fixture.app as unknown as { state: SessionState };
+      internal.state.taskGraph = applyTaskGraphOperation(undefined, {
+        action: "create",
+        goal: "Finish implementation before entering Plan mode",
+        tasks: [{
+          id: "implementation",
+          title: "Implementation",
+          description: "Complete the implementation",
+          dependencies: [],
+          inputs: ["Workspace"],
+          expectedArtifacts: ["Implemented change"],
+          completionChecks: ["Implementation is verified"],
+          failureHandling: "Block on an external requirement",
+        }],
+      }, { turnId: "turn_mode_guard" });
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/mode plan"),
+        /Cannot switch to Plan mode while a task DAG is active or blocked/u,
+      );
+      assert.notEqual(internal.state.mode, "plan");
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("refuses a Plan-mode override when resuming an unfinished DAG", async () => {
+    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
+    const resumeInput = new PassThrough();
+    const resumeOutput = new PassThrough();
+    const resumeTerminal = new Terminal(resumeInput, resumeOutput);
+    try {
+      const internal = fixture.app as unknown as { state: SessionState };
+      const operation = {
+        action: "create" as const,
+        goal: "Resume this graph only in an execution-capable mode",
+        tasks: [{
+          id: "resume",
+          title: "Resume",
+          description: "Continue implementation after resume",
+          dependencies: [],
+          inputs: ["Saved task state"],
+          expectedArtifacts: ["Completed work"],
+          completionChecks: ["The resumed work is verified"],
+          failureHandling: "Block on a missing external condition",
+        }],
+      };
+      const graph = applyTaskGraphOperation(undefined, operation, {
+        turnId: "turn_resume_guard",
+      });
+      const threadId = internal.state.threadId;
+      const storage = createStorage(fixture.dataDir);
+      try {
+        const threads = new ThreadStore(storage);
+        threads.appendEvent(threadId, {
+          type: "tool.result",
+          turnId: "turn_resume_guard",
+          phase: "completed",
+          payload: {
+            callId: "call_resume_guard",
+            tool: "manage_tasks",
+            message: {
+              role: "tool",
+              tool_call_id: "call_resume_guard",
+              name: "manage_tasks",
+              content: '{"ok":true}',
+            },
+            taskGraph: graph,
+            taskGraphOperation: operation,
+          },
+        });
+      } finally {
+        storage.close();
+      }
+      await fixture.app.closeAsync();
+
+      await assert.rejects(
+        EasyCodeApp.create({
+          workspaceRoot: fixture.workspace,
+          resumeThreadId: threadId,
+          mode: "plan",
+          terminal: resumeTerminal,
+          credentialStore: false,
+        }),
+        /Cannot resume an active or blocked task DAG in Plan mode/u,
+      );
+    } finally {
+      resumeTerminal.close();
       fixture.close();
     }
   });

@@ -49,6 +49,7 @@ describe("workspace file tools", () => {
           "update_file",
           "delete_file",
           "run_command",
+          "manage_tasks",
           "compact_context",
         ],
       );

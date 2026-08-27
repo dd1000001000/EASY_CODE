@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { createDefaultEasyCodeConfig } from "../src/config/index.js";
 import { buildSystemPrompt } from "../src/prompts/index.js";
+import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { describe, it } from "./harness.js";
 
 describe("system prompt builder", () => {
@@ -44,6 +45,23 @@ describe("system prompt builder", () => {
       });
       config.qwen.apiKey = "this-must-not-enter-the-prompt";
       config.glm.apiKey = "glm-key-must-not-enter-the-prompt";
+      const taskGraph = applyTaskGraphOperation(undefined, {
+        action: "create",
+        goal: "Implement and verify the feature",
+        tasks: [{
+          id: "implementation",
+          title: "Implement feature",
+          description: "Make the scoped implementation changes",
+          dependencies: [],
+          inputs: ["Verified repository state"],
+          expectedArtifacts: ["Updated source files"],
+          completionChecks: ["Relevant tests pass"],
+          failureHandling: "Record a concrete blocker if validation cannot run",
+        }],
+      }, {
+        turnId: "turn_prompt",
+        graphId: () => "task_graph_00000000-0000-4000-8000-000000000003",
+      });
       const prompt = await buildSystemPrompt({
         config,
         mode: "plan",
@@ -58,6 +76,7 @@ describe("system prompt builder", () => {
           createdAt: "2026-08-26T00:00:00.000Z",
           updatedAt: "2026-08-27T00:00:00.000Z",
         }],
+        taskGraph,
         now: new Date("2026-08-27T01:02:03.000Z"),
         cwd,
         timeZone: "Asia/Shanghai",
@@ -99,6 +118,14 @@ describe("system prompt builder", () => {
       assert.match(prompt, /It must be cumulative/);
       assert.match(prompt, /delete_file deletes a previously read regular workspace file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
+      assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
+      assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
+      assert.match(prompt, /Do not create a task DAG/u);
+      assert.match(prompt, /BEGIN_UNTRUSTED_TASK_DAG/u);
+      assert.match(prompt, /"currentTask": null/u);
+      assert.match(prompt, /"startableTasks": \[/u);
+      assert.match(prompt, /"implementation"/u);
+      assert.match(prompt, /END_UNTRUSTED_TASK_DAG/u);
       assert.match(prompt, /Store memory as atomic facts/);
       assert.match(prompt, /several remember tool calls together/);
       assert.match(prompt, /up to eight changes per turn/);
