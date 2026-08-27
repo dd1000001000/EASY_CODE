@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { assertSupportedNodeVersion, isDirectExecution } from "../src/index.js";
@@ -22,5 +25,31 @@ describe("CLI bootstrap", () => {
       isDirectExecution(entry, pathToFileURL(`${entry}.imported`).href),
       false,
     );
+  });
+
+  it("recognizes an npm entry path reached through a directory link", () => {
+    const temporary = mkdtempSync(path.join(os.tmpdir(), "easy-code-entry-link-"));
+    const sourceDirectory = path.join(temporary, "source");
+    const linkedDirectory = path.join(temporary, "global-install");
+    const entryName = "index.js";
+    try {
+      mkdirSync(sourceDirectory);
+      writeFileSync(path.join(sourceDirectory, entryName), "// fixture\n", "utf8");
+      symlinkSync(
+        sourceDirectory,
+        linkedDirectory,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+
+      assert.equal(
+        isDirectExecution(
+          path.join(linkedDirectory, entryName),
+          pathToFileURL(path.join(sourceDirectory, entryName)).href,
+        ),
+        true,
+      );
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   });
 });

@@ -120,6 +120,8 @@ cd your-project
 easy-code
 ```
 
+EASY CODE 不会打开新的终端窗口；交互式 Agent 会占用当前终端，并显示类似 `EASY CODE [auto qwen/qwen3-coder-plus] >` 的提示符。Shell 中查看 CLI 帮助使用 `easy-code --help`；`/help` 只能在 Agent 提示符出现后输入，不能写成 `easy-code /help`。
+
 或者显式指定工作区和 Provider：
 
 ```bash
