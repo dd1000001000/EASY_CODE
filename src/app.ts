@@ -26,7 +26,9 @@ import type {
   ImageAttachment,
   ProviderName,
   SessionState,
+  ThinkingEffort,
 } from "./core/types.js";
+import { THINKING_EFFORTS } from "./core/types.js";
 import {
   ImageStore,
   MAX_IMAGES_PER_MODEL_REQUEST,
@@ -52,6 +54,7 @@ import {
   modelSupportsVision,
   validateProviderImageAttachments,
 } from "./models/catalog.js";
+import { thinkingEffortIsApplied } from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { AgentRuntime } from "./runtime/agent.js";
@@ -66,6 +69,7 @@ export interface EasyCodeAppOptions {
   model?: string;
   mode?: AgentMode;
   approvalPolicy?: ApprovalPolicyName;
+  thinkingEffort?: ThinkingEffort;
   assumeYes?: boolean;
   resumeThreadId?: string;
   startupInteraction?: "none" | "select-model" | "ensure-api-key";
@@ -261,7 +265,9 @@ export class EasyCodeApp {
         const previousMode = state.mode;
         const previousProvider = state.provider;
         const previousModel = state.model;
+        const previousThinkingEffort = state.thinkingEffort;
         state.mode = options.mode ?? state.mode;
+        state.thinkingEffort = options.thinkingEffort ?? state.thinkingEffort;
         const selectedProvider = options.provider ?? state.provider;
         state.provider = selectedProvider;
         state.model = options.model
@@ -274,6 +280,7 @@ export class EasyCodeApp {
           previousMode !== state.mode ||
           previousProvider !== state.provider ||
           previousModel !== state.model ||
+          previousThinkingEffort !== state.thinkingEffort ||
           repairedInterruptedTurn;
       } else {
         const selectedProvider = options.provider ?? config.provider;
@@ -286,6 +293,7 @@ export class EasyCodeApp {
           mode: selectedMode,
           provider: selectedProvider,
           model: selectedModel,
+          thinkingEffort: options.thinkingEffort ?? config.thinkingEffort,
         });
         threadLease = threadStore.acquireThreadLease(state.threadId);
       }
@@ -293,6 +301,7 @@ export class EasyCodeApp {
       config.workspaceRoot = workspace.root;
       config.provider = state.provider;
       config.mode = state.mode;
+      config.thinkingEffort = state.thinkingEffort;
       config[state.provider].model = state.model;
       if (shouldCheckpoint) threadStore.save(state);
       const app = new EasyCodeApp(
@@ -466,9 +475,9 @@ export class EasyCodeApp {
         if (
           !provider ||
           command.args.length !== 1 ||
-          !["qwen", "deepseek"].includes(provider)
+          !["qwen", "deepseek", "glm"].includes(provider)
         ) {
-          throw new Error("Usage: /provider qwen|deepseek");
+          throw new Error("Usage: /provider qwen|deepseek|glm");
         }
         this.requireProviderApiKey(provider);
         const model = requireCatalogModel(provider, this.config[provider].model).id;
@@ -484,7 +493,12 @@ export class EasyCodeApp {
             return false;
           }
           if (!(await this.ensureProviderApiKey(selection.provider))) return false;
-          this.commitModelSelection(selection.provider, selection.model);
+          this.commitModelSelection(
+            selection.provider,
+            selection.model,
+            "Model switched to",
+            selection.thinkingEffort,
+          );
           return false;
         }
 
@@ -846,6 +860,7 @@ export class EasyCodeApp {
     let selection = {
       provider: this.state.provider,
       model: this.state.model,
+      thinkingEffort: this.state.thinkingEffort,
     };
     if (this.startupInteraction === "select-model") {
       const selected = await this.selectProviderAndModel();
@@ -859,10 +874,21 @@ export class EasyCodeApp {
     if (!(await this.ensureProviderApiKey(selection.provider))) return false;
 
     if (this.startupInteraction === "select-model") {
-      this.commitModelSelection(selection.provider, selection.model, "Selected");
+      this.commitModelSelection(
+        selection.provider,
+        selection.model,
+        "Selected",
+        selection.thinkingEffort,
+      );
     } else {
+      const applied = thinkingEffortIsApplied(
+        selection.provider,
+        selection.model,
+        selection.thinkingEffort,
+      );
       this.terminal.success(
-        `Selected ${providerLabel(selection.provider)} / ${selection.model}`,
+        `Selected ${providerLabel(selection.provider)} / ${selection.model} / ` +
+          `thinking ${selection.thinkingEffort}${applied ? "" : " (saved, not applied)"}`,
       );
     }
     return true;
@@ -871,6 +897,7 @@ export class EasyCodeApp {
   private async selectProviderAndModel(): Promise<{
     provider: ProviderName;
     model: string;
+    thinkingEffort: ThinkingEffort;
   } | undefined> {
     const provider = await this.terminal.selectProvider(
       PROVIDER_CATALOG.map((entry) => ({
@@ -891,7 +918,19 @@ export class EasyCodeApp {
       initialModel,
     );
     if (!model) return undefined;
-    return { provider, model: requireCatalogModel(provider, model).id };
+    const canonicalModel = requireCatalogModel(provider, model).id;
+    const thinkingEffort = await this.terminal.selectThinkingEffort(
+      providerLabel(provider),
+      canonicalModel,
+      THINKING_EFFORTS.map((effort) => ({
+        id: effort,
+        label: effort[0]!.toUpperCase() + effort.slice(1),
+        applied: thinkingEffortIsApplied(provider, canonicalModel, effort),
+      })),
+      this.state.thinkingEffort,
+    );
+    if (!thinkingEffort) return undefined;
+    return { provider, model: canonicalModel, thinkingEffort };
   }
 
   private async ensureProviderApiKey(provider: ProviderName): Promise<boolean> {
@@ -927,31 +966,42 @@ export class EasyCodeApp {
     provider: ProviderName,
     model: string,
     verb = "Model switched to",
+    thinkingEffort = this.state.thinkingEffort,
   ): void {
     const canonicalModel = requireCatalogModel(provider, model).id;
     const previous = {
       stateProvider: this.state.provider,
       stateModel: this.state.model,
+      stateThinkingEffort: this.state.thinkingEffort,
       configProvider: this.config.provider,
       configModel: this.config[provider].model,
+      configThinkingEffort: this.config.thinkingEffort,
       dirty: this.dirty,
     };
     try {
       this.state.provider = provider;
       this.state.model = canonicalModel;
+      this.state.thinkingEffort = thinkingEffort;
       this.config.provider = provider;
       this.config[provider].model = canonicalModel;
+      this.config.thinkingEffort = thinkingEffort;
       this.dirty = true;
       this.save();
     } catch (error) {
       this.state.provider = previous.stateProvider;
       this.state.model = previous.stateModel;
+      this.state.thinkingEffort = previous.stateThinkingEffort;
       this.config.provider = previous.configProvider;
       this.config[provider].model = previous.configModel;
+      this.config.thinkingEffort = previous.configThinkingEffort;
       this.dirty = previous.dirty;
       throw error;
     }
-    this.terminal.success(`${verb} ${providerLabel(provider)} / ${canonicalModel}`);
+    const applied = thinkingEffortIsApplied(provider, canonicalModel, thinkingEffort);
+    this.terminal.success(
+      `${verb} ${providerLabel(provider)} / ${canonicalModel} / thinking ${thinkingEffort}` +
+        (applied ? "" : " (saved, not applied)"),
+    );
     if (this.pendingImages.length && !modelSupportsVision(provider, canonicalModel)) {
       this.terminal.info(
         `${this.pendingImages.length} queued image(s) remain attached, but this model cannot receive them. ` +
@@ -964,9 +1014,11 @@ export class EasyCodeApp {
     const config: EasyCodeConfig = {
       ...this.config,
       mode: this.state.mode,
+      thinkingEffort: this.state.thinkingEffort,
       provider: this.state.provider,
       qwen: { ...this.config.qwen },
       deepseek: { ...this.config.deepseek },
+      glm: { ...this.config.glm },
     };
     config[this.state.provider].model = this.state.model;
     return config;
@@ -1014,6 +1066,7 @@ export class EasyCodeApp {
       mode: this.state.mode,
       provider: this.state.provider,
       model: this.state.model,
+      thinkingEffort: this.state.thinkingEffort,
     });
     let nextLease: ThreadLease | undefined;
     try {
@@ -1077,6 +1130,7 @@ export class EasyCodeApp {
     this.state = recovered;
     this.workspace = nextWorkspace;
     this.config.mode = recovered.mode;
+    this.config.thinkingEffort = recovered.thinkingEffort;
     this.config.provider = recovered.provider;
     this.config[recovered.provider].model = recovered.model;
     this.dirty = repairedInterruptedTurn;
@@ -1106,6 +1160,12 @@ export class EasyCodeApp {
         mode: this.state.mode,
         provider: this.state.provider,
         model: this.state.model,
+        thinkingEffort: this.state.thinkingEffort,
+        thinkingApplied: thinkingEffortIsApplied(
+          this.state.provider,
+          this.state.model,
+          this.state.thinkingEffort,
+        ),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
         apiKeyConfigured: Boolean(providerConfig.apiKey),
@@ -1121,7 +1181,9 @@ export class EasyCodeApp {
     if (this.config[provider].apiKey) return;
     const environment = provider === "qwen"
       ? "QWEN_API_KEY (DASHSCOPE_API_KEY is also supported)"
-      : "DEEPSEEK_API_KEY";
+      : provider === "deepseek"
+        ? "DEEPSEEK_API_KEY"
+        : "ZAI_API_KEY (GLM_API_KEY and ZHIPUAI_API_KEY are also supported)";
     throw new Error(
       `No ${provider} API key is configured. Run ` +
       `easy-code config set ${provider}.api-key (saved to the system credential store), ` +
@@ -1213,6 +1275,8 @@ export class EasyCodeApp {
   }
 
   private prompt(): string {
-    return chalk.bold.cyan(`EASY CODE [${this.state.mode} ${this.state.provider}/${this.state.model}] > `);
+    return chalk.bold.cyan(
+      `EASY CODE [${this.state.mode} ${this.state.provider}/${this.state.model} thinking:${this.state.thinkingEffort}] > `,
+    );
   }
 }

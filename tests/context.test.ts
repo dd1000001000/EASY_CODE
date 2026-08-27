@@ -19,6 +19,7 @@ function makeState(): SessionState {
     mode: "code",
     provider: "qwen",
     model: "mock",
+    thinkingEffort: "medium",
     workspaceRoot: process.cwd(),
     constraints: [],
     messages: Array.from({ length: 30 }, (_, index) => ({

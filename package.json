@@ -1,7 +1,7 @@
 {
   "name": "easy-code-agent",
   "version": "0.1.0",
-  "description": "EASY CODE - a local CLI coding agent for Alibaba Qwen and DeepSeek",
+  "description": "EASY CODE - a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM",
   "type": "module",
   "bin": {
     "easy-code": "dist/index.js"
@@ -42,7 +42,9 @@
     "coding-agent",
     "cli",
     "qwen",
-    "deepseek"
+    "deepseek",
+    "glm",
+    "zhipu"
   ],
   "license": "MIT",
   "dependencies": {

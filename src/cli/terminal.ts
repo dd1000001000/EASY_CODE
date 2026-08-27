@@ -4,6 +4,7 @@ import type {
   ApprovalRequest,
   FileDiffPresentation,
   ImageAttachment,
+  ThinkingEffort,
 } from "../core/types.js";
 import { readSecretInput } from "../config/secret-input.js";
 import { renderFileDiff } from "./file-diff.js";
@@ -14,10 +15,12 @@ import {
 import {
   selectModel,
   selectProvider,
+  selectThinkingEffort,
   type ModelSelectorInput,
   type ModelSelectorOutput,
   type ModelSelectorChoice,
   type ProviderSelectorChoice,
+  type ThinkingEffortSelectorChoice,
 } from "./model-selector.js";
 
 export class Terminal {
@@ -128,6 +131,22 @@ export class Terminal {
       input: this.input as ModelSelectorInput,
       output: this.output as ModelSelectorOutput,
       initialModel,
+      color: this.colorEnabled(),
+    });
+  }
+
+  selectThinkingEffort(
+    providerName: string,
+    model: string,
+    choices: readonly ThinkingEffortSelectorChoice[],
+    initialEffort: ThinkingEffort,
+  ): Promise<ThinkingEffort | undefined> {
+    if (this.closed) return Promise.resolve(undefined);
+    if (this.rl || this.promptActive) throw new Error("Thinking effort selection cannot start while a prompt is active.");
+    return selectThinkingEffort(providerName, model, choices, {
+      input: this.input as ModelSelectorInput,
+      output: this.output as ModelSelectorOutput,
+      initialEffort,
       color: this.colorEnabled(),
     });
   }

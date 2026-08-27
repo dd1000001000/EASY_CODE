@@ -10,6 +10,10 @@ import {
   resolveCatalogModel,
   validateProviderImageAttachments,
 } from "../src/models/catalog.js";
+import {
+  thinkingEffortIsApplied,
+  thinkingRequestParameters,
+} from "../src/models/thinking.js";
 import { describe, it } from "./harness.js";
 
 describe("model catalog", () => {
@@ -19,6 +23,7 @@ describe("model catalog", () => {
       [
         { provider: "deepseek", label: "DeepSeek" },
         { provider: "qwen", label: "Alibaba Qwen" },
+        { provider: "glm", label: "Zhipu GLM" },
       ],
     );
     assert.deepEqual(
@@ -43,9 +48,14 @@ describe("model catalog", () => {
         "qwen3-vl-flash",
       ],
     );
+    assert.deepEqual(
+      modelsForProvider("glm").map((model) => model.id),
+      ["glm-5.3-flash", "glm-5.3", "glm-5.2"],
+    );
     assert.deepEqual(DEFAULT_MODEL_IDS, {
       qwen: "qwen3.7-max",
       deepseek: "deepseek-v4-pro",
+      glm: "glm-5.3",
     });
   });
 
@@ -59,16 +69,87 @@ describe("model catalog", () => {
     assert.equal(modelVisionSupport("qwen", "qwen3-max"), "unsupported");
     assert.equal(modelVisionSupport("qwen", "qwen3.7-max"), "unsupported");
     assert.equal(modelVisionSupport("qwen", "qwen3.6-max"), "unsupported");
+    assert.equal(modelVisionSupport("glm", "glm-5.3-flash"), "supported");
+    assert.equal(modelVisionSupport("glm", "glm-5.3"), "unsupported");
+    assert.equal(modelVisionSupport("glm", "glm-5.2"), "unsupported");
     assert.throws(
       () => requireVisionModel("qwen", "qwen3.7-max"),
       /text-only/u,
     );
     assert.doesNotThrow(() => requireVisionModel("qwen", "qwen3-vl-flash"));
+    assert.doesNotThrow(() => requireVisionModel("glm", "GLM-5.3-Flash"));
+    assert.throws(() => requireVisionModel("glm", "GLM-5.3"), /text-only/u);
+  });
+
+  it("maps the normalized thinking effort only for documented model profiles", () => {
+    assert.deepEqual(
+      thinkingRequestParameters("qwen", "qwen3.7-max", "none"),
+      { enable_thinking: false },
+    );
+    assert.deepEqual(
+      ["low", "medium", "high"].map((effort) =>
+        thinkingRequestParameters(
+          "qwen",
+          "qwen3.7-max",
+          effort as "low" | "medium" | "high",
+        )),
+      [
+        { enable_thinking: true, thinking_budget: 4_096 },
+        { enable_thinking: true, thinking_budget: 16_384 },
+        { enable_thinking: true, thinking_budget: 32_768 },
+      ],
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("deepseek", "deepseek-v4-pro", "medium"),
+      { thinking: { type: "enabled" }, reasoning_effort: "high" },
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("deepseek", "deepseek-v4-flash", "none"),
+      { thinking: { type: "disabled" } },
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("glm", "glm-5.3-flash", "low"),
+      { thinking: { type: "enabled" }, reasoning_effort: "low" },
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("glm", "glm-5.3", "medium"),
+      { thinking: { type: "enabled" }, reasoning_effort: "high" },
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("glm", "glm-5.2", "none"),
+      { thinking: { type: "disabled" } },
+    );
+
+    assert.deepEqual(
+      thinkingRequestParameters("qwen", "qwen3.6-max", "high"),
+      {},
+    );
+    assert.deepEqual(
+      thinkingRequestParameters(
+        "deepseek",
+        "deepseek-v4-flash-vision-exp",
+        "high",
+      ),
+      {},
+    );
+    assert.equal(
+      thinkingEffortIsApplied("glm", "glm-5.3", "none"),
+      false,
+    );
+    assert.equal(
+      thinkingEffortIsApplied("glm", "glm-5.3", "low"),
+      true,
+    );
+    assert.equal(
+      thinkingEffortIsApplied("qwen", "qwen3.6-max", "high"),
+      false,
+    );
   });
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {
     assert.equal(resolveCatalogModel("qwen", "Qwen3-VL-Flash")?.id, "qwen3-vl-flash");
     assert.equal(requireCatalogModel("deepseek", "DEEPSEEK-V4-PRO").id, "deepseek-v4-pro");
+    assert.equal(resolveCatalogModel("glm", "GLM-5.3-Flash")?.id, "glm-5.3-flash");
     assert.throws(
       () => requireCatalogModel("qwen", "deepseek-v4-pro"),
       /not in the Alibaba Qwen catalog/u,
@@ -76,6 +157,10 @@ describe("model catalog", () => {
     assert.throws(
       () => requireCatalogModel("deepseek", "unknown-model"),
       /Supported models:/u,
+    );
+    assert.throws(
+      () => requireCatalogModel("glm", "qwen3-vl-plus"),
+      /not in the Zhipu GLM catalog/u,
     );
   });
 

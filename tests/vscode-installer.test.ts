@@ -196,11 +196,15 @@ describe("VS Code extension installer", () => {
       VSCODE_IPC_HOOK_CLI: "/tmp/vscode.sock",
       QWEN_API_KEY: "qwen-secret",
       DEEPSEEK_API_KEY: "deepseek-secret",
+      ZAI_API_KEY: "glm-secret",
+      GLM_API_KEY: "glm-alias-secret",
     }, "linux");
     assert.equal(environment.HOME, "/home/tester");
     assert.equal(environment.VSCODE_IPC_HOOK_CLI, "/tmp/vscode.sock");
     assert.equal(environment.QWEN_API_KEY, undefined);
     assert.equal(environment.DEEPSEEK_API_KEY, undefined);
+    assert.equal(environment.ZAI_API_KEY, undefined);
+    assert.equal(environment.GLM_API_KEY, undefined);
   });
 
   it("rejects an explicit VS Code shim from the consuming workspace", () => {

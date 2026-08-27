@@ -17,6 +17,10 @@ import {
   validateProviderImageAttachments,
 } from "../models/catalog.js";
 import {
+  thinkingRequestParameters,
+  type ProviderThinkingParameters,
+} from "../models/thinking.js";
+import {
   ProviderError,
   redactImageDataUrls,
   redactSensitiveText,
@@ -84,7 +88,7 @@ type CompletionMessage =
   | Extract<ChatMessage, { role: "assistant" }>
   | Extract<ChatMessage, { role: "tool" }>;
 
-interface CompletionBody {
+interface CompletionBody extends ProviderThinkingParameters {
   model: string;
   messages: CompletionMessage[];
   stream: false;
@@ -152,6 +156,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.temperature = request.temperature;
     }
     if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
+    Object.assign(
+      body,
+      thinkingRequestParameters(this.name, this.model, request.thinkingEffort),
+    );
 
     let serialized: string;
     try {
