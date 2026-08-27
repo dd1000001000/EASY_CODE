@@ -23,6 +23,7 @@ import {
   SystemClipboardImageReader,
   assertDataDirectoryOutsideWorkspace,
   chooseClipboardMediaType,
+  chooseClipboardTextType,
   inspectImageBuffer,
   nextThreadImageNumber,
   prepareDataDirectoryOutsideWorkspace,
@@ -217,6 +218,28 @@ describe("image attachments", () => {
     assert.equal(chooseClipboardMediaType("text/plain"), undefined);
   });
 
+  it("reads UTF-8 clipboard text through a fixed Windows helper", async () => {
+    const calls: Array<{ program: string; args: readonly string[] }> = [];
+    const clipboard = new SystemClipboardImageReader({
+      platform: "win32",
+      env: { SystemRoot: "C:\\Windows", DEEPSEEK_API_KEY: "must-not-leak" },
+      runCommand: async (program, args, options) => {
+        calls.push({ program, args });
+        assert.equal(options.env.DEEPSEEK_API_KEY, undefined);
+        return Buffer.from("复制的文字", "utf8");
+      },
+    });
+
+    assert.equal(await clipboard.readText(), "复制的文字");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.args.includes("-STA"), true);
+    assert.equal(
+      chooseClipboardTextType("image/png\ntext/plain;charset=utf-8\nUTF8_STRING"),
+      "text/plain;charset=utf-8",
+    );
+    assert.equal(chooseClipboardTextType("image/png\ntext/html"), undefined);
+  });
+
   it("skips relative and workspace PATH entries for Linux clipboard helpers", async () => {
     const programs: string[] = [];
     const clipboard = new SystemClipboardImageReader({
@@ -236,6 +259,28 @@ describe("image attachments", () => {
 
     assert.deepEqual(await clipboard.readImage(), PNG_1X1);
     assert.deepEqual(programs, ["/usr/bin/wl-paste", "/usr/bin/wl-paste"]);
+  });
+
+  it("reads Linux clipboard text only from a supported text target", async () => {
+    const calls: Array<{ program: string; args: readonly string[] }> = [];
+    const clipboard = new SystemClipboardImageReader({
+      platform: "linux",
+      currentDirectory: "/workspace",
+      env: { PATH: "/usr/bin", WAYLAND_DISPLAY: "wayland-0" },
+      runCommand: async (program, args) => {
+        calls.push({ program, args });
+        return args.includes("--list-types")
+          ? Buffer.from("image/png\ntext/plain;charset=utf-8\n")
+          : Buffer.from("pasted text", "utf8");
+      },
+    });
+
+    assert.equal(await clipboard.readText(), "pasted text");
+    assert.deepEqual(
+      calls.map(({ program }) => program),
+      ["/usr/bin/wl-paste", "/usr/bin/wl-paste"],
+    );
+    assert.equal(calls[1]?.args.includes("text/plain;charset=utf-8"), true);
   });
 
   it("requires an absolute helper and terminates it when clipboard capture is aborted", async () => {

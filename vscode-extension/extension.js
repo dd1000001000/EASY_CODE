@@ -176,6 +176,23 @@ function activate(context) {
         return;
       }
 
+      // Text wins when the clipboard advertises both rich text and an image
+      // representation. This avoids turning an ordinary copied selection into
+      // an EASY CODE image marker on Windows and in browsers/editors.
+      let clipboardText = "";
+      try {
+        clipboardText = await vscode.env.clipboard.readText();
+      } catch {
+        // Continue with the image probe when the clipboard API is unavailable.
+      }
+      if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
+        return;
+      }
+      if (clipboardContainsText(clipboardText)) {
+        await pasteNormally();
+        return;
+      }
+
       let hasImage = false;
       try {
         hasImage = await clipboardHasImage({
@@ -235,8 +252,13 @@ function deactivate() {
   return vscode.commands.executeCommand("setContext", CONTEXT_KEY, false);
 }
 
+function clipboardContainsText(value) {
+  return typeof value === "string" && value.length > 0;
+}
+
 module.exports = {
   activate,
+  clipboardContainsText,
   createThinkingLinkProvider,
   deactivate,
   findThinkingMarkers,

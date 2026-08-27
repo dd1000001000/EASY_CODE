@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import { Transform, type TransformCallback } from "node:stream";
 
+import { stripTerminalControls } from "../command/output-stream.js";
 import type { ImageAttachment } from "../core/types.js";
 
 export interface PromptInput extends NodeJS.ReadableStream {
@@ -30,6 +31,7 @@ export interface ReadPromptOptions {
     index: number,
     signal?: AbortSignal,
   ) => Promise<ImageAttachment>;
+  readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
   readonly onShowThinking?: (
     id: number | "last",
   ) => void | Promise<void>;
@@ -41,6 +43,7 @@ const CTRL_T = 0x14;
 const CTRL_V = 0x16;
 const OSC_BEL = 0x07;
 const MAX_PRIVATE_OSC_BYTES = 160;
+const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
 /**
  * Private input sequence sent by the bundled VS Code extension. It is framed
  * like an OSC message so it cannot be confused with text or a real key emitted
@@ -254,6 +257,9 @@ class ImagePasteInputProxy extends Transform {
       index: number,
       signal?: AbortSignal,
     ) => Promise<ImageAttachment>,
+    private readonly captureText?: (
+      signal?: AbortSignal,
+    ) => Promise<string | undefined>,
     private readonly onShowThinking?: (
       id: number | "last",
     ) => void | Promise<void>,
@@ -378,7 +384,24 @@ class ImagePasteInputProxy extends Transform {
       this.images.push(attachment);
       return ` [${expectedLabel}] `;
     } catch (error) {
-      this.pasteErrors.push(error instanceof Error ? error.message : String(error));
+      let pasteError = error;
+      if (!this.signal?.aborted && this.captureText) {
+        try {
+          const text = await this.captureText(this.signal);
+          if (text) {
+            try {
+              return clipboardTextForPrompt(text);
+            } catch (textError) {
+              pasteError = textError;
+            }
+          }
+        } catch {
+          // Preserve the original image error when text fallback is unavailable.
+        }
+      }
+      this.pasteErrors.push(
+        pasteError instanceof Error ? pasteError.message : String(pasteError),
+      );
       return " [Image paste failed] ";
     }
   }
@@ -462,6 +485,7 @@ export function readPrompt(
     input,
     initialImageCount,
     options.captureImage,
+    options.captureText,
     showThinking,
     captureController.signal,
   );
@@ -543,4 +567,15 @@ export function readPrompt(
     rl.setPrompt(options.prompt);
     rl.prompt();
   });
+}
+
+function clipboardTextForPrompt(value: string): string {
+  const sanitized = stripTerminalControls(value)
+    // readline treats these bytes as editing or submission commands when they
+    // arrive from our Transform, so keep pasted text literal and single-line.
+    .replace(/[\t\r\n]+/gu, " ");
+  if (sanitized.length > MAX_CLIPBOARD_TEXT_CHARS) {
+    throw new Error("Clipboard text exceeds the 256 KiB input limit.");
+  }
+  return sanitized;
 }

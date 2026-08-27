@@ -322,6 +322,51 @@ describe("image-aware CLI prompt", () => {
     assert.match(result?.text ?? "", /Image paste failed/u);
   });
 
+  it("falls back to ordinary clipboard text instead of showing an image error", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        throw new Error("clipboard has text only");
+      },
+      captureText: async () => "const value = 1;\r\nconsole.log(value);",
+    });
+    input.write(Buffer.from([0x16, 0x0d]));
+
+    const result = await promise;
+
+    assert.equal(result?.text, "const value = 1; console.log(value);");
+    assert.deepEqual(result?.images, []);
+    assert.deepEqual(result?.pasteErrors, []);
+  });
+
+  it("keeps the image error when clipboard text cannot be read", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        throw new Error("clipboard image is unavailable");
+      },
+      captureText: async () => {
+        throw new Error("text helper is unavailable");
+      },
+    });
+    input.write(Buffer.from([0x16, 0x0d]));
+
+    const result = await promise;
+
+    assert.deepEqual(result?.pasteErrors, ["clipboard image is unavailable"]);
+    assert.match(result?.text ?? "", /Image paste failed/u);
+  });
+
   it("keeps text-only prompts usable after Image #99", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
