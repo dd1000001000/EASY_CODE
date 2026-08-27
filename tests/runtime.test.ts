@@ -175,7 +175,7 @@ describe("AgentRuntime", () => {
     assert.equal(result.text, "done despite UI failure");
   });
 
-  it("continues text-only turns after the thread reaches Image #999", async () => {
+  it("continues text-only turns after the thread reaches Image #99", async () => {
     let requestCount = 0;
     const provider: ModelProvider = {
       name: "qwen",
@@ -192,11 +192,11 @@ describe("AgentRuntime", () => {
       role: "user",
       content: "historical image",
       images: [{
-        id: "image_00000000-0000-4000-8000-000000000999",
-        label: "Image #999",
+        id: "image_00000000-0000-4000-8000-000000000099",
+        label: "Image #99",
         mediaType: "image/png",
         storageKey:
-          "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000999.png",
+          "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000099.png",
         sha256: "9".repeat(64),
         byteSize: 128,
         width: 16,

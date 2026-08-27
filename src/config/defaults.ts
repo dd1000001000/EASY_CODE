@@ -63,7 +63,9 @@ export function createDefaultEasyCodeConfig(
     dataDir: path.resolve(paths.dataDir),
     configDir: path.resolve(paths.configDir),
     cacheDir: path.resolve(paths.cacheDir),
-    maxSteps: 40,
+    // Thinking effort chooses the active budget; this remains the configurable
+    // hard ceiling and therefore defaults to the largest built-in tier.
+    maxSteps: 120,
     maxContextChars: 320_000,
     maxOutputChars: 64_000,
     commandTimeoutMs: 120_000,

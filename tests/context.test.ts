@@ -126,7 +126,7 @@ describe("ContextManager", () => {
     assert.equal(context.some((message) => message.content?.includes("latest-")), true);
   });
 
-  it("keeps only the five newest image references in active model context", () => {
+  it("keeps image references beyond the former five-image context limit", () => {
     const state = makeState();
     state.messages = Array.from({ length: 7 }, (_, index) => {
       const ordinal = index + 1;
@@ -155,12 +155,12 @@ describe("ContextManager", () => {
     const ids = context.flatMap((message) =>
       message.role === "user" ? message.images?.map((image) => image.id) ?? [] : [],
     );
-    assert.equal(ids.length, 5);
-    assert.equal(ids[0]?.endsWith("000000000003"), true);
+    assert.equal(ids.length, 7);
+    assert.equal(ids[0]?.endsWith("000000000001"), true);
     assert.equal(ids.at(-1)?.endsWith("000000000007"), true);
     assert.equal(
       context.some((message) => message.content?.includes("older image attachment")),
-      true,
+      false,
     );
     assert.equal(
       state.messages.reduce(

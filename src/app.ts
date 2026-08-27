@@ -54,7 +54,10 @@ import {
   modelSupportsVision,
   validateProviderImageAttachments,
 } from "./models/catalog.js";
-import { thinkingEffortIsApplied } from "./models/thinking.js";
+import {
+  thinkingEffortIsApplied,
+  thinkingEffortStepLimit,
+} from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { AgentRuntime } from "./runtime/agent.js";
@@ -691,7 +694,7 @@ export class EasyCodeApp {
     try {
       const runtime = this.createRuntime(presentReasoning);
       const result = await runtime.run(this.state, { text: userInput, images }, {
-        maxSteps: this.config.maxSteps,
+        maxSteps: this.activeStepLimit(),
         maxContextChars: this.config.maxContextChars,
         maxOutputChars: this.config.maxOutputChars,
         commandTimeoutMs: this.config.commandTimeoutMs,
@@ -1063,6 +1066,13 @@ export class EasyCodeApp {
     return config;
   }
 
+  private activeStepLimit(): number {
+    return thinkingEffortStepLimit(
+      this.state.thinkingEffort,
+      this.config.maxSteps,
+    );
+  }
+
   private syncWorkspaceState(): void {
     const currentVersions = new Map(
       this.workspace.getReadVersions().map((version) => [version.path, version]),
@@ -1207,6 +1217,7 @@ export class EasyCodeApp {
           this.state.model,
           this.state.thinkingEffort,
         ),
+        stepLimit: this.activeStepLimit(),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
         apiKeyConfigured: Boolean(providerConfig.apiKey),

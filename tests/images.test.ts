@@ -19,6 +19,7 @@ import type { ChatMessage, ImageAttachment } from "../src/core/types.js";
 import {
   assertThreadImageNumberAvailable,
   ImageStore,
+  MAX_IMAGES_PER_MODEL_REQUEST,
   SystemClipboardImageReader,
   assertDataDirectoryOutsideWorkspace,
   chooseClipboardMediaType,
@@ -90,13 +91,13 @@ describe("image attachments", () => {
       { role: "user", content: "first", images: [first] },
     ], [pending]), 5);
 
-    const last = { ...first, label: "Image #999" };
+    const last = { ...first, label: "Image #99" };
     assert.equal(nextThreadImageNumber([
       { role: "user", content: "last", images: [last] },
-    ]), 1_000);
+    ]), 100);
     assert.throws(
-      () => assertThreadImageNumberAvailable(1_000),
-      /999 image attachment limit/u,
+      () => assertThreadImageNumberAvailable(100),
+      /99 image attachment limit/u,
     );
   });
 
@@ -287,6 +288,19 @@ describe("image attachments", () => {
         totalBytes: attachment.byteSize,
         totalPixels: 1,
       });
+      assert.equal(MAX_IMAGES_PER_MODEL_REQUEST, 99);
+      assert.equal(
+        validateImageAttachmentCollection(
+          Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST }, () => attachment),
+        ).imageCount,
+        99,
+      );
+      assert.throws(
+        () => validateImageAttachmentCollection(
+          Array.from({ length: MAX_IMAGES_PER_MODEL_REQUEST + 1 }, () => attachment),
+        ),
+        /at most 99 images/u,
+      );
       assert.throws(
         () => validateImageAttachmentCollection([attachment], {
           maxTotalBytes: attachment.byteSize - 1,

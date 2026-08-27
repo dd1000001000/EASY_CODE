@@ -199,6 +199,8 @@ easy-code --resume <thread-id>
 
 选择模型后，交互菜单会继续要求选择 `none`、`low`、`medium` 或 `high` 四档标准化思考强度。该选择会随当前 Thread 保存，并用于构造包括 Auto mode 路由在内的每次模型请求。也可以在启动时使用 `--thinking-effort` 指定；未指定时默认为 `medium`。
 
+该选择还会决定每条用户任务最多可以进行多少次模型请求：`none` 和 `low` 为 40 步，`medium` 为 80 步，`high` 为 120 步。即使所选模型不支持思考参数，这个 Agent 循环预算仍然按照用户保存的档位生效。显式配置的 `max_steps` 或环境变量 `EASY_CODE_MAX_STEPS` 只作为更低的硬上限，不能把任何档位提高到其内置预算以上。
+
 所有模型都会显示这四个选项。EASY CODE 只会向 Provider 发送该精确模型已经明确支持的字段。如果模型不支持可配置思考，选择仍会保留在界面和 Thread 中，但请求不会携带思考参数，因此不会生效。
 
 各 Provider 的行为：
@@ -291,7 +293,7 @@ easy-code --resume <thread-id>
 /image clear
 ```
 
-也可以在启动时使用 `--image <path>`。目前支持完整、非动画的 PNG、JPEG、WebP 和静态 GIF；每个任务最多 5 张图片。只有表中标记“支持”的视觉模型才能接收图片。Qwen 还有额外尺寸和格式限制，并且不接受 GIF。
+也可以在启动时使用 `--image <path>`。目前支持完整、非动画的 PNG、JPEG、WebP 和静态 GIF；每个 Thread 以及单次模型请求最多可包含 99 张图片，同时继续受总计 20 MiB 和 8,000 万像素的安全限制。只有表中标记“支持”的视觉模型才能接收图片。Qwen 还有额外尺寸和格式限制，并且不接受 GIF。
 
 剪贴板截图会复制到工作区之外的 EASY CODE 私有数据目录；Thread 日志和 SQLite 只保存受控引用和元数据，不保存图片 Base64。
 

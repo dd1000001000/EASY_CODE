@@ -20,11 +20,12 @@ import type {
 } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
+import { MAX_THREAD_IMAGE_NUMBER } from "./labels.js";
 
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_EDGE = 8_192;
 export const MAX_IMAGE_PIXELS = 40_000_000;
-export const MAX_IMAGES_PER_MODEL_REQUEST = 5;
+export const MAX_IMAGES_PER_MODEL_REQUEST = MAX_THREAD_IMAGE_NUMBER;
 export const MAX_TOTAL_IMAGE_BYTES_PER_MODEL_REQUEST = 20 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_PIXELS_PER_MODEL_REQUEST = 80_000_000;
 export const DEFAULT_IMAGE_ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;

@@ -118,6 +118,7 @@ model = "workspace-qwen"
       });
       assert.equal(config.qwen.baseUrl, DEFAULT_QWEN_BASE_URL);
       assert.equal(config.thinkingEffort, "medium");
+      assert.equal(config.maxSteps, 120);
       assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
       assert.equal(config.qwen.apiKey, "dashscope-key");
       assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
