@@ -59,6 +59,7 @@ import {
 } from "./models/catalog.js";
 import {
   thinkingEffortIsApplied,
+  thinkingEffortContextCharLimit,
   thinkingEffortStepLimit,
 } from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
@@ -633,7 +634,7 @@ export class EasyCodeApp {
         return false;
       }
       case "context":
-        this.terminal.write(`${json(this.contextManager.inspect(this.state, this.config.maxContextChars))}\n`);
+        this.terminal.write(`${json(this.contextManager.inspect(this.state, this.activeContextCharLimit()))}\n`);
         return false;
       case "memory":
         this.printMemory(command.args);
@@ -887,7 +888,7 @@ export class EasyCodeApp {
       const runtime = this.createRuntime(presentReasoning);
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.activeStepLimit(),
-        maxContextChars: this.config.maxContextChars,
+        maxContextChars: this.activeContextCharLimit(),
         maxOutputChars: this.config.maxOutputChars,
         commandTimeoutMs: this.config.commandTimeoutMs,
         approvalPolicy: this.config.approvalPolicy,
@@ -1285,6 +1286,13 @@ export class EasyCodeApp {
     );
   }
 
+  private activeContextCharLimit(): number {
+    return thinkingEffortContextCharLimit(
+      this.state.thinkingEffort,
+      this.config.maxContextChars,
+    );
+  }
+
   private syncWorkspaceState(): void {
     const currentVersions = new Map(
       this.workspace.getReadVersions().map((version) => [version.path, version]),
@@ -1429,7 +1437,10 @@ export class EasyCodeApp {
           this.state.model,
           this.state.thinkingEffort,
         ),
+        baseStepLimit: this.config.maxSteps,
         stepLimit: this.activeStepLimit(),
+        baseContextCharLimit: this.config.maxContextChars,
+        contextCharLimit: this.activeContextCharLimit(),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
         taskDag: this.state.taskGraph

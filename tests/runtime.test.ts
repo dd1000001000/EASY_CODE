@@ -38,6 +38,28 @@ function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   };
 }
 
+function primeRuntimeContextChars(
+  currentState: SessionState,
+  input: string,
+  targetChars: number,
+  marker: string,
+): void {
+  const currentInputChars = input.length + 32;
+  const historicalContentChars = targetChars - currentInputChars - 32;
+  assert.ok(
+    historicalContentChars >= marker.length,
+    "The target context must leave enough room for the historical marker",
+  );
+  currentState.messages = [{
+    role: "user",
+    content: marker + "x".repeat(historicalContentChars - marker.length),
+  }];
+  assert.equal(
+    new ContextManager().estimateShortTermChars(currentState) + currentInputChars,
+    targetChars,
+  );
+}
+
 describe("AgentRuntime", () => {
   it("notifies the UI only for main-model thinking when thinking is enabled", async () => {
     let requestCount = 0;
@@ -1347,6 +1369,454 @@ describe("AgentRuntime", () => {
     );
     assert.equal(secondRequestMessages.some((message) => message.role === "tool"), false);
     assert.equal(events.some((event) => event.type === "context.compacted"), true);
+  });
+
+  it("advises compaction at exactly 60% while keeping normal tools available", async () => {
+    const maxContextChars = 20_000;
+    const input = "Continue the task at the advisory boundary.";
+    const historyMarker = "ADVISORY_HISTORY_MARKER";
+    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const eventTypes: string[] = [];
+    let readExecutions = 0;
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_read_at_suggestion",
+                type: "function",
+                function: { name: "read_file", arguments: "{}" },
+              }],
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const readTool: AgentTool = {
+      name: "read_file",
+      mutating: false,
+      definition: {
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "read",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {},
+            required: [],
+          },
+        },
+      },
+      async execute() {
+        readExecutions += 1;
+        return { ok: true, summary: "read completed" };
+      },
+    };
+    const currentState = state();
+    primeRuntimeContextChars(
+      currentState,
+      input,
+      maxContextChars * 0.6,
+      historyMarker,
+    );
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [new CompactContextTool(), readTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        eventTypes.push(event.type);
+      },
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, input, {
+      maxSteps: 2,
+      maxContextChars,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(readExecutions, 1);
+    assert.deepEqual(
+      requests[0]?.tools?.map((tool) => tool.function.name),
+      ["compact_context", "read_file"],
+    );
+    const firstSystemPrompt = requests[0]?.messages[0]?.content ?? "";
+    assert.match(firstSystemPrompt, /RUNTIME_CONTEXT_PRESSURE/u);
+    assert.doesNotMatch(firstSystemPrompt, /RUNTIME_CONTEXT_COMPACTION_(?:REQUIRED|FORCED)/u);
+    assert.equal(eventTypes.includes("message.user.synthetic"), false);
+  });
+
+  it("requires compaction at exactly 80% and restores normal tools afterward", async () => {
+    const maxContextChars = 20_000;
+    const input = "Continue after reducing the active context.";
+    const historyMarker = "REQUIRED_OLD_HISTORY_MARKER";
+    const modelSummary = "Objective: continue safely. Next step: return the verified result.";
+    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const events: EventRecord[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_required_compaction",
+                type: "function",
+                function: {
+                  name: "compact_context",
+                  arguments: JSON.stringify({ summary: modelSummary }),
+                },
+              }],
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const readTool: AgentTool = {
+      name: "read_file",
+      mutating: false,
+      definition: {
+        type: "function",
+        function: { name: "read_file", description: "read", parameters: { type: "object" } },
+      },
+      async execute() {
+        return { ok: true, summary: "read" };
+      },
+    };
+    const currentState = state();
+    primeRuntimeContextChars(
+      currentState,
+      input,
+      maxContextChars * 0.8,
+      historyMarker,
+    );
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [new CompactContextTool(), readTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        events.push({
+          ...event,
+          schemaVersion: 1,
+          eventId: `event_${events.length + 1}`,
+          sequence: events.length + 1,
+          timestamp: new Date().toISOString(),
+        });
+      },
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, input, {
+      maxSteps: 1,
+      maxContextChars,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(
+      requests[0]?.tools?.map((tool) => tool.function.name),
+      ["compact_context"],
+    );
+    assert.match(
+      requests[0]?.messages[0]?.content ?? "",
+      /RUNTIME_CONTEXT_COMPACTION_REQUIRED/u,
+    );
+    assert.deepEqual(
+      requests[1]?.tools?.map((tool) => tool.function.name),
+      ["compact_context", "read_file"],
+    );
+    assert.equal(
+      requests[1]?.messages.some((message) => message.content?.includes(modelSummary)),
+      true,
+    );
+    assert.equal(
+      requests[1]?.messages.some((message) => message.content?.includes(historyMarker)),
+      false,
+    );
+    assert.equal(requests[1]?.messages.some((message) => message.role === "tool"), false);
+    assert.equal(currentState.workingSummary, modelSummary);
+    assert.equal(currentState.compactedMessageCount, 4);
+    assert.equal(currentState.compactedMessageCount, currentState.messages.length - 1);
+    const compactionEvent = events.find((event) => event.type === "context.compacted");
+    assert.ok(compactionEvent);
+    assert.deepEqual(compactionEvent.payload, {
+      summary: modelSummary,
+      compactedMessageCount: 4,
+      summaryChars: modelSummary.length,
+    });
+    assert.equal(events.some((event) => event.type === "message.user.synthetic"), false);
+    assert.equal(
+      new ContextManager().inspect(currentState, maxContextChars).pressure,
+      "normal",
+    );
+  });
+
+  it("inserts and persists a forced compaction request at exactly 90%", async () => {
+    const maxContextChars = 20_000;
+    const input = "Continue at the forced compaction boundary.";
+    const historyMarker = "FORCED_OLD_HISTORY_MARKER";
+    const modelSummary = "Objective: continue after forced compaction. Next step: answer.";
+    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const events: EventRecord[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_forced_compaction",
+                type: "function",
+                function: {
+                  name: "compact_context",
+                  arguments: JSON.stringify({ summary: modelSummary }),
+                },
+              }],
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const currentState = state();
+    primeRuntimeContextChars(
+      currentState,
+      input,
+      maxContextChars * 0.9,
+      historyMarker,
+    );
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [new CompactContextTool()],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async (event) => {
+        events.push({
+          ...event,
+          schemaVersion: 1,
+          eventId: `event_${events.length + 1}`,
+          sequence: events.length + 1,
+          timestamp: new Date().toISOString(),
+        });
+      },
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, input, {
+      maxSteps: 1,
+      maxContextChars,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.deepEqual(
+      requests[0]?.tools?.map((tool) => tool.function.name),
+      ["compact_context"],
+    );
+    assert.match(
+      requests[0]?.messages[0]?.content ?? "",
+      /RUNTIME_CONTEXT_COMPACTION_FORCED/u,
+    );
+    assert.equal(
+      requests[0]?.messages.some((message) =>
+        message.content?.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
+      ),
+      true,
+    );
+    assert.equal(
+      requests[1]?.messages.some((message) =>
+        message.content?.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
+      ),
+      false,
+    );
+    assert.equal(
+      currentState.messages.some((message) =>
+        message.role === "user" &&
+        message.content.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
+      ),
+      true,
+    );
+    assert.equal(currentState.compactedMessageCount, 5);
+    assert.equal(currentState.compactedMessageCount, currentState.messages.length - 1);
+    assert.equal(
+      events.some((event) =>
+        event.type === "message.user.synthetic" &&
+        JSON.stringify(event.payload).includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
+      ),
+      true,
+    );
+  });
+
+  it("blocks batched or incorrect tools from causing side effects at 80%", async () => {
+    const maxContextChars = 20_000;
+    const scenarios = [
+      {
+        name: "batched compact_context and create_file",
+        calls: [
+          {
+            id: "call_blocked_compaction",
+            type: "function" as const,
+            function: {
+              name: "compact_context",
+              arguments: JSON.stringify({ summary: "This summary must not be applied." }),
+            },
+          },
+          {
+            id: "call_blocked_create",
+            type: "function" as const,
+            function: { name: "create_file", arguments: "{}" },
+          },
+        ],
+      },
+      {
+        name: "incorrect create_file call",
+        calls: [{
+          id: "call_incorrect_create",
+          type: "function" as const,
+          function: { name: "create_file", arguments: "{}" },
+        }],
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const input = `Continue after ${scenario.name}.`;
+      const recoveredSummary = `Recovered safely after ${scenario.name}.`;
+      const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+      let sideEffectExecutions = 0;
+      const provider: ModelProvider = {
+        name: "qwen",
+        model: "mock",
+        async complete(request) {
+          requests.push(request);
+          if (requests.length === 1) {
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: scenario.calls,
+              },
+            };
+          }
+          if (requests.length === 2) {
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  id: "call_recovery_compaction",
+                  type: "function",
+                  function: {
+                    name: "compact_context",
+                    arguments: JSON.stringify({ summary: recoveredSummary }),
+                  },
+                }],
+              },
+            };
+          }
+          return { message: { role: "assistant", content: "done", tool_calls: [] } };
+        },
+      };
+      const sideEffectTool: AgentTool = {
+        name: "create_file",
+        mutating: true,
+        definition: {
+          type: "function",
+          function: {
+            name: "create_file",
+            description: "side-effect sentinel",
+            parameters: { type: "object" },
+          },
+        },
+        async execute() {
+          sideEffectExecutions += 1;
+          return { ok: true, summary: "side effect executed" };
+        },
+      };
+      const currentState = state();
+      primeRuntimeContextChars(
+        currentState,
+        input,
+        maxContextChars * 0.8,
+        `BLOCKED_SIDE_EFFECT_HISTORY_${scenario.name}`,
+      );
+      const runtime = new AgentRuntime({
+        provider,
+        tools: [new CompactContextTool(), sideEffectTool],
+        contextManager: new ContextManager(),
+        buildSystemPrompt: async () => "system",
+        getWorkspaceSummary: async () => "workspace",
+        searchMemories: async () => [],
+        appendEvent: async () => undefined,
+        requestApproval: async () => false,
+      });
+
+      const result = await runtime.run(currentState, input, {
+        maxSteps: 3,
+        maxContextChars,
+        maxOutputChars: 4_000,
+        commandTimeoutMs: 1_000,
+        approvalPolicy: "never",
+      });
+
+      assert.equal(result.reason, "success", scenario.name);
+      assert.equal(sideEffectExecutions, 0, scenario.name);
+      assert.deepEqual(
+        requests[0]?.tools?.map((tool) => tool.function.name),
+        ["compact_context"],
+        scenario.name,
+      );
+      assert.deepEqual(
+        requests[1]?.tools?.map((tool) => tool.function.name),
+        ["compact_context"],
+        scenario.name,
+      );
+      assert.deepEqual(
+        requests[2]?.tools?.map((tool) => tool.function.name),
+        ["compact_context", "create_file"],
+        scenario.name,
+      );
+      const blockedResults = currentState.messages.filter(
+        (message) =>
+          message.role === "tool" &&
+          (message.name === "create_file" || message.name === "compact_context") &&
+          message.content.includes("context_compaction_required"),
+      );
+      assert.equal(blockedResults.length, scenario.calls.length, scenario.name);
+      assert.equal(currentState.workingSummary, recoveredSummary, scenario.name);
+    }
   });
 
   it("rejects compact_context when it is batched with another tool", async () => {

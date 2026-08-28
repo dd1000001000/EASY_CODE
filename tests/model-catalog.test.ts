@@ -11,7 +11,10 @@ import {
   validateProviderImageAttachments,
 } from "../src/models/catalog.js";
 import {
+  THINKING_EFFORT_BUDGET_MULTIPLIERS,
   THINKING_EFFORT_STEP_LIMITS,
+  thinkingEffortBudget,
+  thinkingEffortContextCharLimit,
   thinkingEffortIsApplied,
   thinkingEffortStepLimit,
   thinkingRequestParameters,
@@ -148,19 +151,47 @@ describe("model catalog", () => {
     );
   });
 
-  it("maps thinking effort to the agent step budget", () => {
+  it("scales the default step and context budgets by thinking effort", () => {
+    assert.deepEqual(THINKING_EFFORT_BUDGET_MULTIPLIERS, {
+      none: 1,
+      low: 1,
+      medium: 2,
+      high: 4,
+    });
     assert.deepEqual(THINKING_EFFORT_STEP_LIMITS, {
       none: 40,
       low: 40,
       medium: 80,
-      high: 120,
+      high: 160,
     });
     assert.equal(thinkingEffortStepLimit("none"), 40);
     assert.equal(thinkingEffortStepLimit("low"), 40);
     assert.equal(thinkingEffortStepLimit("medium"), 80);
-    assert.equal(thinkingEffortStepLimit("high"), 120);
-    assert.equal(thinkingEffortStepLimit("high", 60), 60);
-    assert.equal(thinkingEffortStepLimit("low", 200), 40);
+    assert.equal(thinkingEffortStepLimit("high"), 160);
+    assert.equal(thinkingEffortContextCharLimit("none"), 400_000);
+    assert.equal(thinkingEffortContextCharLimit("low"), 400_000);
+    assert.equal(thinkingEffortContextCharLimit("medium"), 800_000);
+    assert.equal(thinkingEffortContextCharLimit("high"), 1_600_000);
+  });
+
+  it("scales custom none/low bases and rejects invalid or overflowing budgets", () => {
+    assert.equal(thinkingEffortStepLimit("none", 25), 25);
+    assert.equal(thinkingEffortStepLimit("low", 25), 25);
+    assert.equal(thinkingEffortStepLimit("medium", 25), 50);
+    assert.equal(thinkingEffortStepLimit("high", 25), 100);
+    assert.equal(thinkingEffortContextCharLimit("medium", 123_456), 246_912);
+    assert.equal(thinkingEffortContextCharLimit("high", 123_456), 493_824);
+
+    for (const invalid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(
+        () => thinkingEffortBudget("low", invalid),
+        /positive safe integer/u,
+      );
+    }
+    assert.throws(
+      () => thinkingEffortBudget("high", Number.MAX_SAFE_INTEGER),
+      /exceeds the safe integer range/u,
+    );
   });
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {

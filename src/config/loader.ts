@@ -38,7 +38,9 @@ interface EasyCodeConfigLayer {
   dataDir?: unknown;
   configDir?: unknown;
   cacheDir?: unknown;
+  /** Base step budget for none/low thinking. */
   maxSteps?: unknown;
+  /** Base context-character budget for none/low thinking. */
   maxContextChars?: unknown;
   maxOutputChars?: unknown;
   commandTimeoutMs?: unknown;

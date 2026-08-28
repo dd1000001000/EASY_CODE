@@ -19,7 +19,11 @@ import {
   type ToolExecutionResult,
   type ToolName,
 } from "../core/types.js";
-import { ContextManager } from "../context/manager.js";
+import {
+  ContextManager,
+  contextPressureLevel,
+  type ContextPressureLevel,
+} from "../context/manager.js";
 import {
   MAX_IMAGES_PER_MODEL_REQUEST,
   validateImageAttachmentCollection,
@@ -47,6 +51,39 @@ import { determineAutoRoute } from "./auto-router.js";
 
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
 const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
+const CONTEXT_COMPACTION_STEP_ALLOWANCE = 1;
+
+function contextUtilizationPercent(utilization: number): string {
+  // Never round a lower pressure band up to the next threshold in status text.
+  // For example, 89.99% must remain visibly below the 90% force boundary.
+  return (Math.floor(Math.max(0, utilization) * 1_000) / 10).toFixed(1);
+}
+
+function contextPressureInstruction(
+  level: ContextPressureLevel,
+  utilization: number,
+): string {
+  const percent = contextUtilizationPercent(utilization);
+  if (level === "suggest") {
+    return (
+      `RUNTIME_CONTEXT_PRESSURE: Short-term context is approximately ${percent}% of its configured limit. ` +
+      "Consider calling compact_context by itself after the next meaningful milestone. This is advisory; other work may continue."
+    );
+  }
+  if (level === "require") {
+    return (
+      `RUNTIME_CONTEXT_COMPACTION_REQUIRED: Short-term context is approximately ${percent}% of its configured limit. ` +
+      "Before any other work or final answer, call compact_context by itself with a cumulative summary. Runtime exposes only that tool and rejects every other action until compaction succeeds."
+    );
+  }
+  if (level === "force") {
+    return (
+      `RUNTIME_CONTEXT_COMPACTION_FORCED: Short-term context is approximately ${percent}% of its configured limit. ` +
+      "Runtime has inserted an explicit compaction request. Call compact_context by itself now with a cumulative summary; every other action is rejected until it succeeds."
+    );
+  }
+  return "";
+}
 
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
@@ -341,6 +378,11 @@ export class AgentRuntime {
     let taskDagFinalizationOnly = false;
     let taskDagFinalResponseAllowanceGranted = false;
     let planToolReminderIssued = false;
+    let contextCompactionCorrectionIssued = false;
+    let forcedContextCompactionRequestActive = false;
+    let contextCompactionCorrectionAllowanceGranted = false;
+    let contextCompactionContinuationAllowanceGranted = false;
+    let lastContextPressureLevel: ContextPressureLevel = "normal";
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -354,7 +396,7 @@ export class AgentRuntime {
       }
 
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const systemPrompt = await this.dependencies.buildSystemPrompt({
+      const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
         mode: effectiveMode,
         workspaceSummary,
         memories,
@@ -366,17 +408,65 @@ export class AgentRuntime {
           : {}),
         ...(state.planReview ? { planReview: state.planReview } : {}),
       });
+      const shortTermChars = this.dependencies.contextManager.estimateShortTermChars(state);
+      const contextUtilization = shortTermChars / options.maxContextChars;
+      const contextPressure = contextPressureLevel(contextUtilization);
+      const contextCompactionRequired =
+        contextPressure === "require" || contextPressure === "force";
+      if (contextPressure !== lastContextPressureLevel) {
+        const percent = contextUtilizationPercent(contextUtilization);
+        if (contextPressure === "normal") {
+          this.dependencies.onStatus?.(
+            `Context utilization returned below 60% (${percent}%).`,
+          );
+        } else if (contextPressure === "suggest") {
+          this.dependencies.onStatus?.(
+            `Context utilization is ${percent}%; the model is advised to compact soon.`,
+          );
+        } else if (contextPressure === "require") {
+          this.dependencies.onStatus?.(
+            `Context utilization is ${percent}%; compact_context is required before other work.`,
+          );
+        } else {
+          this.dependencies.onStatus?.(
+            `Context utilization is ${percent}%; Runtime is forcing a context compaction request.`,
+          );
+        }
+        lastContextPressureLevel = contextPressure;
+      }
+      if (contextPressure === "force" && !forcedContextCompactionRequestActive) {
+        await this.appendContextCompactionRequest({
+          state,
+          turnId,
+          step,
+          utilization: contextUtilization,
+          correction: false,
+        });
+        forcedContextCompactionRequestActive = true;
+      }
+      const pressureInstruction = contextPressureInstruction(
+        contextPressure,
+        contextUtilization,
+      );
+      const systemPrompt = pressureInstruction
+        ? `${baseSystemPrompt}\n\n${pressureInstruction}`
+        : baseSystemPrompt;
       const messages = this.dependencies.contextManager.build({
         systemPrompt,
         state,
         maxContextChars: options.maxContextChars
       });
 
-      const enabledTools = taskDagFinalizationOnly
-        ? state.taskGraph?.status === "completed"
-          ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
+      const compactContextTool = toolMap.get("compact_context");
+      const enabledTools = contextCompactionRequired
+        ? compactContextTool
+          ? [compactContextTool]
           : []
-        : [...toolMap.values()];
+        : taskDagFinalizationOnly
+          ? state.taskGraph?.status === "completed"
+            ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
+            : []
+          : [...toolMap.values()];
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
       );
@@ -415,6 +505,7 @@ export class AgentRuntime {
       }
 
       const suppressFinalizationToolCalls =
+        !contextCompactionRequired &&
         taskDagFinalizationOnly &&
         Boolean(response.message.tool_calls?.length) &&
         !(
@@ -474,6 +565,40 @@ export class AgentRuntime {
 
       const calls = assistantMessage.tool_calls ?? [];
       if (calls.length === 0) {
+        if (contextCompactionRequired) {
+          if (!contextCompactionCorrectionIssued) {
+            await this.appendContextCompactionRequest({
+              state,
+              turnId,
+              step,
+              utilization: contextUtilization,
+              correction: true,
+            });
+            contextCompactionCorrectionIssued = true;
+            if (
+              step === stepLimit &&
+              !contextCompactionCorrectionAllowanceGranted
+            ) {
+              stepLimit += CONTEXT_COMPACTION_STEP_ALLOWANCE;
+              contextCompactionCorrectionAllowanceGranted = true;
+              this.dependencies.onStatus?.(
+                "Reserved one correction step for required context compaction.",
+              );
+            }
+            this.dependencies.onStatus?.(
+              "The model did not compact the required context; requesting one correction.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            "The model did not complete the required context compaction.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
         const text =
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
@@ -538,6 +663,8 @@ export class AgentRuntime {
 
       const compactContextIsExclusive =
         calls.length === 1 && calls[0]?.function.name === "compact_context";
+      const contextCompactionProtocolViolated =
+        contextCompactionRequired && !compactContextIsExclusive;
       const manageTasksBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
       const proposePlanBatched =
@@ -546,6 +673,7 @@ export class AgentRuntime {
         state.messages.length - 1 > state.compactedMessageCount;
       const stepImageAttachments: ImageAttachment[] = [];
       let successfulMemoryToolCall = false;
+      let successfulContextCompaction = false;
       let proposedPlan: PlanProposal | undefined;
 
       for (const call of calls) {
@@ -564,7 +692,14 @@ export class AgentRuntime {
           payload: call
         });
 
-        if (manageTasksBatched) {
+        if (contextCompactionProtocolViolated) {
+          result = {
+            ok: false,
+            summary:
+              "Context compaction is required; compact_context must be the only tool call.",
+            error: "context_compaction_required",
+          };
+        } else if (manageTasksBatched) {
           result = {
             ok: false,
             summary: "manage_tasks must be the only tool call in a model response.",
@@ -798,6 +933,9 @@ export class AgentRuntime {
             `Context compacted through ${compaction.compactedMessageCount} messages ` +
               `into ${compaction.summaryChars} characters.`,
           );
+          successfulContextCompaction = true;
+          contextCompactionCorrectionIssued = false;
+          forcedContextCompactionRequestActive = false;
         }
         if (toolName === "manage_memory" && result.ok && result.memoryMutation) {
           memoryContext.mutations.push(result.memoryMutation);
@@ -806,6 +944,41 @@ export class AgentRuntime {
           successfulMemoryToolCall = true;
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+      }
+
+      if (contextCompactionRequired && !successfulContextCompaction) {
+        if (!contextCompactionCorrectionIssued) {
+          await this.appendContextCompactionRequest({
+            state,
+            turnId,
+            step,
+            utilization: contextUtilization,
+            correction: true,
+          });
+          contextCompactionCorrectionIssued = true;
+          if (
+            step === stepLimit &&
+            !contextCompactionCorrectionAllowanceGranted
+          ) {
+            stepLimit += CONTEXT_COMPACTION_STEP_ALLOWANCE;
+            contextCompactionCorrectionAllowanceGranted = true;
+            this.dependencies.onStatus?.(
+              "Reserved one correction step for required context compaction.",
+            );
+          }
+          this.dependencies.onStatus?.(
+            "The model violated the required compaction protocol; requesting one correction.",
+          );
+          continue;
+        }
+        return this.finish(
+          state,
+          turnId,
+          "The model did not complete the required context compaction.",
+          "failed",
+          step,
+          memoryContext,
+        );
       }
 
       if (proposedPlan) {
@@ -846,6 +1019,18 @@ export class AgentRuntime {
           payload: imageMessage,
         });
         await this.dependencies.commitImages?.(state.threadId, stepImageAttachments);
+      }
+      if (
+        successfulContextCompaction &&
+        contextCompactionRequired &&
+        step === stepLimit &&
+        !contextCompactionContinuationAllowanceGranted
+      ) {
+        stepLimit += CONTEXT_COMPACTION_STEP_ALLOWANCE;
+        contextCompactionContinuationAllowanceGranted = true;
+        this.dependencies.onStatus?.(
+          "Reserved one continuation step after required context compaction.",
+        );
       }
       if (
         successfulMemoryToolCall &&
@@ -909,6 +1094,40 @@ export class AgentRuntime {
       }
       return result;
     }
+  }
+
+  private async appendContextCompactionRequest(input: {
+    state: SessionState;
+    turnId: string;
+    step: number;
+    utilization: number;
+    correction: boolean;
+  }): Promise<void> {
+    const percent = contextUtilizationPercent(input.utilization);
+    const request: Extract<ChatMessage, { role: "user" }> = {
+      role: "user",
+      content: input.correction
+        ? (
+            "RUNTIME_CONTEXT_COMPACTION_PROTOCOL: The previous response did not satisfy the " +
+            `required compaction at ${percent}% context utilization. Call compact_context by ` +
+            "itself now with a cumulative summary. Do not answer normally or call another tool."
+          )
+        : (
+            `RUNTIME_CONTEXT_COMPACTION_FORCE: Context utilization reached ${percent}%. ` +
+            "Before continuing the task, call compact_context by itself with a cumulative " +
+            "summary preserving the objective, constraints, verified findings, relevant files, " +
+            "tool and test outcomes, blockers, and exact next steps."
+          ),
+    };
+    input.state.messages.push(request);
+    await this.dependencies.appendEvent({
+      threadId: input.state.threadId,
+      turnId: input.turnId,
+      stepId: `step_${input.step}`,
+      type: "message.user.synthetic",
+      phase: "completed",
+      payload: request,
+    });
   }
 
   private async withModelRequestActivity<T>(

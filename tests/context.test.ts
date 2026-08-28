@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
-import { ContextManager, estimateTextTokens } from "../src/context/manager.js";
+import {
+  ContextManager,
+  contextPressureLevel,
+  estimateTextTokens,
+} from "../src/context/manager.js";
 import type { SessionState } from "../src/core/types.js";
 
 function contextChars(messages: ReturnType<ContextManager["build"]>): number {
@@ -37,6 +41,17 @@ function makeState(): SessionState {
 }
 
 describe("ContextManager", () => {
+  it("classifies the exact 60/80/90 percent context-pressure boundaries", () => {
+    assert.equal(contextPressureLevel(0.5999), "normal");
+    assert.equal(contextPressureLevel(0.6), "suggest");
+    assert.equal(contextPressureLevel(0.7999), "suggest");
+    assert.equal(contextPressureLevel(0.8), "require");
+    assert.equal(contextPressureLevel(0.8999), "require");
+    assert.equal(contextPressureLevel(0.9), "force");
+    assert.equal(contextPressureLevel(Number.POSITIVE_INFINITY), "force");
+    assert.equal(contextPressureLevel(Number.NaN), "normal");
+  });
+
   it("estimates mixed-language short-term tokens and excludes compacted raw history", () => {
     assert.equal(estimateTextTokens("abcd"), 1);
     assert.equal(estimateTextTokens("中文"), 2);

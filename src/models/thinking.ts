@@ -17,19 +17,52 @@ const QWEN_THINKING_BUDGETS: Readonly<Record<Exclude<ThinkingEffort, "none">, nu
   high: 32_768,
 };
 
-export const THINKING_EFFORT_STEP_LIMITS: Readonly<Record<ThinkingEffort, number>> = {
-  none: 40,
-  low: 40,
-  medium: 80,
-  high: 120,
+export const THINKING_EFFORT_BUDGET_MULTIPLIERS: Readonly<Record<ThinkingEffort, number>> = {
+  none: 1,
+  low: 1,
+  medium: 2,
+  high: 4,
 };
 
-/** Return the effort budget, optionally reduced by a configured hard ceiling. */
+export const DEFAULT_BASE_STEP_LIMIT = 40;
+export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 400_000;
+
+export const THINKING_EFFORT_STEP_LIMITS: Readonly<Record<ThinkingEffort, number>> = {
+  none: DEFAULT_BASE_STEP_LIMIT,
+  low: DEFAULT_BASE_STEP_LIMIT,
+  medium: DEFAULT_BASE_STEP_LIMIT * THINKING_EFFORT_BUDGET_MULTIPLIERS.medium,
+  high: DEFAULT_BASE_STEP_LIMIT * THINKING_EFFORT_BUDGET_MULTIPLIERS.high,
+};
+
+/** Scale a configurable none/low budget for the selected thinking effort. */
+export function thinkingEffortBudget(
+  effort: ThinkingEffort,
+  baseBudget: number,
+): number {
+  if (!Number.isSafeInteger(baseBudget) || baseBudget < 1) {
+    throw new RangeError("baseBudget must be a positive safe integer");
+  }
+  const budget = baseBudget * THINKING_EFFORT_BUDGET_MULTIPLIERS[effort];
+  if (!Number.isSafeInteger(budget)) {
+    throw new RangeError("scaled thinking-effort budget exceeds the safe integer range");
+  }
+  return budget;
+}
+
+/** Return the step limit derived from the configurable none/low base limit. */
 export function thinkingEffortStepLimit(
   effort: ThinkingEffort,
-  hardCeiling = Number.POSITIVE_INFINITY,
+  baseStepLimit = DEFAULT_BASE_STEP_LIMIT,
 ): number {
-  return Math.min(THINKING_EFFORT_STEP_LIMITS[effort], hardCeiling);
+  return thinkingEffortBudget(effort, baseStepLimit);
+}
+
+/** Return the context character limit derived from the configurable none/low base limit. */
+export function thinkingEffortContextCharLimit(
+  effort: ThinkingEffort,
+  baseContextCharLimit = DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
+): number {
+  return thinkingEffortBudget(effort, baseContextCharLimit);
 }
 
 /** Whether EASY CODE can translate this exact selection into documented API fields. */
