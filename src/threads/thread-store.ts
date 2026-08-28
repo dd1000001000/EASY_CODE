@@ -33,7 +33,11 @@ import {
   serializeChatMessage,
   serializeSessionState,
 } from "./serialization.js";
-import { clonePlanReviewState } from "../plans/plan.js";
+import {
+  clonePlanReviewState,
+  returnPlanExecutionToReview,
+  type PlanExecutionReturnOutcome,
+} from "../plans/plan.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -200,15 +204,6 @@ function messagePrefix(
   return true;
 }
 
-function recoveredPlanReview(review: Readonly<PlanReviewState>): PlanReviewState {
-  return {
-    status: "awaiting_review",
-    proposal: clonePlanReviewState(review).proposal,
-    feedback:
-      "The previously approved execution was interrupted. Review the current workspace state before approving this plan again.",
-  };
-}
-
 function validateInterruptedTurnRecovery(
   state: Readonly<SessionState>,
   event: Pick<EventRecord, "eventId" | "turnId">,
@@ -297,6 +292,47 @@ function validateInterruptedTurnRecovery(
   ) {
     throw new Error(`Turn recovery ${event.eventId} has invalid plan provenance`);
   }
+}
+
+function planExecutionReturnOutcome(
+  value: unknown,
+): PlanExecutionReturnOutcome | undefined {
+  return value === "failed" || value === "interrupted" || value === "limit_reached"
+    ? value
+    : undefined;
+}
+
+function validatePlanExecutionReturnedToReview(
+  state: Readonly<SessionState>,
+  event: Pick<EventRecord, "eventId" | "turnId" | "phase">,
+  payload: Record<string, unknown>,
+  executingReview: Readonly<PlanReviewState> | undefined,
+): PlanReviewState {
+  const outcome = planExecutionReturnOutcome(payload.outcome);
+  if (
+    event.phase !== "completed" ||
+    !event.turnId ||
+    state.activeTurnId !== event.turnId ||
+    state.planReview !== undefined ||
+    !executingReview ||
+    !outcome
+  ) {
+    throw new Error(
+      `Invalid approved-plan execution recovery in event ${event.eventId}`,
+    );
+  }
+  const expected = returnPlanExecutionToReview(executingReview, outcome);
+  if (
+    payload.planId !== expected.proposal.id ||
+    payload.revision !== expected.proposal.revision ||
+    !isPlanReviewState(payload.planReview) ||
+    JSON.stringify(payload.planReview) !== JSON.stringify(expected)
+  ) {
+    throw new Error(
+      `Approved-plan execution recovery ${event.eventId} changed the reviewed proposal`,
+    );
+  }
+  return expected;
 }
 
 function fileChangeKey(change: Readonly<FileChangeRecord>): string {
@@ -560,7 +596,21 @@ export class ThreadStore {
             payload,
           );
         }
-        if (
+        if (payload && input.type === "plan.execution_returned_to_review") {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          validatePlanExecutionReturnedToReview(
+            priorState,
+            {
+              eventId: input.eventId ?? "pending_plan_execution_recovery",
+              turnId: input.turnId,
+              phase: input.phase,
+            },
+            payload,
+            input.turnId
+              ? this.approvedPlanExecution(threadId, input.turnId)
+              : undefined,
+          );
+        } else if (
           payload &&
           ((input.type === "tool.result" && "planReview" in payload) ||
             input.type === "plan.approved" ||
@@ -940,10 +990,23 @@ export class ThreadStore {
     threadId: string,
     turnId: string,
   ): PlanReviewState | undefined {
+    const review = this.approvedPlanExecution(threadId, turnId);
+    return review
+      ? returnPlanExecutionToReview(review, "interrupted")
+      : undefined;
+  }
+
+  /** Locate the still-unresolved approval consumed by an execution turn. */
+  private approvedPlanExecution(
+    threadId: string,
+    turnId: string,
+  ): PlanReviewState | undefined {
     const events = this.journal(threadId).read();
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
-      if (event?.type !== "plan.execution_started" || event.turnId !== turnId) continue;
+      if (event?.turnId !== turnId) continue;
+      if (event.type === "plan.execution_returned_to_review") return undefined;
+      if (event.type !== "plan.execution_started") continue;
       const payload = asPayloadRecord(event.payload);
       if (!payload) return undefined;
       const before = this.recoverFromEvents(threadId, events.slice(0, index));
@@ -955,7 +1018,7 @@ export class ThreadStore {
       ) {
         return undefined;
       }
-      return recoveredPlanReview(review);
+      return clonePlanReviewState(review);
     }
     return undefined;
   }
@@ -1132,7 +1195,10 @@ export class ThreadStore {
         mergeFileChanges(state.changes, artifacts.changes);
         mergeCommandAudits(state.commands, artifacts.commands);
       } else if (event.type === "turn.recovered" && payload && event.turnId) {
-        const expectedPlanReview = interruptedPlanExecutions.get(event.turnId);
+        const interruptedExecution = interruptedPlanExecutions.get(event.turnId);
+        const expectedPlanReview = interruptedExecution
+          ? returnPlanExecutionToReview(interruptedExecution, "interrupted")
+          : undefined;
         validateInterruptedTurnRecovery(state, event, payload, expectedPlanReview);
         for (const message of payload.messages as ChatMessage[]) {
           if (message.role !== "tool" && message.role !== "assistant") {
@@ -1149,6 +1215,18 @@ export class ThreadStore {
         interruptedPlanExecutions.delete(event.turnId);
         state.activeTurnId = undefined;
       } else if (
+        event.type === "plan.execution_returned_to_review" &&
+        payload &&
+        event.turnId
+      ) {
+        state.planReview = validatePlanExecutionReturnedToReview(
+          state,
+          event,
+          payload,
+          interruptedPlanExecutions.get(event.turnId),
+        );
+        interruptedPlanExecutions.delete(event.turnId);
+      } else if (
         (event.type === "plan.approved" ||
           event.type === "plan.rejected" ||
           event.type === "plan.feedback_submitted" ||
@@ -1162,7 +1240,7 @@ export class ThreadStore {
         ) {
           interruptedPlanExecutions.set(
             event.turnId,
-            recoveredPlanReview(state.planReview),
+            clonePlanReviewState(state.planReview),
           );
         }
         this.replayPlanReviewEvent(state, event, payload);

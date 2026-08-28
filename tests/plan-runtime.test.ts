@@ -291,6 +291,71 @@ describe("model-controlled plan flow", () => {
     assert.ok(userIndex >= 0 && executionIndex > userIndex);
   });
 
+  it("returns an approved plan to review after a provider timeout", async () => {
+    const events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [];
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete() {
+        throw new Error("Provider request timed out after 450000ms");
+      },
+    };
+    const current = state("auto");
+    current.planReview = review("approved_pending_execution");
+    const approved = current.planReview.proposal;
+
+    const result = await runtime(provider, [], events).run(
+      current,
+      "Execute the approved plan",
+      {
+        ...options(),
+        modeOverride: "code",
+        approvedPlan: { id: approved.id, revision: approved.revision },
+      },
+    );
+
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /timed out after 450000ms/u);
+    assert.equal(current.planReview?.status, "awaiting_review");
+    assert.equal(current.planReview?.proposal.id, approved.id);
+    assert.equal(current.planReview?.proposal.revision, approved.revision);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(current.planReview ?? {}, "approvedAt"),
+      false,
+    );
+    assert.match(current.planReview?.feedback ?? "", /workspace|partial/u);
+
+    const lifecycle = events
+      .map((event) => event.type)
+      .filter((type) => [
+        "plan.execution_started",
+        "model.error",
+        "plan.execution_returned_to_review",
+        "turn.completed",
+      ].includes(type));
+    assert.deepEqual(lifecycle, [
+      "plan.execution_started",
+      "model.error",
+      "plan.execution_returned_to_review",
+      "turn.completed",
+    ]);
+
+    const returned = events.find(
+      (event) => event.type === "plan.execution_returned_to_review",
+    );
+    assert.ok(returned);
+    const payload = returned.payload as {
+      planId?: string;
+      revision?: number;
+      outcome?: string;
+      planReview?: PlanReviewState;
+    };
+    assert.equal(payload.planId, approved.id);
+    assert.equal(payload.revision, approved.revision);
+    assert.equal(payload.outcome, "failed");
+    assert.equal(payload.planReview?.status, "awaiting_review");
+  });
+
   it("revises the same pending plan in a Runtime-owned Plan override", async () => {
     let requests = 0;
     let mainTools: string[] = [];

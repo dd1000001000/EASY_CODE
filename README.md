@@ -323,12 +323,12 @@ Context and memory are managed automatically. Users can inspect them but cannot 
 
 ```text
 /context
-/memory short
+/memory short [limit]
 /memory long
 /memory long <id>
 ```
 
-- Short-term memory belongs to the current thread and includes the active conversation, summaries, task state, and recent tool results.
+- Short-term memory belongs to the current thread and includes the active conversation, summaries, task state, and recent tool results. `/memory short [limit]` shows previews of the latest active messages rather than the entire memory; the limit defaults to 8 and may be set from 1 to 500.
 - Long-term memory stores useful project facts, decisions, conventions, and preferences for later sessions in the same workspace.
 - EASY CODE compresses older context when the conversation becomes large.
 - The prompt displays an approximate context Token count such as `context:12.4k`.
@@ -402,7 +402,7 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 /permissions               Show command permissions
 /commands                  Show recent commands
 /context                   Show context usage
-/memory short              Show short-term memory
+/memory short [limit]      Show recent short-term memory previews (default 8, max 500)
 /memory long [id]          Show long-term memory
 /thinking [id|last]        Show model thinking
 /sessions                  List saved threads

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { PlanReviewState, SessionState } from "../src/core/types.js";
+import { returnPlanExecutionToReview } from "../src/plans/plan.js";
 import { cloneSessionState } from "../src/runtime/state.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
@@ -148,6 +149,119 @@ describe("plan review persistence", () => {
         },
       });
       assert.equal(store.recover(initial.threadId).planReview, undefined);
+    } finally {
+      storage.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replays a failed execution as awaiting review and permits a second approval", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-plan-retry-"));
+    const storage = createStorage(root);
+    try {
+      const store = new ThreadStore(storage);
+      const initial = store.create({
+        threadId: "thread_plan_retry_after_timeout",
+        workspaceRoot: process.cwd(),
+        mode: "auto",
+        provider: "deepseek",
+        model: "mock-model",
+      });
+      const pending = review();
+      store.appendEvent(initial.threadId, {
+        turnId: "turn_plan_storage",
+        stepId: "step_1",
+        type: "tool.result",
+        phase: "completed",
+        payload: {
+          callId: "call_plan_retry",
+          tool: "propose_plan",
+          message: {
+            role: "tool",
+            tool_call_id: "call_plan_retry",
+            name: "propose_plan",
+            content: '{"ok":true}',
+          },
+          planReview: pending,
+        },
+      });
+      store.appendEvent(initial.threadId, {
+        type: "plan.approved",
+        phase: "completed",
+        payload: {
+          planId: pending.proposal.id,
+          revision: pending.proposal.revision,
+        },
+      });
+
+      const executionTurn = "turn_plan_timeout";
+      store.appendEvent(initial.threadId, {
+        turnId: executionTurn,
+        type: "message.user",
+        phase: "completed",
+        payload: {
+          content: "Execute the approved plan",
+          message: { role: "user", content: "Execute the approved plan" },
+        },
+      });
+      store.appendEvent(initial.threadId, {
+        turnId: executionTurn,
+        type: "plan.execution_started",
+        phase: "completed",
+        payload: {
+          planId: pending.proposal.id,
+          revision: pending.proposal.revision,
+        },
+      });
+      store.appendEvent(initial.threadId, {
+        turnId: executionTurn,
+        stepId: "step_1",
+        type: "model.error",
+        phase: "failed",
+        payload: { message: "Provider request timed out after 450000ms" },
+      });
+
+      const returnedReview = returnPlanExecutionToReview(pending, "failed");
+      store.appendEvent(initial.threadId, {
+        turnId: executionTurn,
+        type: "plan.execution_returned_to_review",
+        phase: "completed",
+        payload: {
+          planId: pending.proposal.id,
+          revision: pending.proposal.revision,
+          outcome: "failed",
+          planReview: returnedReview,
+        },
+      });
+      store.appendEvent(initial.threadId, {
+        turnId: executionTurn,
+        type: "turn.completed",
+        phase: "completed",
+        payload: { reason: "failed", steps: 1 },
+      });
+
+      const resumed = store.recover(initial.threadId);
+      assert.equal(resumed.activeTurnId, undefined);
+      assert.equal(resumed.planReview?.status, "awaiting_review");
+      assert.equal(resumed.planReview?.proposal.id, pending.proposal.id);
+      assert.equal(resumed.planReview?.proposal.revision, pending.proposal.revision);
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(resumed.planReview ?? {}, "approvedAt"),
+        false,
+      );
+
+      store.appendEvent(initial.threadId, {
+        type: "plan.approved",
+        phase: "completed",
+        payload: {
+          planId: pending.proposal.id,
+          revision: pending.proposal.revision,
+        },
+      });
+      const reapproved = store.recover(initial.threadId);
+      assert.equal(reapproved.planReview?.status, "approved_pending_execution");
+      assert.equal(reapproved.planReview?.proposal.id, pending.proposal.id);
+      assert.ok(reapproved.planReview?.approvedAt);
     } finally {
       storage.close();
       rmSync(root, { recursive: true, force: true });
