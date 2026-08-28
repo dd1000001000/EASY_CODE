@@ -1466,6 +1466,8 @@ describe("AgentRuntime", () => {
     const historyMarker = "REQUIRED_OLD_HISTORY_MARKER";
     const modelSummary = "Objective: continue safely. Next step: return the verified result.";
     const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const promptToolNames: string[][] = [];
+    const usagePurposes: string[] = [];
     const events: EventRecord[] = [];
     const provider: ModelProvider = {
       name: "qwen",
@@ -1486,9 +1488,13 @@ describe("AgentRuntime", () => {
                 },
               }],
             },
+            usage: { promptTokens: 40, completionTokens: 8, totalTokens: 48 },
           };
         }
-        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+        return {
+          message: { role: "assistant", content: "done", tool_calls: [] },
+          usage: { promptTokens: 12, completionTokens: 2, totalTokens: 14 },
+        };
       },
     };
     const readTool: AgentTool = {
@@ -1513,7 +1519,10 @@ describe("AgentRuntime", () => {
       provider,
       tools: [new CompactContextTool(), readTool],
       contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system",
+      buildSystemPrompt: async ({ toolNames }) => {
+        promptToolNames.push([...toolNames]);
+        return "system";
+      },
       getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [],
       appendEvent: async (event) => {
@@ -1524,6 +1533,9 @@ describe("AgentRuntime", () => {
           sequence: events.length + 1,
           timestamp: new Date().toISOString(),
         });
+      },
+      onModelUsage: async (record) => {
+        usagePurposes.push(record.purpose);
       },
       requestApproval: async () => false,
     });
@@ -1542,6 +1554,7 @@ describe("AgentRuntime", () => {
       requests[0]?.tools?.map((tool) => tool.function.name),
       ["compact_context"],
     );
+    assert.deepEqual(promptToolNames[0], ["compact_context"]);
     assert.match(
       requests[0]?.messages[0]?.content ?? "",
       /RUNTIME_CONTEXT_COMPACTION_REQUIRED/u,
@@ -1550,6 +1563,8 @@ describe("AgentRuntime", () => {
       requests[1]?.tools?.map((tool) => tool.function.name),
       ["compact_context", "read_file"],
     );
+    assert.deepEqual(promptToolNames[1], ["compact_context", "read_file"]);
+    assert.deepEqual(usagePurposes, ["context_compaction", "agent_step"]);
     assert.equal(
       requests[1]?.messages.some((message) => message.content?.includes(modelSummary)),
       true,

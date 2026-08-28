@@ -78,6 +78,30 @@ export interface ProviderUsage {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  /** Provider-reported prompt tokens served from cache, when available. */
+  cachedInputTokens?: number;
+  /** Provider-reported hidden reasoning tokens, when available. */
+  reasoningTokens?: number;
+}
+
+export type ModelUsagePurpose =
+  | "auto_route"
+  | "agent_step"
+  | "context_compaction";
+
+/** Durable accounting metadata for one completed provider response. */
+export interface ModelUsageRecord {
+  actor: AgentRole;
+  purpose: ModelUsagePurpose;
+  provider: ProviderName;
+  model: string;
+  turnId: string;
+  step?: number;
+  attempt?: number;
+  retry: boolean;
+  usage?: ProviderUsage;
+  sourceAgentId?: string;
+  sourceTaskId?: string;
 }
 
 export interface ProviderResponse {

@@ -19,6 +19,11 @@ import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
 import {
+  aggregateModelUsage,
+  parseModelUsageRecord,
+  type ModelUsageSummary,
+} from "../usage/model-usage.js";
+import {
   cloneTaskGraph,
   subagentTaskOperationSchema,
   taskGraphOperationSchema,
@@ -574,6 +579,20 @@ export class ThreadStore {
     }));
   }
 
+  /** Aggregate durable provider-reported usage without loading it into model context. */
+  modelUsageSummary(threadId: string): ModelUsageSummary {
+    if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
+    const records = this.journal(threadId).read().flatMap((event) => {
+      if (event.type !== "model.usage" || event.phase !== "completed") return [];
+      const record = parseModelUsageRecord(event.payload);
+      if (!record) {
+        throw new Error(`Invalid model usage payload in event ${event.eventId}`);
+      }
+      return [record];
+    });
+    return aggregateModelUsage(records);
+  }
+
   appendEvent(threadId: string, input: AppendEventInput): EventRecord {
     const journal = this.journal(threadId);
     let event: EventRecord | undefined;
@@ -583,6 +602,12 @@ export class ThreadStore {
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
         const payload = asPayloadRecord(input.payload);
+        if (
+          input.type === "model.usage" &&
+          (input.phase !== "completed" || !parseModelUsageRecord(input.payload))
+        ) {
+          throw new Error("Model usage events require a valid completed usage record");
+        }
         if (payload && "taskGraph" in payload) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
           this.replayTaskGraphResult(

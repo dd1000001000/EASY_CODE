@@ -5,11 +5,13 @@ import type {
   AgentMode,
   AgentTool,
   EventRecord,
+  ModelUsageRecord,
   ModelProvider,
   PlanReviewState,
   SessionState,
 } from "../src/core/types.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
+import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { describe, it } from "./harness.js";
 
@@ -58,6 +60,23 @@ function selectMode(mode: "plan" | "code") {
             mode,
             reason: `The model selected ${mode}.`,
           }),
+        },
+      }],
+    },
+  };
+}
+
+function respondDirectly(content: string) {
+  return {
+    message: {
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [{
+        id: "call_respond_directly",
+        type: "function" as const,
+        function: {
+          name: "respond_directly",
+          arguments: JSON.stringify({ content }),
         },
       }],
     },
@@ -128,6 +147,8 @@ function runtime(
   tools: AgentTool[],
   events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [],
   modes: AgentMode[] = [],
+  usageRecords: ModelUsageRecord[] = [],
+  reasoningTexts: string[] = [],
 ) {
   return new AgentRuntime({
     provider,
@@ -142,11 +163,228 @@ function runtime(
     appendEvent: async (event) => {
       events.push(event);
     },
+    onModelUsage: async (record) => {
+      usageRecords.push(record);
+    },
+    onReasoning: ({ text }) => {
+      reasoningTexts.push(text);
+    },
     requestApproval: async () => false,
   });
 }
 
 describe("model-controlled plan flow", () => {
+  it("answers a bounded Auto request in one call and records router usage", async () => {
+    let requests = 0;
+    let routerTools: string[] = [];
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete(request) {
+        requests += 1;
+        routerTools = request.tools?.map((tool) => tool.function.name) ?? [];
+        return {
+          message: {
+            ...respondDirectly("The current task is to add usage accounting.").message,
+            reasoning_content: "The bounded conversation already contains the task.",
+          },
+          usage: {
+            promptTokens: 90,
+            completionTokens: 10,
+            totalTokens: 100,
+            cachedInputTokens: 25,
+            reasoningTokens: 4,
+          },
+        };
+      },
+    };
+    const events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [];
+    const usageRecords: ModelUsageRecord[] = [];
+    const reasoningTexts: string[] = [];
+    const modes: AgentMode[] = [];
+    const current = state("auto");
+    const result = await runtime(
+      provider,
+      [],
+      events,
+      modes,
+      usageRecords,
+      reasoningTexts,
+    ).run(current, "What is the current task?", options());
+
+    assert.equal(requests, 1);
+    assert.deepEqual(routerTools, ["select_mode", "respond_directly"]);
+    assert.equal(result.reason, "success");
+    assert.equal(result.steps, 0);
+    assert.equal(result.text, "The current task is to add usage accounting.");
+    assert.deepEqual(modes, ["auto"]);
+    const finalMessage = current.messages.at(-1);
+    assert.equal(finalMessage?.role, "assistant");
+    assert.equal(
+      finalMessage?.role === "assistant" ? finalMessage.reasoning_content : undefined,
+      "The bounded conversation already contains the task.",
+    );
+    assert.deepEqual(reasoningTexts, [
+      "The bounded conversation already contains the task.",
+    ]);
+    assert.ok(events.some((event) => event.type === "mode.auto_direct_response"));
+    assert.equal(events.some((event) => event.type === "mode.auto_route"), false);
+    assert.deepEqual(usageRecords, [{
+      actor: "main_agent",
+      purpose: "auto_route",
+      provider: "deepseek",
+      model: "mock-model",
+      turnId: result.turnId,
+      attempt: 1,
+      retry: false,
+      usage: {
+        promptTokens: 90,
+        completionTokens: 10,
+        totalTokens: 100,
+        cachedInputTokens: 25,
+        reasoningTokens: 4,
+      },
+    }]);
+  });
+
+  it("records an earlier invalid Auto attempt when the retry request fails", async () => {
+    let requests = 0;
+    const usageRecords: ModelUsageRecord[] = [];
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete() {
+        requests += 1;
+        if (requests === 1) {
+          return {
+            message: { role: "assistant", content: "invalid plain text" },
+            usage: { promptTokens: 100, completionTokens: 23, totalTokens: 123 },
+          };
+        }
+        throw new Error("second controller request failed");
+      },
+    };
+
+    const result = await runtime(
+      provider,
+      [],
+      [],
+      [],
+      usageRecords,
+    ).run(state("auto"), "Fix the bug", options());
+
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /second controller request failed/u);
+    assert.equal(requests, 2);
+    assert.equal(usageRecords.length, 1);
+    assert.equal(usageRecords[0]?.purpose, "auto_route");
+    assert.equal(usageRecords[0]?.usage?.totalTokens, 123);
+  });
+
+  it("compacts an Auto thread at 80% and then restores model-controlled routing", async () => {
+    const current = state("auto");
+    current.messages.push({ role: "user", content: "x".repeat(20_000) });
+    const requestTools: string[][] = [];
+    const modes: AgentMode[] = [];
+    const events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [];
+    let requests = 0;
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete(request) {
+        requests += 1;
+        requestTools.push(request.tools?.map((tool) => tool.function.name) ?? []);
+        if (requests === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_compact_before_direct",
+                type: "function",
+                function: {
+                  name: "compact_context",
+                  arguments: JSON.stringify({
+                    summary: "Objective: answer after required context compaction.",
+                  }),
+                },
+              }],
+            },
+          };
+        }
+        if (requests === 2) return selectMode("plan");
+        return {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [proposePlanCall()],
+          },
+        };
+      },
+    };
+
+    const result = await runtime(
+      provider,
+      [new ProposePlanTool(), new CompactContextTool()],
+      events,
+      modes,
+    ).run(current, "What is the current task?", {
+      ...options(),
+      maxSteps: 1,
+      maxContextChars: 24_000,
+    });
+
+    assert.equal(result.reason, "planned");
+    assert.deepEqual(requestTools[0], ["compact_context"]);
+    assert.deepEqual(requestTools[1], ["select_mode", "respond_directly"]);
+    assert.deepEqual(requestTools[2], ["propose_plan", "compact_context"]);
+    assert.deepEqual(modes, ["auto", "auto", "plan"]);
+    const eventTypes = events.map((event) => event.type);
+    assert.ok(eventTypes.indexOf("context.compacted") >= 0);
+    assert.ok(
+      eventTypes.indexOf("context.compacted") < eventTypes.indexOf("mode.auto_route"),
+    );
+  });
+
+  it("records an ordinary Code response as agent-step usage", async () => {
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete() {
+        return {
+          message: {
+            role: "assistant",
+            content: "Completed without tools.",
+            tool_calls: [],
+          },
+          usage: { promptTokens: 60, completionTokens: 8, totalTokens: 68 },
+        };
+      },
+    };
+    const usageRecords: ModelUsageRecord[] = [];
+    const result = await runtime(
+      provider,
+      [],
+      [],
+      [],
+      usageRecords,
+    ).run(state("code"), "Answer directly", options());
+
+    assert.equal(result.reason, "success");
+    assert.equal(usageRecords.length, 1);
+    assert.deepEqual(usageRecords[0], {
+      actor: "main_agent",
+      purpose: "agent_step",
+      provider: "deepseek",
+      model: "mock-model",
+      turnId: result.turnId,
+      step: 1,
+      attempt: 1,
+      retry: false,
+      usage: { promptTokens: 60, completionTokens: 8, totalTokens: 68 },
+    });
+  });
+
   it("uses select_mode to enter Plan and ends immediately on propose_plan", async () => {
     let requests = 0;
     let mainTools: string[] = [];
@@ -178,7 +416,7 @@ describe("model-controlled plan flow", () => {
 
     assert.equal(requests, 2);
     assert.deepEqual(mainTools, ["propose_plan"]);
-    assert.deepEqual(modes, ["plan"]);
+    assert.deepEqual(modes, ["auto", "plan"]);
     assert.equal(current.mode, "auto");
     assert.equal(result.reason, "planned");
     assert.equal(result.planProposal?.id, current.planReview?.proposal.id);

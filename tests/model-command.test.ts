@@ -668,6 +668,84 @@ describe("memory commands", () => {
   });
 });
 
+describe("/usage", () => {
+  it("prints cumulative provider-reported accounting for the active thread", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    try {
+      const internal = fixture.app as unknown as {
+        state: SessionState;
+        threadStore: ThreadStore;
+      };
+      internal.threadStore.appendEvent(internal.state.threadId, {
+        turnId: "turn_cli_usage",
+        type: "model.usage",
+        phase: "completed",
+        payload: {
+          actor: "main_agent",
+          purpose: "auto_route",
+          provider: "qwen",
+          model: internal.state.model,
+          turnId: "turn_cli_usage",
+          attempt: 1,
+          retry: false,
+          usage: {
+            promptTokens: 120,
+            completionTokens: 12,
+            totalTokens: 132,
+            cachedInputTokens: 20,
+            reasoningTokens: 4,
+          },
+        },
+      });
+      internal.threadStore.appendEvent(internal.state.threadId, {
+        turnId: "turn_cli_usage",
+        type: "model.usage",
+        phase: "completed",
+        payload: {
+          actor: "main_agent",
+          purpose: "agent_step",
+          provider: "qwen",
+          model: internal.state.model,
+          turnId: "turn_cli_usage",
+          step: 1,
+          retry: false,
+        },
+      });
+
+      const offset = fixture.output().length;
+      await fixture.app.handleSlashCommand("/usage");
+      const usage = JSON.parse(fixture.output().slice(offset)) as {
+        threadId?: string;
+        requests?: number;
+        reportedRequests?: number;
+        unreportedRequests?: number;
+        totalTokens?: number;
+        cachedInputTokens?: number;
+        uncachedInputTokens?: number;
+        reasoningTokens?: number;
+        byPurpose?: { auto_route?: { totalTokens?: number } };
+        note?: string;
+      };
+      assert.equal(usage.threadId, internal.state.threadId);
+      assert.equal(usage.requests, 2);
+      assert.equal(usage.reportedRequests, 1);
+      assert.equal(usage.unreportedRequests, 1);
+      assert.equal(usage.totalTokens, 132);
+      assert.equal(usage.cachedInputTokens, 20);
+      assert.equal(usage.uncachedInputTokens, 100);
+      assert.equal(usage.reasoningTokens, 4);
+      assert.equal(usage.byPurpose?.auto_route?.totalTokens, 132);
+      assert.match(usage.note ?? "", /providers that omit usage/u);
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/usage extra"),
+        /Usage: \/usage/u,
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+});
+
 describe("thinking commands", () => {
   it("shows indexed thinking and invalidates old blocks when the thread changes", async () => {
     const fixture = await createAppFixture(

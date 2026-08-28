@@ -12,6 +12,8 @@ import {
   type ImageAttachment,
   type LongTermMemory,
   type MemoryMutationRequest,
+  type ModelUsagePurpose,
+  type ModelUsageRecord,
   type ModelProvider,
   type PlanProposal,
   type PlanReviewState,
@@ -57,7 +59,12 @@ import {
 } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
 import { jsonForModel, safeJsonParse } from "../utils/json.js";
-import { determineAutoRoute } from "./auto-router.js";
+import {
+  AutoRouteRequestError,
+  AutoRouteSelectionError,
+  determineAutoRoute,
+  type AutoRouteAttempt,
+} from "./auto-router.js";
 
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
 const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
@@ -109,6 +116,8 @@ export interface AgentRuntimeDependencies {
     mode: AgentMode;
     workspaceSummary: string;
     memories: ReadonlyArray<Readonly<LongTermMemory>>;
+    /** Exact tools exposed on this provider request. */
+    toolNames: readonly ToolName[];
     taskGraph?: Readonly<TaskGraph>;
     planReview?: Readonly<PlanReviewState>;
   }) => Promise<string>;
@@ -145,6 +154,8 @@ export interface AgentRuntimeDependencies {
   /** Transient presentation lifecycle around each provider API request. */
   onModelRequestStart?: (text: string) => void;
   onModelRequestEnd?: () => void;
+  /** Durable accounting hook; failures are reported but never replace model output. */
+  onModelUsage?: (record: ModelUsageRecord) => Promise<void>;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
   onReasoning?: (notification: AgentReasoningNotification) => void;
   /** Child-only FIFO parent guidance, drained at a model-step boundary. */
@@ -442,7 +453,24 @@ export class AgentRuntime {
       );
     } else if (state.mode === "auto") {
       const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
-      const selection = unfinishedGraph
+      const routeContextPressure = contextPressureLevel(
+        this.dependencies.contextManager.estimateShortTermChars(state) /
+          options.maxContextChars,
+      );
+      if (
+        !unfinishedGraph &&
+        outstandingSubagentsAtRoute.length === 0 &&
+        (routeContextPressure === "require" || routeContextPressure === "force")
+      ) {
+        await this.compactBeforeAutoRoute(
+          state,
+          turnId,
+          userMessage,
+          inputImages,
+          options,
+        );
+      }
+      const fixedSelection = unfinishedGraph
         ? {
             mode: "code" as const,
             reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
@@ -453,11 +481,38 @@ export class AgentRuntime {
               reason:
                 "Collect every running or unobserved child assignment in code mode before planning or finishing.",
             }
-          : await (async () => {
+          : undefined;
+      if (fixedSelection) {
+        effectiveMode = fixedSelection.mode;
+        autoReason = fixedSelection.reason;
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "mode.auto_route",
+          phase: "completed",
+          payload: fixedSelection,
+        });
+        this.dependencies.onStatus?.(
+          `Auto mode selected ${fixedSelection.mode} — ${fixedSelection.reason}`,
+        );
+      } else {
+        let decision;
+        try {
+          decision = await (async () => {
             this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
             const routingInput = inputImages.length
               ? `${userInput}\n\n[${inputImages.length} image attachment(s) are included.]`
               : userInput;
+            // Direct answers must inherit the same base security contract and
+            // layered EASYCODE.md guidance as a normal agent request. Empty
+            // workspace/memory inputs prevent this controller from answering
+            // questions that require repository or retrieval facts.
+            const controllerPolicy = await this.dependencies.buildSystemPrompt({
+              mode: "auto",
+              workspaceSummary: "",
+              memories: [],
+              toolNames: [],
+            });
             return this.withModelRequestActivity(
               `Waiting for ${this.dependencies.provider.model} response`,
               () => determineAutoRoute(
@@ -473,21 +528,90 @@ export class AgentRuntime {
                     -1,
                   ),
                 },
+                controllerPolicy,
               ),
             );
           })();
-      effectiveMode = selection.mode;
-      autoReason = selection.reason;
-      await this.dependencies.appendEvent({
-        threadId: state.threadId,
-        turnId,
-        type: "mode.auto_route",
-        phase: "completed",
-        payload: selection
-      });
-      this.dependencies.onStatus?.(
-        `Auto mode selected ${selection.mode} — ${selection.reason}`,
-      );
+        } catch (error) {
+          if (
+            error instanceof AutoRouteSelectionError ||
+            error instanceof AutoRouteRequestError
+          ) {
+            await this.reportAutoRouteUsage(state, turnId, error.attempts);
+          }
+          if (error instanceof AutoRouteRequestError) throw error.originalError;
+          throw error;
+        }
+        await this.reportAutoRouteUsage(state, turnId, decision.attempts);
+        if (decision.kind === "direct_response") {
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "mode.auto_direct_response",
+            phase: "completed",
+            payload: { attempts: decision.attempts.length },
+          });
+          this.dependencies.onStatus?.(
+            "Auto mode answered directly without starting a second model request.",
+          );
+          const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
+            role: "assistant",
+            content: decision.content,
+            ...(decision.reasoningContent
+              ? { reasoning_content: decision.reasoningContent }
+              : {}),
+          };
+          state.messages.push(directAssistant);
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "message.assistant",
+            phase: "completed",
+            payload: directAssistant,
+          });
+          if (
+            state.thinkingEffort !== "none" &&
+            decision.reasoningContent
+          ) {
+            try {
+              this.dependencies.onReasoning?.({
+                type: "reasoning",
+                text: decision.reasoningContent,
+                threadId: state.threadId,
+                turnId,
+                step: 0,
+                provider: this.dependencies.provider.name,
+                model: this.dependencies.provider.model,
+                thinkingEffort: state.thinkingEffort,
+              });
+            } catch {
+              // Direct-response reasoning presentation is transient; the
+              // assistant message above remains the durable source of truth.
+            }
+          }
+          this.dependencies.onText?.(decision.content);
+          return this.finish(
+            state,
+            turnId,
+            decision.content,
+            "success",
+            0,
+            memoryContext,
+          );
+        }
+        effectiveMode = decision.mode;
+        autoReason = decision.reason;
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          type: "mode.auto_route",
+          phase: "completed",
+          payload: { mode: decision.mode, reason: decision.reason },
+        });
+        this.dependencies.onStatus?.(
+          `Auto mode selected ${decision.mode} — ${decision.reason}`,
+        );
+      }
     }
 
     const memories = await this.dependencies.searchMemories(userInput);
@@ -547,18 +671,6 @@ export class AgentRuntime {
         });
       }
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
-        mode: effectiveMode,
-        workspaceSummary,
-        memories,
-        ...(state.taskGraph && (
-          state.taskGraph.status !== "completed" ||
-          state.taskGraph.updatedByTurnId === turnId
-        )
-          ? { taskGraph: state.taskGraph }
-          : {}),
-        ...(state.planReview ? { planReview: state.planReview } : {}),
-      });
       const shortTermChars = this.dependencies.contextManager.estimateShortTermChars(state);
       const contextUtilization = shortTermChars / options.maxContextChars;
       const contextPressure = contextPressureLevel(contextUtilization);
@@ -599,15 +711,6 @@ export class AgentRuntime {
         contextPressure,
         contextUtilization,
       );
-      const systemPrompt = pressureInstruction
-        ? `${baseSystemPrompt}\n\n${pressureInstruction}`
-        : baseSystemPrompt;
-      const messages = this.dependencies.contextManager.build({
-        systemPrompt,
-        state,
-        maxContextChars: options.maxContextChars
-      });
-
       const compactContextTool = toolMap.get("compact_context");
       const enabledTools = contextCompactionRequired
         ? compactContextTool
@@ -618,6 +721,27 @@ export class AgentRuntime {
             ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
             : []
           : [...toolMap.values()];
+      const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
+        mode: effectiveMode,
+        workspaceSummary,
+        memories,
+        toolNames: enabledTools.map((tool) => tool.name),
+        ...(state.taskGraph && (
+          state.taskGraph.status !== "completed" ||
+          state.taskGraph.updatedByTurnId === turnId
+        )
+          ? { taskGraph: state.taskGraph }
+          : {}),
+        ...(state.planReview ? { planReview: state.planReview } : {}),
+      });
+      const systemPrompt = pressureInstruction
+        ? `${baseSystemPrompt}\n\n${pressureInstruction}`
+        : baseSystemPrompt;
+      const messages = this.dependencies.contextManager.build({
+        systemPrompt,
+        state,
+        maxContextChars: options.maxContextChars
+      });
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
       );
@@ -633,6 +757,18 @@ export class AgentRuntime {
             signal: options.signal,
             thinkingEffort: state.thinkingEffort,
           }),
+        );
+        const compactOnly =
+          response.message.tool_calls?.length === 1 &&
+          response.message.tool_calls[0]?.function.name === "compact_context";
+        await this.reportModelUsage(
+          state,
+          turnId,
+          contextCompactionRequired || compactOnly
+            ? "context_compaction"
+            : "agent_step",
+          response.usage,
+          { step, attempt: 1, retry: false },
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1511,6 +1647,298 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * Auto must satisfy mandatory context pressure before its controller can
+   * choose Plan, Code, or a direct response. This is a control-plane phase,
+   * not a permanent Code selection: after compaction the original current
+   * request is replayed into active context and normal Auto routing resumes.
+   */
+  private async compactBeforeAutoRoute(
+    state: SessionState,
+    turnId: string,
+    currentUserMessage: Extract<ChatMessage, { role: "user" }>,
+    inputImages: readonly ImageAttachment[],
+    options: AgentRunOptions,
+  ): Promise<void> {
+    const compactTool = this.dependencies.tools.find(
+      (tool) => tool.name === "compact_context",
+    );
+    if (!compactTool) {
+      throw new Error(
+        "Context compaction is required before Auto routing, but compact_context is unavailable.",
+      );
+    }
+
+    const appendToolResult = async (
+      call: NonNullable<Extract<ChatMessage, { role: "assistant" }>["tool_calls"]>[number],
+      result: ToolExecutionResult,
+      attempt: number,
+    ): Promise<void> => {
+      const toolMessage: Extract<ChatMessage, { role: "tool" }> = {
+        role: "tool",
+        tool_call_id: call.id,
+        name: call.function.name,
+        content: resultForModel(result, options.maxOutputChars),
+      };
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        stepId: `auto_compaction_${attempt}`,
+        type: "tool.result",
+        phase: result.ok ? "completed" : "failed",
+        payload: {
+          callId: call.id,
+          tool: call.function.name,
+          message: toolMessage,
+        },
+      });
+      state.messages.push(toolMessage);
+    };
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const utilization =
+        this.dependencies.contextManager.estimateShortTermChars(state) /
+        options.maxContextChars;
+      const pressure = contextPressureLevel(utilization);
+      if (attempt === 1 && pressure === "force") {
+        await this.appendContextCompactionRequest({
+          state,
+          turnId,
+          step: 0,
+          utilization,
+          correction: false,
+        });
+      }
+      const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
+        mode: "auto",
+        workspaceSummary: "",
+        memories: [],
+        toolNames: ["compact_context"],
+      });
+      const pressureInstruction = contextPressureInstruction(
+        pressure === "normal" || pressure === "suggest" ? "require" : pressure,
+        utilization,
+      );
+      const messages = this.dependencies.contextManager.build({
+        systemPrompt: `${baseSystemPrompt}\n\n${pressureInstruction}`,
+        state,
+        maxContextChars: options.maxContextChars,
+      });
+      this.dependencies.onStatus?.(
+        `Pre-route context compaction ${attempt}/2: requesting ${this.dependencies.provider.model}`,
+      );
+
+      let response;
+      try {
+        response = await this.withModelRequestActivity(
+          `Waiting for ${this.dependencies.provider.model} response`,
+          () => this.dependencies.provider.complete({
+            messages,
+            currentTurnImageIds: inputImages.map((image) => image.id),
+            tools: [compactTool.definition],
+            signal: options.signal,
+            thinkingEffort: state.thinkingEffort,
+          }),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `auto_compaction_${attempt}`,
+          type: "model.error",
+          phase: "failed",
+          payload: { message },
+        });
+        throw error;
+      }
+      await this.reportModelUsage(
+        state,
+        turnId,
+        "context_compaction",
+        response.usage,
+        { attempt, retry: attempt > 1 },
+      );
+
+      const assistantMessage: Extract<ChatMessage, { role: "assistant" }> = {
+        role: "assistant",
+        content: response.message.content,
+        tool_calls: response.message.tool_calls,
+        reasoning_content: response.message.reasoning_content,
+      };
+      state.messages.push(assistantMessage);
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        stepId: `auto_compaction_${attempt}`,
+        type: "message.assistant",
+        phase: "completed",
+        payload: assistantMessage,
+      });
+      if (
+        state.thinkingEffort !== "none" &&
+        response.message.reasoning_content?.trim()
+      ) {
+        try {
+          this.dependencies.onReasoning?.({
+            type: "reasoning",
+            text: response.message.reasoning_content,
+            threadId: state.threadId,
+            turnId,
+            step: 0,
+            provider: this.dependencies.provider.name,
+            model: this.dependencies.provider.model,
+            thinkingEffort: state.thinkingEffort,
+          });
+        } catch {
+          // Presentation is transient; the assistant message remains durable.
+        }
+      }
+
+      const calls = assistantMessage.tool_calls ?? [];
+      const validExclusiveCall =
+        calls.length === 1 && calls[0]?.function.name === "compact_context";
+      let compactionResult: ToolExecutionResult | undefined;
+      if (validExclusiveCall) {
+        const call = calls[0];
+        if (!call) throw new Error("The context compaction call disappeared");
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `auto_compaction_${attempt}`,
+          type: "tool.call",
+          phase: "requested",
+          payload: call,
+        });
+        try {
+          compactionResult = await compactTool.execute(
+            safeJsonParse(call.function.arguments),
+            {
+              workspaceRoot: state.workspaceRoot,
+              mode: "code",
+              threadId: state.threadId,
+              turnId,
+              approvalPolicy: options.approvalPolicy,
+              requestApproval: this.dependencies.requestApproval,
+              signal: options.signal,
+              commandTimeoutMs: options.commandTimeoutMs,
+              maxOutputChars: options.maxOutputChars,
+              agentRole: "main_agent",
+              thinkingEffort: state.thinkingEffort,
+              provider: state.provider,
+              model: state.model,
+              toolCallId: call.id,
+            },
+          );
+        } catch (error) {
+          compactionResult = {
+            ok: false,
+            summary: "Tool compact_context failed.",
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        await appendToolResult(call, compactionResult, attempt);
+      } else {
+        for (const call of calls) {
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `auto_compaction_${attempt}`,
+            type: "tool.call",
+            phase: "requested",
+            payload: call,
+          });
+          await appendToolResult(
+            call,
+            {
+              ok: false,
+              summary:
+                "Pre-route context compaction requires exactly one compact_context call.",
+              error: "context_compaction_must_be_exclusive",
+            },
+            attempt,
+          );
+        }
+      }
+
+      if (
+        compactionResult?.ok &&
+        compactionResult.contextCompaction
+      ) {
+        const compactedMessageCount = state.messages.length;
+        const replayMessage: Extract<ChatMessage, { role: "user" }> = {
+          role: "user",
+          content: currentUserMessage.content,
+          ...(currentUserMessage.images?.length
+            ? { images: [...currentUserMessage.images] }
+            : {}),
+        };
+        // Persist the replay before advancing the compaction boundary so a
+        // crash can never durably compact away the active request without
+        // also retaining its text and image references.
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `auto_compaction_${attempt}`,
+          type: "message.user.synthetic",
+          phase: "completed",
+          payload: replayMessage,
+        });
+        state.messages.push(replayMessage);
+        const compaction = this.dependencies.contextManager.applyModelCompaction(
+          state,
+          compactionResult.contextCompaction.summary,
+          compactedMessageCount,
+        );
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `auto_compaction_${attempt}`,
+          type: "context.compacted",
+          phase: "completed",
+          payload: {
+            summary: state.workingSummary,
+            compactedMessageCount: compaction.compactedMessageCount,
+            summaryChars: compaction.summaryChars,
+          },
+        });
+        await this.dependencies.onToolCompleted?.(
+          state,
+          "compact_context",
+          compactionResult,
+        );
+        this.dependencies.onStatus?.(
+          `Context compacted before Auto routing through ${compaction.compactedMessageCount} messages ` +
+            `into ${compaction.summaryChars} characters.`,
+        );
+        const remainingPressure = contextPressureLevel(
+          this.dependencies.contextManager.estimateShortTermChars(state) /
+            options.maxContextChars,
+        );
+        if (remainingPressure === "require" || remainingPressure === "force") {
+          throw new Error(
+            "The active request still exceeds the mandatory context limit after compaction. Increase max_context_chars or shorten the request.",
+          );
+        }
+        return;
+      }
+
+      if (attempt < 2) {
+        await this.appendContextCompactionRequest({
+          state,
+          turnId,
+          step: 0,
+          utilization,
+          correction: true,
+        });
+      }
+    }
+
+    throw new Error(
+      "The model did not complete the required context compaction before Auto routing.",
+    );
+  }
+
   private async appendContextCompactionRequest(input: {
     state: SessionState;
     turnId: string;
@@ -1562,6 +1990,61 @@ export class AgentRuntime {
       } catch {
         // A broken presentation hook must not replace a model result or error.
       }
+    }
+  }
+
+  private async reportModelUsage(
+    state: Readonly<SessionState>,
+    turnId: string,
+    purpose: ModelUsagePurpose,
+    usage: ModelUsageRecord["usage"],
+    request: { step?: number; attempt?: number; retry: boolean },
+  ): Promise<void> {
+    if (!this.dependencies.onModelUsage) return;
+    const identity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
+    const record: ModelUsageRecord = {
+      actor: identity.role,
+      purpose,
+      provider: this.dependencies.provider.name,
+      model: this.dependencies.provider.model,
+      turnId,
+      retry: request.retry,
+      ...(request.step !== undefined ? { step: request.step } : {}),
+      ...(request.attempt !== undefined ? { attempt: request.attempt } : {}),
+      ...(usage ? { usage: { ...usage } } : {}),
+      ...(identity.role === "subagent"
+        ? {
+            sourceAgentId: identity.agentId,
+            sourceTaskId: identity.assignedTaskId,
+          }
+        : {}),
+    };
+    try {
+      await this.dependencies.onModelUsage(record);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.dependencies.onStatus?.(
+        `Model usage accounting could not be saved: ${message}`,
+      );
+    }
+  }
+
+  private async reportAutoRouteUsage(
+    state: Readonly<SessionState>,
+    turnId: string,
+    attempts: readonly AutoRouteAttempt[],
+  ): Promise<void> {
+    for (const attempt of attempts) {
+      await this.reportModelUsage(
+        state,
+        turnId,
+        "auto_route",
+        attempt.usage,
+        {
+          attempt: attempt.attempt,
+          retry: attempt.attempt > 1,
+        },
+      );
     }
   }
 
