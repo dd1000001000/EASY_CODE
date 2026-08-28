@@ -138,7 +138,9 @@ export interface EasyCodeConfig {
   dataDir: string;
   configDir: string;
   cacheDir: string;
+  /** Base step budget for none/low thinking; higher efforts derive their budget from this value. */
   maxSteps: number;
+  /** Base context-character budget for none/low thinking; higher efforts derive their budget from this value. */
   maxContextChars: number;
   maxOutputChars: number;
   commandTimeoutMs: number;

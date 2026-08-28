@@ -199,7 +199,26 @@ Within the GLM catalog, only `glm-5.3-flash` accepts image input. `glm-5.3` and 
 
 After choosing a model, the interactive selector asks for one of four normalized thinking-effort levels: `none`, `low`, `medium`, or `high`. The selection is kept with the active thread and is used when building every model request, including Auto mode routing. It can also be set at startup with `--thinking-effort`; when omitted, the default is `medium`.
 
-The selection also sets the maximum model-request steps for each user task: `none` and `low` allow 40 steps, `medium` allows 80, and `high` allows 120. This agent-loop budget follows the saved selection even when the chosen model does not support thinking parameters. An explicit `max_steps` configuration or `EASY_CODE_MAX_STEPS` environment variable acts only as a lower hard ceiling and cannot raise a tier above its built-in budget.
+The same selection scales both the active short-term context-character limit and the maximum model-request steps for each user task. The configurable base applies to `none` and `low`; `medium` multiplies it by 2 and `high` by 4. With the defaults, the tiers are:
+
+| Thinking effort | Multiplier | Active context limit | Step limit |
+| --- | ---: | ---: | ---: |
+| `none` | 1× | 400,000 characters | 40 |
+| `low` | 1× | 400,000 characters | 40 |
+| `medium` | 2× | 800,000 characters | 80 |
+| `high` | 4× | 1,600,000 characters | 160 |
+
+These Runtime budgets follow the saved selection even when the chosen model does not support thinking parameters. Configure the `none`/`low` base values in either the user configuration or `.easycode/config.toml`:
+
+```toml
+[limits]
+max_steps = 40
+max_context_chars = 400000
+```
+
+The equivalent environment variables are `EASY_CODE_MAX_STEPS` and `EASY_CODE_MAX_CONTEXT_CHARS`. Both now hold base values, so the active value is `base × effort multiplier`.
+
+Migration note: older releases treated `max_steps` as a hard ceiling and `max_context_chars` as one absolute limit for every effort. Existing explicit values will now be multiplied. Review or remove those settings during upgrade; to preserve a desired active limit for one effort, set its new base to `desired active limit ÷ multiplier`.
 
 The four choices remain available for every model. EASY CODE sends only fields documented for the exact provider/model combination. If a model does not support configurable thinking, the selection is retained for the UI and thread but no thinking parameter is sent, so it has no effect.
 
@@ -254,7 +273,7 @@ Choosing Yes records approval and returns to Auto for execution. Choosing No rec
 
 ## Current features
 
-The main prompt displays an estimated short-term-memory token count, for example `context:12.4k`. It includes the persistent context summary, active conversation and tool messages, reasoning returned into context, and active image-token estimates. The value is tokenizer-independent and therefore approximate.
+The main prompt displays an estimated short-term-memory token count, for example `context:12.4k`. It includes the persistent context summary, active conversation and tool messages, reasoning returned into context, and active image-token estimates. The value is tokenizer-independent and therefore approximate; it is a display aid, not the character measurement used to trigger compaction.
 
 When EASY CODE is waiting for a model API response in an interactive terminal, it shows a gray spinner with elapsed time. The indicator covers both Auto-mode routing and every agent-loop model request, and is cleared on success, error, or interruption. Piped and CI output stays static.
 
@@ -325,7 +344,14 @@ Clipboard screenshots are copied to EASY CODE's private data directory outside t
 
 ### Context, memory, and threads
 
-- Character, output, and image budgets bound each model request. The model can call `compact_context` to produce a cumulative working summary; a request-only hard-limit fallback remains available.
+- Character, output, and image budgets bound each model request. The active short-term character limit is derived from the selected thinking effort: the default `none`/`low` base is 400,000 characters, `medium` uses 800,000, and `high` uses 1,600,000. Runtime measures the persistent working summary plus messages after the current compaction boundary, rather than compacted raw history. The percentage is calculated against the current active limit, not the unscaled base, and applies four pressure levels:
+
+  - Below 60%: no intervention.
+  - At 60% or more: remind the model to consider `compact_context`; normal work can continue.
+  - At 80% or more: require the next model step to call `compact_context` by itself.
+  - At 90% or more: automatically inject a forced compaction request; the step remains restricted to `compact_context` alone.
+
+  `compact_context` produces a cumulative `workingSummary` and advances the persistent compaction boundary. If a request still exceeds the active hard character limit, the request-only fallback can truncate what is sent to the model, but that fallback does not update `workingSummary` or advance the boundary. The terminal `context:…` token count remains an approximate, tokenizer-independent display and is not used for these character thresholds.
 - Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, the current task DAG, and the working summary.
 - Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts. Each memory is one atomic sentence of at most 120 characters. After searching, the model can issue several `remember` calls together to preserve up to eight independent facts in one turn; the complete set commits atomically instead of becoming one long paragraph.
 - Long-term retrieval is hybrid: 384-dimensional semantic similarity and FTS5 lexical matches are reranked together. SQLite persists both memory rows and Float32 embeddings; Orama is a disposable, generation-versioned in-process Top-K index.

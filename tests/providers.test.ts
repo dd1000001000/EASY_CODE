@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  DEFAULT_BASE_MAX_CONTEXT_CHARS,
+  DEFAULT_BASE_MAX_STEPS,
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_GLM_BASE_URL,
@@ -41,7 +43,10 @@ describe("configuration", () => {
         path.join(configDir, "config.toml"),
         `provider = "deepseek"
 mode = "plan"
+
+[limits]
 max_steps = 12
+max_context_chars = 410000
 
 [qwen]
 model = "user-qwen"
@@ -60,6 +65,7 @@ base_url = "https://user-glm.example/v4/"
         path.join(workspace, ".easycode", "config.toml"),
         `mode = "code"
 max_steps = 18
+max_context_chars = 420000
 
 [qwen]
 model = "workspace-qwen"
@@ -76,6 +82,7 @@ model = "workspace-qwen"
           EASY_CODE_PROVIDER: "qwen",
           EASY_CODE_THINKING_EFFORT: "high",
           EASY_CODE_MAX_STEPS: "24",
+          EASY_CODE_MAX_CONTEXT_CHARS: "430000",
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
@@ -88,6 +95,7 @@ model = "workspace-qwen"
       assert.equal(config.mode, "code");
       assert.equal(config.thinkingEffort, "high");
       assert.equal(config.maxSteps, 24);
+      assert.equal(config.maxContextChars, 430_000);
       assert.equal(config.qwen.apiKey, "qwen-env-key");
       assert.equal(config.qwen.model, "workspace-qwen");
       assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
@@ -118,7 +126,8 @@ model = "workspace-qwen"
       });
       assert.equal(config.qwen.baseUrl, DEFAULT_QWEN_BASE_URL);
       assert.equal(config.thinkingEffort, "medium");
-      assert.equal(config.maxSteps, 120);
+      assert.equal(config.maxSteps, DEFAULT_BASE_MAX_STEPS);
+      assert.equal(config.maxContextChars, DEFAULT_BASE_MAX_CONTEXT_CHARS);
       assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
       assert.equal(config.qwen.apiKey, "dashscope-key");
       assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);

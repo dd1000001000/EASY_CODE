@@ -24,6 +24,7 @@ const TEST_ENVIRONMENT = [
   "EASY_CODE_PROVIDER",
   "EASY_CODE_THINKING_EFFORT",
   "EASY_CODE_MAX_STEPS",
+  "EASY_CODE_MAX_CONTEXT_CHARS",
   "QWEN_API_KEY",
   "DASHSCOPE_API_KEY",
   "DEEPSEEK_API_KEY",
@@ -115,6 +116,7 @@ async function createAppFixture(
   process.env.EASY_CODE_PROVIDER = "qwen";
   delete process.env.EASY_CODE_THINKING_EFFORT;
   delete process.env.EASY_CODE_MAX_STEPS;
+  delete process.env.EASY_CODE_MAX_CONTEXT_CHARS;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.QWEN_MODEL;
   delete process.env.DEEPSEEK_MODEL;
@@ -307,6 +309,7 @@ describe("/model", () => {
     try {
       await fixture.app.handleSlashCommand("/model");
       await fixture.app.handleSlashCommand("/status");
+      await fixture.app.handleSlashCommand("/context");
 
       const terminal = fixture.terminal as ScriptedModelTerminal;
       assert.deepEqual(
@@ -340,7 +343,11 @@ describe("/model", () => {
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
       assert.match(fixture.output(), /"thinkingApplied": false/u);
-      assert.match(fixture.output(), /"stepLimit": 120/u);
+      assert.match(fixture.output(), /"baseStepLimit": 40/u);
+      assert.match(fixture.output(), /"stepLimit": 160/u);
+      assert.match(fixture.output(), /"baseContextCharLimit": 400000/u);
+      assert.match(fixture.output(), /"contextCharLimit": 1600000/u);
+      assert.match(fixture.output(), /"budgetChars": 1600000/u);
     } finally {
       fixture.close();
     }

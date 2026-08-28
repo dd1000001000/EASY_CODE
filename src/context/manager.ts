@@ -7,6 +7,19 @@ import {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 
 export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
+export const CONTEXT_COMPACTION_SUGGEST_RATIO = 0.6;
+export const CONTEXT_COMPACTION_REQUIRE_RATIO = 0.8;
+export const CONTEXT_COMPACTION_FORCE_RATIO = 0.9;
+
+export type ContextPressureLevel = "normal" | "suggest" | "require" | "force";
+
+export function contextPressureLevel(utilization: number): ContextPressureLevel {
+  const normalized = Number.isNaN(utilization) ? 0 : Math.max(0, utilization);
+  if (normalized >= CONTEXT_COMPACTION_FORCE_RATIO) return "force";
+  if (normalized >= CONTEXT_COMPACTION_REQUIRE_RATIO) return "require";
+  if (normalized >= CONTEXT_COMPACTION_SUGGEST_RATIO) return "suggest";
+  return "normal";
+}
 
 export interface ContextBuildInput {
   systemPrompt: string;
@@ -185,21 +198,33 @@ function summaryMessage(content: string): ChatMessage {
   };
 }
 
+function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
+  const compactedMessageCount = Math.min(
+    Math.max(0, state.compactedMessageCount),
+    state.messages.length,
+  );
+  const activeMessages = limitActiveImages(removeOrphanToolMessages(
+    state.messages.slice(compactedMessageCount),
+  ));
+  const persistentSummary = state.workingSummary.trim();
+  return [
+    ...(persistentSummary ? [summaryMessage(persistentSummary)] : []),
+    ...activeMessages,
+  ];
+}
+
 export class ContextManager {
+  /** Character budget used by automatic context-pressure thresholds. */
+  estimateShortTermChars(state: Readonly<SessionState>): number {
+    return shortTermMessages(state).reduce(
+      (total, message) => total + messageChars(message),
+      0,
+    );
+  }
+
   /** Estimate the persisted summary plus currently active thread messages. */
   estimateShortTermTokens(state: Readonly<SessionState>): number {
-    const compactedMessageCount = Math.min(
-      Math.max(0, state.compactedMessageCount),
-      state.messages.length,
-    );
-    const activeMessages = limitActiveImages(removeOrphanToolMessages(
-      state.messages.slice(compactedMessageCount),
-    ));
-    const persistentSummary = state.workingSummary.trim();
-    const messages = [
-      ...(persistentSummary ? [summaryMessage(persistentSummary)] : []),
-      ...activeMessages,
-    ];
+    const messages = shortTermMessages(state);
     return messages.reduce(
       (total, message) => total + estimateMessageTextTokens(message),
       estimateVisionTokens(messages),
@@ -343,11 +368,18 @@ export class ContextManager {
     imageCount: number;
     imageBytes: number;
     estimatedVisionTokens: number;
+    estimatedShortTermChars: number;
     estimatedShortTermTokens: number;
+    utilization: number;
+    pressure: ContextPressureLevel;
   } {
     const images = state.messages.flatMap((message) =>
       message.role === "user" ? message.images ?? [] : [],
     );
+    const estimatedShortTermChars = this.estimateShortTermChars(state);
+    const utilization = maxContextChars > 0
+      ? estimatedShortTermChars / maxContextChars
+      : 0;
     return {
       messageCount: state.messages.length,
       estimatedChars: state.messages.reduce((total, message) => total + messageChars(message), 0),
@@ -362,7 +394,10 @@ export class ContextManager {
           total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
         0,
       ),
+      estimatedShortTermChars,
       estimatedShortTermTokens: this.estimateShortTermTokens(state),
+      utilization,
+      pressure: contextPressureLevel(utilization),
     };
   }
 }

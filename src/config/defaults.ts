@@ -8,6 +8,10 @@ import {
   type ProviderName,
 } from "../core/types.js";
 import { DEFAULT_MODEL_IDS } from "../models/catalog.js";
+import {
+  DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
+  DEFAULT_BASE_STEP_LIMIT,
+} from "../models/thinking.js";
 
 export const DEFAULT_QWEN_BASE_URL =
   "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -19,6 +23,10 @@ export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm;
 
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
 export const DEFAULT_PROVIDER_MAX_RETRIES = 2;
+/** Configurable none/low thinking-effort step budget. */
+export const DEFAULT_BASE_MAX_STEPS = DEFAULT_BASE_STEP_LIMIT;
+/** Configurable none/low thinking-effort context-character budget. */
+export const DEFAULT_BASE_MAX_CONTEXT_CHARS = DEFAULT_BASE_CONTEXT_CHAR_LIMIT;
 
 export interface EasyCodePaths {
   configDir: string;
@@ -63,10 +71,10 @@ export function createDefaultEasyCodeConfig(
     dataDir: path.resolve(paths.dataDir),
     configDir: path.resolve(paths.configDir),
     cacheDir: path.resolve(paths.cacheDir),
-    // Thinking effort chooses the active budget; this remains the configurable
-    // hard ceiling and therefore defaults to the largest built-in tier.
-    maxSteps: 120,
-    maxContextChars: 320_000,
+    // These are the configurable none/low bases. Runtime derives the active
+    // medium/high budgets from them without changing the persisted config.
+    maxSteps: DEFAULT_BASE_MAX_STEPS,
+    maxContextChars: DEFAULT_BASE_MAX_CONTEXT_CHARS,
     maxOutputChars: 64_000,
     commandTimeoutMs: 120_000,
     qwen: createDefaultProviderConfig("qwen"),

@@ -114,6 +114,10 @@ describe("system prompt builder", () => {
       assert.match(prompt, /memory_id=memory_00000000-0000-4000-8000-000000000001/);
       assert.match(prompt, /category=convention/);
       assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);
+      assert.match(prompt, /default none\/low base is 400,000 characters/u);
+      assert.match(prompt, /medium uses 2× that base, and high uses 4× it/u);
+      assert.match(prompt, /Pressure is calculated against that active limit/u);
+      assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
       assert.match(prompt, /current objective, user constraints, key decisions/);
       assert.match(prompt, /It must be cumulative/);
       assert.match(prompt, /delete_file deletes a previously read regular workspace file/);
