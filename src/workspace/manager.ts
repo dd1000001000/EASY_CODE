@@ -238,6 +238,48 @@ export class WorkspaceManager {
     this.manifest = after;
     return delta;
   }
+
+  /** Record a Runtime-verified handoff without treating deletions as command-policy violations. */
+  applyRuntimeSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDelta {
+    const delta = diffWorkspaceSnapshots(before, after);
+    const timestamp = new Date().toISOString();
+    for (const entry of delta.created) {
+      this.readVersions.delete(entry.path);
+      this.recordChange({
+        path: entry.path,
+        operation: "generated",
+        afterHash: entry.hash,
+        source: "command",
+        status: "verified",
+        timestamp,
+      });
+    }
+    for (const entry of delta.updated) {
+      this.readVersions.delete(entry.after.path);
+      this.recordChange({
+        path: entry.after.path,
+        operation: "generated",
+        beforeHash: entry.before.hash,
+        afterHash: entry.after.hash,
+        source: "command",
+        status: "verified",
+        timestamp,
+      });
+    }
+    for (const entry of delta.deleted) {
+      this.readVersions.delete(entry.path);
+      this.recordChange({
+        path: entry.path,
+        operation: "deleted_by_command",
+        beforeHash: entry.hash,
+        source: "command",
+        status: "verified",
+        timestamp,
+      });
+    }
+    this.manifest = after;
+    return delta;
+  }
 }
 
 function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {

@@ -49,6 +49,14 @@ mode = "plan"
 max_steps = 12
 max_context_chars = 410000
 
+[subagents]
+isolation = "shared"
+
+[worktrees]
+base_mode = "head"
+root = "${path.join(temporary, "user-worktrees").replace(/\\/gu, "\\\\")}"
+max_managed = 11
+
 [qwen]
 model = "user-qwen"
 base_url = "https://user-qwen.example/v1/"
@@ -69,6 +77,13 @@ base_url = "https://user-glm.example/v4/"
 max_steps = 18
 max_context_chars = 420000
 
+[subagents]
+isolation = "auto"
+
+[worktrees]
+base_mode = "current-snapshot"
+max_managed = 17
+
 [qwen]
 model = "workspace-qwen"
 timeout_ms = 41000
@@ -86,6 +101,10 @@ timeout_ms = 41000
           EASY_CODE_THINKING_EFFORT: "high",
           EASY_CODE_MAX_STEPS: "24",
           EASY_CODE_MAX_CONTEXT_CHARS: "430000",
+          EASY_CODE_SUBAGENT_ISOLATION: "worktree",
+          EASY_CODE_WORKTREE_BASE_MODE: "fresh",
+          EASY_CODE_WORKTREE_ROOT: path.join(temporary, "environment-worktrees"),
+          EASY_CODE_MAX_MANAGED_WORKTREES: "23",
           QWEN_TIMEOUT_MS: "51000",
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
@@ -100,6 +119,10 @@ timeout_ms = 41000
       assert.equal(config.thinkingEffort, "high");
       assert.equal(config.maxSteps, 24);
       assert.equal(config.maxContextChars, 430_000);
+      assert.equal(config.subagentIsolation, "worktree");
+      assert.equal(config.worktreeBaseMode, "fresh");
+      assert.equal(config.worktreeRoot, path.join(temporary, "environment-worktrees"));
+      assert.equal(config.maxManagedWorktrees, 23);
       assert.equal(config.qwen.apiKey, "qwen-env-key");
       assert.equal(config.qwen.model, "workspace-qwen");
       assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
@@ -133,6 +156,10 @@ timeout_ms = 41000
       assert.equal(config.thinkingEffort, "medium");
       assert.equal(config.maxSteps, DEFAULT_BASE_MAX_STEPS);
       assert.equal(config.maxContextChars, DEFAULT_BASE_MAX_CONTEXT_CHARS);
+      assert.equal(config.subagentIsolation, "auto");
+      assert.equal(config.worktreeBaseMode, "current-snapshot");
+      assert.equal(config.worktreeRoot, path.join(temporary, "data", "worktrees"));
+      assert.equal(config.maxManagedWorktrees, 15);
       assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
       assert.equal(DEFAULT_PROVIDER_TIMEOUT_MS, 300_000);
       assert.equal(config.qwen.timeoutMs, undefined);

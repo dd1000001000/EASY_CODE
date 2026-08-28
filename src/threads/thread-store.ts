@@ -14,6 +14,8 @@ import {
   type SubagentAssignmentSnapshot,
   type SubagentTaskReport,
   type ThinkingEffort,
+  type ExecutionEnvironmentSnapshot,
+  type ResultArtifact,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
@@ -43,6 +45,10 @@ import {
   returnPlanExecutionToReview,
   type PlanExecutionReturnOutcome,
 } from "../plans/plan.js";
+import {
+  isExecutionEnvironmentSnapshot,
+  isResultArtifact,
+} from "../workspace/execution-environment.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -94,13 +100,19 @@ export interface DurableSubagentResult {
   readonly reason: "completed" | "blocked" | "failed" | "stopped" | "interrupted";
   readonly report?: SubagentTaskReport;
   readonly error?: string;
+  readonly environment?: ExecutionEnvironmentSnapshot;
+  readonly resultArtifact?: ResultArtifact;
   readonly timestamp: string;
 }
 
-export interface DurableStandaloneAssignment {
-  readonly assignment: Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
+export interface DurableSubagentAssignment {
+  readonly assignment: SubagentAssignmentSnapshot;
   readonly createdByTurnId: string;
   readonly observed: boolean;
+}
+
+export interface DurableStandaloneAssignment extends DurableSubagentAssignment {
+  readonly assignment: Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
 }
 
 export const INTERRUPTED_TURN_ASSISTANT_MESSAGE =
@@ -145,12 +157,10 @@ function asPayloadRecord(payload: unknown): Record<string, unknown> | undefined 
   return payload as Record<string, unknown>;
 }
 
-function standaloneAssignment(
-  value: unknown,
-): Extract<SubagentAssignmentSnapshot, { kind: "standalone" }> | undefined {
+function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefined {
   const input = asPayloadRecord(value);
   if (
-    input?.kind !== "standalone" ||
+    (input?.kind !== "standalone" && input?.kind !== "dag") ||
     typeof input.agentId !== "string" ||
     !input.agentId ||
     typeof input.taskId !== "string" ||
@@ -170,22 +180,115 @@ function standaloneAssignment(
       input.thinkingEffort !== "medium" &&
       input.thinkingEffort !== "high") ||
     typeof input.createdAt !== "string" ||
-    !input.createdAt
+    !input.createdAt ||
+    (input.childThreadId !== undefined &&
+      (typeof input.childThreadId !== "string" || !input.childThreadId)) ||
+    (input.environmentId !== undefined &&
+      (typeof input.environmentId !== "string" || !input.environmentId)) ||
+    ((input.childThreadId === undefined) !== (input.environmentId === undefined)) ||
+    (input.requestedIsolation !== undefined &&
+      input.requestedIsolation !== "auto" &&
+      input.requestedIsolation !== "shared" &&
+      input.requestedIsolation !== "worktree") ||
+    (input.kind === "dag" &&
+      (typeof input.taskGraphId !== "string" || !input.taskGraphId))
   ) {
     return undefined;
   }
-  return {
-    kind: "standalone",
+  const common = {
     agentId: input.agentId,
+    ...(typeof input.childThreadId === "string"
+      ? { childThreadId: input.childThreadId }
+      : {}),
+    ...(typeof input.environmentId === "string"
+      ? { environmentId: input.environmentId }
+      : {}),
     taskId: input.taskId,
     taskTitle: input.taskTitle,
     taskDescription: input.taskDescription,
     completionChecks: [...input.completionChecks] as string[],
-    provider: input.provider,
+    provider: input.provider as ProviderName,
     model: input.model,
-    thinkingEffort: input.thinkingEffort,
+    thinkingEffort: input.thinkingEffort as ThinkingEffort,
+    ...(input.requestedIsolation === "auto" ||
+    input.requestedIsolation === "shared" ||
+    input.requestedIsolation === "worktree"
+      ? {
+          requestedIsolation: input.requestedIsolation as
+            | "auto"
+            | "shared"
+            | "worktree",
+        }
+      : {}),
     createdAt: input.createdAt,
   };
+  return input.kind === "dag"
+    ? { kind: "dag", taskGraphId: input.taskGraphId as string, ...common }
+    : { kind: "standalone", ...common };
+}
+
+function standaloneAssignment(
+  value: unknown,
+): Extract<SubagentAssignmentSnapshot, { kind: "standalone" }> | undefined {
+  const assignment = subagentAssignment(value);
+  return assignment?.kind === "standalone" ? assignment : undefined;
+}
+
+function sameStringArray(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
+}
+
+/**
+ * Observation events may only close the exact assignment activated earlier.
+ *
+ * Old journals did not persist a child thread, environment, or isolation. The
+ * legacy recovery path deterministically synthesizes those two IDs and always
+ * uses the shared workspace, so accept only that one unambiguous upgrade. All
+ * modern bindings must match byte-for-byte across their immutable identity
+ * fields.
+ */
+function sameSubagentAssignmentIdentity(
+  activated: Readonly<SubagentAssignmentSnapshot>,
+  observed: Readonly<SubagentAssignmentSnapshot>,
+): boolean {
+  if (
+    activated.kind !== observed.kind ||
+    activated.agentId !== observed.agentId ||
+    activated.taskId !== observed.taskId ||
+    activated.taskTitle !== observed.taskTitle ||
+    activated.taskDescription !== observed.taskDescription ||
+    !sameStringArray(activated.completionChecks, observed.completionChecks) ||
+    activated.provider !== observed.provider ||
+    activated.model !== observed.model ||
+    activated.thinkingEffort !== observed.thinkingEffort ||
+    (activated.requestedIsolation ?? "shared") !==
+      (observed.requestedIsolation ?? "shared") ||
+    activated.createdAt !== observed.createdAt
+  ) {
+    return false;
+  }
+  if (
+    activated.kind === "dag" &&
+    (observed.kind !== "dag" || activated.taskGraphId !== observed.taskGraphId)
+  ) {
+    return false;
+  }
+
+  if (activated.childThreadId || activated.environmentId) {
+    return activated.childThreadId === observed.childThreadId &&
+      activated.environmentId === observed.environmentId;
+  }
+
+  const observationIsLegacy =
+    observed.childThreadId === undefined && observed.environmentId === undefined;
+  const observationIsDeterministicLegacyUpgrade =
+    observed.childThreadId === `thread_${activated.agentId}` &&
+    observed.environmentId === `environment_${activated.agentId}`;
+  return observationIsLegacy || observationIsDeterministicLegacyUpgrade;
 }
 
 function cloneMessage(message: ChatMessage): ChatMessage {
@@ -859,10 +962,14 @@ export class ThreadStore {
       taskId: string;
       changes: readonly FileChangeRecord[];
       commands: readonly CommandAuditEntry[];
+      /** False records isolated progress without projecting it into parent state. */
+      mergeIntoParent?: boolean;
     },
   ): EventRecord {
     return this.appendEvent(threadId, {
-      type: "subagent.artifact",
+      type: input.mergeIntoParent === false
+        ? "subagent.progress"
+        : "subagent.artifact",
       turnId,
       phase: "completed",
       payload: {
@@ -873,6 +980,7 @@ export class ThreadStore {
           ...command,
           args: [...command.args],
         })),
+        mergeIntoParent: input.mergeIntoParent !== false,
       },
     });
   }
@@ -894,6 +1002,18 @@ export class ThreadStore {
           ? { report: JSON.parse(JSON.stringify(input.report)) as SubagentTaskReport }
           : {}),
         ...(input.error ? { error: input.error } : {}),
+        ...(input.environment ? { environment: { ...input.environment } } : {}),
+        ...(input.resultArtifact
+          ? {
+              resultArtifact: {
+                ...input.resultArtifact,
+                ...(input.resultArtifact.parentArtifactIds
+                  ? { parentArtifactIds: [...input.resultArtifact.parentArtifactIds] }
+                  : {}),
+                changedFiles: [...input.resultArtifact.changedFiles],
+              },
+            }
+          : {}),
       },
     });
   }
@@ -930,39 +1050,70 @@ export class ThreadStore {
             }
           : {}),
         ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+        ...(isExecutionEnvironmentSnapshot(payload.environment)
+          ? { environment: { ...payload.environment } }
+          : {}),
+        ...(isResultArtifact(payload.resultArtifact)
+          ? {
+              resultArtifact: {
+                ...payload.resultArtifact,
+                ...(payload.resultArtifact.parentArtifactIds
+                  ? { parentArtifactIds: [...payload.resultArtifact.parentArtifactIds] }
+                  : {}),
+                changedFiles: [...payload.resultArtifact.changedFiles],
+              },
+            }
+          : {}),
         timestamp: event.timestamp,
       };
     }
     return undefined;
   }
 
-  /** Rebuild standalone child bindings that still need a parent observation. */
-  unobservedStandaloneAssignments(
+  /** Return the latest durable handoff disposition for an immutable result ID. */
+  latestSubagentHandoffArtifact(
     threadId: string,
-  ): readonly DurableStandaloneAssignment[] {
-    const assignments = new Map<string, DurableStandaloneAssignment>();
+    artifactId: string,
+  ): ResultArtifact | undefined {
+    const events = this.journal(threadId).read();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "subagent.handoff_completed") continue;
+      const payload = asPayloadRecord(event.payload);
+      if (payload?.artifactId !== undefined && payload.artifactId !== artifactId) continue;
+      if (!isResultArtifact(payload?.artifact)) continue;
+      if (payload.artifact.id !== artifactId) continue;
+      return {
+        ...payload.artifact,
+        ...(payload.artifact.parentArtifactIds
+          ? { parentArtifactIds: [...payload.artifact.parentArtifactIds] }
+          : {}),
+        changedFiles: [...payload.artifact.changedFiles],
+      };
+    }
+    return undefined;
+  }
+
+  /** Rebuild every durable child binding, including already observed history. */
+  subagentAssignments(
+    threadId: string,
+  ): readonly DurableSubagentAssignment[] {
+    const assignments = new Map<string, DurableSubagentAssignment>();
     for (const event of this.journal(threadId).read()) {
       if (event.type !== "tool.result" || event.phase !== "completed") continue;
       const payload = asPayloadRecord(event.payload);
       const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
       if (payload?.tool !== "manage_subagents" || !lifecycle) continue;
       if (lifecycle.action === "activate") {
-        const rawAssignment = asPayloadRecord(payload.subagentAssignment);
-        if (rawAssignment?.kind === "dag") {
-          // DAG bindings are reconciled from the authoritative task-graph
-          // transition and must never enter standalone recovery.
-          continue;
-        }
-        const assignment = standaloneAssignment(payload.subagentAssignment);
+        const assignment = subagentAssignment(payload.subagentAssignment);
         if (!assignment || assignment.agentId !== lifecycle.agentId || !event.turnId) {
-          // Legacy DAG activations have no standalone descriptor and remain
-          // governed by task-graph recovery.
+          // Legacy DAG activations may not contain a recoverable descriptor.
           if (payload.subagentAssignment === undefined) continue;
-          throw new Error(`Invalid standalone child activation in event ${event.eventId}`);
+          throw new Error(`Invalid child activation in event ${event.eventId}`);
         }
         const existing = assignments.get(assignment.agentId);
         if (existing) {
-          throw new Error(`Duplicate standalone child activation for ${assignment.agentId}`);
+          throw new Error(`Duplicate child activation for ${assignment.agentId}`);
         }
         assignments.set(assignment.agentId, {
           assignment,
@@ -972,22 +1123,20 @@ export class ThreadStore {
         continue;
       }
       if (lifecycle.action === "observe") {
-        const assignment = standaloneAssignment(payload.subagentAssignment);
+        const assignment = subagentAssignment(payload.subagentAssignment);
         if (!assignment) continue;
         const existing = assignments.get(assignment.agentId);
         if (
           !existing ||
           assignment.agentId !== lifecycle.agentId ||
-          assignment.taskId !== existing.assignment.taskId ||
-          assignment.createdAt !== existing.assignment.createdAt
+          !sameSubagentAssignmentIdentity(existing.assignment, assignment)
         ) {
-          throw new Error(`Invalid standalone child observation in event ${event.eventId}`);
+          throw new Error(`Invalid child observation in event ${event.eventId}`);
         }
         assignments.set(assignment.agentId, { ...existing, observed: true });
       }
     }
     return [...assignments.values()]
-      .filter((entry) => !entry.observed)
       .map((entry) => ({
         ...entry,
         assignment: {
@@ -995,6 +1144,24 @@ export class ThreadStore {
           completionChecks: [...entry.assignment.completionChecks],
         },
       }));
+  }
+
+  /** Durable child bindings that still require collection by the parent. */
+  unobservedSubagentAssignments(
+    threadId: string,
+  ): readonly DurableSubagentAssignment[] {
+    return this.subagentAssignments(threadId).filter((entry) => !entry.observed);
+  }
+
+  /** Compatibility view used by mode guards and legacy callers. */
+  unobservedStandaloneAssignments(
+    threadId: string,
+  ): readonly DurableStandaloneAssignment[] {
+    return this.unobservedSubagentAssignments(threadId)
+      .filter(
+        (entry): entry is DurableStandaloneAssignment =>
+          entry.assignment.kind === "standalone",
+      );
   }
 
   hasCommittedSubagentStop(threadId: string, agentId: string): boolean {
@@ -1008,6 +1175,12 @@ export class ThreadStore {
         lifecycle.agentId === agentId
       );
     });
+  }
+
+  isBoundSubagentThread(threadId: string): boolean {
+    return this.journal(threadId).read().some(
+      (event) => event.type === "subagent.session_bound" && event.phase === "completed",
+    );
   }
 
   /** Recover the approved proposal whose execution was interrupted in this Turn. */

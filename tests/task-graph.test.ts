@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
+  ResultArtifact,
   TaskGraph,
   ToolContext,
   ToolExecutionResult,
 } from "../src/core/types.js";
+import { toResultArtifactRef } from "../src/subagents/coordinator.js";
 import { createStorage } from "../src/storage/database.js";
 import {
   MAX_TASK_GRAPH_DEFINITION_CHARS,
@@ -297,6 +299,135 @@ describe("single-agent task DAG", () => {
       }, { turnId: "turn_main_takeover" }),
       /assigned to a subagent/u,
     );
+  });
+
+  it("stores only a bounded result artifact reference in the DAG", () => {
+    const created = applyTaskGraphOperation(undefined, {
+      action: "create",
+      goal: "Keep private child manifests out of durable task state",
+      tasks: [task("inspect")],
+    }, {
+      turnId: "turn_artifact_ref_create",
+      now: () => new Date("2026-08-27T03:00:00.000Z"),
+    });
+    const claimed = applySubagentTaskOperation(created, {
+      action: "claim",
+      taskId: "inspect",
+      agentId: "agent_inspector",
+    }, {
+      turnId: "turn_artifact_ref_claim",
+      now: () => new Date("2026-08-27T03:00:01.000Z"),
+    });
+    const fullArtifact: ResultArtifact = {
+      id: "artifact_00000000-0000-4000-8000-000000000001",
+      agentId: "agent_inspector",
+      taskId: "inspect",
+      environmentId: "environment_00000000-0000-4000-8000-000000000001",
+      environmentKind: "worktree",
+      status: "ready",
+      logicalWorkspaceRoot: "C:\\private\\logical-workspace",
+      baseCommit: "a".repeat(40),
+      resultCommit: "b".repeat(40),
+      snapshotRef: "refs/easy-code/environments/example/result",
+      parentArtifactIds: [],
+      changedFiles: Array.from({ length: 2_500 }, (_value, index) =>
+        `private/generated/file-${index}.txt`),
+      createdAt: "2026-08-27T03:00:02.000Z",
+      updatedAt: "2026-08-27T03:00:03.000Z",
+    };
+    const reference = toResultArtifactRef(fullArtifact);
+    const completed = applySubagentTaskOperation(claimed, {
+      action: "complete",
+      taskId: "inspect",
+      agentId: "agent_inspector",
+      evidence: ["inspect focused validation passed"],
+      resultArtifact: reference,
+    }, {
+      turnId: "turn_artifact_ref_complete",
+      now: () => new Date("2026-08-27T03:00:04.000Z"),
+    });
+    const stored = completed.tasks[0]?.resultArtifact;
+
+    assert.equal(stored?.changedFileCount, 2_500);
+    assert.deepEqual(stored?.parentArtifactIds, fullArtifact.parentArtifactIds);
+    assert.equal("changedFiles" in (stored ?? {}), false);
+    assert.equal("logicalWorkspaceRoot" in (stored ?? {}), false);
+    assert.ok(JSON.stringify(completed).length < 10_000);
+    assert.equal(isTaskGraph(completed), true);
+
+    reference.parentArtifactIds.push(
+      "artifact_00000000-0000-4000-8000-000000000002",
+    );
+    assert.equal(stored?.parentArtifactIds.length, 0, "the DAG must own a defensive copy");
+  });
+
+  it("requires a child artifact to name the exact dependency artifact lineage", () => {
+    let graph = applyTaskGraphOperation(undefined, {
+      action: "create",
+      goal: "Carry verified artifacts through a dependency chain",
+      tasks: [task("base"), task("join", ["base"])],
+    }, { turnId: "turn_lineage_create" });
+    graph = applySubagentTaskOperation(graph, {
+      action: "claim",
+      taskId: "base",
+      agentId: "agent_base",
+    }, { turnId: "turn_lineage_claim_base" });
+    const baseArtifact = toResultArtifactRef({
+      id: "artifact_00000000-0000-4000-8000-000000000101",
+      agentId: "agent_base",
+      taskId: "base",
+      environmentId: "environment_00000000-0000-4000-8000-000000000101",
+      environmentKind: "worktree",
+      status: "ready",
+      logicalWorkspaceRoot: path.resolve("workspace"),
+      resultCommit: "1".repeat(40),
+      parentArtifactIds: [],
+      changedFiles: ["base.ts"],
+      createdAt: "2026-08-28T12:00:00.000Z",
+      updatedAt: "2026-08-28T12:00:00.000Z",
+    });
+    graph = applySubagentTaskOperation(graph, {
+      action: "complete",
+      taskId: "base",
+      agentId: "agent_base",
+      evidence: ["base check passed"],
+      resultArtifact: baseArtifact,
+    }, { turnId: "turn_lineage_complete_base" });
+    graph = applySubagentTaskOperation(graph, {
+      action: "claim",
+      taskId: "join",
+      agentId: "agent_join",
+    }, { turnId: "turn_lineage_claim_join" });
+    const joinedArtifact = toResultArtifactRef({
+      id: "artifact_00000000-0000-4000-8000-000000000102",
+      agentId: "agent_join",
+      taskId: "join",
+      environmentId: "environment_00000000-0000-4000-8000-000000000102",
+      environmentKind: "worktree",
+      status: "ready",
+      logicalWorkspaceRoot: path.resolve("workspace"),
+      resultCommit: "2".repeat(40),
+      parentArtifactIds: [baseArtifact.id],
+      changedFiles: ["join.ts"],
+      createdAt: "2026-08-28T12:01:00.000Z",
+      updatedAt: "2026-08-28T12:01:00.000Z",
+    });
+
+    const completed = applySubagentTaskOperation(graph, {
+      action: "complete",
+      taskId: "join",
+      agentId: "agent_join",
+      evidence: ["join check passed"],
+      resultArtifact: joinedArtifact,
+    }, { turnId: "turn_lineage_complete_join" });
+    assert.deepEqual(completed.tasks[1]?.resultArtifact?.parentArtifactIds, [baseArtifact.id]);
+    assert.throws(() => applySubagentTaskOperation(graph, {
+      action: "complete",
+      taskId: "join",
+      agentId: "agent_join",
+      evidence: ["join check passed"],
+      resultArtifact: { ...joinedArtifact, parentArtifactIds: [] },
+    }, { turnId: "turn_lineage_invalid_join" }), /parent lineage/u);
   });
 
   it("rejects cycles, duplicate IDs, unsafe text, and replacement of an active graph", async () => {

@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-Technical documentation: [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
+Technical design (architecture, permissions, memory, DAG, child sessions, Worktrees, and Handoff): [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
 
 EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
 
@@ -19,9 +19,9 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 - Automatically manage short-term context and long-term project memory.
 - Reduce model-request size with direct Auto answers and tool-relevant instructions.
 - Inspect cumulative provider-reported Token usage with `/usage`.
-- Save and resume conversations, plans, task progress, and child-agent results.
-- Optionally organize complex work as a task DAG.
-- Optionally delegate independent work to isolated child agents.
+- Save and resume conversations, plans, task progress, child sessions, and managed execution environments.
+- Optionally organize complex work as a task DAG with dependency result lineage.
+- Delegate work to children in shared roots or per-child Git Worktrees, then explicitly hand off an isolated result locally or to a branch.
 - Load project instructions from `EASYCODE.md` files.
 - Work on Windows, macOS, and Linux.
 
@@ -30,6 +30,7 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 - Node.js `>=16.20.0` and npm.
 - Windows, macOS, or Linux.
 - An API key for at least one supported provider.
+- Git is optional for shared child agents, but required for explicit Worktree isolation and branch Handoff.
 - Optional: VS Code `>=1.93` for native image paste in the integrated terminal.
 
 A maintained Node.js LTS release is recommended.
@@ -245,9 +246,44 @@ Optional base limits can be configured in user configuration or `.easycode/confi
 [limits]
 max_steps = 40
 max_context_chars = 400000
+
+[subagents]
+isolation = "auto" # auto, shared, or worktree
+
+[worktrees]
+base_mode = "current-snapshot" # fresh, head, or current-snapshot
+max_managed = 15
+# root = "/absolute/path/outside-the-repository" # trusted user config only
 ```
 
 `medium` uses twice these base values and `high` uses four times these base values.
+`auto` uses a managed Git Worktree when the workspace is inside a Git repository
+and falls back to the shared workspace only when no repository is available. If
+Worktree provisioning is selected but fails validation, reaches its configured
+limit, or cannot create a checkout, the child fails closed instead of silently
+downgrading to shared writes.
+
+The canonical custom storage setting is `root` under `[worktrees]`. It is accepted
+only from trusted user configuration, must be outside the entire Git repository,
+and defaults to the `worktrees` subdirectory of EASY CODE's application data
+directory. A project
+`.easycode/config.toml` cannot redirect it. Equivalent environment variables are
+`EASY_CODE_SUBAGENT_ISOLATION`, `EASY_CODE_WORKTREE_BASE_MODE`,
+`EASY_CODE_WORKTREE_ROOT`, and `EASY_CODE_MAX_MANAGED_WORKTREES`.
+
+The Worktree baseline is a point-in-time input selected when a child starts:
+
+| `base_mode` | Child starting point |
+| --- | --- |
+| `fresh` | The already configured `origin/HEAD`, falling back to local `HEAD`; EASY CODE does not fetch. |
+| `head` | The current local `HEAD`, without uncommitted changes from the containing repository. |
+| `current-snapshot` | Local `HEAD` plus staged, unstaged, and non-ignored untracked state across the containing repository, captured when the child is created. |
+
+`current-snapshot` is the default, so a clean containing repository is not
+required. In a monorepo, the snapshot covers the repository, while the child's
+file tools remain confined to the selected logical workspace mapping. It is not
+live synchronization: later edits in the parent checkout do not appear in an
+existing child and may cause a conflict when its result is handed off.
 
 ## Coding and workspace features
 
@@ -313,6 +349,34 @@ Use `/tasks` to view the current task list:
 
 The main agent may also delegate independent work to child agents. Child agents are optional and can be used with or without a task DAG. They inherit the selected provider, model, and thinking effort, work in Code mode, and cannot create more child agents.
 
+Isolation is selected for each child as `auto`, `shared`, or `worktree`. The original project remains the logical workspace for rules and memory, while a Worktree child executes in its own physical checkout. Each assignment binds the parent Thread, child Thread, task, and execution environment so Resume cannot silently attach the child to another checkout.
+
+Per-child isolation and Handoff are main-agent capabilities rather than slash commands. You can request them in ordinary language:
+
+```text
+Use Worktree-isolated child agents for the independent tasks.
+Hand off the completed result to my local workspace.
+Preserve the result on branch easy-code/login-feature.
+```
+
+Worktree results stay outside the current checkout until the parent explicitly hands them off:
+
+| Result path | Behavior |
+| --- | --- |
+| Local Handoff | Preflight the complete child/DAG delta, then apply it to the current working tree without staging or committing. Unrelated user edits remain; overlapping edits produce a conflict instead of being overwritten. |
+| Branch Handoff | Create or reuse a local branch at the immutable result commit without checking it out or pushing it. An existing branch at another commit is a conflict. |
+| Shared child | Changes already occur in the current workspace; there is no isolated commit for Branch Handoff. |
+
+With `current-snapshot`, the parent's original dirty state is part of the child's
+baseline. Local Handoff applies only the child/DAG delta from that baseline, so it
+does not reapply the user's original changes.
+
+DAG children pass immutable result references only to their direct successors.
+A join combines dependency commits in a newly provisioned managed Worktree;
+conflicts stop node completion for review. A completed DAG can hand off its final
+result only when it has one terminal leaf owned by the selected child. Multiple
+terminal branches must first converge through an explicit join task.
+
 Use these commands to inspect them:
 
 ```text
@@ -321,7 +385,18 @@ Use these commands to inspect them:
 /status
 ```
 
-The active child-agent limit is 2 for `none`/`low`, 4 for `medium`, and 8 for `high`. While child work is still running or waiting to be collected, Auto stays in Code mode so the parent can finish collecting the results.
+`/agents` is read-only. It shows each child's task and agent ID, resumable child
+Thread ID, requested and effective isolation, environment state, and
+result/Handoff state.
+
+The active child-agent limit is 2 for `none`/`low`, 4 for `medium`, and 8 for `high`. A separate `max_managed` Worktree limit prevents unbounded retained checkouts and is not multiplied by thinking effort. Cleanup targets only manager-owned paths. A successfully delivered clean checkout is eligible for automatic removal; dirty, busy, retained, or conflicted environments remain and continue counting toward the limit. While child work is still running or waiting to be collected, Auto stays in Code mode so the parent can finish collecting the results.
+
+If an ignored runtime file is required inside a new managed checkout, the root of
+the containing Git repository may provide `.worktreeinclude` with safe patterns
+relative to that repository root. Matching ignored files are copied into newly
+provisioned Worktrees for every base policy. They are not guaranteed to be
+present after checkpoint reconstruction, so the project must be able to provide
+them again. Never include credentials, private keys, or other secrets.
 
 ## Context and memory
 
@@ -376,7 +451,7 @@ Resume while EASY CODE is already running:
 /resume <thread-id>
 ```
 
-Resume restores as much saved state as possible, including the selected model and mode, conversation, accepted plan, task progress, file/command history, context summary, and completed child-agent results. Interrupted commands or model calls are not automatically repeated.
+Resume restores as much saved state as possible, including the selected model and mode, conversation, accepted plan, task progress, file/command history, context summary, completed child results, and valid active child Thread/environment bindings. A missing managed checkout directory can be reconstructed only after key identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata does not validate for the existing child, fails closed rather than provisioning a different checkout. Durably completed child work is not rerun; interrupted commands or model calls are not automatically repeated.
 
 Use `/new` to start a separate thread.
 
@@ -444,6 +519,7 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 - `--yes` should be used only in trusted workspaces or isolated environments.
 - `--yes` does not bypass Plan mode restrictions or commands that are always denied.
 - A permitted command runs with your current operating-system account and may access resources outside the workspace.
+- A Git Worktree isolates working state, not the operating-system process; it is not a security sandbox.
 - Never place API keys in source files, chat prompts, `EASYCODE.md`, or Git history.
 
 ## Troubleshooting

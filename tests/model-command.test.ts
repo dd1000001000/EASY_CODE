@@ -11,7 +11,12 @@ import type {
   ThinkingEffortSelectorChoice,
 } from "../src/cli/model-selector.js";
 import { Terminal } from "../src/cli/terminal.js";
-import type { ProviderName, SessionState, ThinkingEffort } from "../src/core/types.js";
+import type {
+  ProviderName,
+  SessionState,
+  SubagentAssignmentSnapshot,
+  ThinkingEffort,
+} from "../src/core/types.js";
 import { createStorage } from "../src/storage/index.js";
 import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { ThreadStore } from "../src/threads/index.js";
@@ -780,6 +785,118 @@ describe("thinking commands", () => {
 });
 
 describe("thread leases", () => {
+  it("restores paused children when a /new lease transition fails", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const internals = fixture.app as unknown as {
+      state: SessionState;
+      threadStore: ThreadStore & {
+        releaseThreadLease: (lease: { threadId: string }) => void;
+      };
+      subagentCoordinator: unknown;
+    };
+    const parentThreadId = internals.state.threadId;
+    const assignment: Extract<
+      SubagentAssignmentSnapshot,
+      { kind: "standalone" }
+    > = {
+      kind: "standalone",
+      agentId: "subagent_00000000-0000-4000-8000-000000000401",
+      childThreadId: "thread_00000000-0000-4000-8000-000000000401",
+      environmentId: "environment_00000000-0000-4000-8000-000000000401",
+      taskId: "restore_after_failed_new",
+      taskTitle: "Restore after failed new thread",
+      taskDescription: "Continue the exact child after the parent switch fails.",
+      completionChecks: ["The child is restored in the original parent"],
+      provider: "qwen",
+      model: internals.state.model,
+      thinkingEffort: internals.state.thinkingEffort,
+      requestedIsolation: "shared",
+      createdAt: "2026-08-28T15:00:00.000Z",
+    };
+    internals.threadStore.appendEvent(parentThreadId, {
+      type: "tool.result",
+      turnId: "turn_restore_after_failed_new",
+      phase: "completed",
+      payload: {
+        callId: "call_restore_after_failed_new",
+        tool: "manage_subagents",
+        message: {
+          role: "tool",
+          tool_call_id: "call_restore_after_failed_new",
+          name: "manage_subagents",
+          content: '{"ok":true}',
+        },
+        subagentAssignment: assignment,
+        subagentLifecycle: { action: "activate", agentId: assignment.agentId },
+      },
+    });
+
+    const originalCoordinator = internals.subagentCoordinator;
+    const originalRelease = internals.threadStore.releaseThreadLease.bind(
+      internals.threadStore,
+    );
+    let pauseCalls = 0;
+    let discardCalls = 0;
+    const restored: string[] = [];
+    const activated: string[][] = [];
+    const fakeCoordinator = {
+      pause: async (threadId: string) => {
+        assert.equal(threadId, parentThreadId);
+        pauseCalls += 1;
+      },
+      discardPausedJobs: (threadId: string) => {
+        assert.equal(threadId, parentThreadId);
+        discardCalls += 1;
+        return 1;
+      },
+      hasAgent: () => false,
+      restore: (input: { assignment: SubagentAssignmentSnapshot }) => {
+        restored.push(input.assignment.agentId);
+      },
+      restoreStandalone: () => {
+        throw new Error("V2 binding should use restore");
+      },
+      rollbackRestored: () => undefined,
+      activateRestored: (agentIds: readonly string[]) => {
+        activated.push([...agentIds]);
+      },
+      hasOutstanding: () => false,
+    };
+    Object.defineProperty(fixture.app, "subagentCoordinator", {
+      value: fakeCoordinator,
+      configurable: true,
+      writable: true,
+    });
+    let failedPreviousRelease = false;
+    internals.threadStore.releaseThreadLease = (lease) => {
+      if (lease.threadId === parentThreadId && !failedPreviousRelease) {
+        failedPreviousRelease = true;
+        throw new Error("injected previous lease release failure");
+      }
+      originalRelease(lease as never);
+    };
+
+    try {
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/new"),
+        /injected previous lease release failure/u,
+      );
+      assert.equal(internals.state.threadId, parentThreadId);
+      assert.equal(pauseCalls, 1);
+      assert.equal(discardCalls, 1);
+      assert.deepEqual(restored, [assignment.agentId]);
+      assert.deepEqual(activated, [[assignment.agentId]]);
+    } finally {
+      internals.threadStore.releaseThreadLease = originalRelease as never;
+      Object.defineProperty(fixture.app, "subagentCoordinator", {
+        value: originalCoordinator,
+        configurable: true,
+        writable: true,
+      });
+      fixture.close();
+    }
+  });
+
   it("transfers ownership for /new and /resume and releases it on close", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     const activeThread = (): string =>

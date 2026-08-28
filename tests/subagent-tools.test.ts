@@ -7,6 +7,7 @@ import type {
 } from "../src/core/types.js";
 import type {
   FollowUpSubagentRequest,
+  HandoffSubagentRequest,
   SpawnSubagentRequest,
   StopSubagentRequest,
   SubagentControl,
@@ -38,7 +39,8 @@ type ControlCall =
   | SubagentStatusRequest
   | WaitForSubagentsRequest
   | FollowUpSubagentRequest
-  | StopSubagentRequest;
+  | StopSubagentRequest
+  | HandoffSubagentRequest;
 
 class RecordingControl implements SubagentControl {
   readonly calls: ControlCall[] = [];
@@ -67,6 +69,10 @@ class RecordingControl implements SubagentControl {
   }
 
   stop(request: StopSubagentRequest): Promise<ToolExecutionResult> {
+    return this.record(request);
+  }
+
+  handoff(request: HandoffSubagentRequest): Promise<ToolExecutionResult> {
     return this.record(request);
   }
 
@@ -123,6 +129,12 @@ describe("subagent control tools", () => {
       agentId: AGENT_TWO,
       reason: "The parent no longer needs this task.",
     }, context())).ok, true);
+    assert.equal((await tool.execute({
+      action: "handoff",
+      agentId: AGENT_ONE,
+      destination: "branch",
+      branchName: "easy-code/implementation",
+    }, context())).ok, true);
 
     assert.deepEqual(control.calls.map((call) => call.action), [
       "spawn",
@@ -130,11 +142,12 @@ describe("subagent control tools", () => {
       "wait",
       "follow_up",
       "stop",
+      "handoff",
     ]);
     const wait = control.calls[2];
     assert.equal(wait?.action, "wait");
     if (wait?.action === "wait") assert.equal(wait.timeoutMs, 30_000);
-    assert.equal(control.authorizationChecks, 5);
+    assert.equal(control.authorizationChecks, 6);
     assert.equal(tool.definition.function.strict, true);
     assert.equal(tool.definition.function.parameters.additionalProperties, false);
   });

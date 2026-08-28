@@ -6,12 +6,16 @@ import type { ToolContext } from "../src/core/types.js";
 import {
   CreateFileTool,
   CompactContextTool,
+  DeleteFileTool,
   ReadFileTool,
   ReadImageTool,
   UpdateFileTool,
   createDefaultTools,
 } from "../src/tools/index.js";
-import { WorkspaceManager } from "../src/workspace/index.js";
+import {
+  WorkspaceManager,
+  captureWorkspaceSnapshot,
+} from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 
 async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
@@ -233,6 +237,56 @@ describe("workspace file tools", () => {
       const traversal = await create.execute({ path: "../escape.txt", content: "no" }, context(root));
       assert.equal(planResult.ok, false);
       assert.equal(traversal.ok, false);
+    });
+  });
+
+  it("rejects Git control files and nested .git paths case-insensitively", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, ".git"), "gitdir: ../runtime-owned\n", "utf8");
+      const read = new ReadFileTool(manager);
+      const create = new CreateFileTool(manager);
+      const update = new UpdateFileTool(manager);
+      const remove = new DeleteFileTool(manager);
+
+      const results = await Promise.all([
+        read.execute({ path: ".git" }, context(root)),
+        read.execute({ path: ".GIT" }, context(root)),
+        create.execute(
+          { path: "nested/.GiT/config", content: "[core]\n" },
+          context(root),
+        ),
+        update.execute(
+          {
+            path: "nested/.gIt/config",
+            expectedHash: "0".repeat(64),
+            edits: [{ oldText: "a", newText: "b" }],
+          },
+          context(root),
+        ),
+        remove.execute(
+          { path: "nested/.GIT/config", expectedHash: "0".repeat(64) },
+          context(root),
+        ),
+      ]);
+
+      for (const result of results) {
+        assert.equal(result.ok, false);
+        assert.match(result.error ?? "", /Git control paths are reserved/iu);
+      }
+      assert.equal(await readFile(path.join(root, ".git"), "utf8"), "gitdir: ../runtime-owned\n");
+    });
+  });
+
+  it("ignores a linked-worktree-shaped .git control file in snapshots", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, ".git"), "gitdir: ../.git/worktrees/child\n", "utf8");
+      await writeFile(path.join(root, "visible.txt"), "workspace content\n", "utf8");
+
+      const snapshot = await captureWorkspaceSnapshot(manager.pathGuard);
+
+      assert.equal(snapshot.truncated, false);
+      assert.equal(snapshot.files.has(".git"), false);
+      assert.deepEqual([...snapshot.files.keys()], ["visible.txt"]);
     });
   });
 

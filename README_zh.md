@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-技术文档：[简体中文](./docs/TECHNICAL_DESIGN_ZH.md) | [English](./docs/TECHNICAL_DESIGN.md)
+技术设计（架构、权限、记忆、DAG、子 Agent 会话、Worktree 与 Handoff）：[简体中文](./docs/TECHNICAL_DESIGN_ZH.md) | [English](./docs/TECHNICAL_DESIGN.md)
 
 EASY CODE 是一个支持 Alibaba Qwen、DeepSeek 和智谱 GLM 的本地 CLI 编程 Agent。在项目目录中启动它，描述你想要的结果，它就可以查看文件、修改代码、运行命令、验证变更、管理上下文，并在之后恢复未完成的工作。
 
@@ -19,9 +19,9 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 - 自动管理短期上下文和长期项目记忆。
 - 通过 Auto 直接回答和按工具精简指令，减少模型请求内容。
 - 使用 `/usage` 查看 Provider 累计报告的 Token 用量。
-- 保存并恢复对话、计划、任务进度和子 Agent 结果。
-- 根据任务复杂度选择是否建立任务 DAG。
-- 根据需要把独立工作交给隔离的子 Agent。
+- 保存并恢复对话、计划、任务进度、子 Agent 会话和托管执行环境。
+- 根据任务复杂度选择是否建立带依赖结果链的任务 DAG。
+- 把工作交给共享根目录或独立 Git Worktree 中的子 Agent，再显式 Handoff 到本地或分支。
 - 从 `EASYCODE.md` 读取项目规则。
 - 支持 Windows、macOS 和 Linux。
 
@@ -30,6 +30,7 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 - Node.js `>=16.20.0` 和 npm。
 - Windows、macOS 或 Linux。
 - 至少一个受支持 Provider 的 API Key。
+- 共享子 Agent 不强制依赖 Git；显式 Worktree 隔离和 Branch Handoff 需要 Git。
 - 可选：VS Code `>=1.93`，用于在集成终端中原生粘贴图片。
 
 推荐使用仍在维护期内的 Node.js LTS 版本。
@@ -245,9 +246,40 @@ Auto 的路由由当前所选模型控制，不依赖关键词匹配。如果请
 [limits]
 max_steps = 40
 max_context_chars = 400000
+
+[subagents]
+isolation = "auto" # auto、shared 或 worktree
+
+[worktrees]
+base_mode = "current-snapshot" # fresh、head 或 current-snapshot
+max_managed = 15
+# root = "/位于整个仓库之外的绝对路径" # 仅可信用户配置
 ```
 
 `medium` 使用基础值的 2 倍，`high` 使用基础值的 4 倍。
+工作区位于 Git 仓库中时，`auto` 使用托管 Git Worktree；只有找不到 Git
+仓库时才回退到共享工作区。如果已经选择 Worktree，但校验、数量限制或 checkout
+创建失败，子 Agent 会失败关闭，不会静默降级为共享写入。
+
+自定义存储路径的推荐配置名是 `[worktrees]` 下的 `root`。它只能来自可信用户
+配置，必须位于整个 Git 仓库之外，默认使用 EASY CODE 应用数据目录下的
+`worktrees` 子目录。项目中的
+`.easycode/config.toml` 不能重定向该路径。对应环境变量为
+`EASY_CODE_SUBAGENT_ISOLATION`、`EASY_CODE_WORKTREE_BASE_MODE`、
+`EASY_CODE_WORKTREE_ROOT` 和 `EASY_CODE_MAX_MANAGED_WORKTREES`。
+
+Worktree 基线是创建子 Agent 时确定的一次性输入：
+
+| `base_mode` | 子 Agent 起点 |
+| --- | --- |
+| `fresh` | 使用当前已经配置的 `origin/HEAD`，不存在时回退本地 `HEAD`；EASY CODE 不会 Fetch。 |
+| `head` | 使用本地 `HEAD`，不包含所属仓库尚未提交的修改。 |
+| `current-snapshot` | 使用本地 `HEAD`，并在创建时捕获整个所属仓库中的 staged、unstaged 和未忽略 untracked 状态。 |
+
+默认模式是 `current-snapshot`，因此所属 Git 仓库不需要保持干净。在 Monorepo
+中，快照覆盖整个仓库，但子 Agent 文件工具仍限制在所选逻辑工作区的映射范围内。
+它不是实时同步：父 checkout 后续发生的修改不会自动进入已经创建的子 Agent，并可能
+在 Handoff 时产生冲突。
 
 ## 编程与工作区功能
 
@@ -313,6 +345,32 @@ EASY CODE 支持 PNG、JPEG、WebP 和静态 GIF；一个 Thread 或一次模型
 
 主 Agent 也可以把独立工作交给子 Agent。子 Agent 同样是可选的，无论是否建立 DAG 都可以使用。子 Agent 会继承当前 Provider、模型和思考强度，使用 Code mode 完成任务，并且不能继续创建子 Agent。
 
+每个子 Agent 可以选择 `auto`、`shared` 或 `worktree` 隔离方式。原始项目仍是规则与记忆使用的逻辑工作区，Worktree 子 Agent 则在自己的物理 checkout 中执行。每次分配都会稳定绑定父 Thread、子 Thread、任务与执行环境，因此 Resume 不会把子 Agent 静默连接到另一个 checkout。
+
+按子 Agent 选择隔离方式和执行 Handoff 都是主 Agent 能力，不是斜杠命令。可以直接用自然语言要求：
+
+```text
+让独立任务使用 Worktree 隔离的子 Agent。
+把完成的结果 Handoff 到我的本地工作区。
+把结果保存在分支 easy-code/login-feature。
+```
+
+Worktree 结果在父 Agent 显式 Handoff 前不会进入当前 checkout：
+
+| 结果去向 | 行为 |
+| --- | --- |
+| Local Handoff | 先预检完整的子 Agent/DAG 增量，再应用到当前 Working Tree；不 Stage，也不 Commit。无关用户修改会保留，重叠修改会进入冲突状态而不是被覆盖。 |
+| Branch Handoff | 创建或复用指向不可变结果 Commit 的本地分支；不切换当前 checkout，也不 Push。已有分支指向其他 Commit 时会发生冲突。 |
+| Shared 子 Agent | 变更已经直接发生在当前工作区中，因此不存在可用于 Branch Handoff 的隔离 Commit。 |
+
+使用 `current-snapshot` 时，父工作区原有的脏状态属于子 Agent 基线。Local
+Handoff 只应用从该基线开始产生的子 Agent/DAG 增量，不会重复应用用户原有修改。
+
+DAG 子任务只把不可变结果引用传给自己的直接后继节点。Join 会在新建的托管
+Worktree 中合并依赖 Commit；发生冲突时停止节点完成并等待处理。完整 DAG 只有在
+任务图已完成、存在唯一终点叶节点，并且目标子 Agent 拥有该终点任务时才能 Handoff
+最终结果。多个终点分支必须先通过显式 Join 任务汇合。
+
 查看子 Agent：
 
 ```text
@@ -321,7 +379,15 @@ EASY CODE 支持 PNG、JPEG、WebP 和静态 GIF；一个 Thread 或一次模型
 /status
 ```
 
-`none`/`low` 最多同时运行 2 个子 Agent，`medium` 最多 4 个，`high` 最多 8 个。如果仍有子 Agent 正在运行或结果尚未收取，Auto 会保持在 Code mode，直到父 Agent 完成结果收集。
+`/agents` 是只读命令，会显示每个子 Agent 的任务与 Agent ID、可恢复的子 Thread
+ID、请求和实际使用的隔离方式、执行环境状态，以及结果 Artifact/Handoff 状态。
+
+`none`/`low` 最多同时运行 2 个子 Agent，`medium` 最多 4 个，`high` 最多 8 个。独立的 `max_managed` Worktree 上限不会随思考强度倍增，用于防止保留的 checkout 无限增长。清理只针对 Runtime 管理的路径；成功交付且干净的 checkout 可以自动移除，dirty、busy、retained 或 conflicted 环境会继续保留并占用名额。如果仍有子 Agent 正在运行或结果尚未收取，Auto 会保持在 Code mode，直到父 Agent 完成结果收集。
+
+如果新的托管 checkout 需要某个被 Git 忽略的运行文件，可以在所属 Git 仓库根目录
+创建 `.worktreeinclude`，其中只写相对于该仓库根目录的安全模式。无论选择哪种基线，
+匹配文件都会复制到新建的 Worktree，但 Checkpoint 重建后不保证仍然存在，因此项目
+必须能够再次提供这些文件。不要包含 API Key、私钥或其他秘密。
 
 ## 上下文与记忆
 
@@ -376,7 +442,7 @@ easy-code --resume <thread-id>
 /resume <thread-id>
 ```
 
-Resume 会尽可能恢复已经保存的状态，包括所选模型和模式、对话、已接受计划、任务进度、文件与命令历史、上下文摘要以及已经完成的子 Agent 结果。被中断的命令或模型调用不会被自动重新执行。
+Resume 会尽可能恢复已经保存的状态，包括所选模型和模式、对话、已接受计划、任务进度、文件与命令历史、上下文摘要、已完成的子 Agent 结果，以及仍然有效的活动子 Thread/执行环境绑定。关键身份、仓库和路径元数据校验通过，并且已保存的快照 Commit 仍可解析时，缺失的托管 checkout 目录才能重建。已有子 Agent 的环境记录缺失，或其中的身份、仓库、路径元数据校验不一致时会失败关闭，不会另建 checkout 后静默改绑。已经持久完成的子任务不会重跑；被中断的命令或模型调用也不会自动重复执行。
 
 使用 `/new` 新建一个独立 Thread。
 
@@ -444,6 +510,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 - 只在可信工作区或隔离环境中使用 `--yes`。
 - `--yes` 不会绕过 Plan mode 的限制，也不会放行始终禁止的命令。
 - 获准执行的命令使用当前操作系统账户权限，可能访问工作区之外的资源。
+- Git Worktree 只隔离工作状态，不隔离操作系统进程，因此不是安全 Sandbox。
 - 不要把 API Key 写入源码、聊天提示词、`EASYCODE.md` 或 Git 历史。
 
 ## 常见问题

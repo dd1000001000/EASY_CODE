@@ -172,6 +172,14 @@ export interface EasyCodeConfig {
   maxContextChars: number;
   maxOutputChars: number;
   commandTimeoutMs: number;
+  /** Default child checkout selection; individual spawn calls may narrow it. */
+  subagentIsolation: SubagentIsolationMode;
+  /** Git baseline used when a managed child has no DAG dependency artifact. */
+  worktreeBaseMode: WorktreeBaseMode;
+  /** Trusted manager-owned root, always resolved outside model control. */
+  worktreeRoot: string;
+  /** Retention target for completed managed child environments. */
+  maxManagedWorktrees: number;
   qwen: ProviderConfig;
   deepseek: ProviderConfig;
   glm: ProviderConfig;
@@ -327,6 +335,105 @@ export interface CommandAuditEntry {
   sourceTaskId?: string;
 }
 
+/** Model-selectable isolation preference for one child assignment. */
+export type SubagentIsolationMode = "auto" | "shared" | "worktree";
+
+/** Physical execution environment selected by Runtime after validating the repository. */
+export type ExecutionEnvironmentKind = "shared" | "worktree";
+
+export type ExecutionEnvironmentStatus =
+  | "provisioning"
+  | "ready"
+  | "running"
+  | "result_ready"
+  | "conflicted"
+  | "handed_off"
+  | "retained"
+  | "removed"
+  | "failed";
+
+export type WorktreeBaseMode = "fresh" | "head" | "current-snapshot";
+
+/**
+ * Durable binding between an agent session and its physical checkout. Paths are
+ * local-only runtime data and are never copied into model-facing task text.
+ */
+export interface ExecutionEnvironmentSnapshot {
+  id: string;
+  /** Durable V2 identity binding; absent only on legacy environment records. */
+  agentId?: string;
+  parentThreadId?: string;
+  childThreadId?: string;
+  taskId?: string;
+  kind: ExecutionEnvironmentKind;
+  status: ExecutionEnvironmentStatus;
+  logicalWorkspaceRoot: string;
+  executionRoot: string;
+  requestedIsolation: SubagentIsolationMode;
+  baseMode: WorktreeBaseMode;
+  repositoryRoot?: string;
+  worktreeRoot?: string;
+  baseCommit?: string;
+  baselineCommit?: string;
+  /** Root snapshot used to deliver the complete accumulated DAG result. */
+  handoffBaseCommit?: string;
+  resultCommit?: string;
+  snapshotRef?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ResultArtifactStatus =
+  | "ready"
+  | "integrated"
+  | "conflicted"
+  | "delivered"
+  | "retained";
+
+/** Runtime-created code result. The model cannot invent or edit these fields. */
+export interface ResultArtifact {
+  id: string;
+  agentId: string;
+  taskId: string;
+  environmentId: string;
+  environmentKind: ExecutionEnvironmentKind;
+  status: ResultArtifactStatus;
+  logicalWorkspaceRoot: string;
+  baseCommit?: string;
+  resultCommit?: string;
+  snapshotRef?: string;
+  /** Optional on legacy artifacts; Runtime fills the DAG reference with an empty list. */
+  parentArtifactIds?: string[];
+  changedFiles: string[];
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+  delivery?: "local" | "branch";
+  branchName?: string;
+}
+
+/**
+ * Bounded lineage metadata stored in the task DAG. The complete result artifact,
+ * including its potentially large changed-file manifest and local workspace path,
+ * remains in the private environment/thread stores.
+ */
+export interface ResultArtifactRef {
+  id: string;
+  agentId: string;
+  taskId: string;
+  environmentId: string;
+  environmentKind: ExecutionEnvironmentKind;
+  status: ResultArtifactStatus;
+  baseCommit?: string;
+  resultCommit?: string;
+  snapshotRef?: string;
+  parentArtifactIds: string[];
+  changedFileCount: number;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+}
+
 export type TaskNodeStatus = "pending" | "in_progress" | "completed" | "blocked";
 export type TaskGraphStatus = "active" | "completed" | "blocked";
 
@@ -343,6 +450,7 @@ export type SubagentTaskUpdateOperation =
       taskId: string;
       agentId: string;
       evidence: string[];
+      resultArtifact?: ResultArtifactRef;
     }
   | { action: "release"; taskId: string; agentId: string };
 
@@ -362,6 +470,10 @@ export type SubagentTaskReport =
 
 interface SubagentAssignmentSnapshotBase {
   agentId: string;
+  /** Present for durable child sessions; absent only on legacy journal events. */
+  childThreadId?: string;
+  /** Runtime-preallocated physical environment binding. */
+  environmentId?: string;
   taskId: string;
   taskTitle: string;
   taskDescription: string;
@@ -369,6 +481,8 @@ interface SubagentAssignmentSnapshotBase {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
+  /** Present for worktree-aware assignments; legacy assignments imply shared. */
+  requestedIsolation?: SubagentIsolationMode;
   createdAt: string;
 }
 
@@ -399,6 +513,8 @@ export interface TaskNode {
   assignedAgentId?: string;
   status: TaskNodeStatus;
   completionEvidence?: TaskCompletionEvidence[];
+  /** Runtime-issued result accepted into the DAG lineage. */
+  resultArtifact?: ResultArtifactRef;
   blocker?: string;
   startedAt?: string;
   completedAt?: string;

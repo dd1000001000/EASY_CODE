@@ -1,4 +1,4 @@
-import { Chalk } from "chalk";
+import { Chalk, type ChalkInstance } from "chalk";
 
 import {
   sanitizeCommandOutput,
@@ -26,6 +26,52 @@ function safeInline(value: string, maximum: number): string {
 
 function isActive(status: SubagentStatus): boolean {
   return status === "running" || status === "stopping";
+}
+
+function environmentDetails(
+  agent: Readonly<SubagentView>,
+  palette: ChalkInstance,
+): string {
+  const effectiveIsolation = agent.environment?.kind ?? "pending";
+  const environmentStatus = agent.environment?.status ?? "pending";
+  return palette.gray(
+    `  thread ${safeInline(agent.childThreadId, 80)} · ` +
+    `isolation ${agent.requestedIsolation} → ${effectiveIsolation} · ` +
+    `environment ${safeInline(agent.environmentId, 80)} (${environmentStatus})`,
+  );
+}
+
+function resultDetails(
+  agent: Readonly<SubagentView>,
+  palette: ChalkInstance,
+): string {
+  const artifact = agent.resultArtifact;
+  if (!artifact) {
+    const artifactStatus = isActive(agent.status) ? "pending" : "none";
+    const handoffStatus = agent.environment?.kind === "shared"
+      ? "shared workspace"
+      : isActive(agent.status)
+        ? "pending"
+        : "unavailable";
+    return palette.gray(
+      `  artifact ${artifactStatus} · handoff ${handoffStatus}`,
+    );
+  }
+
+  const changedFiles = artifact.changedFileCount === 1
+    ? "1 changed file"
+    : `${artifact.changedFileCount} changed files`;
+  const handoffStatus = artifact.delivery === "local"
+    ? "local"
+    : artifact.delivery === "branch"
+      ? `branch ${safeInline(artifact.branchName ?? "unknown", 80)}`
+      : artifact.environmentKind === "shared"
+        ? "shared workspace"
+        : "pending";
+  return palette.gray(
+    `  artifact ${safeInline(artifact.id, 80)} (${artifact.status}) · ` +
+    `${changedFiles} · handoff ${handoffStatus}`,
+  );
 }
 
 /** Render process-local child status without exposing private child context. */
@@ -60,22 +106,35 @@ export function renderSubagents(
       `${safeInline(agent.taskTitle, 160)} ` +
       `(${agent.status})`;
 
+    let statusLine: string;
     switch (agent.status) {
       case "running":
-        return palette.cyan(`▶ ${label}`);
+        statusLine = palette.cyan(`▶ ${label}`);
+        break;
       case "stopping":
-        return palette.yellow(`◌ ${label}`);
+        statusLine = palette.yellow(`◌ ${label}`);
+        break;
       case "completed":
-        return palette.green(`✓ ${label}`);
+        statusLine = palette.green(`✓ ${label}`);
+        break;
       case "blocked":
-        return palette.yellow(`⊠ ${label}`);
+        statusLine = palette.yellow(`⊠ ${label}`);
+        break;
       case "failed":
-        return palette.red(`✗ ${label}`);
+        statusLine = palette.red(`✗ ${label}`);
+        break;
       case "stopped":
-        return palette.gray(`■ ${label}`);
+        statusLine = palette.gray(`■ ${label}`);
+        break;
       case "interrupted":
-        return palette.red(`! ${label}`);
+        statusLine = palette.red(`! ${label}`);
+        break;
     }
+    return [
+      statusLine,
+      environmentDetails(agent, palette),
+      resultDetails(agent, palette),
+    ].join("\n");
   });
 
   return `\n${header}\n${lines.join("\n")}\n`;

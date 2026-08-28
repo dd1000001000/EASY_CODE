@@ -36,7 +36,12 @@ flowchart TB
     Provider --> APIs[Qwen、DeepSeek 与 GLM API]
     Capabilities --> Workspace[工作区文件边界]
     Capabilities --> Commands[受控命令执行]
-    Orchestration --> Children[隔离的子 Agent 上下文]
+    Orchestration --> Children[子 Agent 会话与 DAG 结果链]
+    Children --> Environments[共享根目录或托管 Git Worktree]
+    Environments --> Snapshots[经过校验的基线与 Checkpoint]
+    Children --> Results[不可变结果 Artifact]
+    Results --> Handoff[Local 或 Branch Handoff]
+    Handoff --> Workspace
 
     Runtime --> State[持久状态层]
     State --> Journal[追加式 Thread 事件日志]
@@ -52,7 +57,7 @@ flowchart TB
 | Agent Runtime | Turn 状态机、有效模式、能力选择、模型输出校验、工具循环和完成规则。 |
 | Provider 网关 | 统一消息、结构化操作、Thinking、图片、超时、重试和 Token 用量元数据。 |
 | 能力边界 | 把文件、命令、Plan、任务、记忆、上下文和子 Agent 操作表示为经过校验的结构化能力。 |
-| 编排层 | 可审核 Plan、依赖感知的任务执行、子任务分配、结果收集和完成证据。 |
+| 编排层 | 可审核 Plan、依赖感知的任务执行、子任务分配、可恢复执行环境、结果链与受控 Handoff。 |
 | 状态与检索层 | 权威 Thread 事件、可查询投影、Checkpoint、长期事实、语义索引和二进制 Artifact。 |
 
 这种分层避免 Provider 差异扩散到工作区安全，也避免模型输出直接修改本地状态。
@@ -120,7 +125,9 @@ Runtime 与基础系统契约高于当前用户请求。项目规则可以约束
 - 成功变更会产生持久审计记录和带行号的终端 Diff。
 - Resume 只会恢复仍与当前文件版本一致的历史读取授权。
 
-主 Agent 与子 Agent 共享一个工作区。可能改变工作区的操作通过同一个公平队列串行执行，同时版本检查仍负责发现 EASY CODE 之外的并发修改。这个队列只能协调本应用，不能锁住用户编辑器或其他进程。
+用户选择的项目始终是策略、记忆、项目规则和父 Agent 路径展示所使用的**逻辑工作区根目录**。每个子 Agent 还拥有一个**物理执行根目录**：共享模式下两者相同；Worktree 模式下，物理根目录是位于项目外、由 Runtime 管理的 linked checkout。文件能力以子 Agent 的物理根目录为边界；命令从该目录启动并继续受命令策略约束；持久身份仍归属于原始逻辑项目。
+
+共享模式的变更通过一个公平队列和版本校验降低冲突。相互独立的 Worktree 拥有各自的 Git 状态，不需要经过同一个全局变更队列，而是在显式结果边界汇合。两种机制都无法锁住用户编辑器或无关进程。
 
 ### 命令策略与审批
 
@@ -145,7 +152,15 @@ API Key 通过隐藏输入、操作系统凭据存储或显式环境变量读取
 
 Runtime 生成的错误、命令数据、任务与记忆通道以及其他已知控制面输出会进行长度限制、控制字符清理和常见敏感信息遮蔽。这属于纵深防御而不是完整 DLP：源码内容、文件 Diff、用户消息和最终模型文本并不经过统一 DLP，为完成任务而读取的源码仍可能被发送给当前选择的模型 Provider。
 
-私有状态始终保存在所选工作区之外，以降低误提交风险；可信用户配置只能把它迁移到另一个仍位于工作区之外的位置。EASY CODE 当前不会在应用层加密这些数据，其机密性仍依赖操作系统账户和文件权限。
+大部分应用私有状态保存在所选工作区之外，以降低误提交风险。Worktree 执行有意跨越两个存储边界：
+
+| 状态 | 位置与影响 |
+| --- | --- |
+| Thread 日志、SQLite、图片、环境描述记录与托管 checkout 目录 | 位于逻辑工作区之外的 EASY CODE 数据目录；托管 checkout 还必须位于整个 Git 仓库之外。 |
+| 可恢复的 Worktree 基线、Checkpoint 与结果 | 作为本地 Git Object 保存，并由 Runtime 管理的命名空间 Ref 锚定在仓库公共 Git 数据库中。它们不会移动或提交用户当前分支，但物理 checkout 删除后，其内容仍可能保留在本地 Git 存储中。这些 Ref 可由本地仓库访问者查看，并不是机密存储。 |
+| 已交付结果 | Local Handoff 修改用户 Working Tree，但不 Commit；Branch Handoff 新增本地分支，但不切换也不 Push。 |
+
+可信用户配置只能把应用数据迁移到所选逻辑工作区之外；托管 Worktree checkout 根目录采用更严格的规则，必须位于整个所属仓库之外。EASY CODE 当前不会在应用层加密这些记录，其机密性依赖操作系统账户和文件权限。秘密不应进入任务 Artifact 或 Worktree 快照输入。
 
 ## 5. 持久状态与 Resume
 
@@ -158,7 +173,7 @@ EASY CODE 采用事件优先的会话模型：
 
 事件日志覆盖用户与助手消息、结构化操作及结果、模式决策、Plan 审核、上下文压缩、任务迁移、子 Agent 生命周期、文件与命令审计，以及 Provider 返回的用量。稳定身份和顺序号使状态回放具有确定性，也使重复投影保持幂等。
 
-Resume 会重建最新有效状态，再修复可查询投影。已完成的工作会被保留，但未完成的命令、Provider 请求或旧子 Agent 进程不会自动重跑。中断操作会被明确表示，防止模型误认为它已经成功。
+Resume 会重建最新有效状态，再修复可查询投影。已完成工作会被保留，活动中的子任务也可以重新连接到绑定的子 Thread 与执行环境。未完成的命令或 Provider 请求不会被当成成功，也不会被盲目重放；只有已经持久记录的终态工作才被视为完成，未结束的子任务会从最近一个通过校验的 Checkpoint 继续。
 
 恢复还遵循以下规则：
 
@@ -166,7 +181,11 @@ Resume 会重建最新有效状态，再修复可查询投影。已完成的工�
 - Thread 租约阻止两个本地进程同时拥有同一会话。
 - 历史文件版本会与当前工作区重新校验。
 - 已批准 Plan 在尚未转化为持久 DAG 时，会在执行中断后返回审核状态。
-- 已持久化的子 Agent 结果和 Artifact 可以恢复；没有可信结果的任务占用会被释放。
+- 父 Thread、子 Thread、任务、Agent 与执行环境通过一个不可变绑定相互引用。子日志保存详细对话和工具进度，父日志只保存有界的生命周期与结果引用；Observation 事件必须匹配完整绑定才能关闭任务分配。
+- 恢复时会把持久执行环境描述视为不可信输入，重新校验仓库身份、Runtime 托管路径、逻辑/物理根目录映射和 Realpath 包含关系，然后才允许子 Agent 运行。
+- 子 Agent 恢复采用事务式批处理：先准备并校验完整绑定集合，全部通过后才统一激活；任意绑定无效都会回滚整批恢复。新建 Thread 或 Resume 到其他 Thread 前，会先暂停当前子 Agent 并创建 Checkpoint；所有权切换失败时，原 Thread 会根据持久绑定重新恢复这些子 Agent。
+- 关键环境身份、仓库和路径元数据校验通过，并且已保存的快照 Commit 仍可解析时，缺失的托管 Worktree 目录才能重建。已有现代子 Agent 的环境记录缺失，或其中的身份、仓库、路径元数据与绑定不一致时会失败关闭，不会静默创建另一个 checkout；旧记录只接受确定性的兼容恢复。
+- 已持久化的结果 Artifact 与 Handoff 状态可以恢复，同时不会把隔离变更再次投射到父工作区。
 - 已由事件确认的压缩边界、Plan 或任务迁移不能被过期 Checkpoint 回滚。
 
 ## 6. 上下文与记忆架构
@@ -232,9 +251,17 @@ Runtime 强制以下图约束：
 - 阻塞只用于真实外部条件，而不是非正式暂停。
 - 任务文本是不可信数据，不能授予额外权限。
 
-每个合法迁移都会持久化，因此 Resume 后可以重建任务编号、所有权、状态、阻塞原因和完成证据。
+每个合法迁移都会持久化，因此 Resume 后可以重建任务编号、所有权、状态、阻塞原因、完成证据和结果引用。
 
-## 8. 隔离子 Agent
+每个完成的 Worktree 子 Agent，无论是独立任务还是 DAG 任务，都会产生不可变的 Runtime 内部结果 Artifact，其中包含基线、结果 Checkpoint 和完整变更文件清单。DAG 与父 Agent 状态只保存有界引用，其中包含身份、血缘、Commit 和变更文件数量；DAG 引用还会按照依赖顺序记录当前可用的直接依赖 Artifact。
+
+Worktree 依赖 Artifact 通过结果 Commit 为下游 Worktree 提供输入。只要任意直接依赖具有 Runtime Artifact，所有直接依赖都必须具有 Artifact，并且完整集合不能混用 shared 与 Worktree 环境类型；如果所有依赖都没有 Artifact，下游状态只来自所选仓库基线。Shared 与主 Agent 结果已经落在逻辑工作区；之后创建的 Worktree 只有在基线策略会捕获这些修改时才包含它们，例如 `current-snapshot`。`head` 与 `fresh` 会有意排除这类未提交的共享结果。
+
+遇到 Join 节点时，依赖 Commit 会在一个根据共同逻辑 Handoff 基线新建的托管 Worktree 中合并。合并冲突会成为明确的执行环境状态并阻止节点完成，使任务可以被审慎重试，不会通过模型文字静默解决。这样既形成有界、可审计的 DAG 结果链，也不需要把完整 Patch 或子日志复制进父 Agent 活动上下文。
+
+DAG 必须已经完成并且只有一个终点叶节点，才能 Handoff 最终结果；目标子 Agent 还必须拥有这个终点任务。这些约束防止父 Agent 把多个不可比较分支中的任意一个，或无关子 Agent 的 Artifact，误当成完整图结果。多个终点分支必须先通过显式 Join 任务汇合。
+
+## 8. 子 Agent 会话、Worktree 与 Handoff
 
 子 Agent 是由主 Agent 控制的隔离 Worker，而不是共享同一个实时对话的平级 Agent。
 
@@ -246,7 +273,25 @@ Runtime 强制以下图约束：
   └─ 收集有界结果与逐项完成证据
 ```
 
-子 Agent 可以认领一个依赖已经满足的 DAG 节点；没有未完成 DAG 时，也可以接受带明确完成检查的独立任务。它继承当前 Provider、模型和思考强度，但不会继承父会话全文。
+执行环境具有明确的生命周期，而不是被当作一次性临时目录：
+
+```mermaid
+stateDiagram-v2
+    [*] --> Provisioning
+    Provisioning --> Ready
+    Provisioning --> Conflicted
+    Provisioning --> Failed
+    Ready --> Running
+    Running --> Running: 工具完成后 Checkpoint
+    Running --> Ready: 暂停 Checkpoint
+    Running --> ResultReady: 完成校验通过
+    Running --> Retained: 未接受的终态结果
+    ResultReady --> HandedOff: Local 或 Branch 交付
+    ResultReady --> Conflicted: Handoff 预检冲突
+    HandedOff --> Removed: 安全清理
+```
+
+子 Agent 可以认领一个依赖已经满足的 DAG 节点；没有未完成 DAG 时，也可以接受带明确完成检查的独立任务。它继承当前 Provider、模型和思考强度，但不会继承父会话全文。每次分配同时获得持久子 Thread 身份和持久执行环境身份，两者不能被静默改绑到其他任务或路径。
 
 子 Agent 能力被刻意收窄：
 
@@ -254,13 +299,55 @@ Runtime 强制以下图约束：
 - 不能管理或重写任务图。
 - 不能维护长期记忆。
 - 不能切换到 Plan 或改变父 Agent 工作流。
-- 生命周期和最终报告只绑定一个任务，并且必须返回结构化证据或真实阻塞原因。底层文件能力仍覆盖所选工作区，受普通工作区边界约束，而不是按任务隔离的文件系统 Sandbox。
+- 生命周期和最终报告只绑定一个任务，并且必须返回结构化证据或真实阻塞原因。
 
-父 Agent 可以查看、等待、追加指导或请求停止。所有子 Agent 结果必须在父 Agent 结束、建立新任务图或进入 Plan 前被收集。
+父 Agent 可以查看、等待、追加指导、请求停止，或显式 Handoff 已完成结果。所有子 Agent 结果必须在父 Agent 结束、建立新任务图或进入 Plan 前被收集。
 
-并发额度随思考强度变化：none/low 最多两个，medium 最多四个，high 最多八个。并行执行可以把搜索和中间日志隔离在子上下文中，共享工作区变更仍然串行执行以减少冲突。这提供的是上下文隔离和受控并行，而不是 Worktree 或进程级文件系统隔离。
+隔离方式按子 Agent 选择：
 
-子 Agent 的分配、生命周期迁移和最终结果会带身份归属并持久化。结果被收集后，文件与命令审计会携带子 Agent 身份合并进父 Thread；子 Agent 的私有对话、每一步模型调用和完整中间日志不会作为独立可恢复会话保存。Resume 恢复持久控制状态和已完成结果，但不会恢复旧进程中的 Worker。
+| 选择 | 行为 |
+| --- | --- |
+| `auto` | 逻辑工作区属于 Git 仓库时使用托管 Worktree，否则回退到共享模式。 |
+| `worktree` | 强制使用独立 linked checkout；Git 或有效仓库不可用时失败关闭。 |
+| `shared` | 有意直接使用逻辑工作区，适合只读为主的工作或非 Git 项目，但仍有共享写入冲突风险。 |
+
+托管 Worktree 是 detached checkout，使用以下三种一次性基线策略之一：
+
+| 基线策略 | 快照语义 |
+| --- | --- |
+| `fresh` | 使用当前已经配置的 `origin/HEAD`，不存在时回退本地 `HEAD`；创建过程不会 Fetch 远程状态。 |
+| `head` | 使用本地 `HEAD`，不包含所属仓库尚未提交的修改。 |
+| `current-snapshot` | 从本地 `HEAD` 开始，再捕获创建子 Agent 时整个所属仓库中的 staged、unstaged 和未忽略 untracked 状态。 |
+
+创建完成后，父 checkout 不会与子 Agent 实时同步。在 Monorepo 中，基线覆盖整个
+所属仓库，但子 Agent 文件能力仍限制在映射后的逻辑工作区中。所属 Git 仓库根目录
+可以通过 `.worktreeinclude` 把特定被忽略运行文件复制到每个新建 Worktree，其中模式
+相对于该仓库根目录；只接受有界的安全模式，并拒绝符号链接。这些被忽略文件属于本次
+checkout 输入，不保证进入可恢复 Checkpoint，因此重建后可能需要重新提供，也绝不能
+包含凭据或私钥。
+
+Runtime 使用本地内部 Commit 和命名空间 Ref 锚定基线、工具完成后及生命周期
+Checkpoint 与最终结果，它们位于仓库公共 Object Database 中。这些 Ref 是本地可查看
+的普通 Git 元数据，不构成机密边界。内部 Git 操作会禁用 Hook 与签名；创建过程不会
+Fetch 或 Push，也不会推进用户分支。Worktree 依赖 Artifact 会在 DAG 子任务启动前
+合入；Shared 结果没有隔离结果 Commit，只有所选仓库基线包含其工作区修改时才会进入
+新 Worktree。由于快照 Object 可能比物理 checkout 存在更久，创建子 Agent 前必须
+排除敏感材料。
+
+子日志持久保存自己的消息、工具活动、工作区观察和 Checkpoint；父日志保存任务分配、环境状态、有界进度、不可变结果引用与 Handoff 结果。Resume 时，Runtime 会先校验完整绑定批次，再统一激活；在可能时从已存 Checkpoint 恢复缺失的托管 checkout，并继续同一个子会话。已经持久记录的终态工作不会重跑，中断的 Provider 或命令操作也不会被假定为完成。
+
+父 Agent 可见的状态有明确上限：只公开子 Agent、Thread 与任务身份、隔离和生命周期状态、Artifact 血缘及变更文件数量，不公开物理 checkout 路径或完整文件清单。托管 Worktree 存储也必须位于整个父仓库之外；Runtime 自己执行的 Git 操作会禁用仓库 Hook，避免环境创建过程静默执行 checkout Hook。
+
+收集结果后，Worktree 变更仍留在用户 checkout 之外。Handoff 是独立的显式状态迁移：
+
+- **Local Handoff** 从逻辑 Handoff 基线到终点结果计算完整增量，先在当前 checkout 预检，再应用到 Working Tree，但不 Stage、也不 Commit。`current-snapshot` 捕获的父工作区脏状态属于基线，因此只交付子 Agent/DAG 新增的变化。无关当前修改会保留；重叠修改会把 Artifact 与环境标记为 conflicted，而不是被覆盖。重复交付同一结果时可以识别已经应用的状态。
+- **Branch Handoff** 创建或校验指向不可变结果 Commit 的本地分支，不切换 checkout，也不 Push。同一分支/结果重复执行是幂等的；已有分支指向其他 Commit 时进入冲突。该分支的 Tree 包含所选基线与子 Agent 结果。
+
+Handoff 请求、完成与失败都是持久状态迁移。Shared 子 Agent 已经直接修改逻辑工作区，因此没有可用于 Branch Handoff 的隔离结果 Commit。
+
+清理只允许作用于 Runtime 管理的路径。dirty、busy、retained 或未解决冲突的 Worktree 默认保留，并继续计入可配置的托管环境上限。成功 Handoff 后的干净 checkout 可以自动移除；删除物理 checkout 不会删除持久结果引用或底层 Git Object。达到上限后，新 Worktree 会失败关闭，直到保留环境被安全交付或另行处理。
+
+并发额度随思考强度变化：none/low 最多两个，medium 最多四个，high 最多八个。Worktree 降低子 Agent 之间的文件冲突；共享模式变更仍会串行并进行版本校验。Worktree **不是**操作系统级 Sandbox：命令仍使用启动 CLI 的用户身份运行，只要命令策略允许，就可能访问 checkout 之外的资源。
 
 ## 9. Provider 与多模态设计
 
@@ -305,11 +392,13 @@ Token 效率由多种策略共同实现：
 当前设计明确接受以下权衡：
 
 - 策略与审批不是 OS Sandbox。
-- 子 Agent 共享一个工作区；串行变更降低冲突，但不提供 Worktree 隔离。
+- 托管 Worktree 只隔离 Git 工作状态，不隔离进程、凭据、网络或其余文件系统。
+- 非 Git 项目和显式低开销委派仍需要共享模式，因此外部并发编辑仍可能让子 Agent 操作失效。
+- 隔离结果必须经过显式 Local 或 Branch Handoff；这个额外步骤用于避免静默覆盖用户 checkout。
 - Provider 响应目前按完整结果处理，因此加载动画用于反馈存活状态，最终文本不会逐 Token 流式输出。
 - 本地语义记忆优先考虑可安装性、隐私和可重建性，而不是超大规模检索。
 - 追加式历史提高恢复和审计能力，但长期 Thread 未来可能需要日志分段和归档。
 - 结构化完成证据提升可控性和可审核性，但不构成对模型声明的独立证明。
 - 敏感信息遮蔽可以降低常见意外泄漏，但不是完整 DLP 系统。
 
-现有架构为新增 Provider、新能力策略、可配置子 Agent 角色、更通用的 DAG 调度、流式传输、Worktree/容器隔离以及远程或团队状态后端保留了扩展点。新增能力仍应遵循同一原则：模型只提出状态迁移，可信本地代码负责校验并提交。
+现有架构为新增 Provider、新能力策略、可配置子 Agent 角色、更通用的 DAG 调度、流式传输、容器隔离以及远程或团队状态后端保留了扩展点。新增能力仍应遵循同一原则：模型只提出状态迁移，可信本地代码负责校验并提交。
