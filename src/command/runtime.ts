@@ -101,6 +101,10 @@ export class CommandRuntime {
           title: `Run ${resolved.program}`,
           description: `${policyDecision.reason}. cwd=${resolved.cwdRelative}; exact approval=${fingerprint}`,
           risk: policyDecision.risk,
+          // This value is produced by CommandResolver after PATH lookup and
+          // realpath canonicalization. The UI must never derive a reusable
+          // grant by parsing the redacted human-readable preview below.
+          commandPrefix: resolved.executablePath,
           commandPreview: commandPreview(resolved),
         });
       } catch {

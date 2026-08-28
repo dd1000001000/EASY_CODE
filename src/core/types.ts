@@ -264,9 +264,14 @@ export interface ApprovalRequest {
   title: string;
   description: string;
   risk: "read" | "workspace" | "install" | "system" | "external" | "destructive";
+  /** Runtime-resolved executable identity; UIs must not derive this from the preview. */
+  commandPrefix: string;
   commandPreview?: string;
 }
 
+export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
+
+/** Runtime boundary: the application resolves any interactive choice to allow/deny. */
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 
 export interface ToolContext {
@@ -571,6 +576,8 @@ export interface SessionState {
   filesRead: Map<string, FileVersion>;
   changes: FileChangeRecord[];
   commands: CommandAuditEntry[];
+  /** Runtime-normalized executable identities approved for this Thread only. */
+  commandApprovalPrefixes: string[];
   /** Optional model-created DAG for one complex objective; Runtime owns all transitions. */
   taskGraph?: TaskGraph;
   /** Runtime-owned proposal awaiting a user review or an already-approved execution turn. */

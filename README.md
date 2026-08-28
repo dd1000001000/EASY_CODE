@@ -310,6 +310,14 @@ Useful commands:
 
 EASY CODE stays inside the selected workspace for file operations. Commands still run with the permissions of the operating-system user who started the process.
 
+When a command needs approval, use `↑`/`↓` and Enter to choose:
+
+1. `Yes, allow execute one time` — approve only this command request.
+2. `Yes, don't ask me again with prefix [executable]` — remember the exact Runtime-resolved executable path for the current thread.
+3. `Reject` — do not run it.
+
+The second choice applies to later argument vectors for that executable, survives `/resume`, and can be used by child Agents bound to the same parent thread. It does not carry into `/new` or another thread, and child Agents cannot create new grants. Treat grants for interpreters and shells such as Python, Node.js, `cmd`, or PowerShell as broad authority: later scripts or shell text can perform very different operations. The grant identifies a path, not immutable executable bytes, so replacing the file at that path does not revoke it. `/permissions` shows the active executable grants. Permanent policy denials, Plan mode boundaries, and `--approval never` always take precedence.
+
 ## Images
 
 With the bundled VS Code extension installed, paste screenshots into the integrated terminal with the platform's native shortcut:
@@ -516,6 +524,7 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 
 - Review or commit important work before letting an agent make broad changes.
 - Use `/permissions` to inspect the active command policy.
+- Prefer one-time approval unless you trust every later argument passed to the displayed executable in this thread.
 - `--yes` should be used only in trusted workspaces or isolated environments.
 - `--yes` does not bypass Plan mode restrictions or commands that are always denied.
 - A permitted command runs with your current operating-system account and may access resources outside the workspace.

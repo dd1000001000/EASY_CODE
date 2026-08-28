@@ -306,6 +306,14 @@ EASY CODE 可以：
 
 文件操作会限制在所选工作区内。命令仍然使用启动 EASY CODE 的当前操作系统用户权限执行。
 
+命令需要批准时，可以使用 `↑`/`↓` 和 Enter 选择：
+
+1. `Yes, allow execute one time`：只批准当前这一次命令请求。
+2. `Yes, don't ask me again with prefix [executable]`：在当前 Thread 中记住 Runtime 解析后的精确可执行文件路径。
+3. `Reject`：拒绝执行。
+
+第二项会作用于该可执行文件后续收到的不同参数，使用 `/resume` 后仍然有效，同一父 Thread 绑定的子 Agent 也可以复用；它不会进入 `/new` 或其他 Thread，子 Agent 自己也不能新增授权。Python、Node.js、`cmd`、PowerShell 等解释器或 Shell 的授权范围很大，因为后续脚本或 Shell 文本可能执行完全不同的操作。授权标识的是路径，而不是不可变的程序内容，因此替换该路径上的文件不会自动撤销授权。可以使用 `/permissions` 查看当前授权。永久策略拒绝、Plan mode 边界和 `--approval never` 始终拥有更高优先级。
+
 ## 图片
 
 安装随项目提供的 VS Code 扩展后，可以在集成终端中使用系统原生快捷键粘贴截图：
@@ -507,6 +515,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 
 - 让 Agent 进行大范围修改前，建议先提交或备份重要工作。
 - 使用 `/permissions` 查看当前命令策略。
+- 除非信任当前 Thread 中传给该可执行文件的所有后续参数，否则优先选择一次性批准。
 - 只在可信工作区或隔离环境中使用 `--yes`。
 - `--yes` 不会绕过 Plan mode 的限制，也不会放行始终禁止的命令。
 - 获准执行的命令使用当前操作系统账户权限，可能访问工作区之外的资源。

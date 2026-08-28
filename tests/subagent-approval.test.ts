@@ -10,11 +10,13 @@ import {
 } from "../src/app.js";
 import { Terminal } from "../src/cli/terminal.js";
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   CommandAuditEntry,
 } from "../src/core/types.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
+import { grantCommandApprovalPrefix } from "../src/command/approval.js";
 import { describe, it } from "./harness.js";
 
 const AGENT_ID = "subagent_00000000-0000-4000-8000-000000000001";
@@ -28,9 +30,9 @@ class ApprovalProbeTerminal extends Terminal {
     super(new PassThrough(), new PassThrough());
   }
 
-  override async approve(_request: ApprovalRequest): Promise<boolean> {
+  override async approve(_request: ApprovalRequest): Promise<ApprovalDecision> {
     this.approvalCalls += 1;
-    return true;
+    return "allow_once";
   }
 
   override info(_text: string): void {
@@ -44,10 +46,14 @@ function approvalRequest(): ApprovalRequest {
     title: "Run workspace command",
     description: "A test command requires explicit approval.",
     risk: "workspace",
+    commandPrefix: process.execPath,
   };
 }
 
-function approvalHarness(assumeYes: boolean): {
+function approvalHarness(
+  assumeYes: boolean,
+  commandApprovalPrefixes: readonly string[] = [],
+): {
   terminal: ApprovalProbeTerminal;
   request(request: ApprovalRequest): Promise<boolean>;
 } {
@@ -56,6 +62,10 @@ function approvalHarness(assumeYes: boolean): {
   Object.defineProperties(app, {
     assumeYes: { value: assumeYes },
     terminal: { value: terminal },
+    state: {
+      value: { commandApprovalPrefixes: [...commandApprovalPrefixes] },
+      writable: true,
+    },
   });
   const internal = app as unknown as {
     requestSubagentApproval(
@@ -104,6 +114,27 @@ describe("background subagent approvals", () => {
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.approvalCalls, 0);
       assert.equal(harness.terminal.infoCalls, 0);
+    } finally {
+      harness.terminal.close();
+    }
+  });
+
+  it("consumes an exact parent-Thread executable grant without opening stdin", async () => {
+    const harness = approvalHarness(
+      false,
+      grantCommandApprovalPrefix([], process.execPath),
+    );
+    try {
+      assert.equal(await harness.request(approvalRequest()), true);
+      assert.equal(harness.terminal.approvalCalls, 0);
+      assert.equal(harness.terminal.infoCalls, 0);
+
+      const different = {
+        ...approvalRequest(),
+        commandPrefix: path.join(path.dirname(process.execPath), "different-executable"),
+      };
+      assert.equal(await harness.request(different), false);
+      assert.equal(harness.terminal.approvalCalls, 0);
     } finally {
       harness.terminal.close();
     }
