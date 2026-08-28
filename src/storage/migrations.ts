@@ -225,6 +225,17 @@ const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE tool_audit ADD COLUMN source_agent_role TEXT;
+      ALTER TABLE tool_audit ADD COLUMN source_agent_id TEXT;
+      ALTER TABLE tool_audit ADD COLUMN source_task_id TEXT;
+
+      CREATE INDEX tool_audit_source_agent_idx
+        ON tool_audit(thread_id, source_agent_id, timestamp);
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

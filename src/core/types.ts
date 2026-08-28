@@ -1,4 +1,5 @@
 export type AgentMode = "plan" | "auto" | "code";
+export type AgentRole = "main_agent" | "subagent";
 export type ProviderName = "qwen" | "deepseek" | "glm";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
 export const THINKING_EFFORTS = ["none", "low", "medium", "high"] as const;
@@ -15,6 +16,8 @@ export type ToolName =
   | "delete_file"
   | "run_command"
   | "manage_tasks"
+  | "manage_subagents"
+  | "submit_task_result"
   | "compact_context"
   | "manage_memory";
 
@@ -162,6 +165,14 @@ export interface ToolExecutionResult {
   memoryMutation?: MemoryMutationRequest;
   /** Runtime-owned task-DAG transition. It is persisted separately from model-visible data. */
   taskGraphUpdate?: TaskGraph;
+  /** Runtime-only child assignment/completion transition paired with taskGraphUpdate. */
+  subagentTaskOperation?: SubagentTaskUpdateOperation;
+  /** Runtime-owned immutable binding for a child lifecycle transition. */
+  subagentAssignment?: SubagentAssignmentSnapshot;
+  /** Local-only lifecycle commit performed only after the matching DAG event is durable. */
+  subagentLifecycle?: SubagentLifecycleUpdate;
+  /** Child-only terminal result. It is never copied verbatim into a child tool message. */
+  subagentTaskReport?: SubagentTaskReport;
   /** Structured Plan-mode proposal. Runtime assigns its durable identity and review revision. */
   planProposal?: PlanDraft;
   /**
@@ -235,6 +246,14 @@ export interface ToolContext {
   signal?: AbortSignal;
   commandTimeoutMs: number;
   maxOutputChars: number;
+  /** Runtime-issued identity. Missing values are never accepted by subagent controls. */
+  agentRole?: AgentRole;
+  agentId?: string;
+  assignedTaskId?: string;
+  thinkingEffort?: ThinkingEffort;
+  provider?: ProviderName;
+  model?: string;
+  toolCallId?: string;
   /** Read-only authoritative snapshot used by manage_tasks to propose one transition. */
   taskGraph?: Readonly<TaskGraph>;
   recordCommand?: (entry: CommandAuditEntry) => void;
@@ -277,6 +296,10 @@ export interface CommandAuditEntry {
   durationMs: number;
   timestamp: string;
   summary: string;
+  /** Runtime attribution for commands executed by an isolated child worker. */
+  sourceAgentRole?: AgentRole;
+  sourceAgentId?: string;
+  sourceTaskId?: string;
 }
 
 export type TaskNodeStatus = "pending" | "in_progress" | "completed" | "blocked";
@@ -287,6 +310,56 @@ export interface TaskCompletionEvidence {
   evidence: string;
 }
 
+/** Runtime-only; models cannot invoke these transitions through manage_tasks. */
+export type SubagentTaskUpdateOperation =
+  | { action: "claim"; taskId: string; agentId: string }
+  | {
+      action: "complete";
+      taskId: string;
+      agentId: string;
+      evidence: string[];
+    }
+  | { action: "release"; taskId: string; agentId: string };
+
+export type SubagentTaskReport =
+  | {
+      taskId: string;
+      outcome: "completed";
+      summary: string;
+      completionEvidence: TaskCompletionEvidence[];
+    }
+  | {
+      taskId: string;
+      outcome: "blocked";
+      summary: string;
+      blocker: string;
+    };
+
+interface SubagentAssignmentSnapshotBase {
+  agentId: string;
+  taskId: string;
+  taskTitle: string;
+  taskDescription: string;
+  completionChecks: string[];
+  provider: ProviderName;
+  model: string;
+  thinkingEffort: ThinkingEffort;
+  createdAt: string;
+}
+
+/** Durable, Runtime-issued child binding. It never contains the child's private context. */
+export type SubagentAssignmentSnapshot = SubagentAssignmentSnapshotBase &
+  (
+    | { kind: "dag"; taskGraphId: string }
+    | { kind: "standalone"; taskGraphId?: never }
+  );
+
+export type SubagentLifecycleUpdate =
+  | { action: "activate"; agentId: string }
+  | { action: "observe"; agentId: string }
+  | { action: "deliver_follow_up"; agentId: string; message: string }
+  | { action: "request_stop"; agentId: string; reason: string };
+
 export interface TaskNode {
   id: string;
   title: string;
@@ -296,7 +369,9 @@ export interface TaskNode {
   expectedArtifacts: string[];
   completionChecks: string[];
   failureHandling: string;
-  owner: "main_agent";
+  owner: "main_agent" | "subagent";
+  /** Runtime-assigned identity. Present exactly when owner is subagent. */
+  assignedAgentId?: string;
   status: TaskNodeStatus;
   completionEvidence?: TaskCompletionEvidence[];
   blocker?: string;
@@ -399,4 +474,6 @@ export interface AgentRunResult {
   turnId: string;
   /** Present only when propose_plan ended this turn for interactive review. */
   planProposal?: PlanProposal;
+  /** Present only for an isolated child that used submit_task_result. */
+  subagentTaskReport?: SubagentTaskReport;
 }

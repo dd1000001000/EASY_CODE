@@ -1,6 +1,7 @@
 import type { AgentTool, ToolName } from "../core/types.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
+import type { SubagentControl } from "../subagents/types.js";
 import { CompactContextTool } from "./compact-context.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
@@ -9,6 +10,7 @@ import { ReadImageTool } from "./read-image.js";
 import { RunCommandTool } from "./run-command.js";
 import { ManageMemoryTool } from "./manage-memory.js";
 import { ManageTasksTool } from "./manage-tasks.js";
+import { ManageSubagentsTool } from "./manage-subagents.js";
 import { ProposePlanTool } from "./propose-plan.js";
 import { UpdateFileTool } from "./update-file.js";
 
@@ -36,6 +38,7 @@ export class ToolRegistry {
 export function createDefaultTools(
   workspaceManager: WorkspaceManager,
   memoryManager?: MemoryManager,
+  options: { subagentControl?: SubagentControl } = {},
 ): AgentTool[] {
   return [
     new ReadFileTool(workspaceManager),
@@ -45,6 +48,9 @@ export function createDefaultTools(
     new DeleteFileTool(workspaceManager),
     new RunCommandTool(workspaceManager),
     new ManageTasksTool(),
+    ...(options.subagentControl
+      ? [new ManageSubagentsTool(options.subagentControl)]
+      : []),
     new ProposePlanTool(),
     new CompactContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
@@ -54,6 +60,7 @@ export function createDefaultTools(
 export function createDefaultToolRegistry(
   workspaceManager: WorkspaceManager,
   memoryManager?: MemoryManager,
+  options: { subagentControl?: SubagentControl } = {},
 ): ToolRegistry {
-  return new ToolRegistry(createDefaultTools(workspaceManager, memoryManager));
+  return new ToolRegistry(createDefaultTools(workspaceManager, memoryManager, options));
 }

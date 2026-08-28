@@ -38,6 +38,8 @@ import {
 } from "./model-selector.js";
 import { renderTaskGraph } from "./task-graph.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
+import { renderSubagents } from "./subagents.js";
+import type { SubagentView } from "../subagents/types.js";
 
 export type PlanReviewDecision =
   | { action: "approve" }
@@ -348,6 +350,18 @@ export class Terminal {
     this.write(renderTaskGraph(graph, { color: this.colorEnabled() }));
   }
 
+  subagents(
+    agents: readonly Readonly<SubagentView>[],
+    taskGraph?: Readonly<TaskGraphView>,
+    concurrencyLimit?: number,
+  ): void {
+    this.write(renderSubagents(agents, {
+      color: this.colorEnabled(),
+      ...(taskGraph ? { taskGraph } : {}),
+      ...(concurrencyLimit === undefined ? {} : { concurrencyLimit }),
+    }));
+  }
+
   /** Store provider thinking safely and print only its collapsed marker. */
   addReasoning(text: string): number {
     const block = this.reasoning.add(text);
@@ -355,6 +369,11 @@ export class Terminal {
       this.write(renderReasoningMarker(block, { color: this.colorEnabled() }));
     }
     return block.id;
+  }
+
+  /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
+  restoreReasoning(texts: readonly string[]): number {
+    return this.reasoning.rebuild(texts);
   }
 
   /** Append one bounded, sanitized thinking block. Missing IDs are silent. */

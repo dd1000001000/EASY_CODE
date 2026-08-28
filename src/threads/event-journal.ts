@@ -23,6 +23,11 @@ export interface AppendEventInput {
   readonly schemaVersion?: number;
 }
 
+export interface EventJournalOptions {
+  /** False opens an existing journal for read-only discovery without mkdir. */
+  readonly createDirectory?: boolean;
+}
+
 interface JournalScan {
   readonly events: EventRecord[];
   readonly validLength: number;
@@ -79,11 +84,15 @@ export class EventJournal {
   readonly threadId: string;
   readonly filePath: string;
 
-  constructor(dataDir: string, threadId: string) {
+  constructor(
+    dataDir: string,
+    threadId: string,
+    options: EventJournalOptions = {},
+  ) {
     assertSafeThreadId(threadId);
     this.threadId = threadId;
     const threadDir = path.join(path.resolve(dataDir), "threads", threadId);
-    mkdirSync(threadDir, { recursive: true });
+    if (options.createDirectory !== false) mkdirSync(threadDir, { recursive: true });
     this.filePath = path.join(threadDir, "events.jsonl");
   }
 

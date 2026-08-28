@@ -2,24 +2,37 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and GLM. It can read, create, update, and delete code inside a guarded workspace, run commands, manage context and memory, and send images to vision-capable models.
+EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
 
-The current release is an MVP with a terminal-only interface. It does not open a separate desktop window.
+EASY CODE runs entirely in the current terminal. It does not open a separate desktop window.
+
+## Features
+
+- Three working modes: Plan, Auto, and Code.
+- Read, create, update, and delete files inside the selected workspace.
+- Run commands, tests, build tools, and supported npm installation commands.
+- Show line-numbered code diffs with green additions and red removals.
+- Switch providers, models, and thinking effort while the session is running.
+- Attach screenshots and image files to supported vision models.
+- Automatically manage short-term context and long-term project memory.
+- Save and resume conversations, plans, task progress, and child-agent results.
+- Optionally organize complex work as a task DAG.
+- Optionally delegate independent work to isolated child agents.
+- Load project instructions from `EASYCODE.md` files.
+- Work on Windows, macOS, and Linux.
 
 ## Requirements
 
+- Node.js `>=16.20.0` and npm.
 - Windows, macOS, or Linux.
-- Node.js `>=16.20.0` and npm. A currently maintained Node.js LTS release is recommended.
-- An Alibaba Qwen, DeepSeek, or GLM API key.
-- Optional: VS Code `>=1.93` for native image-paste shortcuts in the integrated terminal.
+- An API key for at least one supported provider.
+- Optional: VS Code `>=1.93` for native image paste in the integrated terminal.
 
-EASY CODE uses SQLite WASM as the durable source of truth for threads and long-term memory, plus an embedded Orama vector index for semantic Top-K retrieval. A local multilingual embedding model runs through ONNX Runtime; no Python environment, external vector database, Redis, or model server is required.
+A maintained Node.js LTS release is recommended.
 
 ## Installation
 
-### Install globally from source
-
-The package is not currently published to the npm registry. Install it from GitHub:
+The package is currently installed from the GitHub repository:
 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -30,20 +43,25 @@ npm install --global .
 easy-code --version
 ```
 
-You may use `git@github.com:dd1000001000/EASY_CODE.git` instead if your GitHub SSH key is configured.
-
-After global installation, run `easy-code` from any project directory. The current directory becomes the default workspace.
-
-To update or reinstall an existing clone:
+If your GitHub SSH key is configured, you can clone with:
 
 ```bash
+git clone git@github.com:dd1000001000/EASY_CODE.git
+```
+
+The npm installation prepares the resources required by automatic memory and tries to install the bundled VS Code terminal extension. Do not use `--ignore-scripts` for a normal installation.
+
+To update an existing installation:
+
+```bash
+cd EASY_CODE
 git pull
 npm install
 npm run build
 npm install --global .
 ```
 
-To run without a global installation:
+To run directly from the repository without installing globally:
 
 ```bash
 npm install
@@ -51,127 +69,88 @@ npm run build
 npm start -- --workspace /path/to/project
 ```
 
-A normal npm installation verifies SQLite, downloads the pinned quantized embedding assets (about 135 MB) into EASY CODE's per-user operating-system cache, checks their exact size and SHA-256, runs a real local ONNX/vector-search self-test, and then tries to install the bundled VS Code image-paste extension. Inference is offline after installation; memory text is not sent to Hugging Face.
-
-Do not use `--ignore-scripts` for a normal installation, because it skips required model preparation. To repair or verify the local memory model from an EASY CODE source checkout, run:
-
-```bash
-npm run memory:install
-npm run memory:verify
-```
-
-If a portable/custom VS Code installation was not detected, run:
+If VS Code was not detected during installation, run this from the EASY CODE repository:
 
 ```bash
 npm run vscode:install
 ```
 
-Set `EASY_CODE_SKIP_VSCODE_EXTENSION=1` to skip extension installation in CI or managed environments. To select a custom VS Code CLI, set `EASY_CODE_VSCODE_CLI` to its absolute path.
+Set `EASY_CODE_SKIP_VSCODE_EXTENSION=1` before installation to skip the extension in CI or managed environments.
 
 ## Configure API keys
 
-The recommended setup stores keys in the operating system credential store:
+The recommended method stores API keys in the operating system credential store:
 
 ```bash
 easy-code config set qwen.api-key
 easy-code config set deepseek.api-key
 easy-code config set glm.api-key
-easy-code config list
 ```
 
-`config set` hides terminal input and does not accept a key as a command argument, keeping it out of shell history and process listings. You can inspect or remove configuration status without printing the secret:
+The command asks for the key through hidden input. Do not add the key after the command.
+
+Check configuration status:
 
 ```bash
+easy-code config list
 easy-code config get qwen.api-key
+```
+
+Remove a saved key:
+
+```bash
 easy-code config unset qwen.api-key
-easy-code config get glm.api-key
-easy-code config unset glm.api-key
 ```
 
 Environment variables are also supported:
 
-| Provider | Environment variable |
+| Provider | Environment variables |
 | --- | --- |
 | Alibaba Qwen | `QWEN_API_KEY` or `DASHSCOPE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
-| GLM | `ZAI_API_KEY` (recommended), `GLM_API_KEY`, or `ZHIPUAI_API_KEY` |
+| Zhipu GLM | `ZAI_API_KEY`, `GLM_API_KEY`, or `ZHIPUAI_API_KEY` |
 
-PowerShell:
+If the selected provider has no configured API key, EASY CODE prompts for one before starting.
 
-```powershell
-$env:QWEN_API_KEY = "your-api-key"
-$env:DEEPSEEK_API_KEY = "your-api-key"
-$env:ZAI_API_KEY = "your-api-key"
-```
+## Quick start
 
-macOS/Linux:
-
-```bash
-export QWEN_API_KEY="your-api-key"
-export DEEPSEEK_API_KEY="your-api-key"
-export ZAI_API_KEY="your-api-key"
-```
-
-During the first interactive launch, EASY CODE prompts for a missing key after you select a provider. It validates the input and credential-store round trip locally; provider access, region availability, and model entitlement are confirmed by the first API request.
-
-Never put an API key in workspace configuration, `EASYCODE.md`, source code, chat messages, or Git history.
-
-## Terminal usage
-
-Enter the project you want EASY CODE to work on and start the agent:
+Open the project you want to work on and start EASY CODE:
 
 ```bash
 cd /path/to/project
 easy-code
 ```
 
-EASY CODE stays in the current terminal instead of opening another agent window. A normal startup works as follows:
+On interactive startup:
 
-1. Select `DeepSeek`, `Alibaba Qwen`, or `GLM`.
-2. Select a model from that provider.
-3. Select the thinking effort: `none`, `low`, `medium`, or `high`.
-4. Move with the Up/Down arrow keys, press Enter to confirm, or Esc to cancel.
-5. Enter a task at a prompt such as `EASY CODE [auto qwen/qwen3.7-max thinking:medium] >`.
+1. Select DeepSeek, Alibaba Qwen, or Zhipu GLM.
+2. Select a model.
+3. Select `none`, `low`, `medium`, or `high` thinking effort.
+4. Use the Up/Down arrow keys and press Enter to confirm.
+5. Enter your request at the `EASY CODE [...] >` prompt.
 
-`/help` is an in-agent command and only works after the EASY CODE prompt appears. To inspect CLI arguments from your shell, use:
+Example requests:
 
-```bash
-easy-code --help
+```text
+Explain this project and identify its main entry points.
+Fix the login error and run the relevant tests.
+Add a settings page that follows the existing code style.
+Review the current changes for security and maintainability issues.
 ```
 
-Start with an explicit workspace, provider, model, thinking effort, and mode:
+Start with explicit settings:
 
 ```bash
 easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinking-effort high --mode code
 ```
 
-Run one non-interactive task and exit, which is useful for scripts and CI:
+Run one task non-interactively and exit:
 
 ```bash
-easy-code --workspace ./my-project --mode code run "Fix the login error and run the relevant tests"
+easy-code --workspace ./my-project --mode code run "Fix the login error and run the tests"
 ```
 
-Resume a saved thread:
-
-```bash
-easy-code --resume <thread-id>
-```
-
-Common top-level options:
-
-| Option | Purpose |
-| --- | --- |
-| `-w, --workspace <path>` | Workspace root; defaults to the current directory |
-| `--provider qwen\|deepseek\|glm` | Model provider |
-| `--model <id>` | Model for the active provider |
-| `--thinking-effort none\|low\|medium\|high` | Thinking effort; defaults to `medium` |
-| `--mode plan\|auto\|code` | Working mode; defaults to `auto` |
-| `--approval safe\|ask\|never` | Command approval policy |
-| `-y, --yes` | Automatically approve policy-allowed prompts |
-| `--resume <thread-id>` | Resume a saved thread |
-| `-i, --image <path>` | Attach an image to the first task; repeatable |
-
-## Supported providers and models
+## Supported models
 
 | Provider | Model | Image input |
 | --- | --- | --- |
@@ -187,73 +166,33 @@ Common top-level options:
 | Alibaba Qwen | `qwen3-max` | No |
 | Alibaba Qwen | `qwen3-vl-plus` | Yes |
 | Alibaba Qwen | `qwen3-vl-flash` | Yes |
-| GLM | `glm-5.3-flash` | Yes |
-| GLM | `glm-5.3` | No |
-| GLM | `glm-5.2` | No |
+| Zhipu GLM | `glm-5.3-flash` | Yes |
+| Zhipu GLM | `glm-5.3` (default) | No |
+| Zhipu GLM | `glm-5.2` | No |
 
-This is EASY CODE's built-in model catalog, not live provider model discovery. Actual availability still depends on the provider service, account, region, and model entitlement. EASY CODE reports the provider's API error if a listed model is unavailable to the current account.
+The table is EASY CODE's supported catalog. Actual access depends on the provider, account, region, and model entitlement.
 
-Within the GLM catalog, only `glm-5.3-flash` accepts image input. `glm-5.3` and `glm-5.2` are text-only in EASY CODE.
-
-### Thinking effort
-
-After choosing a model, the interactive selector asks for one of four normalized thinking-effort levels: `none`, `low`, `medium`, or `high`. The selection is kept with the active thread and is used when building every model request, including Auto mode routing. It can also be set at startup with `--thinking-effort`; when omitted, the default is `medium`.
-
-The same selection scales both the active short-term context-character limit and the maximum model-request steps for each user task. The configurable base applies to `none` and `low`; `medium` multiplies it by 2 and `high` by 4. With the defaults, the tiers are:
-
-| Thinking effort | Multiplier | Active context limit | Step limit |
-| --- | ---: | ---: | ---: |
-| `none` | 1× | 400,000 characters | 40 |
-| `low` | 1× | 400,000 characters | 40 |
-| `medium` | 2× | 800,000 characters | 80 |
-| `high` | 4× | 1,600,000 characters | 160 |
-
-These Runtime budgets follow the saved selection even when the chosen model does not support thinking parameters. Configure the `none`/`low` base values in either the user configuration or `.easycode/config.toml`:
-
-```toml
-[limits]
-max_steps = 40
-max_context_chars = 400000
-```
-
-The equivalent environment variables are `EASY_CODE_MAX_STEPS` and `EASY_CODE_MAX_CONTEXT_CHARS`. Both now hold base values, so the active value is `base × effort multiplier`.
-
-Migration note: older releases treated `max_steps` as a hard ceiling and `max_context_chars` as one absolute limit for every effort. Existing explicit values will now be multiplied. Review or remove those settings during upgrade; to preserve a desired active limit for one effort, set its new base to `desired active limit ÷ multiplier`.
-
-The four choices remain available for every model. EASY CODE sends only fields documented for the exact provider/model combination. If a model does not support configurable thinking, the selection is retained for the UI and thread but no thinking parameter is sent, so it has no effect.
-
-Provider behavior:
-
-- Alibaba Qwen: `none` disables thinking on supported hybrid-thinking models. `low`, `medium`, and `high` enable thinking with EASY CODE budgets of 4,096, 16,384, and 32,768 reasoning tokens respectively. These are output ceilings, not guarantees that the model will use the full budget. `qwen3.6-max` currently receives no thinking parameters because its exact model ID is not documented for this capability.
-- DeepSeek: `none` disables thinking for `deepseek-v4-flash` and `deepseek-v4-pro`; `low` and `high` use the matching provider effort. DeepSeek treats `medium` as `high`. The experimental vision model currently receives no thinking parameters.
-- GLM: `glm-5.2` can disable thinking with `none` and accepts the other three efforts, although GLM maps `low` and `medium` to its `high` effort. `glm-5.3` and `glm-5.3-flash` always think, so choosing `none` is retained but sends no disabling parameter; their `medium` selection maps to `high`.
-
-When the selected effort is not `none` and the provider returns `reasoning_content`, EASY CODE prints the existing gray `Thinking #2` marker followed by a gray one-line preview of up to 160 characters. Longer content ends with `...`. Use `/thinking`, `/thinking <id>`, or `Ctrl+T` to show the expanded bounded content. In the VS Code integrated terminal, the bundled extension can also make the marker clickable, but clicking is optional. Both the preview and expanded output are sanitized and redacted before they are written to the terminal. Non-interactive `easy-code run` output does not include this interactive presentation.
-
-Switch providers or models while the agent is running:
+Switch models during a session:
 
 ```text
 /model
 /model <model-id>
 /model qwen <model-id>
 /model deepseek <model-id>
-/model glm glm-5.3-flash
-/provider qwen
-/provider deepseek
-/provider glm
+/model glm <model-id>
 ```
 
-`/model` opens the Provider → Model → Thinking effort selector again. The argument forms such as `/model <model-id>` switch directly and keep the current effort. EASY CODE asks for configuration if the selected provider has no API key.
+`/model` opens the Provider → Model → Thinking effort selector. Use `/provider qwen|deepseek|glm` to switch providers directly.
 
 ## Working modes
 
-| Mode | Behavior |
+| Mode | Use it when |
 | --- | --- |
-| `plan` | Read and investigate the workspace, then submit a structured plan for review. File writes, builds, tests, and dependency installation are blocked. |
-| `auto` | A dedicated model call uses the `select_mode` tool to choose Plan or Code; there is no local keyword router. |
-| `code` | Implement and verify directly without first presenting a plan. Safety policies still apply. |
+| `plan` | You want EASY CODE to inspect the project and propose a plan without changing files or running build/install commands. |
+| `auto` | You want the model to decide whether the request needs a reviewed plan or can be implemented directly. This is the default. |
+| `code` | You want EASY CODE to implement and verify the request immediately without presenting a plan first. |
 
-Switch modes during a session:
+Switch modes at any time:
 
 ```text
 /mode plan
@@ -261,7 +200,7 @@ Switch modes during a session:
 /mode code
 ```
 
-When Auto selects Plan, the planning model must call `propose_plan`; ordinary assistant text cannot become an approved plan. The CLI then offers:
+When Auto chooses Plan, EASY CODE shows the proposal and offers three choices:
 
 ```text
 1. Yes, use Auto mode
@@ -269,68 +208,77 @@ When Auto selects Plan, the planning model must call `propose_plan`; ordinary as
 3. Type feedback and press Enter to adjust the plan
 ```
 
-Choosing Yes records approval and returns to Auto for execution. Choosing No records rejection without another model request. Any other non-empty text is sent back as Plan feedback; the model must submit a revised plan before the menu is shown again. Pending and approved plan-review state is thread-scoped and restored by `/resume`. Non-interactive `easy-code run` prints the proposal and thread ID instead of waiting for input. `--yes` does not approve plans.
+Approving returns to Auto and executes the accepted plan. Rejecting stops it. Entering feedback asks the model to revise the proposal.
 
-## Current features
+## Thinking effort
 
-The main prompt displays an estimated short-term-memory token count, for example `context:12.4k`. It includes the persistent context summary, active conversation and tool messages, reasoning returned into context, and active image-token estimates. The value is tokenizer-independent and therefore approximate; it is a display aid, not the character measurement used to trigger compaction.
+Thinking effort affects model reasoning when the selected model supports it. It also controls the default task budget and maximum number of concurrently active child agents.
 
-When EASY CODE is waiting for a model API response in an interactive terminal, it shows a gray spinner with elapsed time. The indicator covers both Auto-mode routing and every agent-loop model request, and is cleared on success, error, or interruption. Piped and CI output stays static.
+| Effort | Default maximum steps | Default context size | Child-agent limit |
+| --- | ---: | ---: | ---: |
+| `none` | 40 | 400,000 characters | 2 |
+| `low` | 40 | 400,000 characters | 2 |
+| `medium` | 80 | 800,000 characters | 4 |
+| `high` | 160 | 1,600,000 characters | 8 |
 
-### Agent tools
+`none` requests no model thinking where the provider supports disabling it. If a model does not support configurable thinking, the selected effort is still saved, but the thinking setting itself may not affect that model.
 
-The main agent can use up to ten Runtime tools. Auto routing is a separate model request that exposes only `select_mode`. `read_image` is exposed only to models explicitly marked as vision-capable.
+When a model returns thinking content, EASY CODE shows a gray `Thinking #N` marker and a short gray preview. Use one of the following to view the expanded content:
 
-| Tool | Capability |
-| --- | --- |
-| `read_file` | Read UTF-8 workspace files in bounded chunks |
-| `read_image` | Validate and attach a workspace image to a vision model |
-| `create_file` | Create a file without overwriting an existing target |
-| `update_file` | Replace or remove exact text in a previously read file, with hash checks |
-| `delete_file` | Delete the exact previously read file version, with path and hash checks |
-| `run_command` | Run policy-controlled commands using structured `program + args[]` input |
-| `manage_tasks` | Optionally create and advance a persistent single-agent task DAG |
-| `propose_plan` | Submit the structured Plan-mode proposal for user review |
-| `compact_context` | Submit a cumulative summary and advance the context-compaction boundary |
-| `manage_memory` | Search and stage automatic long-term-memory additions, revisions, or retirement |
+```text
+/thinking
+/thinking <id>
+/thinking last
+```
 
-`delete_file` requires the SHA-256 returned by `read_file`. It refuses unread files, stale hashes, directories, links, workspace escapes, and all deletions in Plan mode.
+You can also press `Ctrl+T` in the interactive terminal.
 
-### Workspace and code changes
+Optional base limits can be configured in user configuration or `.easycode/config.toml`:
 
-- File tools stay inside the workspace. Absolute paths, `..` traversal, and symlink or Windows junction escapes are rejected.
-- `update_file` and `delete_file` check the SHA-256 recorded by the last read, preventing silent changes after an editor or another process modifies the file.
-- Successful creates, updates, and deletions print a line-numbered diff: additions in green and removals in red.
-- `/changes` shows the current thread's file changes.
+```toml
+[limits]
+max_steps = 40
+max_context_chars = 400000
+```
 
-### Optional task orchestration
+`medium` uses twice these base values and `high` uses four times these base values.
 
-In Code mode, or after Auto mode selects Code, the model may call `manage_tasks` for a genuinely complex objective. It creates a fixed-structure DAG containing task IDs, dependencies, inputs, expected artifacts, completion checks, and failure handling. The model decides whether orchestration is useful; plans, simple explanations, small fixes, and short linear work continue without a DAG.
+## Coding and workspace features
 
-After a DAG is created, Runtime—not the prompt—enforces its execution: only one task can be `in_progress`, dependency-blocked tasks cannot start, workspace and command tools require an active task, and a task can be completed only after recording one concise evidence statement per declared check. Runtime validates the transition and evidence structure; the model must still ground each statement in actual tool results. A normal final answer is rejected while the DAG remains active. A real external blocker can pause the graph, and a later turn can resume it after the condition is resolved. Auto mode continues an unfinished graph in Code mode, and `/mode plan` is rejected until the graph is completed.
+EASY CODE can:
 
-Every successful DAG state change prints the ordered task list in the terminal. `✓` marks completed tasks, `▶` marks the active task, `□` marks pending tasks, and `⊠` marks a blocked task. `/tasks` renders the same view on demand.
+- Read text files in the selected workspace.
+- Create new files without silently replacing existing files.
+- Update previously inspected files.
+- Delete files after inspecting them.
+- Run project commands, tests, formatters, builds, and supported installers.
+- Display successful file changes as line-numbered diffs.
+- Track file changes and recent commands for the current thread.
 
-The current graph is thread-scoped short-term state. Its declared operation and post-transition snapshot are written atomically with the matching tool-result event; recovery replays the operation and rejects a mismatched snapshot. `/resume` restores it, and a compact control view is reinjected into every model request even after context compaction. `/tasks` is a read-only user view; only the model-facing tool changes DAG state. This first version deliberately executes nodes serially and does not start additional agents.
+Useful commands:
 
-### Commands and npm
+```text
+/workspace
+/workspace refresh
+/changes
+/commands
+/tools
+/permissions
+```
 
-- `run_command` uses structured arguments with `shell: false`. Shell syntax requires an explicit one-shot `cmd /c`, PowerShell `-Command`, or `sh -c` call.
-- Commands are classified as `allow`, `ask`, or `deny`, with the invocation, working directory, result, and detected file changes recorded.
-- Auto and Code modes permit restricted workspace-local npm installation. Agent-initiated installs disable dependency lifecycle scripts, audit, and fund.
-- `--yes` automatically approves policy-allowed prompts, but cannot bypass Plan mode or hard-deny rules.
+EASY CODE stays inside the selected workspace for file operations. Commands still run with the permissions of the operating-system user who started the process.
 
-### Image input
+## Images
 
-In a VS Code integrated terminal with the bundled extension installed, use each platform's native paste shortcut:
+With the bundled VS Code extension installed, paste screenshots into the integrated terminal with the platform's native shortcut:
 
 - Windows: `Ctrl+V`
 - Linux: `Ctrl+Shift+V`
 - macOS: `Command+V`
 
-Images appear in the input as `[Image #1]`, `[Image #2]`, and so on, with IDs increasing within the thread. Text clipboard data continues to use VS Code's normal paste behavior.
+Attached images appear as `[Image #1]`, `[Image #2]`, and so on. Ordinary clipboard text continues to paste as text.
 
-Other terminals may intercept paste shortcuts before they reach the CLI. Use these portable fallbacks:
+You can also attach images with commands:
 
 ```text
 /image clipboard
@@ -338,91 +286,191 @@ Other terminals may intercept paste shortcuts before they reach the CLI. Use the
 /image clear
 ```
 
-You can also attach files with `--image <path>`. EASY CODE accepts complete, non-animated PNG, JPEG, WebP, and static GIF files. A thread and an individual model request can contain up to 99 images, subject to the existing 20 MiB combined-size and 80-million-pixel safety limits. Only models marked “Yes” in the model table receive images. Qwen applies additional size and format limits and does not accept GIF.
+Or attach one or more images at startup:
 
-Clipboard screenshots are copied to EASY CODE's private data directory outside the workspace. Thread journals and SQLite store controlled references and metadata, not image Base64.
+```bash
+easy-code --image ./screenshot.png --image ./diagram.jpg
+```
 
-### Context, memory, and threads
+EASY CODE accepts PNG, JPEG, WebP, and static GIF images, with up to 99 images in a thread or model request. The active model must be marked as image-capable in the supported-model table.
 
-- Character, output, and image budgets bound each model request. The active short-term character limit is derived from the selected thinking effort: the default `none`/`low` base is 400,000 characters, `medium` uses 800,000, and `high` uses 1,600,000. Runtime measures the persistent working summary plus messages after the current compaction boundary, rather than compacted raw history. The percentage is calculated against the current active limit, not the unscaled base, and applies four pressure levels:
+## Tasks and child agents
 
-  - Below 60%: no intervention.
-  - At 60% or more: remind the model to consider `compact_context`; normal work can continue.
-  - At 80% or more: require the next model step to call `compact_context` by itself.
-  - At 90% or more: automatically inject a forced compaction request; the step remains restricted to `compact_context` alone.
+For complex work, EASY CODE may create a task DAG containing named tasks and dependencies. This is optional: simple requests continue without a DAG.
 
-  `compact_context` produces a cumulative `workingSummary` and advances the persistent compaction boundary. If a request still exceeds the active hard character limit, the request-only fallback can truncate what is sent to the model, but that fallback does not update `workingSummary` or advance the boundary. The terminal `context:…` token count remains an approximate, tokenizer-independent display and is not used for these character thresholds.
-- Short-term memory belongs to the current thread and includes conversation, tool results, file versions, change sets, the current task DAG, and the working summary.
-- Long-term memory is isolated by workspace. The model uses `manage_memory` to search, remember, revise, or retire durable preferences, conventions, decisions, verified architecture, and stable environment facts. Each memory is one atomic sentence of at most 120 characters. After searching, the model can issue several `remember` calls together to preserve up to eight independent facts in one turn; the complete set commits atomically instead of becoming one long paragraph.
-- Long-term retrieval is hybrid: 384-dimensional semantic similarity and FTS5 lexical matches are reranked together. SQLite persists both memory rows and Float32 embeddings; Orama is a disposable, generation-versioned in-process Top-K index.
-- Embeddings are produced locally by the pinned [`Xenova/paraphrase-multilingual-MiniLM-L12-v2`](https://huggingface.co/Xenova/paraphrase-multilingual-MiniLM-L12-v2) quantized model. Existing memories from older database versions are backfilled automatically on first retrieval.
-- Memory mutations are staged during a turn and committed atomically only after `success` or `planned`; failed, interrupted, and step-limited turns discard them. Revisions preserve superseded rows, while forgetting marks a row expired instead of physically deleting its audit history.
-- Memory remains automatic. Users can inspect it with `/memory short` and `/memory long`, but there is no user command for adding, editing, or deleting it.
-- Append-only JSONL stores original thread events; SQLite WASM/FTS5 stores searchable projections, long-term memory, and persistent vectors. Threads can be listed and resumed.
-- Cross-process locks and thread leases prevent two EASY CODE processes from resuming the same thread concurrently.
+Use `/tasks` to view the current task list:
 
-### System prompt and project instructions
+- `✓` completed
+- `▶` in progress
+- `□` not started
+- `⊠` blocked
 
-Every model call rebuilds the system prompt with current local and UTC time, IANA time zone, system language and locale, OS, CPU architecture, shell, current directory, workspace, mode, provider, and model.
+The main agent may also delegate independent work to child agents. Child agents are optional and can be used with or without a task DAG. They inherit the selected provider, model, and thinking effort, work in Code mode, and cannot create more child agents.
 
-EASY CODE reads `EASYCODE.md` from the user configuration directory and from the workspace-root-to-current-directory hierarchy. These files can describe build commands, code style, and project conventions, but cannot grant additional permissions.
+Use these commands to inspect them:
+
+```text
+/agents
+/subagents
+/status
+```
+
+The active child-agent limit is 2 for `none`/`low`, 4 for `medium`, and 8 for `high`. While child work is still running or waiting to be collected, Auto stays in Code mode so the parent can finish collecting the results.
+
+## Context and memory
+
+Context and memory are managed automatically. Users can inspect them but cannot manually add, edit, or delete memory entries.
+
+```text
+/context
+/memory short
+/memory long
+/memory long <id>
+```
+
+- Short-term memory belongs to the current thread and includes the active conversation, summaries, task state, and recent tool results.
+- Long-term memory stores useful project facts, decisions, conventions, and preferences for later sessions in the same workspace.
+- EASY CODE compresses older context when the conversation becomes large.
+- The prompt displays an approximate context Token count such as `context:12.4k`.
+
+## Threads and Resume
+
+Find the current thread ID with `/status`, or list saved threads with:
+
+```text
+/sessions
+```
+
+Resume from your shell:
+
+```bash
+easy-code --resume <thread-id>
+```
+
+Resume while EASY CODE is already running:
+
+```text
+/resume <thread-id>
+```
+
+Resume restores as much saved state as possible, including the selected model and mode, conversation, accepted plan, task progress, file/command history, context summary, and completed child-agent results. Interrupted commands or model calls are not automatically repeated.
+
+Use `/new` to start a separate thread.
+
+## Project instructions
+
+Create an `EASYCODE.md` file to tell EASY CODE how to work in a project. Typical content includes:
+
+- Build, test, lint, and formatting commands.
+- Coding style and naming conventions.
+- Important directories and architectural rules.
+- Files or operations that should be avoided.
+
+EASY CODE can load user-level instructions and project instructions from the workspace path.
+
+## CLI options
+
+```text
+-w, --workspace <path>                         Select the workspace
+--provider qwen|deepseek|glm                   Select the provider
+--model <id>                                   Select the model
+--mode plan|auto|code                          Select the working mode
+--thinking-effort none|low|medium|high         Select thinking effort
+--approval safe|ask|never                      Select command approval policy
+-y, --yes                                      Approve policy-allowed prompts
+--resume <thread-id>                           Resume a saved thread
+-i, --image <path>                             Attach an image; repeatable
+```
+
+Run `easy-code --help` for shell-level help. Run `/help` after entering EASY CODE for interactive commands.
 
 ## Interactive commands
 
 ```text
 /mode plan|auto|code       Switch working mode
-/provider qwen|deepseek|glm  Switch provider
-/model                     Open provider and model selectors
-/model <model>             Switch model for the current provider
-/model <provider> <model>  Switch provider and model
-/status                    Show current status
-/workspace                 Show workspace summary
-/workspace refresh         Refresh the workspace inventory
-/image <path>              Attach an image to the next task
-/image clipboard           Read an image from the clipboard
-/image clear               Clear pending images
-/changes                   Show file changes in the current thread
-/tasks                     Show the current model-managed task DAG
-/tools                     Show currently available tools
-/permissions               Show command permissions and sandbox status
+/provider <provider>       Switch provider
+/model                     Open model selection
+/model <model-id>          Switch model
+/status                    Show thread and agent status
+/workspace [refresh]       Show or refresh workspace information
+/image <path|clipboard>    Attach an image
+/image clear               Clear unsent images
+/changes                   Show file changes
+/tasks                     Show task DAG
+/agents                    Show child agents
+/tools                     Show available tools
+/permissions               Show command permissions
 /commands                  Show recent commands
-/context                   Show context-budget usage
-/memory short              Show automatic short-term memory
-/memory long               List automatic long-term memories
-/memory long <id>          Show one long-term memory
-/thinking [id|last]        Show expanded model thinking
+/context                   Show context usage
+/memory short              Show short-term memory
+/memory long [id]          Show long-term memory
+/thinking [id|last]        Show model thinking
 /sessions                  List saved threads
 /resume <id>               Resume a thread
 /new                       Start a new thread
-/clear                     Clear the screen
+/clear                     Clear the terminal
 /help                      Show help
 /exit                      Save and exit
 ```
 
-## Security boundaries
+## Safety notes
 
-EASY CODE provides workspace path guards, command classification, approvals, environment filtering, and audit records, but it does not currently provide an operating-system-level process sandbox.
-
-- File tools are constrained to the workspace.
-- An approved command still runs with the permissions of the operating-system user who started EASY CODE, and may access the network or resources outside the workspace.
-- Explicit shells can execute complex commands. Use `--yes` only in trusted workspaces, containers, virtual machines, or low-privilege environments.
-- `--yes` does not bypass Plan mode or hard-deny rules.
-- For untrusted repositories, commit or back up existing work and keep interactive approvals enabled.
+- Review or commit important work before letting an agent make broad changes.
+- Use `/permissions` to inspect the active command policy.
+- `--yes` should be used only in trusted workspaces or isolated environments.
+- `--yes` does not bypass Plan mode restrictions or commands that are always denied.
+- A permitted command runs with your current operating-system account and may access resources outside the workspace.
+- Never place API keys in source files, chat prompts, `EASYCODE.md`, or Git history.
 
 ## Troubleshooting
 
-- `easy-code` is not found: ensure npm's global binary directory is on `PATH`, or use `npx easy-code` for a local dependency.
-- Missing API key, 401, or 403: run `easy-code config list` and verify that the provider, key, account, and region match.
-- Image shortcut does nothing: confirm that `dd1000001000.easy-code-image-paste` is installed. If needed, run `npm run vscode:install`, then VS Code's `Developer: Reload Window`. `/image clipboard` is the fallback.
-- Semantic memory falls back to lexical search: reinstall without `--ignore-scripts`, or run `npm run memory:install` followed by `npm run memory:verify` from the EASY CODE source checkout.
-- A command is denied: run `/permissions` to inspect the mode and approval policy. Plan mode blocks writes and builds. Use `--yes` only when unattended approval is intended; hard-deny rules still apply.
-- Node.js is too old: run `node --version`. The minimum is `16.20.0`; rerun `npm install` after changing Node.js versions.
+### `easy-code` is not found
 
-## Development checks
+Make sure npm's global binary directory is on `PATH`, then reinstall:
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm pack --dry-run
+npm install --global .
 ```
+
+### API key missing, 401, or 403
+
+Check the active provider and key status:
+
+```bash
+easy-code config list
+```
+
+Then confirm that the account and region can access the selected model.
+
+### Image paste does not work in VS Code
+
+From the EASY CODE repository, run:
+
+```bash
+npm run vscode:install
+```
+
+Then run `Developer: Reload Window` in VS Code. `/image clipboard` remains available as a fallback.
+
+### Memory resources are missing
+
+Reinstall without `--ignore-scripts`, or repair them from the repository:
+
+```bash
+npm run memory:install
+npm run memory:verify
+```
+
+### A command was refused
+
+Use `/permissions` to inspect the current mode and approval policy. Plan mode does not allow code changes, builds, tests, or dependency installation.
+
+### Node.js is too old
+
+Check the version:
+
+```bash
+node --version
+```
+
+EASY CODE requires Node.js `>=16.20.0`.

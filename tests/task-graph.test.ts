@@ -11,9 +11,15 @@ import type {
 import { createStorage } from "../src/storage/database.js";
 import {
   MAX_TASK_GRAPH_DEFINITION_CHARS,
+  activeTask,
+  activeTaskByOwner,
+  activeTaskForAgent,
+  activeTasksByOwner,
+  applySubagentTaskOperation,
   applyTaskGraphOperation,
   isTaskGraph,
   taskGraphView,
+  validateSubagentTaskTransition,
   type TaskDefinitionInput,
 } from "../src/tasks/task-graph.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
@@ -129,6 +135,168 @@ describe("single-agent task DAG", () => {
     assert.equal(finished.ok, true);
     assert.equal(graph?.status, "completed");
     assert.equal(graph && taskGraphView(graph).completed, 4);
+  });
+
+  it("allows independent subagents to claim parallel tasks while the main agent owns at most one", () => {
+    const created = applyTaskGraphOperation(undefined, {
+      action: "create",
+      goal: "Execute independent DAG branches with isolated agents",
+      tasks: [task("backend"), task("frontend"), task("docs"), task("qa")],
+    }, {
+      turnId: "turn_parallel_create",
+      now: () => new Date("2026-08-27T01:00:00.000Z"),
+    });
+    const backendClaimed = applySubagentTaskOperation(created, {
+      action: "claim",
+      taskId: "backend",
+      agentId: "agent_backend",
+    }, {
+      turnId: "turn_backend_claim",
+      now: () => new Date("2026-08-27T01:00:01.000Z"),
+    });
+    const frontendClaimed = applySubagentTaskOperation(backendClaimed, {
+      action: "claim",
+      taskId: "frontend",
+      agentId: "agent_frontend",
+    }, {
+      turnId: "turn_frontend_claim",
+      now: () => new Date("2026-08-27T01:00:02.000Z"),
+    });
+
+    assert.equal(activeTask(frontendClaimed), undefined);
+    assert.deepEqual(
+      activeTasksByOwner(frontendClaimed, "subagent").map((entry) => entry.id),
+      ["backend", "frontend"],
+    );
+    assert.equal(
+      activeTaskByOwner(frontendClaimed, "subagent", "agent_backend")?.id,
+      "backend",
+    );
+    assert.equal(activeTaskForAgent(frontendClaimed, "agent_frontend")?.id, "frontend");
+    assert.deepEqual(taskGraphView(frontendClaimed).startableTasks, ["docs", "qa"]);
+    assert.throws(
+      () => applySubagentTaskOperation(frontendClaimed, {
+        action: "claim",
+        taskId: "docs",
+        agentId: "agent_backend",
+      }, { turnId: "turn_duplicate_agent" }),
+      /already assigned/u,
+    );
+
+    const mainStarted = applyTaskGraphOperation(frontendClaimed, {
+      action: "start",
+      taskId: "docs",
+    }, {
+      turnId: "turn_main_start",
+      now: () => new Date("2026-08-27T01:00:03.000Z"),
+    });
+    assert.equal(activeTask(mainStarted)?.id, "docs");
+    assert.deepEqual(taskGraphView(mainStarted).startableTasks, ["qa"]);
+    assert.throws(
+      () => applyTaskGraphOperation(mainStarted, {
+        action: "start",
+        taskId: "qa",
+      }, { turnId: "turn_second_main" }),
+      /current main-agent task/u,
+    );
+
+    const backendCompleted = applySubagentTaskOperation(mainStarted, {
+      action: "complete",
+      taskId: "backend",
+      agentId: "agent_backend",
+      evidence: ["Backend focused validation passed"],
+    }, {
+      turnId: "turn_backend_complete",
+      now: () => new Date("2026-08-27T01:00:04.000Z"),
+    });
+    const completedBackend = backendCompleted.tasks.find((entry) => entry.id === "backend");
+    assert.equal(completedBackend?.status, "completed");
+    assert.equal(completedBackend?.owner, "subagent");
+    assert.equal(completedBackend?.assignedAgentId, "agent_backend");
+
+    const frontendReleased = applySubagentTaskOperation(backendCompleted, {
+      action: "release",
+      taskId: "frontend",
+      agentId: "agent_frontend",
+    }, {
+      turnId: "turn_frontend_release",
+      now: () => new Date("2026-08-27T01:00:05.000Z"),
+    });
+    const releasedFrontend = frontendReleased.tasks.find((entry) => entry.id === "frontend");
+    assert.equal(releasedFrontend?.status, "pending");
+    assert.equal(releasedFrontend?.owner, "main_agent");
+    assert.equal(releasedFrontend?.assignedAgentId, undefined);
+    assert.equal(releasedFrontend?.startedAt, undefined);
+    assert.deepEqual(taskGraphView(frontendReleased).startableTasks, ["frontend", "qa"]);
+  });
+
+  it("binds subagent completion and release to the exact assigned agent and validates replay", () => {
+    const created = applyTaskGraphOperation(undefined, {
+      action: "create",
+      goal: "Validate Runtime-owned subagent transitions",
+      tasks: [task("inspect")],
+    }, {
+      turnId: "turn_agent_validation_create",
+      now: () => new Date("2026-08-27T02:00:00.000Z"),
+    });
+    const operation = {
+      action: "claim" as const,
+      taskId: "inspect",
+      agentId: "agent_inspector",
+    };
+    const claimed = applySubagentTaskOperation(created, operation, {
+      turnId: "turn_agent_validation_claim",
+      now: () => new Date("2026-08-27T02:00:01.000Z"),
+    });
+
+    assert.deepEqual(
+      validateSubagentTaskTransition(
+        created,
+        operation,
+        claimed,
+        "turn_agent_validation_claim",
+      ),
+      claimed,
+    );
+    assert.throws(
+      () => validateSubagentTaskTransition(
+        created,
+        operation,
+        {
+          ...claimed,
+          tasks: claimed.tasks.map((entry) => entry.id === "inspect"
+            ? { ...entry, assignedAgentId: "agent_tampered" }
+            : entry),
+        },
+        "turn_agent_validation_claim",
+      ),
+      /does not match/u,
+    );
+    assert.throws(
+      () => applySubagentTaskOperation(claimed, {
+        action: "complete",
+        taskId: "inspect",
+        agentId: "agent_other",
+        evidence: ["Untrusted evidence"],
+      }, { turnId: "turn_wrong_agent_complete" }),
+      /not assigned/u,
+    );
+    assert.throws(
+      () => applySubagentTaskOperation(claimed, {
+        action: "release",
+        taskId: "inspect",
+        agentId: "agent_other",
+      }, { turnId: "turn_wrong_agent_release" }),
+      /not assigned/u,
+    );
+    assert.throws(
+      () => applyTaskGraphOperation(claimed, {
+        action: "complete",
+        taskId: "inspect",
+        evidence: ["Main agent attempted to take child evidence"],
+      }, { turnId: "turn_main_takeover" }),
+      /assigned to a subagent/u,
+    );
   });
 
   it("rejects cycles, duplicate IDs, unsafe text, and replacement of an active graph", async () => {

@@ -7,6 +7,7 @@ import { describe, it } from "./harness.js";
 function graph(): TaskGraphView {
   const common = {
     description: "Task description",
+    owner: "main_agent" as const,
     dependencies: [] as string[],
     blockedBy: [] as string[],
     inputs: [] as string[],
@@ -74,5 +75,20 @@ describe("task DAG terminal UI", () => {
     assert.doesNotMatch(plain, /abcdefghijklmnopqrstuvwxyz/u);
     assert.match(plain, /\[REDACTED\]/u);
     assert.match(colored, /\u001B\[/u);
+  });
+
+  it("shows the Runtime-issued child ID on an assigned task", () => {
+    const view = graph();
+    view.currentTask = null;
+    view.tasks[1] = {
+      ...view.tasks[1]!,
+      owner: "subagent",
+      assignedAgentId: "subagent_00000000-0000-4000-8000-000000000001",
+    };
+    const rendered = renderTaskGraph(view, { color: false });
+    assert.match(
+      rendered,
+      /▶ 2\. \[implement\] Implement feature · child subagent_00000000-0000-4000-8000-000000000001 \(in progress\)/u,
+    );
   });
 });

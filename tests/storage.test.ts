@@ -107,9 +107,9 @@ describe("storage", () => {
               "SELECT COUNT(*) AS count FROM schema_migrations",
             )
             .get()?.count,
-          3,
+          4,
         );
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 3);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 4);
       } finally {
         reopened.close();
       }
