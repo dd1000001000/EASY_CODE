@@ -5,8 +5,14 @@ import type {
   ApprovalRequest,
   FileDiffPresentation,
   ImageAttachment,
+  PlanProposal,
   ThinkingEffort,
 } from "../core/types.js";
+import {
+  MAX_PLAN_FEEDBACK_CHARS,
+  formatPlanProposal,
+  sanitizePlanText,
+} from "../plans/plan.js";
 import { readSecretInput } from "../config/secret-input.js";
 import { renderFileDiff } from "./file-diff.js";
 import {
@@ -30,6 +36,14 @@ import {
   type ProviderSelectorChoice,
   type ThinkingEffortSelectorChoice,
 } from "./model-selector.js";
+import { renderTaskGraph } from "./task-graph.js";
+import type { TaskGraphView } from "../tasks/task-graph.js";
+
+export type PlanReviewDecision =
+  | { action: "approve" }
+  | { action: "reject" }
+  | { action: "adjust"; feedback: string }
+  | { action: "defer" };
 
 export class Terminal {
   private static readonly ACTIVITY_FRAMES = [
@@ -229,6 +243,42 @@ export class Terminal {
     return answer === "y" || answer === "yes" || answer === "是";
   }
 
+  showPlan(plan: Readonly<PlanProposal>): void {
+    this.write(`\n${formatPlanProposal(plan)}\n`);
+  }
+
+  async reviewPlan(): Promise<PlanReviewDecision> {
+    if (!this.isInteractive()) return { action: "defer" };
+    while (!this.closed) {
+      this.write("\nWhat would you like to do?\n\n");
+      this.write("1. Yes, use Auto mode\n");
+      this.write("2. No, reject plan\n");
+      this.write("3. Type feedback and press Enter to adjust the plan\n\n");
+      const response = await this.question(
+        "Choose 1/2, or type feedback to adjust > ",
+      );
+      if (response === null) return { action: "defer" };
+      const answer = sanitizePlanText(response, MAX_PLAN_FEEDBACK_CHARS);
+      if (!answer) continue;
+      const normalized = answer.toLowerCase();
+      if (normalized === "1" || normalized === "y" || normalized === "yes") {
+        return { action: "approve" };
+      }
+      if (normalized === "2" || normalized === "n" || normalized === "no") {
+        return { action: "reject" };
+      }
+      if (normalized === "3") {
+        const feedback = await this.question("Plan feedback > ");
+        if (feedback === null) return { action: "defer" };
+        const sanitized = sanitizePlanText(feedback, MAX_PLAN_FEEDBACK_CHARS);
+        if (!sanitized) continue;
+        return { action: "adjust", feedback: sanitized };
+      }
+      return { action: "adjust", feedback: answer };
+    }
+    return { action: "defer" };
+  }
+
   write(text: string): void {
     this.stopActivity();
     this.output.write(text);
@@ -292,6 +342,10 @@ export class Terminal {
 
   fileDiff(presentation: FileDiffPresentation): void {
     this.write(renderFileDiff(presentation, { color: this.colorEnabled() }));
+  }
+
+  taskGraph(graph: Readonly<TaskGraphView>): void {
+    this.write(renderTaskGraph(graph, { color: this.colorEnabled() }));
   }
 
   /** Store provider thinking safely and print only its collapsed marker. */

@@ -50,6 +50,7 @@ describe("workspace file tools", () => {
           "delete_file",
           "run_command",
           "manage_tasks",
+          "propose_plan",
           "compact_context",
         ],
       );

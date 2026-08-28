@@ -120,6 +120,8 @@ describe("system prompt builder", () => {
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
       assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
+      assert.match(prompt, /propose_plan is the only valid way/u);
+      assert.match(prompt, /Plain assistant text cannot complete a Plan-mode turn/u);
       assert.match(prompt, /Do not create a task DAG/u);
       assert.match(prompt, /BEGIN_UNTRUSTED_TASK_DAG/u);
       assert.match(prompt, /"currentTask": null/u);

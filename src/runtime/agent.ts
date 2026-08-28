@@ -12,6 +12,8 @@ import {
   type LongTermMemory,
   type MemoryMutationRequest,
   type ModelProvider,
+  type PlanProposal,
+  type PlanReviewState,
   type SessionState,
   type TaskGraph,
   type ToolExecutionResult,
@@ -27,6 +29,10 @@ import {
   nextThreadImageNumber,
 } from "../images/labels.js";
 import { validateProviderImageAttachments } from "../models/catalog.js";
+import {
+  createPlanReviewState,
+  formatPlanProposal,
+} from "../plans/plan.js";
 import {
   activeTask,
   cloneTaskGraph,
@@ -51,6 +57,7 @@ export interface AgentRuntimeDependencies {
     workspaceSummary: string;
     memories: ReadonlyArray<Readonly<LongTermMemory>>;
     taskGraph?: Readonly<TaskGraph>;
+    planReview?: Readonly<PlanReviewState>;
   }) => Promise<string>;
   getWorkspaceSummary: () => Promise<string>;
   searchMemories: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
@@ -102,15 +109,24 @@ export interface AgentRunOptions {
   commandTimeoutMs: number;
   approvalPolicy: "safe" | "ask" | "never";
   signal?: AbortSignal;
+  /** Runtime-owned Plan-review transition; never inferred from user text. */
+  modeOverride?: "plan" | "code";
+  /** Exact approved proposal consumed after its execution user message is durable. */
+  approvedPlan?: Pick<PlanProposal, "id" | "revision">;
 }
 
 function availableTools(tools: AgentTool[], mode: AgentMode): AgentTool[] {
-  if (mode !== "plan") return tools;
+  if (mode !== "plan") {
+    return tools.filter(
+      (tool) => tool.name !== "propose_plan" && tool.name !== "select_mode",
+    );
+  }
   return tools.filter(
     (tool) =>
       tool.name === "read_file" ||
       tool.name === "read_image" ||
       tool.name === "run_command" ||
+      tool.name === "propose_plan" ||
       tool.name === "compact_context" ||
       tool.name === "manage_memory",
   );
@@ -217,13 +233,62 @@ export class AgentRuntime {
       await this.dependencies.commitImages?.(state.threadId, inputImages);
     }
 
-    let effectiveMode: AgentMode = state.mode;
+    if (options.approvedPlan) {
+      const review = state.planReview;
+      if (
+        !review ||
+        review.status !== "approved_pending_execution" ||
+        review.proposal.id !== options.approvedPlan.id ||
+        review.proposal.revision !== options.approvedPlan.revision
+      ) {
+        throw new Error("The approved plan no longer matches the pending review state");
+      }
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "plan.execution_started",
+        phase: "completed",
+        payload: {
+          planId: review.proposal.id,
+          revision: review.proposal.revision,
+        },
+      });
+      state.planReview = undefined;
+      state.updatedAt = new Date().toISOString();
+    }
+
+    if (options.modeOverride && state.mode !== "auto") {
+      throw new Error("A review mode override is valid only while the persistent mode is Auto");
+    }
+    if (
+      options.modeOverride === "plan" &&
+      state.taskGraph &&
+      state.taskGraph.status !== "completed"
+    ) {
+      throw new Error("An active task DAG cannot be adjusted in Plan mode");
+    }
+
+    let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
     let autoReason = "";
-    if (state.mode === "auto") {
+    if (state.mode === "auto" && options.modeOverride) {
+      autoReason = options.modeOverride === "plan"
+        ? "The user requested a revision of the pending plan."
+        : "Runtime resumed an explicitly selected Code operation.";
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "mode.review_override",
+        phase: "completed",
+        payload: { mode: options.modeOverride, reason: autoReason },
+      });
+      this.dependencies.onStatus?.(
+        `Auto mode review transition: ${options.modeOverride} — ${autoReason}`,
+      );
+    } else if (state.mode === "auto") {
       const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
-      const route = unfinishedGraph
+      const selection = unfinishedGraph
         ? {
-            route: "direct_code" as const,
+            mode: "code" as const,
             reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
           }
           : await (async () => {
@@ -239,19 +304,28 @@ export class AgentRuntime {
                 options.signal,
                 inputImages,
                 state.thinkingEffort,
+                {
+                  workingSummary: state.workingSummary,
+                  priorMessages: state.messages.slice(
+                    Math.min(state.compactedMessageCount, state.messages.length - 1),
+                    -1,
+                  ),
+                },
               ),
             );
           })();
-      effectiveMode = route.route === "plan_only" ? "plan" : "code";
-      autoReason = route.reason;
+      effectiveMode = selection.mode;
+      autoReason = selection.reason;
       await this.dependencies.appendEvent({
         threadId: state.threadId,
         turnId,
         type: "mode.auto_route",
         phase: "completed",
-        payload: route
+        payload: selection
       });
-      this.dependencies.onStatus?.(`Auto mode: ${route.route} — ${route.reason}`);
+      this.dependencies.onStatus?.(
+        `Auto mode selected ${selection.mode} — ${selection.reason}`,
+      );
     }
 
     const memories = await this.dependencies.searchMemories(userInput);
@@ -266,6 +340,7 @@ export class AgentRuntime {
     let memoryFinalizationAllowanceGranted = false;
     let taskDagFinalizationOnly = false;
     let taskDagFinalResponseAllowanceGranted = false;
+    let planToolReminderIssued = false;
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -289,6 +364,7 @@ export class AgentRuntime {
         )
           ? { taskGraph: state.taskGraph }
           : {}),
+        ...(state.planReview ? { planReview: state.planReview } : {}),
       });
       const messages = this.dependencies.contextManager.build({
         systemPrompt,
@@ -420,12 +496,42 @@ export class AgentRuntime {
           );
           continue;
         }
+        if (effectiveMode === "plan") {
+          if (!planToolReminderIssued) {
+            planToolReminderIssued = true;
+            const reminder: Extract<ChatMessage, { role: "user" }> = {
+              role: "user",
+              content:
+                "RUNTIME_PLAN_PROTOCOL: A Plan-mode response must be submitted by calling " +
+                "propose_plan by itself. Plain assistant text cannot become an executable plan.",
+            };
+            state.messages.push(reminder);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "message.user.synthetic",
+              phase: "completed",
+              payload: reminder,
+            });
+            this.dependencies.onStatus?.(
+              "The model did not submit its plan with propose_plan; requesting one correction.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            "The model did not submit a structured plan with propose_plan.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
         this.dependencies.onText?.(text);
         const reason = state.taskGraph?.status === "blocked"
           ? "blocked"
-          : effectiveMode === "plan"
-            ? "planned"
-            : "success";
+          : "success";
         const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
         return this.finish(state, turnId, `${prefix}${text}`, reason, step, memoryContext);
       }
@@ -434,10 +540,13 @@ export class AgentRuntime {
         calls.length === 1 && calls[0]?.function.name === "compact_context";
       const manageTasksBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
+      const proposePlanBatched =
+        calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
       const compactContextHasNewHistory =
         state.messages.length - 1 > state.compactedMessageCount;
       const stepImageAttachments: ImageAttachment[] = [];
       let successfulMemoryToolCall = false;
+      let proposedPlan: PlanProposal | undefined;
 
       for (const call of calls) {
         const toolName = call.function.name as ToolName;
@@ -460,6 +569,12 @@ export class AgentRuntime {
             ok: false,
             summary: "manage_tasks must be the only tool call in a model response.",
             error: "manage_tasks_must_be_exclusive",
+          };
+        } else if (proposePlanBatched) {
+          result = {
+            ok: false,
+            summary: "propose_plan must be the only tool call in a model response.",
+            error: "propose_plan_must_be_exclusive",
           };
         } else if (toolName === "compact_context" && !compactContextIsExclusive) {
           result = {
@@ -599,6 +714,32 @@ export class AgentRuntime {
           };
         }
 
+        let planReviewUpdate: SessionState["planReview"] | undefined;
+        if (result.ok && result.planProposal) {
+          try {
+            if (toolName !== "propose_plan" || effectiveMode !== "plan") {
+              throw new Error("Only propose_plan may submit a proposal in Plan mode");
+            }
+            planReviewUpdate = createPlanReviewState(
+              result.planProposal,
+              turnId,
+              state.planReview,
+            );
+          } catch (error) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid plan proposal.",
+              error: error instanceof Error ? error.message : String(error),
+            };
+          }
+        } else if (result.ok && toolName === "propose_plan") {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing plan proposal.",
+            error: "propose_plan did not return a structured proposal",
+          };
+        }
+
         const toolMessage: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
@@ -620,10 +761,16 @@ export class AgentRuntime {
             ...(taskGraphUpdate && taskGraphOperation
               ? { taskGraph: taskGraphUpdate, taskGraphOperation }
               : {}),
+            ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
           }
         });
         if (taskGraphUpdate) {
           state.taskGraph = taskGraphUpdate;
+          state.updatedAt = new Date().toISOString();
+        }
+        if (planReviewUpdate) {
+          state.planReview = planReviewUpdate;
+          proposedPlan = planReviewUpdate.proposal;
           state.updatedAt = new Date().toISOString();
         }
         if (result.ok && result.imageAttachments?.length) {
@@ -659,6 +806,25 @@ export class AgentRuntime {
           successfulMemoryToolCall = true;
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+      }
+
+      if (proposedPlan) {
+        const text =
+          `${formatPlanProposal(proposedPlan)}\n\n` +
+          "This plan is waiting for user review.";
+        this.dependencies.onText?.(text);
+        const prefix = state.mode === "auto" && autoReason
+          ? `Auto decision: ${autoReason}\n\n`
+          : "";
+        return this.finish(
+          state,
+          turnId,
+          `${prefix}${text}`,
+          "planned",
+          step,
+          memoryContext,
+          proposedPlan,
+        );
       }
 
       if (stepImageAttachments.length) {
@@ -775,11 +941,19 @@ export class AgentRuntime {
       userInput: string;
       mutations: readonly MemoryMutationRequest[];
     },
+    planProposal?: PlanProposal,
   ): Promise<AgentRunResult> {
     state.activeTurnId = undefined;
     state.updatedAt = new Date().toISOString();
     const lastMessage = state.messages[state.messages.length - 1];
-    const result = { text, reason, steps, threadId: state.threadId, turnId };
+    const result: AgentRunResult = {
+      text,
+      reason,
+      steps,
+      threadId: state.threadId,
+      turnId,
+      ...(planProposal ? { planProposal } : {}),
+    };
     if (
       !lastMessage ||
       lastMessage.role !== "assistant" ||
@@ -801,7 +975,13 @@ export class AgentRuntime {
       turnId,
       type: "turn.completed",
       phase: "completed",
-      payload: { reason, steps }
+      payload: {
+        reason,
+        steps,
+        ...(planProposal
+          ? { planId: planProposal.id, revision: planProposal.revision }
+          : {}),
+      }
     });
 
     if (

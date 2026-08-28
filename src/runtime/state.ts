@@ -1,4 +1,5 @@
 import type { EasyCodeConfig, SessionState } from "../core/types.js";
+import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
 
@@ -36,5 +37,6 @@ export function cloneSessionState(state: SessionState): SessionState {
     changes: [...state.changes],
     commands: [...state.commands],
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
+    ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
   };
 }

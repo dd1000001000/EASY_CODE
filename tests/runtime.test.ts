@@ -15,6 +15,7 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";
+import { ProposePlanTool } from "../src/tools/propose-plan.js";
 
 function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   const now = new Date().toISOString();
@@ -50,7 +51,15 @@ describe("AgentRuntime", () => {
           return {
             message: {
               role: "assistant",
-              content: '{"route":"direct_code","reason":"A scoped task."}',
+              content: null,
+              tool_calls: [{
+                id: "call_select_mode",
+                type: "function",
+                function: {
+                  name: "select_mode",
+                  arguments: '{"mode":"code","reason":"A scoped task."}',
+                },
+              }],
               reasoning_content: "internal router thinking",
             },
           };
@@ -258,7 +267,16 @@ describe("AgentRuntime", () => {
           return {
             message: {
               role: "assistant",
-              content: '{"route":"direct_code","reason":"The screenshot identifies a scoped fix."}',
+              content: null,
+              tool_calls: [{
+                id: "call_select_mode_image",
+                type: "function",
+                function: {
+                  name: "select_mode",
+                  arguments:
+                    '{"mode":"code","reason":"The screenshot identifies a scoped fix."}',
+                },
+              }],
             },
           };
         }
@@ -489,7 +507,28 @@ describe("AgentRuntime", () => {
       model: "mock",
       async complete(request) {
         seenToolNames = request.tools?.map((tool) => tool.function.name) ?? [];
-        return { message: { role: "assistant", content: "计划", tool_calls: [] } };
+        return {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "call_propose_plan",
+              type: "function",
+              function: {
+                name: "propose_plan",
+                arguments: JSON.stringify({
+                  title: "Plan the change",
+                  overview: "Inspect and implement the requested scoped change.",
+                  steps: [{
+                    title: "Implement and verify",
+                    description: "Make the scoped change after the user approves this plan.",
+                    verification: "Run the relevant test suite.",
+                  }],
+                }),
+              },
+            }],
+          },
+        };
       }
     };
     const tools = [
@@ -500,10 +539,11 @@ describe("AgentRuntime", () => {
       "delete_file",
       "run_command",
       "manage_tasks",
+      "propose_plan",
       "compact_context",
       "manage_memory",
     ].map(
-      (name): AgentTool => ({
+      (name): AgentTool => name === "propose_plan" ? new ProposePlanTool() : ({
         name: name as AgentTool["name"],
         mutating: name !== "read_file",
         definition: {
@@ -542,6 +582,7 @@ describe("AgentRuntime", () => {
       "read_file",
       "read_image",
       "run_command",
+      "propose_plan",
       "compact_context",
       "manage_memory",
     ]);

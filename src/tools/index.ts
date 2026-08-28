@@ -4,6 +4,7 @@ export * from "./create-file.js";
 export * from "./delete-file.js";
 export * from "./manage-memory.js";
 export * from "./manage-tasks.js";
+export * from "./propose-plan.js";
 export * from "./read-file.js";
 export * from "./read-image.js";
 export * from "./registry.js";
