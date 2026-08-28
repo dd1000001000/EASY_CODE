@@ -6,6 +6,8 @@ export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
 export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 
 export type ToolName =
+  | "select_mode"
+  | "propose_plan"
   | "read_file"
   | "read_image"
   | "create_file"
@@ -158,6 +160,8 @@ export interface ToolExecutionResult {
   memoryMutation?: MemoryMutationRequest;
   /** Runtime-owned task-DAG transition. It is persisted separately from model-visible data. */
   taskGraphUpdate?: TaskGraph;
+  /** Structured Plan-mode proposal. Runtime assigns its durable identity and review revision. */
+  planProposal?: PlanDraft;
   /**
    * Local image references that Runtime promotes into a synthetic multimodal user
    * message after all matching textual tool results have been appended.
@@ -309,6 +313,32 @@ export interface TaskGraph {
   updatedAt: string;
 }
 
+export interface PlanStepDraft {
+  title: string;
+  description: string;
+  verification: string;
+}
+
+export interface PlanDraft {
+  title: string;
+  overview: string;
+  steps: PlanStepDraft[];
+}
+
+export interface PlanProposal extends PlanDraft {
+  id: string;
+  revision: number;
+  proposedByTurnId: string;
+  proposedAt: string;
+}
+
+export interface PlanReviewState {
+  status: "awaiting_review" | "approved_pending_execution";
+  proposal: PlanProposal;
+  feedback?: string;
+  approvedAt?: string;
+}
+
 export interface SessionState {
   threadId: string;
   activeTurnId?: string;
@@ -325,6 +355,8 @@ export interface SessionState {
   commands: CommandAuditEntry[];
   /** Optional model-created DAG for one complex objective; Runtime owns all transitions. */
   taskGraph?: TaskGraph;
+  /** Runtime-owned proposal awaiting a user review or an already-approved execution turn. */
+  planReview?: PlanReviewState;
   workingSummary: string;
   /** Number of leading messages represented by workingSummary and omitted from future model requests. */
   compactedMessageCount: number;
@@ -363,4 +395,6 @@ export interface AgentRunResult {
   steps: number;
   threadId: string;
   turnId: string;
+  /** Present only when propose_plan ended this turn for interactive review. */
+  planProposal?: PlanProposal;
 }

@@ -7,10 +7,12 @@ import {
   type FileChangeRecord,
   type FileVersion,
   type ImageAttachment,
+  type PlanReviewState,
   type SessionState,
   type TaskGraph,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
+import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 
 export interface SerializedSessionState {
@@ -28,6 +30,7 @@ export interface SerializedSessionState {
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
   readonly taskGraph?: TaskGraph;
+  readonly planReview?: PlanReviewState;
   readonly workingSummary: string;
   readonly compactedMessageCount: number;
   readonly createdAt: string;
@@ -44,6 +47,88 @@ function hasOnlyKeys(
 ): boolean {
   const keys = new Set(allowed);
   return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isSafePlanText(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.length <= maxLength &&
+    !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u.test(value)
+  );
+}
+
+export function isPlanReviewState(value: unknown): value is PlanReviewState {
+  if (!isRecord(value)) return false;
+  if (!hasOnlyKeys(value, ["status", "proposal", "feedback", "approvedAt"])) {
+    return false;
+  }
+  if (
+    value.status !== "awaiting_review" &&
+    value.status !== "approved_pending_execution"
+  ) {
+    return false;
+  }
+  const proposal = value.proposal;
+  if (!isRecord(proposal)) return false;
+  if (!hasOnlyKeys(proposal, [
+    "id",
+    "revision",
+    "proposedByTurnId",
+    "proposedAt",
+    "title",
+    "overview",
+    "steps",
+  ])) {
+    return false;
+  }
+  if (
+    typeof proposal.id !== "string" ||
+    !/^plan_[A-Za-z0-9_-]{1,160}$/u.test(proposal.id) ||
+    !Number.isInteger(proposal.revision) ||
+    Number(proposal.revision) < 1 ||
+    typeof proposal.proposedByTurnId !== "string" ||
+    proposal.proposedByTurnId.length < 1 ||
+    proposal.proposedByTurnId.length > 256 ||
+    typeof proposal.proposedAt !== "string" ||
+    !isSafePlanText(proposal.title, 200) ||
+    !isSafePlanText(proposal.overview, 4_000) ||
+    !Array.isArray(proposal.steps) ||
+    proposal.steps.length < 1 ||
+    proposal.steps.length > 24
+  ) {
+    return false;
+  }
+  for (const step of proposal.steps) {
+    if (
+      !isRecord(step) ||
+      !hasOnlyKeys(step, ["title", "description", "verification"]) ||
+      !isSafePlanText(step.title, 200) ||
+      !isSafePlanText(step.description, 2_000) ||
+      !isSafePlanText(step.verification, 1_000)
+    ) {
+      return false;
+    }
+  }
+  if (
+    value.feedback !== undefined &&
+    !isSafePlanText(value.feedback, 4_000)
+  ) {
+    return false;
+  }
+  if (value.approvedAt !== undefined && typeof value.approvedAt !== "string") {
+    return false;
+  }
+  if (
+    value.status === "approved_pending_execution" &&
+    typeof value.approvedAt !== "string"
+  ) {
+    return false;
+  }
+  if (value.status === "awaiting_review" && value.approvedAt !== undefined) {
+    return false;
+  }
+  return true;
 }
 
 export function isImageAttachment(value: unknown): value is ImageAttachment {
@@ -173,6 +258,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
       args: [...command.args],
     })),
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
+    ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     workingSummary: state.workingSummary,
     compactedMessageCount: state.compactedMessageCount,
     createdAt: state.createdAt,
@@ -198,6 +284,7 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Array.isArray(value.changes) ||
     !Array.isArray(value.commands) ||
     (value.taskGraph !== undefined && !isTaskGraph(value.taskGraph)) ||
+    (value.planReview !== undefined && !isPlanReviewState(value.planReview)) ||
     typeof value.workingSummary !== "string" ||
     (value.compactedMessageCount !== undefined &&
       (!Number.isInteger(value.compactedMessageCount) ||
@@ -252,6 +339,9 @@ export function deserializeSessionState(value: unknown): SessionState {
     })),
     ...(isTaskGraph(value.taskGraph)
       ? { taskGraph: cloneTaskGraph(value.taskGraph) }
+      : {}),
+    ...(isPlanReviewState(value.planReview)
+      ? { planReview: clonePlanReviewState(value.planReview) }
       : {}),
     // Checkpoints created before model-controlled compaction used workingSummary as a
     // transient overflow cache and had no boundary. Dropping that derived value avoids

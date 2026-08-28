@@ -84,7 +84,15 @@ describe("model request loading indicator", () => {
           ? {
               message: {
                 role: "assistant",
-                content: '{"route":"direct_code","reason":"Scoped change."}',
+                content: null,
+                tool_calls: [{
+                  id: "call_select_mode",
+                  type: "function",
+                  function: {
+                    name: "select_mode",
+                    arguments: '{"mode":"code","reason":"Scoped change."}',
+                  },
+                }],
               },
             }
           : {

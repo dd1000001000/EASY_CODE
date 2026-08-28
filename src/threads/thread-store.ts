@@ -23,9 +23,11 @@ import { EventJournal, type AppendEventInput } from "./event-journal.js";
 import {
   deserializeSessionState,
   isChatMessage,
+  isPlanReviewState,
   serializeChatMessage,
   serializeSessionState,
 } from "./serialization.js";
+import { clonePlanReviewState } from "../plans/plan.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -191,6 +193,7 @@ export class ThreadStore {
         args: [...command.args],
       })),
       ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
+      ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     };
     state.updatedAt = snapshot.updatedAt;
 
@@ -286,6 +289,23 @@ export class ThreadStore {
             },
             payload,
           );
+        }
+        if (
+          payload &&
+          ((input.type === "tool.result" && "planReview" in payload) ||
+            input.type === "plan.approved" ||
+            input.type === "plan.rejected" ||
+            input.type === "plan.feedback_submitted" ||
+            input.type === "plan.execution_started")
+        ) {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          this.replayPlanReviewEvent(priorState, {
+            eventId: input.eventId ?? "pending_plan_event",
+            timestamp: input.timestamp ?? new Date().toISOString(),
+            type: input.type,
+            turnId: input.turnId,
+            phase: input.phase,
+          }, payload);
         }
         // Keep append inside the database write transaction: its cross-process
         // lock serializes EventJournal's scan/sequence/append critical section.
@@ -503,6 +523,13 @@ export class ThreadStore {
               `Thread checkpoint ${event.eventId} introduced a task DAG without a legal transition`,
             );
           }
+          if (state.planReview) {
+            checkpoint.planReview = clonePlanReviewState(state.planReview);
+          } else if (checkpoint.planReview) {
+            throw new Error(
+              `Thread checkpoint ${event.eventId} introduced a plan review without a legal event`,
+            );
+          }
         }
         state = checkpoint;
         continue;
@@ -550,6 +577,9 @@ export class ThreadStore {
         if ("taskGraph" in payload) {
           state.taskGraph = this.replayTaskGraphResult(state, event, payload);
         }
+        if ("planReview" in payload) {
+          this.replayPlanReviewEvent(state, event, payload);
+        }
         if (isChatMessage(payload.message) && payload.message.role === "tool") {
           appendMessageIfNew(state, payload.message);
         } else {
@@ -562,6 +592,17 @@ export class ThreadStore {
             name: tool,
             content: JSON.stringify(payload.result ?? null).slice(0, 64_000),
           });
+        }
+      } else if (
+        (event.type === "plan.approved" ||
+          event.type === "plan.rejected" ||
+          event.type === "plan.feedback_submitted" ||
+          event.type === "plan.execution_started") &&
+        payload
+      ) {
+        this.replayPlanReviewEvent(state, event, payload);
+        if (isChatMessage(payload.message) && payload.message.role === "user") {
+          appendMessageIfNew(state, payload.message);
         }
       } else if (event.type === "turn.completed") {
         state.activeTurnId = undefined;
@@ -628,6 +669,103 @@ export class ThreadStore {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid task DAG transition in tool.result event ${event.eventId}: ${message}`);
     }
+  }
+
+  private replayPlanReviewEvent(
+    state: SessionState,
+    event: Pick<EventRecord, "eventId" | "timestamp" | "type" | "turnId" | "phase">,
+    payload: Record<string, unknown>,
+  ): void {
+    if (event.type === "tool.result") {
+      if (
+        event.phase !== "completed" ||
+        payload.tool !== "propose_plan" ||
+        !isPlanReviewState(payload.planReview) ||
+        payload.planReview.status !== "awaiting_review" ||
+        !event.turnId ||
+        payload.planReview.proposal.proposedByTurnId !== event.turnId
+      ) {
+        throw new Error(`Invalid plan proposal source in tool.result event ${event.eventId}`);
+      }
+      const previous = state.planReview?.proposal;
+      const next = payload.planReview.proposal;
+      if (previous) {
+        if (
+          state.planReview?.status !== "awaiting_review" ||
+          next.id !== previous.id ||
+          next.revision !== previous.revision + 1
+        ) {
+          throw new Error(`Invalid plan revision in tool.result event ${event.eventId}`);
+        }
+      } else if (next.revision !== 1) {
+        throw new Error(`Initial plan proposal must use revision 1 in event ${event.eventId}`);
+      }
+      state.planReview = clonePlanReviewState(payload.planReview);
+      return;
+    }
+
+    const current = state.planReview;
+    const planId = payload.planId;
+    const revision = payload.revision;
+    if (
+      !current ||
+      typeof planId !== "string" ||
+      !Number.isInteger(revision) ||
+      current.proposal.id !== planId ||
+      current.proposal.revision !== revision
+    ) {
+      throw new Error(`Plan review event ${event.eventId} does not match the pending proposal`);
+    }
+
+    if (event.type === "plan.feedback_submitted") {
+      if (current.status !== "awaiting_review") {
+        throw new Error(`Cannot adjust an approved plan in event ${event.eventId}`);
+      }
+      const feedback = payload.feedback;
+      if (
+        typeof feedback !== "string" ||
+        feedback.trim().length === 0 ||
+        feedback.length > 4_000 ||
+        /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u.test(feedback)
+      ) {
+        throw new Error(`Invalid plan feedback in event ${event.eventId}`);
+      }
+      state.planReview = {
+        ...clonePlanReviewState(current),
+        feedback,
+      };
+      return;
+    }
+
+    if (event.type === "plan.approved") {
+      if (current.status !== "awaiting_review") {
+        throw new Error(`Plan ${planId} was already approved in event ${event.eventId}`);
+      }
+      state.planReview = {
+        ...clonePlanReviewState(current),
+        status: "approved_pending_execution",
+        approvedAt: event.timestamp,
+      };
+      return;
+    }
+
+    if (event.type === "plan.rejected") {
+      if (current.status !== "awaiting_review") {
+        throw new Error(`Cannot reject an approved plan in event ${event.eventId}`);
+      }
+      state.planReview = undefined;
+      return;
+    }
+
+    if (event.type === "plan.execution_started") {
+      if (current.status !== "approved_pending_execution") {
+        throw new Error(`Cannot execute an unapproved plan in event ${event.eventId}`);
+      }
+      state.planReview = undefined;
+      return;
+    }
+
+    throw new Error(`Unsupported plan review event ${event.type}`);
   }
 
   private threadExists(threadId: string): boolean {

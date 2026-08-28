@@ -20,7 +20,44 @@ function messageChars(message: ChatMessage): number {
   if (message.role === "assistant" && message.tool_calls) {
     size += JSON.stringify(message.tool_calls).length;
   }
+  if (message.role === "assistant" && message.reasoning_content) {
+    size += message.reasoning_content.length;
+  }
   return size + 32;
+}
+
+/** Tokenizer-independent estimate suitable for a mixed English/CJK CLI counter. */
+export function estimateTextTokens(value: string): number {
+  let asciiCharacters = 0;
+  let nonAsciiCodePoints = 0;
+  for (const character of value) {
+    if ((character.codePointAt(0) ?? 0) <= 0x7f) asciiCharacters += 1;
+    else nonAsciiCodePoints += 1;
+  }
+  return Math.ceil(asciiCharacters / 4) + nonAsciiCodePoints;
+}
+
+function estimateMessageTextTokens(message: ChatMessage): number {
+  let tokens = 8;
+  if (message.content) tokens += estimateTextTokens(message.content);
+  if (message.role === "assistant" && message.tool_calls) {
+    tokens += estimateTextTokens(JSON.stringify(message.tool_calls));
+  }
+  if (message.role === "assistant" && message.reasoning_content) {
+    tokens += estimateTextTokens(message.reasoning_content);
+  }
+  return tokens;
+}
+
+function estimateVisionTokens(messages: readonly ChatMessage[]): number {
+  return messages.reduce((total, message) => {
+    if (message.role !== "user") return total;
+    return total + (message.images ?? []).reduce(
+      (imageTotal, image) =>
+        imageTotal + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
+      0,
+    );
+  }, 0);
 }
 
 function summarizeMessages(messages: ChatMessage[]): string {
@@ -149,6 +186,26 @@ function summaryMessage(content: string): ChatMessage {
 }
 
 export class ContextManager {
+  /** Estimate the persisted summary plus currently active thread messages. */
+  estimateShortTermTokens(state: Readonly<SessionState>): number {
+    const compactedMessageCount = Math.min(
+      Math.max(0, state.compactedMessageCount),
+      state.messages.length,
+    );
+    const activeMessages = limitActiveImages(removeOrphanToolMessages(
+      state.messages.slice(compactedMessageCount),
+    ));
+    const persistentSummary = state.workingSummary.trim();
+    const messages = [
+      ...(persistentSummary ? [summaryMessage(persistentSummary)] : []),
+      ...activeMessages,
+    ];
+    return messages.reduce(
+      (total, message) => total + estimateMessageTextTokens(message),
+      estimateVisionTokens(messages),
+    );
+  }
+
   applyModelCompaction(
     state: SessionState,
     summary: string,
@@ -286,6 +343,7 @@ export class ContextManager {
     imageCount: number;
     imageBytes: number;
     estimatedVisionTokens: number;
+    estimatedShortTermTokens: number;
   } {
     const images = state.messages.flatMap((message) =>
       message.role === "user" ? message.images ?? [] : [],
@@ -304,6 +362,7 @@ export class ContextManager {
           total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
         0,
       ),
+      estimatedShortTermTokens: this.estimateShortTermTokens(state),
     };
   }
 }

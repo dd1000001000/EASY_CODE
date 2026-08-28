@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
-import { ContextManager } from "../src/context/manager.js";
+import { ContextManager, estimateTextTokens } from "../src/context/manager.js";
 import type { SessionState } from "../src/core/types.js";
 
 function contextChars(messages: ReturnType<ContextManager["build"]>): number {
@@ -37,6 +37,26 @@ function makeState(): SessionState {
 }
 
 describe("ContextManager", () => {
+  it("estimates mixed-language short-term tokens and excludes compacted raw history", () => {
+    assert.equal(estimateTextTokens("abcd"), 1);
+    assert.equal(estimateTextTokens("中文"), 2);
+
+    const state = makeState();
+    state.messages.push({
+      role: "assistant",
+      content: null,
+      reasoning_content: "推理".repeat(200),
+    });
+    const manager = new ContextManager();
+    const before = manager.estimateShortTermTokens(state);
+    manager.applyModelCompaction(state, "Objective and verified result.", state.messages.length - 1);
+    const after = manager.estimateShortTermTokens(state);
+
+    assert.ok(before > after);
+    assert.ok(after >= 400);
+    assert.equal(manager.inspect(state, 50_000).estimatedShortTermTokens, after);
+  });
+
   it("applies a bounded overflow fallback without mutating model-owned summary state", () => {
     const state = makeState();
     const context = new ContextManager().build({

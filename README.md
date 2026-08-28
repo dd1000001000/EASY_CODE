@@ -230,8 +230,8 @@ Switch providers or models while the agent is running:
 
 | Mode | Behavior |
 | --- | --- |
-| `plan` | Read and investigate the workspace, then return a plan. File writes, builds, tests, and dependency installation are blocked. |
-| `auto` | The agent decides whether the request needs a plan only or can be implemented and verified directly. |
+| `plan` | Read and investigate the workspace, then submit a structured plan for review. File writes, builds, tests, and dependency installation are blocked. |
+| `auto` | A dedicated model call uses the `select_mode` tool to choose Plan or Code; there is no local keyword router. |
 | `code` | Implement and verify directly without first presenting a plan. Safety policies still apply. |
 
 Switch modes during a session:
@@ -242,13 +242,25 @@ Switch modes during a session:
 /mode code
 ```
 
+When Auto selects Plan, the planning model must call `propose_plan`; ordinary assistant text cannot become an approved plan. The CLI then offers:
+
+```text
+1. Yes, use Auto mode
+2. No, reject plan
+3. Type feedback and press Enter to adjust the plan
+```
+
+Choosing Yes records approval and returns to Auto for execution. Choosing No records rejection without another model request. Any other non-empty text is sent back as Plan feedback; the model must submit a revised plan before the menu is shown again. Pending and approved plan-review state is thread-scoped and restored by `/resume`. Non-interactive `easy-code run` prints the proposal and thread ID instead of waiting for input. `--yes` does not approve plans.
+
 ## Current features
+
+The main prompt displays an estimated short-term-memory token count, for example `context:12.4k`. It includes the persistent context summary, active conversation and tool messages, reasoning returned into context, and active image-token estimates. The value is tokenizer-independent and therefore approximate.
 
 When EASY CODE is waiting for a model API response in an interactive terminal, it shows a gray spinner with elapsed time. The indicator covers both Auto-mode routing and every agent-loop model request, and is cleared on success, error, or interruption. Piped and CI output stays static.
 
 ### Agent tools
 
-The model can use up to nine tools. `read_image` is exposed only to models explicitly marked as vision-capable.
+The main agent can use up to ten Runtime tools. Auto routing is a separate model request that exposes only `select_mode`. `read_image` is exposed only to models explicitly marked as vision-capable.
 
 | Tool | Capability |
 | --- | --- |
@@ -259,6 +271,7 @@ The model can use up to nine tools. `read_image` is exposed only to models expli
 | `delete_file` | Delete the exact previously read file version, with path and hash checks |
 | `run_command` | Run policy-controlled commands using structured `program + args[]` input |
 | `manage_tasks` | Optionally create and advance a persistent single-agent task DAG |
+| `propose_plan` | Submit the structured Plan-mode proposal for user review |
 | `compact_context` | Submit a cumulative summary and advance the context-compaction boundary |
 | `manage_memory` | Search and stage automatic long-term-memory additions, revisions, or retirement |
 
@@ -273,9 +286,11 @@ The model can use up to nine tools. `read_image` is exposed only to models expli
 
 ### Optional task orchestration
 
-In Code mode, or after Auto mode chooses `direct_code`, the model may call `manage_tasks` for a genuinely complex objective. It creates a fixed-structure DAG containing task IDs, dependencies, inputs, expected artifacts, completion checks, and failure handling. The model decides whether orchestration is useful; plans, simple explanations, small fixes, and short linear work continue without a DAG.
+In Code mode, or after Auto mode selects Code, the model may call `manage_tasks` for a genuinely complex objective. It creates a fixed-structure DAG containing task IDs, dependencies, inputs, expected artifacts, completion checks, and failure handling. The model decides whether orchestration is useful; plans, simple explanations, small fixes, and short linear work continue without a DAG.
 
 After a DAG is created, Runtime—not the prompt—enforces its execution: only one task can be `in_progress`, dependency-blocked tasks cannot start, workspace and command tools require an active task, and a task can be completed only after recording one concise evidence statement per declared check. Runtime validates the transition and evidence structure; the model must still ground each statement in actual tool results. A normal final answer is rejected while the DAG remains active. A real external blocker can pause the graph, and a later turn can resume it after the condition is resolved. Auto mode continues an unfinished graph in Code mode, and `/mode plan` is rejected until the graph is completed.
+
+Every successful DAG state change prints the ordered task list in the terminal. `✓` marks completed tasks, `▶` marks the active task, `□` marks pending tasks, and `⊠` marks a blocked task. `/tasks` renders the same view on demand.
 
 The current graph is thread-scoped short-term state. Its declared operation and post-transition snapshot are written atomically with the matching tool-result event; recovery replays the operation and rejects a mismatched snapshot. `/resume` restores it, and a compact control view is reinjected into every model request even after context compaction. `/tasks` is a read-only user view; only the model-facing tool changes DAG state. This first version deliberately executes nodes serially and does not start additional agents.
 

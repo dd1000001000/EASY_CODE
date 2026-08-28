@@ -3,6 +3,7 @@ import path from "node:path";
 import chalk from "chalk";
 
 import { Terminal, printBanner } from "./cli/terminal.js";
+import { formatTokenCount } from "./cli/token-count.js";
 import type { PromptSubmission } from "./cli/prompt-input.js";
 import {
   HELP_TEXT,
@@ -24,6 +25,7 @@ import type {
   ChatMessage,
   EasyCodeConfig,
   ImageAttachment,
+  PlanProposal,
   ProviderName,
   SessionState,
   ThinkingEffort,
@@ -43,6 +45,7 @@ import { LocalEmbeddingModel } from "./memory/embedding-model.js";
 import { MemoryManager } from "./memory/memory-manager.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
+import { formatPlanProposal } from "./plans/plan.js";
 import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
@@ -84,6 +87,11 @@ export interface EasyCodeAppOptions {
   imagePaths?: readonly string[];
   /** Dependency injection for clipboard tests. */
   clipboardImageReader?: ClipboardImageReader;
+}
+
+interface ExecutePromptOptions {
+  modeOverride?: "plan" | "code";
+  approvedPlan?: Pick<PlanProposal, "id" | "revision">;
 }
 
 function samePath(left: string, right: string): boolean {
@@ -381,6 +389,17 @@ export class EasyCodeApp {
     this.printStatus();
 
     while (!this.closed) {
+      if (this.state.planReview) {
+        try {
+          if (!(await this.processPendingPlanReview(true))) return;
+        } catch (error) {
+          this.terminal.error(error instanceof Error ? error.message : String(error));
+          // A failed adjustment leaves the previous proposal pending, so keep
+          // the review gate active instead of accepting an unrelated prompt.
+          if (this.state.planReview) continue;
+        }
+      }
+
       const promptImages: ImageAttachment[] = [];
       let promptOpen = true;
       let response: PromptSubmission | null;
@@ -443,8 +462,9 @@ export class EasyCodeApp {
         continue;
       }
 
+      let result: AgentRunResult;
       try {
-        await this.executePrompt(
+        result = await this.executePrompt(
           input || "Analyze the attached image(s).",
           images,
           true,
@@ -453,11 +473,26 @@ export class EasyCodeApp {
       } catch (error) {
         this.pendingImages = images;
         this.terminal.error(error instanceof Error ? error.message : String(error));
+        continue;
+      }
+      if (result.planProposal) {
+        try {
+          if (!(await this.processPendingPlanReview(false))) return;
+        } catch (error) {
+          this.terminal.error(error instanceof Error ? error.message : String(error));
+        }
       }
     }
   }
 
   async runOnce(prompt: string): Promise<AgentRunResult> {
+    if (this.state.planReview) {
+      throw new Error(
+        `Thread ${this.state.threadId} has a ${this.state.planReview.status.replace(/_/gu, " ")} ` +
+          `plan (${this.state.planReview.proposal.id} revision ` +
+          `${this.state.planReview.proposal.revision}). Resume it interactively to review or execute the plan.`,
+      );
+    }
     const normalized = prompt.trim();
     if (!normalized && this.pendingImages.length === 0) {
       throw new Error("A non-empty prompt or at least one image is required");
@@ -467,6 +502,11 @@ export class EasyCodeApp {
       this.pendingImages,
     );
     this.pendingImages = [];
+    if (result.planProposal) {
+      this.terminal.info(
+        `Resume thread ${result.threadId} interactively to approve, reject, or adjust this plan.`,
+      );
+    }
     return result;
   }
 
@@ -574,11 +614,11 @@ export class EasyCodeApp {
       }
       case "tasks": {
         if (command.args.length) throw new Error("Usage: /tasks");
-        this.terminal.write(
-          this.state.taskGraph
-            ? `${json(taskGraphView(this.state.taskGraph))}\n`
-            : "This thread has no task DAG.\n",
-        );
+        if (this.state.taskGraph) {
+          this.terminal.taskGraph(taskGraphView(this.state.taskGraph));
+        } else {
+          this.terminal.write("This thread has no task DAG.\n");
+        }
         return false;
       }
       case "tools":
@@ -698,10 +738,131 @@ export class EasyCodeApp {
     }
   }
 
+  private async processPendingPlanReview(showPlan: boolean): Promise<boolean> {
+    let shouldShowPlan = showPlan;
+    while (this.state.planReview && !this.closed) {
+      const review = this.state.planReview;
+      const proposal = review.proposal;
+
+      if (review.status === "approved_pending_execution") {
+        this.terminal.info(
+          `Executing approved plan ${proposal.id} revision ${proposal.revision} in Auto mode.`,
+        );
+        const result = await this.executePrompt(
+          `[Plan approval]\nThe user approved plan ${proposal.id} revision ${proposal.revision} ` +
+            "and selected Auto mode. Execute the exact approved scope below now.\n\n" +
+            `BEGIN_APPROVED_PLAN\n${formatPlanProposal(proposal)}\nEND_APPROVED_PLAN`,
+          [],
+          true,
+          {
+            modeOverride: "code",
+            approvedPlan: {
+              id: proposal.id,
+              revision: proposal.revision,
+            },
+          },
+        );
+        shouldShowPlan = false;
+        if (!result.planProposal) return true;
+        continue;
+      }
+
+      if (shouldShowPlan) this.terminal.showPlan(proposal);
+      const decision = await this.terminal.reviewPlan();
+      if (decision.action === "defer") {
+        this.dirty = true;
+        this.save();
+        return false;
+      }
+
+      if (decision.action === "approve") {
+        const event = this.threadStore.appendEvent(this.state.threadId, {
+          type: "plan.approved",
+          phase: "completed",
+          payload: {
+            planId: proposal.id,
+            revision: proposal.revision,
+          },
+        });
+        this.state.planReview = {
+          ...review,
+          status: "approved_pending_execution",
+          approvedAt: event.timestamp,
+        };
+        this.state.mode = "auto";
+        this.config.mode = "auto";
+        this.state.updatedAt = event.timestamp;
+        this.dirty = true;
+        this.save();
+        this.terminal.success(
+          `Approved plan ${proposal.id} revision ${proposal.revision}; mode is Auto.`,
+        );
+        shouldShowPlan = false;
+        continue;
+      }
+
+      if (decision.action === "reject") {
+        const message: Extract<ChatMessage, { role: "user" }> = {
+          role: "user",
+          content:
+            `[Plan review]\nThe user rejected plan ${proposal.id} revision ` +
+            `${proposal.revision}. Do not treat that proposal as approved.`,
+        };
+        const event = this.threadStore.appendEvent(this.state.threadId, {
+          type: "plan.rejected",
+          phase: "completed",
+          payload: {
+            planId: proposal.id,
+            revision: proposal.revision,
+            message,
+          },
+        });
+        this.state.planReview = undefined;
+        this.state.messages.push(message);
+        this.state.updatedAt = event.timestamp;
+        this.dirty = true;
+        this.save();
+        this.terminal.info(
+          `Rejected plan ${proposal.id} revision ${proposal.revision}.`,
+        );
+        return true;
+      }
+
+      const event = this.threadStore.appendEvent(this.state.threadId, {
+        type: "plan.feedback_submitted",
+        phase: "completed",
+        payload: {
+          planId: proposal.id,
+          revision: proposal.revision,
+          feedback: decision.feedback,
+        },
+      });
+      this.state.planReview = {
+        ...review,
+        feedback: decision.feedback,
+      };
+      this.state.updatedAt = event.timestamp;
+      this.dirty = true;
+      this.save();
+      const result = await this.executePrompt(
+        `[Plan adjustment]\nRevise plan ${proposal.id} revision ${proposal.revision} ` +
+          `using this user feedback:\n${decision.feedback}\n\n` +
+          "Stay in Plan mode, investigate only with read-only tools if needed, and submit " +
+          "the complete revised proposal with propose_plan.",
+        [],
+        true,
+        this.state.mode === "auto" ? { modeOverride: "plan" } : {},
+      );
+      shouldShowPlan = !result.planProposal;
+    }
+    return true;
+  }
+
   private async executePrompt(
     userInput: string,
     images: readonly ImageAttachment[] = [],
     presentReasoning = false,
+    runtimeOptions: ExecutePromptOptions = {},
   ): Promise<AgentRunResult> {
     this.requireProviderApiKey(this.state.provider);
     if (images.length) this.requireCurrentModelVision();
@@ -731,6 +892,7 @@ export class EasyCodeApp {
         commandTimeoutMs: this.config.commandTimeoutMs,
         approvalPolicy: this.config.approvalPolicy,
         signal: controller.signal,
+        ...runtimeOptions,
       });
 
       this.syncWorkspaceState();
@@ -760,13 +922,20 @@ export class EasyCodeApp {
       provider,
       tools,
       contextManager: new ContextManager(),
-      buildSystemPrompt: async ({ mode, workspaceSummary, memories, taskGraph }) =>
+      buildSystemPrompt: async ({
+        mode,
+        workspaceSummary,
+        memories,
+        taskGraph,
+        planReview,
+      }) =>
         buildSystemPrompt({
           config: effectiveConfig,
           mode,
           workspaceSummary,
           memories,
           ...(taskGraph ? { taskGraph } : {}),
+          ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
       searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
@@ -793,9 +962,18 @@ export class EasyCodeApp {
           await this.imageStore.commit(threadId, attachment);
         }
       },
-      onToolCompleted: async (_state, _toolName, result) => {
+      onToolCompleted: async (_state, toolName, result) => {
         this.syncWorkspaceState();
         this.save();
+        if (toolName === "manage_tasks" && result.ok && result.taskGraphUpdate) {
+          try {
+            this.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
+          } catch {
+            this.terminal.info(
+              "The task DAG was updated successfully, but its terminal view could not be rendered.",
+            );
+          }
+        }
         if (result.ok && result.presentation?.type === "file_diff") {
           try {
             this.terminal.fileDiff(result.presentation);
@@ -1266,6 +1444,14 @@ export class EasyCodeApp {
               };
             })()
           : null,
+        planReview: this.state.planReview
+          ? {
+              id: this.state.planReview.proposal.id,
+              revision: this.state.planReview.proposal.revision,
+              title: this.state.planReview.proposal.title,
+              status: this.state.planReview.status,
+            }
+          : null,
         apiKeyConfigured: Boolean(providerConfig.apiKey),
         workspace: this.workspace.root,
         approvalPolicy: this.config.approvalPolicy,
@@ -1290,19 +1476,24 @@ export class EasyCodeApp {
   }
 
   private printTools(): void {
-    const tools = createDefaultTools(this.workspace, this.memoryManager).map((tool) => ({
-      name: tool.name,
-      available:
-        (tool.name !== "read_image" ||
-          modelSupportsVision(this.state.provider, this.state.model)) &&
-        (this.state.mode !== "plan" ||
+    const tools = createDefaultTools(this.workspace, this.memoryManager).map((tool) => {
+      const availableForMode = tool.name === "propose_plan"
+        ? this.state.mode === "plan"
+        : this.state.mode !== "plan" ||
           tool.name === "read_file" ||
           tool.name === "read_image" ||
           tool.name === "run_command" ||
           tool.name === "compact_context" ||
-          tool.name === "manage_memory"),
-      mutating: tool.mutating,
-    }));
+          tool.name === "manage_memory";
+      return {
+        name: tool.name,
+        available:
+          availableForMode &&
+          (tool.name !== "read_image" ||
+            modelSupportsVision(this.state.provider, this.state.model)),
+        mutating: tool.mutating,
+      };
+    });
     this.terminal.write(`${json(tools)}\n`);
   }
 
@@ -1373,8 +1564,10 @@ export class EasyCodeApp {
   }
 
   private prompt(): string {
+    const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
     return chalk.bold.cyan(
-      `EASY CODE [${this.state.mode} ${this.state.provider}/${this.state.model} thinking:${this.state.thinkingEffort}] > `,
+      `EASY CODE [${this.state.mode} ${this.state.provider}/${this.state.model} ` +
+        `thinking:${this.state.thinkingEffort} context:${formatTokenCount(shortTermTokens)}] > `,
     );
   }
 }
