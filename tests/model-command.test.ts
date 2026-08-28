@@ -429,6 +429,7 @@ describe("/model", () => {
       const before = JSON.stringify(internal.state.taskGraph);
       await fixture.app.handleSlashCommand("/tasks");
       assert.match(fixture.output(), /Show this graph without changing it/u);
+      assert.match(fixture.output(), /□ 1\. \[inspect\] Inspect/u);
       assert.equal(JSON.stringify(internal.state.taskGraph), before);
       await assert.rejects(
         fixture.app.handleSlashCommand("/tasks complete"),
