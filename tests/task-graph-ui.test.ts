@@ -17,22 +17,15 @@ function graph(): TaskGraphView {
   return {
     id: "task_graph_test",
     goal: "Implement and verify the feature",
-    status: "blocked",
+    status: "active",
     currentTask: "implement",
     startableTasks: [],
     completed: 1,
-    total: 4,
+    total: 3,
     tasks: [
       { ...common, id: "inspect", title: "Inspect architecture", status: "completed" },
       { ...common, id: "implement", title: "Implement feature", status: "in_progress" },
       { ...common, id: "verify", title: "Run verification", status: "pending" },
-      {
-        ...common,
-        id: "publish",
-        title: "Publish result",
-        status: "blocked",
-        blocker: "Waiting for credentials",
-      },
     ],
   };
 }
@@ -41,17 +34,31 @@ describe("task DAG terminal UI", () => {
   it("renders stable task numbers, IDs, names, and status symbols", () => {
     const rendered = renderTaskGraph(graph(), { color: false });
 
-    assert.match(rendered, /Task DAG · 1\/4 completed/u);
+    assert.match(rendered, /Task DAG · 1\/3 completed/u);
     assert.match(rendered, /Goal: Implement and verify the feature/u);
     assert.match(rendered, /✓ 1\. \[inspect\] Inspect architecture/u);
     assert.match(rendered, /▶ 2\. \[implement\] Implement feature \(in progress\)/u);
     assert.match(rendered, /□ 3\. \[verify\] Run verification/u);
+    assert.ok(rendered.indexOf("1. [inspect]") < rendered.indexOf("3. [verify]"));
+    assert.doesNotMatch(rendered, /\u001B/u);
+  });
+
+  it("distinguishes an explicitly blocked task from pending dependents", () => {
+    const view = graph();
+    view.status = "blocked";
+    view.currentTask = null;
+    view.tasks[1] = {
+      ...view.tasks[1]!,
+      status: "blocked",
+      blocker: "Waiting for credentials",
+    };
+    const rendered = renderTaskGraph(view, { color: false });
+
     assert.match(
       rendered,
-      /⊠ 4\. \[publish\] Publish result \(blocked: Waiting for credentials\)/u,
+      /⊠ 2\. \[implement\] Implement feature \(blocked: Waiting for credentials\)/u,
     );
-    assert.ok(rendered.indexOf("1. [inspect]") < rendered.indexOf("4. [publish]"));
-    assert.doesNotMatch(rendered, /\u001B/u);
+    assert.match(rendered, /□ 3\. \[verify\] Run verification/u);
   });
 
   it("sanitizes task text and supports colored TTY rendering", () => {
