@@ -20,7 +20,7 @@ export const providerConfigSchema = z.object({
   apiKey: nonEmptyString.optional(),
   baseUrl: httpUrl,
   model: nonEmptyString,
-  timeoutMs: positiveInteger,
+  timeoutMs: positiveInteger.optional(),
   maxRetries: z.number().int().min(0).max(10),
 });
 

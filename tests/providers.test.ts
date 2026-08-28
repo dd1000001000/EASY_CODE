@@ -15,6 +15,7 @@ import {
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_GLM_BASE_URL,
   DEFAULT_GLM_MODEL,
+  DEFAULT_PROVIDER_TIMEOUT_MS,
   DEFAULT_QWEN_BASE_URL,
   DEFAULT_QWEN_MODEL,
   createDefaultEasyCodeConfig,
@@ -51,6 +52,7 @@ max_context_chars = 410000
 [qwen]
 model = "user-qwen"
 base_url = "https://user-qwen.example/v1/"
+timeout_ms = 31000
 
 [deepseek]
 model = "user-deepseek"
@@ -69,6 +71,7 @@ max_context_chars = 420000
 
 [qwen]
 model = "workspace-qwen"
+timeout_ms = 41000
 `,
         "utf8",
       );
@@ -83,6 +86,7 @@ model = "workspace-qwen"
           EASY_CODE_THINKING_EFFORT: "high",
           EASY_CODE_MAX_STEPS: "24",
           EASY_CODE_MAX_CONTEXT_CHARS: "430000",
+          QWEN_TIMEOUT_MS: "51000",
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
@@ -99,6 +103,7 @@ model = "workspace-qwen"
       assert.equal(config.qwen.apiKey, "qwen-env-key");
       assert.equal(config.qwen.model, "workspace-qwen");
       assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
+      assert.equal(config.qwen.timeoutMs, 51_000);
       assert.equal(config.deepseek.model, "user-deepseek");
       assert.equal(config.deepseek.apiKey, "deepseek-env-key");
       assert.equal(config.glm.model, "user-glm");
@@ -129,6 +134,8 @@ model = "workspace-qwen"
       assert.equal(config.maxSteps, DEFAULT_BASE_MAX_STEPS);
       assert.equal(config.maxContextChars, DEFAULT_BASE_MAX_CONTEXT_CHARS);
       assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
+      assert.equal(DEFAULT_PROVIDER_TIMEOUT_MS, 300_000);
+      assert.equal(config.qwen.timeoutMs, undefined);
       assert.equal(config.qwen.apiKey, "dashscope-key");
       assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
       assert.equal(config.deepseek.model, DEFAULT_DEEPSEEK_MODEL);
@@ -203,6 +210,98 @@ model = "workspace-qwen"
 });
 
 describe("OpenAI-compatible providers", () => {
+  it("scales request timeouts with the selected thinking effort", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    const capturedTimeouts: number[] = [];
+    const provider = createProvider(config, "deepseek", undefined, {
+      transport: async (request) => {
+        capturedTimeouts.push(request.timeoutMs);
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: { role: "assistant", content: "done" },
+            }],
+          }),
+        };
+      },
+    });
+
+    for (const thinkingEffort of ["none", "low", "medium", "high"] as const) {
+      await provider.complete({
+        messages: [{ role: "user", content: "hello" }],
+        thinkingEffort,
+      });
+    }
+    await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.deepEqual(
+      capturedTimeouts,
+      [300_000, 300_000, 450_000, 600_000, 300_000],
+    );
+  });
+
+  it("preserves an explicit timeout as an exact override", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    config.deepseek.timeoutMs = 42_000;
+    const capturedTimeouts: number[] = [];
+    const provider = createProvider(config, "deepseek", undefined, {
+      transport: async (request) => {
+        capturedTimeouts.push(request.timeoutMs);
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: { role: "assistant", content: "done" },
+            }],
+          }),
+        };
+      },
+    });
+
+    await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+      thinkingEffort: "high",
+    });
+    await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.deepEqual(capturedTimeouts, [42_000, 42_000]);
+  });
+
+  it("reports the effective effort-based timeout in timeout errors", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    config.deepseek.maxRetries = 0;
+    const provider = createProvider(config, "deepseek", undefined, {
+      transport: async () => {
+        throw new HttpTransportError("timeout", "test timeout");
+      },
+    });
+
+    await assert.rejects(
+      provider.complete({
+        messages: [{ role: "user", content: "hello" }],
+        thinkingEffort: "high",
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof ProviderError);
+        assert.equal(error.code, "timeout");
+        assert.match(error.message, /600000ms/u);
+        return true;
+      },
+    );
+  });
+
   it("sends and parses native Chat Completions tool_calls", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.qwen.apiKey = "test-qwen-key";

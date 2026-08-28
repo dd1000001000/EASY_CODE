@@ -26,6 +26,12 @@ export const THINKING_EFFORT_BUDGET_MULTIPLIERS: Readonly<Record<ThinkingEffort,
 
 export const DEFAULT_BASE_STEP_LIMIT = 40;
 export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 400_000;
+export const THINKING_EFFORT_TIMEOUT_MS: Readonly<Record<ThinkingEffort, number>> = {
+  none: 300_000,
+  low: 300_000,
+  medium: 450_000,
+  high: 600_000,
+};
 
 export const THINKING_EFFORT_STEP_LIMITS: Readonly<Record<ThinkingEffort, number>> = {
   none: DEFAULT_BASE_STEP_LIMIT,
@@ -63,6 +69,13 @@ export function thinkingEffortContextCharLimit(
   baseContextCharLimit = DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
 ): number {
   return thinkingEffortBudget(effort, baseContextCharLimit);
+}
+
+/** Return the default provider request timeout for the selected effort. */
+export function thinkingEffortTimeoutMs(
+  effort: ThinkingEffort,
+): number {
+  return THINKING_EFFORT_TIMEOUT_MS[effort];
 }
 
 /** Whether EASY CODE can translate this exact selection into documented API fields. */
