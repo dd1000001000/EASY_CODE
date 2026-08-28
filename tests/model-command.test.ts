@@ -447,6 +447,22 @@ describe("/model", () => {
     }
   });
 
+  it("shows child-agent assignments through read-only slash commands", async () => {
+    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
+    try {
+      await fixture.app.handleSlashCommand("/agents");
+      await fixture.app.handleSlashCommand("/subagents");
+      assert.match(fixture.output(), /Child agents · 0\/4 active · 0 total/u);
+      assert.match(fixture.output(), /No child agents in this runtime/u);
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/agents stop"),
+        /Usage: \/agents/u,
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("refuses Plan mode while a task DAG is unfinished", async () => {
     const fixture = await createAppFixture({ qwen: "qwen-test-key" });
     try {

@@ -32,7 +32,12 @@ export function renderTaskGraph(
   );
   const goal = palette.gray(`Goal: ${safeInline(graph.goal, 240)}`);
   const tasks = graph.tasks.map((task, index) => {
-    const label = `${index + 1}. [${safeInline(task.id, 48)}] ${safeInline(task.title, 160)}`;
+    const assignment = task.owner === "subagent"
+      ? ` · child ${safeInline(task.assignedAgentId ?? "unassigned", 72)}`
+      : "";
+    const label =
+      `${index + 1}. [${safeInline(task.id, 48)}] ${safeInline(task.title, 160)}` +
+      assignment;
     switch (task.status) {
       case "completed":
         return palette.green(`✓ ${label}`);

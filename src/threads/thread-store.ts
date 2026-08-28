@@ -7,8 +7,12 @@ import {
   type ChatMessage,
   type CommandAuditEntry,
   type EventRecord,
+  type FileChangeRecord,
+  type PlanReviewState,
   type ProviderName,
   type SessionState,
+  type SubagentAssignmentSnapshot,
+  type SubagentTaskReport,
   type ThinkingEffort,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
@@ -16,7 +20,9 @@ import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
 import {
   cloneTaskGraph,
+  subagentTaskOperationSchema,
   taskGraphOperationSchema,
+  validateSubagentTaskTransition,
   validateTaskGraphTransition,
 } from "../tasks/task-graph.js";
 import { EventJournal, type AppendEventInput } from "./event-journal.js";
@@ -73,6 +79,24 @@ export interface ThreadLease {
   readonly acquiredAt: string;
 }
 
+export interface DurableSubagentResult {
+  readonly agentId: string;
+  readonly taskId: string;
+  readonly reason: "completed" | "blocked" | "failed" | "stopped" | "interrupted";
+  readonly report?: SubagentTaskReport;
+  readonly error?: string;
+  readonly timestamp: string;
+}
+
+export interface DurableStandaloneAssignment {
+  readonly assignment: Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
+  readonly createdByTurnId: string;
+  readonly observed: boolean;
+}
+
+export const INTERRUPTED_TURN_ASSISTANT_MESSAGE =
+  "The previous EASY CODE process exited before this turn completed; the turn has been marked as interrupted.";
+
 export interface ThreadLeaseAcquireOptions {
   /** Primarily useful for deterministic dead-process recovery tests. */
   readonly processId?: number;
@@ -112,6 +136,49 @@ function asPayloadRecord(payload: unknown): Record<string, unknown> | undefined 
   return payload as Record<string, unknown>;
 }
 
+function standaloneAssignment(
+  value: unknown,
+): Extract<SubagentAssignmentSnapshot, { kind: "standalone" }> | undefined {
+  const input = asPayloadRecord(value);
+  if (
+    input?.kind !== "standalone" ||
+    typeof input.agentId !== "string" ||
+    !input.agentId ||
+    typeof input.taskId !== "string" ||
+    !input.taskId ||
+    typeof input.taskTitle !== "string" ||
+    !input.taskTitle ||
+    typeof input.taskDescription !== "string" ||
+    !input.taskDescription ||
+    !Array.isArray(input.completionChecks) ||
+    input.completionChecks.length === 0 ||
+    !input.completionChecks.every((check) => typeof check === "string" && check.length > 0) ||
+    (input.provider !== "qwen" && input.provider !== "deepseek" && input.provider !== "glm") ||
+    typeof input.model !== "string" ||
+    !input.model ||
+    (input.thinkingEffort !== "none" &&
+      input.thinkingEffort !== "low" &&
+      input.thinkingEffort !== "medium" &&
+      input.thinkingEffort !== "high") ||
+    typeof input.createdAt !== "string" ||
+    !input.createdAt
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "standalone",
+    agentId: input.agentId,
+    taskId: input.taskId,
+    taskTitle: input.taskTitle,
+    taskDescription: input.taskDescription,
+    completionChecks: [...input.completionChecks] as string[],
+    provider: input.provider,
+    model: input.model,
+    thinkingEffort: input.thinkingEffort,
+    createdAt: input.createdAt,
+  };
+}
+
 function cloneMessage(message: ChatMessage): ChatMessage {
   return JSON.parse(serializeChatMessage(message)) as ChatMessage;
 }
@@ -122,9 +189,212 @@ function appendMessageIfNew(state: SessionState, message: ChatMessage): void {
   state.messages.push(cloneMessage(message));
 }
 
+function messagePrefix(
+  prefix: readonly ChatMessage[],
+  messages: readonly ChatMessage[],
+): boolean {
+  if (prefix.length > messages.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (JSON.stringify(prefix[index]) !== JSON.stringify(messages[index])) return false;
+  }
+  return true;
+}
+
+function recoveredPlanReview(review: Readonly<PlanReviewState>): PlanReviewState {
+  return {
+    status: "awaiting_review",
+    proposal: clonePlanReviewState(review).proposal,
+    feedback:
+      "The previously approved execution was interrupted. Review the current workspace state before approving this plan again.",
+  };
+}
+
+function validateInterruptedTurnRecovery(
+  state: Readonly<SessionState>,
+  event: Pick<EventRecord, "eventId" | "turnId">,
+  payload: Record<string, unknown>,
+  expectedPlanReview: Readonly<PlanReviewState> | undefined,
+): void {
+  if (!event.turnId || state.activeTurnId !== event.turnId) {
+    throw new Error(`Turn recovery ${event.eventId} does not target the active turn`);
+  }
+  if (payload.reason !== "interrupted" || payload.recovered !== true || payload.steps !== 0) {
+    throw new Error(`Turn recovery ${event.eventId} has invalid terminal metadata`);
+  }
+  if (!Array.isArray(payload.messages) || !payload.messages.every(isChatMessage)) {
+    throw new Error(`Turn recovery ${event.eventId} has invalid messages`);
+  }
+
+  const latestToolCallMessage = [...state.messages].reverse().find(
+    (message): message is Extract<ChatMessage, { role: "assistant" }> =>
+      message.role === "assistant" && Boolean(message.tool_calls?.length),
+  );
+  const latestToolCallIndex = latestToolCallMessage
+    ? state.messages.lastIndexOf(latestToolCallMessage)
+    : -1;
+  const completedCallIds = new Set(
+    state.messages
+      .slice(latestToolCallIndex + 1)
+      .filter((message): message is Extract<ChatMessage, { role: "tool" }> =>
+        message.role === "tool")
+      .map((message) => message.tool_call_id),
+  );
+  const missingCalls = (latestToolCallMessage?.tool_calls ?? []).filter(
+    (call) => !completedCallIds.has(call.id),
+  );
+  const toolMessages = payload.messages.filter(
+    (message): message is Extract<ChatMessage, { role: "tool" }> => message.role === "tool",
+  );
+  if (toolMessages.length !== missingCalls.length) {
+    throw new Error(`Turn recovery ${event.eventId} did not cover the exact missing tool calls`);
+  }
+  for (let index = 0; index < missingCalls.length; index += 1) {
+    const call = missingCalls[index];
+    const message = toolMessages[index];
+    let content: unknown;
+    try {
+      content = message ? JSON.parse(message.content) : undefined;
+    } catch {
+      throw new Error(`Turn recovery ${event.eventId} has invalid tool-result JSON`);
+    }
+    const result = asPayloadRecord(content);
+    if (
+      !call ||
+      !message ||
+      message.tool_call_id !== call.id ||
+      message.name !== call.function.name ||
+      result?.ok !== false ||
+      result.error !== "interrupted"
+    ) {
+      throw new Error(`Turn recovery ${event.eventId} changed a missing tool call`);
+    }
+  }
+
+  const assistantMessages = payload.messages.filter(
+    (message): message is Extract<ChatMessage, { role: "assistant" }> =>
+      message.role === "assistant",
+  );
+  const lastMessage = state.messages[state.messages.length - 1];
+  const durableFinalAssistant = Boolean(
+    lastMessage?.role === "assistant" &&
+    lastMessage.content?.trim() &&
+    !lastMessage.tool_calls?.length,
+  );
+  if (durableFinalAssistant) {
+    if (assistantMessages.length !== 0) {
+      throw new Error(`Turn recovery ${event.eventId} duplicated a durable final assistant`);
+    }
+  } else if (
+    assistantMessages.length !== 1 ||
+    assistantMessages[0]?.content !== INTERRUPTED_TURN_ASSISTANT_MESSAGE ||
+    assistantMessages[0].tool_calls?.length
+  ) {
+    throw new Error(`Turn recovery ${event.eventId} has an invalid interruption marker`);
+  }
+
+  if (
+    JSON.stringify(payload.planReview) !== JSON.stringify(expectedPlanReview)
+  ) {
+    throw new Error(`Turn recovery ${event.eventId} has invalid plan provenance`);
+  }
+}
+
+function fileChangeKey(change: Readonly<FileChangeRecord>): string {
+  return [
+    change.timestamp,
+    change.path,
+    change.operation,
+    change.beforeHash ?? "",
+    change.afterHash ?? "",
+  ].join("|");
+}
+
+function mergeFileChanges(
+  target: FileChangeRecord[],
+  additions: readonly FileChangeRecord[],
+): void {
+  const known = new Set(target.map(fileChangeKey));
+  for (const change of additions) {
+    const key = fileChangeKey(change);
+    if (known.has(key)) continue;
+    target.push({ ...change });
+    known.add(key);
+  }
+}
+
+function mergeCommandAudits(
+  target: CommandAuditEntry[],
+  additions: readonly CommandAuditEntry[],
+): void {
+  const known = new Set(target.map((entry) => entry.id));
+  for (const entry of additions) {
+    if (known.has(entry.id)) continue;
+    target.push({ ...entry, args: [...entry.args] });
+    known.add(entry.id);
+  }
+}
+
+function artifactPayload(payload: Record<string, unknown>): {
+  changes: FileChangeRecord[];
+  commands: CommandAuditEntry[];
+} {
+  const changes = payload.changes;
+  const commands = payload.commands;
+  if (!Array.isArray(changes) || !Array.isArray(commands)) {
+    throw new Error("Invalid subagent artifact event payload");
+  }
+  for (const change of changes) {
+    if (
+      change === null ||
+      typeof change !== "object" ||
+      typeof (change as Partial<FileChangeRecord>).path !== "string" ||
+      typeof (change as Partial<FileChangeRecord>).timestamp !== "string"
+    ) {
+      throw new Error("Invalid subagent file-change record");
+    }
+  }
+  for (const command of commands) {
+    if (
+      command === null ||
+      typeof command !== "object" ||
+      typeof (command as Partial<CommandAuditEntry>).id !== "string" ||
+      !Array.isArray((command as Partial<CommandAuditEntry>).args)
+    ) {
+      throw new Error("Invalid subagent command-audit record");
+    }
+  }
+  return {
+    changes: changes.map((change) => ({ ...(change as FileChangeRecord) })),
+    commands: commands.map((command) => ({
+      ...(command as CommandAuditEntry),
+      args: [...(command as CommandAuditEntry).args],
+    })),
+  };
+}
+
+/** Locate a saved Thread without opening SQLite or mutating its projections. */
+export function peekThreadWorkspaceRoot(dataDir: string, threadId: string): string {
+  const events = new EventJournal(dataDir, threadId, { createDirectory: false }).read();
+  const created = events.find((event) => event.type === "thread_created");
+  const payload = created ? asPayloadRecord(created.payload) : undefined;
+  if (!payload || !("state" in payload)) {
+    throw new Error(`Thread not found: ${threadId}`);
+  }
+  const state = deserializeSessionState(payload.state);
+  if (state.threadId !== threadId) {
+    throw new Error(`Thread creation snapshot belongs to ${state.threadId}, expected ${threadId}`);
+  }
+  return state.workspaceRoot;
+}
+
 /** Stores thread metadata as SQLite projections and recovers state from JSONL. */
 export class ThreadStore {
   constructor(private readonly storage: EasyCodeStorage) {}
+
+  /** Read only the creation snapshot needed to locate a Thread's workspace. */
+  peekWorkspaceRoot(threadId: string): string {
+    return peekThreadWorkspaceRoot(this.storage.dataDir, threadId);
+  }
 
   create(input: ThreadCreateInput): SessionState {
     const threadId = input.threadId ?? createId("thread");
@@ -277,7 +547,7 @@ export class ThreadStore {
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
         const payload = asPayloadRecord(input.payload);
-        if (input.type === "tool.result" && payload && "taskGraph" in payload) {
+        if (payload && "taskGraph" in payload) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
           this.replayTaskGraphResult(
             priorState,
@@ -306,6 +576,21 @@ export class ThreadStore {
             turnId: input.turnId,
             phase: input.phase,
           }, payload);
+        }
+        if (input.type === "turn.recovered") {
+          if (!payload || !input.turnId) {
+            throw new Error("Interrupted-turn recovery requires a payload and turn ID");
+          }
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          validateInterruptedTurnRecovery(
+            priorState,
+            {
+              eventId: input.eventId ?? "pending_turn_recovery",
+              turnId: input.turnId,
+            },
+            payload,
+            this.interruptedPlanReview(threadId, input.turnId),
+          );
         }
         // Keep append inside the database write transaction: its cross-process
         // lock serializes EventJournal's scan/sequence/append critical section.
@@ -491,6 +776,222 @@ export class ThreadStore {
     return event;
   }
 
+  recordSubagentArtifacts(
+    threadId: string,
+    turnId: string | undefined,
+    input: {
+      agentId: string;
+      taskId: string;
+      changes: readonly FileChangeRecord[];
+      commands: readonly CommandAuditEntry[];
+    },
+  ): EventRecord {
+    return this.appendEvent(threadId, {
+      type: "subagent.artifact",
+      turnId,
+      phase: "completed",
+      payload: {
+        agentId: input.agentId,
+        taskId: input.taskId,
+        changes: input.changes.map((change) => ({ ...change })),
+        commands: input.commands.map((command) => ({
+          ...command,
+          args: [...command.args],
+        })),
+      },
+    });
+  }
+
+  recordSubagentResult(
+    threadId: string,
+    turnId: string | undefined,
+    input: Omit<DurableSubagentResult, "timestamp">,
+  ): EventRecord {
+    return this.appendEvent(threadId, {
+      type: "subagent.result",
+      turnId,
+      phase: input.reason === "completed" ? "completed" : "failed",
+      payload: {
+        agentId: input.agentId,
+        taskId: input.taskId,
+        reason: input.reason,
+        ...(input.report
+          ? { report: JSON.parse(JSON.stringify(input.report)) as SubagentTaskReport }
+          : {}),
+        ...(input.error ? { error: input.error } : {}),
+      },
+    });
+  }
+
+  latestSubagentResult(
+    threadId: string,
+    agentId: string,
+    taskId: string,
+  ): DurableSubagentResult | undefined {
+    const events = this.journal(threadId).read();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "subagent.result") continue;
+      const payload = asPayloadRecord(event.payload);
+      if (
+        !payload ||
+        payload.agentId !== agentId ||
+        payload.taskId !== taskId ||
+        (payload.reason !== "completed" &&
+          payload.reason !== "blocked" &&
+          payload.reason !== "failed" &&
+          payload.reason !== "stopped" &&
+          payload.reason !== "interrupted")
+      ) {
+        continue;
+      }
+      return {
+        agentId,
+        taskId,
+        reason: payload.reason,
+        ...(payload.report
+          ? {
+              report: JSON.parse(JSON.stringify(payload.report)) as SubagentTaskReport,
+            }
+          : {}),
+        ...(typeof payload.error === "string" ? { error: payload.error } : {}),
+        timestamp: event.timestamp,
+      };
+    }
+    return undefined;
+  }
+
+  /** Rebuild standalone child bindings that still need a parent observation. */
+  unobservedStandaloneAssignments(
+    threadId: string,
+  ): readonly DurableStandaloneAssignment[] {
+    const assignments = new Map<string, DurableStandaloneAssignment>();
+    for (const event of this.journal(threadId).read()) {
+      if (event.type !== "tool.result" || event.phase !== "completed") continue;
+      const payload = asPayloadRecord(event.payload);
+      const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
+      if (payload?.tool !== "manage_subagents" || !lifecycle) continue;
+      if (lifecycle.action === "activate") {
+        const rawAssignment = asPayloadRecord(payload.subagentAssignment);
+        if (rawAssignment?.kind === "dag") {
+          // DAG bindings are reconciled from the authoritative task-graph
+          // transition and must never enter standalone recovery.
+          continue;
+        }
+        const assignment = standaloneAssignment(payload.subagentAssignment);
+        if (!assignment || assignment.agentId !== lifecycle.agentId || !event.turnId) {
+          // Legacy DAG activations have no standalone descriptor and remain
+          // governed by task-graph recovery.
+          if (payload.subagentAssignment === undefined) continue;
+          throw new Error(`Invalid standalone child activation in event ${event.eventId}`);
+        }
+        const existing = assignments.get(assignment.agentId);
+        if (existing) {
+          throw new Error(`Duplicate standalone child activation for ${assignment.agentId}`);
+        }
+        assignments.set(assignment.agentId, {
+          assignment,
+          createdByTurnId: event.turnId,
+          observed: false,
+        });
+        continue;
+      }
+      if (lifecycle.action === "observe") {
+        const assignment = standaloneAssignment(payload.subagentAssignment);
+        if (!assignment) continue;
+        const existing = assignments.get(assignment.agentId);
+        if (
+          !existing ||
+          assignment.agentId !== lifecycle.agentId ||
+          assignment.taskId !== existing.assignment.taskId ||
+          assignment.createdAt !== existing.assignment.createdAt
+        ) {
+          throw new Error(`Invalid standalone child observation in event ${event.eventId}`);
+        }
+        assignments.set(assignment.agentId, { ...existing, observed: true });
+      }
+    }
+    return [...assignments.values()]
+      .filter((entry) => !entry.observed)
+      .map((entry) => ({
+        ...entry,
+        assignment: {
+          ...entry.assignment,
+          completionChecks: [...entry.assignment.completionChecks],
+        },
+      }));
+  }
+
+  hasCommittedSubagentStop(threadId: string, agentId: string): boolean {
+    return this.journal(threadId).read().some((event) => {
+      if (event.type !== "tool.result" || event.phase !== "completed") return false;
+      const payload = asPayloadRecord(event.payload);
+      const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
+      return (
+        payload?.tool === "manage_subagents" &&
+        lifecycle?.action === "request_stop" &&
+        lifecycle.agentId === agentId
+      );
+    });
+  }
+
+  /** Recover the approved proposal whose execution was interrupted in this Turn. */
+  interruptedPlanReview(
+    threadId: string,
+    turnId: string,
+  ): PlanReviewState | undefined {
+    const events = this.journal(threadId).read();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.type !== "plan.execution_started" || event.turnId !== turnId) continue;
+      const payload = asPayloadRecord(event.payload);
+      if (!payload) return undefined;
+      const before = this.recoverFromEvents(threadId, events.slice(0, index));
+      const review = before.planReview;
+      if (
+        review?.status !== "approved_pending_execution" ||
+        payload.planId !== review.proposal.id ||
+        payload.revision !== review.proposal.revision
+      ) {
+        return undefined;
+      }
+      return recoveredPlanReview(review);
+    }
+    return undefined;
+  }
+
+  /** True when the model's terminal assistant reply was durable but turn completion was not. */
+  hasDurableFinalAssistant(threadId: string, turnId: string): boolean {
+    const events = this.journal(threadId).read();
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event?.turnId !== turnId) continue;
+      if (
+        event.type === "thread_checkpoint" ||
+        event.type === "subagent.artifact" ||
+        event.type === "subagent.result" ||
+        event.type === "tool_audit"
+      ) {
+        continue;
+      }
+      if (
+        event.type !== "message.assistant" &&
+        event.type !== "message.assistant.synthetic"
+      ) {
+        return false;
+      }
+      if (
+        (event.phase !== undefined && event.phase !== "completed") ||
+        !isChatMessage(event.payload) ||
+        event.payload.role !== "assistant"
+      ) {
+        return false;
+      }
+      return Boolean(event.payload.content?.trim()) && !event.payload.tool_calls?.length;
+    }
+    return false;
+  }
+
   journal(threadId: string): EventJournal {
     return new EventJournal(this.storage.dataDir, threadId);
   }
@@ -506,6 +1007,7 @@ export class ThreadStore {
 
   private recoverFromEvents(threadId: string, events: readonly EventRecord[]): SessionState {
     let state: SessionState | undefined;
+    const interruptedPlanExecutions = new Map<string, PlanReviewState>();
     for (const event of events) {
       const payload = asPayloadRecord(event.payload);
       if (event.type === "thread_created" || event.type === "thread_checkpoint") {
@@ -514,9 +1016,21 @@ export class ThreadStore {
         }
         const checkpoint = deserializeSessionState(payload.state);
         if (event.type === "thread_checkpoint" && state) {
+          // Messages and the active-turn pointer advance through journal events.
+          // A derived checkpoint may add a legacy tail, but it must never erase
+          // or fork an event-replayed prefix.
+          if (messagePrefix(checkpoint.messages, state.messages)) {
+            checkpoint.messages = state.messages.map(cloneMessage);
+            checkpoint.goal = state.goal;
+          } else if (!messagePrefix(state.messages, checkpoint.messages)) {
+            throw new Error(
+              `Thread checkpoint ${event.eventId} diverged from durable message history`,
+            );
+          }
+          checkpoint.activeTurnId = state.activeTurnId;
           if (state.taskGraph) {
-            // Checkpoints are derived snapshots. Only replayed manage_tasks
-            // transitions may advance or replace the authoritative DAG.
+            // Checkpoints are derived snapshots. Only replayed model DAG or
+            // Runtime-owned subagent transitions may advance the authority.
             checkpoint.taskGraph = cloneTaskGraph(state.taskGraph);
           } else if (checkpoint.taskGraph) {
             throw new Error(
@@ -530,6 +1044,21 @@ export class ThreadStore {
               `Thread checkpoint ${event.eventId} introduced a plan review without a legal event`,
             );
           }
+          // Context compaction is an event-authoritative monotonic boundary.
+          // A checkpoint may have been serialized before a background append;
+          // never let that derived snapshot expand already-compacted history.
+          if (state.compactedMessageCount >= checkpoint.compactedMessageCount) {
+            if (state.compactedMessageCount > checkpoint.messages.length) {
+              checkpoint.messages = state.messages.map(cloneMessage);
+            }
+            checkpoint.workingSummary = state.workingSummary;
+            checkpoint.compactedMessageCount = state.compactedMessageCount;
+          }
+          // A background child can append artifacts between the caller taking
+          // its checkpoint snapshot and the checkpoint append. Durable
+          // side-effect/audit events must never be erased by that stale view.
+          mergeFileChanges(checkpoint.changes, state.changes);
+          mergeCommandAudits(checkpoint.commands, state.commands);
         }
         state = checkpoint;
         continue;
@@ -540,6 +1069,7 @@ export class ThreadStore {
         state.activeTurnId = event.turnId;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           appendMessageIfNew(state, payload.message);
+          if (payload.message.content.trim()) state.goal = payload.message.content;
         }
       } else if (event.type === "turn_completed") {
         state.activeTurnId = undefined;
@@ -558,9 +1088,11 @@ export class ThreadStore {
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           state.activeTurnId = event.turnId;
           appendMessageIfNew(state, payload.message);
+          if (payload.message.content.trim()) state.goal = payload.message.content;
         } else if (typeof payload?.content === "string") {
           state.activeTurnId = event.turnId;
           appendMessageIfNew(state, { role: "user", content: payload.content });
+          if (payload.content.trim()) state.goal = payload.content;
         }
       } else if (
         event.type === "message.user.synthetic" &&
@@ -593,6 +1125,29 @@ export class ThreadStore {
             content: JSON.stringify(payload.result ?? null).slice(0, 64_000),
           });
         }
+      } else if (event.type === "subagent.recovery" && payload && "taskGraph" in payload) {
+        state.taskGraph = this.replayTaskGraphResult(state, event, payload);
+      } else if (event.type === "subagent.artifact" && payload) {
+        const artifacts = artifactPayload(payload);
+        mergeFileChanges(state.changes, artifacts.changes);
+        mergeCommandAudits(state.commands, artifacts.commands);
+      } else if (event.type === "turn.recovered" && payload && event.turnId) {
+        const expectedPlanReview = interruptedPlanExecutions.get(event.turnId);
+        validateInterruptedTurnRecovery(state, event, payload, expectedPlanReview);
+        for (const message of payload.messages as ChatMessage[]) {
+          if (message.role !== "tool" && message.role !== "assistant") {
+            throw new Error(`Invalid recovery message role in event ${event.eventId}`);
+          }
+          appendMessageIfNew(state, message);
+        }
+        if (payload.planReview !== undefined) {
+          if (!isPlanReviewState(payload.planReview)) {
+            throw new Error(`Invalid recovered plan review in event ${event.eventId}`);
+          }
+          state.planReview = clonePlanReviewState(payload.planReview);
+        }
+        interruptedPlanExecutions.delete(event.turnId);
+        state.activeTurnId = undefined;
       } else if (
         (event.type === "plan.approved" ||
           event.type === "plan.rejected" ||
@@ -600,6 +1155,16 @@ export class ThreadStore {
           event.type === "plan.execution_started") &&
         payload
       ) {
+        if (
+          event.type === "plan.execution_started" &&
+          event.turnId &&
+          state.planReview?.status === "approved_pending_execution"
+        ) {
+          interruptedPlanExecutions.set(
+            event.turnId,
+            recoveredPlanReview(state.planReview),
+          );
+        }
         this.replayPlanReviewEvent(state, event, payload);
         if (isChatMessage(payload.message) && payload.message.role === "user") {
           appendMessageIfNew(state, payload.message);
@@ -645,26 +1210,42 @@ export class ThreadStore {
     payload: Record<string, unknown>,
   ): NonNullable<SessionState["taskGraph"]> {
     if (
-      event.type !== "tool.result" ||
+      (event.type !== "tool.result" && event.type !== "subagent.recovery") ||
       event.phase !== "completed" ||
-      payload.tool !== "manage_tasks" ||
       typeof event.turnId !== "string" ||
       !event.turnId ||
-      !("taskGraphOperation" in payload)
+      (event.type === "tool.result" &&
+        payload.tool !== "manage_tasks" &&
+        payload.tool !== "manage_subagents")
     ) {
       throw new Error(`Invalid task DAG source in tool.result event ${event.eventId}`);
     }
-    const parsed = taskGraphOperationSchema.safeParse(payload.taskGraphOperation);
-    if (!parsed.success || parsed.data.action === "list") {
-      throw new Error(`Invalid task DAG operation in tool.result event ${event.eventId}`);
-    }
     try {
-      return validateTaskGraphTransition(
-        state.taskGraph,
-        parsed.data,
-        payload.taskGraph,
-        event.turnId,
-      );
+      if (payload.tool === "manage_tasks" && "taskGraphOperation" in payload) {
+        const parsed = taskGraphOperationSchema.safeParse(payload.taskGraphOperation);
+        if (!parsed.success || parsed.data.action === "list") {
+          throw new Error("Invalid model task DAG operation");
+        }
+        return validateTaskGraphTransition(
+          state.taskGraph,
+          parsed.data,
+          payload.taskGraph,
+          event.turnId,
+        );
+      }
+      if (
+        (payload.tool === "manage_subagents" || event.type === "subagent.recovery") &&
+        "subagentTaskOperation" in payload
+      ) {
+        const parsed = subagentTaskOperationSchema.parse(payload.subagentTaskOperation);
+        return validateSubagentTaskTransition(
+          state.taskGraph,
+          parsed,
+          payload.taskGraph,
+          event.turnId,
+        );
+      }
+      throw new Error("The event did not declare an authorized task DAG transition");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Invalid task DAG transition in tool.result event ${event.eventId}: ${message}`);
@@ -865,6 +1446,35 @@ export class ThreadStore {
         .run(threadId);
       return;
     }
+    if (event.type === "turn.recovered" && event.turnId && payload) {
+      const messages = Array.isArray(payload.messages)
+        ? payload.messages.filter(isChatMessage)
+        : [];
+      const assistant = [...messages].reverse().find(
+        (message): message is Extract<ChatMessage, { role: "assistant" }> =>
+          message.role === "assistant",
+      );
+      if (assistant) {
+        this.projectTurnCompleted(
+          threadId,
+          event.turnId,
+          assistant,
+          "interrupted",
+          event.timestamp,
+        );
+      } else {
+        this.projectRuntimeTurnCompleted(
+          threadId,
+          event.turnId,
+          "interrupted",
+          event.timestamp,
+        );
+      }
+      this.storage.db
+        .prepare("UPDATE threads SET active_turn_id = NULL WHERE id = ?")
+        .run(threadId);
+      return;
+    }
     if (event.type === "turn_completed" && event.turnId && payload) {
       if (isChatMessage(payload.message) && payload.message.role === "assistant") {
         const reason = typeof payload.reason === "string" ? payload.reason : "success";
@@ -884,6 +1494,13 @@ export class ThreadStore {
     if (event.type === "tool_audit" && payload) {
       const entry = payload.entry as CommandAuditEntry | undefined;
       if (entry && typeof entry.id === "string" && Array.isArray(entry.args)) {
+        this.projectToolAudit(threadId, event.turnId, entry);
+      }
+      return;
+    }
+    if (event.type === "subagent.artifact" && payload) {
+      const artifacts = artifactPayload(payload);
+      for (const entry of artifacts.commands) {
         this.projectToolAudit(threadId, event.turnId, entry);
       }
     }
@@ -1040,14 +1657,18 @@ export class ThreadStore {
       .prepare(
         `INSERT INTO tool_audit(
            id, thread_id, turn_id, program, args_json, cwd, status,
-           exit_code, duration_ms, timestamp, summary
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, duration_ms, timestamp, summary, source_agent_role,
+           source_agent_id, source_task_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            status = excluded.status,
            exit_code = excluded.exit_code,
            duration_ms = excluded.duration_ms,
            timestamp = excluded.timestamp,
-           summary = excluded.summary`,
+           summary = excluded.summary,
+           source_agent_role = excluded.source_agent_role,
+           source_agent_id = excluded.source_agent_id,
+           source_task_id = excluded.source_task_id`,
       )
       .run(
         entry.id,
@@ -1061,6 +1682,9 @@ export class ThreadStore {
         entry.durationMs,
         entry.timestamp,
         entry.summary,
+        entry.sourceAgentRole ?? null,
+        entry.sourceAgentId ?? null,
+        entry.sourceTaskId ?? null,
       );
   }
 

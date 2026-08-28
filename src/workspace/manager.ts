@@ -21,6 +21,17 @@ export interface WorkspaceManagerOptions extends SnapshotOptions {
   manifestSummaryLimit?: number;
 }
 
+export interface WorkspaceRestoreSummary {
+  /** Read authorizations that still match the current workspace bytes. */
+  restoredReadVersions: number;
+  /** Saved read authorizations rejected because the path is missing or changed. */
+  staleReadVersions: number;
+  /** Historical file-tool/command audit entries restored into the live manager. */
+  restoredChanges: number;
+  /** Invalid or duplicate historical audit entries omitted during rehydration. */
+  discardedChanges: number;
+}
+
 /** Owns the workspace manifest, read versions and current ChangeSet. */
 export class WorkspaceManager {
   readonly pathGuard: WorkspacePathGuard;
@@ -66,6 +77,73 @@ export class WorkspaceManager {
 
   getReadVersions(): FileVersion[] {
     return [...this.readVersions.values()].map((entry) => ({ ...entry }));
+  }
+
+  /**
+   * Rehydrate thread-scoped workspace state after `/resume`.
+   *
+   * A saved read version is an authorization boundary for update/delete tools,
+   * so it is restored only when the fresh startup manifest proves that the
+   * file still has exactly the hash the agent read previously. Historical
+   * changes are audit records rather than authorizations and can be restored
+   * independently. Invalid paths are ignored instead of making an otherwise
+   * usable thread impossible to resume.
+   */
+  restorePersistedState(
+    readVersions: ReadonlyMap<string, FileVersion>,
+    changes: readonly FileChangeRecord[],
+  ): WorkspaceRestoreSummary {
+    this.readVersions.clear();
+    this.changes.length = 0;
+
+    let restoredReadVersions = 0;
+    let staleReadVersions = 0;
+    const manifestFiles = this.manifest?.files ?? new Map();
+    for (const [savedPath, savedVersion] of readVersions) {
+      try {
+        const relative = this.pathGuard.normalizeRelative(savedPath);
+        const versionPath = this.pathGuard.normalizeRelative(savedVersion.path);
+        const current = manifestFiles.get(relative);
+        if (
+          relative !== versionPath ||
+          !current ||
+          current.kind !== "file" ||
+          current.hash !== savedVersion.hash
+        ) {
+          staleReadVersions += 1;
+          continue;
+        }
+        this.readVersions.set(relative, {
+          path: relative,
+          hash: savedVersion.hash,
+          readAt: savedVersion.readAt,
+        });
+        restoredReadVersions += 1;
+      } catch {
+        staleReadVersions += 1;
+      }
+    }
+
+    const knownChanges = new Set<string>();
+    for (const change of changes) {
+      try {
+        const relative = this.pathGuard.normalizeRelative(change.path);
+        const restored = { ...change, path: relative };
+        const key = fileChangeIdentity(restored);
+        if (knownChanges.has(key)) continue;
+        knownChanges.add(key);
+        this.changes.push(restored);
+      } catch {
+        // Old/corrupt audit paths must not escape the resumed workspace.
+      }
+    }
+
+    return {
+      restoredReadVersions,
+      staleReadVersions,
+      restoredChanges: this.changes.length,
+      discardedChanges: Math.max(0, changes.length - this.changes.length),
+    };
   }
 
   invalidateReadVersion(filename: string): void {
@@ -162,3 +240,14 @@ export class WorkspaceManager {
   }
 }
 
+function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {
+  return [
+    change.timestamp,
+    change.path,
+    change.operation,
+    change.beforeHash ?? "",
+    change.afterHash ?? "",
+    change.source,
+    change.status,
+  ].join("|");
+}

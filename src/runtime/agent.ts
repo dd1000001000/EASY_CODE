@@ -1,6 +1,7 @@
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
+  type AgentRole,
   type AgentReasoningNotification,
   type AgentRunResult,
   type AgentTool,
@@ -15,6 +16,9 @@ import {
   type PlanProposal,
   type PlanReviewState,
   type SessionState,
+  type SubagentLifecycleUpdate,
+  type SubagentAssignmentSnapshot,
+  type SubagentTaskReport,
   type TaskGraph,
   type ToolExecutionResult,
   type ToolName,
@@ -43,6 +47,9 @@ import {
   taskGraphOperationSchema,
   taskGraphView,
   validateTaskGraphTransition,
+  subagentTaskOperationSchema,
+  validateSubagentTaskTransition,
+  type SubagentTaskTransitionOperation,
   type TaskGraphTransitionOperation,
 } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
@@ -52,6 +59,8 @@ import { determineAutoRoute } from "./auto-router.js";
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
 const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
 const CONTEXT_COMPACTION_STEP_ALLOWANCE = 1;
+const SUBAGENT_RESULT_STEP_ALLOWANCE = 1;
+const SUBAGENT_COLLECTION_STEP_ALLOWANCE = 1;
 
 function contextUtilizationPercent(utilization: number): string {
   // Never round a lower pressure band up to the next threshold in status text.
@@ -88,6 +97,10 @@ function contextPressureInstruction(
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   tools: AgentTool[];
+  /** Runtime-issued actor identity; the default is the only main agent. */
+  agentIdentity?:
+    | { role: "main_agent" }
+    | { role: "subagent"; agentId: string; assignedTaskId: string };
   contextManager: ContextManager;
   buildSystemPrompt: (input: {
     mode: AgentMode;
@@ -114,6 +127,16 @@ export interface AgentRuntimeDependencies {
     toolName: string,
     result: ToolExecutionResult
   ) => Promise<void>;
+  /** Roll back a prepared child lifecycle when its authoritative event cannot commit. */
+  onSubagentLifecycleRollback?: (update: SubagentLifecycleUpdate) => void;
+  /** Process-local children that must be collected before the main agent can finish. */
+  getOutstandingSubagents?: () => readonly {
+    id: string;
+    assignmentKind: "dag" | "standalone";
+    taskId: string;
+    taskTitle: string;
+    status: string;
+  }[];
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
   /** Transient presentation lifecycle around each provider API request. */
@@ -121,6 +144,8 @@ export interface AgentRuntimeDependencies {
   onModelRequestEnd?: () => void;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
   onReasoning?: (notification: AgentReasoningNotification) => void;
+  /** Child-only FIFO parent guidance, drained at a model-step boundary. */
+  takeAdditionalInstructions?: () => readonly string[];
   attachImage?: (input: {
     threadId: string;
     label: string;
@@ -152,10 +177,30 @@ export interface AgentRunOptions {
   approvedPlan?: Pick<PlanProposal, "id" | "revision">;
 }
 
-function availableTools(tools: AgentTool[], mode: AgentMode): AgentTool[] {
+function availableTools(
+  tools: AgentTool[],
+  mode: AgentMode,
+  role: AgentRole,
+  _thinkingEffort: SessionState["thinkingEffort"],
+): AgentTool[] {
+  if (role === "subagent") {
+    if (mode !== "code") return [];
+    return tools.filter((tool) =>
+      tool.name === "read_file" ||
+      tool.name === "create_file" ||
+      tool.name === "update_file" ||
+      tool.name === "delete_file" ||
+      tool.name === "run_command" ||
+      tool.name === "compact_context" ||
+      tool.name === "submit_task_result"
+    );
+  }
   if (mode !== "plan") {
     return tools.filter(
-      (tool) => tool.name !== "propose_plan" && tool.name !== "select_mode",
+      (tool) =>
+        tool.name !== "propose_plan" &&
+        tool.name !== "select_mode" &&
+        tool.name !== "submit_task_result",
     );
   }
   return tools.filter(
@@ -207,10 +252,15 @@ function taskGraphToolError(
 
 function incompleteTaskGraphReminder(graph: Readonly<TaskGraph>): string {
   const view = taskGraphView(graph);
+  const childTasks = view.tasks.filter(
+    (task) => task.status === "in_progress" && task.owner === "subagent",
+  );
   return (
     "RUNTIME_TASK_DAG_ENFORCEMENT: The task DAG is still active, so a final answer is not allowed. " +
     (view.currentTask
       ? `Continue task ${view.currentTask}, then mark it complete with verified evidence or block it with a concrete external reason.`
+      : childTasks.length
+        ? `Use manage_subagents status/wait to collect the running child task(s): ${childTasks.map((task) => `${task.id}=${task.assignedAgentId}`).join(", ")}.`
       : `Start one available task with manage_tasks. Startable tasks: ${view.startableTasks.join(", ") || "none"}.`)
   );
 }
@@ -222,13 +272,61 @@ function terminalTaskGraphText(graph: Readonly<TaskGraph> | undefined): string {
     : "The task DAG completed all declared tasks and completion checks.";
 }
 
-function resultForModel(result: ToolExecutionResult): string {
-  return jsonForModel({
+function resultForModel(result: ToolExecutionResult, maximumChars: number): string {
+  const payload = {
     ok: result.ok,
     summary: result.summary,
     data: result.data,
     error: result.error
-  });
+  };
+  const complete = jsonForModel(payload);
+  if (complete.length <= maximumChars) return complete;
+
+  let textBudget = Math.max(16, Math.floor((maximumChars - 120) / 2));
+  while (textBudget >= 0) {
+    const bounded = jsonForModel({
+      ok: result.ok,
+      summary: result.summary.slice(0, textBudget),
+      ...(result.error ? { error: result.error.slice(0, textBudget) } : {}),
+      data: { truncated: true, originalChars: complete.length },
+    });
+    if (bounded.length <= maximumChars) return bounded;
+    if (textBudget === 0) break;
+    textBudget = Math.floor(textBudget / 2);
+  }
+  return jsonForModel({ ok: result.ok, data: { truncated: true } });
+}
+
+function isSubagentAssignmentSnapshot(
+  value: unknown,
+): value is SubagentAssignmentSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const assignment = value as Partial<SubagentAssignmentSnapshot>;
+  return (
+    (assignment.kind === "dag" || assignment.kind === "standalone") &&
+    typeof assignment.agentId === "string" &&
+    assignment.agentId.length > 0 &&
+    typeof assignment.taskId === "string" &&
+    assignment.taskId.length > 0 &&
+    typeof assignment.taskTitle === "string" &&
+    assignment.taskTitle.length > 0 &&
+    typeof assignment.taskDescription === "string" &&
+    assignment.taskDescription.length > 0 &&
+    Array.isArray(assignment.completionChecks) &&
+    assignment.completionChecks.length > 0 &&
+    assignment.completionChecks.every(
+      (check) => typeof check === "string" && check.length > 0,
+    ) &&
+    typeof assignment.provider === "string" &&
+    typeof assignment.model === "string" &&
+    (assignment.thinkingEffort === "none" ||
+      assignment.thinkingEffort === "low" ||
+      assignment.thinkingEffort === "medium" ||
+      assignment.thinkingEffort === "high") &&
+    typeof assignment.createdAt === "string" &&
+    (assignment.kind === "standalone" ||
+      (typeof assignment.taskGraphId === "string" && assignment.taskGraphId.length > 0))
+  );
 }
 
 export class AgentRuntime {
@@ -244,6 +342,10 @@ export class AgentRuntime {
     validateImageAttachmentCollection(inputImages);
     validateProviderImageAttachments(this.dependencies.provider.name, inputImages);
     const turnId = createId("turn");
+    const agentIdentity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
+    if (agentIdentity.role === "subagent" && state.mode !== "code") {
+      throw new Error("An isolated child runtime must remain in Code mode");
+    }
     const memoryContext = {
       userInput,
       mutations: [] as MemoryMutationRequest[],
@@ -297,6 +399,18 @@ export class AgentRuntime {
     if (options.modeOverride && state.mode !== "auto") {
       throw new Error("A review mode override is valid only while the persistent mode is Auto");
     }
+    const outstandingSubagentsAtRoute = agentIdentity.role === "main_agent"
+      ? (this.dependencies.getOutstandingSubagents?.() ?? [])
+      : [];
+    if (
+      outstandingSubagentsAtRoute.length > 0 &&
+      (options.modeOverride === "plan" ||
+        (options.modeOverride === undefined && state.mode === "plan"))
+    ) {
+      throw new Error(
+        "Outstanding child assignments must be collected in Code mode before entering Plan mode",
+      );
+    }
     if (
       options.modeOverride === "plan" &&
       state.taskGraph &&
@@ -328,6 +442,12 @@ export class AgentRuntime {
             mode: "code" as const,
             reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
           }
+        : outstandingSubagentsAtRoute.length > 0
+          ? {
+              mode: "code" as const,
+              reason:
+                "Collect every running or unobserved child assignment in code mode before planning or finishing.",
+            }
           : await (async () => {
             this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
             const routingInput = inputImages.length
@@ -369,7 +489,12 @@ export class AgentRuntime {
     let nextImageNumber = nextThreadImageNumber(state.messages);
     const turnImages = [...inputImages];
     const toolMap = new Map<ToolName, AgentTool>();
-    for (const tool of availableTools(this.dependencies.tools, effectiveMode)) {
+    for (const tool of availableTools(
+      this.dependencies.tools,
+      effectiveMode,
+      agentIdentity.role,
+      state.thinkingEffort,
+    )) {
       toolMap.set(tool.name, tool);
     }
 
@@ -383,6 +508,10 @@ export class AgentRuntime {
     let contextCompactionCorrectionAllowanceGranted = false;
     let contextCompactionContinuationAllowanceGranted = false;
     let lastContextPressureLevel: ContextPressureLevel = "normal";
+    let subagentResultReminderIssued = false;
+    let subagentResultAllowanceGranted = false;
+    let subagentCollectionReminderIssued = false;
+    let subagentCollectionAllowanceGranted = false;
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -395,6 +524,23 @@ export class AgentRuntime {
         );
       }
 
+      for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
+        const followUp: Extract<ChatMessage, { role: "user" }> = {
+          role: "user",
+          content:
+            "PARENT_FOLLOW_UP: The main agent added the following scoped guidance for your " +
+            `assigned task. Apply it without expanding the assignment.\n\n${instruction}`,
+        };
+        state.messages.push(followUp);
+        await this.dependencies.appendEvent({
+          threadId: state.threadId,
+          turnId,
+          stepId: `step_${step}`,
+          type: "message.user.synthetic",
+          phase: "completed",
+          payload: followUp,
+        });
+      }
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
         mode: effectiveMode,
@@ -602,6 +748,89 @@ export class AgentRuntime {
         const text =
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
+        if (agentIdentity.role === "subagent") {
+          if (!subagentResultReminderIssued) {
+            subagentResultReminderIssued = true;
+            const reminder: Extract<ChatMessage, { role: "user" }> = {
+              role: "user",
+              content:
+                "RUNTIME_SUBAGENT_RESULT_PROTOCOL: A child cannot finish with plain assistant " +
+                "text. Call submit_task_result by itself for the single bound task, using " +
+                "completed with exact evidence or blocked with a concrete external blocker.",
+            };
+            state.messages.push(reminder);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "message.user.synthetic",
+              phase: "completed",
+              payload: reminder,
+            });
+            if (step === stepLimit && !subagentResultAllowanceGranted) {
+              stepLimit += SUBAGENT_RESULT_STEP_ALLOWANCE;
+              subagentResultAllowanceGranted = true;
+            }
+            this.dependencies.onStatus?.(
+              "The child attempted to finish without submit_task_result; requesting one correction.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            "The child did not submit a structured result for its bound task.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
+        const outstandingSubagents = this.dependencies.getOutstandingSubagents?.() ?? [];
+        if (outstandingSubagents.length > 0) {
+          if (!subagentCollectionReminderIssued) {
+            subagentCollectionReminderIssued = true;
+            const targets = outstandingSubagents
+              .slice(0, 8)
+              .map(
+                (agent) =>
+                  `${agent.id}=${agent.assignmentKind}:${agent.taskId} (${agent.status})`,
+              )
+              .join(", ");
+            const reminder: Extract<ChatMessage, { role: "user" }> = {
+              role: "user",
+              content:
+                "RUNTIME_SUBAGENT_COLLECTION_REQUIRED: The main agent cannot finish while " +
+                "a child result is running or unobserved. Use manage_subagents status/wait, " +
+                "or stop and then wait, before returning a final answer. Outstanding: " +
+                targets,
+            };
+            state.messages.push(reminder);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "message.user.synthetic",
+              phase: "completed",
+              payload: reminder,
+            });
+            if (step === stepLimit && !subagentCollectionAllowanceGranted) {
+              stepLimit += SUBAGENT_COLLECTION_STEP_ALLOWANCE;
+              subagentCollectionAllowanceGranted = true;
+            }
+            this.dependencies.onStatus?.(
+              "The model attempted to finish with outstanding child work; requesting collection.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            "The main agent did not collect all outstanding child results.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
         if (state.taskGraph?.status === "active") {
           const reminder: Extract<ChatMessage, { role: "user" }> = {
             role: "user",
@@ -667,21 +896,32 @@ export class AgentRuntime {
         contextCompactionRequired && !compactContextIsExclusive;
       const manageTasksBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
+      const manageSubagentsMixed =
+        calls.length > 1 &&
+        calls.some((call) => call.function.name === "manage_subagents") &&
+        !calls.every((call) => call.function.name === "manage_subagents");
       const proposePlanBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
+      const submitTaskResultBatched =
+        calls.length > 1 &&
+        calls.some((call) => call.function.name === "submit_task_result");
       const compactContextHasNewHistory =
         state.messages.length - 1 > state.compactedMessageCount;
       const stepImageAttachments: ImageAttachment[] = [];
       let successfulMemoryToolCall = false;
       let successfulContextCompaction = false;
       let proposedPlan: PlanProposal | undefined;
+      let submittedTaskReport: SubagentTaskReport | undefined;
 
       for (const call of calls) {
         const toolName = call.function.name as ToolName;
         const tool = toolMap.get(toolName);
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
         let taskGraphOperation: TaskGraphTransitionOperation | undefined;
+        let subagentTaskOperation: SubagentTaskTransitionOperation | undefined;
         let result: ToolExecutionResult;
+        let preparedSubagentLifecycle: SubagentLifecycleUpdate | undefined;
+        let preparedSubagentLifecycleRolledBack = false;
 
         await this.dependencies.appendEvent({
           threadId: state.threadId,
@@ -705,11 +945,24 @@ export class AgentRuntime {
             summary: "manage_tasks must be the only tool call in a model response.",
             error: "manage_tasks_must_be_exclusive",
           };
+        } else if (manageSubagentsMixed) {
+          result = {
+            ok: false,
+            summary:
+              "manage_subagents may be batched only with other manage_subagents calls.",
+            error: "manage_subagents_must_not_mix_with_other_tools",
+          };
         } else if (proposePlanBatched) {
           result = {
             ok: false,
             summary: "propose_plan must be the only tool call in a model response.",
             error: "propose_plan_must_be_exclusive",
+          };
+        } else if (submitTaskResultBatched) {
+          result = {
+            ok: false,
+            summary: "submit_task_result must be the only tool call in a model response.",
+            error: "submit_task_result_must_be_exclusive",
           };
         } else if (toolName === "compact_context" && !compactContextIsExclusive) {
           result = {
@@ -737,6 +990,16 @@ export class AgentRuntime {
             let input: unknown = rawInput;
             if (toolName === "manage_tasks") {
               const parsedOperation = taskGraphOperationSchema.parse(rawInput);
+              if (
+                parsedOperation.action === "create" &&
+                (this.dependencies.getOutstandingSubagents?.() ?? []).some(
+                  (agent) => agent.assignmentKind === "standalone",
+                )
+              ) {
+                throw new Error(
+                  "Collect every standalone child result before creating a task DAG.",
+                );
+              }
               input = parsedOperation;
               if (parsedOperation.action !== "list") {
                 taskGraphOperation = parsedOperation;
@@ -753,6 +1016,17 @@ export class AgentRuntime {
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,
               maxOutputChars: options.maxOutputChars,
+              agentRole: agentIdentity.role,
+              ...(agentIdentity.role === "subagent"
+                ? {
+                    agentId: agentIdentity.agentId,
+                    assignedTaskId: agentIdentity.assignedTaskId,
+                  }
+                : {}),
+              thinkingEffort: state.thinkingEffort,
+              provider: state.provider,
+              model: state.model,
+              toolCallId: call.id,
               ...(state.taskGraph
                 ? { taskGraph: cloneTaskGraph(state.taskGraph) }
                 : {}),
@@ -800,6 +1074,7 @@ export class AgentRuntime {
                 : {}),
             };
             result = await tool.execute(input, toolContext);
+            preparedSubagentLifecycle = result.subagentLifecycle;
           } catch (error) {
             result = {
               ok: false,
@@ -825,15 +1100,28 @@ export class AgentRuntime {
         let taskGraphUpdate: TaskGraph | undefined;
         if (result.ok && result.taskGraphUpdate) {
           try {
-            if (toolName !== "manage_tasks" || !taskGraphOperation) {
-              throw new Error("Only a state-changing manage_tasks call may update the task DAG");
+            if (toolName === "manage_tasks" && taskGraphOperation) {
+              taskGraphUpdate = validateTaskGraphTransition(
+                state.taskGraph,
+                taskGraphOperation,
+                result.taskGraphUpdate,
+                turnId,
+              );
+            } else if (toolName === "manage_subagents" && result.subagentTaskOperation) {
+              subagentTaskOperation = subagentTaskOperationSchema.parse(
+                result.subagentTaskOperation,
+              );
+              taskGraphUpdate = validateSubagentTaskTransition(
+                state.taskGraph,
+                subagentTaskOperation,
+                result.taskGraphUpdate,
+                turnId,
+              );
+            } else {
+              throw new Error(
+                "Only an authorized manage_tasks or manage_subagents call may update the task DAG",
+              );
             }
-            taskGraphUpdate = validateTaskGraphTransition(
-              state.taskGraph,
-              taskGraphOperation,
-              result.taskGraphUpdate,
-              turnId,
-            );
           } catch (error) {
             result = {
               ok: false,
@@ -849,11 +1137,91 @@ export class AgentRuntime {
           };
         }
 
+        if (result.ok && result.subagentLifecycle) {
+          const lifecycle = result.subagentLifecycle;
+          const requiresBinding =
+            lifecycle.action === "activate" || lifecycle.action === "observe";
+          const assignment = result.subagentAssignment;
+          let lifecycleError: string | undefined;
+          if (toolName !== "manage_subagents") {
+            lifecycleError = "Only manage_subagents may change child lifecycle state";
+          } else if (requiresBinding) {
+            if (
+              !isSubagentAssignmentSnapshot(assignment) ||
+              assignment.agentId !== lifecycle.agentId
+            ) {
+              lifecycleError = "The child lifecycle transition is missing its exact Runtime binding";
+            } else if (assignment.kind === "dag") {
+              if (
+                !taskGraphUpdate ||
+                !subagentTaskOperation ||
+                assignment.taskGraphId !== taskGraphUpdate.id ||
+                assignment.taskId !== subagentTaskOperation.taskId ||
+                assignment.agentId !== subagentTaskOperation.agentId ||
+                (lifecycle.action === "activate" &&
+                  subagentTaskOperation.action !== "claim") ||
+                (lifecycle.action === "observe" &&
+                  subagentTaskOperation.action === "claim")
+              ) {
+                lifecycleError =
+                  "A DAG child lifecycle transition requires its matching authoritative task-DAG transition";
+              }
+            } else if (taskGraphUpdate || subagentTaskOperation) {
+              lifecycleError =
+                "A standalone child lifecycle transition must not update the task DAG";
+            }
+          } else if (taskGraphUpdate || subagentTaskOperation || assignment) {
+            lifecycleError =
+              "Follow-up and stop lifecycle transitions must not alter the child binding or task DAG";
+          }
+          if (lifecycleError) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an invalid subagent lifecycle transition.",
+              error: lifecycleError,
+            };
+          }
+        } else if (result.ok && result.subagentAssignment) {
+          result = {
+            ok: false,
+            summary: "Runtime rejected an unpaired child assignment.",
+            error: "A child assignment requires an activate or observe lifecycle transition",
+          };
+        }
+
+        if (result.ok && result.subagentTaskReport) {
+          const report = result.subagentTaskReport;
+          if (
+            toolName !== "submit_task_result" ||
+            agentIdentity.role !== "subagent" ||
+            report.taskId !== agentIdentity.assignedTaskId
+          ) {
+            result = {
+              ok: false,
+              summary: "Runtime rejected an unauthorized child task result.",
+              error: "invalid_subagent_task_result",
+            };
+          } else {
+            submittedTaskReport = report;
+          }
+        } else if (result.ok && toolName === "submit_task_result") {
+          result = {
+            ok: false,
+            summary: "Runtime rejected a missing child task result.",
+            error: "submit_task_result did not return a structured result",
+          };
+        }
+
         let planReviewUpdate: SessionState["planReview"] | undefined;
         if (result.ok && result.planProposal) {
           try {
             if (toolName !== "propose_plan" || effectiveMode !== "plan") {
               throw new Error("Only propose_plan may submit a proposal in Plan mode");
+            }
+            if ((this.dependencies.getOutstandingSubagents?.() ?? []).length > 0) {
+              throw new Error(
+                "Outstanding child assignments must be collected before proposing a plan",
+              );
             }
             planReviewUpdate = createPlanReviewState(
               result.planProposal,
@@ -874,31 +1242,58 @@ export class AgentRuntime {
             error: "propose_plan did not return a structured proposal",
           };
         }
+        if (!result.ok && toolName === "submit_task_result") {
+          submittedTaskReport = undefined;
+        }
 
         const toolMessage: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
           name: call.function.name,
-          content: resultForModel(result).slice(0, options.maxOutputChars)
+          content: resultForModel(result, options.maxOutputChars)
         };
-        state.messages.push(toolMessage);
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          stepId: `step_${step}`,
-          type: "tool.result",
-          phase: result.ok ? "completed" : "failed",
-          payload: {
-            callId: call.id,
-            tool: call.function.name,
-            message: toolMessage,
-            ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
-            ...(taskGraphUpdate && taskGraphOperation
-              ? { taskGraph: taskGraphUpdate, taskGraphOperation }
-              : {}),
-            ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
+        const rollbackPreparedSubagent = (): void => {
+          if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
+          preparedSubagentLifecycleRolledBack = true;
+          try {
+            this.dependencies.onSubagentLifecycleRollback?.(preparedSubagentLifecycle);
+          } catch {
+            // A local reservation cleanup hook must not replace the durable tool result/error.
           }
-        });
+        };
+        if (!result.ok) rollbackPreparedSubagent();
+        try {
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `step_${step}`,
+            type: "tool.result",
+            phase: result.ok ? "completed" : "failed",
+            payload: {
+              callId: call.id,
+              tool: call.function.name,
+              message: toolMessage,
+              ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
+              ...(taskGraphUpdate && taskGraphOperation
+                ? { taskGraph: taskGraphUpdate, taskGraphOperation }
+                : {}),
+              ...(taskGraphUpdate && subagentTaskOperation
+                ? { taskGraph: taskGraphUpdate, subagentTaskOperation }
+                : {}),
+              ...(result.ok && result.subagentLifecycle
+                ? { subagentLifecycle: result.subagentLifecycle }
+                : {}),
+              ...(result.ok && result.subagentAssignment
+                ? { subagentAssignment: result.subagentAssignment }
+                : {}),
+              ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
+            }
+          });
+        } catch (error) {
+          rollbackPreparedSubagent();
+          throw error;
+        }
+        state.messages.push(toolMessage);
         if (taskGraphUpdate) {
           state.taskGraph = taskGraphUpdate;
           state.updatedAt = new Date().toISOString();
@@ -944,6 +1339,21 @@ export class AgentRuntime {
           successfulMemoryToolCall = true;
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+      }
+
+      if (submittedTaskReport) {
+        const text = submittedTaskReport.summary;
+        this.dependencies.onText?.(text);
+        return this.finish(
+          state,
+          turnId,
+          text,
+          submittedTaskReport.outcome === "completed" ? "success" : "blocked",
+          step,
+          memoryContext,
+          undefined,
+          submittedTaskReport,
+        );
       }
 
       if (contextCompactionRequired && !successfulContextCompaction) {
@@ -1161,6 +1571,7 @@ export class AgentRuntime {
       mutations: readonly MemoryMutationRequest[];
     },
     planProposal?: PlanProposal,
+    subagentTaskReport?: SubagentTaskReport,
   ): Promise<AgentRunResult> {
     state.activeTurnId = undefined;
     state.updatedAt = new Date().toISOString();
@@ -1172,6 +1583,7 @@ export class AgentRuntime {
       threadId: state.threadId,
       turnId,
       ...(planProposal ? { planProposal } : {}),
+      ...(subagentTaskReport ? { subagentTaskReport } : {}),
     };
     if (
       !lastMessage ||

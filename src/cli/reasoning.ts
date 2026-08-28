@@ -151,6 +151,15 @@ export class ReasoningRegistry {
     return resolved === undefined ? undefined : this.blocks.get(resolved);
   }
 
+  /** Recreate stable Thread-local IDs after loading durable message history. */
+  rebuild(values: readonly string[]): number {
+    this.blocks.clear();
+    this.latestId = undefined;
+    this.nextId = 1;
+    for (const value of values) this.add(value);
+    return this.blocks.size;
+  }
+
   clear(): void {
     this.blocks.clear();
     this.latestId = undefined;
