@@ -17,6 +17,7 @@ import {
   thinkingEffortContextCharLimit,
   thinkingEffortIsApplied,
   thinkingEffortStepLimit,
+  thinkingEffortTimeoutMs,
   thinkingRequestParameters,
 } from "../src/models/thinking.js";
 import { describe, it } from "./harness.js";
@@ -192,6 +193,13 @@ describe("model catalog", () => {
       () => thinkingEffortBudget("high", Number.MAX_SAFE_INTEGER),
       /exceeds the safe integer range/u,
     );
+  });
+
+  it("selects provider request timeouts by thinking effort", () => {
+    assert.equal(thinkingEffortTimeoutMs("none"), 300_000);
+    assert.equal(thinkingEffortTimeoutMs("low"), 300_000);
+    assert.equal(thinkingEffortTimeoutMs("medium"), 450_000);
+    assert.equal(thinkingEffortTimeoutMs("high"), 600_000);
   });
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {

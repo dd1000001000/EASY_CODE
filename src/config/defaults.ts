@@ -11,6 +11,7 @@ import { DEFAULT_MODEL_IDS } from "../models/catalog.js";
 import {
   DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
   DEFAULT_BASE_STEP_LIMIT,
+  THINKING_EFFORT_TIMEOUT_MS,
 } from "../models/thinking.js";
 
 export const DEFAULT_QWEN_BASE_URL =
@@ -21,7 +22,8 @@ export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek;
 export const DEFAULT_GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
 export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm;
 
-export const DEFAULT_PROVIDER_TIMEOUT_MS = 120_000;
+/** Backward-compatible name for the default none/low request timeout. */
+export const DEFAULT_PROVIDER_TIMEOUT_MS = THINKING_EFFORT_TIMEOUT_MS.none;
 export const DEFAULT_PROVIDER_MAX_RETRIES = 2;
 /** Configurable none/low thinking-effort step budget. */
 export const DEFAULT_BASE_MAX_STEPS = DEFAULT_BASE_STEP_LIMIT;
@@ -53,7 +55,6 @@ export function createDefaultProviderConfig(
       : { baseUrl: DEFAULT_GLM_BASE_URL, model: DEFAULT_GLM_MODEL };
   return {
     ...defaults,
-    timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
     maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
   };
 }

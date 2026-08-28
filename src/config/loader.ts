@@ -26,6 +26,7 @@ interface ProviderConfigLayer extends UnknownRecord {
   apiKey?: unknown;
   baseUrl?: unknown;
   model?: unknown;
+  /** Exact provider request timeout override for every thinking effort. */
   timeoutMs?: unknown;
   maxRetries?: unknown;
 }

@@ -128,7 +128,8 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl: string;
   model: string;
-  timeoutMs: number;
+  /** Optional exact timeout override; defaults otherwise depend on thinking effort. */
+  timeoutMs?: number;
   maxRetries: number;
 }
 

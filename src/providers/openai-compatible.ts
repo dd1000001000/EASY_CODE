@@ -17,6 +17,7 @@ import {
   validateProviderImageAttachments,
 } from "../models/catalog.js";
 import {
+  thinkingEffortTimeoutMs,
   thinkingRequestParameters,
   type ProviderThinkingParameters,
 } from "../models/thinking.js";
@@ -160,6 +161,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body,
       thinkingRequestParameters(this.name, this.model, request.thinkingEffort),
     );
+    const timeoutMs = this.config.timeoutMs ??
+      thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
 
     let serialized: string;
     try {
@@ -187,13 +190,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
             "user-agent": "easy-code-agent/0.1",
           },
           body: serialized,
-          timeoutMs: this.config.timeoutMs,
+          timeoutMs,
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
         });
         return this.parseResponse(response);
       } catch (error) {
-        const providerError = this.normalizeError(error, request.signal);
+        const providerError = this.normalizeError(
+          error,
+          request.signal,
+          timeoutMs,
+        );
         lastError = providerError;
         if (!providerError.retryable || attempt >= this.config.maxRetries) {
           throw providerError;
@@ -203,7 +210,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         try {
           await this.sleep(delay, request.signal);
         } catch (sleepError) {
-          throw this.normalizeError(sleepError, request.signal);
+          throw this.normalizeError(sleepError, request.signal, timeoutMs);
         }
       }
     }
@@ -424,6 +431,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private normalizeError(
     error: unknown,
     signal: AbortSignal | undefined,
+    timeoutMs: number,
   ): ProviderError {
     if (error instanceof ProviderError) return error;
     if (signal?.aborted) return this.error("Request was canceled", "aborted");
@@ -433,7 +441,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
       if (error.kind === "timeout") {
         return new ProviderError(
-          `Provider request timed out after ${this.config.timeoutMs}ms`,
+          `Provider request timed out after ${timeoutMs}ms`,
           {
             provider: this.name,
             code: "timeout",
@@ -503,7 +511,10 @@ function validateProviderConfig(
       code: "invalid_config",
     });
   }
-  if (!Number.isInteger(config.timeoutMs) || config.timeoutMs <= 0) {
+  if (
+    config.timeoutMs !== undefined &&
+    (!Number.isInteger(config.timeoutMs) || config.timeoutMs <= 0)
+  ) {
     throw new ProviderError("Provider timeout must be a positive integer", {
       provider,
       code: "invalid_config",
