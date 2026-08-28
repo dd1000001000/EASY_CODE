@@ -13,11 +13,14 @@ export {
 } from "./types.js";
 export type {
   FollowUpSubagentRequest,
+  HandoffSubagentRequest,
   ManageSubagentsInput,
   SpawnSubagentRequest,
   StandaloneSubagentTask,
   StopSubagentRequest,
   SubagentControl,
+  SubagentArtifactView,
+  SubagentEnvironmentView,
   SubagentRecord,
   SubagentStatus,
   SubagentStatusRequest,

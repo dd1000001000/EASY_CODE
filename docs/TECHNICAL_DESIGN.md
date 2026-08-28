@@ -36,7 +36,12 @@ flowchart TB
     Provider --> APIs[Qwen, DeepSeek, and GLM APIs]
     Capabilities --> Workspace[Workspace file boundary]
     Capabilities --> Commands[Controlled command execution]
-    Orchestration --> Children[Isolated child contexts]
+    Orchestration --> Children[Child sessions and DAG result lineage]
+    Children --> Environments[Shared roots or managed Git worktrees]
+    Environments --> Snapshots[Validated baselines and checkpoints]
+    Children --> Results[Immutable result artifacts]
+    Results --> Handoff[Local or branch Handoff]
+    Handoff --> Workspace
 
     Runtime --> State[Durable state layer]
     State --> Journal[Append-only thread journal]
@@ -52,7 +57,7 @@ flowchart TB
 | Agent Runtime | Turn state machine, effective mode, capability selection, model-output validation, tool loop, and completion rules. |
 | Provider gateway | A common representation for messages, structured actions, thinking, images, timeouts, retries, and usage metadata. |
 | Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. |
-| Orchestration | Reviewed plans, dependency-aware task execution, child assignment, result collection, and completion evidence. |
+| Orchestration | Reviewed plans, dependency-aware task execution, child assignment, resumable execution environments, result lineage, and controlled handoff. |
 | State and retrieval | Authoritative thread events, queryable projections, checkpoints, long-term facts, semantic indexes, and binary artifacts. |
 
 This separation keeps provider-specific behavior out of workspace security and keeps model output from directly mutating local state.
@@ -120,7 +125,9 @@ Mutation safety follows an inspect-before-change protocol:
 - Successful changes produce durable audit records and line-numbered terminal diffs.
 - Resume restores a historical read authorization only when the file still matches the observed version.
 
-Main and child agents share a workspace. Potential workspace mutations are serialized through one fair queue, while version checks still detect changes made outside EASY CODE. The queue coordinates this application only; it cannot lock out the user's editor or an unrelated process.
+The user-selected project remains the **logical workspace root** for policy, memory, project instructions, and paths shown to the parent. Each child also has a **physical execution root**. In shared mode those roots coincide; in Worktree mode the physical root is a manager-owned linked checkout outside the project. File capabilities are confined relative to the child's physical root, while commands start there and remain subject to command policy; durable identity stays attached to the logical project.
+
+Shared-mode mutations use one fair queue and version checks to reduce conflicts. Independent Worktrees do not need that global mutation queue because their Git state is separate; they instead meet at an explicit result boundary. Neither mechanism locks out the user's editor or unrelated processes.
 
 ### Command policy and approval
 
@@ -145,7 +152,15 @@ API keys are read through hidden input, the operating-system credential store, o
 
 Runtime-generated errors, command data, task and memory channels, and other known control-plane outputs use bounded redaction and control-character filtering. This is defense in depth, not complete data-loss prevention: source content, file diffs, user messages, and final model text do not pass through one universal DLP layer, and a source file read for a task can still be sent to the selected model provider.
 
-Private state is always kept outside the selected workspace to reduce accidental commits. Trusted user configuration may relocate it only to another path outside that workspace. It is not encrypted by EASY CODE at the application layer, so its confidentiality depends on the operating-system account and filesystem permissions.
+Most application-private state is kept outside the selected workspace to reduce accidental commits. Worktree execution deliberately spans two storage boundaries:
+
+| State | Location and effect |
+| --- | --- |
+| Thread journals, SQLite, images, environment descriptors, and managed checkout directories | EASY CODE data locations outside the logical workspace and, for managed checkouts, outside the entire Git repository. |
+| Resumable Worktree baselines, checkpoints, and results | Local Git objects anchored by Runtime-owned namespaced refs in the repository's common Git database. They do not move or commit the user's current branch, but their content can remain in local Git storage after the physical checkout is removed. These refs are locally inspectable and are not confidential storage. |
+| Delivered result | Local Handoff changes the user's working tree without committing; Branch Handoff adds a local branch without checking it out or pushing it. |
+
+Trusted user configuration may relocate application data only outside the selected logical workspace. The managed Worktree checkout root has the stricter rule that it must remain outside the entire containing repository. EASY CODE does not encrypt these records at the application layer, so confidentiality depends on the operating-system account and filesystem permissions. Secrets must not be placed into task artifacts or Worktree snapshot inputs.
 
 ## 5. Durable state and Resume
 
@@ -158,7 +173,7 @@ EASY CODE uses an event-first session model:
 
 The journal records user and assistant messages, structured action requests and results, mode decisions, plan review, context compaction, task transitions, child lifecycle events, file and command audit data, and provider-reported usage. Stable identities and sequence ordering make replay deterministic and make duplicate projection safe.
 
-Resume rebuilds the latest valid state, then reconciles the queryable projection. It preserves completed work but does not automatically repeat an unfinished command, provider request, or old child process. Interrupted operations are represented explicitly so the model cannot assume they succeeded.
+Resume rebuilds the latest valid state, then reconciles the queryable projection. It preserves completed work and can reattach an active child assignment to its bound child thread and execution environment. An unfinished command or provider request is never assumed successful or blindly replayed; only durably recorded terminal work is treated as complete, while unfinished child execution resumes from the latest validated checkpoint.
 
 Additional recovery rules include:
 
@@ -166,7 +181,11 @@ Additional recovery rules include:
 - A thread lease prevents two local processes from concurrently owning the same session.
 - File versions are revalidated against the current workspace.
 - An interrupted approved plan returns to review when execution has not already transitioned into a durable task DAG.
-- Persisted child results and artifacts are recovered; abandoned task claims are released when no trustworthy result exists.
+- Parent thread, child thread, task, agent, and execution environment are cross-referenced by one immutable binding. The child journal owns detailed conversation and tool progress; the parent journal keeps bounded lifecycle and result references. Observation events must match the full binding before they can close an assignment.
+- Persisted execution descriptors are treated as untrusted input during recovery. Repository identity, manager-owned path, logical-to-physical root mapping, and real-path containment are revalidated before a child can run.
+- Child restoration is transactional: the complete binding set is prepared and validated before any child is activated. One invalid binding rolls back the batch. Starting a new thread or resuming another thread first pauses and checkpoints current children; if the ownership transition fails, the original thread rebuilds those children from its durable bindings.
+- A missing managed checkout directory can be reconstructed only after key descriptor identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata is inconsistent with an existing modern child, fails closed rather than silently provisioning a different checkout. Supported legacy records receive only deterministic compatibility recovery.
+- Persisted result artifacts and handoff dispositions are recovered without projecting isolated changes into the parent workspace a second time.
 - An event-confirmed compaction boundary, plan transition, or task transition cannot be rolled back by a stale checkpoint.
 
 ## 6. Context and memory architecture
@@ -232,9 +251,17 @@ The Runtime enforces these graph invariants:
 - Blocking is reserved for a genuine external condition rather than an informal pause.
 - Task text is untrusted data and cannot grant additional permissions.
 
-Every accepted transition is durable, so task numbers, ownership, status, blockers, and evidence can be reconstructed after Resume.
+Every accepted transition is durable, so task numbers, ownership, status, blockers, evidence, and result references can be reconstructed after Resume.
 
-## 8. Isolated child agents
+Every completed Worktree child, whether standalone or DAG-bound, produces an immutable Runtime-internal result artifact containing its baseline, result checkpoint, and complete changed-file manifest. The DAG and parent-facing status retain only a bounded reference with identities, lineage, commits, and a changed-file count. A DAG-bound reference names the available direct-dependency artifacts in dependency order.
+
+Worktree dependency artifacts seed a downstream Worktree through their result commits. If any direct dependency has a Runtime artifact, every direct dependency must have one; the complete artifact set also cannot mix shared and Worktree environment kinds. When none has an artifact, downstream state comes only from the selected repository baseline. Shared and main-agent results already live in the logical workspace; they enter a later Worktree only when its selected baseline captures them, such as `current-snapshot`. The `head` and `fresh` policies intentionally exclude such uncommitted shared results.
+
+At a join, dependency commits are combined in a newly provisioned managed Worktree seeded from their common logical Handoff baseline. A merge conflict becomes explicit environment state and prevents node completion, leaving the task available for a deliberate retry; it is never silently resolved by model prose. This gives the DAG a bounded, auditable result chain without copying full patches or child logs into the parent's active context.
+
+A DAG must be completed and have exactly one terminal leaf when its final result is handed off, and the selected child must own that terminal task. These guards prevent the parent from choosing one of several incomparable branch results—or an unrelated child artifact—as if it represented the completed graph. Multiple terminal branches must first converge through an explicit join task.
+
+## 8. Child sessions, Worktrees, and Handoff
 
 Child agents are isolated workers controlled by the main agent, not peers sharing one live conversation.
 
@@ -246,7 +273,25 @@ Parent agent
   └─ collects a bounded result and completion evidence
 ```
 
-A child may claim one dependency-ready DAG task. When no unfinished DAG exists, it may instead receive a standalone assignment with explicit completion checks. It inherits the selected provider, model, and thinking effort, but not the parent's full chat history.
+The execution environment has an explicit lifecycle rather than being treated as a temporary directory:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Provisioning
+    Provisioning --> Ready
+    Provisioning --> Conflicted
+    Provisioning --> Failed
+    Ready --> Running
+    Running --> Running: post-tool checkpoint
+    Running --> Ready: pause checkpoint
+    Running --> ResultReady: verified completion
+    Running --> Retained: non-accepted terminal result
+    ResultReady --> HandedOff: local or branch delivery
+    ResultReady --> Conflicted: Handoff preflight conflict
+    HandedOff --> Removed: safe cleanup
+```
+
+A child may claim one dependency-ready DAG task. When no unfinished DAG exists, it may instead receive a standalone assignment with explicit completion checks. It inherits the selected provider, model, and thinking effort, but not the parent's full chat history. Each assignment receives both a durable child-thread identity and a durable execution-environment identity; the pair cannot be silently rebound to another task or path.
 
 Child capability is deliberately narrower:
 
@@ -254,13 +299,52 @@ Child capability is deliberately narrower:
 - It cannot manage or rewrite the task graph.
 - It cannot maintain long-term memory.
 - It cannot switch into Plan or change the parent workflow.
-- Its lifecycle and final report are bound to one assignment, and it must return structured evidence or a genuine blocker. Its underlying file capability still spans the selected workspace and is constrained by the normal workspace boundary rather than a per-task filesystem sandbox.
+- Its lifecycle and final report are bound to one assignment, and it must return structured evidence or a genuine blocker.
 
-The parent can observe, wait, send scoped follow-up guidance, or request cancellation. All child results must be collected before the parent finishes, starts a new graph, or enters Plan.
+The parent can observe, wait, send scoped follow-up guidance, request cancellation, or explicitly hand off a completed result. All child results must be collected before the parent finishes, starts a new graph, or enters Plan.
 
-Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Parallelism isolates search and intermediate logs from the main context, while shared workspace mutations remain serialized to reduce conflicts. This is context isolation and controlled parallelism, not worktree or process-level filesystem isolation.
+Isolation is selected per child:
 
-Child assignments, lifecycle transitions, and final results are attributed and persisted. After collection, file and command audit records are merged into the parent thread with child identity. The child's private conversation, individual model steps, and complete intermediate logs are not stored as a separately resumable session. Resume restores durable control state and completed results, but it does not restart workers from an earlier process.
+| Choice | Behavior |
+| --- | --- |
+| `auto` | Use a managed Git Worktree when the logical workspace belongs to a Git repository; otherwise fall back to shared mode. |
+| `worktree` | Require a separate linked checkout. Provisioning fails closed if Git or a valid repository is unavailable. |
+| `shared` | Intentionally use the logical workspace directly, which is useful for read-heavy work or non-Git projects but retains shared-write conflict risk. |
+
+A managed Worktree is a detached checkout selected from one of three point-in-time base policies:
+
+| Base policy | Snapshot semantics |
+| --- | --- |
+| `fresh` | Use the already configured `origin/HEAD`, falling back to local `HEAD`. Provisioning never fetches remote state. |
+| `head` | Use the current local `HEAD` and exclude uncommitted changes from the containing repository. |
+| `current-snapshot` | Start at local `HEAD`, then capture staged, unstaged, and non-ignored untracked state across the containing repository when the child is created. |
+
+The parent checkout is not live-synchronized after provisioning. In a monorepo,
+the baseline covers the containing repository while child file capabilities remain
+confined to the mapped logical workspace. The containing repository root may opt
+specific ignored runtime files into every newly provisioned Worktree through a
+`.worktreeinclude` file whose patterns are relative to that repository root;
+entries are bounded safe patterns and symbolic links are rejected. Those ignored
+files are checkout inputs rather than guaranteed checkpoint content, so they may
+need to be supplied again after reconstruction and must never contain credentials
+or private keys.
+
+Runtime-owned local commits and namespaced refs anchor the baseline, post-tool and lifecycle checkpoints, and final result in the repository's common object database. These refs are ordinary locally inspectable Git metadata, not a confidentiality boundary. Git hooks and signing are disabled for internal operations; provisioning does not fetch or push, and it does not advance a user branch. Worktree dependency artifacts are incorporated before a DAG child begins. Shared results have no isolated result commit and are represented only when the chosen repository baseline includes their workspace changes. Because snapshot objects may outlive a physical checkout, sensitive material must be excluded before child creation.
+
+The child journal durably records its own messages, tool activity, workspace observations, and checkpoints. The parent journal records the assignment, environment state, bounded progress, immutable result reference, and Handoff outcome. On Resume, the Runtime validates the entire binding batch before activation, restores a missing managed checkout from its saved checkpoint when possible, and continues the same child session. Durably recorded terminal work is not rerun; interrupted provider or command activity is not assumed complete.
+
+Parent-visible status is deliberately bounded: it exposes the child/thread/task identities, isolation and lifecycle state, artifact lineage, and a changed-file count, but not the physical checkout path or complete file manifest. Managed Worktree storage must also remain outside the entire parent repository. Runtime-owned Git operations disable repository hooks so environment provisioning cannot silently execute checkout hooks.
+
+Worktree changes remain outside the user's checkout after result collection. Handoff is a separate, explicit transition:
+
+- **Local Handoff** derives the complete delta from the logical Handoff baseline to the terminal result, preflights it against the current checkout, then applies it without staging or committing. The baseline includes any parent dirty state captured by `current-snapshot`, so only child/DAG changes are delivered. Unrelated current edits remain; overlapping edits mark the artifact and environment conflicted instead of overwriting them. Repeating the same completed delivery is recognized as already applied.
+- **Branch Handoff** creates or validates a local branch at the immutable result commit without checking it out or pushing it. Repeating the same branch/result pair is idempotent; an existing branch at another commit is a conflict. The branch tree contains the selected baseline plus the child result.
+
+Handoff request, completion, and failure are durable transitions. Shared children already mutate the logical workspace, so they have no isolated result commit for Branch Handoff.
+
+Only manager-owned paths may be cleaned. Dirty, busy, retained, or unresolved Worktrees remain by default and continue counting toward a configurable managed-environment limit. A successfully handed-off clean checkout is eligible for automatic removal; removing it does not remove the durable result reference or its underlying Git objects. When the limit is reached, new Worktree provisioning fails closed until retained environments are safely delivered or otherwise handled.
+
+Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is **not** an operating-system sandbox: commands still run as the launching user and can access resources outside the checkout if command policy permits them.
 
 ## 9. Provider and multimodal design
 
@@ -305,11 +389,13 @@ Token efficiency follows several complementary strategies:
 Current trade-offs are explicit:
 
 - Policy and approval are not an OS sandbox.
-- Child agents share one workspace; serialized mutations reduce conflicts but do not provide worktree isolation.
+- Managed Worktrees isolate Git working state, not processes, credentials, the network, or the rest of the filesystem.
+- Shared mode remains necessary for non-Git projects and explicit low-overhead delegation, so concurrent external edits can still invalidate child operations.
+- Isolated results require an explicit local or branch Handoff; this extra transition avoids silently overwriting the user's checkout.
 - Provider responses are currently handled as complete responses, so the loading indicator communicates liveness but final text is not streamed Token by Token.
 - Local semantic memory favors installability, privacy, and rebuildability over very large-scale retrieval.
 - Append-only history improves recovery and auditability but may eventually require journal segmentation and archival for very long-lived threads.
 - Structured completion evidence improves control and review but is not independent proof that a model's claim is true.
 - Redaction reduces common accidental leaks but is not a complete DLP system.
 
-The architecture leaves clear extension points for new providers, capability policies, child roles, richer DAG scheduling, streaming transports, worktree or container isolation, and remote/team state backends. New capabilities should preserve the same core rule: model output proposes a transition; trusted local code validates and commits it.
+The architecture leaves clear extension points for new providers, capability policies, child roles, richer DAG scheduling, streaming transports, container isolation, and remote/team state backends. New capabilities should preserve the same core rule: model output proposes a transition; trusted local code validates and commits it.

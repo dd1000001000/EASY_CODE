@@ -80,7 +80,7 @@ EASY CODE commands
   /image clear               Remove all queued, unsent images
   /changes                   Show file changes in this thread
   /tasks                     Show the current model-managed task DAG
-  /agents                    Show child agents and their assigned tasks
+  /agents                    Show child sessions, tasks, isolation, and handoff
   /tools                     Show available tools
   /permissions               Show command permissions and sandbox status
   /commands                  Show recent commands

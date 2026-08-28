@@ -15,6 +15,8 @@ function agent(
 ): SubagentView {
   return {
     id,
+    childThreadId: `thread_${id}`,
+    environmentId: `environment_${id}`,
     assignmentKind: "dag",
     taskGraphId: "task_graph_ui",
     taskId,
@@ -23,6 +25,7 @@ function agent(
     provider: "deepseek",
     model: "deepseek-v4-flash",
     thinkingEffort: "high",
+    requestedIsolation: "auto",
     status,
     revision: 1,
     followUpCount: 0,
@@ -74,7 +77,78 @@ describe("child-agent terminal UI", () => {
       rendered,
       /✓ 2\. subagent_frontend · Task 2 \[frontend\] Implement frontend \(completed\)/u,
     );
+    assert.match(
+      rendered,
+      /thread thread_subagent_backend · isolation auto → pending · environment environment_subagent_backend \(pending\)/u,
+    );
+    assert.match(rendered, /artifact pending · handoff pending/u);
+    assert.match(rendered, /artifact none · handoff unavailable/u);
     assert.doesNotMatch(rendered, /\u001B/u);
+  });
+
+  it("shows effective worktree isolation, result artifacts, and branch handoff", () => {
+    const completed: SubagentView = {
+      ...agent("subagent_delivery", "backend", "Implement backend", "completed"),
+      requestedIsolation: "worktree",
+      environment: {
+        id: "environment_subagent_delivery",
+        kind: "worktree",
+        status: "handed_off",
+        requestedIsolation: "worktree",
+        baseMode: "current-snapshot",
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+      },
+      resultArtifact: {
+        id: "artifact_delivery",
+        agentId: "subagent_delivery",
+        taskId: "backend",
+        environmentId: "environment_subagent_delivery",
+        environmentKind: "worktree",
+        status: "delivered",
+        parentArtifactIds: [],
+        changedFileCount: 2,
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+        deliveredAt: CREATED_AT,
+        delivery: "branch",
+        branchName: "easy-code/backend",
+      },
+    };
+
+    const rendered = renderSubagents([completed], {
+      color: false,
+      taskGraph: graph(),
+    });
+
+    assert.match(
+      rendered,
+      /thread thread_subagent_delivery · isolation worktree → worktree · environment environment_subagent_delivery \(handed_off\)/u,
+    );
+    assert.match(
+      rendered,
+      /artifact artifact_delivery \(delivered\) · 2 changed files · handoff branch easy-code\/backend/u,
+    );
+  });
+
+  it("identifies shared environments without suggesting a handoff is required", () => {
+    const shared: SubagentView = {
+      ...agent("subagent_shared", "backend", "Implement backend", "completed"),
+      requestedIsolation: "auto",
+      environment: {
+        id: "environment_subagent_shared",
+        kind: "shared",
+        status: "result_ready",
+        requestedIsolation: "auto",
+        baseMode: "head",
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+      },
+    };
+
+    const rendered = renderSubagents([shared], { color: false });
+    assert.match(rendered, /isolation auto → shared/u);
+    assert.match(rendered, /artifact none · handoff shared workspace/u);
   });
 
   it("renders every lifecycle status with a distinct terminal marker", () => {

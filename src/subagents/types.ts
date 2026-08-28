@@ -1,5 +1,9 @@
 import type {
   ProviderName,
+  ExecutionEnvironmentSnapshot,
+  ResultArtifact,
+  ResultArtifactRef,
+  SubagentIsolationMode,
   SubagentTaskReport,
   ThinkingEffort,
   ToolContext,
@@ -58,12 +62,14 @@ export type SpawnSubagentRequest =
       taskId: string;
       task?: never;
       instructions: string;
+      isolation?: SubagentIsolationMode;
     }
   | {
       action: "spawn";
       taskId?: never;
       task: StandaloneSubagentTask;
       instructions: string;
+      isolation?: SubagentIsolationMode;
     };
 
 export interface SubagentStatusRequest {
@@ -89,17 +95,27 @@ export interface StopSubagentRequest {
   reason: string;
 }
 
+export interface HandoffSubagentRequest {
+  action: "handoff";
+  agentId: string;
+  destination: "local" | "branch";
+  branchName?: string;
+}
+
 export type ManageSubagentsInput =
   | SpawnSubagentRequest
   | SubagentStatusRequest
   | WaitForSubagentsRequest
   | FollowUpSubagentRequest
-  | StopSubagentRequest;
+  | StopSubagentRequest
+  | HandoffSubagentRequest;
 
 export type SubagentTaskResult = SubagentTaskReport;
 
 export interface SubagentRecord {
   id: string;
+  childThreadId: string;
+  environmentId: string;
   parentThreadId: string;
   createdByTurnId: string;
   assignmentKind: "dag" | "standalone";
@@ -111,6 +127,9 @@ export interface SubagentRecord {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
+  requestedIsolation: SubagentIsolationMode;
+  environment?: ExecutionEnvironmentSnapshot;
+  resultArtifact?: ResultArtifact;
   status: SubagentStatus;
   revision: number;
   instructions: string;
@@ -124,9 +143,23 @@ export interface SubagentRecord {
   finishedAt?: string;
 }
 
+/** Model/UI-safe execution state. Physical paths and private Git details stay Runtime-local. */
+export type SubagentEnvironmentView = Pick<
+  ExecutionEnvironmentSnapshot,
+  "id" | "kind" | "status" | "requestedIsolation" | "baseMode" | "createdAt" | "updatedAt"
+>;
+
+/** Bounded public artifact metadata; the full changed-file manifest remains private. */
+export interface SubagentArtifactView extends ResultArtifactRef {
+  delivery?: "local" | "branch";
+  branchName?: string;
+}
+
 /** Bounded, user-facing snapshot. Private child prompts and context stay isolated. */
 export interface SubagentView {
   id: string;
+  childThreadId: string;
+  environmentId: string;
   assignmentKind: "dag" | "standalone";
   taskGraphId?: string;
   taskId: string;
@@ -135,6 +168,9 @@ export interface SubagentView {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
+  requestedIsolation: SubagentIsolationMode;
+  environment?: SubagentEnvironmentView;
+  resultArtifact?: SubagentArtifactView;
   status: SubagentStatus;
   revision: number;
   followUpCount: number;
@@ -172,6 +208,10 @@ export interface SubagentControl {
   ): Promise<ToolExecutionResult>;
   stop(
     request: StopSubagentRequest,
+    context: ToolContext,
+  ): Promise<ToolExecutionResult>;
+  handoff(
+    request: HandoffSubagentRequest,
     context: ToolContext,
   ): Promise<ToolExecutionResult>;
 }

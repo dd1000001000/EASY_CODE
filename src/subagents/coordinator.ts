@@ -1,6 +1,10 @@
 import type {
   CommandAuditEntry,
   FileChangeRecord,
+  ExecutionEnvironmentSnapshot,
+  ResultArtifact,
+  ResultArtifactRef,
+  SubagentIsolationMode,
   SubagentLifecycleUpdate,
   SubagentAssignmentSnapshot,
   SubagentTaskReport,
@@ -20,6 +24,7 @@ import { createId } from "../utils/ids.js";
 import { sanitizeSubagentText } from "./types.js";
 import type {
   FollowUpSubagentRequest,
+  HandoffSubagentRequest,
   SpawnSubagentRequest,
   StandaloneSubagentTask,
   StopSubagentRequest,
@@ -47,6 +52,10 @@ export interface SubagentExecutionRequest {
   readonly signal: AbortSignal;
   /** Follow-ups are delivered once, in FIFO order, at a model-request boundary. */
   readonly drainFollowUps: () => string[];
+  /** Runtime reports the physical checkout as soon as provisioning succeeds. */
+  readonly reportEnvironment: (environment: ExecutionEnvironmentSnapshot) => void;
+  /** True only when the parent is preserving this child for a later resume. */
+  readonly isPauseRequested: () => boolean;
 }
 
 export interface SubagentExecutionOutcome {
@@ -56,6 +65,8 @@ export interface SubagentExecutionOutcome {
   readonly changes: readonly FileChangeRecord[];
   readonly commands: readonly CommandAuditEntry[];
   readonly presentations: readonly ToolPresentation[];
+  readonly environment?: ExecutionEnvironmentSnapshot;
+  readonly resultArtifact?: ResultArtifact;
 }
 
 export interface ObservedSubagentArtifacts {
@@ -64,6 +75,8 @@ export interface ObservedSubagentArtifacts {
   readonly changes: readonly FileChangeRecord[];
   readonly commands: readonly CommandAuditEntry[];
   readonly presentations: readonly ToolPresentation[];
+  readonly environment?: ExecutionEnvironmentSnapshot;
+  readonly resultArtifact?: ResultArtifact;
 }
 
 export interface RecoveredStandaloneSubagent {
@@ -73,7 +86,27 @@ export interface RecoveredStandaloneSubagent {
   readonly reason: SubagentExecutionOutcome["reason"];
   readonly report?: SubagentTaskReport;
   readonly error?: string;
+  readonly environment?: ExecutionEnvironmentSnapshot;
+  readonly resultArtifact?: ResultArtifact;
   readonly finishedAt: string;
+  readonly observed?: boolean;
+}
+
+/** Durable parent/child binding restored after a process boundary. */
+export interface RecoveredSubagent {
+  readonly parentThreadId: string;
+  readonly createdByTurnId: string;
+  readonly assignment: SubagentAssignmentSnapshot;
+  /** Required for DAG assignments; standalone tasks can be rebuilt from the binding. */
+  readonly task?: TaskNode;
+  /** Omit to resume the bound child session; provide to expose a terminal result. */
+  readonly reason?: SubagentExecutionOutcome["reason"];
+  readonly report?: SubagentTaskReport;
+  readonly error?: string;
+  readonly environment?: ExecutionEnvironmentSnapshot;
+  readonly resultArtifact?: ResultArtifact;
+  readonly finishedAt?: string;
+  readonly observed?: boolean;
 }
 
 export interface SubagentCoordinatorOptions {
@@ -81,8 +114,13 @@ export interface SubagentCoordinatorOptions {
   readonly maxConcurrent?: number;
   readonly now?: () => Date;
   readonly createAgentId?: () => string;
+  readonly defaultIsolation?: SubagentIsolationMode;
   readonly onWaitStart?: (text: string) => void;
   readonly onWaitEnd?: () => void;
+  readonly handoff?: (
+    artifact: Readonly<ResultArtifact>,
+    destination: { type: "local" } | { type: "branch"; branchName?: string },
+  ) => Promise<ResultArtifact>;
 }
 
 interface SubagentJob {
@@ -96,7 +134,14 @@ interface SubagentJob {
   graphObserved: boolean;
   artifactsMerged: boolean;
   stopReason?: string;
+  pauseRequested?: boolean;
+  preparedRestore?: boolean;
   outcome?: SubagentExecutionOutcome;
+}
+
+export interface RestoreSubagentOptions {
+  /** Register and validate the durable binding without starting child work yet. */
+  readonly deferActivation?: boolean;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<SubagentStatus> = new Set([
@@ -114,8 +159,10 @@ export class SubagentCoordinator implements SubagentControl {
   private readonly maxConcurrentOverride: number | undefined;
   private readonly now: () => Date;
   private readonly createAgentId: () => string;
+  private readonly defaultIsolation: SubagentIsolationMode;
   private readonly onWaitStart: ((text: string) => void) | undefined;
   private readonly onWaitEnd: (() => void) | undefined;
+  private readonly handoffResult: SubagentCoordinatorOptions["handoff"];
 
   constructor(options: SubagentCoordinatorOptions) {
     this.runChild = options.run;
@@ -130,8 +177,10 @@ export class SubagentCoordinator implements SubagentControl {
     }
     this.now = options.now ?? (() => new Date());
     this.createAgentId = options.createAgentId ?? (() => createId("subagent"));
+    this.defaultIsolation = options.defaultIsolation ?? "auto";
     this.onWaitStart = options.onWaitStart;
     this.onWaitEnd = options.onWaitEnd;
+    this.handoffResult = options.handoff;
   }
 
   assertAuthorized(context: ToolContext): void {
@@ -160,6 +209,8 @@ export class SubagentCoordinator implements SubagentControl {
       );
     }
     const agentId = this.createAgentId();
+    const childThreadId = createId("thread");
+    const environmentId = createId("environment");
     if (this.jobs.has(agentId)) throw new Error(`Duplicate subagent ID: ${agentId}`);
     let task: TaskNode;
     let nextGraph: TaskGraph | undefined;
@@ -204,6 +255,8 @@ export class SubagentCoordinator implements SubagentControl {
     }
     const record: SubagentRecord = {
       id: agentId,
+      childThreadId,
+      environmentId,
       parentThreadId: context.threadId,
       createdByTurnId: context.turnId,
       assignmentKind,
@@ -214,6 +267,7 @@ export class SubagentCoordinator implements SubagentControl {
       provider: context.provider as NonNullable<ToolContext["provider"]>,
       model: context.model as string,
       thinkingEffort: context.thinkingEffort as ThinkingEffort,
+      requestedIsolation: request.isolation ?? this.defaultIsolation,
       status: "running",
       revision: 1,
       instructions: sanitizeSubagentText(request.instructions),
@@ -240,8 +294,8 @@ export class SubagentCoordinator implements SubagentControl {
     return {
       ok: true,
       summary: assignmentKind === "dag"
-        ? `Assigned DAG task ${task.id} to isolated child ${agentId}.`
-        : `Created standalone task ${task.id} for isolated child ${agentId}.`,
+        ? `Assigned DAG task ${task.id} to child ${agentId}.`
+        : `Created standalone task ${task.id} for child ${agentId}.`,
       data: {
         agent: publicRecord(record),
         concurrency: { active: active + 1, limit: concurrencyLimit },
@@ -414,6 +468,75 @@ export class SubagentCoordinator implements SubagentControl {
     };
   }
 
+  async handoff(
+    request: HandoffSubagentRequest,
+    context: ToolContext,
+  ): Promise<ToolExecutionResult> {
+    const job = this.requireOwnedJob(request.agentId, context.threadId);
+    if (job.record.status !== "completed" || !job.record.resultArtifact) {
+      throw new Error(`Subagent ${request.agentId} has no completed result artifact to hand off`);
+    }
+    if (job.record.assignmentKind === "dag") {
+      const graph = this.requireGraph(context);
+      if (graph.id !== job.record.taskGraphId) {
+        throw new Error(`Subagent ${request.agentId} belongs to a different task DAG`);
+      }
+      if (graph.status !== "completed") {
+        throw new Error("A DAG result can be handed off only after the complete task graph finishes");
+      }
+      const dependencyIds = new Set(
+        graph.tasks.flatMap((task) => task.dependencies),
+      );
+      const terminalLeaves = graph.tasks.filter(
+        (task) => task.status === "completed" && !dependencyIds.has(task.id),
+      );
+      if (terminalLeaves.length !== 1) {
+        throw new Error(
+          "A DAG result can be handed off only when the graph has exactly one terminal leaf task",
+        );
+      }
+      if (terminalLeaves[0]?.id !== job.record.taskId) {
+        throw new Error(
+          `Subagent ${request.agentId} does not own the DAG's terminal result task`,
+        );
+      }
+    }
+    if (!this.handoffResult) throw new Error("Result handoff is unavailable in this runtime");
+    const artifact = await this.handoffResult(
+      job.record.resultArtifact,
+      request.destination === "local"
+        ? { type: "local" }
+        : { type: "branch", ...(request.branchName ? { branchName: request.branchName } : {}) },
+    );
+    job.record.resultArtifact = cloneArtifact(artifact);
+    if (job.record.environment) {
+      job.record.environment = {
+        ...job.record.environment,
+        status: artifact.status === "conflicted" ? "conflicted" : "handed_off",
+        updatedAt: artifact.updatedAt,
+      };
+    }
+    touch(job.record, this.now);
+    return {
+      ok: artifact.status === "delivered",
+      summary: artifact.status === "delivered"
+        ? `Handed off ${artifact.id} to ${artifact.delivery ?? request.destination}.`
+        : `Artifact ${artifact.id} requires conflict resolution before handoff.`,
+      data: {
+        agentId: job.record.id,
+        taskId: job.record.taskId,
+        artifactId: artifact.id,
+        status: artifact.status,
+        delivery: artifact.delivery,
+        branchName: artifact.branchName,
+        changedFileCount: artifact.changedFiles.length,
+      },
+      ...(artifact.status === "delivered"
+        ? {}
+        : { error: "Result handoff is conflicted" }),
+    };
+  }
+
   /** Commit a local lifecycle change only after Runtime persisted its parent event. */
   commitLifecycle(update: Readonly<SubagentLifecycleUpdate>): ObservedSubagentArtifacts | undefined {
     const job = this.jobs.get(update.agentId);
@@ -460,6 +583,12 @@ export class SubagentCoordinator implements SubagentControl {
       changes: [...(job.outcome?.changes ?? [])],
       commands: [...(job.outcome?.commands ?? [])],
       presentations: [...(job.outcome?.presentations ?? [])],
+      ...(job.outcome?.environment
+        ? { environment: { ...job.outcome.environment } }
+        : {}),
+      ...(job.outcome?.resultArtifact
+        ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) }
+        : {}),
     };
   }
 
@@ -488,6 +617,12 @@ export class SubagentCoordinator implements SubagentControl {
         changes: [...(job.outcome?.changes ?? [])],
         commands: [...(job.outcome?.commands ?? [])],
         presentations: [...(job.outcome?.presentations ?? [])],
+        ...(job.outcome?.environment
+          ? { environment: { ...job.outcome.environment } }
+          : {}),
+        ...(job.outcome?.resultArtifact
+          ? { resultArtifact: cloneArtifact(job.outcome.resultArtifact) }
+          : {}),
       }));
   }
 
@@ -535,70 +670,174 @@ export class SubagentCoordinator implements SubagentControl {
   }
 
   /** Restore a terminal standalone result without restarting its old process. */
-  restoreStandalone(input: RecoveredStandaloneSubagent): void {
+  restoreStandalone(
+    input: RecoveredStandaloneSubagent,
+    options: RestoreSubagentOptions = {},
+  ): void {
+    this.restore({
+      ...input,
+      assignment: {
+        ...input.assignment,
+        childThreadId:
+          input.assignment.childThreadId ?? `thread_${input.assignment.agentId}`,
+        environmentId:
+          input.assignment.environmentId ?? `environment_${input.assignment.agentId}`,
+        requestedIsolation: input.assignment.requestedIsolation ?? "shared",
+      },
+    }, options);
+  }
+
+  /** Restore a durable DAG or standalone binding, resuming non-terminal children. */
+  restore(
+    input: RecoveredSubagent,
+    options: RestoreSubagentOptions = {},
+  ): void {
     const { assignment } = input;
     if (this.jobs.has(assignment.agentId)) {
       throw new Error(`Duplicate recovered subagent ID: ${assignment.agentId}`);
     }
-    const task: TaskNode = {
-      id: assignment.taskId,
-      title: assignment.taskTitle,
-      description: assignment.taskDescription,
-      dependencies: [],
-      inputs: [],
-      expectedArtifacts: [],
-      completionChecks: [...assignment.completionChecks],
-      failureHandling: "Return a blocked result only for a concrete external condition.",
-      owner: "subagent",
-      assignedAgentId: assignment.agentId,
-      status: "in_progress",
-      startedAt: assignment.createdAt,
-    };
-    const status = statusForRecovered(input.reason, input.report);
+    if (!assignment.childThreadId || !assignment.environmentId) {
+      throw new Error(`Recovered child ${assignment.agentId} has only a legacy binding`);
+    }
+    const task: TaskNode = input.task
+      ? cloneTask(input.task)
+      : {
+          id: assignment.taskId,
+          title: assignment.taskTitle,
+          description: assignment.taskDescription,
+          dependencies: [],
+          inputs: [],
+          expectedArtifacts: [],
+          completionChecks: [...assignment.completionChecks],
+          failureHandling: "Return a blocked result only for a concrete external condition.",
+          owner: "subagent",
+          assignedAgentId: assignment.agentId,
+          status: "in_progress",
+          startedAt: assignment.createdAt,
+        };
+    if (
+      task.id !== assignment.taskId ||
+      task.assignedAgentId !== assignment.agentId ||
+      task.owner !== "subagent"
+    ) {
+      throw new Error(`Recovered child ${assignment.agentId} does not match its bound task`);
+    }
+    const terminal = input.reason !== undefined;
+    const status = terminal
+      ? statusForRecovered(input.reason as SubagentExecutionOutcome["reason"], input.report)
+      : "running";
     const record: SubagentRecord = {
       id: assignment.agentId,
+      childThreadId: assignment.childThreadId,
+      environmentId: assignment.environmentId,
       parentThreadId: input.parentThreadId,
       createdByTurnId: input.createdByTurnId,
-      assignmentKind: "standalone",
+      assignmentKind: assignment.kind,
+      ...(assignment.kind === "dag" ? { taskGraphId: assignment.taskGraphId } : {}),
       taskId: assignment.taskId,
       taskTitle: assignment.taskTitle,
       mode: "code",
       provider: assignment.provider,
       model: assignment.model,
       thinkingEffort: assignment.thinkingEffort,
+      requestedIsolation: assignment.requestedIsolation ?? "shared",
       status,
-      revision: 2,
-      instructions: "",
+      revision: terminal ? 2 : 1,
+      instructions:
+        "Resume the persisted child session and continue only the Runtime-bound assignment.",
       followUpCount: 0,
       ...(input.report && status !== "stopped"
         ? { result: validateAndCloneReport(task, input.report) }
         : {}),
       ...(input.error ? { error: sanitizeSubagentText(input.error).slice(0, 2_000) } : {}),
+      ...(input.environment ? { environment: { ...input.environment } } : {}),
+      ...(input.resultArtifact
+        ? { resultArtifact: cloneArtifact(input.resultArtifact) }
+        : {}),
       createdAt: assignment.createdAt,
       startedAt: assignment.createdAt,
-      updatedAt: input.finishedAt,
-      finishedAt: input.finishedAt,
+      updatedAt: input.finishedAt ?? this.now().toISOString(),
+      ...(input.finishedAt ? { finishedAt: input.finishedAt } : {}),
     };
+    let resolveSettled!: () => void;
+    const settled = terminal
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          resolveSettled = resolve;
+        });
     this.jobs.set(assignment.agentId, {
       record,
       task,
       controller: new AbortController(),
       followUps: [],
-      settled: Promise.resolve(),
-      resolveSettled: () => undefined,
-      activated: true,
-      graphObserved: false,
-      // Durable artifact events were already replayed into the parent state.
-      artifactsMerged: true,
-      outcome: {
-        ...(record.result ? { report: record.result } : {}),
-        reason: input.reason,
-        ...(record.error ? { error: record.error } : {}),
-        changes: [],
-        commands: [],
-        presentations: [],
-      },
+      settled,
+      resolveSettled: terminal ? () => undefined : resolveSettled,
+      activated: options.deferActivation !== true,
+      graphObserved: input.observed ?? false,
+      // Durable terminal artifact events were already replayed into the parent state.
+      artifactsMerged: terminal,
+      ...(terminal
+        ? {
+            outcome: {
+              ...(record.result ? { report: record.result } : {}),
+              reason: input.reason as SubagentExecutionOutcome["reason"],
+              ...(record.error ? { error: record.error } : {}),
+              changes: [],
+              commands: [],
+              presentations: [],
+              ...(input.environment ? { environment: { ...input.environment } } : {}),
+              ...(input.resultArtifact
+                ? { resultArtifact: cloneArtifact(input.resultArtifact) }
+                : {}),
+            },
+          }
+        : {}),
+      ...(options.deferActivation ? { preparedRestore: true } : {}),
     });
+    if (!terminal && !options.deferActivation) {
+      const job = this.jobs.get(assignment.agentId);
+      if (!job) throw new Error(`Could not restore subagent ${assignment.agentId}`);
+      void this.execute(job);
+    }
+  }
+
+  /** Start a fully validated batch of durable restores as one control-plane commit. */
+  activateRestored(agentIds: readonly string[]): void {
+    const jobs = agentIds.map((agentId) => {
+      const job = this.jobs.get(agentId);
+      if (!job || !job.preparedRestore) {
+        throw new Error(`Subagent ${agentId} is not a prepared durable restore`);
+      }
+      return job;
+    });
+    for (const job of jobs) {
+      delete job.preparedRestore;
+      if (isTerminal(job.record.status)) {
+        job.activated = true;
+        continue;
+      }
+      job.activated = true;
+      void this.execute(job);
+    }
+  }
+
+  /** Roll back only a batch that has not started any child execution. */
+  rollbackRestored(agentIds: readonly string[]): void {
+    const jobs = agentIds.map((agentId) => {
+      const job = this.jobs.get(agentId);
+      if (!job || !job.preparedRestore || job.activated) {
+        throw new Error(`Subagent ${agentId} is not an unstarted durable restore`);
+      }
+      return job;
+    });
+    for (const job of jobs) this.jobs.delete(job.record.id);
+  }
+
+  hasAgent(agentId: string, parentThreadId?: string): boolean {
+    const job = this.jobs.get(agentId);
+    return Boolean(
+      job && (!parentThreadId || job.record.parentThreadId === parentThreadId),
+    );
   }
 
   async shutdown(threadId?: string): Promise<void> {
@@ -617,6 +856,58 @@ export class SubagentCoordinator implements SubagentControl {
       }
     }
     await Promise.all(jobs.map((job) => job.settled));
+  }
+
+  /** Abort process-local execution while preserving the durable claim/session. */
+  async pause(threadId?: string): Promise<void> {
+    const jobs = [...this.jobs.values()].filter(
+      (job) =>
+        (!threadId || job.record.parentThreadId === threadId) &&
+        !isTerminal(job.record.status),
+    );
+    for (const job of jobs) {
+      job.pauseRequested = true;
+      job.controller.abort();
+      if (!job.activated) {
+        this.finishUnstarted(
+          job,
+          "interrupted",
+          "The prepared child restore was paused before execution started.",
+        );
+      }
+    }
+    await Promise.all(jobs.map((job) => job.settled));
+  }
+
+  /** Remove process-local interrupted workers while preserving their durable bindings. */
+  discardPausedJobs(threadId: string): number {
+    const paused = [...this.jobs.values()].filter(
+      (job) => job.record.parentThreadId === threadId && job.pauseRequested,
+    );
+    const unsafe = paused.find((job) => !isTerminal(job.record.status));
+    if (unsafe) {
+      throw new Error(`Cannot forget child ${unsafe.record.id}; pause has not settled`);
+    }
+    for (const job of paused) this.jobs.delete(job.record.id);
+    return paused.length;
+  }
+
+  /** Forget only jobs that were deliberately paused and remain durable elsewhere. */
+  discardPausedThread(threadId: string): void {
+    const jobs = [...this.jobs.values()].filter(
+      (job) => job.record.parentThreadId === threadId,
+    );
+    const unsafe = jobs.find(
+      (job) =>
+        !isTerminal(job.record.status) ||
+        (!job.pauseRequested && (!job.graphObserved || !job.artifactsMerged)),
+    );
+    if (unsafe) {
+      throw new Error(
+        `Cannot forget child ${unsafe.record.id}; it was not durably paused`,
+      );
+    }
+    for (const job of jobs) this.jobs.delete(job.record.id);
   }
 
   /**
@@ -652,8 +943,17 @@ export class SubagentCoordinator implements SubagentControl {
         task: cloneTask(job.task),
         signal: job.controller.signal,
         drainFollowUps: () => job.followUps.splice(0),
+        reportEnvironment: (environment) => {
+          job.record.environment = { ...environment };
+          touch(job.record, this.now);
+        },
+        isPauseRequested: () => job.pauseRequested === true,
       });
       job.outcome = outcome;
+      if (outcome.environment) job.record.environment = { ...outcome.environment };
+      if (outcome.resultArtifact) {
+        job.record.resultArtifact = cloneArtifact(outcome.resultArtifact);
+      }
       if (outcome.report) {
         try {
           job.record.result = validateAndCloneReport(job.task, outcome.report);
@@ -670,7 +970,11 @@ export class SubagentCoordinator implements SubagentControl {
       job.record.error = outcome.error
         ? sanitizeSubagentText(outcome.error).slice(0, 2_000)
         : undefined;
-      job.record.status = statusForOutcome(outcome, job.controller.signal.aborted);
+      job.record.status = statusForOutcome(
+        outcome,
+        job.controller.signal.aborted,
+        job.pauseRequested === true && !job.stopReason,
+      );
       if (job.record.status === "stopped") delete job.record.result;
     } catch (error) {
       job.record.status = job.controller.signal.aborted ? "stopped" : "failed";
@@ -762,6 +1066,9 @@ function operationForObservedJob(job: SubagentJob): SubagentTaskTransitionOperat
       taskId: job.record.taskId,
       agentId: job.record.id,
       evidence: report.completionEvidence.map((item) => item.evidence),
+      ...(job.record.resultArtifact
+        ? { resultArtifact: toResultArtifactRef(job.record.resultArtifact) }
+        : {}),
     };
   }
   return { action: "release", taskId: job.record.taskId, agentId: job.record.id };
@@ -770,6 +1077,8 @@ function operationForObservedJob(job: SubagentJob): SubagentTaskTransitionOperat
 function publicRecord(record: Readonly<SubagentRecord>): SubagentView {
   return {
     id: record.id,
+    childThreadId: record.childThreadId,
+    environmentId: record.environmentId,
     assignmentKind: record.assignmentKind,
     ...(record.taskGraphId ? { taskGraphId: record.taskGraphId } : {}),
     taskId: record.taskId,
@@ -778,6 +1087,33 @@ function publicRecord(record: Readonly<SubagentRecord>): SubagentView {
     provider: record.provider,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
+    requestedIsolation: record.requestedIsolation,
+    ...(record.environment
+      ? {
+          environment: {
+            id: record.environment.id,
+            kind: record.environment.kind,
+            status: record.environment.status,
+            requestedIsolation: record.environment.requestedIsolation,
+            baseMode: record.environment.baseMode,
+            createdAt: record.environment.createdAt,
+            updatedAt: record.environment.updatedAt,
+          },
+        }
+      : {}),
+    ...(record.resultArtifact
+      ? {
+          resultArtifact: {
+            ...toResultArtifactRef(record.resultArtifact),
+            ...(record.resultArtifact.delivery
+              ? { delivery: record.resultArtifact.delivery }
+              : {}),
+            ...(record.resultArtifact.branchName
+              ? { branchName: record.resultArtifact.branchName }
+              : {}),
+          },
+        }
+      : {}),
     status: record.status,
     revision: record.revision,
     followUpCount: record.followUpCount,
@@ -819,6 +1155,8 @@ function assignmentSnapshot(
 ): SubagentAssignmentSnapshot {
   const common = {
     agentId: record.id,
+    childThreadId: record.childThreadId,
+    environmentId: record.environmentId,
     taskId: task.id,
     taskTitle: task.title,
     taskDescription: task.description,
@@ -826,6 +1164,7 @@ function assignmentSnapshot(
     provider: record.provider,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
+    requestedIsolation: record.requestedIsolation,
     createdAt: record.createdAt,
   };
   if (record.assignmentKind === "standalone") {
@@ -847,6 +1186,46 @@ function cloneTask(task: Readonly<TaskNode>): TaskNode {
     ...(task.completionEvidence
       ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
       : {}),
+    ...(task.resultArtifact
+      ? {
+          resultArtifact: {
+            ...task.resultArtifact,
+            parentArtifactIds: [...task.resultArtifact.parentArtifactIds],
+          },
+        }
+      : {}),
+  };
+}
+
+/** Strip private and unbounded artifact fields before accepting lineage into a DAG. */
+export function toResultArtifactRef(
+  artifact: Readonly<ResultArtifact>,
+): ResultArtifactRef {
+  return {
+    id: artifact.id,
+    agentId: artifact.agentId,
+    taskId: artifact.taskId,
+    environmentId: artifact.environmentId,
+    environmentKind: artifact.environmentKind,
+    status: artifact.status,
+    ...(artifact.baseCommit ? { baseCommit: artifact.baseCommit } : {}),
+    ...(artifact.resultCommit ? { resultCommit: artifact.resultCommit } : {}),
+    ...(artifact.snapshotRef ? { snapshotRef: artifact.snapshotRef } : {}),
+    parentArtifactIds: [...(artifact.parentArtifactIds ?? [])],
+    changedFileCount: artifact.changedFiles.length,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    ...(artifact.deliveredAt ? { deliveredAt: artifact.deliveredAt } : {}),
+  };
+}
+
+function cloneArtifact(artifact: Readonly<ResultArtifact>): ResultArtifact {
+  return {
+    ...artifact,
+    ...(artifact.parentArtifactIds
+      ? { parentArtifactIds: [...artifact.parentArtifactIds] }
+      : {}),
+    changedFiles: [...artifact.changedFiles],
   };
 }
 
@@ -894,7 +1273,19 @@ function validateAndCloneReport(
 function statusForOutcome(
   outcome: Readonly<SubagentExecutionOutcome>,
   aborted: boolean,
+  paused: boolean,
 ): SubagentStatus {
+  // A pause preserves the durable child session. If the child already crossed
+  // its verified completion boundary, that completed result (and its artifact)
+  // must remain atomic even when the pause abort arrives during finalization.
+  // Explicit stop/shutdown requests still win because they are not pauses.
+  if (
+    paused &&
+    outcome.reason === "completed" &&
+    outcome.report?.outcome === "completed"
+  ) {
+    return "completed";
+  }
   if (aborted || outcome.reason === "stopped") return "stopped";
   if (outcome.report?.outcome === "completed") return "completed";
   if (outcome.report?.outcome === "blocked") return "blocked";

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import type {
+  ResultArtifact,
   SubagentLifecycleUpdate,
   SubagentTaskReport,
   TaskGraph,
@@ -112,6 +113,27 @@ function completedOutcome(taskId: string): SubagentExecutionOutcome {
     changes: [],
     commands: [],
     presentations: [],
+  };
+}
+
+function resultArtifact(
+  agentId: string,
+  taskId: string,
+  environmentId: string,
+): ResultArtifact {
+  return {
+    id: "artifact_00000000-0000-4000-8000-000000000099",
+    agentId,
+    taskId,
+    environmentId,
+    environmentKind: "worktree",
+    status: "ready",
+    logicalWorkspaceRoot: "C:\\private\\workspace",
+    baseCommit: "1".repeat(40),
+    resultCommit: "2".repeat(40),
+    changedFiles: ["src/result.ts"],
+    createdAt: "2026-08-27T10:00:01.000Z",
+    updatedAt: "2026-08-27T10:00:02.000Z",
   };
 }
 
@@ -243,6 +265,250 @@ describe("SubagentCoordinator", () => {
     assert.equal(waited.taskGraphUpdate?.status, "completed");
     coordinator.commitLifecycle(lifecycle(waited, "observe"));
     assert.equal(coordinator.snapshot(context(taskGraph).threadId)[0]?.taskTitle, "Task inspect");
+  });
+
+  it("projects full child artifacts into bounded DAG lineage references", async () => {
+    const taskGraph = graph(["inspect"]);
+    const artifact: ResultArtifact = {
+      id: "artifact_00000000-0000-4000-8000-000000000011",
+      agentId: AGENT_ONE,
+      taskId: "inspect",
+      environmentId: "environment_00000000-0000-4000-8000-000000000011",
+      environmentKind: "worktree",
+      status: "ready",
+      logicalWorkspaceRoot: "C:\\private\\workspace",
+      baseCommit: "1".repeat(40),
+      resultCommit: "2".repeat(40),
+      parentArtifactIds: [],
+      changedFiles: Array.from({ length: 3_000 }, (_value, index) =>
+        `generated/private-${index}.txt`),
+      createdAt: "2026-08-27T10:00:01.000Z",
+      updatedAt: "2026-08-27T10:00:02.000Z",
+    };
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: async () => ({
+        ...completedOutcome("inspect"),
+        environment: {
+          id: "environment_00000000-0000-4000-8000-000000000011",
+          kind: "worktree",
+          status: "result_ready",
+          logicalWorkspaceRoot: "C:\\private\\workspace",
+          executionRoot: "C:\\private\\runtime-data\\worktree",
+          requestedIsolation: "worktree",
+          baseMode: "current-snapshot",
+          createdAt: "2026-08-27T10:00:00.000Z",
+          updatedAt: "2026-08-27T10:00:02.000Z",
+        },
+        resultArtifact: artifact,
+      }),
+    });
+    const spawned = await coordinator.spawn({
+      action: "spawn",
+      taskId: "inspect",
+      instructions: "Inspect the bounded artifact lineage path.",
+    }, context(taskGraph));
+    coordinator.commitLifecycle(lifecycle(spawned, "activate"));
+
+    const waited = await coordinator.wait({
+      action: "wait",
+      agentIds: [AGENT_ONE],
+      timeoutMs: 100,
+    }, context(spawned.taskGraphUpdate as TaskGraph));
+    assert.equal(waited.subagentTaskOperation?.action, "complete");
+    if (waited.subagentTaskOperation?.action !== "complete") {
+      throw new Error("Expected a completed subagent transition");
+    }
+    const reference = waited.subagentTaskOperation.resultArtifact;
+    assert.equal(reference?.changedFileCount, 3_000);
+    assert.deepEqual(reference?.parentArtifactIds, artifact.parentArtifactIds);
+    assert.equal("changedFiles" in (reference ?? {}), false);
+    assert.equal("logicalWorkspaceRoot" in (reference ?? {}), false);
+    assert.ok(JSON.stringify(waited.taskGraphUpdate).length < 10_000);
+
+    const publicAgent = (waited.data as {
+      agents: Array<{
+        environment?: {
+          kind: string;
+          executionRoot?: string;
+          logicalWorkspaceRoot?: string;
+        };
+        resultArtifact?: {
+          changedFileCount: number;
+          changedFiles?: string[];
+          logicalWorkspaceRoot?: string;
+        };
+      }>;
+    }).agents[0];
+    const publicArtifact = publicAgent?.resultArtifact;
+    assert.equal(publicArtifact?.changedFileCount, 3_000);
+    assert.equal(publicArtifact?.changedFiles, undefined);
+    assert.equal(publicArtifact?.logicalWorkspaceRoot, undefined);
+    assert.equal(publicAgent?.environment?.kind, "worktree");
+    assert.equal(publicAgent?.environment?.executionRoot, undefined);
+    assert.equal(publicAgent?.environment?.logicalWorkspaceRoot, undefined);
+  });
+
+  it("hands off only a completed DAG's unique child-owned terminal leaf", async () => {
+    const handedOff: string[] = [];
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: async (request) => ({
+        ...completedOutcome(request.task.id),
+        resultArtifact: resultArtifact(
+          request.record.id,
+          request.task.id,
+          request.record.environmentId,
+        ),
+      }),
+      handoff: async (artifact) => {
+        handedOff.push(artifact.id);
+        return {
+          ...artifact,
+          status: "delivered",
+          delivery: "local",
+          deliveredAt: "2026-08-27T10:00:04.000Z",
+          updatedAt: "2026-08-27T10:00:04.000Z",
+        };
+      },
+    });
+    const initial = graph(["inspect"]);
+    const spawned = await coordinator.spawn({
+      action: "spawn",
+      taskId: "inspect",
+      instructions: "Produce the final DAG result.",
+    }, context(initial));
+    const claimed = spawned.taskGraphUpdate as TaskGraph;
+    coordinator.commitLifecycle(lifecycle(spawned, "activate"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await assert.rejects(
+      coordinator.handoff({
+        action: "handoff",
+        agentId: AGENT_ONE,
+        destination: "local",
+      }, context(claimed)),
+      /complete task graph finishes/u,
+    );
+
+    const waited = await coordinator.wait({
+      action: "wait",
+      agentIds: [AGENT_ONE],
+      timeoutMs: 100,
+    }, context(claimed));
+    const completed = waited.taskGraphUpdate as TaskGraph;
+    assert.equal(completed.status, "completed");
+    const delivered = await coordinator.handoff({
+      action: "handoff",
+      agentId: AGENT_ONE,
+      destination: "local",
+    }, context(completed));
+    assert.equal(delivered.ok, true);
+    assert.deepEqual(handedOff, [
+      "artifact_00000000-0000-4000-8000-000000000099",
+    ]);
+
+    const standalone = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_TWO]),
+      run: async (request) => ({
+        report: {
+          taskId: request.task.id,
+          outcome: "completed",
+          summary: "Standalone result is ready.",
+          completionEvidence: request.task.completionChecks.map((check) => ({
+            check,
+            evidence: "Standalone focused validation passed.",
+          })),
+        },
+        reason: "completed",
+        changes: [],
+        commands: [],
+        presentations: [],
+        resultArtifact: resultArtifact(
+          request.record.id,
+          request.task.id,
+          request.record.environmentId,
+        ),
+      }),
+      handoff: async (artifact) => ({
+        ...artifact,
+        status: "delivered",
+        delivery: "local",
+        deliveredAt: "2026-08-27T10:00:05.000Z",
+        updatedAt: "2026-08-27T10:00:05.000Z",
+      }),
+    });
+    const standaloneContext = context(undefined);
+    const standaloneSpawned = await standalone.spawn({
+      action: "spawn",
+      task: {
+        title: "Standalone delivery",
+        description: "Produce an independent child result.",
+        completionChecks: ["Standalone delivery is verified"],
+      },
+      instructions: "Produce the independent result.",
+    }, standaloneContext);
+    standalone.commitLifecycle(lifecycle(standaloneSpawned, "activate"));
+    await standalone.wait({
+      action: "wait",
+      agentIds: [AGENT_TWO],
+      timeoutMs: 100,
+    }, standaloneContext);
+    const standaloneDelivered = await standalone.handoff({
+      action: "handoff",
+      agentId: AGENT_TWO,
+      destination: "local",
+    }, standaloneContext);
+    assert.equal(standaloneDelivered.ok, true);
+  });
+
+  it("rejects DAG handoff when a completed graph has multiple terminal leaves", async () => {
+    const initial = graph(["inspect", "docs"]);
+    const docsStarted = applyTaskGraphOperation(initial, {
+      action: "start",
+      taskId: "docs",
+    }, { turnId: "turn_docs_start" });
+    const docsCompleted = applyTaskGraphOperation(docsStarted, {
+      action: "complete",
+      taskId: "docs",
+      evidence: ["docs focused validation passed"],
+    }, { turnId: "turn_docs_complete" });
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: async (request) => ({
+        ...completedOutcome(request.task.id),
+        resultArtifact: resultArtifact(
+          request.record.id,
+          request.task.id,
+          request.record.environmentId,
+        ),
+      }),
+      handoff: async (artifact) => artifact,
+    });
+    const spawned = await coordinator.spawn({
+      action: "spawn",
+      taskId: "inspect",
+      instructions: "Complete one of two DAG leaves.",
+    }, context(docsCompleted));
+    const claimed = spawned.taskGraphUpdate as TaskGraph;
+    coordinator.commitLifecycle(lifecycle(spawned, "activate"));
+    const waited = await coordinator.wait({
+      action: "wait",
+      agentIds: [AGENT_ONE],
+      timeoutMs: 100,
+    }, context(claimed));
+    const completed = waited.taskGraphUpdate as TaskGraph;
+    assert.equal(completed.status, "completed");
+
+    await assert.rejects(
+      coordinator.handoff({
+        action: "handoff",
+        agentId: AGENT_ONE,
+        destination: "local",
+      }, context(completed)),
+      /exactly one terminal leaf/u,
+    );
   });
 
   it("runs and observes a named standalone assignment without creating a DAG", async () => {
@@ -564,6 +830,63 @@ describe("SubagentCoordinator", () => {
     }, context(claimedGraph));
     assert.equal(waited.subagentTaskOperation?.action, "release");
     assert.equal(waited.taskGraphUpdate?.tasks[0]?.status, "pending");
+  });
+
+  it("keeps a verified artifact when coordinator pause races with finalization", async () => {
+    const initialGraph = graph(["pause_finalize_race"]);
+    const finalizationEntered = deferred<void>();
+    const releaseFinalization = deferred<void>();
+    let childSignal: AbortSignal | undefined;
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: async (request) => {
+        childSignal = request.signal;
+        finalizationEntered.resolve();
+        await releaseFinalization.promise;
+        assert.equal(request.signal.aborted, true);
+        assert.equal(request.isPauseRequested(), true);
+        return {
+          ...completedOutcome(request.task.id),
+          resultArtifact: resultArtifact(
+            request.record.id,
+            request.task.id,
+            request.record.environmentId,
+          ),
+        };
+      },
+    });
+    const spawned = await coordinator.spawn({
+      action: "spawn",
+      taskId: "pause_finalize_race",
+      instructions: "Return the verified result after finalization settles.",
+    }, context(initialGraph));
+    const claimedGraph = spawned.taskGraphUpdate as TaskGraph;
+    coordinator.commitLifecycle(lifecycle(spawned, "activate"));
+    await finalizationEntered.promise;
+
+    const pausePromise = coordinator.pause(context(initialGraph).threadId);
+    assert.equal(childSignal?.aborted, true);
+    releaseFinalization.resolve();
+    await pausePromise;
+
+    const [record] = coordinator.snapshot(context(initialGraph).threadId);
+    assert.equal(record?.status, "completed");
+    assert.equal(
+      record?.resultArtifact?.id,
+      "artifact_00000000-0000-4000-8000-000000000099",
+    );
+
+    const waited = await coordinator.wait({
+      action: "wait",
+      agentIds: [AGENT_ONE],
+      timeoutMs: 0,
+    }, context(claimedGraph));
+    assert.equal(waited.subagentTaskOperation?.action, "complete");
+    const artifacts = coordinator.commitLifecycle(lifecycle(waited, "observe"));
+    assert.equal(
+      artifacts?.resultArtifact?.id,
+      "artifact_00000000-0000-4000-8000-000000000099",
+    );
   });
 
   it("lets a durable prepared stop win when completion settles before local commit", async () => {

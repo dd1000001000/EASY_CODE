@@ -45,6 +45,10 @@ interface EasyCodeConfigLayer {
   maxContextChars?: unknown;
   maxOutputChars?: unknown;
   commandTimeoutMs?: unknown;
+  subagentIsolation?: unknown;
+  worktreeBaseMode?: unknown;
+  worktreeRoot?: unknown;
+  maxManagedWorktrees?: unknown;
   qwen?: ProviderConfigLayer;
   deepseek?: ProviderConfigLayer;
   glm?: ProviderConfigLayer;
@@ -110,6 +114,8 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
   const limits = recordAt(value, "limits");
   const paths = recordAt(value, "paths");
   const providers = recordAt(value, "providers");
+  const subagents = recordAt(value, "subagents");
+  const worktrees = recordAt(value, "worktrees");
   const nestedQwen = recordAt(providers, "qwen");
   const nestedDeepSeek = recordAt(providers, "deepseek");
   const directQwen = recordAt(value, "qwen");
@@ -150,6 +156,22 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
       field(value, "commandTimeoutMs", "command_timeout_ms"),
       field(limits, "commandTimeoutMs", "command_timeout_ms"),
     ),
+    subagentIsolation: firstDefined(
+      field(value, "subagentIsolation", "subagent_isolation"),
+      field(subagents, "isolation", "isolation"),
+    ),
+    worktreeBaseMode: firstDefined(
+      field(value, "worktreeBaseMode", "worktree_base_mode"),
+      field(worktrees, "baseMode", "base_mode"),
+    ),
+    worktreeRoot: firstDefined(
+      field(value, "worktreeRoot", "worktree_root"),
+      field(worktrees, "root", "root"),
+    ),
+    maxManagedWorktrees: firstDefined(
+      field(value, "maxManagedWorktrees", "max_managed_worktrees"),
+      field(worktrees, "maxManaged", "max_managed"),
+    ),
     qwen: providerLayer({ ...nestedQwen, ...directQwen }),
     deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
     glm: providerLayer({ ...nestedGlm, ...directGlm }),
@@ -186,6 +208,10 @@ function applyLayer(
     maxContextChars: layer.maxContextChars,
     maxOutputChars: layer.maxOutputChars,
     commandTimeoutMs: layer.commandTimeoutMs,
+    subagentIsolation: layer.subagentIsolation,
+    worktreeBaseMode: layer.worktreeBaseMode,
+    worktreeRoot: layer.worktreeRoot,
+    maxManagedWorktrees: layer.maxManagedWorktrees,
   });
 
   return {
@@ -240,6 +266,7 @@ function assertSafeWorkspaceLayer(
   if (layer.configDir !== undefined) forbidden.push("config_dir");
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
   if (layer.cacheDir !== undefined) forbidden.push("cache_dir");
+  if (layer.worktreeRoot !== undefined) forbidden.push("worktree_root");
   if (forbidden.length) {
     throw new EasyCodeConfigError(
       `Workspace configuration cannot set trust-root fields: ${forbidden.join(", ")}`,
@@ -287,6 +314,10 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     maxContextChars: envInteger(env, "EASY_CODE_MAX_CONTEXT_CHARS"),
     maxOutputChars: envInteger(env, "EASY_CODE_MAX_OUTPUT_CHARS"),
     commandTimeoutMs: envInteger(env, "EASY_CODE_COMMAND_TIMEOUT_MS"),
+    subagentIsolation: envValue(env, "EASY_CODE_SUBAGENT_ISOLATION"),
+    worktreeBaseMode: envValue(env, "EASY_CODE_WORKTREE_BASE_MODE"),
+    worktreeRoot: envValue(env, "EASY_CODE_WORKTREE_ROOT"),
+    maxManagedWorktrees: envInteger(env, "EASY_CODE_MAX_MANAGED_WORKTREES"),
     qwen: compact({
       apiKey: envValue(env, "QWEN_API_KEY", "DASHSCOPE_API_KEY"),
       baseUrl: envValue(env, "QWEN_BASE_URL", "DASHSCOPE_BASE_URL"),
@@ -352,6 +383,7 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
     dataDir: path.resolve(cwd, config.dataDir),
     configDir: path.resolve(cwd, config.configDir),
     cacheDir: path.resolve(cwd, config.cacheDir),
+    worktreeRoot: path.resolve(cwd, config.worktreeRoot),
     qwen: {
       ...config.qwen,
       baseUrl: config.qwen.baseUrl.replace(/\/+$/, ""),

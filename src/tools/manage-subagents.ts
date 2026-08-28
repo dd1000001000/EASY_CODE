@@ -29,6 +29,13 @@ const SUBAGENT_ID_PATTERN =
 
 const taskIdSchema = z.string().trim().regex(new RegExp(TASK_ID_PATTERN, "u"));
 const subagentIdSchema = z.string().trim().regex(new RegExp(SUBAGENT_ID_PATTERN, "u"));
+const isolationSchema = z.enum(["auto", "shared", "worktree"]);
+const branchNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(160)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/u);
 
 function boundedAgentText(maximum: number): z.ZodPipeline<
   z.ZodEffects<z.ZodString, string, string>,
@@ -66,6 +73,7 @@ export const manageSubagentsInputSchema = z.union([
       action: z.literal("spawn"),
       taskId: taskIdSchema,
       instructions: boundedAgentText(MAX_SUBAGENT_INSTRUCTIONS_CHARS),
+      isolation: isolationSchema.optional(),
     })
     .strict(),
   z
@@ -73,6 +81,7 @@ export const manageSubagentsInputSchema = z.union([
       action: z.literal("spawn"),
       task: standaloneTaskSchema,
       instructions: boundedAgentText(MAX_SUBAGENT_INSTRUCTIONS_CHARS),
+      isolation: isolationSchema.optional(),
     })
     .strict(),
   z
@@ -107,6 +116,17 @@ export const manageSubagentsInputSchema = z.union([
       reason: boundedAgentText(MAX_SUBAGENT_STOP_REASON_CHARS),
     })
     .strict(),
+  z
+    .object({
+      action: z.literal("handoff"),
+      agentId: subagentIdSchema,
+      destination: z.enum(["local", "branch"]),
+      branchName: branchNameSchema.optional(),
+    })
+    .strict()
+    .refine((value) => value.destination === "branch" || value.branchName === undefined, {
+      message: "branchName is valid only for branch handoff",
+    }),
 ]);
 
 /**
@@ -128,7 +148,8 @@ export class ManageSubagentsTool implements AgentTool {
         "when no unfinished DAG exists, creates a standalone assignment with task title, description, " +
         "and completion checks. The two spawn forms are mutually exclusive. " +
         "status inspects bounded lifecycle state; wait pauses for a target update; follow_up queues " +
-        "additional guidance; and stop requests cancellation. Child agents run in Code mode, cannot " +
+        "additional guidance; stop requests cancellation; and handoff safely delivers a completed " +
+        "result locally, or preserves an isolated Worktree result on a branch. Child agents run in Code mode, cannot " +
         "create children, inherit the parent's model and thinking effort, and return only a bounded task result. " +
         "The parent concurrency limit is 2 at none/low effort, 4 at medium, and 8 at high. " +
         "Collect every running or unobserved child before entering Plan mode or finishing. " +
@@ -141,7 +162,7 @@ export class ManageSubagentsTool implements AgentTool {
         properties: {
           action: {
             type: "string",
-            enum: ["spawn", "status", "wait", "follow_up", "stop"],
+            enum: ["spawn", "status", "wait", "follow_up", "stop", "handoff"],
           },
           taskId: {
             type: "string",
@@ -185,10 +206,16 @@ export class ManageSubagentsTool implements AgentTool {
             description:
               "Required for spawn. Only the explicit bounded context needed to execute the assigned task.",
           },
+          isolation: {
+            type: "string",
+            enum: ["auto", "shared", "worktree"],
+            description:
+              "Optional for spawn. auto uses a managed worktree in Git repositories and shared serialization otherwise; shared is suitable for intentionally read-heavy work.",
+          },
           agentId: {
             type: "string",
             pattern: SUBAGENT_ID_PATTERN,
-            description: "Required for follow_up and stop.",
+            description: "Required for follow_up, stop, and handoff.",
           },
           agentIds: {
             type: "array",
@@ -218,6 +245,16 @@ export class ManageSubagentsTool implements AgentTool {
             maxLength: MAX_SUBAGENT_STOP_REASON_CHARS,
             description: "Required for stop. A concise auditable cancellation reason.",
           },
+          destination: {
+            type: "string",
+            enum: ["local", "branch"],
+            description: "Required for handoff. Local applies the verified result without committing the user's branch; branch preserves the result on a new branch.",
+          },
+          branchName: {
+            type: "string",
+            maxLength: 160,
+            description: "Optional explicit branch name for branch handoff.",
+          },
         },
         required: ["action"],
       },
@@ -244,6 +281,8 @@ export class ManageSubagentsTool implements AgentTool {
           return await this.control.followUp(parsed, context);
         case "stop":
           return await this.control.stop(parsed, context);
+        case "handoff":
+          return await this.control.handoff(parsed, context);
       }
     } catch (error) {
       return toolFailure(error, "Unable to manage subagents");

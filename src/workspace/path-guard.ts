@@ -64,6 +64,16 @@ export class WorkspacePathGuard {
     if (segments.some((segment) => segment === "..")) {
       throw new Error("Parent-directory traversal is not allowed");
     }
+    if (segments.some((segment) => segment.toLowerCase() === ".git")) {
+      throw new Error("Git control paths are reserved for the EASY CODE Runtime");
+    }
+    if (
+      segments.length >= 2 &&
+      segments[0]?.toLowerCase() === ".easycode" &&
+      segments[1]?.toLowerCase() === "config.toml"
+    ) {
+      throw new Error("Workspace trust configuration cannot be accessed through agent file tools");
+    }
 
     const absolute = path.resolve(this.root, input);
     this.assertInside(absolute);

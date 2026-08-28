@@ -7,6 +7,7 @@ import type {
   TaskGraphStatus,
   TaskNode,
   TaskNodeStatus,
+  ResultArtifactRef,
 } from "../core/types.js";
 import {
   containsSensitiveInformation,
@@ -31,6 +32,28 @@ const UNSAFE_TASK_TEXT =
 
 const taskIdSchema = z.string().trim().regex(TASK_ID_PATTERN);
 const agentIdSchema = z.string().trim().regex(AGENT_ID_PATTERN);
+const gitCommitSchema = z.string().regex(/^[0-9a-f]{40,64}$/u);
+
+const artifactIdSchema = z.string().regex(/^artifact_[0-9a-f-]{36}$/u);
+
+const resultArtifactRefSchema = z
+  .object({
+    id: artifactIdSchema,
+    agentId: agentIdSchema,
+    taskId: taskIdSchema,
+    environmentId: z.string().regex(/^environment_[0-9a-f-]{36}$/u),
+    environmentKind: z.enum(["shared", "worktree"]),
+    status: z.enum(["ready", "integrated", "conflicted", "delivered", "retained"]),
+    baseCommit: gitCommitSchema.optional(),
+    resultCommit: gitCommitSchema.optional(),
+    snapshotRef: z.string().min(1).max(512).optional(),
+    parentArtifactIds: z.array(artifactIdSchema).max(MAX_TASK_DEPENDENCIES),
+    changedFileCount: z.number().int().min(0).max(1_000_000),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    deliveredAt: z.string().datetime().optional(),
+  })
+  .strict();
 
 function boundedTaskText(maximum = MAX_TASK_TEXT_CHARS): z.ZodEffects<z.ZodString, string, string> {
   return z
@@ -113,6 +136,7 @@ export const subagentTaskOperationSchema = z.discriminatedUnion("action", [
         .array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS))
         .min(1)
         .max(MAX_TASK_LIST_ITEMS),
+      resultArtifact: resultArtifactRefSchema.optional(),
     })
     .strict(),
   z
@@ -154,6 +178,7 @@ const persistedTaskNodeSchema = z
     assignedAgentId: agentIdSchema.optional(),
     status: z.enum(["pending", "in_progress", "completed", "blocked"]),
     completionEvidence: z.array(completionEvidenceSchema).optional(),
+    resultArtifact: resultArtifactRefSchema.optional(),
     blocker: boundedTaskText(MAX_TASK_EVIDENCE_CHARS).optional(),
     startedAt: z.string().datetime().optional(),
     completedAt: z.string().datetime().optional(),
@@ -323,6 +348,38 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       );
     }
     if (task.blocker) assertSafeText(task.blocker);
+    if (task.resultArtifact) {
+      if (task.status !== "completed") {
+        throw new Error(`Only completed task ${task.id} may contain a result artifact`);
+      }
+      if (
+        task.resultArtifact.taskId !== task.id ||
+        task.resultArtifact.agentId !== task.assignedAgentId
+      ) {
+        throw new Error(`Task ${task.id} result artifact does not match its child assignment`);
+      }
+      if (
+        task.resultArtifact.status === "conflicted" ||
+        task.resultArtifact.status === "retained" ||
+        (task.resultArtifact.environmentKind === "worktree" &&
+          !task.resultArtifact.resultCommit)
+      ) {
+        throw new Error(`Task ${task.id} result artifact is not ready for DAG lineage`);
+      }
+      const expectedParents = task.dependencies.flatMap((dependencyId) => {
+        const artifact = byId.get(dependencyId)?.resultArtifact;
+        return artifact ? [artifact.id] : [];
+      });
+      if (
+        expectedParents.length !== task.resultArtifact.parentArtifactIds.length ||
+        expectedParents.some(
+          (artifactId, index) =>
+            task.resultArtifact?.parentArtifactIds[index] !== artifactId,
+        )
+      ) {
+        throw new Error(`Task ${task.id} result artifact has invalid parent lineage`);
+      }
+    }
     if (
       task.status === "in_progress" ||
       task.status === "completed" ||
@@ -390,6 +447,9 @@ export function cloneTaskGraph(graph: Readonly<TaskGraph>): TaskGraph {
       completionChecks: [...task.completionChecks],
       ...(task.completionEvidence
         ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
+        : {}),
+      ...(task.resultArtifact
+        ? { resultArtifact: cloneResultArtifact(task.resultArtifact) }
         : {}),
     })),
   };
@@ -543,11 +603,29 @@ export function applySubagentTaskOperation(
     }
     if (operation.action === "complete") {
       applyCompletionEvidence(task, operation.evidence, now);
+      if (operation.resultArtifact) {
+        if (
+          operation.resultArtifact.agentId !== operation.agentId ||
+          operation.resultArtifact.taskId !== operation.taskId
+        ) {
+          throw new Error("Subagent result artifact does not match the completed assignment");
+        }
+        if (
+          operation.resultArtifact.status === "conflicted" ||
+          operation.resultArtifact.status === "retained" ||
+          (operation.resultArtifact.environmentKind === "worktree" &&
+            !operation.resultArtifact.resultCommit)
+        ) {
+          throw new Error("Subagent result artifact is not ready for DAG lineage");
+        }
+        task.resultArtifact = cloneResultArtifact(operation.resultArtifact);
+      }
     } else {
       task.owner = "main_agent";
       delete task.assignedAgentId;
       task.status = "pending";
       delete task.startedAt;
+      delete task.resultArtifact;
     }
   }
 
@@ -556,6 +634,10 @@ export function applySubagentTaskOperation(
   graph.updatedByTurnId = options.turnId;
   assertTaskGraphInvariants(graph);
   return graph;
+}
+
+function cloneResultArtifact(artifact: Readonly<ResultArtifactRef>): ResultArtifactRef {
+  return { ...artifact, parentArtifactIds: [...artifact.parentArtifactIds] };
 }
 
 /**

@@ -71,6 +71,9 @@ export async function captureWorkspaceSnapshot(
         return;
       }
       if (entry.name === "." || entry.name === "..") continue;
+      // Linked worktrees store `.git` as a regular control file, not a
+      // directory. Never hash or expose either form as workspace content.
+      if (entry.name.toLowerCase() === ".git") continue;
       if (entry.isDirectory() && ignored.has(entry.name)) continue;
 
       const absolute = path.join(directory, entry.name);
@@ -158,4 +161,3 @@ export function diffWorkspaceSnapshots(
     truncated: before.truncated || after.truncated,
   };
 }
-
