@@ -2,6 +2,8 @@
 
 English | [简体中文](./README_zh.md)
 
+Technical documentation: [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
+
 EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
 
 EASY CODE runs entirely in the current terminal. It does not open a separate desktop window.
