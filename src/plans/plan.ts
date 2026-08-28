@@ -13,6 +13,11 @@ export const MAX_PLAN_STEP_DESCRIPTION_CHARS = 2_000;
 export const MAX_PLAN_STEP_VERIFICATION_CHARS = 1_000;
 export const MAX_PLAN_FEEDBACK_CHARS = 4_000;
 
+export type PlanExecutionReturnOutcome =
+  | "failed"
+  | "interrupted"
+  | "limit_reached";
+
 const UNSAFE_PLAN_CONTROLS =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu;
 
@@ -77,6 +82,29 @@ export function clonePlanReviewState(value: Readonly<PlanReviewState>): PlanRevi
       ...value.proposal,
       steps: value.proposal.steps.map((step) => ({ ...step })),
     },
+  };
+}
+
+/**
+ * Return an approved execution to an explicit user review without changing the
+ * immutable proposal identity. Executions may have committed partial workspace
+ * mutations before ending, so a retry must never be presented as a clean start.
+ */
+export function returnPlanExecutionToReview(
+  value: Readonly<PlanReviewState>,
+  outcome: PlanExecutionReturnOutcome,
+): PlanReviewState {
+  const outcomeText = outcome === "failed"
+    ? "failed"
+    : outcome === "interrupted"
+      ? "was interrupted"
+      : "reached its step limit";
+  return {
+    status: "awaiting_review",
+    proposal: clonePlanReviewState(value).proposal,
+    feedback:
+      `The previously approved execution ${outcomeText}. It may have partially modified ` +
+      "the workspace; inspect the current workspace state before approving this plan again.",
   };
 }
 

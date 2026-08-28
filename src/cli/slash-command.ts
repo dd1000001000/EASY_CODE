@@ -85,7 +85,7 @@ EASY CODE commands
   /permissions               Show command permissions and sandbox status
   /commands                  Show recent commands
   /context                   Show context budget
-  /memory short              Show automatic short-term memory
+  /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
   /memory long               Show automatic long-term memory
   /memory long <id>          Show one long-term memory entry
   /thinking [id|last]        Show the expanded model thinking

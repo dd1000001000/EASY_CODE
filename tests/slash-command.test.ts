@@ -55,5 +55,6 @@ describe("parseSlashCommand", () => {
     assert.match(HELP_TEXT, /qwen\|deepseek\|glm/u);
     assert.match(HELP_TEXT, /\/thinking \[id\|last\]/u);
     assert.match(HELP_TEXT, /\/agents/u);
+    assert.match(HELP_TEXT, /\/memory short \[limit\]/u);
   });
 });

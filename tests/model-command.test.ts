@@ -585,6 +585,89 @@ describe("/model", () => {
   });
 });
 
+describe("memory commands", () => {
+  it("shows the last eight active short-term message previews by default", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    try {
+      const internal = fixture.app as unknown as { state: SessionState };
+      internal.state.goal = "Explain the current task";
+      internal.state.messages = Array.from({ length: 12 }, (_, index) => ({
+        role: "user" as const,
+        content: `message-${index + 1}`,
+      }));
+      internal.state.compactedMessageCount = 2;
+
+      const offset = fixture.output().length;
+      await fixture.app.handleSlashCommand("/memory short");
+      const memory = JSON.parse(fixture.output().slice(offset)) as {
+        latestRequest?: string;
+        showingLast?: number;
+        totalActive?: number;
+        recentMessagePreviews?: string[];
+        goal?: unknown;
+        activeMessageCount?: unknown;
+        recentMessages?: unknown;
+      };
+
+      assert.equal(memory.latestRequest, "Explain the current task");
+      assert.equal(memory.showingLast, 8);
+      assert.equal(memory.totalActive, 10);
+      assert.deepEqual(
+        memory.recentMessagePreviews,
+        Array.from({ length: 8 }, (_, index) => `User: message-${index + 5}`),
+      );
+      assert.equal("goal" in memory, false);
+      assert.equal("activeMessageCount" in memory, false);
+      assert.equal("recentMessages" in memory, false);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("accepts a positive preview limit and rejects invalid short-memory arguments", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    try {
+      const internal = fixture.app as unknown as { state: SessionState };
+      internal.state.messages = Array.from({ length: 6 }, (_, index) => ({
+        role: "assistant" as const,
+        content: `reply-${index + 1}`,
+      }));
+      internal.state.compactedMessageCount = 1;
+
+      const offset = fixture.output().length;
+      await fixture.app.handleSlashCommand("/memory short 3");
+      const memory = JSON.parse(fixture.output().slice(offset)) as {
+        showingLast?: number;
+        totalActive?: number;
+        recentMessagePreviews?: string[];
+      };
+      assert.equal(memory.showingLast, 3);
+      assert.equal(memory.totalActive, 5);
+      assert.deepEqual(memory.recentMessagePreviews, [
+        "Assistant: reply-4",
+        "Assistant: reply-5",
+        "Assistant: reply-6",
+      ]);
+
+      for (const command of [
+        "/memory short 0",
+        "/memory short -1",
+        "/memory short 1.5",
+        "/memory short nope",
+        "/memory short 3 extra",
+        "/memory short 9007199254740992",
+      ]) {
+        await assert.rejects(
+          fixture.app.handleSlashCommand(command),
+          /Usage: \/memory short \[limit\]/u,
+        );
+      }
+    } finally {
+      fixture.close();
+    }
+  });
+});
+
 describe("thinking commands", () => {
   it("shows indexed thinking and invalidates old blocks when the thread changes", async () => {
     const fixture = await createAppFixture(

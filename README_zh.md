@@ -323,12 +323,12 @@ EASY CODE 支持 PNG、JPEG、WebP 和静态 GIF；一个 Thread 或一次模型
 
 ```text
 /context
-/memory short
+/memory short [limit]
 /memory long
 /memory long <id>
 ```
 
-- 短期记忆属于当前 Thread，包括有效对话、摘要、任务状态和近期工具结果。
+- 短期记忆属于当前 Thread，包括有效对话、摘要、任务状态和近期工具结果。`/memory short [limit]` 展示最近的活跃消息预览，而不是全部短期记忆；默认显示 8 条，可设置为 1 到 500 条。
 - 长期记忆保存同一工作区中以后仍然有用的项目事实、决定、约定和偏好。
 - 当对话变得较长时，EASY CODE 会自动压缩较早的上下文。
 - 提示符会显示类似 `context:12.4k` 的近似 Token 数量。
@@ -402,7 +402,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 /permissions               查看命令权限
 /commands                  查看近期命令
 /context                   查看上下文使用量
-/memory short              查看短期记忆
+/memory short [limit]      查看近期短期记忆预览（默认 8 条，最多 500 条）
 /memory long [id]          查看长期记忆
 /thinking [id|last]        查看模型 Thinking
 /sessions                  列出保存的 Thread

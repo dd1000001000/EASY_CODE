@@ -38,8 +38,11 @@ import {
 } from "../images/labels.js";
 import { validateProviderImageAttachments } from "../models/catalog.js";
 import {
+  clonePlanReviewState,
   createPlanReviewState,
   formatPlanProposal,
+  returnPlanExecutionToReview,
+  type PlanExecutionReturnOutcome,
 } from "../plans/plan.js";
 import {
   activeTask,
@@ -349,6 +352,7 @@ export class AgentRuntime {
     const memoryContext = {
       userInput,
       mutations: [] as MemoryMutationRequest[],
+      approvedPlanReview: undefined as PlanReviewState | undefined,
     };
     state.activeTurnId = turnId;
     state.goal = userInput || "Analyze the attached image(s).";
@@ -392,6 +396,7 @@ export class AgentRuntime {
           revision: review.proposal.revision,
         },
       });
+      memoryContext.approvedPlanReview = clonePlanReviewState(review);
       state.planReview = undefined;
       state.updatedAt = new Date().toISOString();
     }
@@ -1569,10 +1574,40 @@ export class AgentRuntime {
     memoryContext: {
       userInput: string;
       mutations: readonly MemoryMutationRequest[];
+      approvedPlanReview?: Readonly<PlanReviewState>;
     },
     planProposal?: PlanProposal,
     subagentTaskReport?: SubagentTaskReport,
   ): Promise<AgentRunResult> {
+    const returnOutcome: PlanExecutionReturnOutcome | undefined =
+      reason === "failed" || reason === "interrupted" || reason === "limit_reached"
+        ? reason
+        : undefined;
+    if (
+      returnOutcome &&
+      memoryContext.approvedPlanReview &&
+      !state.planReview &&
+      state.taskGraph?.createdByTurnId !== turnId
+    ) {
+      const restoredPlanReview = returnPlanExecutionToReview(
+        memoryContext.approvedPlanReview,
+        returnOutcome,
+      );
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "plan.execution_returned_to_review",
+        phase: "completed",
+        payload: {
+          planId: restoredPlanReview.proposal.id,
+          revision: restoredPlanReview.proposal.revision,
+          outcome: returnOutcome,
+          planReview: restoredPlanReview,
+        },
+      });
+      state.planReview = restoredPlanReview;
+      memoryContext.approvedPlanReview = undefined;
+    }
     state.activeTurnId = undefined;
     state.updatedAt = new Date().toISOString();
     const lastMessage = state.messages[state.messages.length - 1];

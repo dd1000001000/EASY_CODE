@@ -2470,19 +2470,31 @@ export class EasyCodeApp {
 
   private printMemory(args: string[]): void {
     const kind = args[0];
-    if (kind === "short" && args.length === 1) {
+    if (kind === "short" && args.length <= 2) {
+      const rawLimit = args[1];
+      if (rawLimit !== undefined && !/^[1-9]\d*$/u.test(rawLimit)) {
+        throw new Error("Usage: /memory short [limit] (limit must be an integer from 1 to 500)");
+      }
+      const limit = rawLimit === undefined ? 8 : Number(rawLimit);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+        throw new Error("Usage: /memory short [limit] (limit must be an integer from 1 to 500)");
+      }
       this.syncWorkspaceState();
+      const compactedMessageCount = Math.min(
+        Math.max(0, this.state.compactedMessageCount),
+        this.state.messages.length,
+      );
+      const activeMessages = this.state.messages.slice(compactedMessageCount);
+      const recentMessagePreviews = activeMessages.slice(-limit).map(messagePreview);
       this.terminal.write(
         `${json({
-          goal: this.state.goal,
+          latestRequest: this.state.goal ?? null,
           constraints: this.state.constraints,
           workingSummary: redactSensitiveInformation(this.state.workingSummary),
           compactedMessageCount: this.state.compactedMessageCount,
-          activeMessageCount: Math.max(
-            0,
-            this.state.messages.length - this.state.compactedMessageCount,
-          ),
-          recentMessages: this.state.messages.slice(-8).map(messagePreview),
+          showingLast: recentMessagePreviews.length,
+          totalActive: activeMessages.length,
+          recentMessagePreviews,
           filesRead: [...this.state.filesRead.values()],
           changeCount: this.state.changes.length,
           commandCount: this.state.commands.length,
@@ -2506,7 +2518,7 @@ export class EasyCodeApp {
       return;
     }
 
-    throw new Error("Usage: /memory short | /memory long [id]");
+    throw new Error("Usage: /memory short [limit] | /memory long [id]");
   }
 
   private printSessions(): void {
