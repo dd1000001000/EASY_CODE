@@ -144,6 +144,141 @@ describe("system prompt builder", () => {
     }
   });
 
+  it("includes only exposed Plan-mode tool rules", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-plan-tools-"));
+    const workspace = path.join(temporary, "workspace");
+    const configDir = path.join(temporary, "config");
+    try {
+      await mkdir(workspace, { recursive: true });
+      await mkdir(configDir, { recursive: true });
+      const config = createDefaultEasyCodeConfig(workspace, {
+        configDir,
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+      });
+      const prompt = await buildSystemPrompt({
+        config,
+        mode: "plan",
+        availableTools: ["read_file", "propose_plan"],
+        now: new Date("2026-08-27T00:00:00.000Z"),
+        cwd: workspace,
+        timeZone: "UTC",
+        locale: "en-US",
+        platform: "linux",
+        arch: "x64",
+        shell: "/bin/sh",
+        env: {},
+      });
+
+      assert.match(prompt, /read_file reads bounded workspace text/u);
+      assert.match(prompt, /propose_plan is the only valid way/u);
+      assert.match(prompt, /Inspect before editing, keep changes scoped/u);
+      assert.match(prompt, /Treat tool failures, conflicts, timeouts/u);
+      assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
+      assert.doesNotMatch(prompt, /update_file applies a checked update/u);
+      assert.doesNotMatch(prompt, /run_command executes an argument-vector command/u);
+      assert.doesNotMatch(prompt, /manage_tasks is available only/u);
+      assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
+      assert.doesNotMatch(prompt, /compact_context replaces the earlier/u);
+      assert.doesNotMatch(prompt, /manage_memory is the only way/u);
+      assert.doesNotMatch(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
+      assert.doesNotMatch(prompt, /Before your final answer.*durable memory/u);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("includes only exposed Code-mode tool rules", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-code-tools-"));
+    const workspace = path.join(temporary, "workspace");
+    const configDir = path.join(temporary, "config");
+    try {
+      await mkdir(workspace, { recursive: true });
+      await mkdir(configDir, { recursive: true });
+      const config = createDefaultEasyCodeConfig(workspace, {
+        configDir,
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+      });
+      const prompt = await buildSystemPrompt({
+        config,
+        mode: "code",
+        availableTools: [
+          "read_file",
+          "update_file",
+          "run_command",
+          "compact_context",
+          "manage_memory",
+        ],
+        now: new Date("2026-08-27T00:00:00.000Z"),
+        cwd: workspace,
+        timeZone: "UTC",
+        locale: "en-US",
+        platform: "linux",
+        arch: "x64",
+        shell: "/bin/sh",
+        env: {},
+      });
+
+      assert.match(prompt, /read_file reads bounded workspace text/u);
+      assert.match(prompt, /update_file applies a checked update/u);
+      assert.match(prompt, /run_command executes an argument-vector command/u);
+      assert.match(prompt, /compact_context replaces the earlier/u);
+      assert.match(prompt, /manage_memory is the only way/u);
+      assert.match(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
+      assert.match(prompt, /Before your final answer.*durable memory/u);
+      assert.doesNotMatch(prompt, /propose_plan is the only valid way/u);
+      assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
+      assert.doesNotMatch(prompt, /create_file creates a new workspace file/u);
+      assert.doesNotMatch(prompt, /delete_file deletes a previously read/u);
+      assert.doesNotMatch(prompt, /manage_tasks is available only/u);
+      assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
+      assert.doesNotMatch(prompt, /submit_task_result is available only/u);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps security and EASYCODE guidance in a tool-free Auto controller prompt", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-auto-policy-"));
+    const workspace = path.join(temporary, "workspace");
+    const configDir = path.join(temporary, "config");
+    try {
+      await mkdir(workspace, { recursive: true });
+      await mkdir(configDir, { recursive: true });
+      await writeFile(
+        path.join(workspace, "EASYCODE.md"),
+        "AUTO_DIRECT_PROJECT_POLICY_TOKEN",
+        "utf8",
+      );
+      const config = createDefaultEasyCodeConfig(workspace, {
+        configDir,
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+      });
+      const prompt = await buildSystemPrompt({
+        config,
+        mode: "auto",
+        availableTools: [],
+        now: new Date("2026-08-27T00:00:00.000Z"),
+        cwd: workspace,
+        timeZone: "UTC",
+        locale: "en-US",
+        platform: "linux",
+        arch: "x64",
+        shell: "/bin/sh",
+        env: {},
+      });
+
+      assert.match(prompt, /Never expose credentials/u);
+      assert.match(prompt, /AUTO_DIRECT_PROJECT_POLICY_TOKEN/u);
+      assert.doesNotMatch(prompt, /read_file reads bounded workspace text/u);
+      assert.doesNotMatch(prompt, /manage_memory is the only way/u);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
   it("does not load EASYCODE.md files between unrelated cwd and workspace", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-scope-"));
     const workspace = path.join(temporary, "workspace");

@@ -8,13 +8,15 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 
 ## 功能概览
 
-- 提供 Plan、Auto、Code 三种工作模式。
+- 提供 Plan、Auto、Code 三种工作模式，其中 Auto 由模型控制路由。
 - 读取、新建、更新和删除工作区内的文件。
 - 运行命令、测试、构建工具以及受支持的 npm 安装命令。
 - 显示带行号的代码 Diff：新增内容为绿色，删除内容为红色。
 - 在会话中切换 Provider、模型和思考强度。
 - 向支持视觉的模型发送截图和图片文件。
 - 自动管理短期上下文和长期项目记忆。
+- 通过 Auto 直接回答和按工具精简指令，减少模型请求内容。
+- 使用 `/usage` 查看 Provider 累计报告的 Token 用量。
 - 保存并恢复对话、计划、任务进度和子 Agent 结果。
 - 根据任务复杂度选择是否建立任务 DAG。
 - 根据需要把独立工作交给隔离的子 Agent。
@@ -189,7 +191,7 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 | 模式 | 适用场景 |
 | --- | --- |
 | `plan` | 只希望 EASY CODE 调查项目并提供方案，不修改文件，也不执行构建或安装命令。 |
-| `auto` | 让模型自行决定先给出可审核计划，还是直接实现。默认使用该模式。 |
+| `auto` | 让模型自行决定直接回答、先给出可审核计划，还是直接实现。默认使用该模式。 |
 | `code` | 不需要预先展示计划，直接实现并验证需求。 |
 
 在会话中切换模式：
@@ -199,6 +201,8 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 /mode auto
 /mode code
 ```
+
+Auto 的路由由当前所选模型控制，不依赖关键词匹配。如果请求可以仅根据当前对话完整回答，不需要访问工作区、调用工具、产生副作用或先审核方案，本次路由请求可以直接返回最终答案。直接回答仍遵守常规安全规则和 `EASYCODE.md`；上下文达到强制压缩阈值时，EASY CODE 会先完成压缩，再进行路由或回答。其他请求会被模型路由到 Plan 或 Code。
 
 当 Auto 选择 Plan 后，EASY CODE 会显示方案并提供三个选项：
 
@@ -333,6 +337,23 @@ EASY CODE 支持 PNG、JPEG、WebP 和静态 GIF；一个 Thread 或一次模型
 - 当对话变得较长时，EASY CODE 会自动压缩较早的上下文。
 - 提示符会显示类似 `context:12.4k` 的近似 Token 数量。
 
+## Token 效率与用量
+
+EASY CODE 通过以下方式精简模型请求：
+
+- 对于边界明确且不需要工具的请求，Auto 可以在一次路由请求中直接回答，不再额外发起第二次 Agent 请求。
+- 每次模型请求只包含当前模式和步骤实际开放工具的相关指令。
+
+使用只读命令 `/usage` 查看当前 Thread 中由 Provider 报告的累计 Token 用量：
+
+```text
+/usage
+```
+
+报告会按 Provider/模型、请求用途（`auto_route`、`agent_step` 和 `context_compaction`）以及执行者（主 Agent 和子 Agent）分类；如果 Provider 提供相应明细，还会分别显示缓存 Token 和推理 Token。Provider 没有返回用量数据的请求会计入未报告请求。失败请求以及未附带 usage 明细的 Provider 响应无法得到精确 Token 数，因此 `/usage` 可能低于 Provider 账单控制台中的总量。
+
+`/context` 仍用于估算当前有效上下文大小；`/usage` 显示当前 Thread 中已保存模型请求的 Provider 累计报告用量。
+
 ## Thread 与 Resume
 
 使用 `/status` 查看当前 Thread ID，或者列出已经保存的 Thread：
@@ -402,6 +423,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 /permissions               查看命令权限
 /commands                  查看近期命令
 /context                   查看上下文使用量
+/usage                     查看 Provider 累计报告的 Token 用量
 /memory short [limit]      查看近期短期记忆预览（默认 8 条，最多 500 条）
 /memory long [id]          查看长期记忆
 /thinking [id|last]        查看模型 Thinking

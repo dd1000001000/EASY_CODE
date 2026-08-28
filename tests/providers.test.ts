@@ -336,6 +336,8 @@ describe("OpenAI-compatible providers", () => {
             prompt_tokens: 11,
             completion_tokens: 7,
             total_tokens: 18,
+            prompt_tokens_details: { cached_tokens: 5 },
+            completion_tokens_details: { reasoning_tokens: 3 },
           },
         }),
       };
@@ -375,6 +377,89 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.message.reasoning_content, "inspect first");
     assert.equal(response.finishReason, "tool_calls");
     assert.equal(response.usage?.totalTokens, 18);
+    assert.equal(response.usage?.cachedInputTokens, 5);
+    assert.equal(response.usage?.reasoningTokens, 3);
+  });
+
+  it("rejects malformed negative provider token usage", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.qwen.apiKey = "test-qwen-key";
+    const provider = createProvider(config, "qwen", undefined, {
+      transport: async () => ({
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          choices: [{
+            finish_reason: "stop",
+            message: { role: "assistant", content: "done" },
+          }],
+          usage: {
+            prompt_tokens: -1,
+            completion_tokens: 1,
+            total_tokens: 0,
+          },
+        }),
+      }),
+    });
+
+    await assert.rejects(
+      provider.complete({ messages: [{ role: "user", content: "hello" }] }),
+      /unsupported Chat Completions response/u,
+    );
+  });
+
+  it("normalizes DeepSeek top-level cache usage and nullable detail objects", async () => {
+    const providerConfig = createDefaultEasyCodeConfig(process.cwd());
+    providerConfig.deepseek.apiKey = "test-deepseek-key";
+    providerConfig.deepseek.model = "deepseek-v4-flash";
+    const provider = createProvider(
+      providerConfig,
+      "deepseek",
+      undefined,
+      {
+        transport: async () => ({
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "ok" } }],
+            usage: {
+              prompt_tokens: 20,
+              completion_tokens: 4,
+              total_tokens: 24,
+              prompt_cache_hit_tokens: 12,
+              prompt_tokens_details: { cached_tokens: null },
+              completion_tokens_details: { reasoning_tokens: null },
+            },
+          }),
+        }),
+      },
+    );
+
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+    assert.equal(response.usage?.cachedInputTokens, 12);
+    assert.equal(response.usage?.reasoningTokens, undefined);
+  });
+
+  it("treats an empty provider usage object as unreported", async () => {
+    const providerConfig = createDefaultEasyCodeConfig(process.cwd());
+    providerConfig.glm.apiKey = "test-glm-key";
+    const provider = createProvider(providerConfig, "glm", undefined, {
+      transport: async () => ({
+        statusCode: 200,
+        headers: {},
+        body: JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "ok" } }],
+          usage: {},
+        }),
+      }),
+    });
+
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+    assert.equal(response.usage, undefined);
   });
 
   it("omits thinking fields when the exact catalog model does not support them", async () => {

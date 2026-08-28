@@ -8,7 +8,9 @@ import type {
   ModelRequest,
 } from "../src/core/types.js";
 import {
+  AutoRouteRequestError,
   AutoRouteSelectionError,
+  MAX_AUTO_DIRECT_RESPONSE_CHARS,
   MAX_AUTO_ROUTE_CONTEXT_CHARS,
   buildAutoRouteContext,
   determineAutoRoute,
@@ -25,6 +27,17 @@ function selectModeCall(
     function: {
       name: "select_mode",
       arguments: JSON.stringify({ mode, reason }),
+    },
+  };
+}
+
+function respondDirectlyCall(content: string): FunctionToolCall {
+  return {
+    id: "call_respond_directly",
+    type: "function",
+    function: {
+      name: "respond_directly",
+      arguments: JSON.stringify({ content }),
     },
   };
 }
@@ -52,15 +65,24 @@ function selectionProvider(
 }
 
 describe("tool-only Auto Router", () => {
-  it("exposes only select_mode and routes exclusively from its structured call", async () => {
+  it("exposes only strict router controls and routes exclusively from select_mode", async () => {
     let inspected = false;
     const result = await determineAutoRoute(
       selectionProvider("code", (request) => {
         inspected = true;
-        assert.equal(request.tools?.length, 1);
-        const tool = request.tools?.[0];
-        assert.equal(tool?.function.name, "select_mode");
+        assert.equal(request.tools?.length, 2);
+        assert.deepEqual(
+          request.tools?.map((tool) => tool.function.name),
+          ["select_mode", "respond_directly"],
+        );
+        const tool = request.tools?.find(
+          (candidate) => candidate.function.name === "select_mode",
+        );
+        const directTool = request.tools?.find(
+          (candidate) => String(candidate.function.name) === "respond_directly",
+        );
         assert.equal(tool?.function.strict, true);
+        assert.equal(directTool?.function.strict, true);
         assert.deepEqual(
           (tool?.function.parameters as { required?: string[] }).required,
           ["mode", "reason"],
@@ -70,8 +92,11 @@ describe("tool-only Auto Router", () => {
     );
 
     assert.equal(inspected, true);
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.equal(result.mode, "code");
     assert.equal(result.reason, "The model selected this mode.");
+    assert.deepEqual(result.attempts, [{ attempt: 1, outcome: "route" }]);
   });
 
   it("returns a plan tool selection without translating it through keywords", async () => {
@@ -80,7 +105,77 @@ describe("tool-only Auto Router", () => {
       "Implement the feature immediately. Keywords must not override the tool call.",
     );
 
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.equal(result.mode, "plan");
+  });
+
+  it("returns a sanitized final response from the structured direct-answer call", async () => {
+    const result = await determineAutoRoute(
+      {
+        name: "deepseek",
+        model: "mock-model",
+        async complete() {
+          return {
+            message: {
+              role: "assistant",
+              content: "This ordinary text must not become the answer.",
+              tool_calls: [respondDirectlyCall("  Four\u0000\r\n")],
+            },
+            usage: {
+              promptTokens: 21,
+              completionTokens: 4,
+              totalTokens: 25,
+            },
+            finishReason: "tool_calls",
+          };
+        },
+      },
+      "What is two plus two?",
+    );
+
+    assert.equal(result.kind, "direct_response");
+    if (result.kind !== "direct_response") {
+      assert.fail("Expected a direct response");
+    }
+    assert.equal(result.content, "Four");
+    assert.deepEqual(result.attempts, [{
+      attempt: 1,
+      outcome: "direct_response",
+      usage: { promptTokens: 21, completionTokens: 4, totalTokens: 25 },
+      finishReason: "tool_calls",
+    }]);
+  });
+
+  it("inherits the supplied base security and project policy", async () => {
+    let systemPrompt = "";
+    const result = await determineAutoRoute(
+      selectionProvider("code", (request) => {
+        systemPrompt = request.messages[0]?.content ?? "";
+      }),
+      "Handle this request",
+      undefined,
+      [],
+      "medium",
+      undefined,
+      "BASE_SECURITY_POLICY\nPROJECT_EASYCODE_POLICY",
+    );
+
+    assert.equal(result.kind, "route");
+    assert.match(systemPrompt, /BASE_SECURITY_POLICY/u);
+    assert.match(systemPrompt, /PROJECT_EASYCODE_POLICY/u);
+    assert.match(systemPrompt, /Auto controller protocol/u);
+  });
+
+  it("routes requests that need workspace tools instead of answering directly", async () => {
+    const result = await determineAutoRoute(
+      selectionProvider("code"),
+      "Read package.json and fix the build script.",
+    );
+
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
+    assert.equal(result.mode, "code");
   });
 
   it("retries once when the model returns ordinary text instead of the tool", async () => {
@@ -116,8 +211,49 @@ describe("tool-only Auto Router", () => {
     );
 
     assert.equal(requests, 2);
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.equal(result.mode, "code");
     assert.equal(result.reason, "Corrected with the required tool.");
+    assert.deepEqual(result.attempts.map(({ attempt, outcome }) => ({ attempt, outcome })), [
+      { attempt: 1, outcome: "invalid" },
+      { attempt: 2, outcome: "route" },
+    ]);
+  });
+
+  it("preserves completed attempt usage when a later controller request fails", async () => {
+    let requests = 0;
+    const providerFailure = new Error("second controller request failed");
+    await assert.rejects(
+      determineAutoRoute(
+        {
+          name: "deepseek",
+          model: "mock-model",
+          async complete() {
+            requests += 1;
+            if (requests === 1) {
+              return {
+                message: { role: "assistant", content: "invalid plain text" },
+                usage: { promptTokens: 100, completionTokens: 23, totalTokens: 123 },
+              };
+            }
+            throw providerFailure;
+          },
+        },
+        "Fix the bug",
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AutoRouteRequestError);
+        assert.equal(error.originalError, providerFailure);
+        assert.deepEqual(error.attempts, [{
+          attempt: 1,
+          outcome: "invalid",
+          usage: { promptTokens: 100, completionTokens: 23, totalTokens: 123 },
+        }]);
+        return true;
+      },
+    );
+    assert.equal(requests, 2);
   });
 
   it("throws after two missing or invalid tool selections without guessing from text", async () => {
@@ -153,7 +289,92 @@ describe("tool-only Auto Router", () => {
       (error: unknown) => {
         assert.ok(error instanceof AutoRouteSelectionError);
         assert.equal(error.code, "auto_route_selection_failed");
-        assert.match(error.message, /exactly one valid select_mode tool call/iu);
+        assert.match(error.message, /select_mode or respond_directly tool call/iu);
+        assert.deepEqual(error.attempts.map(({ attempt, outcome }) => ({ attempt, outcome })), [
+          { attempt: 1, outcome: "invalid" },
+          { attempt: 2, outcome: "invalid" },
+        ]);
+        return true;
+      },
+    );
+    assert.equal(requests, 2);
+  });
+
+  it("rejects malformed, empty, extra-property, and overlong direct responses", async () => {
+    const invalidCalls: FunctionToolCall[] = [
+      {
+        ...respondDirectlyCall("valid"),
+        function: { name: "respond_directly", arguments: "not-json" },
+      },
+      respondDirectlyCall("   \r\n"),
+      {
+        ...respondDirectlyCall("valid"),
+        function: {
+          name: "respond_directly",
+          arguments: '{"content":"valid","extra":true}',
+        },
+      },
+      respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 1)),
+    ];
+
+    for (const invalidCall of invalidCalls) {
+      let requests = 0;
+      await assert.rejects(
+        determineAutoRoute(
+          {
+            name: "deepseek",
+            model: "mock-model",
+            async complete() {
+              requests += 1;
+              return {
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [invalidCall],
+                },
+              };
+            },
+          },
+          "Answer without tools",
+        ),
+        AutoRouteSelectionError,
+      );
+      assert.equal(requests, 2);
+    }
+  });
+
+  it("never treats an ordinary-text answer as a direct response", async () => {
+    let requests = 0;
+    await assert.rejects(
+      determineAutoRoute(
+        {
+          name: "deepseek",
+          model: "mock-model",
+          async complete(request) {
+            requests += 1;
+            if (requests === 2) {
+              assert.match(
+                request.messages[0]?.content ?? "",
+                /respond_directly/iu,
+              );
+            }
+            return {
+              message: {
+                role: "assistant",
+                content: "This is a complete but unstructured final answer.",
+              },
+              usage: { totalTokens: requests * 10 },
+            };
+          },
+        },
+        "What is two plus two?",
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof AutoRouteSelectionError);
+        assert.deepEqual(error.attempts, [
+          { attempt: 1, outcome: "invalid", usage: { totalTokens: 10 } },
+          { attempt: 2, outcome: "invalid", usage: { totalTokens: 20 } },
+        ]);
         return true;
       },
     );
@@ -250,6 +471,8 @@ describe("tool-only Auto Router", () => {
       "Inspect the project",
     );
 
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.ok(result.reason.length <= 300);
     assert.doesNotMatch(result.reason, new RegExp(secret, "u"));
   });
@@ -331,6 +554,8 @@ describe("tool-only Auto Router", () => {
       },
     );
 
+    assert.equal(result.kind, "route");
+    if (result.kind !== "route") assert.fail("Expected a route decision");
     assert.equal(result.mode, "code");
     assert.equal(routerText.split(currentRequest).length - 1, 1);
     assert.match(routerText, /Prior plan details/u);

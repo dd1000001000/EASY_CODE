@@ -8,13 +8,15 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 
 ## Features
 
-- Three working modes: Plan, Auto, and Code.
+- Three working modes: Plan, Auto, and Code, with model-controlled routing in Auto.
 - Read, create, update, and delete files inside the selected workspace.
 - Run commands, tests, build tools, and supported npm installation commands.
 - Show line-numbered code diffs with green additions and red removals.
 - Switch providers, models, and thinking effort while the session is running.
 - Attach screenshots and image files to supported vision models.
 - Automatically manage short-term context and long-term project memory.
+- Reduce model-request size with direct Auto answers and tool-relevant instructions.
+- Inspect cumulative provider-reported Token usage with `/usage`.
 - Save and resume conversations, plans, task progress, and child-agent results.
 - Optionally organize complex work as a task DAG.
 - Optionally delegate independent work to isolated child agents.
@@ -189,7 +191,7 @@ Switch models during a session:
 | Mode | Use it when |
 | --- | --- |
 | `plan` | You want EASY CODE to inspect the project and propose a plan without changing files or running build/install commands. |
-| `auto` | You want the model to decide whether the request needs a reviewed plan or can be implemented directly. This is the default. |
+| `auto` | You want the model to decide whether to answer directly, propose a reviewed plan, or implement the request. This is the default. |
 | `code` | You want EASY CODE to implement and verify the request immediately without presenting a plan first. |
 
 Switch modes at any time:
@@ -199,6 +201,8 @@ Switch modes at any time:
 /mode auto
 /mode code
 ```
+
+Auto routing is controlled by the selected model rather than keyword matching. If a request can be answered completely from the current conversation without workspace access, tools, side effects, or a reviewed plan, the routing request may return the final answer directly. Direct answers still follow the normal security and `EASYCODE.md` rules; when context has reached the mandatory compaction threshold, EASY CODE compacts it before routing or answering. Otherwise, the model routes the request to Plan or Code.
 
 When Auto chooses Plan, EASY CODE shows the proposal and offers three choices:
 
@@ -333,6 +337,23 @@ Context and memory are managed automatically. Users can inspect them but cannot 
 - EASY CODE compresses older context when the conversation becomes large.
 - The prompt displays an approximate context Token count such as `context:12.4k`.
 
+## Token efficiency and usage
+
+EASY CODE keeps model requests focused in two ways:
+
+- Auto can answer a bounded, tool-free request in its single routing request instead of making a second agent request.
+- Model requests include instructions only for the tools that are actually available in the current mode and step.
+
+Use the read-only `/usage` command to inspect cumulative provider-reported Token usage for the current thread:
+
+```text
+/usage
+```
+
+The report separates usage by provider/model, request purpose (`auto_route`, `agent_step`, and `context_compaction`), and actor (the main agent and subagents). When the provider supplies the details, it also reports cached and reasoning Tokens. Requests for which the provider does not return usage data are counted as unreported requests. Failed requests and provider responses without usage details cannot be assigned an exact Token count, so `/usage` may be lower than billing-console totals.
+
+`/context` remains an estimate of the active context size; `/usage` is the cumulative usage reported by providers for saved model requests in the current thread.
+
 ## Threads and Resume
 
 Find the current thread ID with `/status`, or list saved threads with:
@@ -402,6 +423,7 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 /permissions               Show command permissions
 /commands                  Show recent commands
 /context                   Show context usage
+/usage                     Show cumulative provider-reported Token usage
 /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
 /memory long [id]          Show long-term memory
 /thinking [id|last]        Show model thinking

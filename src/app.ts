@@ -918,6 +918,18 @@ export class EasyCodeApp {
       case "context":
         this.terminal.write(`${json(this.contextManager.inspect(this.state, this.activeContextCharLimit()))}\n`);
         return false;
+      case "usage": {
+        if (command.args.length) throw new Error("Usage: /usage");
+        this.terminal.write(
+          `${json({
+            threadId: this.state.threadId,
+            ...this.threadStore.modelUsageSummary(this.state.threadId),
+            note:
+              "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens.",
+          })}\n`,
+        );
+        return false;
+      }
       case "memory":
         this.printMemory(command.args);
         return false;
@@ -1244,6 +1256,7 @@ export class EasyCodeApp {
         mode,
         workspaceSummary,
         memories,
+        toolNames,
         taskGraph,
         planReview,
       }) =>
@@ -1252,6 +1265,7 @@ export class EasyCodeApp {
           mode,
           workspaceSummary,
           memories,
+          availableTools: toolNames,
           ...(taskGraph ? { taskGraph } : {}),
           ...(planReview ? { planReview } : {}),
         }),
@@ -1339,6 +1353,14 @@ export class EasyCodeApp {
       onStatus: (status) => this.terminal.info(status),
       onModelRequestStart: (text) => this.terminal.startActivity(text),
       onModelRequestEnd: () => this.terminal.stopActivity(),
+      onModelUsage: async (record) => {
+        this.threadStore.appendEvent(this.state.threadId, {
+          type: "model.usage",
+          phase: "completed",
+          payload: record,
+        });
+        this.dirty = true;
+      },
       ...(presentReasoning
         ? {
             onReasoning: ({ text }: { text: string }) => {
@@ -1446,12 +1468,18 @@ export class EasyCodeApp {
         assignedTaskId: request.task.id,
       },
       contextManager: new ContextManager(),
-      buildSystemPrompt: async ({ mode, workspaceSummary, memories }) => {
+      buildSystemPrompt: async ({
+        mode,
+        workspaceSummary,
+        memories,
+        toolNames,
+      }) => {
         const base = await buildSystemPrompt({
           config: childConfig,
           mode,
           workspaceSummary,
           memories,
+          availableTools: toolNames,
         });
         return (
           `${base}\n\n` +
@@ -1473,6 +1501,14 @@ export class EasyCodeApp {
           `${request.task.title}\n${request.task.description}\n${query}`,
         ),
       appendEvent: async () => undefined,
+      onModelUsage: async (record) => {
+        this.threadStore.appendEvent(request.record.parentThreadId, {
+          type: "model.usage",
+          phase: "completed",
+          payload: record,
+        });
+        if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
+      },
       requestApproval: (approval) => this.requestSubagentApproval(approval, {
         agentId: request.record.id,
         taskId: request.task.id,

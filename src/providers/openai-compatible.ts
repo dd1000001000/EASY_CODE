@@ -61,10 +61,30 @@ const chatCompletionSchema = z.object({
     .min(1),
   usage: z
     .object({
-      prompt_tokens: z.number().optional(),
-      completion_tokens: z.number().optional(),
-      total_tokens: z.number().optional(),
+      prompt_tokens: z.number().int().nonnegative().optional(),
+      completion_tokens: z.number().int().nonnegative().optional(),
+      total_tokens: z.number().int().nonnegative().optional(),
+      // DeepSeek reports cache hits at the usage top level. Some Alibaba
+      // regions have also returned a top-level cached_tokens compatibility
+      // field, while the current OpenAI-compatible shape nests it below.
+      prompt_cache_hit_tokens: z.number().int().nonnegative().optional(),
+      cached_tokens: z.number().int().nonnegative().nullable().optional(),
+      prompt_tokens_details: z
+        .object({
+          cached_tokens: z.number().int().nonnegative().nullable().optional(),
+        })
+        .passthrough()
+        .nullable()
+        .optional(),
+      completion_tokens_details: z
+        .object({
+          reasoning_tokens: z.number().int().nonnegative().nullable().optional(),
+        })
+        .passthrough()
+        .nullable()
+        .optional(),
     })
+    .passthrough()
     .optional(),
 });
 
@@ -419,11 +439,25 @@ export class OpenAICompatibleProvider implements ModelProvider {
       finishReason: choice.finish_reason ?? null,
     };
     if (parsed.data.usage) {
-      result.usage = {
+      const usage = {
         promptTokens: parsed.data.usage.prompt_tokens,
         completionTokens: parsed.data.usage.completion_tokens,
         totalTokens: parsed.data.usage.total_tokens,
+        cachedInputTokens:
+          parsed.data.usage.prompt_tokens_details?.cached_tokens ??
+          parsed.data.usage.prompt_cache_hit_tokens ??
+          parsed.data.usage.cached_tokens ??
+          undefined,
+        reasoningTokens:
+          parsed.data.usage.completion_tokens_details?.reasoning_tokens ??
+          undefined,
       };
+      // An empty compatibility object carries no accounting data. Omitting it
+      // lets Runtime persist the request as unreported instead of rejecting an
+      // object made entirely of undefined normalized fields.
+      if (Object.values(usage).some((value) => value !== undefined)) {
+        result.usage = usage;
+      }
     }
     return result;
   }
