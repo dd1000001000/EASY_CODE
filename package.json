@@ -17,6 +17,7 @@
     "vscode-extension/easy-code-vscode.manifest.json",
     "vscode-extension/easy-code-vscode.vsix",
     "npm-shrinkwrap.json",
+    "docs",
     "README.md",
     "README_zh.md"
   ],

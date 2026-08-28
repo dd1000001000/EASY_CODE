@@ -2,6 +2,8 @@
 
 [English](./README.md) | 简体中文
 
+技术文档：[简体中文](./docs/TECHNICAL_DESIGN_ZH.md) | [English](./docs/TECHNICAL_DESIGN.md)
+
 EASY CODE 是一个支持 Alibaba Qwen、DeepSeek 和智谱 GLM 的本地 CLI 编程 Agent。在项目目录中启动它，描述你想要的结果，它就可以查看文件、修改代码、运行命令、验证变更、管理上下文，并在之后恢复未完成的工作。
 
 EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
