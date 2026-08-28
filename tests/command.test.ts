@@ -165,6 +165,7 @@ describe("command runtime", () => {
       assert.equal(approvals.length, 1);
       assert.match(approvals[0]?.description ?? "", /exact approval=/u);
       assert.equal(approvals[0]?.risk, "destructive");
+      assert.equal(path.isAbsolute(approvals[0]?.commandPrefix ?? ""), true);
       const output = result.data as {
         stdout: { text: string };
         policyDecision: { capability: string; effect: string; matchedRule: string };

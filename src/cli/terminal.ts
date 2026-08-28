@@ -2,12 +2,14 @@ import readline from "node:readline";
 import chalk from "chalk";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
 import type {
+  ApprovalDecision,
   ApprovalRequest,
   FileDiffPresentation,
   ImageAttachment,
   PlanProposal,
   ThinkingEffort,
 } from "../core/types.js";
+import { selectApproval } from "./approval-selector.js";
 import {
   MAX_PLAN_FEEDBACK_CHARS,
   formatPlanProposal,
@@ -234,15 +236,36 @@ export class Terminal {
     );
   }
 
-  async approve(request: ApprovalRequest): Promise<boolean> {
-    this.write(chalk.yellow(`\nApproval required: ${request.title}\n`));
-    this.write(`${request.description}\n`);
-    if (request.commandPreview) this.write(chalk.gray(`Command: ${request.commandPreview}\n`));
-    if (!this.isInteractive()) return false;
-    const response = await this.question("Allow this operation once? [y/N] ");
-    if (response === null) return false;
-    const answer = response.trim().toLowerCase();
-    return answer === "y" || answer === "yes" || answer === "是";
+  async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
+    const title = sanitizeCommandOutput(request.title).replace(/\s+/gu, " ").trim();
+    const description = sanitizeCommandOutput(request.description);
+    const preview = request.commandPreview
+      ? sanitizeCommandOutput(request.commandPreview).replace(/[\r\n]+/gu, " ")
+      : undefined;
+    this.write(chalk.yellow(`\nApproval required: ${title}\n`));
+    this.write(`${description}\n`);
+    if (preview) this.write(chalk.gray(`Command: ${preview}\n`));
+
+    if (
+      this.closed ||
+      !this.isInteractive() ||
+      this.rl ||
+      this.promptActive ||
+      this.guardedInputActive
+    ) {
+      return "reject";
+    }
+    try {
+      return await this.withPrivateProtocolFilteredInput((input) =>
+        selectApproval(request.commandPrefix, {
+          input: input as ModelSelectorInput,
+          output: this.output as ModelSelectorOutput,
+          color: this.colorEnabled(),
+        }),
+      );
+    } catch {
+      return "reject";
+    }
   }
 
   showPlan(plan: Readonly<PlanProposal>): void {

@@ -49,6 +49,10 @@ import {
   isExecutionEnvironmentSnapshot,
   isResultArtifact,
 } from "../workspace/execution-environment.js";
+import {
+  grantCommandApprovalPrefix,
+  normalizeCommandApprovalPrefix,
+} from "../command/approval.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -557,6 +561,7 @@ export class ThreadStore {
       filesRead: new Map(),
       changes: [],
       commands: [],
+      commandApprovalPrefixes: [],
       workingSummary: "",
       compactedMessageCount: 0,
       createdAt: now,
@@ -606,6 +611,7 @@ export class ThreadStore {
         ...command,
         args: [...command.args],
       })),
+      commandApprovalPrefixes: [...state.commandApprovalPrefixes],
       ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
       ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     };
@@ -710,6 +716,22 @@ export class ThreadStore {
           (input.phase !== "completed" || !parseModelUsageRecord(input.payload))
         ) {
           throw new Error("Model usage events require a valid completed usage record");
+        }
+        if (input.type === "command.approval_prefix_granted") {
+          if (
+            input.phase !== "completed" ||
+            !payload ||
+            typeof payload.commandPrefix !== "string"
+          ) {
+            throw new Error("Command approval prefix grants require one completed prefix");
+          }
+          // Validate against the event-authoritative state while the same DB
+          // transaction holds EventJournal's cross-process append lock.
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          grantCommandApprovalPrefix(
+            priorState.commandApprovalPrefixes,
+            payload.commandPrefix,
+          );
         }
         if (payload && "taskGraph" in payload) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
@@ -952,6 +974,21 @@ export class ThreadStore {
       timestamp: entry.timestamp,
     });
     return event;
+  }
+
+  /** Atomically persist one exact executable grant in the Thread journal. */
+  recordCommandApprovalPrefixGrant(
+    threadId: string,
+    commandPrefix: string,
+    turnId?: string,
+  ): EventRecord {
+    const normalized = normalizeCommandApprovalPrefix(commandPrefix);
+    return this.appendEvent(threadId, {
+      type: "command.approval_prefix_granted",
+      turnId,
+      phase: "completed",
+      payload: { commandPrefix: normalized },
+    });
   }
 
   recordSubagentArtifacts(
@@ -1320,6 +1357,9 @@ export class ThreadStore {
           // side-effect/audit events must never be erased by that stale view.
           mergeFileChanges(checkpoint.changes, state.changes);
           mergeCommandAudits(checkpoint.commands, state.commands);
+          // Reusable grants are event-authoritative. A stale or forged derived
+          // checkpoint can neither erase a later grant nor introduce one.
+          checkpoint.commandApprovalPrefixes = [...state.commandApprovalPrefixes];
         }
         state = checkpoint;
         continue;
@@ -1469,6 +1509,18 @@ export class ThreadStore {
         ) {
           state.commands.push({ ...entry, args: [...entry.args] });
         }
+      } else if (event.type === "command.approval_prefix_granted") {
+        if (
+          event.phase !== "completed" ||
+          !payload ||
+          typeof payload.commandPrefix !== "string"
+        ) {
+          throw new Error(`Invalid command approval prefix grant in event ${event.eventId}`);
+        }
+        state.commandApprovalPrefixes = grantCommandApprovalPrefix(
+          state.commandApprovalPrefixes,
+          payload.commandPrefix,
+        );
       }
       state.updatedAt = event.timestamp;
     }

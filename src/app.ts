@@ -17,6 +17,10 @@ import {
   type ApiKeyCredentialStore,
 } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
+import {
+  grantCommandApprovalPrefix,
+  isCommandApprovalPrefixGranted,
+} from "./command/approval.js";
 import { ContextManager } from "./context/manager.js";
 import type {
   AgentMode,
@@ -2157,12 +2161,46 @@ export class EasyCodeApp {
     }
   }
 
-  private requestToolApproval(request: ApprovalRequest): Promise<boolean> {
+  private async requestToolApproval(request: ApprovalRequest): Promise<boolean> {
     if (this.assumeYes) {
       this.terminal.info(`Approved by --yes: ${request.title}`);
-      return Promise.resolve(true);
+      return true;
     }
-    return this.terminal.approve(request);
+
+    if (
+      isCommandApprovalPrefixGranted(
+        this.state.commandApprovalPrefixes,
+        request.commandPrefix,
+      )
+    ) {
+      this.terminal.info(
+        `Approved by this Thread's executable grant: ${JSON.stringify([request.commandPrefix])}`,
+      );
+      return true;
+    }
+
+    const decision = await this.terminal.approve(request);
+    if (decision === "reject") return false;
+    if (decision === "allow_once") return true;
+
+    // Validate and derive the next in-memory state before writing the
+    // authoritative event. If the durable append fails, the exception reaches
+    // CommandRuntime and the command fails closed without executing.
+    const prefixes = grantCommandApprovalPrefix(
+      this.state.commandApprovalPrefixes,
+      request.commandPrefix,
+    );
+    this.threadStore.recordCommandApprovalPrefixGrant(
+      this.state.threadId,
+      request.commandPrefix,
+      this.state.activeTurnId,
+    );
+    this.state.commandApprovalPrefixes = prefixes;
+    this.dirty = true;
+    this.terminal.info(
+      `Allowed for this Thread: ${JSON.stringify([request.commandPrefix])}`,
+    );
+    return true;
   }
 
   private requestSubagentApproval(
@@ -2170,9 +2208,15 @@ export class EasyCodeApp {
     _source: { agentId: string; taskId: string },
   ): Promise<boolean> {
     // A background worker must never acquire stdin or stop/repaint the main
-    // terminal's activity line. Even with --yes, Worktree isolation is not an
-    // OS sandbox, so fresh shell/system/external/destructive grants stay denied.
+    // terminal's activity line. It may consume a grant already made by the
+    // user for this parent Thread, but it cannot create or widen one. Even with
+    // --yes, Worktree isolation is not an OS sandbox, so fresh high-risk grants
+    // stay denied.
     return Promise.resolve(
+      isCommandApprovalPrefixGranted(
+        this.state.commandApprovalPrefixes,
+        request.commandPrefix,
+      ) ||
       this.assumeYes &&
       (request.risk === "read" ||
         request.risk === "workspace" ||
@@ -3059,9 +3103,10 @@ export class EasyCodeApp {
         mode: this.state.mode,
         approvalPolicy: this.config.approvalPolicy,
         autoApprovePrompts: this.assumeYes,
+        threadExecutableGrants: [...this.state.commandApprovalPrefixes],
         osSandbox: false,
         commandBoundary:
-          "structured argv; explicit one-shot shells require exact approval (or --yes); restricted environment; direct destructive/system/remote commands denied",
+          "structured argv; interactive approval can allow once or remember the exact resolved executable for this Thread; permanent policy denies and approval=never still take precedence",
         npmInstall:
           "project-local registry packages at exact versions only; lifecycle scripts disabled; global installs denied",
         subagents:

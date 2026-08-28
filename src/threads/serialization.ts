@@ -14,6 +14,7 @@ import {
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
+import { validateCommandApprovalPrefixes } from "../command/approval.js";
 
 export interface SerializedSessionState {
   readonly threadId: string;
@@ -29,6 +30,8 @@ export interface SerializedSessionState {
   readonly filesRead: Array<[string, FileVersion]>;
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
+  /** Optional only for checkpoint compatibility; new checkpoints always write it. */
+  readonly commandApprovalPrefixes?: string[];
   readonly taskGraph?: TaskGraph;
   readonly planReview?: PlanReviewState;
   readonly workingSummary: string;
@@ -257,6 +260,9 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
       ...command,
       args: [...command.args],
     })),
+    commandApprovalPrefixes: validateCommandApprovalPrefixes(
+      state.commandApprovalPrefixes,
+    ),
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     workingSummary: state.workingSummary,
@@ -312,6 +318,16 @@ export function deserializeSessionState(value: unknown): SessionState {
     filesRead.set(entry[0], entry[1] as unknown as FileVersion);
   }
 
+  let commandApprovalPrefixes: string[];
+  try {
+    // Checkpoints predating reusable per-Thread approvals omitted this field.
+    commandApprovalPrefixes = value.commandApprovalPrefixes === undefined
+      ? []
+      : validateCommandApprovalPrefixes(value.commandApprovalPrefixes);
+  } catch {
+    throw new Error("Invalid command approval prefixes in serialized session state");
+  }
+
   return {
     threadId: value.threadId,
     activeTurnId:
@@ -337,6 +353,7 @@ export function deserializeSessionState(value: unknown): SessionState {
       ...item,
       args: [...item.args],
     })),
+    commandApprovalPrefixes,
     ...(isTaskGraph(value.taskGraph)
       ? { taskGraph: cloneTaskGraph(value.taskGraph) }
       : {}),

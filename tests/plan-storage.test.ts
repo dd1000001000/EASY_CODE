@@ -47,6 +47,7 @@ function stateWithReview(): SessionState {
     filesRead: new Map(),
     changes: [],
     commands: [],
+    commandApprovalPrefixes: [],
     planReview: review(),
     workingSummary: "",
     compactedMessageCount: 0,

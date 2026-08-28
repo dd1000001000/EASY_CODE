@@ -1,3 +1,4 @@
+export * from "./approval.js";
 export * from "./environment.js";
 export * from "./lifecycle.js";
 export * from "./npm-installer.js";

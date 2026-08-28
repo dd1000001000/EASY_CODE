@@ -21,6 +21,7 @@ export function createSessionState(
     filesRead: new Map(),
     changes: [],
     commands: [],
+    commandApprovalPrefixes: [],
     workingSummary: "",
     compactedMessageCount: 0,
     createdAt: now,
@@ -36,6 +37,7 @@ export function cloneSessionState(state: SessionState): SessionState {
     filesRead: new Map(state.filesRead),
     changes: [...state.changes],
     commands: [...state.commands],
+    commandApprovalPrefixes: [...state.commandApprovalPrefixes],
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
   };

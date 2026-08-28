@@ -29,6 +29,7 @@ function state(mode: AgentMode = "auto"): SessionState {
     filesRead: new Map(),
     changes: [],
     commands: [],
+    commandApprovalPrefixes: [],
     workingSummary: "",
     compactedMessageCount: 0,
     createdAt: now,
