@@ -13,10 +13,16 @@ export interface MenuSelectorOutput extends NodeJS.WritableStream {
   readonly isTTY?: boolean;
 }
 
+export interface MenuSelectorOverlay {
+  render(lines: string[]): void;
+  clear(): void;
+}
+
 export interface MenuSelectorOptions {
   readonly input: MenuSelectorInput;
   readonly output: MenuSelectorOutput;
   readonly color?: boolean;
+  readonly overlay?: MenuSelectorOverlay;
 }
 
 const HIDE_CURSOR = "\u001B[?25l";
@@ -89,6 +95,11 @@ export function selectMenuIndex(
 
   const render = (): void => {
     const lines = renderLines(selectedIndex);
+    if (options.overlay) {
+      options.overlay.render(lines);
+      rendered = true;
+      return;
+    }
     if (rendered) options.output.write(`\u001B[${lineCount}A`);
     for (const line of lines) {
       if (rendered) options.output.write("\u001B[2K\r");
@@ -124,7 +135,8 @@ export function selectMenuIndex(
       if (wasFlowing) input.resume();
       else input.pause();
       try {
-        options.output.write(`${SHOW_CURSOR}\n`);
+        if (options.overlay) options.overlay.clear();
+        else options.output.write(`${SHOW_CURSOR}\n`);
       } catch {
         // Selection is already settled; output cleanup is best effort.
       }
@@ -185,7 +197,7 @@ export function selectMenuIndex(
     const onError = (): void => finish(undefined, new Error("Unable to read the interactive selection."));
 
     try {
-      options.output.write(HIDE_CURSOR);
+      if (!options.overlay) options.output.write(HIDE_CURSOR);
       render();
       input.setRawMode?.(true);
       input.on("data", onData);
