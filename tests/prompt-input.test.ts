@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import type { ImageAttachment } from "../src/core/types.js";
 import {
   readPrompt,
+  type PromptInputSession,
   VSCODE_IMAGE_PASTE_SEQUENCE,
   vscodeShowThinkingSequence,
 } from "../src/cli/prompt-input.js";
@@ -24,7 +25,7 @@ class TtyInput extends PassThrough {
 
 class TtyOutput extends PassThrough {
   readonly isTTY = true;
-  constructor(readonly columns = 80) {
+  constructor(public columns = 80) {
     super();
   }
   readonly rows = 24;
@@ -219,6 +220,135 @@ describe("image-aware CLI prompt", () => {
     input.write("X\r");
 
     assert.equal((await promise)?.text, "abcdefghijkX");
+  });
+
+  it("writes stable output above typed input without changing its submission", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let activeSession: PromptInputSession | undefined;
+    const lifecycle: Array<PromptInputSession | undefined> = [];
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onSessionReady: (session) => {
+        activeSession = session;
+        lifecycle.push(session);
+      },
+    });
+
+    assert.ok(activeSession);
+    input.write("draft");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    activeSession.writeAbove("stable update");
+
+    const afterUpdate = transcript.slice(transcript.indexOf("stable update"));
+    assert.match(afterUpdate, /^stable update\n> draft/u);
+    input.write("!\r");
+    const result = await promise;
+
+    assert.equal(result?.text, "draft!");
+    assert.equal(activeSession, undefined);
+    assert.equal(lifecycle.length, 2);
+    assert.ok(lifecycle[0]);
+    assert.equal(lifecycle[1], undefined);
+    assert.equal(input.rawModeTransitions.at(-1), false);
+  });
+
+  it("keeps live rows below wrapped input through writes, resize, and image paste", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput(12);
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let activeSession: PromptInputSession | undefined;
+    let footerVersion = 1;
+    let renderCount = 0;
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      renderBelow: () => {
+        renderCount += 1;
+        return `╰──────────╯\nfooter ${footerVersion}`;
+      },
+      onSessionReady: (session) => {
+        activeSession = session;
+      },
+    });
+
+    assert.ok(activeSession);
+    assert.match(transcript, /╰──────────╯\r\nfooter 1/u);
+    input.write("abcdefghijklmno");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(renderCount > 1);
+
+    activeSession.writeAbove("stable notice");
+    const afterNotice = transcript.slice(transcript.indexOf("stable notice"));
+    assert.match(afterNotice, /stable notice\n> abcdefghijklmno/u);
+    assert.match(afterNotice, /footer 1/u);
+
+    footerVersion = 2;
+    output.columns = 16;
+    output.emit("resize");
+    assert.match(transcript, /footer 2/u);
+    footerVersion = 3;
+    activeSession.refreshBelow();
+    assert.match(transcript, /footer 3/u);
+
+    input.write(Buffer.from([0x16, 0x0d]));
+    const result = await promise;
+    assert.match(result?.text ?? "", /^abcdefghijklmno \[Image #1\] /u);
+    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.equal(activeSession, undefined);
+    assert.equal(input.rawModeTransitions.at(-1), false);
+
+    const lastFooter = transcript.lastIndexOf("footer 3");
+    assert.ok(lastFooter >= 0);
+    assert.match(transcript.slice(lastFooter), /\u001B\[0J/u);
+  });
+
+  it("clears live rows below the prompt when Ctrl+C cancels input", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let activeSession: PromptInputSession | undefined;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      renderBelow: () => "bottom border\nactive footer",
+      onSessionReady: (session) => {
+        activeSession = session;
+      },
+    });
+
+    assert.ok(activeSession);
+    assert.match(transcript, /active footer/u);
+    input.write(Buffer.from([0x03]));
+
+    assert.equal(await prompt, null);
+    assert.equal(activeSession, undefined);
+    assert.equal(input.isRaw, false);
+    assert.match(transcript.slice(transcript.indexOf("active footer")), /\u001B\[0J/u);
   });
 
   it("swallows private Thinking OSC during approval and secret input", async () => {

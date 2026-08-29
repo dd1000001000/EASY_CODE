@@ -91,7 +91,7 @@ EASY CODE commands
   /memory long <id>          Show one long-term memory entry
   /thinking [id|last]        Show the expanded model thinking
   /sessions                  List previous threads
-  /resume <id>               Resume a thread
+  /resume [id]               Pick or resume a thread
   /new                       Start a new thread
   /clear                     Clear the screen
   /help                      Show help

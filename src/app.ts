@@ -96,7 +96,9 @@ import {
   ThreadStore,
   peekThreadWorkspaceRoot,
   type ThreadLease,
+  type ThreadSummary,
 } from "./threads/thread-store.js";
+import type { UISessionInfo } from "./ui/contracts.js";
 import {
   applySubagentTaskOperation,
   taskGraphView,
@@ -721,12 +723,17 @@ export class EasyCodeApp {
     if (!this.terminal.isInteractive()) {
       throw new Error("Interactive mode requires a TTY; use `easy-code run \"<task>\"` for non-interactive use.");
     }
+    // Start the retained shell before startup selection so the initial
+    // provider/model/effort flow uses the same modal overlays as /model.
+    this.terminal.beginShell(this.terminalSessionInfo());
     if (!(await this.prepareInteractiveStartup())) return;
+    this.syncTerminalView();
     printBanner(this.terminal);
-    this.printStatus();
+    if (!this.terminal.isInlineShell()) this.printStatus();
     this.announceResumeRecovery();
 
     while (!this.closed) {
+      this.syncTerminalView();
       if (this.state.planReview) {
         try {
           if (!(await this.processPendingPlanReview(true))) return;
@@ -957,17 +964,17 @@ export class EasyCodeApp {
       case "tasks": {
         if (command.args.length) throw new Error("Usage: /tasks");
         if (this.state.taskGraph) {
-          this.terminal.taskGraph(taskGraphView(this.state.taskGraph));
+          this.terminal.showTaskGraphSnapshot(taskGraphView(this.state.taskGraph));
         } else {
           this.terminal.write("This thread has no task DAG.\n");
         }
-        this.printSubagents();
+        this.printSubagents(true);
         return false;
       }
       case "agents":
       case "subagents":
         if (command.args.length) throw new Error("Usage: /agents");
-        this.printSubagents();
+        this.printSubagents(true);
         return false;
       case "tools":
         this.printTools();
@@ -1027,10 +1034,15 @@ export class EasyCodeApp {
         this.printSessions();
         return false;
       case "resume": {
-        const threadId = command.args[0];
-        if (!threadId || command.args.length !== 1) throw new Error("Usage: /resume <thread-id>");
+        if (command.args.length > 1) throw new Error("Usage: /resume [thread-id]");
+        const threadId = command.args[0] ?? await this.selectResumeThread();
+        if (!threadId) {
+          this.terminal.info("Resume canceled.");
+          return false;
+        }
         await this.clearPendingImages();
         await this.resumeThread(threadId);
+        this.syncTerminalView(true);
         this.terminal.success(`Resumed thread ${this.state.threadId}`);
         this.announceResumeRecovery();
         return false;
@@ -1039,10 +1051,11 @@ export class EasyCodeApp {
         if (command.args.length) throw new Error("Usage: /new");
         await this.clearPendingImages();
         await this.newThread();
+        this.syncTerminalView(true);
         this.terminal.success(`Created thread ${this.state.threadId}`);
         return false;
       case "clear":
-        if (process.stdout.isTTY) this.terminal.write("\u001Bc");
+        this.terminal.clearScreen();
         return false;
       case "help":
         this.terminal.write(`${HELP_TEXT.trim()}\n`);
@@ -1257,6 +1270,7 @@ export class EasyCodeApp {
     if (images.length) this.requireCurrentModelVision();
     validateImageAttachmentCollection(images);
     validateProviderImageAttachments(this.state.provider, images);
+    this.terminal.setCurrentRequest(userInput, images);
     this.dirty = true;
     const controller = new AbortController();
     let interruptCount = 0;
@@ -1267,6 +1281,7 @@ export class EasyCodeApp {
         controller.abort();
       } else {
         process.removeListener("SIGINT", onInterrupt);
+        this.terminal.emergencyRestore();
         process.exit(130);
       }
     };
@@ -1290,6 +1305,8 @@ export class EasyCodeApp {
     } finally {
       process.removeListener("SIGINT", onInterrupt);
       this.save();
+      this.terminal.clearCurrentRequest();
+      this.syncTerminalView();
     }
   }
 
@@ -1358,6 +1375,7 @@ export class EasyCodeApp {
         }
       },
       onToolCompleted: async (_state, toolName, result) => {
+        this.terminal.toolCompleted(toolName, result.ok, result.summary);
         let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
         if (result.ok && result.subagentLifecycle) {
           const artifacts = this.subagentCoordinator.commitLifecycle(
@@ -1413,7 +1431,7 @@ export class EasyCodeApp {
       requestApproval: async (request) => {
         return this.requestToolApproval(request);
       },
-      onStatus: (status) => this.terminal.info(status),
+      onStatus: (status) => this.terminal.status(status),
       onModelRequestStart: (text) => this.terminal.startActivity(text),
       onModelRequestEnd: () => this.terminal.stopActivity(),
       onModelUsage: async (record) => {
@@ -2989,6 +3007,56 @@ export class EasyCodeApp {
     this.dirty = false;
   }
 
+  private terminalSessionInfo(): UISessionInfo {
+    return {
+      threadId: this.state.threadId,
+      workspaceRoot: this.workspace.root,
+      mode: this.state.mode,
+      provider: this.state.provider,
+      model: this.state.model,
+      thinkingEffort: this.state.thinkingEffort,
+      approvalPolicy: this.config.approvalPolicy,
+      contextTokens: this.contextManager.estimateShortTermTokens(this.state),
+    };
+  }
+
+  private syncTerminalView(announceHeader = false): void {
+    this.terminal.setSessionInfo(this.terminalSessionInfo(), announceHeader);
+    if (!this.terminal.isInlineShell()) return;
+    if (this.state.taskGraph) {
+      this.terminal.taskGraph(taskGraphView(this.state.taskGraph));
+    } else {
+      this.terminal.clearTaskGraph();
+    }
+    this.printSubagents();
+  }
+
+  private resumableThreads(): ThreadSummary[] {
+    return this.threadStore.list({
+      workspaceId: workspaceIdFromRoot(this.workspace.root),
+      limit: 50,
+    }).filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
+  }
+
+  private async selectResumeThread(): Promise<string | undefined> {
+    const sessions = this.resumableThreads();
+    if (sessions.length === 0) {
+      this.terminal.info("This workspace has no previous threads.");
+      return undefined;
+    }
+    return this.terminal.selectChoice(
+      "Resume a thread",
+      sessions.map((session) => ({
+        id: session.threadId,
+        label: session.goal?.trim() || session.threadId,
+        detail:
+          `${session.provider}/${session.model} · ${session.mode} · ` +
+          `${session.updatedAt}`,
+      })),
+      this.state.threadId,
+    );
+  }
+
   private printStatus(): void {
     const providerConfig = this.effectiveConfig()[this.state.provider];
     this.terminal.write(
@@ -3046,15 +3114,21 @@ export class EasyCodeApp {
     );
   }
 
-  private printSubagents(): void {
+  private printSubagents(snapshot = false): void {
     const taskGraph = this.state.taskGraph
       ? taskGraphView(this.state.taskGraph)
       : undefined;
-    this.terminal.subagents(
-      this.subagentCoordinator.snapshot(this.state.threadId),
-      taskGraph,
-      maxConcurrentSubagents(this.state.thinkingEffort),
-    );
+    const agents = this.subagentCoordinator.snapshot(this.state.threadId);
+    const concurrencyLimit = maxConcurrentSubagents(this.state.thinkingEffort);
+    if (snapshot) {
+      this.terminal.showSubagentsSnapshot(
+        agents,
+        taskGraph,
+        concurrencyLimit,
+      );
+    } else {
+      this.terminal.subagents(agents, taskGraph, concurrencyLimit);
+    }
   }
 
   private requireProviderApiKey(provider: ProviderName): void {
@@ -3170,10 +3244,7 @@ export class EasyCodeApp {
   }
 
   private printSessions(): void {
-    const sessions = this.threadStore.list({
-      workspaceId: workspaceIdFromRoot(this.workspace.root),
-      limit: 50,
-    }).filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
+    const sessions = this.resumableThreads();
     this.terminal.write(sessions.length ? `${json(sessions)}\n` : "This workspace has no previous threads.\n");
   }
 

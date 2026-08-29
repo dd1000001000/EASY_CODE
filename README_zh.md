@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-技术设计（架构、权限、记忆、DAG、子 Agent 会话、Worktree 与 Handoff）：[简体中文](./docs/TECHNICAL_DESIGN_ZH.md) | [English](./docs/TECHNICAL_DESIGN.md)
+技术设计（架构、终端 UI、权限、记忆、DAG、子 Agent 会话、Worktree 与 Handoff）：[简体中文](./docs/TECHNICAL_DESIGN_ZH.md) | [English](./docs/TECHNICAL_DESIGN.md)
 
 EASY CODE 是一个支持 Alibaba Qwen、DeepSeek 和智谱 GLM 的本地 CLI 编程 Agent。在项目目录中启动它，描述你想要的结果，它就可以查看文件、修改代码、运行命令、验证变更、管理上下文，并在之后恢复未完成的工作。
 
@@ -14,6 +14,7 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 - 读取、新建、更新和删除工作区内的文件。
 - 运行命令、测试、构建工具以及受支持的 npm 安装命令。
 - 显示带行号的代码 Diff：新增内容为绿色，删除内容为红色。
+- 已完成内容保留在终端 scrollback 中，当前工作则在紧凑的行内状态区持续更新。
 - 在会话中切换 Provider、模型和思考强度。
 - 向支持视觉的模型发送截图和图片文件。
 - 自动管理短期上下文和长期项目记忆。
@@ -132,7 +133,7 @@ easy-code
 2. 选择模型。
 3. 选择 `none`、`low`、`medium` 或 `high` 思考强度。
 4. 使用上下方向键移动，按 Enter 确认。
-5. 在 `EASY CODE [...] >` 提示符后输入任务。
+5. 在终端底部的盒式输入区中输入任务，然后按 Enter 提交。
 
 示例：
 
@@ -154,6 +155,25 @@ easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinki
 ```bash
 easy-code --workspace ./my-project --mode code run "修复登录错误并运行测试"
 ```
+
+## 终端界面
+
+在交互式终端中，EASY CODE 把同一个行内界面分成四个区域：
+
+| 区域 | 显示内容 |
+| --- | --- |
+| 会话头部 | 当前模式、Provider/模型、思考强度、上下文估算、工作区和 Thread ID。 |
+| Scrollback | 已完成的用户/助手消息、工具结果、命令输出、Diff 和最终结果。内容按普通终端输出追加，因此仍然可以滚动、选择和复制。 |
+| 动态状态区 | 只显示当前请求：进度行、最多五条紧凑任务、最多五个子 Agent、命令/模型活动及已用时间。EASY CODE 只会重绘这个输出区域。 |
+| 输入框与状态栏 | 可跨终端行自动换行的盒式输入区；其下显示模式、模型、思考强度、上下文、任务和活动 Agent 状态。附加图片显示为 `[Image #N]`。 |
+
+活动完成后会离开动态状态区，进入普通 scrollback。重绘只清除终端底部的动态行，不会重新绘制或擦除更早的对话、命令输出和 Diff。布局按终端显示单元格计算，因此窄窗口、中文等全角字符以及 Emoji 都能保持对齐。
+
+`/model`、命令审批、Plan 审核和 `/resume` 使用盒式覆盖选择器，不再向 scrollback 追加临时菜单文本。选择器打开时会替代普通动态状态和输入框。使用 `↑`/`↓` 移动，按 Enter 确认，按 Esc 取消；取消命令审批始终等同于拒绝。
+
+在输入框中可以正常输入或粘贴，按 Enter 提交。`Ctrl+T` 可以打开最近一个可用的 Thinking 内容，并保留当前草稿；`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
+
+当 stdin/stdout 不是交互式 TTY，或终端无法安全支持光标定位重绘时，EASY CODE 会降级为无 ANSI 颜色的纯文本追加式状态快照和单行输入。此时交互式覆盖选择器可能不可用，请改用明确的 CLI 选项或命令参数，例如 `/model <model-id>` 和 `/resume <thread-id>`。
 
 ## 支持的模型
 
@@ -207,15 +227,15 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 
 Auto 的路由由当前所选模型控制，不依赖关键词匹配。如果请求可以仅根据当前对话完整回答，不需要访问工作区、调用工具、产生副作用或先审核方案，本次路由请求可以直接返回最终答案。直接回答仍遵守常规安全规则和 `EASYCODE.md`；上下文达到强制压缩阈值时，EASY CODE 会先完成压缩，再进行路由或回答。其他请求会被模型路由到 Plan 或 Code。
 
-当 Auto 选择 Plan 后，EASY CODE 会显示方案并提供三个选项：
+当 Auto 选择 Plan 后，EASY CODE 会显示方案，并打开包含三个选项的盒式审核 overlay：
 
 ```text
-1. Yes, use Auto mode
-2. No, reject plan
-3. Type feedback and press Enter to adjust the plan
+Yes, use Auto mode
+No, reject plan
+Adjust plan with feedback
 ```
 
-选择 Yes 会切回 Auto 并执行已经接受的方案；选择 No 会拒绝方案；直接输入修改意见会让模型调整方案并重新提交。
+选择 Yes 会切回 Auto 并执行已经接受的方案；选择 No 会拒绝方案；选择反馈行后会打开单行输入，再让模型调整方案并重新提交。
 
 ## 思考强度
 
@@ -411,7 +431,7 @@ ID、请求和实际使用的隔离方式、执行环境状态，以及结果 Ar
 - 短期记忆属于当前 Thread，包括有效对话、摘要、任务状态和近期工具结果。`/memory short [limit]` 展示最近的活跃消息预览，而不是全部短期记忆；默认显示 8 条，可设置为 1 到 500 条。
 - 长期记忆保存同一工作区中以后仍然有用的项目事实、决定、约定和偏好。
 - 当对话变得较长时，EASY CODE 会自动压缩较早的上下文。
-- 提示符会显示类似 `context:12.4k` 的近似 Token 数量。
+- 会话头部与状态栏会显示类似 `context:12.4k` 的近似 Token 数量。
 
 ## Token 效率与用量
 
@@ -447,8 +467,10 @@ easy-code --resume <thread-id>
 在 EASY CODE 会话中恢复：
 
 ```text
-/resume <thread-id>
+/resume [thread-id]
 ```
+
+省略 ID 会打开盒式 Resume 选择器；提供 ID 则直接恢复对应 Thread。
 
 Resume 会尽可能恢复已经保存的状态，包括所选模型和模式、对话、已接受计划、任务进度、文件与命令历史、上下文摘要、已完成的子 Agent 结果，以及仍然有效的活动子 Thread/执行环境绑定。关键身份、仓库和路径元数据校验通过，并且已保存的快照 Commit 仍可解析时，缺失的托管 checkout 目录才能重建。已有子 Agent 的环境记录缺失，或其中的身份、仓库、路径元数据校验不一致时会失败关闭，不会另建 checkout 后静默改绑。已经持久完成的子任务不会重跑；被中断的命令或模型调用也不会自动重复执行。
 
@@ -504,7 +526,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 /memory long [id]          查看长期记忆
 /thinking [id|last]        查看模型 Thinking
 /sessions                  列出保存的 Thread
-/resume <id>               恢复 Thread
+/resume [id]               选择或恢复 Thread
 /new                       新建 Thread
 /clear                     清屏
 /help                      显示帮助

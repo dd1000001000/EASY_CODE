@@ -2,7 +2,7 @@
 
 [简体中文](./TECHNICAL_DESIGN_ZH.md) | [Back to README](../README.md)
 
-This document explains the design of EASY CODE as a controlled local coding agent. It focuses on architectural decisions, trust boundaries, state management, orchestration, and reliability. User-facing installation and command instructions remain in the main README.
+This document explains the design of EASY CODE as a controlled local coding agent. It focuses on architectural decisions, terminal interaction, trust boundaries, state management, orchestration, and reliability. User-facing installation and command instructions remain in the main README.
 
 ## 1. Design goals and boundaries
 
@@ -61,6 +61,27 @@ flowchart TB
 | State and retrieval | Authoritative thread events, queryable projections, checkpoints, long-term facts, semantic indexes, and binary artifacts. |
 
 This separation keeps provider-specific behavior out of workspace security and keeps model output from directly mutating local state.
+
+### Inline terminal UI and output ownership
+
+The interactive UI is a projection of structured state rather than a collection of independent print calls. Its state separates a stable session header, append-only transcript entries, ephemeral live activity, a modal overlay, and the persistent composer. Reducer-style updates make stale activity stops harmless and keep task, child-Agent, progress, image, and picker rows bounded before rendering.
+
+The visible interface has four regions with different ownership rules:
+
+| Region | Lifetime and update rule |
+| --- | --- |
+| Session header | Rendered from stable Thread/session facts: mode, provider/model, effort, context estimate, workspace, and Thread ID. |
+| Terminal scrollback | Owns completed conversation, tool/command output, diffs, and results. New entries are appended and are never cursor-erased by a live refresh. |
+| Live region | Owns only current progress, the compact task DAG and child-Agent snapshots, running activity, and elapsed time. A screen writer may erase and replace only these bottom rows. |
+| Composer and footer | Keeps the wrapping input box and a compact mode/model/context/task/Agent status line at the bottom while normal work is active. Image attachments are represented by stable `[Image #N]` labels. |
+
+Before a stable transcript entry is committed, the screen writer removes the current live rows, appends the entry at their former start, and redraws the latest live snapshot underneath. Cursor restoration uses visual rows and display-cell columns rather than UTF-16 indexes, so a cursor is never placed in the second cell of a wide grapheme. Resize rendering uses the current terminal width. ANSI control families from external text are removed; only UI-owned SGR styling may survive, and CJK, combining characters, flags, and joined emoji are measured as terminal cells.
+
+A modal picker has precedence over the ordinary live region. `/model`, command approval, Plan review, and Resume all use the same boxed overlay behavior: the selected row is visually distinct, other rows are subdued, `Up`/`Down` changes selection, Enter confirms, and Esc cancels. The menu temporarily owns stdin in Raw Mode and restores the previous input, cursor, and flow state on every exit path. Approval cancellation maps to rejection, preserving fail-closed behavior. This single-owner rule also prevents a background child or status update from consuming interactive input.
+
+The composer and the VS Code paste bridge share one ordered input stream. Native image paste is resolved before a following Enter can submit, and the composer receives only a visible attachment label; verified bytes remain in the private image-artifact store. Text paste stays text. `Ctrl+T` may temporarily reveal Thinking without losing the draft, while `Ctrl+C` remains able to cancel an in-flight clipboard capture.
+
+Non-TTY output does not attempt cursor movement, screen erasure, Raw Mode, or color. It emits append-only plain status messages and uses line-oriented input; workflows that require an interactive picker must instead provide an explicit model, Resume ID, or other command argument. This degradation preserves readable logs for pipes, redirected output, CI, and terminals with incomplete control-sequence support.
 
 ## 3. Request lifecycle and working modes
 

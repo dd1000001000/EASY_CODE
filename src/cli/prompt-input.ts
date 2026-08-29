@@ -3,6 +3,10 @@ import { Transform, type TransformCallback } from "node:stream";
 
 import { stripTerminalControls } from "../command/output-stream.js";
 import type { ImageAttachment } from "../core/types.js";
+import {
+  sanitizeTerminalText,
+  wrapToWidth,
+} from "../ui/render/layout.js";
 
 export interface PromptInput extends NodeJS.ReadableStream {
   readonly isTTY?: boolean;
@@ -13,12 +17,23 @@ export interface PromptInput extends NodeJS.ReadableStream {
 
 export interface PromptOutput extends NodeJS.WritableStream {
   readonly isTTY?: boolean;
+  readonly columns?: number;
 }
 
 export interface PromptSubmission {
   readonly text: string;
   readonly images: ImageAttachment[];
   readonly pasteErrors: string[];
+}
+
+export interface PromptInputSession {
+  /**
+   * Commit stable terminal output above the active readline edit buffer.
+   * A missing final line break is added; calls after release are ignored.
+   */
+  writeAbove(text: string): void;
+  /** Re-render optional live content below the active edit buffer. */
+  refreshBelow(): void;
 }
 
 export interface ReadPromptOptions {
@@ -35,6 +50,11 @@ export interface ReadPromptOptions {
   readonly onShowThinking?: (
     id: number | "last",
   ) => void | Promise<void>;
+  readonly onSessionReady?: (
+    session: PromptInputSession | undefined,
+  ) => void;
+  /** Render live rows below the readline buffer; terminal controls are filtered. */
+  readonly renderBelow?: () => string;
 }
 
 const ESCAPE = 0x1b;
@@ -446,38 +466,181 @@ export function readPrompt(
   const wasFlowing = input.readableFlowing === true;
   const captureController = new AbortController();
   let promptActive = true;
+  let sessionReady = false;
+  let promptSuspensionDepth = 0;
+  let suspendedLine = "";
+  let suspendedCursor = 0;
+  let belowRendered = false;
+  let resizeInProgress = false;
+  let scheduledBelowDraw: ReturnType<typeof setImmediate> | undefined;
+  let renderedCursorPosition: { rows: number; cols: number } | undefined;
+  let renderedEndPosition: { rows: number; cols: number } | undefined;
   let rl!: readline.Interface;
+
+  const promptGeometry = (
+    line = rl.line,
+    cursor = rl.cursor,
+  ): {
+    cursorPosition: { rows: number; cols: number };
+    endPosition: { rows: number; cols: number };
+  } => {
+    const mutableReadline = rl as unknown as { cursor: number };
+    const originalCursor = rl.cursor;
+    try {
+      mutableReadline.cursor = cursor;
+      const cursorPosition = rl.getCursorPos();
+      mutableReadline.cursor = line.length;
+      const endPosition = rl.getCursorPos();
+      return { cursorPosition, endPosition };
+    } finally {
+      mutableReadline.cursor = originalCursor;
+    }
+  };
+  const moveToPromptEnd = (
+    cursorPosition: { rows: number; cols: number },
+    endPosition: { rows: number; cols: number },
+  ): number => {
+    const rowsDown = Math.max(0, endPosition.rows - cursorPosition.rows);
+    if (rowsDown > 0) readline.moveCursor(options.output, 0, rowsDown);
+    readline.cursorTo(options.output, endPosition.cols);
+    return rowsDown;
+  };
+  const eraseBelow = (): void => {
+    const cursorPosition = renderedCursorPosition;
+    const endPosition = renderedEndPosition;
+    belowRendered = false;
+    renderedCursorPosition = undefined;
+    renderedEndPosition = undefined;
+    if (!cursorPosition || !endPosition) return;
+
+    const rowsDown = moveToPromptEnd(cursorPosition, endPosition);
+    readline.moveCursor(options.output, 0, 1);
+    readline.cursorTo(options.output, 0);
+    readline.clearScreenDown(options.output);
+    readline.moveCursor(options.output, 0, -(rowsDown + 1));
+    readline.cursorTo(options.output, cursorPosition.cols);
+  };
+  const drawBelow = (): void => {
+    if (scheduledBelowDraw) {
+      clearImmediate(scheduledBelowDraw);
+      scheduledBelowDraw = undefined;
+    }
+    if (
+      !promptActive ||
+      promptSuspensionDepth > 0 ||
+      resizeInProgress ||
+      !options.renderBelow
+    ) {
+      return;
+    }
+    if (belowRendered) eraseBelow();
+
+    let source = "";
+    try {
+      source = sanitizeTerminalText(options.renderBelow(), { allowSgr: true });
+    } catch {
+      // A decorative renderer must never make the input itself unusable.
+      return;
+    }
+    if (!source) return;
+
+    const columnsValue = Number(options.output.columns);
+    const columns = Number.isFinite(columnsValue) && columnsValue > 0
+      ? Math.max(1, Math.floor(columnsValue))
+      : 80;
+    const lines = wrapToWidth(source, columns, { preserveAnsi: true });
+    if (lines.length === 0) return;
+
+    const geometry = promptGeometry();
+    const rowsDown = moveToPromptEnd(
+      geometry.cursorPosition,
+      geometry.endPosition,
+    );
+    options.output.write(`\r\n${lines.join("\r\n")}`);
+    readline.moveCursor(options.output, 0, -(rowsDown + lines.length));
+    readline.cursorTo(options.output, geometry.cursorPosition.cols);
+    renderedCursorPosition = geometry.cursorPosition;
+    renderedEndPosition = geometry.endPosition;
+    belowRendered = true;
+  };
+  const refreshBelow = (): void => {
+    if (!promptActive) return;
+    if (promptSuspensionDepth > 0 || resizeInProgress) {
+      return;
+    }
+    eraseBelow();
+    drawBelow();
+  };
+  const scheduleBelowDraw = (): void => {
+    if (scheduledBelowDraw || !promptActive) return;
+    scheduledBelowDraw = setImmediate(() => {
+      scheduledBelowDraw = undefined;
+      drawBelow();
+    });
+  };
+  const suspendPrompt = (): boolean => {
+    if (!promptActive) return false;
+    promptSuspensionDepth += 1;
+    if (promptSuspensionDepth > 1) return true;
+
+    eraseBelow();
+    suspendedLine = rl.line;
+    suspendedCursor = rl.cursor;
+    const savedPosition = rl.getCursorPos();
+
+    // Remove every visual row occupied by the wrapped edit buffer. Stable
+    // output can now be written at the prompt's former first row.
+    if (savedPosition.rows > 0) {
+      readline.moveCursor(options.output, 0, -savedPosition.rows);
+    }
+    readline.cursorTo(options.output, 0);
+    readline.clearScreenDown(options.output);
+    return true;
+  };
+  const resumePrompt = (): void => {
+    if (promptSuspensionDepth === 0) return;
+    promptSuspensionDepth -= 1;
+    if (promptSuspensionDepth > 0) return;
+    if (!promptActive) return;
+
+    // Recalculate visual positions in case the terminal was resized while an
+    // asynchronous expansion kept the prompt hidden.
+    const mutableReadline = rl as unknown as { cursor: number };
+    mutableReadline.cursor = suspendedCursor;
+    const savedPosition = rl.getCursorPos();
+    mutableReadline.cursor = suspendedLine.length;
+    const endPosition = rl.getCursorPos();
+    mutableReadline.cursor = suspendedCursor;
+
+    // readline.prompt() does not reliably repaint an existing edit buffer
+    // after out-of-band output, so redraw it and restore its visual cursor.
+    options.output.write(`${options.prompt}${suspendedLine}`);
+    const rowsUp = Math.max(0, endPosition.rows - savedPosition.rows);
+    if (rowsUp > 0) {
+      readline.moveCursor(options.output, 0, -rowsUp);
+    }
+    readline.cursorTo(options.output, savedPosition.cols);
+    drawBelow();
+  };
+  const promptSession: PromptInputSession = {
+    writeAbove(text: string): void {
+      if (!text || !suspendPrompt()) return;
+      try {
+        const atLineStart = stripTerminalControls(text).endsWith("\n");
+        options.output.write(atLineStart ? text : `${text}\n`);
+      } finally {
+        resumePrompt();
+      }
+    },
+    refreshBelow,
+  };
   const showThinking = options.onShowThinking
     ? async (id: number | "last"): Promise<void> => {
-        const savedLine = rl.line;
-        const savedCursor = rl.cursor;
-        const savedPosition = rl.getCursorPos();
-        const mutableReadline = rl as unknown as { cursor: number };
-        mutableReadline.cursor = savedLine.length;
-        const endPosition = rl.getCursorPos();
-        mutableReadline.cursor = savedCursor;
-
-        // Remove every visual row occupied by a wrapped edit buffer, without
-        // changing readline's logical line or cursor.
-        if (savedPosition.rows > 0) {
-          readline.moveCursor(options.output, 0, -savedPosition.rows);
-        }
-        readline.cursorTo(options.output, 0);
-        readline.clearScreenDown(options.output);
+        if (!suspendPrompt()) return;
         try {
           await options.onShowThinking?.(id);
         } finally {
-          if (promptActive) {
-            // readline.prompt() does not reliably repaint its existing edit
-            // buffer after out-of-band output, so draw the unchanged buffer
-            // explicitly and then restore its visual cursor position.
-            options.output.write(`${options.prompt}${savedLine}`);
-            const rowsUp = Math.max(0, endPosition.rows - savedPosition.rows);
-            if (rowsUp > 0) {
-              readline.moveCursor(options.output, 0, -rowsUp);
-            }
-            readline.cursorTo(options.output, savedPosition.cols);
-          }
+          resumePrompt();
         }
       }
     : undefined;
@@ -499,13 +662,33 @@ export function readPrompt(
     let settled = false;
 
     const cleanup = (): void => {
+      if (scheduledBelowDraw) clearImmediate(scheduledBelowDraw);
+      scheduledBelowDraw = undefined;
+      try {
+        eraseBelow();
+      } catch {
+        // Raw-mode and stream cleanup still matter if the TTY disappeared.
+      }
       promptActive = false;
+      promptSuspensionDepth = 0;
+      if (sessionReady) {
+        sessionReady = false;
+        try {
+          options.onSessionReady?.(undefined);
+        } catch {
+          // Cleanup and raw-mode restoration must not depend on a lifecycle hook.
+        }
+      }
       captureController.abort();
       rl.removeListener("close", onClose);
       rl.removeListener("line", onLine);
       proxy.removeListener("error", onError);
       options.signal?.removeEventListener("abort", onAbort);
       input.removeListener("data", onRawInput);
+      proxy.removeListener("keypress", onBeforeKeypress);
+      proxy.removeListener("keypress", onAfterKeypress);
+      options.output.removeListener("resize", onBeforeResize);
+      options.output.removeListener("resize", onAfterResize);
       input.unpipe(proxy);
       if (!proxy.destroyed) proxy.destroy();
       try {
@@ -524,7 +707,14 @@ export function readPrompt(
       if (settled) return;
       settled = true;
       rl.removeListener("close", onClose);
-      if (closeInterface) rl.close();
+      if (closeInterface) {
+        try {
+          eraseBelow();
+        } catch {
+          // Closing the interface must not depend on decorative output.
+        }
+        rl.close();
+      }
       cleanup();
       if (error) {
         reject(error);
@@ -548,6 +738,22 @@ export function readPrompt(
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (data.includes(CTRL_C)) finish();
     };
+    const onBeforeKeypress = (): void => {
+      eraseBelow();
+    };
+    const onAfterKeypress = (): void => {
+      // One input chunk can contain a large paste. Redraw once after readline
+      // consumes the burst instead of once for every decoded character.
+      scheduleBelowDraw();
+    };
+    const onBeforeResize = (): void => {
+      resizeInProgress = true;
+      eraseBelow();
+    };
+    const onAfterResize = (): void => {
+      resizeInProgress = false;
+      drawBelow();
+    };
 
     rl.once("close", onClose);
     rl.once("line", onLine);
@@ -556,6 +762,15 @@ export function readPrompt(
     if (options.signal?.aborted) {
       finish();
       return;
+    }
+    if (options.renderBelow) {
+      // readline's own keypress/resize listeners remain the sole owners of the
+      // edit buffer. We only clear decoration immediately before their redraw
+      // and restore it immediately afterward.
+      proxy.prependListener("keypress", onBeforeKeypress);
+      proxy.on("keypress", onAfterKeypress);
+      options.output.prependListener("resize", onBeforeResize);
+      options.output.on("resize", onAfterResize);
     }
     input.pipe(proxy);
     // Observe the source as well as the serialized Transform. A clipboard read
@@ -566,6 +781,18 @@ export function readPrompt(
     // inline Thinking expansion can inspect and redraw the current edit buffer.
     rl.setPrompt(options.prompt);
     rl.prompt();
+    drawBelow();
+    if (options.onSessionReady) {
+      sessionReady = true;
+      try {
+        options.onSessionReady(promptSession);
+      } catch (error) {
+        finish(
+          undefined,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+      }
+    }
   });
 }
 

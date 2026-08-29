@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-Technical design (architecture, permissions, memory, DAG, child sessions, Worktrees, and Handoff): [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
+Technical design (architecture, terminal UI, permissions, memory, DAG, child sessions, Worktrees, and Handoff): [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
 
 EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
 
@@ -14,6 +14,7 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 - Read, create, update, and delete files inside the selected workspace.
 - Run commands, tests, build tools, and supported npm installation commands.
 - Show line-numbered code diffs with green additions and red removals.
+- Keep completed output in terminal scrollback while updating current work in a compact inline status area.
 - Switch providers, models, and thinking effort while the session is running.
 - Attach screenshots and image files to supported vision models.
 - Automatically manage short-term context and long-term project memory.
@@ -132,7 +133,7 @@ On interactive startup:
 2. Select a model.
 3. Select `none`, `low`, `medium`, or `high` thinking effort.
 4. Use the Up/Down arrow keys and press Enter to confirm.
-5. Enter your request at the `EASY CODE [...] >` prompt.
+5. Enter your request in the boxed composer at the bottom of the terminal and press Enter.
 
 Example requests:
 
@@ -154,6 +155,25 @@ Run one task non-interactively and exit:
 ```bash
 easy-code --workspace ./my-project --mode code run "Fix the login error and run the tests"
 ```
+
+## Terminal interface
+
+In an interactive terminal, EASY CODE keeps one inline interface in four regions:
+
+| Region | What it shows |
+| --- | --- |
+| Session header | Current mode, provider/model, thinking effort, context estimate, workspace, and Thread ID. |
+| Scrollback | Completed user/assistant messages, tool results, command output, diffs, and final results. This history is appended normally, so terminal scrolling and copy/select continue to work. |
+| Live status | Only the current request: progress rows, up to five compact task rows, up to five child-Agent rows, command/model activity, and elapsed time. This is the only output region EASY CODE redraws. |
+| Composer and footer | A boxed input area that wraps across terminal rows, followed by mode, model, effort, context, task, and active-Agent status. Attached images appear as `[Image #N]`. |
+
+Completed activity moves out of the live status and into ordinary scrollback. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
+
+`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
+
+In the composer, type or paste normally and press Enter to submit. `Ctrl+T` opens the latest available Thinking block without discarding the current draft; `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
+
+When stdout/stdin is not an interactive TTY, or the terminal cannot safely support cursor-addressed redraws, EASY CODE falls back to plain append-only status snapshots and line-oriented input without ANSI color. Interactive overlay selection may be unavailable in that mode; use explicit CLI options or command arguments such as `/model <model-id>` and `/resume <thread-id>`.
 
 ## Supported models
 
@@ -207,15 +227,15 @@ Switch modes at any time:
 
 Auto routing is controlled by the selected model rather than keyword matching. If a request can be answered completely from the current conversation without workspace access, tools, side effects, or a reviewed plan, the routing request may return the final answer directly. Direct answers still follow the normal security and `EASYCODE.md` rules; when context has reached the mandatory compaction threshold, EASY CODE compacts it before routing or answering. Otherwise, the model routes the request to Plan or Code.
 
-When Auto chooses Plan, EASY CODE shows the proposal and offers three choices:
+When Auto chooses Plan, EASY CODE shows the proposal and opens a boxed review overlay with three choices:
 
 ```text
-1. Yes, use Auto mode
-2. No, reject plan
-3. Type feedback and press Enter to adjust the plan
+Yes, use Auto mode
+No, reject plan
+Adjust plan with feedback
 ```
 
-Approving returns to Auto and executes the accepted plan. Rejecting stops it. Entering feedback asks the model to revise the proposal.
+Approving returns to Auto and executes the accepted plan. Rejecting stops it. Choosing the feedback row opens a line prompt, then asks the model to revise the proposal.
 
 ## Thinking effort
 
@@ -420,7 +440,7 @@ Context and memory are managed automatically. Users can inspect them but cannot 
 - Short-term memory belongs to the current thread and includes the active conversation, summaries, task state, and recent tool results. `/memory short [limit]` shows previews of the latest active messages rather than the entire memory; the limit defaults to 8 and may be set from 1 to 500.
 - Long-term memory stores useful project facts, decisions, conventions, and preferences for later sessions in the same workspace.
 - EASY CODE compresses older context when the conversation becomes large.
-- The prompt displays an approximate context Token count such as `context:12.4k`.
+- The session header and footer display an approximate context Token count such as `context:12.4k`.
 
 ## Token efficiency and usage
 
@@ -456,8 +476,10 @@ easy-code --resume <thread-id>
 Resume while EASY CODE is already running:
 
 ```text
-/resume <thread-id>
+/resume [thread-id]
 ```
+
+Omit the ID to open the boxed Resume picker; provide it to resume that Thread directly.
 
 Resume restores as much saved state as possible, including the selected model and mode, conversation, accepted plan, task progress, file/command history, context summary, completed child results, and valid active child Thread/environment bindings. A missing managed checkout directory can be reconstructed only after key identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata does not validate for the existing child, fails closed rather than provisioning a different checkout. Durably completed child work is not rerun; interrupted commands or model calls are not automatically repeated.
 
@@ -513,7 +535,7 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 /memory long [id]          Show long-term memory
 /thinking [id|last]        Show model thinking
 /sessions                  List saved threads
-/resume <id>               Resume a thread
+/resume [id]               Pick or resume a thread
 /new                       Start a new thread
 /clear                     Clear the terminal
 /help                      Show help
