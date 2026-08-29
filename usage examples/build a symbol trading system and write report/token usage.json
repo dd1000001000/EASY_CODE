@@ -1,0 +1,74 @@
+{
+  "threadId": "thread_0802861f-203d-458f-9c5f-7f12a0cdeea2",
+  "requests": 62,
+  "reportedRequests": 62,
+  "promptTokens": 5318603,
+  "completionTokens": 97459,
+  "totalTokens": 5416062,
+  "cachedInputTokens": 101888,
+  "reasoningTokens": 60446,
+  "unreportedRequests": 0,
+  "retryRequests": 0,
+  "uncachedInputTokens": 5216715,
+  "byPurpose": {
+    "auto_route": {
+      "requests": 1,
+      "reportedRequests": 1,
+      "promptTokens": 1281,
+      "completionTokens": 495,
+      "totalTokens": 1776,
+      "cachedInputTokens": 384,
+      "reasoningTokens": 410
+    },
+    "agent_step": {
+      "requests": 61,
+      "reportedRequests": 61,
+      "promptTokens": 5317322,
+      "completionTokens": 96964,
+      "totalTokens": 5414286,
+      "cachedInputTokens": 101504,
+      "reasoningTokens": 60036
+    },
+    "context_compaction": {
+      "requests": 0,
+      "reportedRequests": 0,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "cachedInputTokens": 0,
+      "reasoningTokens": 0
+    }
+  },
+  "byActor": {
+    "mainAgent": {
+      "requests": 62,
+      "reportedRequests": 62,
+      "promptTokens": 5318603,
+      "completionTokens": 97459,
+      "totalTokens": 5416062,
+      "cachedInputTokens": 101888,
+      "reasoningTokens": 60446
+    },
+    "subagents": {
+      "requests": 0,
+      "reportedRequests": 0,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "cachedInputTokens": 0,
+      "reasoningTokens": 0
+    }
+  },
+  "byModel": {
+    "deepseek/deepseek-v4-flash": {
+      "requests": 62,
+      "reportedRequests": 62,
+      "promptTokens": 5318603,
+      "completionTokens": 97459,
+      "totalTokens": 5416062,
+      "cachedInputTokens": 101888,
+      "reasoningTokens": 60446
+    }
+  },
+  "note": "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens."
+}

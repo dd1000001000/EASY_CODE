@@ -1,0 +1,9 @@
+# Exchange matching server (Homework 4) -- run with:  docker compose up
+services:
+  exchange:
+    build: .
+    image: exchange-server:latest
+    container_name: exchange-server
+    ports:
+      - "12345:12345"
+    restart: unless-stopped

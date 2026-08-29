@@ -1,0 +1,74 @@
+{
+  "threadId": "thread_35b8e39b-fd57-4810-86a0-972f922a0184",
+  "requests": 78,
+  "reportedRequests": 78,
+  "promptTokens": 2209440,
+  "completionTokens": 78403,
+  "totalTokens": 2287843,
+  "cachedInputTokens": 96000,
+  "reasoningTokens": 45812,
+  "unreportedRequests": 0,
+  "retryRequests": 0,
+  "uncachedInputTokens": 2113440,
+  "byPurpose": {
+    "auto_route": {
+      "requests": 1,
+      "reportedRequests": 1,
+      "promptTokens": 1292,
+      "completionTokens": 213,
+      "totalTokens": 1505,
+      "cachedInputTokens": 256,
+      "reasoningTokens": 119
+    },
+    "agent_step": {
+      "requests": 77,
+      "reportedRequests": 77,
+      "promptTokens": 2208148,
+      "completionTokens": 78190,
+      "totalTokens": 2286338,
+      "cachedInputTokens": 95744,
+      "reasoningTokens": 45693
+    },
+    "context_compaction": {
+      "requests": 0,
+      "reportedRequests": 0,
+      "promptTokens": 0,
+      "completionTokens": 0,
+      "totalTokens": 0,
+      "cachedInputTokens": 0,
+      "reasoningTokens": 0
+    }
+  },
+  "byActor": {
+    "mainAgent": {
+      "requests": 38,
+      "reportedRequests": 38,
+      "promptTokens": 1433078,
+      "completionTokens": 27619,
+      "totalTokens": 1460697,
+      "cachedInputTokens": 61056,
+      "reasoningTokens": 15521
+    },
+    "subagents": {
+      "requests": 40,
+      "reportedRequests": 40,
+      "promptTokens": 776362,
+      "completionTokens": 50784,
+      "totalTokens": 827146,
+      "cachedInputTokens": 34944,
+      "reasoningTokens": 30291
+    }
+  },
+  "byModel": {
+    "deepseek/deepseek-v4-flash": {
+      "requests": 78,
+      "reportedRequests": 78,
+      "promptTokens": 2209440,
+      "completionTokens": 78403,
+      "totalTokens": 2287843,
+      "cachedInputTokens": 96000,
+      "reasoningTokens": 45812
+    }
+  },
+  "note": "Totals include completed provider responses reported by this EASY CODE version. Failed requests and providers that omit usage cannot be assigned exact tokens."
+}
