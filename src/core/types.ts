@@ -2,6 +2,8 @@ export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
 export type ProviderName = "qwen" | "deepseek" | "glm";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
+/** Process-local command posture selected by the user from /approval. */
+export type CommandExecutionMode = "manual" | "auto_approve" | "unrestricted";
 export const THINKING_EFFORTS = ["none", "low", "medium", "high"] as const;
 export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
 export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
@@ -280,6 +282,8 @@ export interface ToolContext {
   threadId: string;
   turnId: string;
   approvalPolicy: ApprovalPolicyName;
+  /** Omitted by legacy callers; Runtime treats omission as the normal policy-controlled mode. */
+  commandExecutionMode?: CommandExecutionMode;
   requestApproval: ApprovalHandler;
   signal?: AbortSignal;
   commandTimeoutMs: number;
@@ -329,7 +333,13 @@ export interface CommandAuditEntry {
   program: string;
   args: string[];
   cwd: string;
-  status: "exited" | "timed_out" | "canceled" | "spawn_failed" | "policy_denied";
+  status:
+    | "exited"
+    | "timed_out"
+    | "canceled"
+    | "spawn_failed"
+    | "policy_denied"
+    | "sandbox_unavailable";
   exitCode: number | null;
   durationMs: number;
   timestamp: string;

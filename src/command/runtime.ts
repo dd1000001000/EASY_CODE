@@ -2,6 +2,14 @@ import { execa } from "execa";
 import type { ToolContext } from "../core/types.js";
 import { createId } from "../utils/ids.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
+import {
+  AnthropicSandboxBackend,
+  extractSandboxControls,
+  type CommandExecutionBackend,
+  type PreparedCommand,
+  type SandboxExecutionMetadata,
+  type SandboxExecutionRequest,
+} from "../sandbox/index.js";
 import { terminateProcessTree } from "./lifecycle.js";
 import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
@@ -60,13 +68,16 @@ function hardTimeoutFor(policy: CommandPolicyDecision): number {
 export class CommandRuntime {
   readonly resolver: CommandResolver;
   readonly policy: CommandPolicy;
+  private readonly executionBackend: CommandExecutionBackend;
 
   constructor(
     private readonly workspace: WorkspaceManager,
     policy = new CommandPolicy(),
+    executionBackend?: CommandExecutionBackend,
   ) {
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
+    this.executionBackend = executionBackend ?? new AnthropicSandboxBackend(workspace);
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
@@ -79,9 +90,21 @@ export class CommandRuntime {
       return this.resolutionFailure(commandId, startedAt, input, error, context);
     }
     let policyDecision = this.policy.classify(input, resolved, context.mode);
+    const unrestricted = context.commandExecutionMode === "unrestricted";
+    if (unrestricted) {
+      policyDecision = {
+        ...policyDecision,
+        id: createId("policy"),
+        effect: "allow",
+        reason:
+          "User explicitly enabled unrestricted command execution for this EASY CODE process",
+        matchedRule: "allow.unrestricted",
+      };
+    }
     const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
 
-    const shouldAsk = policyDecision.effect === "ask" || context.approvalPolicy === "ask";
+    const shouldAsk = !unrestricted &&
+      (policyDecision.effect === "ask" || context.approvalPolicy === "ask");
     if (policyDecision.effect === "deny") {
       return this.denied(commandId, startedAt, resolved, policyDecision, context);
     }
@@ -120,24 +143,55 @@ export class CommandRuntime {
       }
     }
 
+    const sandboxRequest: SandboxExecutionRequest = {
+      commandId,
+      command: resolved,
+      policyDecision,
+      context,
+      commandPreview: commandPreview(resolved),
+    };
     if (context.signal?.aborted) {
-      const output: RunCommandOutput = {
+      return this.canceledBeforeStart(
         commandId,
-        status: "canceled",
-        exitCode: null,
-        signal: null,
-        durationMs: Date.now() - startedAt,
-        stdout: emptyDigest(),
-        stderr: emptyDigest(),
-        workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
+        startedAt,
+        resolved,
         policyDecision,
-        executed: this.executionSummary(resolved),
-      };
-      this.audit(output, resolved, context, "Canceled before process start");
-      return output;
+        context,
+        this.executionBackend.describe(sandboxRequest),
+      );
     }
 
     const before = await this.workspace.captureSnapshot();
+    let prepared: PreparedCommand;
+    try {
+      prepared = await this.executionBackend.prepare(sandboxRequest);
+    } catch (error) {
+      return this.sandboxFailure(
+        commandId,
+        startedAt,
+        resolved,
+        policyDecision,
+        context,
+        error,
+        sandboxRequest,
+      );
+    }
+    if (context.signal?.aborted) {
+      try {
+        await prepared.cleanup();
+      } catch {
+        // The cancellation result remains authoritative; a later doctor run
+        // can diagnose cleanup failures without starting the target command.
+      }
+      return this.canceledBeforeStart(
+        commandId,
+        startedAt,
+        resolved,
+        policyDecision,
+        context,
+        prepared.metadata,
+      );
+    }
     const maxOutputChars = Math.max(256, Math.min(context.maxOutputChars, 1_000_000));
     const stdout = new OutputCollector(maxOutputChars);
     const stderr = new OutputCollector(maxOutputChars);
@@ -151,9 +205,9 @@ export class CommandRuntime {
     let result: ProcessResult = {};
     let termination: Promise<void> | undefined;
 
-    const subprocess = execa(resolved.executablePath, resolved.args, {
-      cwd: resolved.cwdAbsolute,
-      env: resolved.environment,
+    const subprocess = execa(prepared.executablePath, prepared.args, {
+      cwd: prepared.cwdAbsolute,
+      env: prepared.environment,
       extendEnv: false,
       shell: false,
       stdin: "ignore",
@@ -194,8 +248,30 @@ export class CommandRuntime {
     }
     await termination;
 
+    try {
+      await prepared.cleanup();
+    } catch (error) {
+      stderr.push(
+        `EASY CODE sandbox cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+
     const stdoutDigest = stdout.finish();
-    const stderrDigest = stderr.finish();
+    const extractedStderr = extractSandboxControls(commandId, stderr.finish());
+    const stderrDigest = extractedStderr.digest;
+    const sandboxError = extractedStderr.controls.find((control) =>
+      control.type === "sandbox_error"
+    );
+    const targetSpawnError = extractedStderr.controls.find((control) =>
+      control.type === "target_spawn_error"
+    );
+    const sandboxReady = !prepared.metadata.enforced ||
+      extractedStderr.controls.some((control) => control.type === "ready");
+    const sandboxUnavailableMessage = sandboxError?.type === "sandbox_error"
+      ? sandboxError.message
+      : !sandboxReady
+        ? "Sandbox worker exited without confirming that enforcement was active"
+        : undefined;
     const after = await this.workspace.captureSnapshot();
     const delta = this.workspace.applyCommandSnapshots(before, after);
 
@@ -203,9 +279,13 @@ export class CommandRuntime {
       ? "canceled"
       : timedOut || result.timedOut
         ? "timed_out"
-        : result.exitCode === undefined
-          ? "spawn_failed"
-          : "exited";
+        : sandboxUnavailableMessage
+          ? "sandbox_unavailable"
+          : targetSpawnError
+            ? "spawn_failed"
+            : result.exitCode === undefined
+              ? "spawn_failed"
+              : "exited";
     const output: RunCommandOutput = {
       commandId,
       status,
@@ -216,12 +296,15 @@ export class CommandRuntime {
       stderr: stderrDigest,
       workspaceDelta: summarizeWorkspaceDelta(delta),
       policyDecision,
+      sandbox: prepared.metadata,
       executed: this.executionSummary(resolved),
     };
 
     const summary = status === "exited"
       ? `Exited with code ${output.exitCode}`
-      : status.replace(/_/gu, " ");
+      : status === "sandbox_unavailable" && sandboxUnavailableMessage
+        ? `Sandbox unavailable: ${sandboxUnavailableMessage}`
+        : status.replace(/_/gu, " ");
     this.audit(output, resolved, context, summary);
     return output;
   }
@@ -243,9 +326,41 @@ export class CommandRuntime {
       stderr: emptyDigest(),
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
+      sandbox: this.executionBackend.describe({
+        commandId,
+        command: resolved,
+        policyDecision,
+        context,
+        commandPreview: commandPreview(resolved),
+      }),
       executed: this.executionSummary(resolved),
     };
     this.audit(output, resolved, context, policyDecision.reason);
+    return output;
+  }
+
+  private canceledBeforeStart(
+    commandId: string,
+    startedAt: number,
+    resolved: ResolvedCommand,
+    policyDecision: CommandPolicyDecision,
+    context: ToolContext,
+    sandbox: SandboxExecutionMetadata,
+  ): RunCommandOutput {
+    const output: RunCommandOutput = {
+      commandId,
+      status: "canceled",
+      exitCode: null,
+      signal: null,
+      durationMs: Date.now() - startedAt,
+      stdout: emptyDigest(),
+      stderr: emptyDigest(),
+      workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
+      policyDecision,
+      sandbox,
+      executed: this.executionSummary(resolved),
+    };
+    this.audit(output, resolved, context, "Canceled before process start");
     return output;
   }
 
@@ -278,6 +393,7 @@ export class CommandRuntime {
       stderr: emptyDigest(),
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
+      sandbox: this.executionBackend.describe(),
       executed: {
         program: sanitizeCommandOutput(input.program),
         args: redactedArgs,
@@ -300,6 +416,41 @@ export class CommandRuntime {
     } catch {
       // See audit(): projection failures do not change the policy result.
     }
+    return output;
+  }
+
+  private sandboxFailure(
+    commandId: string,
+    startedAt: number,
+    resolved: ResolvedCommand,
+    policyDecision: CommandPolicyDecision,
+    context: ToolContext,
+    error: unknown,
+    request: SandboxExecutionRequest,
+  ): RunCommandOutput {
+    const message = sanitizeCommandOutput(error instanceof Error ? error.message : String(error));
+    const text = `EASY CODE sandbox unavailable: ${message}`;
+    const stderr: OutputDigest = {
+      head: text,
+      tail: "",
+      text,
+      totalBytes: Buffer.byteLength(text),
+      truncated: false,
+    };
+    const output: RunCommandOutput = {
+      commandId,
+      status: "sandbox_unavailable",
+      exitCode: null,
+      signal: null,
+      durationMs: Date.now() - startedAt,
+      stdout: emptyDigest(),
+      stderr,
+      workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
+      policyDecision,
+      sandbox: this.executionBackend.describe(request),
+      executed: this.executionSummary(resolved),
+    };
+    this.audit(output, resolved, context, text);
     return output;
   }
 

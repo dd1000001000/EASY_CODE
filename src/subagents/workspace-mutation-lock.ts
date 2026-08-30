@@ -28,7 +28,7 @@ export class WorkspaceMutationLockAbortError extends Error {
 }
 
 /**
- * A small Node 16-compatible FIFO mutex for operations that may modify one
+ * A small Node 20-compatible FIFO mutex for operations that may modify one
  * shared workspace. Cancellation affects only callers that have not started;
  * once an operation owns the lock, its own ToolContext signal controls it and
  * the lock remains held until the operation settles.

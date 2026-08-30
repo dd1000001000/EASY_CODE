@@ -38,7 +38,7 @@ export type JsonPostTransport = (
 ) => Promise<JsonPostResponse>;
 
 /**
- * Small Node 16-compatible JSON transport. It intentionally supports only HTTP(S),
+ * Small Node 20-compatible JSON transport. It intentionally supports only HTTP(S),
  * performs no redirects, and enforces a total wall-clock timeout and body cap.
  */
 export const postJsonWithNode: JsonPostTransport = (

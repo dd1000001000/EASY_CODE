@@ -97,6 +97,7 @@ export function renderSessionHeader(
     body,
     columns,
     palette,
+    "cyan",
   );
 }
 
@@ -205,6 +206,9 @@ export function renderComposerFooter(
   const segments: string[] = [];
 
   if (session) {
+    if (session.commandExecutionMode === "unrestricted") {
+      segments.push(palette.red.bold("! EASY CODE unrestricted"));
+    }
     segments.push(palette.cyan(safeInline(session.mode) || "auto"));
     segments.push(palette.bold(formatProviderModel(session, false)));
     segments.push(safeInline(session.thinkingEffort) || "none");
@@ -497,15 +501,19 @@ function renderBox(
   body: readonly string[],
   columns: number,
   palette: ChalkInstance,
-  tone: "cyan" | "gray" = "cyan",
+  tone: "cyan" | "gray" | "red" = "cyan",
 ): string {
   const border = tone === "gray"
     ? (value: string): string => palette.gray(value)
-    : (value: string): string => palette.cyan(value);
+    : tone === "red"
+      ? (value: string): string => palette.red(value)
+      : (value: string): string => palette.cyan(value);
   if (columns < 6) {
     const styledTitle = tone === "gray"
       ? palette.gray.bold(title)
-      : palette.bold(title);
+      : tone === "red"
+        ? palette.red.bold(title)
+        : palette.bold(title);
     const flat = [...(title ? [styledTitle] : []), ...body];
     return flat.map((line) => truncateToWidth(line, columns, {
       preserveAnsi: true,

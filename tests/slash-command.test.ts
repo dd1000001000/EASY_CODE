@@ -58,5 +58,6 @@ describe("parseSlashCommand", () => {
     assert.match(HELP_TEXT, /child sessions, tasks, isolation, and handoff/u);
     assert.match(HELP_TEXT, /\/memory short \[limit\]/u);
     assert.match(HELP_TEXT, /\/usage/u);
+    assert.match(HELP_TEXT, /\/approval/u);
   });
 });

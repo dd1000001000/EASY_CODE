@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type {
   AgentMode,
+  CommandExecutionMode,
   EasyCodeConfig,
   LongTermMemory,
   PlanReviewState,
@@ -32,6 +33,7 @@ export interface BuildSystemPromptOptions {
   env?: NodeJS.ProcessEnv;
   /** Tools exposed for this model request. Omit to retain the legacy all-tools prompt. */
   availableTools?: readonly ToolName[];
+  commandExecutionMode?: CommandExecutionMode;
 }
 
 const BASE_RULES = `You are EASY CODE, a local CLI coding agent.
@@ -169,6 +171,7 @@ export async function buildSystemPrompt(
     SECURITY_RULES,
     formatModeRules(options.mode, options.availableTools),
     formatToolRules(options.availableTools),
+    formatCommandExecutionMode(options.commandExecutionMode ?? "manual"),
     environment,
   ];
   if (instructions.length) {
@@ -195,6 +198,22 @@ export async function buildSystemPrompt(
     sections.push(formatPlanReview(options.planReview));
   }
   return sections.join("\n\n");
+}
+
+function formatCommandExecutionMode(mode: CommandExecutionMode): string {
+  if (mode === "unrestricted") {
+    return `Runtime command execution mode: unrestricted (explicitly confirmed by the user)
+- run_command may execute any program and arguments that pass structural resolution, including destructive Git, network, system, interpreter, and shell commands. Runtime does not apply command classification, Plan command restrictions, permanent denials, or approval prompts in this mode.
+- Structured program/argv execution, the Anthropic Sandbox Runtime workspace boundary, controlled cwd and environment, timeouts, bounded/redacted output, process cleanup, workspace snapshots, and command audit remain active.
+- This exception applies only to run_command. File tools and all other capabilities keep their ordinary workspace, mode, role, and schema boundaries.
+- Use this authority only when it materially advances the user's request. Never conceal destructive effects. Unrestricted bypasses EASY CODE command policy, but it does not bypass the operating-system sandbox.`;
+  }
+  if (mode === "auto_approve") {
+    return `Runtime command execution mode: auto approval
+- Commands that policy classifies as approval-eligible execute without an interactive prompt. Permanent policy denials, structural execution boundaries, and the operating-system workspace sandbox remain active.`;
+  }
+  return `Runtime command execution mode: manual approval
+- Policy-eligible commands require the user's approval unless an exact executable grant already exists. Permanent policy denials, structural execution boundaries, and the operating-system workspace sandbox remain active.`;
 }
 
 function formatModeRules(

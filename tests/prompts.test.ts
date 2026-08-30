@@ -234,6 +234,26 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
       assert.doesNotMatch(prompt, /submit_task_result is available only/u);
+
+      const unrestricted = await buildSystemPrompt({
+        config,
+        mode: "plan",
+        commandExecutionMode: "unrestricted",
+        availableTools: ["run_command"],
+        now: new Date("2026-08-27T00:00:00.000Z"),
+        cwd: workspace,
+        timeZone: "UTC",
+        locale: "en-US",
+        platform: "linux",
+        arch: "x64",
+        shell: "/bin/sh",
+        env: {},
+      });
+      assert.match(unrestricted, /unrestricted \(explicitly confirmed by the user\)/u);
+      assert.match(unrestricted, /destructive Git, network, system, interpreter, and shell commands/u);
+      assert.match(unrestricted, /does not apply command classification, Plan command restrictions/u);
+      assert.match(unrestricted, /Structured program\/argv execution.*timeouts.*command audit remain active/u);
+      assert.match(unrestricted, /does not bypass the operating-system sandbox/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

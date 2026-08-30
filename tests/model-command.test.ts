@@ -210,6 +210,69 @@ function assertMissingKey(
   };
 }
 
+describe("/approval", () => {
+  it("requires a second confirmation for unrestricted mode and switches all three states", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const selections: Array<string | undefined> = [
+      "unrestricted",
+      "cancel",
+      "unrestricted",
+      "confirm",
+      "auto_approve",
+      "manual",
+    ];
+    const titles: string[] = [];
+    const choiceIds: string[][] = [];
+    const sessionAnnouncements: Array<boolean | undefined> = [];
+    const setSessionInfo = fixture.terminal.setSessionInfo.bind(fixture.terminal);
+    fixture.terminal.setSessionInfo = (session, announce) => {
+      sessionAnnouncements.push(announce);
+      setSessionInfo(session, announce);
+    };
+    fixture.terminal.selectChoice = async (title, choices) => {
+      titles.push(title);
+      choiceIds.push(choices.map((choice) => choice.id));
+      return selections.shift();
+    };
+    const internal = fixture.app as unknown as {
+      commandExecutionMode: string;
+      config: { approvalPolicy: string };
+    };
+
+    try {
+      await fixture.app.handleSlashCommand("/approval");
+      assert.equal(internal.commandExecutionMode, "manual");
+
+      await fixture.app.handleSlashCommand("/approval");
+      assert.equal(internal.commandExecutionMode, "unrestricted");
+      assert.equal(internal.config.approvalPolicy, "safe");
+
+      await fixture.app.handleSlashCommand("/approval");
+      assert.equal(internal.commandExecutionMode, "auto_approve");
+
+      await fixture.app.handleSlashCommand("/approval");
+      assert.equal(internal.commandExecutionMode, "manual");
+
+      assert.deepEqual(choiceIds[0], ["manual", "auto_approve", "unrestricted"]);
+      assert.deepEqual(choiceIds[1], ["cancel", "confirm"]);
+      assert.deepEqual(choiceIds[3], ["cancel", "confirm"]);
+      assert.equal(
+        titles.filter((title) => title === "Confirm unrestricted command execution").length,
+        2,
+      );
+      assert.match(fixture.output(), /DANGER: unrestricted mode allows every resolved command/u);
+      assert.match(fixture.output(), /! UNRESTRICTED COMMAND EXECUTION IS ACTIVE/u);
+      assert.deepEqual(sessionAnnouncements, [false, false, false]);
+      await assert.rejects(
+        fixture.app.handleSlashCommand("/approval unrestricted"),
+        /Usage: \/approval/u,
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+});
+
 describe("/model", () => {
   it("validates direct switches against the provider catalog and preserves state on failure", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });

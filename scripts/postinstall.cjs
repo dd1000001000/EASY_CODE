@@ -1,5 +1,29 @@
 "use strict";
 
+const MINIMUM_NODE_VERSION = [20, 11, 0];
+
+function assertSupportedNodeVersion(version = process.versions.node) {
+  const parts = version.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10));
+  const [major = 0, minor = 0, patch = 0] = parts;
+  const [minimumMajor, minimumMinor, minimumPatch] = MINIMUM_NODE_VERSION;
+  const supported =
+    parts.length === 3 &&
+    parts.every((part) => Number.isInteger(part)) &&
+    (major > minimumMajor ||
+      (major === minimumMajor &&
+        (minor > minimumMinor ||
+          (minor === minimumMinor && patch >= minimumPatch))));
+
+  if (!supported) {
+    process.stderr.write(
+      `EASY CODE requires Node.js >= ${MINIMUM_NODE_VERSION.join(".")}; current version is ${version}. Upgrade Node.js before installing EASY CODE.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+assertSupportedNodeVersion();
+
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -347,6 +371,11 @@ module.exports = {
 };
 
 if (require.main === module) {
+  process.stdout.write(
+    process.platform === "win32"
+      ? "EASY CODE: Anthropic Sandbox Runtime is installed. Run `easy-code sandbox setup` once and approve the UAC prompt, then run `easy-code sandbox doctor`.\n"
+      : "EASY CODE: Anthropic Sandbox Runtime is installed. Run `easy-code sandbox doctor` to verify platform prerequisites.\n",
+  );
   runPostinstall()
     .then((result) => {
       if (!result.sqliteReady || !result.modelReady || !result.vectorStackReady) {

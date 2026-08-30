@@ -8,6 +8,7 @@ import {
   type ApprovalHandler,
   type ChatMessage,
   type CommandAuditEntry,
+  type CommandExecutionMode,
   type EventRecord,
   type ImageAttachment,
   type LongTermMemory,
@@ -184,6 +185,7 @@ export interface AgentRunOptions {
   maxOutputChars: number;
   commandTimeoutMs: number;
   approvalPolicy: "safe" | "ask" | "never";
+  commandExecutionMode?: CommandExecutionMode;
   signal?: AbortSignal;
   /** Runtime-owned Plan-review transition; never inferred from user text. */
   modeOverride?: "plan" | "code";
@@ -1153,6 +1155,7 @@ export class AgentRuntime {
               threadId: state.threadId,
               turnId,
               approvalPolicy: options.approvalPolicy,
+              commandExecutionMode: options.commandExecutionMode,
               requestApproval: this.dependencies.requestApproval,
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,
@@ -1819,6 +1822,7 @@ export class AgentRuntime {
               threadId: state.threadId,
               turnId,
               approvalPolicy: options.approvalPolicy,
+              commandExecutionMode: options.commandExecutionMode,
               requestApproval: this.dependencies.requestApproval,
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,

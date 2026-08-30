@@ -72,6 +72,7 @@ EASY CODE commands
   /model <model>             Switch the current provider's model
   /model qwen|deepseek|glm <id>
                               Switch both provider and model
+  /approval                 Select manual, auto-approved, or unrestricted commands
   /status                    Show current status
   /workspace                 Show workspace summary
   /workspace refresh         Refresh the workspace inventory
