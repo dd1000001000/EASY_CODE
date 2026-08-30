@@ -9,6 +9,7 @@ import type {
   UIProgressStatus,
   UISessionInfo,
   UIState,
+  UIThinkingPanelState,
 } from "../contracts.js";
 import {
   displayWidth,
@@ -20,6 +21,7 @@ import {
 export const DEFAULT_VIEW_COLUMNS = 80;
 export const MAX_COMPACT_TASK_ROWS = 5;
 export const MAX_COMPACT_AGENT_ROWS = 5;
+export const MAX_THINKING_PANEL_ROWS = 12;
 
 export const ACTIVITY_SPINNER_FRAMES = [
   "⠋",
@@ -49,6 +51,8 @@ export interface RenderViewOptions {
   readonly maxAgentRows?: number;
   readonly maxProgress?: number;
   readonly maxProgressRows?: number;
+  readonly maxThinkingLines?: number;
+  readonly maxThinkingRows?: number;
   readonly maxOverlayRows?: number;
   /** Override the effort-derived child capacity shown in the Agents heading. */
   readonly agentConcurrencyLimit?: number;
@@ -98,7 +102,7 @@ export function renderSessionHeader(
 
 /**
  * Render the redrawable bottom region. An overlay is modal and therefore hides
- * progress, activity, composer, and status until the selection is dismissed.
+ * progress, activity, Thinking, composer, and status until it is dismissed.
  */
 export function renderLiveRegion(
   state: Readonly<UIState>,
@@ -108,15 +112,46 @@ export function renderLiveRegion(
   if (state.overlay) return renderOverlay(state.overlay, options);
 
   const blocks: string[] = [];
+  const activityRegion = renderLiveActivityRegion(state, nowMs, options);
+  const statusRegion = renderComposerStatusRegion(state, options);
+  if (activityRegion) blocks.push(activityRegion);
+  if (state.composer.busy) blocks.push(renderComposerPrompt(state, options));
+  if (statusRegion) blocks.push(statusRegion);
+  return blocks.join("\n\n");
+}
+
+/**
+ * Render transient work above the composer. Thinking joins this upper region
+ * only while the renderer owns the busy composer; an active readline renders
+ * the clickable panel immediately below its own input border instead.
+ */
+export function renderLiveActivityRegion(
+  state: Readonly<UIState>,
+  nowMs: number,
+  options: RenderViewOptions = {},
+): string {
+  const blocks: string[] = [];
   const progress = renderProgress(state, options);
+  const activity = renderActivity(state, nowMs, options);
+  const thinking = state.composer.busy && state.live.thinking
+    ? renderThinkingPanel(state.live.thinking, options)
+    : "";
+  if (progress) blocks.push(progress);
+  if (activity) blocks.push(activity);
+  if (thinking) blocks.push(thinking);
+  return blocks.join("\n\n");
+}
+
+/** Render Tasks and Agents below the composer, followed by the final footer. */
+export function renderComposerStatusRegion(
+  state: Readonly<UIState>,
+  options: RenderViewOptions = {},
+): string {
+  const blocks: string[] = [];
   const tasks = renderTasks(state.live.tasks, options);
   const agents = renderAgents(state, options);
-  const activity = renderActivity(state, nowMs, options);
-  if (progress) blocks.push(progress);
   if (tasks) blocks.push(tasks);
   if (agents) blocks.push(agents);
-  if (activity) blocks.push(activity);
-  if (state.composer.busy) blocks.push(renderComposerPrompt(state, options));
   blocks.push(renderComposerFooter(state, options));
   return blocks.join("\n\n");
 }
@@ -185,6 +220,47 @@ export function renderComposerFooter(
   return truncateToWidth(segments.join("  "), viewColumns(options), {
     preserveAnsi: viewColor(options),
   });
+}
+
+/** Render one expanded, bounded Thinking block inside the redrawable region. */
+export function renderThinkingPanel(
+  panel: Readonly<UIThinkingPanelState>,
+  options: RenderViewOptions = {},
+): string {
+  const columns = viewColumns(options);
+  const palette = viewPalette(options);
+  const innerWidth = Math.max(1, boxContentWidth(columns));
+  const maximumRows = boundedOption(
+    options.maxThinkingRows ?? options.maxThinkingLines,
+    MAX_THINKING_PANEL_ROWS,
+    1,
+    40,
+  );
+  const content = panel.body || "(No visible Thinking text.)";
+  const body = limitedWrappedLines(content, innerWidth, maximumRows).map((line) =>
+    palette.gray(line)
+  );
+  if (panel.truncated) {
+    const source = panel.sourceLines !== undefined && panel.sourceChars !== undefined
+      ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`
+      : panel.sourceLines !== undefined
+        ? ` from ${panel.sourceLines} lines`
+        : panel.sourceChars !== undefined
+          ? ` from ${panel.sourceChars} chars`
+          : "";
+    body.push(palette.gray(`… [Thinking truncated${source}.]`));
+  }
+  body.push("");
+  body.push(palette.gray(
+    `↕ Thinking #${panel.id} · Click again to close · /thinking ${panel.id}`,
+  ));
+  return renderBox(
+    `Thinking #${panel.id}`,
+    body,
+    columns,
+    palette,
+    "gray",
+  );
 }
 
 /** Render a modal picker card. All request/model/plan strings remain data. */
@@ -409,9 +485,16 @@ function renderBox(
   body: readonly string[],
   columns: number,
   palette: ChalkInstance,
+  tone: "cyan" | "gray" = "cyan",
 ): string {
+  const border = tone === "gray"
+    ? (value: string): string => palette.gray(value)
+    : (value: string): string => palette.cyan(value);
   if (columns < 6) {
-    const flat = [...(title ? [palette.bold(title)] : []), ...body];
+    const styledTitle = tone === "gray"
+      ? palette.gray.bold(title)
+      : palette.bold(title);
+    const flat = [...(title ? [styledTitle] : []), ...body];
     return flat.map((line) => truncateToWidth(line, columns, {
       preserveAnsi: true,
     })).join("\n");
@@ -427,14 +510,14 @@ function renderBox(
     0,
     availableTitleWidth - displayWidth(titlePart),
   ));
-  const top = palette.cyan(`╭─${titlePart}${titleFill}╮`);
-  const bottom = palette.cyan(`╰${"─".repeat(columns - 2)}╯`);
+  const top = border(`╭─${titlePart}${titleFill}╮`);
+  const bottom = border(`╰${"─".repeat(columns - 2)}╯`);
   const innerWidth = boxContentWidth(columns);
   const rows = body.length > 0 ? body : [""];
   const content = rows.map((line) => {
     const fitted = truncateToWidth(line, innerWidth, { preserveAnsi: true });
     const padding = " ".repeat(Math.max(0, innerWidth - displayWidth(fitted)));
-    return `${palette.cyan("│")} ${fitted}${padding} ${palette.cyan("│")}`;
+    return `${border("│")} ${fitted}${padding} ${border("│")}`;
   });
   return [top, ...content, bottom].join("\n");
 }

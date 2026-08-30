@@ -64,9 +64,10 @@ import {
   truncateToWidth,
 } from "../ui/render/layout.js";
 import {
-  renderComposerFooter,
+  renderComposerStatusRegion,
   renderLiveRegion,
   renderSessionHeader,
+  renderThinkingPanel,
 } from "../ui/render/view.js";
 
 export type PlanReviewDecision =
@@ -245,6 +246,9 @@ export class Terminal {
 
   clearCurrentRequest(): void {
     if (!this.inlineShellActive) return;
+    this.progressItems = [];
+    this.progressSequence = 0;
+    this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
     this.uiState = applyEvent(this.uiState, { type: "composer.reset" });
     this.refresh();
   }
@@ -262,14 +266,14 @@ export class Terminal {
       return;
     }
     if (presentation.destination === "stable") {
-      this.completeRunningProgress("status");
+      this.removeRunningProgress("status");
       this.writeStableStatus(label, presentation.kind);
       this.refresh();
       return;
     }
 
     const kind = presentation.kind;
-    this.completeRunningProgress(kind);
+    this.removeRunningProgress(kind);
     this.progressSequence += 1;
     this.progressItems.push({
       id: `progress_${this.progressSequence}`,
@@ -288,20 +292,10 @@ export class Terminal {
 
   toolCompleted(toolName: string, ok: boolean, summary?: string): void {
     if (!this.inlineShellActive) return;
-    for (let index = this.progressItems.length - 1; index >= 0; index -= 1) {
-      const item = this.progressItems[index];
-      if (item?.kind !== "tool" || item.status !== "running") continue;
-      this.progressItems[index] = {
-        ...item,
-        status: ok ? "completed" : "failed",
-        ...(summary ? { detail: this.safeInline(summary, 160) } : {}),
-      };
-      break;
-    }
-    this.uiState = applyEvent(this.uiState, {
-      type: "progress.set",
-      progress: this.progressItems,
-    });
+    // Completion is durable scrollback. Keeping a second completed copy in the
+    // redrawable region makes every tool appear twice and lets Progress grow
+    // for the lifetime of a request.
+    this.removeRunningProgress("tool");
     const detail = summary ? ` — ${this.safeInline(summary, 160)}` : "";
     this.commitTranscript({
       kind: "tool",
@@ -414,6 +408,9 @@ export class Terminal {
                 : `Thinking block #${id} is not available in this thread.`,
             );
           }
+        },
+        onToggleThinking: (id) => {
+          this.toggleReasoning(id);
         },
       });
       if (result === null) this.closed = true;
@@ -877,7 +874,10 @@ export class Terminal {
 
   /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
   restoreReasoning(texts: readonly string[]): number {
-    return this.reasoning.rebuild(texts);
+    const count = this.reasoning.rebuild(texts);
+    this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+    this.refresh();
+    return count;
   }
 
   /** Append one bounded, sanitized thinking block. Missing IDs are silent. */
@@ -893,9 +893,34 @@ export class Terminal {
     return this.showReasoning("last");
   }
 
+  /** Toggle one Thinking block in the redrawable panel without adding scrollback. */
+  toggleReasoning(id: number): boolean {
+    if (!this.isInteractive()) return false;
+    const block = this.reasoning.get(id);
+    if (!block) {
+      // A stale marker must not leave an unrelated block looking selected.
+      this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+      this.writeStableStatus(
+        `Thinking block #${id} is not available in this thread.`,
+        "info",
+      );
+      this.refresh();
+      return false;
+    }
+    if (!this.inlineShellActive) return false;
+    this.uiState = applyEvent(this.uiState, {
+      type: "thinking.toggle",
+      panel: block,
+    });
+    this.refresh();
+    return true;
+  }
+
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
     this.reasoning.clear();
+    this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+    this.refresh();
   }
 
   close(): void {
@@ -1020,14 +1045,12 @@ export class Terminal {
     }
   }
 
-  private completeRunningProgress(kind: UIProgressItem["kind"]): void {
-    let changed = false;
-    this.progressItems = this.progressItems.map((item) => {
-      if (item.kind !== kind || item.status !== "running") return item;
-      changed = true;
-      return { ...item, status: "completed" as const };
-    });
-    if (changed) {
+  private removeRunningProgress(kind: UIProgressItem["kind"]): void {
+    const retained = this.progressItems.filter((item) =>
+      item.kind !== kind || item.status !== "running"
+    );
+    if (retained.length !== this.progressItems.length) {
+      this.progressItems = retained;
       this.uiState = applyEvent(this.uiState, {
         type: "progress.set",
         progress: this.progressItems,
@@ -1124,9 +1147,13 @@ export class Terminal {
   }
 
   private composerPromptSuffix(): string {
-    return `${this.composerBottomBorder()}\n${
-      renderComposerFooter(this.uiState, this.viewOptions())
-    }`;
+    const options = this.viewOptions();
+    const sections = [this.composerBottomBorder()];
+    if (this.uiState.live.thinking) {
+      sections.push(renderThinkingPanel(this.uiState.live.thinking, options));
+    }
+    sections.push(renderComposerStatusRegion(this.uiState, options));
+    return sections.join("\n");
   }
 
   private safeInline(value: string, maximum: number): string {

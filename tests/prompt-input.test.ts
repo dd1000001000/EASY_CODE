@@ -7,6 +7,7 @@ import {
   type PromptInputSession,
   VSCODE_IMAGE_PASTE_SEQUENCE,
   vscodeShowThinkingSequence,
+  vscodeToggleThinkingSequence,
 } from "../src/cli/prompt-input.js";
 import { Terminal } from "../src/cli/terminal.js";
 import { describe, it } from "./harness.js";
@@ -161,11 +162,12 @@ describe("image-aware CLI prompt", () => {
     assert.equal(input.rawModeTransitions.at(-1), false);
   });
 
-  it("handles a fragmented VS Code thinking link without leaking protocol bytes", async () => {
+  it("handles a fragmented legacy VS Code Thinking link as a toggle without leaking protocol bytes", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     output.resume();
     const shown: Array<number | "last"> = [];
+    const toggled: number[] = [];
     const promise = readPrompt({
       input,
       output,
@@ -173,6 +175,9 @@ describe("image-aware CLI prompt", () => {
       captureImage: async (index) => attachment(index),
       onShowThinking: (id) => {
         shown.push(id);
+      },
+      onToggleThinking: (id) => {
+        toggled.push(id);
       },
     });
     const sequence = Buffer.from(vscodeShowThinkingSequence(42));
@@ -185,7 +190,39 @@ describe("image-aware CLI prompt", () => {
     const result = await promise;
 
     assert.equal(result?.text, "keep me");
-    assert.deepEqual(shown, [42]);
+    assert.deepEqual(shown, []);
+    assert.deepEqual(toggled, [42]);
+  });
+
+  it("keeps Ctrl+T expansion separate from new and legacy mouse toggles", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const shown: Array<number | "last"> = [];
+    const toggled: number[] = [];
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onShowThinking: (id) => {
+        shown.push(id);
+      },
+      onToggleThinking: (id) => {
+        toggled.push(id);
+      },
+    });
+
+    input.write("draft");
+    input.write(Buffer.from([0x14]));
+    input.write(vscodeToggleThinkingSequence(7));
+    input.write(vscodeShowThinkingSequence(8));
+    input.write("!\r");
+    const result = await promise;
+
+    assert.equal(result?.text, "draft!");
+    assert.deepEqual(shown, ["last"]);
+    assert.deepEqual(toggled, [7, 8]);
   });
 
   it("redraws a wrapped input buffer after expansion", async () => {
@@ -357,7 +394,7 @@ describe("image-aware CLI prompt", () => {
     approvalOutput.resume();
     const approvalTerminal = new Terminal(approvalInput, approvalOutput);
     const approval = approvalTerminal.question("Approve? ");
-    approvalInput.write(`${vscodeShowThinkingSequence(7)}y\r`);
+    approvalInput.write(`${vscodeToggleThinkingSequence(7)}y\r`);
     assert.equal(await approval, "y");
     approvalTerminal.close();
 
