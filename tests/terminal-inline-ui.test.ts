@@ -177,6 +177,52 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("resets the retained conversation and redraws only the new Thread", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.write("old conversation\n");
+        terminal.setCurrentRequest("Old request");
+        terminal.status("Step 1/3: requesting deepseek-v4-pro");
+        terminal.taskGraph(graph());
+        terminal.subagents([agent()], graph(), 4);
+        const reasoningId = terminal.addReasoning("Old private reasoning.");
+        assert.equal(terminal.toggleReasoning(reasoningId), true);
+
+        const resetOffset = captured().length;
+        const next = session({ threadId: "thread_new_inline_ui" });
+        terminal.resetForNewThread(next);
+        const state = terminalState(terminal);
+        assert.equal(state.header.session?.threadId, "thread_new_inline_ui");
+        assert.deepEqual(state.transcript, []);
+        assert.equal(state.live.activity, null);
+        assert.deepEqual(state.live.progress, []);
+        assert.equal(state.live.thinking, null);
+        assert.equal(state.live.tasks, null);
+        assert.deepEqual(state.live.subagents, []);
+        assert.equal(state.overlay, null);
+        assert.equal(state.composer.busy, false);
+
+        const resetOutput = stripAnsi(captured().slice(resetOffset));
+        assert.match(captured().slice(resetOffset), /\u001Bc/u);
+        assert.match(resetOutput, /thread: thread_new_inline_ui/u);
+        assert.equal(resetOutput.includes("old conversation"), false);
+
+        terminal.success("Created thread thread_new_inline_ui");
+        assert.deepEqual(
+          terminalState(terminal).transcript.map((entry) => entry.kind),
+          ["raw"],
+        );
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("renders the session header and keeps activity, task DAG, and subagents live", async () => {
     await withInteractiveEnvironment(() => {
       const input = new TtyInput();

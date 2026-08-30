@@ -32,6 +32,17 @@ class TtyOutput extends PassThrough {
   readonly rows = 24;
 }
 
+async function withInteractiveTerm<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.TERM;
+  process.env.TERM = "xterm-256color";
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.TERM;
+    else process.env.TERM = previous;
+  }
+}
+
 function attachment(index: number): ImageAttachment {
   const id = `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
   return {
@@ -236,6 +247,127 @@ describe("image-aware CLI prompt", () => {
     assert.deepEqual(result?.pasteErrors, [
       "Pasted text exceeds the 256 KiB input limit.",
     ]);
+  });
+
+  it("deletes one intact multiline-paste marker with a single Backspace", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => attachment(index),
+      });
+
+      input.write("before");
+      input.write("\u001B[200~first line\nsecond line\u001B[201~");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.from([0x7f]));
+      input.write("after\r");
+
+      assert.equal((await prompt)?.text, "beforeafter");
+    });
+  });
+
+  it("submits a partially edited multiline-paste marker as ordinary text", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => attachment(index),
+      });
+
+      input.write("\u001B[200~first line\nsecond line\u001B[201~");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.alloc(17, 0x02)); // Move before the visible closing bracket.
+      input.write(Buffer.from([0x7f, 0x05, 0x0d]));
+      const result = await prompt;
+
+      assert.match(result?.text ?? "", /Pasted text #1 · 2 lines/u);
+      assert.equal(result?.text.includes("first line\nsecond line"), false);
+      assert.deepEqual(result?.images, []);
+    });
+  });
+
+  it("deletes an intact image marker with one Backspace and detaches its image", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => attachment(index),
+      });
+
+      input.write(Buffer.from([0x16]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.from([0x7f]));
+      input.write("plain text\r");
+      const result = await prompt;
+
+      assert.equal(result?.text, "plain text");
+      assert.deepEqual(result?.images, []);
+    });
+  });
+
+  it("submits a partially edited image marker as ordinary text without its image", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => attachment(index),
+      });
+
+      input.write(Buffer.from([0x16]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.alloc(17, 0x02)); // Move before the visible closing bracket.
+      input.write(Buffer.from([0x7f, 0x05, 0x0d]));
+      const result = await prompt;
+
+      assert.match(result?.text ?? "", /\[Image #1/u);
+      assert.equal(result?.text.includes("[Image #1]"), false);
+      assert.deepEqual(result?.images, []);
+    });
+  });
+
+  it("never binds a manually typed image label to a captured image", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => attachment(index),
+      });
+
+      input.write("[Image #1]");
+      input.write(Buffer.from([0x16]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.from([0x7f, 0x0d]));
+      const result = await prompt;
+
+      assert.equal(result?.text, "[Image #1]");
+      assert.deepEqual(result?.images, []);
+    });
   });
 
   it("uses Ctrl+T to show the latest thinking without changing typed input", async () => {

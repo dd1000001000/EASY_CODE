@@ -311,6 +311,7 @@ class ImagePasteInputProxy extends Transform {
   private bracketedPasteBuffer = Buffer.alloc(0);
   private pastedTextSequence = 0;
   private readonly pastedTextBlocks = new Map<string, string>();
+  private readonly imageMarkers = new Map<string, string>();
 
   constructor(
     private readonly source: PromptInput,
@@ -328,6 +329,7 @@ class ImagePasteInputProxy extends Transform {
     private readonly onToggleThinking?: (
       id: number,
     ) => void | Promise<void>,
+    private readonly onAtomicBackspace?: () => boolean,
     private readonly signal?: AbortSignal,
   ) {
     super();
@@ -402,6 +404,40 @@ class ImagePasteInputProxy extends Transform {
     return expanded;
   }
 
+  referencedImages(value: string): ImageAttachment[] {
+    return this.images.filter((image) => {
+      const marker = this.imageMarkers.get(image.id);
+      return marker !== undefined && value.includes(marker);
+    });
+  }
+
+  collapseMarkerBefore(
+    value: string,
+    cursor: number,
+  ): { line: string; cursor: number } | undefined {
+    if (!Number.isInteger(cursor) || cursor <= 0 || cursor > value.length) {
+      return undefined;
+    }
+    const markers = [
+      ...this.pastedTextBlocks.keys(),
+      ...this.imageMarkers.values(),
+    ];
+    const prefix = value.slice(0, cursor);
+    let matched = "";
+    for (const marker of markers) {
+      if (marker.length > matched.length && prefix.endsWith(marker)) {
+        matched = marker;
+      }
+    }
+    if (!matched) return undefined;
+
+    const start = cursor - matched.length;
+    return {
+      line: `${value.slice(0, start)}${value.slice(cursor)}`,
+      cursor: start,
+    };
+  }
+
   private async process(data: Buffer): Promise<Buffer> {
     const input = this.pendingSequence.length
       ? Buffer.concat([this.pendingSequence, data])
@@ -467,6 +503,10 @@ class ImagePasteInputProxy extends Transform {
       }
 
       const byte = input[offset];
+      if ((byte === 0x08 || byte === 0x7f) && this.onAtomicBackspace?.()) {
+        offset += 1;
+        continue;
+      }
       if (byte === CTRL_V) {
         output.push(...Buffer.from(await this.captureMarker(), "utf8"));
         offset += 1;
@@ -542,8 +582,10 @@ class ImagePasteInputProxy extends Transform {
       if (attachment.label !== expectedLabel) {
         throw new Error(`Captured image label must be ${expectedLabel}.`);
       }
+      const marker = ` [${expectedLabel}]${invisiblePasteNonce()} `;
       this.images.push(attachment);
-      return ` [${expectedLabel}] `;
+      this.imageMarkers.set(attachment.id, marker);
+      return marker;
     } catch (error) {
       let pasteError = error;
       if (!this.signal?.aborted && this.captureText) {
@@ -866,13 +908,29 @@ export function readPrompt(
         }
       }
     : undefined;
-  const proxy = new ImagePasteInputProxy(
+  let proxy!: ImagePasteInputProxy;
+  const deleteAtomicMarker = (): boolean => {
+    const collapsed = proxy.collapseMarkerBefore(rl.line, rl.cursor);
+    if (!collapsed || !suspendPrompt()) return false;
+    const mutableReadline = rl as unknown as {
+      line: string;
+      cursor: number;
+    };
+    mutableReadline.line = collapsed.line;
+    mutableReadline.cursor = collapsed.cursor;
+    suspendedLine = collapsed.line;
+    suspendedCursor = collapsed.cursor;
+    resumePrompt();
+    return true;
+  };
+  proxy = new ImagePasteInputProxy(
     input,
     initialImageCount,
     options.captureImage,
     options.captureText,
     showThinking,
     toggleThinking,
+    deleteAtomicMarker,
     captureController.signal,
   );
   rl = readline.createInterface({
@@ -958,7 +1016,7 @@ export function readPrompt(
       }
       resolve({
         text: proxy.expandPastedText(answer),
-        images: [...proxy.images],
+        images: proxy.referencedImages(answer),
         pasteErrors: [...proxy.pasteErrors],
       });
     };
@@ -1063,8 +1121,8 @@ export function readPrompt(
 
 function invisiblePasteNonce(): string {
   // Supplementary variation selectors have zero terminal width but remain in
-  // readline's edit buffer. They bind expansion to the marker we inserted, so
-  // identical visible text typed by the user is never mistaken for paste data.
+  // readline's edit buffer. They bind payloads and attachments to the exact
+  // marker we inserted, so identical visible text typed by the user is inert.
   let nonce = "";
   for (const byte of randomBytes(8)) {
     nonce += String.fromCodePoint(0xE0100 + (byte >> 4));
