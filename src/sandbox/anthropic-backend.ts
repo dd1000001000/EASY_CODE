@@ -63,8 +63,7 @@ function defaultSensitiveReadPaths(): string[] {
 }
 
 function sandboxMetadata(request: SandboxExecutionRequest): SandboxExecutionMetadata {
-  const unrestricted = request.context.commandExecutionMode === "unrestricted";
-  const network = unrestricted || request.policyDecision.capability === "shell_exec"
+  const network = request.policyDecision.capability === "shell_exec"
     ? "allowed"
     : request.policyDecision.capability === "registry_install"
       ? "registry-only"
@@ -83,7 +82,6 @@ function sandboxMetadata(request: SandboxExecutionRequest): SandboxExecutionMeta
 
 function networkDomains(request: SandboxExecutionRequest): string[] {
   if (
-    request.context.commandExecutionMode === "unrestricted" ||
     request.policyDecision.capability === "shell_exec"
   ) {
     return ["*"];
@@ -142,6 +140,9 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
+    if (request.context.commandExecutionMode === "unrestricted") {
+      throw new Error("Dangerous full access must use the dedicated host backend");
+    }
     const releaseGate = process.platform === "win32"
       ? await WINDOWS_SANDBOX_GATE.acquire()
       : () => undefined;
@@ -173,14 +174,13 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         XDG_CACHE_HOME: scratchCache,
         EASY_CODE_SANDBOXED: "1",
       };
-      const unrestricted = request.context.commandExecutionMode === "unrestricted";
       const protectedWorkspacePaths = [
         path.join(this.workspace.root, ".easycode"),
+        path.join(this.workspace.root, ".git"),
         this.workerPath,
         this.bridgePath,
         this.srtPackageRoot,
       ];
-      if (!unrestricted) protectedWorkspacePaths.push(path.join(this.workspace.root, ".git"));
       const payloadPath = path.join(scratchRoot, "worker-payload.json");
 
       const payload: SandboxWorkerPayload = {
@@ -214,7 +214,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
           ]),
           allowWrite: uniquePaths([this.workspace.root, scratchRoot]),
           denyWrite: uniquePaths(protectedWorkspacePaths),
-          allowGitConfig: unrestricted,
+          allowGitConfig: false,
         },
         network: { allowedDomains: networkDomains(request) },
       };

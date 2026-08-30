@@ -9,6 +9,7 @@ import type {
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
+import { recordFileToolRead, resolveExistingFileToolTarget } from "./file-access.js";
 
 export const readFileInputSchema = z
   .object({
@@ -57,13 +58,17 @@ export class ReadFileTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Read a UTF-8 text file inside the workspace by a 1-based line range and return its full-file SHA-256 version hash.",
+        "Read a UTF-8 text file by a 1-based line range and return its full-file SHA-256 version hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Workspace-relative file path" },
+          path: {
+            type: "string",
+            description:
+              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
+          },
           startLine: { type: "integer", minimum: 1 },
           endLine: { type: "integer", minimum: 1 },
         },
@@ -78,12 +83,21 @@ export class ReadFileTool implements AgentTool {
     try {
       await assertMatchingWorkspace(this.workspace, context);
       const parsed = this.inputSchema.parse(input);
-      const relative = this.workspace.pathGuard.normalizeRelative(parsed.path);
-      const filename = await this.workspace.pathGuard.resolveExisting(relative, {
+      const target = await resolveExistingFileToolTarget(this.workspace, context, parsed.path, {
         kind: "file",
         allowFinalSymlink: true,
       });
-      const buffer = await readFile(filename);
+      if (!target.workspaceRelative) {
+        // A background child must not return host bytes after the parent user
+        // has switched dangerous mode off.
+        if (!(context.isUnrestrictedHostAccessActive?.() ?? true)) {
+          throw new Error("Unrestricted host access was revoked before the file read");
+        }
+      }
+      const buffer = await readFile(target.absolutePath);
+      if (!target.workspaceRelative && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
+        throw new Error("Unrestricted host access was revoked during the file read");
+      }
       if (buffer.length > MAX_FILE_BYTES) {
         throw new Error(`File exceeds the ${MAX_FILE_BYTES}-byte read limit`);
       }
@@ -104,10 +118,10 @@ export class ReadFileTool implements AgentTool {
       }
       const endLine = Math.min(requestedEnd, totalLines, startLine + MAX_LINES_PER_READ - 1);
       const contentHash = sha256(buffer);
-      this.workspace.recordRead(relative, contentHash);
+      recordFileToolRead(this.workspace, target, contentHash, context);
 
       const output: ReadFileOutput = {
-        path: relative,
+        path: target.displayPath,
         content: lines.slice(startLine - 1, endLine).join("\n"),
         startLine,
         endLine,
@@ -117,10 +131,9 @@ export class ReadFileTool implements AgentTool {
         contentHash,
         truncated: endLine < requestedEnd || endLine < totalLines,
       };
-      return toolSuccess(`Read ${relative} lines ${startLine}-${endLine}`, output);
+      return toolSuccess(`Read ${target.displayPath} lines ${startLine}-${endLine}`, output);
     } catch (error) {
       return toolFailure(error, "Unable to read file");
     }
   }
 }
-

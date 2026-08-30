@@ -186,6 +186,8 @@ export interface AgentRunOptions {
   commandTimeoutMs: number;
   approvalPolicy: "safe" | "ask" | "never";
   commandExecutionMode?: CommandExecutionMode;
+  isUnrestrictedHostAccessActive?: () => boolean;
+  unrestrictedHostAccessEpoch?: () => number;
   signal?: AbortSignal;
   /** Runtime-owned Plan-review transition; never inferred from user text. */
   modeOverride?: "plan" | "code";
@@ -1156,6 +1158,8 @@ export class AgentRuntime {
               turnId,
               approvalPolicy: options.approvalPolicy,
               commandExecutionMode: options.commandExecutionMode,
+              isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
+              unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
               requestApproval: this.dependencies.requestApproval,
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,
@@ -1823,6 +1827,8 @@ export class AgentRuntime {
               turnId,
               approvalPolicy: options.approvalPolicy,
               commandExecutionMode: options.commandExecutionMode,
+              isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
+              unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
               requestApproval: this.dependencies.requestApproval,
               signal: options.signal,
               commandTimeoutMs: options.commandTimeoutMs,

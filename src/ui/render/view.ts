@@ -110,7 +110,11 @@ export function renderLiveRegion(
   nowMs: number,
   options: RenderViewOptions = {},
 ): string {
-  if (state.overlay) return renderOverlay(state.overlay, options);
+  if (state.overlay) {
+    const overlay = renderOverlay(state.overlay, options);
+    const danger = renderDangerIndicator(state, options);
+    return danger ? `${overlay}\n\n${danger}` : overlay;
+  }
 
   const blocks: string[] = [];
   const activityRegion = renderLiveActivityRegion(state, nowMs, options);
@@ -207,7 +211,7 @@ export function renderComposerFooter(
 
   if (session) {
     if (session.commandExecutionMode === "unrestricted") {
-      segments.push(palette.red.bold("! EASY CODE unrestricted"));
+      segments.push(palette.red.bold("! EASY CODE DANGER: FULL ACCESS"));
     }
     segments.push(palette.cyan(safeInline(session.mode) || "auto"));
     segments.push(palette.bold(formatProviderModel(session, false)));
@@ -224,6 +228,19 @@ export function renderComposerFooter(
   return truncateToWidth(segments.join("  "), viewColumns(options), {
     preserveAnsi: viewColor(options),
   });
+}
+
+function renderDangerIndicator(
+  state: Readonly<UIState>,
+  options: RenderViewOptions,
+): string {
+  if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
+  const palette = viewPalette(options);
+  return truncateToWidth(
+    palette.red.bold("! EASY CODE DANGER: FULL COMPUTER ACCESS — NO SANDBOX OR APPROVALS"),
+    viewColumns(options),
+    { preserveAnsi: viewColor(options) },
+  );
 }
 
 /** Render one expanded, bounded Thinking block inside the redrawable region. */

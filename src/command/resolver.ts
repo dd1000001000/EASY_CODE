@@ -1,9 +1,12 @@
 import { constants } from "node:fs";
-import { access, lstat, readFile, realpath } from "node:fs/promises";
+import { access, lstat, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { buildCommandEnvironment } from "./environment.js";
+import {
+  buildCommandEnvironment,
+  buildUnrestrictedCommandEnvironment,
+} from "./environment.js";
 import { analyzeNpmInstall } from "./npm-installer.js";
 import { normalizeExplicitShellArgs } from "./shell.js";
 import type { ResolvedCommand, RunCommandInput } from "./types.js";
@@ -50,14 +53,23 @@ async function isExecutable(filename: string): Promise<boolean> {
 export class CommandResolver {
   constructor(private readonly workspace: WorkspaceManager) {}
 
-  async resolve(input: RunCommandInput): Promise<ResolvedCommand> {
-    this.validateRequest(input);
-    const environment = buildCommandEnvironment();
-    const cwdAbsolute = await this.resolveCwd(input.cwd);
-    const cwdRelative = cwdAbsolute === this.workspace.root
-      ? "."
-      : this.workspace.pathGuard.toRelative(cwdAbsolute);
-    const executablePath = await this.resolveExecutable(input.program, cwdAbsolute, environment);
+  async resolve(
+    input: RunCommandInput,
+    options: { unrestrictedHostAccess?: boolean } = {},
+  ): Promise<ResolvedCommand> {
+    const unrestricted = options.unrestrictedHostAccess === true;
+    this.validateRequest(input, unrestricted);
+    const environment = unrestricted
+      ? buildUnrestrictedCommandEnvironment()
+      : buildCommandEnvironment();
+    const cwdAbsolute = await this.resolveCwd(input.cwd, unrestricted);
+    const cwdRelative = this.displayCwd(cwdAbsolute);
+    const executablePath = await this.resolveExecutable(
+      input.program,
+      cwdAbsolute,
+      environment,
+      unrestricted,
+    );
 
     let args = normalizeExplicitShellArgs(
       this.basename(executablePath),
@@ -65,7 +77,7 @@ export class CommandResolver {
     );
     this.validateArguments(args);
     let approvalMaterialHash: string | undefined;
-    if (this.basename(executablePath) === "npm") {
+    if (!unrestricted && this.basename(executablePath) === "npm") {
       const install = analyzeNpmInstall(args);
       if (install.isInstall && install.valid) args = install.normalizedArgs;
       this.hardenNpmEnvironment(environment);
@@ -89,11 +101,11 @@ export class CommandResolver {
     return path.basename(executablePath).replace(/\.(?:exe|cmd|bat|com)$/iu, "").toLowerCase();
   }
 
-  private validateRequest(input: RunCommandInput): void {
+  private validateRequest(input: RunCommandInput, unrestricted: boolean): void {
     if (!input.program || input.program.length > 4_096 || FORBIDDEN_PROGRAM_CHARACTERS.test(input.program)) {
-      throw new Error("program must be one executable name or workspace-relative executable path");
+      throw new Error("program must be one executable name or path without shell control characters");
     }
-    if (path.isAbsolute(input.program) || /^[a-zA-Z]:[\\/]/u.test(input.program)) {
+    if (!unrestricted && (path.isAbsolute(input.program) || /^[a-zA-Z]:[\\/]/u.test(input.program))) {
       throw new Error("Absolute executable paths are not accepted from the model");
     }
     this.validateArguments(input.args ?? []);
@@ -113,8 +125,21 @@ export class CommandResolver {
     }
   }
 
-  private async resolveCwd(requested?: string): Promise<string> {
+  private async resolveCwd(requested: string | undefined, unrestricted: boolean): Promise<string> {
     if (!requested || requested === ".") return this.workspace.root;
+    if (unrestricted) {
+      if (requested.includes("\0") || requested.includes("\r") || requested.includes("\n")) {
+        throw new Error("cwd contains forbidden control characters");
+      }
+      if (!path.isAbsolute(requested)) {
+        throw new Error("A host working directory must be an absolute path in unrestricted mode");
+      }
+      const canonical = path.normalize(await realpath(requested));
+      if (!(await stat(canonical)).isDirectory()) {
+        throw new Error("cwd does not refer to a directory");
+      }
+      return canonical;
+    }
     return this.workspace.pathGuard.resolveExisting(requested, {
       kind: "directory",
       allowFinalSymlink: true,
@@ -125,8 +150,17 @@ export class CommandResolver {
     requested: string,
     cwd: string,
     environment: NodeJS.ProcessEnv,
+    unrestricted: boolean,
   ): Promise<string> {
     if (requested.includes("/") || requested.includes("\\")) {
+      if (unrestricted) {
+        const candidate = path.isAbsolute(requested)
+          ? requested
+          : path.resolve(cwd, requested);
+        const target = path.normalize(await realpath(candidate));
+        if (!(await isExecutable(target))) throw new Error("Host program is not executable");
+        return target;
+      }
       const target = await this.workspace.pathGuard.resolveExisting(requested, {
         kind: "file",
         allowFinalSymlink: true,
@@ -137,20 +171,22 @@ export class CommandResolver {
 
     const extensions = executableExtensions(requested, environment);
 
-    // Prefer a package-local binary, walking only as far as the workspace root.
+    // Prefer a package-local binary. Ordinary modes stop at the workspace;
+    // explicitly confirmed host mode may resolve from any absolute cwd.
     let directory = cwd;
     while (true) {
       for (const extension of extensions) {
         const candidate = path.join(directory, "node_modules", ".bin", `${requested}${extension}`);
         if (await isExecutable(candidate)) {
           const canonical = path.normalize(await realpath(candidate));
-          this.workspace.pathGuard.assertInside(canonical);
+          if (!unrestricted) this.workspace.pathGuard.assertInside(canonical);
           return canonical;
         }
       }
-      if (directory === this.workspace.root) break;
+      if (!unrestricted && directory === this.workspace.root) break;
       const parent = path.dirname(directory);
-      if (!isInsideWorkspace(this.workspace, parent)) break;
+      if (parent === directory) break;
+      if (!unrestricted && !isInsideWorkspace(this.workspace, parent)) break;
       directory = parent;
     }
 
@@ -166,6 +202,15 @@ export class CommandResolver {
       }
     }
     throw new Error(`Executable not found on the controlled PATH: ${requested}`);
+  }
+
+  private displayCwd(cwdAbsolute: string): string {
+    if (cwdAbsolute === this.workspace.root) return ".";
+    try {
+      return this.workspace.pathGuard.toRelative(cwdAbsolute);
+    } catch {
+      return cwdAbsolute;
+    }
   }
 
   private hardenNpmEnvironment(environment: NodeJS.ProcessEnv): void {

@@ -8,6 +8,7 @@ export type SandboxBackendName =
   | "anthropic-srt-macos"
   | "anthropic-srt-linux"
   | "anthropic-srt-windows"
+  | "host-unrestricted"
   | "host-test-only";
 
 export interface SandboxExecutionMetadata {

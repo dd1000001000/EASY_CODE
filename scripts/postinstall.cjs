@@ -40,6 +40,73 @@ function importedDefault(value) {
     : value;
 }
 
+/**
+ * Read-only installation check. It never elevates, installs OS packages, or
+ * makes npm installation fail; privileged setup is offered by the retained
+ * terminal on the first interactive EASY CODE launch.
+ */
+async function checkSandboxPrerequisites(options = {}) {
+  const stdout = options.stdout || process.stdout;
+  const stderr = options.stderr || process.stderr;
+  const platform = options.platform || process.platform;
+  const loadRuntime = options.loadRuntime || (() => import("@anthropic-ai/sandbox-runtime"));
+
+  try {
+    const srt = await loadRuntime();
+    if (!srt.SandboxManager.isSupportedPlatform()) {
+      stdout.write(
+        `EASY CODE: Anthropic Sandbox Runtime does not support ${platform}; command execution will remain blocked.\n`,
+      );
+      return { ready: false, platform, status: "unsupported" };
+    }
+
+    if (platform === "win32") {
+      const resolved = srt.resolveSrtWin({ path: srt.VENDORED_SRT_WIN_EXE });
+      const status = await srt.checkWindowsSandboxStatusAsync({ srtWin: resolved });
+      const userReady = status.user.provisioned &&
+        status.user.credPresent &&
+        status.user.groupExists &&
+        status.user.inSandboxGroup;
+      let networkReady = false;
+      if (userReady) {
+        try {
+          await srt.verifyWindowsWfpEgress({ srtWin: resolved });
+          networkReady = true;
+        } catch {
+          networkReady = false;
+        }
+      }
+      const ready = userReady && networkReady;
+      stdout.write(
+        ready
+          ? "EASY CODE: Anthropic Windows sandbox prerequisites are ready.\n"
+          : "EASY CODE: Windows sandbox needs one-time setup; the first interactive launch will offer a UAC-guided setup.\n",
+      );
+      return { ready, platform, status: ready ? "ready" : "setup_required" };
+    }
+
+    const dependencies = await srt.SandboxManager.checkDependenciesAsync();
+    const problems = [...dependencies.errors, ...dependencies.warnings];
+    if (problems.length) {
+      stdout.write(
+        "EASY CODE: command sandbox prerequisites need attention; the first interactive launch will offer guided setup or diagnostics.\n",
+      );
+      for (const problem of problems) {
+        stdout.write(`EASY CODE: sandbox prerequisite: ${String(problem).replace(/[\r\n]+/g, " ")}\n`);
+      }
+      return { ready: false, platform, status: "dependencies_missing", problems };
+    }
+    stdout.write("EASY CODE: Anthropic command sandbox prerequisites are present.\n");
+    return { ready: true, platform, status: "ready" };
+  } catch (error) {
+    stderr.write(
+      `EASY CODE: sandbox prerequisite check could not complete: ${errorMessage(error)}. ` +
+      "Installation will continue; the first interactive launch will retry.\n",
+    );
+    return { ready: false, platform, status: "check_failed" };
+  }
+}
+
 function assertIntegerArray(value, label) {
   if (
     !Array.isArray(value) ||
@@ -364,6 +431,7 @@ async function runPostinstall(options = {}) {
 }
 
 module.exports = {
+  checkSandboxPrerequisites,
   runPostinstall,
   validateEmbeddingStack,
   validateOrama,
@@ -371,12 +439,9 @@ module.exports = {
 };
 
 if (require.main === module) {
-  process.stdout.write(
-    process.platform === "win32"
-      ? "EASY CODE: Anthropic Sandbox Runtime is installed. Run `easy-code sandbox setup` once and approve the UAC prompt, then run `easy-code sandbox doctor`.\n"
-      : "EASY CODE: Anthropic Sandbox Runtime is installed. Run `easy-code sandbox doctor` to verify platform prerequisites.\n",
-  );
-  runPostinstall()
+  Promise.resolve()
+    .then(() => checkSandboxPrerequisites())
+    .then(() => runPostinstall())
     .then((result) => {
       if (!result.sqliteReady || !result.modelReady || !result.vectorStackReady) {
         process.exitCode = 1;

@@ -13,7 +13,7 @@ import {
   renderSessionHeader,
   renderThinkingPanel,
 } from "../src/ui/render/view.js";
-import { applyEvents, createUIState } from "../src/ui/store.js";
+import { applyEvent, applyEvents, createUIState } from "../src/ui/store.js";
 import { describe, it } from "./harness.js";
 
 const CREATED_AT = "2026-08-29T00:00:00.000Z";
@@ -182,9 +182,40 @@ describe("pure terminal UI views", () => {
     const footer = renderComposerFooter(state, { columns: 80, color: true });
     assert.match(stripAnsi(header), /^╭─ EASY CODE /u);
     assert.doesNotMatch(stripAnsi(header), /Unrestricted command execution/u);
-    assert.match(stripAnsi(footer), /^! EASY CODE unrestricted  code/u);
+    assert.match(stripAnsi(footer), /^! EASY CODE DANGER: FULL ACCESS  code/u);
     assert.doesNotMatch(header, /\u001B\[31m/u);
     assert.match(footer, /\u001B\[31m/u);
+  });
+
+  it("keeps the red full-access warning visible while a modal overlay is open", () => {
+    let state = applyEvents(createUIState(), [{
+      type: "session.set",
+      session: {
+        threadId: "danger-overlay-thread",
+        workspaceRoot: "F:\\projects\\danger",
+        mode: "code",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        thinkingEffort: "high",
+        commandExecutionMode: "unrestricted",
+      },
+    }]);
+    state = applyEvent(state, {
+      type: "overlay.show",
+      overlay: {
+        id: "danger-model-picker",
+        kind: "picker",
+        title: "Select model",
+        rows: [{ id: "one", label: "One" }],
+        selectedIndex: 0,
+        hint: "Enter confirm",
+      },
+    });
+
+    const rendered = renderLiveRegion(state, 0, { columns: 100, color: true });
+    assert.match(stripAnsi(rendered), /Select model/u);
+    assert.match(stripAnsi(rendered), /! EASY CODE DANGER: FULL COMPUTER ACCESS/u);
+    assert.match(rendered, /\u001B\[31m/u);
   });
 
   it("renders compact progress, task, agent, activity, busy composer, and footer", () => {

@@ -84,6 +84,7 @@ function appOptions(
     resumeThreadId: options.resume,
     imagePaths: options.image,
     startupInteraction,
+    sandboxStartup: startupInteraction !== "none",
   };
 }
 

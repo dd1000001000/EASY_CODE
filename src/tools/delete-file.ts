@@ -15,6 +15,15 @@ import {
   toolFailure,
   toolSuccess,
 } from "./base.js";
+import {
+  acquireHostFileMutationLock,
+  assertHostFileMutationStillAllowed,
+  getFileToolReadVersion,
+  invalidateFileToolReadVersion,
+  refreshWorkspaceForFileToolTarget,
+  resolveExistingFileToolTarget,
+  type FileToolTarget,
+} from "./file-access.js";
 
 export const deleteFileInputSchema = z
   .object({
@@ -35,13 +44,17 @@ export class DeleteFileTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Delete a previously read regular workspace file only if its current SHA-256 hash still matches expectedHash.",
+        "Delete a previously read regular file only if its current SHA-256 hash still matches expectedHash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Workspace-relative file path" },
+          path: {
+            type: "string",
+            description:
+              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
+          },
           expectedHash: {
             type: "string",
             pattern: "^[a-fA-F0-9]{64}$",
@@ -56,16 +69,22 @@ export class DeleteFileTool implements AgentTool {
   constructor(private readonly workspace: WorkspaceManager) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
-    let relative: string | undefined;
+    let target: FileToolTarget | undefined;
     let expectedHash: string | undefined;
+    let releaseHostMutation: (() => void) | undefined;
     try {
       await assertMatchingWorkspace(this.workspace, context);
       assertWritableMode(context);
       const parsed = this.inputSchema.parse(input);
-      relative = this.workspace.pathGuard.normalizeRelative(parsed.path);
+      target = await resolveExistingFileToolTarget(this.workspace, context, parsed.path, {
+        kind: "file",
+        allowFinalSymlink: false,
+      });
+      releaseHostMutation = await acquireHostFileMutationLock(target, context.signal);
+      assertHostFileMutationStillAllowed(context, target);
       expectedHash = parsed.expectedHash.toLowerCase();
 
-      const readVersion = this.workspace.getReadVersion(relative);
+      const readVersion = getFileToolReadVersion(this.workspace, target, context);
       if (!readVersion) {
         throw new Error("File must be successfully read before it can be deleted");
       }
@@ -73,17 +92,14 @@ export class DeleteFileTool implements AgentTool {
         throw new Error("expectedHash does not match the last successfully read version");
       }
 
-      const filename = await this.workspace.pathGuard.resolveExisting(relative, {
-        kind: "file",
-        allowFinalSymlink: false,
-      });
+      const filename = target.absolutePath;
       const originalBuffer = await readFile(filename);
       if (originalBuffer.includes(0)) {
         throw new Error("Binary files are not supported");
       }
       const currentHash = sha256(originalBuffer);
       if (currentHash !== expectedHash) {
-        this.recordConflict(relative, expectedHash, currentHash);
+        this.recordConflict(target, expectedHash, currentHash);
         throw new Error("File changed after it was read; read it again before deleting");
       }
 
@@ -97,55 +113,62 @@ export class DeleteFileTool implements AgentTool {
       // changes made while this operation was being prepared. Node does not
       // expose a portable atomic compare-and-unlink primitive, so this is the
       // same best-effort compare-before-mutation boundary used by update_file.
-      const confirmedFilename = await this.workspace.pathGuard.resolveExisting(relative, {
+      const confirmedTarget = await resolveExistingFileToolTarget(this.workspace, context, parsed.path, {
         kind: "file",
         allowFinalSymlink: false,
       });
+      const confirmedFilename = confirmedTarget.absolutePath;
       if (!samePath(filename, confirmedFilename)) {
         throw new Error("File path changed while deletion was being prepared");
       }
       const confirmedHash = sha256(await readFile(confirmedFilename));
       if (confirmedHash !== expectedHash) {
-        this.recordConflict(relative, expectedHash, confirmedHash);
+        this.recordConflict(target, expectedHash, confirmedHash);
         throw new Error("File changed while deletion was being prepared");
       }
 
+      assertHostFileMutationStillAllowed(context, target);
       await unlink(confirmedFilename);
 
-      this.workspace.invalidateReadVersion(relative);
-      this.workspace.recordChange({
-        path: relative,
-        operation: "delete",
-        beforeHash: currentHash,
-        source: "file_tool",
-        status: "verified",
-        timestamp: new Date().toISOString(),
-      });
-      await this.workspace.refreshManifest();
+      invalidateFileToolReadVersion(this.workspace, target);
+      if (target.workspaceRelative) {
+        this.workspace.recordChange({
+          path: target.workspaceRelative,
+          operation: "delete",
+          beforeHash: currentHash,
+          source: "file_tool",
+          status: "verified",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      await refreshWorkspaceForFileToolTarget(this.workspace, target);
 
       return toolSuccess(
-        `Deleted ${relative}`,
+        `Deleted ${target.displayPath}`,
         {
-          path: relative,
+          path: target.displayPath,
           beforeHash: currentHash,
           bytesDeleted: originalBuffer.length,
         },
         {
           type: "file_diff",
           operation: "delete",
-          path: relative,
+          path: target.displayPath,
           before: originalBuffer.toString("utf8"),
           after: "",
         },
       );
     } catch (error) {
       return toolFailure(error, "Unable to delete file");
+    } finally {
+      releaseHostMutation?.();
     }
   }
 
-  private recordConflict(pathname: string, expectedHash: string, actualHash: string): void {
+  private recordConflict(target: FileToolTarget, expectedHash: string, actualHash: string): void {
+    if (!target.workspaceRelative) return;
     this.workspace.recordChange({
-      path: pathname,
+      path: target.workspaceRelative,
       operation: "delete",
       beforeHash: expectedHash,
       afterHash: actualHash,

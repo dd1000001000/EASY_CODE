@@ -4,6 +4,8 @@ English | [简体中文](./README_zh.md)
 
 Technical design (architecture, terminal UI, permissions, memory, DAG, child sessions, Worktrees, and Handoff): [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
 
+License: EASY CODE's original source is [MIT licensed](./LICENSE). Third-party components retain their own licenses; see [Third-Party Notices](./THIRD_PARTY_NOTICES.md).
+
 EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
 
 EASY CODE runs entirely in the current terminal. It does not open a separate desktop window.
@@ -11,9 +13,10 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 ## Features
 
 - Three working modes: Plan, Auto, and Code, with model-controlled routing in Auto.
-- Read, create, update, and delete files inside the selected workspace.
+- Read, create, update, and delete files inside the selected workspace; explicitly confirmed Dangerous full access also accepts absolute host paths.
 - Run commands, tests, build tools, and supported npm installation commands.
-- Run command process trees inside an OS-enforced `workspace-write` sandbox powered by `@anthropic-ai/sandbox-runtime` `0.0.74`.
+- Run Manual and Auto-approved command process trees inside an OS-enforced `workspace-write` sandbox powered by `@anthropic-ai/sandbox-runtime` `0.0.74`.
+- Optionally enable process-local Dangerous full access, with a second confirmation and persistent red warning, to run without sandboxing or approval as the current OS user.
 - Show line-numbered code diffs with green additions and red removals.
 - Keep completed output in terminal scrollback while updating current work in a compact inline status area.
 - Switch providers, models, and thinking effort while the session is running.
@@ -40,7 +43,7 @@ A maintained Node.js LTS release is recommended.
 The command sandbox has platform prerequisites:
 
 - Windows uses the bundled Anthropic SRT Windows backend, which is currently alpha and requires a one-time elevated setup.
-- macOS uses Seatbelt and requires `ripgrep`.
+- macOS uses the operating system's built-in Seatbelt sandbox and has no additional hard package prerequisite in the pinned runtime.
 - Linux uses bubblewrap and requires `bubblewrap`, `socat`, and `ripgrep`; the host must also permit the user namespaces required by bubblewrap.
 
 ## Installation
@@ -56,20 +59,22 @@ npm install --global .
 easy-code --version
 ```
 
-Check the command sandbox after installation:
+The npm postinstall hook performs a read-only prerequisite check. It never opens UAC, runs `sudo`, or changes machine policy. On the first interactive `easy-code` launch, an unready sandbox is shown in the retained terminal UI and you can choose guided setup, recheck, continue with sandboxed commands blocked, or exit. Dangerous full access is never enabled by installation or a failed probe; it always requires its own in-session confirmation.
+
+You can also check or repair the command sandbox explicitly:
 
 ```bash
 easy-code sandbox doctor
 ```
 
-On Windows, complete the one-time machine setup and approve the UAC prompt, then verify it:
+On Windows, setup opens the one-time SRT UAC flow. On Linux, setup can install only the fixed packages reported as missing through a recognized system package manager; it uses structured arguments and non-interactive existing administrator credentials. It never changes User Namespace, AppArmor, kernel, repository, or other machine security policy. macOS normally needs no package setup.
 
 ```bash
 easy-code sandbox setup
 easy-code sandbox doctor
 ```
 
-On macOS or Linux, `easy-code sandbox setup` is a read-only prerequisite check: it does not install system packages or request elevation. Install any dependencies reported by `doctor` with the platform package manager, then rerun the check.
+If Linux administrator credentials are not already available non-interactively, EASY CODE prints the exact package-manager command instead of collecting a password inside the terminal UI. Run it yourself, then choose recheck or run `easy-code sandbox doctor`.
 
 If your GitHub SSH key is configured, you can clone with:
 
@@ -191,7 +196,7 @@ In an interactive terminal, EASY CODE keeps one inline interface in four regions
 
 Completed tool activity moves out of the live status and into ordinary scrollback exactly once. Superseded Step/status rows are discarded rather than accumulated. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
 
-`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
+`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer, but an active Dangerous full access warning remains visible. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
 
 With the bundled VS Code extension installed, hold `Ctrl` and click the gray `Thinking #N` text on Windows/Linux, or hold `Cmd` and click it on macOS, to open that block in a gray panel inside the redrawable live region. Repeat the same gesture on that marker—or on the `Thinking #N` text in the panel's bottom `↕` control line—to close it. Activating a different marker switches the panel to that block. The control remains responsive while a model request is running. Thinking panels do not support or consume Esc; Esc remains available to overlays and normal terminal input.
 
@@ -329,7 +334,9 @@ The Worktree baseline is a point-in-time input selected when a child starts:
 
 `current-snapshot` is the default, so a clean containing repository is not
 required. In a monorepo, the snapshot covers the repository, while the child's
-file tools remain confined to the selected logical workspace mapping. It is not
+file tools normally remain confined to the selected logical workspace mapping.
+Dangerous full access removes that security boundary for the main Agent and
+children while it is active. It is not
 live synchronization: later edits in the parent checkout do not appear in an
 existing child and may cause a conflict when its result is handed off.
 
@@ -357,9 +364,9 @@ Useful commands:
 /approval
 ```
 
-EASY CODE applies two independent command boundaries. Command policy and approval decide whether a resolved command may start; the Anthropic Sandbox Runtime then confines the approved command process tree at the operating-system level. Built-in file tools continue to use EASY CODE's canonical workspace path guard.
+In Manual and Auto-approved modes, EASY CODE applies two independent command boundaries. Command policy and approval decide whether a resolved command may start; the Anthropic Sandbox Runtime then confines the approved command process tree at the operating-system level. Built-in file tools use EASY CODE's canonical workspace path guard.
 
-The sandbox is always `workspace-write`: commands may write the active physical workspace and a Runtime-owned temporary directory, while EASY CODE's private state, common credential locations, and protected control files are denied. If SRT is unsupported, uninitialized, missing a dependency, or cannot prepare the command, execution fails closed with `sandbox_unavailable`; EASY CODE never falls back to launching the command directly on the host.
+For those protected modes, the sandbox is `workspace-write`: commands may write the active physical workspace and a Runtime-owned temporary directory, while EASY CODE's private state, common credential locations, and protected control files are denied. If SRT is unsupported, uninitialized, missing a dependency, or cannot prepare the command, execution fails closed with `sandbox_unavailable`; EASY CODE never silently falls back to the host.
 
 When a command needs approval, use `↑`/`↓` and Enter to choose:
 
@@ -367,19 +374,19 @@ When a command needs approval, use `↑`/`↓` and Enter to choose:
 2. `Yes, don't ask me again with prefix [executable]` — remember the exact Runtime-resolved executable path for the current thread.
 3. `Reject` — do not run it.
 
-The second choice applies to later argument vectors for that executable, survives `/resume`, and can be used by child Agents bound to the same parent thread. It does not carry into `/new` or another thread, and child Agents cannot create new grants. Treat grants for interpreters and shells such as Python, Node.js, `cmd`, or PowerShell as broad authority: later scripts or shell text can perform very different operations. The grant identifies a path, not immutable executable bytes, so replacing the file at that path does not revoke it. `/permissions` shows the active executable grants. Permanent policy denials, Plan mode boundaries, and `--approval never` always take precedence.
+The second choice applies to later argument vectors for that executable, survives `/resume`, and can be used by child Agents bound to the same parent thread. It does not carry into `/new` or another thread, and child Agents cannot create new grants. Treat grants for interpreters and shells such as Python, Node.js, `cmd`, or PowerShell as broad authority: later scripts or shell text can perform very different operations. The grant identifies a path, not immutable executable bytes, so replacing the file at that path does not revoke it. `/permissions` shows the active executable grants. Outside Dangerous full access, permanent policy denials, Plan mode boundaries, and `--approval never` always take precedence.
 
 Use `/approval` to change the command posture for the current EASY CODE process with an arrow-key selector:
 
 1. `Manual approval` asks before policy-eligible high-risk commands.
 2. `Auto approve` executes approval-eligible commands without prompting, while permanent denials and structural boundaries remain active.
-3. `Unrestricted` bypasses command classification, permanent command denials, Plan command restrictions, and approval prompts. It requires a separate danger confirmation and adds a red `! EASY CODE unrestricted` marker to the redrawable status footer. The mode ends when EASY CODE exits or when you select another posture. The scrollback session title is not reprinted when the posture changes. It does **not** disable the OS sandbox.
+3. `Dangerous full access` disables command classification, permanent command denials, Plan command restrictions, approval prompts, and the OS sandbox. Before it is enabled, a separate danger confirmation explicitly warns that commands and file tools will receive current-user access to the full host filesystem, inherited environment, and internet. After it is enabled, a persistent red `! EASY CODE DANGER: FULL ACCESS` marker remains visible. The mode ends when EASY CODE exits or when another posture is selected; switching away immediately revokes the authority from the main Agent and every child, including waiting operations. The scrollback session title is not duplicated when the posture changes.
 
-All three `/approval` modes therefore remain inside the same OS-enforced `workspace-write` filesystem boundary. Unrestricted mode still uses a structured program and argument vector, a workspace working directory, a controlled environment, cancellation, timeouts, bounded/redacted output, process cleanup, and command audit. It may modify protected Git metadata inside the workspace and its network policy is open, so the red warning remains meaningful even though host filesystem access stays sandboxed.
+Dangerous full access uses a separate host backend. Commands run directly as the current OS user, may use absolute executables and working directories, inherit the host environment, access the internet, and read or modify anything that account can access. The checked file tools also accept explicit absolute host paths; relative paths keep their normal workspace interpretation. Main and child Agents inherit this process-level authority while it is active. EASY CODE does not bypass OS ACLs, UAC, `sudo`, or another account's permissions.
 
-Network access is capability based and uses SRT's strict allowlist. Ordinary commands receive no network access; constrained exact-version npm Registry installation can reach only `registry.npmjs.org`; an explicitly approved Shell and Unrestricted command mode can reach any domain. An allowed domain is not a destination- or operation-level authorization, so Shell and Unrestricted execution can still transmit readable workspace data. Unix sockets, local port binding, Apple Events, weaker nested isolation, and weaker network isolation remain disabled.
+Structured program/argv execution, non-interactive shell shape, cancellation, timeouts, bounded/redacted output, process cleanup, and command audit remain active in Dangerous full access. These controls are not a sandbox or rollback mechanism. Host processes inherit environment variables and can expose credentials. Workspace snapshots and `/changes` cover the selected workspace, not arbitrary external modifications.
 
-The sandbox is a second boundary rather than a substitute for review. `@anthropic-ai/sandbox-runtime` is pinned because its API is still a Beta Research Preview, and its Windows backend is alpha. Windows commands are serialized within one EASY CODE process because SRT uses one machine-wide sandbox identity. Some user-scoped toolchains or programs that expect access to files outside their executable directory may not run without a machine-wide installation. A Git Worktree still only isolates Git working state by itself; EASY CODE separately applies the command sandbox to the active main or child physical workspace.
+In protected modes, network access is capability based through SRT: ordinary commands receive no network access, constrained exact-version npm installation receives the Registry allowlist, and an explicitly approved shell receives its classified network capability. `@anthropic-ai/sandbox-runtime` is pinned because its API is still a Beta Research Preview and its Windows backend is alpha. A Git Worktree isolates Git state rather than security; Dangerous full access can reach outside every Worktree.
 
 ## Images
 
@@ -558,8 +565,8 @@ Run `easy-code --help` for shell-level help. Run `/help` after entering EASY COD
 Sandbox maintenance commands run before entering the interactive Agent:
 
 ```text
-easy-code sandbox doctor    Diagnose platform support and prerequisites
-easy-code sandbox setup     Perform the one-time Windows setup or check prerequisites elsewhere
+easy-code sandbox doctor    Diagnose dependencies and run an enforcement probe
+easy-code sandbox setup     Run Windows UAC setup or install fixed missing Linux prerequisites
 ```
 
 ## Interactive commands
@@ -578,7 +585,7 @@ easy-code sandbox setup     Perform the one-time Windows setup or check prerequi
 /agents                    Show child agents
 /tools                     Show available tools
 /permissions               Show command permissions
-/approval                  Select manual, auto-approved, or unrestricted commands
+/approval                  Select manual, auto-approved, or Dangerous full access
 /commands                  Show recent commands
 /context                   Show context usage
 /usage                     Show cumulative provider-reported Token usage
@@ -597,13 +604,13 @@ easy-code sandbox setup     Perform the one-time Windows setup or check prerequi
 
 - Review or commit important work before letting an agent make broad changes.
 - Use `/permissions` to inspect the active command policy.
-- Use `easy-code sandbox doctor` to verify the OS filesystem and network boundary.
+- Use `easy-code sandbox doctor` to verify the OS filesystem and network boundary retained by Manual and automatic approval.
 - Prefer one-time approval unless you trust every later argument passed to the displayed executable in this thread.
 - `--yes` should be used only in trusted workspaces or isolated environments.
 - `--yes` does not bypass Plan mode restrictions or commands that are always denied.
-- Manual, automatic, and Unrestricted approval all retain the OS-enforced `workspace-write` sandbox; a sandbox setup failure blocks execution instead of falling back to a host process.
-- An approved Shell or Unrestricted command has unrestricted network destinations and may transmit workspace data even though filesystem writes remain sandboxed.
-- A Git Worktree isolates Git working state rather than providing the security boundary; EASY CODE applies the command sandbox separately to that physical checkout.
+- Manual and automatic approval retain the OS-enforced `workspace-write` sandbox; a sandbox setup failure blocks those commands instead of silently falling back to a host process.
+- Dangerous full access intentionally has no EASY CODE sandbox or approval boundary. It can transmit host data, expose inherited credentials, install software, and modify or delete any data available to the current OS user.
+- A Git Worktree isolates Git working state rather than providing the security boundary. Manual and automatic approval apply the command sandbox separately to that physical checkout; Dangerous full access does not.
 - Never place API keys in source files, chat prompts, `EASYCODE.md`, or Git history.
 
 ## Troubleshooting
@@ -655,7 +662,7 @@ If the result reports `sandbox_unavailable`, diagnose the platform boundary:
 easy-code sandbox doctor
 ```
 
-On Windows, run `easy-code sandbox setup` and approve the one-time UAC prompt. On Linux, install `bubblewrap`, `socat`, and `ripgrep` and ensure user namespaces are available. On macOS, install `ripgrep`. EASY CODE fails closed and will not retry the command outside the sandbox.
+On Windows, run `easy-code sandbox setup` and approve the one-time UAC prompt. On Linux, the same command can install missing `bubblewrap`, `socat`, and `ripgrep` packages, but User Namespace/AppArmor policy remains an administrator decision. macOS uses its built-in Seatbelt sandbox. Manual and Auto-approved execution fail closed and do not retry outside the sandbox. Dangerous full access is a separate, explicit user choice under `/approval`, not an error fallback.
 
 ### Node.js is too old
 

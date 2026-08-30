@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { ApprovalRequest, CommandAuditEntry, ToolContext } from "../src/core/types.js";
 import {
@@ -338,42 +339,70 @@ describe("command runtime", () => {
 
   it("bypasses every command policy and approval rule in unrestricted mode", async () => {
     await withWorkspace(async (root, manager) => {
+      const hostCwd = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-command-"));
+      const canonicalHostCwd = path.normalize(await realpath(hostCwd));
       const approvals: ApprovalRequest[] = [];
       const tool = new RunCommandTool(manager);
-      const result = await tool.execute(
-        {
-          program: "node",
-          args: ["-e", "process.stdout.write('unrestricted-ok')"],
-          intent: "run",
-        },
-        context(root, {
-          mode: "plan",
-          approvalPolicy: "never",
-          commandExecutionMode: "unrestricted",
-          approvals,
-        }),
-      );
+      const environmentName = "EASY_CODE_DANGER_ENV_TEST";
+      const previousEnvironment = process.env[environmentName];
+      process.env[environmentName] = "inherited-host-value";
+      try {
+        const result = await tool.execute(
+          {
+            program: process.execPath,
+            args: [
+              "-e",
+              "require('node:fs').writeFileSync('outside.txt', process.env.EASY_CODE_DANGER_ENV_TEST); process.stdout.write('unrestricted-ok')",
+            ],
+            cwd: hostCwd,
+            intent: "run",
+          },
+          context(root, {
+            mode: "plan",
+            approvalPolicy: "never",
+            commandExecutionMode: "unrestricted",
+            approvals,
+          }),
+        );
 
-      assert.equal(result.ok, true);
-      assert.equal(approvals.length, 0);
-      const output = result.data as {
-        stdout: { text: string };
-        policyDecision: { effect: string; matchedRule: string };
-      };
-      assert.equal(output.stdout.text, "unrestricted-ok");
-      assert.equal(output.policyDecision.effect, "allow");
-      assert.equal(output.policyDecision.matchedRule, "allow.unrestricted");
+        assert.equal(result.ok, true);
+        assert.equal(approvals.length, 0);
+        const output = result.data as {
+          stdout: { text: string };
+          policyDecision: { effect: string; matchedRule: string };
+          sandbox: { backend: string; enforced: boolean; filesystem: string; network: string };
+          executed: { cwd: string };
+        };
+        assert.equal(output.stdout.text, "unrestricted-ok");
+        assert.equal(output.policyDecision.effect, "allow");
+        assert.equal(output.policyDecision.matchedRule, "allow.unrestricted");
+        assert.deepEqual(output.sandbox, {
+          backend: "host-unrestricted",
+          enforced: false,
+          filesystem: "host",
+          network: "host",
+        });
+        assert.equal(output.executed.cwd, canonicalHostCwd);
+        assert.equal(
+          await readFile(path.join(hostCwd, "outside.txt"), "utf8"),
+          "inherited-host-value",
+        );
 
-      const escapedCwd = await tool.execute(
-        { program: "node", args: ["--version"], cwd: "../", intent: "run" },
-        context(root, {
-          mode: "code",
-          approvalPolicy: "never",
-          commandExecutionMode: "unrestricted",
-        }),
-      );
-      assert.equal(escapedCwd.ok, false);
-      assert.match(escapedCwd.error ?? "", /traversal|workspace/iu);
+        const relativeEscape = await tool.execute(
+          { program: "node", args: ["--version"], cwd: "../", intent: "run" },
+          context(root, {
+            mode: "code",
+            approvalPolicy: "never",
+            commandExecutionMode: "unrestricted",
+          }),
+        );
+        assert.equal(relativeEscape.ok, false);
+        assert.match(relativeEscape.error ?? "", /absolute path/iu);
+      } finally {
+        if (previousEnvironment === undefined) delete process.env[environmentName];
+        else process.env[environmentName] = previousEnvironment;
+        await rm(hostCwd, { recursive: true, force: true });
+      }
     });
   });
 
