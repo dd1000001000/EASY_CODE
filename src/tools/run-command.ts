@@ -30,15 +30,23 @@ export class RunCommandTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Run one controlled program with a structured argv array inside the workspace. Every production command process tree is confined by Anthropic Sandbox Runtime and fails closed if that boundary is unavailable. Explicit one-shot shells are supported in Auto/Code mode (for example cmd /c, PowerShell -Command, or sh -c) and require approval unless command auto-approval or Unrestricted mode is active.",
+        "Run one structured program/argv command. Manual and auto-approved modes use Runtime policy plus the Anthropic workspace sandbox. User-confirmed dangerous mode runs directly as the current OS user with host filesystem, working-directory, environment, and internet access and no EASY CODE approval prompt. Explicit one-shot shells remain supported.",
       strict: true,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          program: { type: "string", description: "Executable name or workspace-relative executable" },
+          program: {
+            type: "string",
+            description:
+              "Executable name or workspace-relative executable; absolute host executables require dangerous mode",
+          },
           args: { type: "array", items: { type: "string" }, maxItems: 256 },
-          cwd: { type: "string", description: "Workspace-relative existing directory" },
+          cwd: {
+            type: "string",
+            description:
+              "Workspace-relative existing directory, or an absolute host directory only in dangerous mode",
+          },
           intent: { type: "string", enum: ["inspect", "build", "test", "run", "install"] },
           timeoutMs: { type: "integer", minimum: 1 },
           reason: { type: "string" },

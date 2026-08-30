@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
@@ -28,7 +28,11 @@ async function withWorkspace(run: (root: string, manager: WorkspaceManager) => P
   }
 }
 
-function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext {
+function context(
+  root: string,
+  mode: ToolContext["mode"] = "code",
+  overrides: Partial<ToolContext> = {},
+): ToolContext {
   return {
     workspaceRoot: root,
     mode,
@@ -38,6 +42,7 @@ function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext 
     requestApproval: async () => false,
     commandTimeoutMs: 2_000,
     maxOutputChars: 4_096,
+    ...overrides,
   };
 }
 
@@ -238,6 +243,116 @@ describe("workspace file tools", () => {
       assert.equal(planResult.ok, false);
       assert.equal(traversal.ok, false);
     });
+  });
+
+  it("allows checked absolute host file operations only during dangerous full access", async () => {
+    const hostRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-files-"));
+    try {
+      await withWorkspace(async (root, manager) => {
+        const reader = new ReadFileTool(manager);
+        const creator = new CreateFileTool(manager);
+        const updater = new UpdateFileTool(manager);
+        const remover = new DeleteFileTool(manager);
+        const target = path.join(
+          path.normalize(await realpath(hostRoot)),
+          "nested",
+          "outside.txt",
+        );
+
+        const restrictedCreate = await creator.execute(
+          { path: target, content: "blocked\n" },
+          context(root),
+        );
+        assert.equal(restrictedCreate.ok, false);
+        assert.match(restrictedCreate.error ?? "", /Absolute paths are not allowed/iu);
+
+        let active = true;
+        let epoch = 1;
+        const dangerous = context(root, "code", {
+          commandExecutionMode: "unrestricted",
+          isUnrestrictedHostAccessActive: () => active,
+          unrestrictedHostAccessEpoch: () => epoch,
+        });
+        const created = await creator.execute(
+          { path: target, content: "outside one\n" },
+          dangerous,
+        );
+        assert.equal(created.ok, true);
+        assert.equal((created.data as { path: string }).path, path.normalize(target));
+
+        const read = await reader.execute({ path: target }, dangerous);
+        assert.equal(read.ok, true);
+        const hash = (read.data as { contentHash: string }).contentHash;
+        const updated = await updater.execute(
+          {
+            path: target,
+            expectedHash: hash,
+            edits: [{ oldText: "outside one", newText: "outside two" }],
+          },
+          dangerous,
+        );
+        assert.equal(updated.ok, true);
+        assert.equal(await readFile(target, "utf8"), "outside two\n");
+
+        const updatedHash = (updated.data as { contentHash: string }).contentHash;
+        epoch += 1;
+        const staleAuthorization = await remover.execute(
+          { path: target, expectedHash: updatedHash },
+          dangerous,
+        );
+        assert.equal(staleAuthorization.ok, false);
+        assert.match(staleAuthorization.error ?? "", /must be successfully read/iu);
+
+        const reread = await reader.execute({ path: target }, dangerous);
+        const rereadHash = (reread.data as { contentHash: string }).contentHash;
+        const removed = await remover.execute(
+          { path: target, expectedHash: rereadHash },
+          dangerous,
+        );
+        assert.equal(removed.ok, true);
+        await assert.rejects(() => readFile(target, "utf8"), /ENOENT/u);
+
+        active = false;
+        const revoked = await creator.execute(
+          { path: path.join(hostRoot, "revoked", "no.txt"), content: "no" },
+          dangerous,
+        );
+        assert.equal(revoked.ok, false);
+        await assert.rejects(
+          () => readFile(path.join(hostRoot, "revoked", "no.txt"), "utf8"),
+          /ENOENT/u,
+        );
+        assert.equal(manager.getChangeSet().some((change) => path.isAbsolute(change.path)), false);
+      });
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not return host content when dangerous access is revoked during a read", async () => {
+    const hostRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-read-revoke-"));
+    try {
+      const target = path.join(hostRoot, "secret.txt");
+      await writeFile(target, "host content", "utf8");
+      await withWorkspace(async (root, manager) => {
+        let checks = 0;
+        const result = await new ReadFileTool(manager).execute(
+          { path: target },
+          context(root, "code", {
+            commandExecutionMode: "unrestricted",
+            isUnrestrictedHostAccessActive: () => {
+              checks += 1;
+              return checks === 1;
+            },
+          }),
+        );
+        assert.equal(result.ok, false);
+        assert.match(result.error ?? "", /revoked/iu);
+        assert.doesNotMatch(JSON.stringify(result), /host content/u);
+      });
+    } finally {
+      await rm(hostRoot, { recursive: true, force: true });
+    }
   });
 
   it("rejects Git control files and nested .git paths case-insensitively", async () => {

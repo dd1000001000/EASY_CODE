@@ -39,3 +39,21 @@ export function buildCommandEnvironment(source: NodeJS.ProcessEnv = process.env)
   environment.FORCE_COLOR = "0";
   return environment;
 }
+
+/**
+ * Dangerous mode intentionally runs as the current OS user. Preserve the host
+ * environment so proxy, certificate, toolchain, and platform configuration
+ * behave exactly as they do in the user's terminal. The enable warning makes
+ * clear that child processes can therefore access inherited secrets.
+ */
+export function buildUnrestrictedCommandEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) environment[key] = value;
+  }
+  environment.NO_COLOR = "1";
+  environment.FORCE_COLOR = "0";
+  return environment;
+}

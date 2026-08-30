@@ -284,6 +284,13 @@ export interface ToolContext {
   approvalPolicy: ApprovalPolicyName;
   /** Omitted by legacy callers; Runtime treats omission as the normal policy-controlled mode. */
   commandExecutionMode?: CommandExecutionMode;
+  /**
+   * Process-owned revocation check for unrestricted host access. A background
+   * worker must not retain host authority after the user switches modes.
+   */
+  isUnrestrictedHostAccessActive?: () => boolean;
+  /** Monotonic process epoch; host read-before-write grants never cross activations. */
+  unrestrictedHostAccessEpoch?: () => number;
   requestApproval: ApprovalHandler;
   signal?: AbortSignal;
   commandTimeoutMs: number;

@@ -14,6 +14,14 @@ import {
   toolFailure,
   toolSuccess,
 } from "./base.js";
+import {
+  acquireHostFileMutationLock,
+  assertHostFileMutationStillAllowed,
+  prepareCreateFileToolTarget,
+  recordFileToolRead,
+  refreshWorkspaceForFileToolTarget,
+  resolveCreateFileToolTarget,
+} from "./file-access.js";
 
 export const createFileInputSchema = z
   .object({
@@ -34,13 +42,17 @@ export class CreateFileTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Create a new UTF-8 text file inside the workspace. The operation fails if the file already exists.",
+        "Create a new UTF-8 text file. The operation fails if the file already exists. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Workspace-relative file path" },
+          path: {
+            type: "string",
+            description:
+              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
+          },
           content: { type: "string" },
           encoding: { type: "string", enum: ["utf-8"] },
         },
@@ -53,15 +65,18 @@ export class CreateFileTool implements AgentTool {
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     let createdTarget: string | undefined;
+    let releaseHostMutation: (() => void) | undefined;
     try {
       await assertMatchingWorkspace(this.workspace, context);
       assertWritableMode(context);
       const parsed = this.inputSchema.parse(input);
-      const relative = this.workspace.pathGuard.normalizeRelative(parsed.path);
-      const target = await this.workspace.pathGuard.resolveForCreate(relative, true);
-      const handle = await open(target, "wx", 0o666);
-      createdTarget = target;
+      const target = await resolveCreateFileToolTarget(this.workspace, context, parsed.path);
+      releaseHostMutation = await acquireHostFileMutationLock(target, context.signal);
+      await prepareCreateFileToolTarget(context, target);
+      const handle = await open(target.absolutePath, "wx", 0o666);
+      createdTarget = target.absolutePath;
       try {
+        assertHostFileMutationStillAllowed(context, target);
         await handle.writeFile(parsed.content, { encoding: "utf8" });
         await handle.sync();
       } finally {
@@ -69,7 +84,8 @@ export class CreateFileTool implements AgentTool {
       }
 
       const hash = sha256(Buffer.from(parsed.content, "utf8"));
-      const verifiedHash = sha256(await readFile(target));
+      const verifiedHash = sha256(await readFile(target.absolutePath));
+      assertHostFileMutationStillAllowed(context, target);
       if (verifiedHash !== hash) {
         throw new Error("New file verification failed");
       }
@@ -77,25 +93,27 @@ export class CreateFileTool implements AgentTool {
       // erase a successfully created user-visible file.
       createdTarget = undefined;
       const timestamp = new Date().toISOString();
-      this.workspace.recordRead(relative, hash);
-      this.workspace.recordChange({
-        path: relative,
-        operation: "create",
-        afterHash: hash,
-        source: "file_tool",
-        status: "verified",
-        timestamp,
-      });
-      await this.workspace.refreshManifest();
+      recordFileToolRead(this.workspace, target, hash, context);
+      if (target.workspaceRelative) {
+        this.workspace.recordChange({
+          path: target.workspaceRelative,
+          operation: "create",
+          afterHash: hash,
+          source: "file_tool",
+          status: "verified",
+          timestamp,
+        });
+      }
+      await refreshWorkspaceForFileToolTarget(this.workspace, target);
 
-      return toolSuccess(`Created ${relative}`, {
-        path: relative,
+      return toolSuccess(`Created ${target.displayPath}`, {
+        path: target.displayPath,
         contentHash: hash,
         bytesWritten: Buffer.byteLength(parsed.content, "utf8"),
       }, {
         type: "file_diff",
         operation: "create",
-        path: relative,
+        path: target.displayPath,
         before: "",
         after: parsed.content,
       });
@@ -108,6 +126,8 @@ export class CreateFileTool implements AgentTool {
         }
       }
       return toolFailure(error, "Unable to create file");
+    } finally {
+      releaseHostMutation?.();
     }
   }
 }

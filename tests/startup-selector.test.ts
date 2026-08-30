@@ -19,6 +19,10 @@ import {
 import { Terminal } from "../src/cli/terminal.js";
 import type { ApiKeyCredentialStore } from "../src/config/credentials.js";
 import type { ProviderName, ThinkingEffort } from "../src/core/types.js";
+import type {
+  SandboxReadiness,
+  SandboxStartupService,
+} from "../src/sandbox/index.js";
 import { describe, it } from "./harness.js";
 
 const TEST_ENVIRONMENT = [
@@ -102,12 +106,18 @@ class ScriptedStartupTerminal extends Terminal {
   thinkingProviderLabel?: string;
   thinkingModel?: string;
   readonly secretPrompts: string[] = [];
+  readonly genericChoices: Array<{
+    title: string;
+    ids: string[];
+    initialId?: string;
+  }> = [];
 
   constructor(
     private readonly providerSelection: ProviderName | undefined,
     private readonly modelSelection: string | undefined,
     private readonly secret: string,
     private readonly thinkingSelection: ThinkingEffort | undefined = "medium",
+    private readonly genericSelections: Array<string | undefined> = [],
   ) {
     super(new PassThrough(), new PassThrough());
   }
@@ -154,6 +164,19 @@ class ScriptedStartupTerminal extends Terminal {
     return this.secret;
   }
 
+  override async selectChoice(
+    title: string,
+    choices: readonly { id: string; label: string; detail?: string }[],
+    initialId?: string,
+  ): Promise<string | undefined> {
+    this.genericChoices.push({
+      title,
+      ids: choices.map((choice) => choice.id),
+      ...(initialId === undefined ? {} : { initialId }),
+    });
+    return this.genericSelections.shift();
+  }
+
   override async question(): Promise<string | null> {
     return "/exit";
   }
@@ -188,6 +211,7 @@ async function withStartupApp(
   terminal: ScriptedStartupTerminal,
   store: MemoryCredentialStore,
   run: (app: EasyCodeApp) => Promise<void>,
+  sandboxStartupService?: SandboxStartupService,
 ): Promise<void> {
   const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-startup-selector-"));
   const workspace = path.join(root, "workspace");
@@ -217,6 +241,8 @@ async function withStartupApp(
       terminal,
       credentialStore: store,
       startupInteraction: "select-model",
+      sandboxStartup: sandboxStartupService !== undefined,
+      ...(sandboxStartupService ? { sandboxStartupService } : {}),
     });
     await run(app);
   } finally {
@@ -224,6 +250,19 @@ async function withStartupApp(
     restoreEnvironment(previous);
     rmSync(root, { recursive: true, force: true });
   }
+}
+
+function sandboxReadiness(
+  status: SandboxReadiness["status"],
+): SandboxReadiness {
+  return {
+    status,
+    platform: "linux",
+    backend: "startup selector fixture",
+    details: status === "ready" ? [] : ["sandbox probe fixture failed"],
+    warnings: [],
+    canSetup: false,
+  };
 }
 
 describe("three-stage model selector", () => {
@@ -518,5 +557,87 @@ describe("three-stage model selector", () => {
     assert.match(terminal.transcript, /"thinkingEffort": "none"/u);
     assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
+  });
+
+  it("runs the sandbox startup gate before model selection without prompting when ready", async () => {
+    const terminal = new ScriptedStartupTerminal(
+      "qwen",
+      "qwen3.7-plus",
+      "unused",
+    );
+    const store = new MemoryCredentialStore();
+    store.values.set("qwen", "configured-qwen-key");
+    let inspectCalls = 0;
+    const service: SandboxStartupService = {
+      inspect: async () => {
+        inspectCalls += 1;
+        return sandboxReadiness("ready");
+      },
+      setup: async () => {
+        throw new Error("setup must not run for a ready startup sandbox");
+      },
+    };
+
+    await withStartupApp(
+      terminal,
+      store,
+      async (app) => app.runInteractive(),
+      service,
+    );
+
+    assert.equal(inspectCalls, 1);
+    assert.deepEqual(terminal.genericChoices, []);
+    assert.equal(terminal.providerChoices.length > 0, true);
+    assert.match(terminal.transcript, /Selected Alibaba Qwen/u);
+  });
+
+  it("continues to model selection only for the explicit continue branch and stops on exit", async () => {
+    const unavailable = sandboxReadiness("probe_failed");
+    const service: SandboxStartupService = {
+      inspect: async () => unavailable,
+      setup: async () => ({
+        status: "unavailable",
+        message: "setup is unavailable",
+        readiness: unavailable,
+      }),
+    };
+
+    const continuing = new ScriptedStartupTerminal(
+      "qwen",
+      "qwen3.7-plus",
+      "unused",
+      "medium",
+      ["continue"],
+    );
+    const continuingStore = new MemoryCredentialStore();
+    continuingStore.values.set("qwen", "configured-qwen-key");
+    await withStartupApp(
+      continuing,
+      continuingStore,
+      async (app) => app.runInteractive(),
+      service,
+    );
+    assert.deepEqual(continuing.genericChoices[0]?.ids, ["recheck", "continue", "exit"]);
+    assert.equal(continuing.providerChoices.length > 0, true);
+    assert.match(continuing.transcript, /commands blocked|fail-closed/iu);
+
+    const exiting = new ScriptedStartupTerminal(
+      "qwen",
+      "qwen3.7-plus",
+      "unused",
+      "medium",
+      ["exit"],
+    );
+    const exitingStore = new MemoryCredentialStore();
+    exitingStore.values.set("qwen", "configured-qwen-key");
+    await withStartupApp(
+      exiting,
+      exitingStore,
+      async (app) => app.runInteractive(),
+      service,
+    );
+    assert.equal(exiting.genericChoices.length, 1);
+    assert.deepEqual(exiting.providerChoices, []);
+    assert.doesNotMatch(exiting.transcript, /Selected Alibaba Qwen/u);
   });
 });

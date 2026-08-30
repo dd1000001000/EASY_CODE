@@ -286,12 +286,12 @@ describe("Terminal retained inline shell", () => {
         const dangerOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "unrestricted" }));
         const dangerFrame = stripAnsi(captured().slice(dangerOffset));
-        assert.match(dangerFrame, /! EASY CODE unrestricted/u);
+        assert.match(dangerFrame, /! EASY CODE DANGER: FULL ACCESS/u);
 
         const safeOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
         const safeFrame = stripAnsi(captured().slice(safeOffset));
-        assert.doesNotMatch(safeFrame, /! EASY CODE unrestricted/u);
+        assert.doesNotMatch(safeFrame, /! EASY CODE DANGER/u);
         assert.equal(
           (stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length,
           1,

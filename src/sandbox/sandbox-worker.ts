@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { encodeSandboxControl } from "./control.js";
+import { resolveTrustedSystemExecutable } from "./startup.js";
 import type {
   SandboxBackendName,
   SandboxWorkerControl,
@@ -69,10 +70,36 @@ async function main(): Promise<void> {
   if (!SandboxManager.isSupportedPlatform()) {
     throw new Error(`Anthropic Sandbox Runtime does not support ${process.platform}`);
   }
+  let linuxPaths:
+    | { bwrapPath: string; socatPath: string; ripgrepPath: string }
+    | undefined;
   if (process.platform !== "win32") {
-    const dependencies = await SandboxManager.checkDependenciesAsync();
-    if (dependencies.errors.length) {
-      throw new Error(dependencies.errors.join("; "));
+    if (process.platform === "linux") {
+      const bwrapPath = await resolveTrustedSystemExecutable(["/usr/bin/bwrap", "/bin/bwrap"]);
+      const socatPath = await resolveTrustedSystemExecutable(["/usr/bin/socat", "/bin/socat"]);
+      const ripgrepPath = await resolveTrustedSystemExecutable(["/usr/bin/rg", "/bin/rg"]);
+      if (!bwrapPath || !socatPath || !ripgrepPath) {
+        throw new Error(
+          "Linux sandbox dependencies must resolve from trusted system paths; run `easy-code sandbox setup`.",
+        );
+      }
+      linuxPaths = { bwrapPath, socatPath, ripgrepPath };
+    }
+    const dependencies = await SandboxManager.checkDependenciesAsync(
+      linuxPaths ? { command: linuxPaths.ripgrepPath } : undefined,
+    );
+    const dependencyErrors = linuxPaths
+      ? dependencies.errors.filter((value) => {
+          const lower = value.toLowerCase();
+          return !lower.includes("bubblewrap") &&
+            !lower.includes("bwrap") &&
+            !lower.includes("socat");
+        })
+      : dependencies.errors;
+    if (dependencyErrors.length || dependencies.warnings.length) {
+      throw new Error(
+        [...dependencyErrors, ...dependencies.warnings].join("; "),
+      );
     }
   }
 
@@ -111,6 +138,13 @@ async function main(): Promise<void> {
     allowAppleEvents: false,
     allowPty: false,
     git: { safeDirectories: [payload.workspaceRoot] },
+    ...(linuxPaths
+      ? {
+          bwrapPath: linuxPaths.bwrapPath,
+          socatPath: linuxPaths.socatPath,
+          ripgrep: { command: linuxPaths.ripgrepPath },
+        }
+      : {}),
     ...(process.platform === "win32"
       ? { windows: { srtWin: { path: srt.VENDORED_SRT_WIN_EXE } } }
       : {}),

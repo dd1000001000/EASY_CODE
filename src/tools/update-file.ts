@@ -16,6 +16,15 @@ import {
   toolFailure,
   toolSuccess,
 } from "./base.js";
+import {
+  acquireHostFileMutationLock,
+  assertHostFileMutationStillAllowed,
+  getFileToolReadVersion,
+  recordFileToolRead,
+  refreshWorkspaceForFileToolTarget,
+  resolveExistingFileToolTarget,
+  type FileToolTarget,
+} from "./file-access.js";
 
 export const textEditSchema = z
   .object({
@@ -55,13 +64,17 @@ export class UpdateFileTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Update a previously read UTF-8 workspace file using exact text replacements and its expected SHA-256 hash.",
+        "Update a previously read UTF-8 file using exact text replacements and its expected SHA-256 hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: { type: "string", description: "Workspace-relative file path" },
+          path: {
+            type: "string",
+            description:
+              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
+          },
           expectedHash: { type: "string", pattern: "^[a-fA-F0-9]{64}$" },
           edits: {
             type: "array",
@@ -87,15 +100,21 @@ export class UpdateFileTool implements AgentTool {
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     let temporaryPath: string | undefined;
-    let relative: string | undefined;
+    let target: FileToolTarget | undefined;
     let expectedHash: string | undefined;
+    let releaseHostMutation: (() => void) | undefined;
     try {
       await assertMatchingWorkspace(this.workspace, context);
       assertWritableMode(context);
       const parsed = this.inputSchema.parse(input);
-      relative = this.workspace.pathGuard.normalizeRelative(parsed.path);
+      target = await resolveExistingFileToolTarget(this.workspace, context, parsed.path, {
+        kind: "file",
+        allowFinalSymlink: false,
+      });
+      releaseHostMutation = await acquireHostFileMutationLock(target, context.signal);
+      assertHostFileMutationStillAllowed(context, target);
       expectedHash = parsed.expectedHash.toLowerCase();
-      const readVersion = this.workspace.getReadVersion(relative);
+      const readVersion = getFileToolReadVersion(this.workspace, target, context);
       if (!readVersion) {
         throw new Error("File must be successfully read before it can be updated");
       }
@@ -103,15 +122,12 @@ export class UpdateFileTool implements AgentTool {
         throw new Error("expectedHash does not match the last successfully read version");
       }
 
-      const filename = await this.workspace.pathGuard.resolveExisting(relative, {
-        kind: "file",
-        allowFinalSymlink: false,
-      });
+      const filename = target.absolutePath;
       const originalBuffer = await readFile(filename);
       if (originalBuffer.includes(0)) throw new Error("Binary files are not supported");
       const currentHash = sha256(originalBuffer);
       if (currentHash !== expectedHash) {
-        this.recordConflict(relative, expectedHash, currentHash);
+        this.recordConflict(target, expectedHash, currentHash);
         throw new Error("File changed after it was read; read it again before updating");
       }
 
@@ -139,6 +155,7 @@ export class UpdateFileTool implements AgentTool {
       }
 
       const originalInfo = await stat(filename);
+      assertHostFileMutationStillAllowed(context, target);
       temporaryPath = path.join(
         path.dirname(filename),
         `.${path.basename(filename)}.easy-code-${process.pid}-${randomBytes(6).toString("hex")}.tmp`,
@@ -156,10 +173,11 @@ export class UpdateFileTool implements AgentTool {
       // compare-and-swap requires platform-specific filesystem support.
       const beforeRenameHash = sha256(await readFile(filename));
       if (beforeRenameHash !== expectedHash) {
-        this.recordConflict(relative, expectedHash, beforeRenameHash);
+        this.recordConflict(target, expectedHash, beforeRenameHash);
         throw new Error("File changed while the update was being prepared");
       }
 
+      assertHostFileMutationStillAllowed(context, target);
       await rename(temporaryPath, filename);
       temporaryPath = undefined;
       const verifiedHash = sha256(await readFile(filename));
@@ -168,20 +186,22 @@ export class UpdateFileTool implements AgentTool {
       }
 
       const timestamp = new Date().toISOString();
-      this.workspace.recordRead(relative, afterHash);
-      this.workspace.recordChange({
-        path: relative,
-        operation: "update",
-        beforeHash: currentHash,
-        afterHash,
-        source: "file_tool",
-        status: "verified",
-        timestamp,
-      });
-      await this.workspace.refreshManifest();
+      recordFileToolRead(this.workspace, target, afterHash, context);
+      if (target.workspaceRelative) {
+        this.workspace.recordChange({
+          path: target.workspaceRelative,
+          operation: "update",
+          beforeHash: currentHash,
+          afterHash,
+          source: "file_tool",
+          status: "verified",
+          timestamp,
+        });
+      }
+      await refreshWorkspaceForFileToolTarget(this.workspace, target);
 
-      return toolSuccess(`Updated ${relative}`, {
-        path: relative,
+      return toolSuccess(`Updated ${target.displayPath}`, {
+        path: target.displayPath,
         beforeHash: currentHash,
         contentHash: afterHash,
         editsApplied: parsed.edits.length,
@@ -189,7 +209,7 @@ export class UpdateFileTool implements AgentTool {
       }, {
         type: "file_diff",
         operation: "update",
-        path: relative,
+        path: target.displayPath,
         before: original,
         after: updated,
       });
@@ -202,12 +222,15 @@ export class UpdateFileTool implements AgentTool {
         }
       }
       return toolFailure(error, "Unable to update file");
+    } finally {
+      releaseHostMutation?.();
     }
   }
 
-  private recordConflict(pathname: string, expectedHash: string, actualHash: string): void {
+  private recordConflict(target: FileToolTarget, expectedHash: string, actualHash: string): void {
+    if (!target.workspaceRelative) return;
     this.workspace.recordChange({
-      path: pathname,
+      path: target.workspaceRelative,
       operation: "update",
       beforeHash: expectedHash,
       afterHash: actualHash,

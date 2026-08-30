@@ -4,6 +4,8 @@
 
 This document explains the design of EASY CODE as a controlled local coding agent. It focuses on architectural decisions, terminal interaction, trust boundaries, state management, orchestration, and reliability. User-facing installation and command instructions remain in the main README.
 
+Licensing is independent of these trust boundaries: EASY CODE's original source is covered by its [MIT License](../LICENSE), while embedded or installed third-party components retain their own terms. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md), including the Apache-2.0 notice for the pinned Anthropic Sandbox Runtime.
+
 ## 1. Design goals and boundaries
 
 EASY CODE is designed around one central rule: **the model proposes actions, while the local Runtime decides what is allowed and owns every state transition**.
@@ -12,14 +14,14 @@ The main design goals are:
 
 - **Runtime authority:** prompts guide model behavior, but they never grant permissions.
 - **Least capability:** each model request receives only the capabilities required by its current mode, role, and execution phase.
-- **Workspace safety:** file access is confined to a selected project, with version checks before destructive changes.
-- **Process containment:** approved command process trees run inside an OS-enforced `workspace-write` boundary rather than inheriting unrestricted host access.
+- **Workspace safety:** Manual and Auto approval confine file access to a selected project, with version checks before destructive changes; only an explicit Dangerous full access selection removes that location boundary.
+- **Process containment:** Manual and Auto-approved command process trees run inside an OS-enforced `workspace-write` boundary rather than inheriting direct host access.
 - **Durable execution:** conversations, plans, task progress, child results, and audit data survive process restarts.
 - **Evidence over claims:** file and command outcomes are recorded, while task completion must include structured evidence that a user or parent agent can review.
 - **Local-first state:** session data, memory, image artifacts, and indexes are stored locally by default.
 - **Graceful degradation:** optional features such as semantic retrieval may fall back without making authoritative state unavailable.
 
-EASY CODE pins and embeds `@anthropic-ai/sandbox-runtime` `0.0.74` as its command-process sandbox. This raises the minimum runtime to Node.js `>=20.11.0`. Command policy and approval decide whether an action may start; the OS sandbox independently limits what the approved process tree can access. Sandbox preparation is fail-closed: an unsupported or uninitialized backend, missing dependency, or wrapper failure blocks execution and never falls back to a direct host launch.
+EASY CODE pins and embeds `@anthropic-ai/sandbox-runtime` `0.0.74` as the command-process sandbox for Manual and Auto approval. This raises the minimum runtime to Node.js `>=20.11.0`. In those protected postures, command policy and approval decide whether an action may start, and the OS sandbox independently limits what the approved process tree can access. Sandbox preparation is fail-closed: an unsupported or uninitialized backend, missing dependency, or wrapper failure blocks execution and never falls back to a direct host launch. Dangerous full access is a separate, explicitly confirmed posture that intentionally selects a direct host backend; a sandbox failure can never select it.
 
 ## 2. System architecture
 
@@ -37,8 +39,10 @@ flowchart TB
     Provider --> APIs[Qwen, DeepSeek, and GLM APIs]
     Capabilities --> Workspace[Workspace file boundary]
     Capabilities --> Commands[Command policy and approval]
-    Commands --> Sandbox[Anthropic SRT workspace-write sandbox]
+    Commands --> Sandbox[Manual and Auto: Anthropic SRT workspace-write]
     Sandbox --> OS[Seatbelt, bubblewrap, or Windows SRT]
+    Commands --> Host[Dangerous full access: direct host backend]
+    Host --> HostOS[Current OS user: host filesystem, environment, and network]
     Orchestration --> Children[Child sessions and DAG result lineage]
     Children --> Environments[Shared roots or managed Git worktrees]
     Environments --> Snapshots[Validated baselines and checkpoints]
@@ -59,7 +63,7 @@ flowchart TB
 | Application coordination | Configuration, credentials, workspace binding, model selection, thread lifecycle, resume, and presentation. |
 | Agent Runtime | Turn state machine, effective mode, capability selection, model-output validation, tool loop, and completion rules. |
 | Provider gateway | A common representation for messages, structured actions, thinking, images, timeouts, retries, and usage metadata. |
-| Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. Command approval and OS sandboxing remain separate enforcement layers. |
+| Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. Manual and Auto keep command approval and OS sandboxing as separate enforcement layers; Dangerous full access explicitly removes both. |
 | Orchestration | Reviewed plans, dependency-aware task execution, child assignment, resumable execution environments, result lineage, and controlled handoff. |
 | State and retrieval | Authoritative thread events, queryable projections, checkpoints, long-term facts, semantic indexes, and binary artifacts. |
 
@@ -80,7 +84,7 @@ The visible interface has four regions with different ownership rules:
 
 Before a stable transcript entry is committed, the screen writer removes the current live rows, appends the entry at their former start, and redraws the latest live snapshot underneath. Live progress contains running work only: a newer item replaces the prior item of the same kind, and a completed tool is removed before its single durable transcript entry is committed. Ending a request clears all transient progress. Cursor restoration uses visual rows and display-cell columns rather than UTF-16 indexes, so a cursor is never placed in the second cell of a wide grapheme. Resize rendering uses the current terminal width. ANSI control families from external text are removed; only UI-owned SGR styling may survive, and CJK, combining characters, flags, and joined emoji are measured as terminal cells.
 
-A modal picker has precedence over the ordinary live region, including an open Thinking panel. `/model`, command approval, Plan review, and Resume all use the same boxed overlay behavior: the selected row is visually distinct, other rows are subdued, `Up`/`Down` changes selection, Enter confirms, and Esc cancels. The menu temporarily owns stdin in Raw Mode and restores the previous input, cursor, and flow state on every exit path. Approval cancellation maps to rejection, preserving fail-closed behavior. This single-owner rule also prevents a background child or status update from consuming interactive input. While a model request is active, a narrow control-only input owner keeps private Thinking toggles and `Ctrl+C` cancellation responsive; ordinary keystrokes are discarded. It yields stdin to every modal input and resumes only after that owner has restored the prior raw and stream-flow state.
+A modal picker has precedence over the ordinary live region, including an open Thinking panel; the persistent Dangerous full access marker is security chrome and remains visible above or alongside the picker. `/model`, command approval, Plan review, and Resume all use the same boxed overlay behavior: the selected row is visually distinct, other rows are subdued, `Up`/`Down` changes selection, Enter confirms, and Esc cancels. The menu temporarily owns stdin in Raw Mode and restores the previous input, cursor, and flow state on every exit path. Approval cancellation maps to rejection, preserving fail-closed behavior. This single-owner rule also prevents a background child or status update from consuming interactive input. While a model request is active, a narrow control-only input owner keeps private Thinking toggles and `Ctrl+C` cancellation responsive; ordinary keystrokes are discarded. It yields stdin to every modal input and resumes only after that owner has restored the prior raw and stream-flow state.
 
 Click-to-toggle Thinking uses the same ordered private terminal channel as image paste. The bundled extension recognizes only an exact paired collapsed marker or expanded-panel control and requires the repeated positive decimal ID to be a safe integer. Links are enabled for a terminal with a tracked EASY CODE shell execution or an explicit user override. To recover a start event missed by an extension-host reload, only terminals already present at activation may enter a marker-proven recovery state; the next observed shell start/end or terminal close revokes it. VS Code activates terminal links with `Ctrl+click` on Windows/Linux or `Cmd+click` on macOS by default. Each activation sends the fixed no-newline sequence `ESC ] 6973 ; easy-code ; toggle-thinking ; <id> BEL` back to the terminal that produced the link; the terminal parser consumes it as protocol rather than composer text. The older `show-thinking;<id>` payload remains accepted for already-installed clients and is normalized to the same toggle action. Neither protocol assigns a meaning to Esc.
 
@@ -134,6 +138,8 @@ An unfinished task graph or an uncollected child result keeps Auto in Code so th
 
 The capability set is rebuilt for every model step. A forged request for an unavailable capability is rejected locally even if the model believes it should be allowed.
 
+The matrix describes the normal role boundary under Manual and Auto approval. While Dangerous full access is active, the Runtime intentionally overrides the protected command and filesystem-location restrictions for the main Agent and every child Agent. That authority comes only from the user's local posture selection, never from model output, project text, memory, or a child Agent.
+
 ### Instruction trust
 
 The Runtime and base system contract have higher priority than the current user request. Project guidance can refine how work should be performed but cannot grant filesystem, command, network, installation, or credential access.
@@ -142,7 +148,7 @@ Workspace files, source comments, command output, task descriptions, retrieved m
 
 ### Workspace mutation boundary
 
-File operations use workspace-relative paths and verify both textual containment and the canonical disk location. This rejects absolute paths, parent traversal, symbolic-link escapes, and Windows junction escapes.
+Under Manual and Auto approval, file operations use workspace-relative paths and verify both textual containment and the canonical disk location. This rejects absolute paths, parent traversal, symbolic-link escapes, and Windows junction escapes. Under Dangerous full access, checked file operations also accept explicit absolute host paths and may create, update, or delete anything available to the current OS user; relative paths retain their workspace interpretation. Canonical resolution and inspect-before-change version checks remain, but they are not a containment boundary.
 
 Mutation safety follows an inspect-before-change protocol:
 
@@ -153,13 +159,13 @@ Mutation safety follows an inspect-before-change protocol:
 - Successful changes produce durable audit records and line-numbered terminal diffs.
 - Resume restores a historical read authorization only when the file still matches the observed version.
 
-The user-selected project remains the **logical workspace root** for policy, memory, project instructions, and paths shown to the parent. Each child also has a **physical execution root**. In shared mode those roots coincide; in Worktree mode the physical root is a manager-owned linked checkout outside the project. File capabilities are confined relative to the child's physical root, while commands start there and remain subject to command policy; durable identity stays attached to the logical project.
+The user-selected project remains the **logical workspace root** for policy, memory, project instructions, and paths shown to the parent. Each child also has a **physical execution root**. In shared mode those roots coincide; in Worktree mode the physical root is a manager-owned linked checkout outside the project. In Manual and Auto approval, file capabilities are confined relative to the child's physical root, while commands start there and remain subject to command policy; durable identity stays attached to the logical project. Dangerous full access removes that location boundary for both the main Agent and children. Mutations outside the selected workspace are not incorporated into workspace snapshots, `/changes`, Worktree result artifacts, or Handoff.
 
 Shared-mode mutations use one fair queue and version checks to reduce conflicts. Independent Worktrees do not need that global mutation queue because their Git state is separate; they instead meet at an explicit result boundary. Neither mechanism locks out the user's editor or unrelated processes.
 
 ### Command policy and approval
 
-Commands are represented as an executable, an argument vector, and a workspace working directory. Ordinary input is not implicitly interpreted by a shell.
+Commands are represented as an executable, an argument vector, and a working directory. Ordinary input is not implicitly interpreted by a shell. The following classification and approval table governs Manual and Auto approval; Dangerous full access bypasses it after explicit confirmation.
 
 | Risk class | Policy direction |
 | --- | --- |
@@ -172,43 +178,47 @@ The default one-time approval is bound to the exact executable, arguments, worki
 
 Reusable grants are created only by an explicit terminal selection, are written to the authoritative Thread history before the command may run, survive Resume, and are absent from a new or unrelated Thread. A bound child Agent may consume its parent Thread's existing grant without taking over terminal input, but cannot prompt for or create a grant. Checkpoints can preserve but cannot invent or erase the event-authoritative set, and malformed identities fail closed. `/permissions` exposes the current set for inspection.
 
-Descriptive model intent does not influence classification. Permanent policy denial happens before approval lookup; disabling prompts turns approval-requiring commands into denials; and neither remembered nor automatic approval changes direct policy denials or Plan restrictions. A user-approved shell or interpreter remains capable of performing everything expressed by later arguments and must be treated as a high-risk unit.
+Outside Dangerous full access, descriptive model intent does not influence classification. Permanent policy denial happens before approval lookup; disabling prompts turns approval-requiring commands into denials; and neither remembered nor automatic approval changes direct policy denials or Plan restrictions. A user-approved shell or interpreter remains capable of performing everything expressed by later arguments and must be treated as a high-risk unit.
 
-The interactive command posture is process-local and has three states. Manual approval preserves the ordinary decision path. Auto approval removes prompts only for commands the policy already considers approval-eligible. Unrestricted execution is an explicitly double-confirmed emergency posture: it replaces the command-policy decision with an allow decision, including for Git, network, system, interpreter, and shell invocations. Persistent red branding makes this exceptional authority visible until the process exits or the user switches back. None of these states disables the OS sandbox.
+The interactive command posture is process-local and has three states. Manual approval preserves the ordinary decision path. Auto approval removes prompts only for commands the policy already considers approval-eligible. `Dangerous full access` is an explicitly double-confirmed emergency posture with **no EASY CODE sandbox and no approval boundary**. Before activation, the confirmation warns that the main Agent and all child Agents will receive current-user access to the full host filesystem, inherited host environment, and internet. After activation, persistent red `! EASY CODE DANGER: FULL ACCESS` branding remains in the live interface, including while modal pickers are open.
 
-Unrestricted execution changes only command policy. It does not widen built-in read, create, update, write, or delete capabilities, and the launched process still runs inside the same OS-enforced `workspace-write` filesystem boundary. Command resolution continues to require structured program and argument data, keep the working directory inside the active physical root, supply a controlled environment, and retain cancellation, time limits, output bounds, cleanup, snapshots, and audit. Unrestricted execution may modify protected Git metadata inside the workspace and receives open network destinations, which is why it remains visibly dangerous.
+Dangerous full access disables command classification, permanent command denials, Plan command restrictions, approval prompts, and SRT wrapping. A separate production host backend launches absolute executables in arbitrary current-user-accessible working directories, inherits the host environment, and uses the host network directly. Checked file tools accept explicit absolute host paths as well as workspace-relative paths. The authority is inherited by every child Agent regardless of shared-root or Worktree execution. EASY CODE does not bypass OS ACLs, UAC, `sudo`, or another account's permissions.
 
-Processes receive a small environment allowlist rather than the full parent environment. Commands have cancellation, time limits, bounded output, process-tree cleanup, secret redaction, and before/after workspace snapshots for audit.
+Switching from Dangerous full access to Manual or Auto immediately revokes this authority from the main Agent and all children. Queued or waiting host operations are rejected, in-flight host command trees are canceled and cleaned up, and later actions are evaluated under the newly selected protected posture. Side effects completed before revocation are not rolled back.
 
-Permanent command classifications apply to the top-level invocation. A permitted shell, interpreter, or project program can still start descendants, but SRT applies the filesystem and network boundary to the whole wrapped process tree. Workspace snapshots remain bounded audit aids rather than complete monitoring or rollback: they omit Git metadata, dependency directories, and private state, and may be truncated by file-count limits.
+Structured executable/argv validation, the non-interactive shell shape, cancellation, time limits, bounded and redacted output, process-tree cleanup, and command audit remain active in Dangerous full access. They are operational controls, **not a sandbox, permission boundary, complete monitor, or rollback mechanism**. Host processes inherit environment variables and can expose credentials. Workspace snapshots and `/changes` remain bounded workspace-only audit aids: they omit arbitrary host modifications, Git metadata, dependency directories, and private state, and may be truncated by file-count limits.
 
-### OS command sandbox
+In Manual and Auto approval, processes receive a small environment allowlist rather than the full parent environment. Permanent command classifications apply to the top-level invocation; a permitted shell, interpreter, or project program can still start descendants, but SRT applies the filesystem and network boundary to the whole wrapped process tree.
 
-EASY CODE runs production commands through the pinned Anthropic Sandbox Runtime rather than its unsandboxed test backend. The original model action remains a structured executable and argument vector. A trusted worker turns that resolved invocation into SRT's platform wrapper, attributes violations with an opaque command identity, and launches the target without reinterpreting model text as the worker's own arguments. The parent process, Provider calls, memory database, credential store, terminal UI, and orchestration remain outside the command sandbox.
+### OS command sandbox and Dangerous full access host backend
 
-The effective filesystem profile is always `workspace-write` for Manual, Auto approve, and Unrestricted command policy:
+EASY CODE runs production Manual and Auto-approved commands through the pinned Anthropic Sandbox Runtime. The original model action remains a structured executable and argument vector. A trusted worker turns that resolved invocation into SRT's platform wrapper, attributes violations with an opaque command identity, and launches the target without reinterpreting model text as the worker's own arguments. The parent process, Provider calls, memory database, credential store, terminal UI, and orchestration remain outside the command sandbox. Only explicitly confirmed Dangerous full access selects the separate production host backend and launches without SRT.
+
+The effective filesystem profile for Manual and Auto approval is `workspace-write`:
 
 - The active physical workspace and an invocation-private scratch directory are writable.
 - EASY CODE's private configuration, data, cache, common credential locations, and the user's home tree are denied for command reads, with narrow re-allow rules for the active workspace, trusted Runtime bridge, Node executable, and resolved target executable.
-- `.easycode`, and a Runtime checkout that is also the project being edited, remain protected from command writes. `.git` is protected under normal policy and becomes writable only under explicitly confirmed Unrestricted command policy.
+- `.easycode`, `.git`, and a Runtime checkout that is also the project being edited remain protected from command writes.
 - Provider API-key environment variables are explicitly denied in the sandbox in addition to the parent's controlled environment construction.
 - Unix sockets, local port binding, Apple Events, weaker nested isolation, and weaker network isolation are disabled.
 
-Network authority is derived from the classified command capability rather than from the approval UI state alone. Ordinary commands receive an empty strict allowlist. Restricted exact-version npm Registry installation receives only `registry.npmjs.org`. An explicitly approved Shell and Unrestricted command policy receive `*`. This preserves the supported installation workflow, but an allowed domain is not an operation-level authorization: Shell or Unrestricted execution can transmit any workspace data that the process may read.
+In Manual and Auto approval, network authority is derived from the classified command capability rather than from the approval UI state alone. Ordinary commands receive an empty strict allowlist. Restricted exact-version npm Registry installation receives only `registry.npmjs.org`. An explicitly approved Shell receives its classified SRT network capability. An allowed domain is not an operation-level authorization: a Shell can transmit any data its sandboxed process tree may read. Dangerous full access bypasses SRT network allowlists entirely and uses the host's full network access.
 
-Sandbox setup and execution are fail-closed. `prepare` failures and worker initialization failures become explicit `sandbox_unavailable` command results; no code path retries the resolved target through the host backend. The host backend exists only for focused unit tests. `/permissions` reports the active backend and policy, while `easy-code sandbox doctor` diagnoses platform prerequisites.
+Manual and Auto sandbox setup and execution are fail-closed. `prepare` failures and worker initialization failures become explicit `sandbox_unavailable` command results; no error path retries the resolved target through the host backend. The production host backend is reachable only through the separately confirmed Dangerous full access posture, never through automatic degradation. Installation performs a non-privileged prerequisite check. The first interactive launch performs a live readiness probe inside the existing retained UI before model selection, and only then offers a Runtime-owned, fixed setup recipe. Explicit maintenance commands use the same readiness service, so install, startup, and diagnosis do not drift into separate policy implementations.
+
+Automatic setup is deliberately narrower than Agent command execution. Windows delegates the fixed one-time account and WFP operation to SRT's UAC flow. Linux may invoke only a built-in package-manager recipe for prerequisites that the runtime explicitly reported missing, using an absolute trusted executable and structured arguments. The Linux worker likewise resolves bubblewrap, socat, and ripgrep from fixed system locations and passes their absolute paths to SRT instead of trusting a workspace-influenced `PATH`. Setup does not update package indexes, enable repositories, collect passwords, alter User Namespace/AppArmor/kernel settings, or accept package names from the model or project. After setup, a real sandboxed process probe must pass. Reduced-isolation warnings are treated as unavailable rather than silently accepted.
 
 | Platform | SRT backend and prerequisite |
 | --- | --- |
-| macOS | Seatbelt-backed SRT; `ripgrep` is required. |
+| macOS | Seatbelt-backed SRT using the operating-system facility; the pinned runtime has no additional hard package prerequisite. |
 | Linux | bubblewrap-backed SRT; `bubblewrap`, `socat`, and `ripgrep` are required, together with usable user namespaces. |
 | Windows | Bundled SRT Windows backend, currently alpha. `easy-code sandbox setup` performs the explicit one-time elevated account and WFP setup; `easy-code sandbox doctor` verifies the filesystem identity and network fence. |
 
-The Windows backend uses one machine-wide sandbox identity and session-level ACL grants. EASY CODE therefore serializes Windows sandbox commands within one process so concurrent child Worktrees do not receive overlapping grants. SRT remains a Beta Research Preview, and user-scoped toolchains or programs that expect broader profile access can be incompatible. A backend dependency disappearing, a canceled UAC setup, or a worker cleanup problem is reported rather than treated as permission to execute directly on the host.
+The Windows backend uses one machine-wide sandbox identity and session-level ACL grants. EASY CODE therefore serializes Windows sandbox commands within one process so concurrent child Worktrees do not receive overlapping grants. SRT remains a Beta Research Preview, and user-scoped toolchains or programs that expect broader profile access can be incompatible. In Manual and Auto approval, a backend dependency disappearing, a canceled UAC setup, a failed Linux user-namespace probe, or a worker cleanup problem is reported rather than treated as permission to execute directly on the host. The user must separately choose and confirm Dangerous full access.
 
 ### Credentials and private state
 
-API keys are read through hidden input, the operating-system credential store, or explicit environment variables. Workspace configuration cannot set API keys, Provider base URLs, or EASY CODE's private data directories, although it may select normal workflow options such as provider, model, mode, effort, approval policy, and budgets. Configuration views report presence rather than secret values. A compatibility path may still read a legacy user-level plaintext key, so migrating such keys to the operating-system credential store is recommended.
+API keys are read through hidden input, the operating-system credential store, or explicit environment variables. Workspace configuration cannot set API keys, Provider base URLs, or EASY CODE's private data directories, although it may select normal workflow options such as provider, model, mode, effort, approval policy, and budgets. Configuration views report presence rather than secret values. A compatibility path may still read a legacy user-level plaintext key, so migrating such keys to the operating-system credential store is recommended. Dangerous full access processes inherit the host environment and can read any credential files available to the current OS user; output redaction does not prevent a process from using or transmitting those secrets.
 
 Runtime-generated errors, command data, task and memory channels, and other known control-plane outputs use bounded redaction and control-character filtering. This is defense in depth, not complete data-loss prevention: source content, file diffs, user messages, and final model text do not pass through one universal DLP layer, and a source file read for a task can still be sent to the selected model provider.
 
@@ -380,8 +390,9 @@ A managed Worktree is a detached checkout selected from one of three point-in-ti
 | `current-snapshot` | Start at local `HEAD`, then capture staged, unstaged, and non-ignored untracked state across the containing repository when the child is created. |
 
 The parent checkout is not live-synchronized after provisioning. In a monorepo,
-the baseline covers the containing repository while child file capabilities remain
-confined to the mapped logical workspace. The containing repository root may opt
+the baseline covers the containing repository while child file capabilities in
+Manual and Auto approval remain confined to the mapped logical workspace.
+Dangerous full access removes that boundary. The containing repository root may opt
 specific ignored runtime files into every newly provisioned Worktree through a
 `.worktreeinclude` file whose patterns are relative to that repository root;
 entries are bounded safe patterns and symbolic links are rejected. Those ignored
@@ -404,7 +415,7 @@ Handoff request, completion, and failure are durable transitions. Shared childre
 
 Only manager-owned paths may be cleaned. Dirty, busy, retained, or unresolved Worktrees remain by default and continue counting toward a configurable managed-environment limit. A successfully handed-off clean checkout is eligible for automatic removal; removing it does not remove the durable result reference or its underlying Git objects. When the limit is reached, new Worktree provisioning fails closed until retained environments are safely delivered or otherwise handled.
 
-Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is not itself a security boundary, but every main or child command is separately wrapped in an SRT `workspace-write` sandbox rooted at that Agent's active physical workspace. On Windows, command execution is serialized because SRT's alpha backend uses one machine-wide sandbox identity; this is independent of the higher model-work concurrency limit.
+Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is not itself a security boundary. In Manual and Auto approval, every main or child command is separately wrapped in an SRT `workspace-write` sandbox rooted at that Agent's active physical workspace. In Dangerous full access, the main Agent and every child instead inherit the same direct host authority and can reach outside every Worktree. On Windows, protected command execution is serialized because SRT's alpha backend uses one machine-wide sandbox identity; this is independent of the higher model-work concurrency limit.
 
 ## 9. Provider and multimodal design
 
@@ -448,11 +459,11 @@ Token efficiency follows several complementary strategies:
 
 Current trade-offs are explicit:
 
-- Policy and approval determine whether a command may start; SRT supplies a separate OS boundary after approval. Neither layer replaces the other.
-- Managed Worktrees isolate Git working state rather than supplying their own security boundary; SRT separately confines command process trees to the active physical workspace.
+- In Manual and Auto approval, policy and approval determine whether a command may start, and SRT supplies a separate OS boundary after approval. Neither layer replaces the other. Dangerous full access intentionally removes both layers.
+- Managed Worktrees isolate Git working state rather than supplying their own security boundary. SRT separately confines protected command process trees to the active physical workspace; Dangerous full access can reach outside every Worktree.
 - The pinned `@anthropic-ai/sandbox-runtime` is a Beta Research Preview and its Windows backend is alpha. Platform prerequisites and some user-profile toolchains can limit compatibility.
-- Network isolation is domain based rather than request-content based. Approved Shell and Unrestricted commands receive all domains and can transmit readable workspace data.
-- Windows sandbox commands are serialized within one EASY CODE process to avoid overlapping ACL grants through SRT's shared machine identity.
+- Protected-mode network isolation is domain based rather than request-content based. Approved Shell processes can transmit readable sandbox data; Dangerous full access uses the host network without an SRT domain boundary and can transmit any host data it can read.
+- Windows sandbox commands in Manual and Auto approval are serialized within one EASY CODE process to avoid overlapping ACL grants through SRT's shared machine identity.
 - Shared mode remains necessary for non-Git projects and explicit low-overhead delegation, so concurrent external edits can still invalidate child operations.
 - Isolated results require an explicit local or branch Handoff; this extra transition avoids silently overwriting the user's checkout.
 - Provider responses are currently handled as complete responses, so the loading indicator communicates liveness but final text is not streamed Token by Token.

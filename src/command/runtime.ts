@@ -5,6 +5,7 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import {
   AnthropicSandboxBackend,
   extractSandboxControls,
+  UnrestrictedHostBackend,
   type CommandExecutionBackend,
   type PreparedCommand,
   type SandboxExecutionMetadata,
@@ -69,35 +70,52 @@ export class CommandRuntime {
   readonly resolver: CommandResolver;
   readonly policy: CommandPolicy;
   private readonly executionBackend: CommandExecutionBackend;
+  private readonly unrestrictedExecutionBackend: CommandExecutionBackend;
 
   constructor(
     private readonly workspace: WorkspaceManager,
     policy = new CommandPolicy(),
     executionBackend?: CommandExecutionBackend,
+    unrestrictedExecutionBackend?: CommandExecutionBackend,
   ) {
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
     this.executionBackend = executionBackend ?? new AnthropicSandboxBackend(workspace);
+    this.unrestrictedExecutionBackend = unrestrictedExecutionBackend ??
+      new UnrestrictedHostBackend();
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
     const commandId = createId("command");
     const startedAt = Date.now();
+    const unrestricted = context.commandExecutionMode === "unrestricted" &&
+      (context.isUnrestrictedHostAccessActive?.() ?? true);
+    const executionBackend = unrestricted
+      ? this.unrestrictedExecutionBackend
+      : this.executionBackend;
     let resolved: ResolvedCommand;
     try {
-      resolved = await this.resolver.resolve(input);
+      resolved = await this.resolver.resolve(input, {
+        unrestrictedHostAccess: unrestricted,
+      });
     } catch (error) {
-      return this.resolutionFailure(commandId, startedAt, input, error, context);
+      return this.resolutionFailure(
+        commandId,
+        startedAt,
+        input,
+        error,
+        context,
+        executionBackend,
+      );
     }
     let policyDecision = this.policy.classify(input, resolved, context.mode);
-    const unrestricted = context.commandExecutionMode === "unrestricted";
     if (unrestricted) {
       policyDecision = {
         ...policyDecision,
         id: createId("policy"),
         effect: "allow",
         reason:
-          "User explicitly enabled unrestricted command execution for this EASY CODE process",
+          "User explicitly enabled dangerous full-computer access for this EASY CODE process",
         matchedRule: "allow.unrestricted",
       };
     }
@@ -106,7 +124,7 @@ export class CommandRuntime {
     const shouldAsk = !unrestricted &&
       (policyDecision.effect === "ask" || context.approvalPolicy === "ask");
     if (policyDecision.effect === "deny") {
-      return this.denied(commandId, startedAt, resolved, policyDecision, context);
+      return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
     }
     if (shouldAsk) {
       if (context.approvalPolicy === "never") {
@@ -115,7 +133,7 @@ export class CommandRuntime {
           effect: "deny",
           reason: `${policyDecision.reason}; approval prompts are disabled`,
         };
-        return this.denied(commandId, startedAt, resolved, policyDecision, context);
+        return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
       }
       let approved = false;
       try {
@@ -139,8 +157,18 @@ export class CommandRuntime {
           effect: "deny",
           reason: `${policyDecision.reason}; approval was not granted`,
         };
-        return this.denied(commandId, startedAt, resolved, policyDecision, context);
+        return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
       }
+    }
+
+    if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
+      policyDecision = {
+        ...policyDecision,
+        effect: "deny",
+        reason: "Unrestricted host access was revoked before the command started",
+        matchedRule: "deny.unrestricted_revoked",
+      };
+      return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
     }
 
     const sandboxRequest: SandboxExecutionRequest = {
@@ -157,14 +185,14 @@ export class CommandRuntime {
         resolved,
         policyDecision,
         context,
-        this.executionBackend.describe(sandboxRequest),
+        executionBackend.describe(sandboxRequest),
       );
     }
 
     const before = await this.workspace.captureSnapshot();
     let prepared: PreparedCommand;
     try {
-      prepared = await this.executionBackend.prepare(sandboxRequest);
+      prepared = await executionBackend.prepare(sandboxRequest);
     } catch (error) {
       return this.sandboxFailure(
         commandId,
@@ -174,6 +202,7 @@ export class CommandRuntime {
         context,
         error,
         sandboxRequest,
+        executionBackend,
       );
     }
     if (context.signal?.aborted) {
@@ -232,6 +261,14 @@ export class CommandRuntime {
       requestTermination();
     };
     context.signal?.addEventListener("abort", onAbort, { once: true });
+    const revocationTimer = unrestricted && context.isUnrestrictedHostAccessActive
+      ? setInterval(() => {
+        if (context.isUnrestrictedHostAccessActive?.()) return;
+        canceled = true;
+        requestTermination();
+      }, 250)
+      : undefined;
+    revocationTimer?.unref();
     const timer = setTimeout(() => {
       timedOut = true;
       requestTermination();
@@ -244,6 +281,7 @@ export class CommandRuntime {
       result = error as ProcessResult;
     } finally {
       clearTimeout(timer);
+      if (revocationTimer) clearInterval(revocationTimer);
       context.signal?.removeEventListener("abort", onAbort);
     }
     await termination;
@@ -257,7 +295,10 @@ export class CommandRuntime {
     }
 
     const stdoutDigest = stdout.finish();
-    const extractedStderr = extractSandboxControls(commandId, stderr.finish());
+    const rawStderr = stderr.finish();
+    const extractedStderr = prepared.metadata.enforced
+      ? extractSandboxControls(commandId, rawStderr)
+      : { digest: rawStderr, controls: [] };
     const stderrDigest = extractedStderr.digest;
     const sandboxError = extractedStderr.controls.find((control) =>
       control.type === "sandbox_error"
@@ -315,6 +356,7 @@ export class CommandRuntime {
     resolved: ResolvedCommand,
     policyDecision: CommandPolicyDecision,
     context: ToolContext,
+    executionBackend: CommandExecutionBackend = this.executionBackend,
   ): RunCommandOutput {
     const output: RunCommandOutput = {
       commandId,
@@ -326,7 +368,7 @@ export class CommandRuntime {
       stderr: emptyDigest(),
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
-      sandbox: this.executionBackend.describe({
+      sandbox: executionBackend.describe({
         commandId,
         command: resolved,
         policyDecision,
@@ -370,6 +412,7 @@ export class CommandRuntime {
     input: RunCommandInput,
     error: unknown,
     context: ToolContext,
+    executionBackend: CommandExecutionBackend,
   ): RunCommandOutput {
     const message = sanitizeCommandOutput(error instanceof Error ? error.message : String(error));
     const notFound = /Executable not found/iu.test(message);
@@ -393,7 +436,7 @@ export class CommandRuntime {
       stderr: emptyDigest(),
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
-      sandbox: this.executionBackend.describe(),
+      sandbox: executionBackend.describe(),
       executed: {
         program: sanitizeCommandOutput(input.program),
         args: redactedArgs,
@@ -427,6 +470,7 @@ export class CommandRuntime {
     context: ToolContext,
     error: unknown,
     request: SandboxExecutionRequest,
+    executionBackend: CommandExecutionBackend,
   ): RunCommandOutput {
     const message = sanitizeCommandOutput(error instanceof Error ? error.message : String(error));
     const text = `EASY CODE sandbox unavailable: ${message}`;
@@ -447,7 +491,7 @@ export class CommandRuntime {
       stderr,
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
-      sandbox: this.executionBackend.describe(request),
+      sandbox: executionBackend.describe(request),
       executed: this.executionSummary(resolved),
     };
     this.audit(output, resolved, context, text);

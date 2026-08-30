@@ -120,7 +120,7 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
       assert.match(prompt, /current objective, user constraints, key decisions/);
       assert.match(prompt, /It must be cumulative/);
-      assert.match(prompt, /delete_file deletes a previously read regular workspace file/);
+      assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
       assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
@@ -170,13 +170,13 @@ describe("system prompt builder", () => {
         env: {},
       });
 
-      assert.match(prompt, /read_file reads bounded workspace text/u);
+      assert.match(prompt, /read_file reads bounded text/u);
       assert.match(prompt, /propose_plan is the only valid way/u);
       assert.match(prompt, /Inspect before editing, keep changes scoped/u);
       assert.match(prompt, /Treat tool failures, conflicts, timeouts/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /update_file applies a checked update/u);
-      assert.doesNotMatch(prompt, /run_command executes an argument-vector command/u);
+      assert.doesNotMatch(prompt, /run_command executes a structured program\/argument-vector command/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
       assert.doesNotMatch(prompt, /compact_context replaces the earlier/u);
@@ -220,16 +220,16 @@ describe("system prompt builder", () => {
         env: {},
       });
 
-      assert.match(prompt, /read_file reads bounded workspace text/u);
+      assert.match(prompt, /read_file reads bounded text/u);
       assert.match(prompt, /update_file applies a checked update/u);
-      assert.match(prompt, /run_command executes an argument-vector command/u);
+      assert.match(prompt, /run_command executes a structured program\/argument-vector command/u);
       assert.match(prompt, /compact_context replaces the earlier/u);
       assert.match(prompt, /manage_memory is the only way/u);
       assert.match(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
       assert.match(prompt, /Before your final answer.*durable memory/u);
       assert.doesNotMatch(prompt, /propose_plan is the only valid way/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
-      assert.doesNotMatch(prompt, /create_file creates a new workspace file/u);
+      assert.doesNotMatch(prompt, /create_file creates a new file/u);
       assert.doesNotMatch(prompt, /delete_file deletes a previously read/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
@@ -249,11 +249,14 @@ describe("system prompt builder", () => {
         shell: "/bin/sh",
         env: {},
       });
-      assert.match(unrestricted, /unrestricted \(explicitly confirmed by the user\)/u);
-      assert.match(unrestricted, /destructive Git, network, system, interpreter, and shell commands/u);
-      assert.match(unrestricted, /does not apply command classification, Plan command restrictions/u);
+      assert.match(unrestricted, /dangerous full-computer access \(explicitly confirmed by the user\)/u);
+      assert.match(unrestricted, /operating-system sandbox.*disabled/u);
+      assert.match(unrestricted, /execute directly as the current OS user/u);
+      assert.match(unrestricted, /may access the internet/u);
+      assert.match(unrestricted, /explicit absolute host path/u);
       assert.match(unrestricted, /Structured program\/argv execution.*timeouts.*command audit remain active/u);
-      assert.match(unrestricted, /does not bypass the operating-system sandbox/u);
+      assert.match(unrestricted, /authority also reaches child Agents/u);
+      assert.doesNotMatch(unrestricted, /does not bypass the operating-system sandbox/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

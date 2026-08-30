@@ -18,8 +18,11 @@
     "vscode-extension/easy-code-vscode.vsix",
     "npm-shrinkwrap.json",
     "docs",
+    "third_party/licenses",
     "README.md",
-    "README_zh.md"
+    "README_zh.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
