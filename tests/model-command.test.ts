@@ -901,11 +901,21 @@ describe("thread leases", () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     const activeThread = (): string =>
       (fixture.app as unknown as { state: { threadId: string } }).state.threadId;
+    const resetThreadIds: string[] = [];
+    const resettableTerminal = fixture.terminal as unknown as {
+      resetForNewThread: (session: { threadId: string }) => void;
+    };
+    const originalReset = resettableTerminal.resetForNewThread.bind(fixture.terminal);
+    resettableTerminal.resetForNewThread = (session) => {
+      resetThreadIds.push(session.threadId);
+      originalReset(session);
+    };
     try {
       const firstThreadId = activeThread();
       await fixture.app.handleSlashCommand("/new");
       const secondThreadId = activeThread();
       assert.notEqual(secondThreadId, firstThreadId);
+      assert.deepEqual(resetThreadIds, [secondThreadId]);
 
       const probeStorage = createStorage(fixture.dataDir);
       try {
@@ -922,6 +932,7 @@ describe("thread leases", () => {
 
       await fixture.app.handleSlashCommand(`/resume ${firstThreadId}`);
       assert.equal(activeThread(), firstThreadId);
+      assert.deepEqual(resetThreadIds, [secondThreadId]);
       const transferredStorage = createStorage(fixture.dataDir);
       try {
         const transferredThreads = new ThreadStore(transferredStorage);

@@ -30,6 +30,36 @@ def _clear_box(grid, r0, r1, c0, c1):
             grid[r][c] = EMPTY
 
 
+def _hline(grid, r, c0, c1, gaps=()):
+    """横向墙体：第 r 行、c0..c1 列，gaps 为要留口的列号。"""
+    for c in range(c0, c1 + 1):
+        if c in gaps:
+            continue
+        grid[r][c] = WALL
+
+
+def _vline(grid, c, r0, r1, gaps=()):
+    """纵向墙体：第 c 列、r0..r1 行，gaps 为要留口的行号。"""
+    for r in range(r0, r1 + 1):
+        if r in gaps:
+            continue
+        grid[r][c] = WALL
+
+
+def _rect(grid, r0, r1, c0, c1, gaps=()):
+    """矩形边框。gaps 为 (方向, 起, 止) 三元组，方向取 't'/'b'/'l'/'r'。"""
+    for c in range(c0, c1 + 1):
+        if not any(g[0] == "t" and g[1] <= c <= g[2] for g in gaps):
+            grid[r0][c] = WALL
+        if not any(g[0] == "b" and g[1] <= c <= g[2] for g in gaps):
+            grid[r1][c] = WALL
+    for r in range(r0 + 1, r1):
+        if not any(g[0] == "l" and g[1] <= r <= g[2] for g in gaps):
+            grid[r][c0] = WALL
+        if not any(g[0] == "r" and g[1] <= r <= g[2] for g in gaps):
+            grid[r][c1] = WALL
+
+
 def build_classic(rows=GRID_ROWS, cols=GRID_COLS):
     """经典空场：没有墙，蛇穿过边界会从对面出现（环绕模式）。"""
     return _empty_grid(rows, cols)
@@ -100,6 +130,67 @@ def build_maze(rows=GRID_ROWS, cols=GRID_COLS):
     return grid
 
 
+def build_rooms(rows=GRID_ROWS, cols=GRID_COLS):
+    """房间迷宫：两条竖墙、一条横墙隔出六个房间，隔墙开有门洞。"""
+    grid = _empty_grid(rows, cols)
+    _border(grid)
+    mid_r, mid_c = rows // 2, cols // 2
+    # 两条竖直隔墙，各开两个门洞
+    _vline(grid, 10, 1, rows - 2, gaps=(4, 5, 15, 16))
+    _vline(grid, 20, 1, rows - 2, gaps=(6, 7, 12, 13))
+    # 一条水平隔墙，门洞开在两侧，中央留作出生区
+    _hline(grid, 10, 1, cols - 2, gaps=(4, 5, 25, 26))
+    _clear_box(grid, mid_r - 2, mid_r + 2, mid_c - 4, mid_c + 4)
+    return grid
+
+
+def build_spiral(rows=GRID_ROWS, cols=GRID_COLS):
+    """螺旋迷宫：四圈方环由外向内旋进，只有一条通路通向中央。"""
+    grid = _empty_grid(rows, cols)
+    _border(grid)
+    mid_r, mid_c = rows // 2, cols // 2
+    # 缺口依次开在：下、左、上、右，形成一条螺旋通路
+    _rect(grid, 2, 18, 2, 28, gaps=(("b", 13, 15),))
+    _rect(grid, 4, 16, 4, 26, gaps=(("l", 8, 10),))
+    _rect(grid, 6, 14, 6, 24, gaps=(("t", 16, 18),))
+    _rect(grid, 8, 12, 8, 22, gaps=(("r", 9, 11),))
+    # 中央出生区（在第四圈内部）
+    _clear_box(grid, mid_r - 1, mid_r + 1, mid_c - 3, mid_c + 3)
+    return grid
+
+
+def build_diagonal(rows=GRID_ROWS, cols=GRID_COLS):
+    """斜线迷阵：两条斜墙交叉成 X，中央广场为出生区。"""
+    grid = _empty_grid(rows, cols)
+    _border(grid)
+    mid_r, mid_c = rows // 2, cols // 2
+    for r in range(1, rows - 1):
+        c1 = mid_c - (mid_r - r)   # 左上 → 右下
+        c2 = mid_c + (mid_r - r)   # 右上 → 左下
+        if 0 < c1 < cols - 1:
+            grid[r][c1] = WALL
+        if c2 != c1 and 0 < c2 < cols - 1:
+            grid[r][c2] = WALL
+    # 中央广场（两条斜墙的交点区域）
+    _clear_box(grid, mid_r - 2, mid_r + 2, mid_c - 4, mid_c + 4)
+    return grid
+
+
+def build_serpentine(rows=GRID_ROWS, cols=GRID_COLS):
+    """S 形走廊：四条横向短墙交错留口，蛇必须左右迂回。"""
+    grid = _empty_grid(rows, cols)
+    _border(grid)
+    mid_r, mid_c = rows // 2, cols // 2
+    # 左段墙 → 右段墙 → 左段墙 → 右段墙，缺口交替
+    _hline(grid, 4, 2, 13)
+    _hline(grid, 8, 17, 28)
+    _hline(grid, 12, 2, 13)
+    _hline(grid, 16, 17, 28)
+    # 出生区位于中间横向带
+    _clear_box(grid, mid_r - 1, mid_r + 1, mid_c - 2, mid_c + 2)
+    return grid
+
+
 # ----------------------------------------------------------------------
 # 地图注册表
 # ----------------------------------------------------------------------
@@ -130,6 +221,34 @@ MAPS = [
         "name": "简易迷宫",
         "desc": "多段短墙与缺口组成的迷宫",
         "builder": build_maze,
+        "wrap": False,
+    },
+    {
+        "id": "rooms",
+        "name": "房间迷宫",
+        "desc": "六个带门洞的房间，中央出生区",
+        "builder": build_rooms,
+        "wrap": False,
+    },
+    {
+        "id": "spiral",
+        "name": "螺旋迷宫",
+        "desc": "四圈方环由外向内旋进，只有一条通路",
+        "builder": build_spiral,
+        "wrap": False,
+    },
+    {
+        "id": "diagonal",
+        "name": "斜线迷阵",
+        "desc": "两条斜墙交叉成 X，中央广场出生区",
+        "builder": build_diagonal,
+        "wrap": False,
+    },
+    {
+        "id": "serpentine",
+        "name": "S 形走廊",
+        "desc": "横向短墙交错留口，蛇必须左右迂回",
+        "builder": build_serpentine,
         "wrap": False,
     },
 ]

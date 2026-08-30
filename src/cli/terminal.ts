@@ -335,6 +335,33 @@ export class Terminal {
     this.showSessionHeader();
   }
 
+  /** Clear every process-local UI projection when a new Thread becomes active. */
+  resetForNewThread(session: Readonly<UISessionInfo>): void {
+    this.currentRequestOptions = undefined;
+    this.stopBusyInputOwner();
+    this.resetActivityState();
+    this.activeActivityId = undefined;
+    this.lastPlan = undefined;
+    this.progressItems = [];
+    this.progressSequence = 0;
+    this.agentConcurrencyLimit = undefined;
+    this.reasoning.clear();
+    this.uiState = createUIState({
+      header: {
+        title: this.uiState.header.title,
+        session,
+      },
+    });
+
+    if (!this.inlineShellActive) {
+      if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001Bc");
+      return;
+    }
+    this.screen?.clearLive();
+    this.output.write("\u001Bc");
+    this.showSessionHeader();
+  }
+
   question(prompt: string): Promise<string | null> {
     if (this.closed) return Promise.resolve(null);
     if (this.promptActive || this.guardedInputActive) {

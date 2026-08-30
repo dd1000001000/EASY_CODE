@@ -779,6 +779,10 @@ export class EasyCodeApp {
         await this.clearPendingImages();
         return;
       }
+      const referencedImageIds = new Set(response.images.map((image) => image.id));
+      await this.discardImages(
+        promptImages.filter((image) => !referencedImageIds.has(image.id)),
+      );
       for (const error of response.pasteErrors) {
         this.terminal.error(`Image paste failed: ${error}`);
       }
@@ -1051,7 +1055,8 @@ export class EasyCodeApp {
         if (command.args.length) throw new Error("Usage: /new");
         await this.clearPendingImages();
         await this.newThread();
-        this.syncTerminalView(true);
+        this.terminal.resetForNewThread(this.terminalSessionInfo());
+        this.syncTerminalView();
         this.terminal.success(`Created thread ${this.state.threadId}`);
         return false;
       case "clear":
@@ -2797,7 +2802,6 @@ export class EasyCodeApp {
     this.threadLease = nextLease;
     this.dirty = false;
     this.subagentCoordinator.discardPausedJobs(previousThreadId);
-    this.terminal.clearReasoning();
   }
 
   private async resumeThread(threadId: string): Promise<void> {
