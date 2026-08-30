@@ -9,8 +9,10 @@ const {
 
 const CONTEXT_KEY = "easyCode.imagePasteEnabled";
 const PASTE_IMAGE_SEQUENCE = "\x1b]6973;easy-code;paste-image\x07";
-const SHOW_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;show-thinking;";
-const THINKING_MARKER_PREFIX = "▶ ";
+const TOGGLE_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-thinking;";
+// Deprecated compatibility export. New callers should use the toggle name;
+// the old symbol deliberately emits the new action as well.
+const SHOW_THINKING_SEQUENCE_PREFIX = TOGGLE_THINKING_SEQUENCE_PREFIX;
 const THINKING_LINK_PREFIX = "Thinking #";
 const THINKING_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
 
@@ -21,9 +23,9 @@ function vscodeApi() {
 }
 
 /**
- * Parse only EASY CODE's paired, visible thinking marker. Requiring the same
- * decimal ID at both ends prevents an unrelated "Thinking" message from
- * becoming a terminal link.
+ * Parse only EASY CODE's paired collapsed marker or expanded-panel control.
+ * Requiring the same decimal ID at both ends prevents an unrelated "Thinking"
+ * message from becoming a terminal link.
  *
  * @param {string} line
  * @returns {Array<{ startIndex: number, length: number, id: string }>}
@@ -34,12 +36,13 @@ function findThinkingMarkers(line) {
   const matches = [];
   // This RegExp is deliberately local: VS Code may invoke terminal link
   // providers concurrently, so no mutable global RegExp state is shared.
-  const markerPattern = /▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g;
+  const markerPattern = /(?:▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})|↕ Thinking #([1-9][0-9]{0,15}) · Click again to close · \/thinking ([1-9][0-9]{0,15}))(?=$|[ \t])/g;
   for (const match of line.matchAll(markerPattern)) {
-    const id = match[1];
-    if (id !== match[2] || !Number.isSafeInteger(Number(id))) continue;
+    const id = match[1] ?? match[3];
+    const pairedId = match[2] ?? match[4];
+    if (!id || id !== pairedId || !Number.isSafeInteger(Number(id))) continue;
     matches.push({
-      startIndex: match.index + THINKING_MARKER_PREFIX.length,
+      startIndex: match.index + match[0].indexOf(THINKING_LINK_PREFIX),
       length: THINKING_LINK_PREFIX.length + id.length,
       id,
     });
@@ -50,7 +53,7 @@ function findThinkingMarkers(line) {
 /**
  * @param {string | number} id
  */
-function showThinkingSequence(id) {
+function toggleThinkingSequence(id) {
   const value = String(id);
   if (
     !THINKING_ID_PATTERN.test(value) ||
@@ -58,7 +61,16 @@ function showThinkingSequence(id) {
   ) {
     throw new TypeError("EASY CODE thinking IDs must be positive decimal integers.");
   }
-  return `${SHOW_THINKING_SEQUENCE_PREFIX}${value}\x07`;
+  return `${TOGGLE_THINKING_SEQUENCE_PREFIX}${value}\x07`;
+}
+
+/**
+ * @deprecated Use toggleThinkingSequence. Kept so older extension consumers
+ * receive the new toggle action instead of retaining one-way show behavior.
+ * @param {string | number} id
+ */
+function showThinkingSequence(id) {
+  return toggleThinkingSequence(id);
 }
 
 /**
@@ -78,7 +90,7 @@ function createThinkingLinkProvider(isEnabled) {
         const link = {
           startIndex: marker.startIndex,
           length: marker.length,
-          tooltip: `Show EASY CODE thinking #${marker.id}`,
+          tooltip: `Toggle EASY CODE Thinking #${marker.id}`,
         };
         linkMetadata.set(link, { id: marker.id, terminal: context.terminal });
         return link;
@@ -88,7 +100,7 @@ function createThinkingLinkProvider(isEnabled) {
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
       if (!metadata || !isEnabled(metadata.terminal)) return;
-      metadata.terminal.sendText(showThinkingSequence(metadata.id), false);
+      metadata.terminal.sendText(toggleThinkingSequence(metadata.id), false);
     },
   };
 }
@@ -265,4 +277,6 @@ module.exports = {
   PASTE_IMAGE_SEQUENCE,
   showThinkingSequence,
   SHOW_THINKING_SEQUENCE_PREFIX,
+  toggleThinkingSequence,
+  TOGGLE_THINKING_SEQUENCE_PREFIX,
 };

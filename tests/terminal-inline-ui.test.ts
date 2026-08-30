@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
+import { vscodeToggleThinkingSequence } from "../src/cli/prompt-input.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UISessionInfo, UIState } from "../src/ui/contracts.js";
@@ -132,6 +133,11 @@ function terminalState(terminal: Terminal): Readonly<UIState> {
   return (terminal as unknown as { readonly uiState: UIState }).uiState;
 }
 
+async function settlePromptInput(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 describe("Terminal retained inline shell", () => {
   it("enables only for a usable interactive TTY and remains safe across retries", async () => {
     await withInteractiveEnvironment(() => {
@@ -202,6 +208,18 @@ describe("Terminal retained inline shell", () => {
         assert.match(rendered, /Agents 1\/4/u);
         assert.match(rendered, /backend-auth/u);
         assert.match(rendered, /Waiting for deepseek-v4-pro/u);
+
+        const progressOffset = rendered.lastIndexOf("Progress");
+        const activityOffset = rendered.lastIndexOf("Waiting for deepseek-v4-pro");
+        const composerOffset = rendered.lastIndexOf("Working on: Add login and registration");
+        const tasksOffset = rendered.lastIndexOf("Tasks 2/3");
+        const agentsOffset = rendered.lastIndexOf("Agents 1/4");
+        const footerOffset = rendered.lastIndexOf("auto  deepseek/v4-pro");
+        assert.ok(progressOffset >= 0 && progressOffset < activityOffset);
+        assert.ok(activityOffset < composerOffset);
+        assert.ok(composerOffset < tasksOffset);
+        assert.ok(tasksOffset < agentsOffset);
+        assert.ok(agentsOffset < footerOffset);
       } finally {
         terminal.stopActivity();
         terminal.close();
@@ -241,7 +259,7 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("commits tool completion once while runtime status remains transient", async () => {
+  it("keeps only running progress live and commits each tool completion once", async () => {
     await withInteractiveEnvironment(() => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -250,17 +268,42 @@ describe("Terminal retained inline shell", () => {
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.status("Step 1/2: requesting deepseek-v4-pro");
+        terminal.status("Step 2/2: requesting deepseek-v4-pro");
+        assert.deepEqual(
+          terminalState(terminal).live.progress.map((item) => [item.kind, item.label]),
+          [["step", "Step 2/2: requesting deepseek-v4-pro"]],
+        );
+
+        terminal.status("Tool: stale_probe");
         terminal.status("Tool: read_file");
+        assert.equal(
+          terminalState(terminal).live.progress.filter((item) => item.kind === "tool").length,
+          1,
+        );
+        assert.equal(
+          terminalState(terminal).live.progress.find((item) => item.kind === "tool")?.label,
+          "Tool: read_file",
+        );
         assert.equal(terminalState(terminal).transcript.length, 0);
 
         terminal.toolCompleted("read_file", true, "Read static/index.html");
+        assert.equal(
+          terminalState(terminal).live.progress.some((item) => item.kind === "tool"),
+          false,
+        );
         terminal.status(
           "Context utilization is 90%; compact_context is required before other work.",
         );
         terminal.write("Authentication flow inspected.\n");
-        terminal.status("Step 2/2: requesting deepseek-v4-pro");
+        terminal.status("Step 3/3: requesting deepseek-v4-pro");
         terminal.taskGraph(graph());
         terminal.setSessionInfo(session({ contextTokens: 84_000 }));
+
+        const runningProgress = terminalState(terminal).live.progress;
+        assert.deepEqual(
+          runningProgress.map((item) => [item.kind, item.status, item.label]),
+          [["step", "running", "Step 3/3: requesting deepseek-v4-pro"]],
+        );
 
         const transcript = terminalState(terminal).transcript;
         assert.deepEqual(
@@ -275,6 +318,9 @@ describe("Terminal retained inline shell", () => {
           1,
         );
         assert.match(stripAnsi(captured()), /✓ Tool: read_file/u);
+
+        terminal.clearCurrentRequest();
+        assert.deepEqual(terminalState(terminal).live.progress, []);
       } finally {
         terminal.close();
       }
@@ -307,6 +353,26 @@ describe("Terminal retained inline shell", () => {
         assert.match(initial, /╭─ Request /u);
         assert.match(initial, /╰─+╯\r?\nauto\s+deepseek\/v4-pro/u);
 
+        const liveOnlyOffset = captured().length;
+        terminal.status("Tool: read_file");
+        terminal.taskGraph(graph());
+        terminal.subagents([agent()], graph(), 4);
+        terminal.startActivity("Waiting for deepseek-v4-pro");
+
+        const activeState = terminalState(terminal);
+        assert.equal(activeState.live.progress.at(-1)?.label, "Tool: read_file");
+        assert.equal(activeState.live.activity?.label, "Waiting for deepseek-v4-pro");
+        const activeSuffix = stripAnsi(captured().slice(liveOnlyOffset));
+        assert.doesNotMatch(activeSuffix, /Progress|Tool: read_file|Waiting for deepseek-v4-pro/u);
+        const composerBottomOffset = activeSuffix.lastIndexOf("╰");
+        const tasksOffset = activeSuffix.lastIndexOf("Tasks 2/3");
+        const agentsOffset = activeSuffix.lastIndexOf("Agents 1/4");
+        const footerOffset = activeSuffix.lastIndexOf("auto  deepseek/v4-pro");
+        assert.ok(composerBottomOffset >= 0 && composerBottomOffset < tasksOffset);
+        assert.ok(tasksOffset < agentsOffset);
+        assert.ok(agentsOffset < footerOffset);
+        terminal.stopActivity();
+
         input.write("A request long enough to wrap across several terminal rows");
         await new Promise<void>((resolve) => setImmediate(resolve));
         terminal.status(
@@ -319,7 +385,10 @@ describe("Terminal retained inline shell", () => {
         assert.ok(statusOffset >= 0);
         const afterStatus = plainOutput.slice(statusOffset);
         assert.match(afterStatus, /╭─ Request /u);
-        assert.match(afterStatus, /╰─+╯\r?\nauto\s+deepseek\/v4-pro/u);
+        assert.match(
+          afterStatus,
+          /╰─+╯\r?\nTasks 2\/3[\s\S]*Agents 1\/4[\s\S]*auto\s+deepseek\/v4-pro/u,
+        );
 
         output.columns = 44;
         output.emit("resize");
@@ -338,6 +407,114 @@ describe("Terminal retained inline shell", () => {
           false,
         );
         assert.equal(input.rawModeTransitions.at(-1), false);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("toggles clicked Thinking blocks live while Ctrl+T remains stable scrollback", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const firstId = terminal.addReasoning("Inspect the authentication routes.");
+        const secondId = terminal.addReasoning("Verify the registration form.");
+        const markerEntries = terminalState(terminal).transcript.length;
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => ({
+            id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            label: `Image #${index}`,
+            mediaType: "image/png",
+            storageKey: `attachments/test/image-${index}.png`,
+            sha256: String(index).repeat(64).slice(0, 64),
+            byteSize: 68,
+            width: 1,
+            height: 1,
+          }),
+        });
+
+        input.write("draft");
+        input.write(vscodeToggleThinkingSequence(firstId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, firstId);
+        assert.equal(terminalState(terminal).transcript.length, markerEntries);
+        assert.match(
+          stripAnsi(captured()),
+          new RegExp(
+            `↕ Thinking #${firstId} · Click again to close · /thinking ${firstId}`,
+            "u",
+          ),
+        );
+
+        input.write(vscodeToggleThinkingSequence(firstId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(terminalState(terminal).transcript.length, markerEntries);
+
+        input.write(vscodeToggleThinkingSequence(secondId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, secondId);
+        input.write(vscodeToggleThinkingSequence(firstId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, firstId);
+        assert.equal(terminalState(terminal).transcript.length, markerEntries);
+
+        input.write(vscodeToggleThinkingSequence(999));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(terminalState(terminal).transcript.at(-1)?.kind, "info");
+        assert.match(
+          terminalState(terminal).transcript.at(-1)?.text ?? "",
+          /Thinking block #999 is not available in this thread\./u,
+        );
+
+        const beforeCtrlT = terminalState(terminal).transcript.length;
+        input.write(Buffer.from([0x14]));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(terminalState(terminal).transcript.length, beforeCtrlT + 1);
+        assert.match(
+          terminalState(terminal).transcript.at(-1)?.text ?? "",
+          new RegExp(
+            `▼ Thinking #${secondId}[\\s\\S]*Verify the registration form\\.`,
+            "u",
+          ),
+        );
+
+        input.write("!\r");
+        assert.equal((await prompt)?.text, "draft!");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("hides a live Thinking panel when reasoning history is restored or cleared", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const id = terminal.addReasoning("Original thread reasoning.");
+        assert.equal(terminal.toggleReasoning(id), true);
+        assert.equal(terminalState(terminal).live.thinking?.id, id);
+
+        assert.equal(terminal.restoreReasoning(["Restored thread reasoning."]), 1);
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(terminal.toggleReasoning(1), true);
+        assert.equal(
+          terminalState(terminal).live.thinking?.body,
+          "Restored thread reasoning.",
+        );
+
+        terminal.clearReasoning();
+        assert.equal(terminalState(terminal).live.thinking, null);
       } finally {
         terminal.close();
       }

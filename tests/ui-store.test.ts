@@ -19,6 +19,9 @@ import {
   MAX_LIVE_PROGRESS_ITEMS,
   MAX_LIVE_TASKS,
   MAX_OVERLAY_ROWS,
+  MAX_THINKING_PANEL_CHARS,
+  MAX_THINKING_PANEL_LINE_CHARS,
+  MAX_THINKING_PANEL_LINES,
   MAX_TRANSCRIPT_ENTRIES,
   applyEvent,
   applyEvents,
@@ -101,6 +104,7 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(initial.live, {
       activity: null,
       progress: [],
+      thinking: null,
       tasks: null,
       subagents: [],
     });
@@ -245,6 +249,72 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(
       applyEvent(withAgents, { type: "subagents.clear" }).live.subagents,
       [],
+    );
+  });
+
+  it("toggles one bounded, sanitized Thinking panel with stale-safe hiding", () => {
+    const secret = "abcdefghijklmnopqrstuvwxyz";
+    const lines = [
+      `Inspect api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz`,
+      "x".repeat(MAX_THINKING_PANEL_LINE_CHARS + 20),
+      ...Array.from(
+        { length: MAX_THINKING_PANEL_LINES + 3 },
+        (_, index) => `reasoning line ${index}`,
+      ),
+    ];
+    const text = lines.join("\n");
+    const initial = createUIState();
+    const opened = applyEvent(initial, {
+      type: "thinking.toggle",
+      panel: {
+        id: 7,
+        text,
+        sourceChars: text.length,
+        sourceLines: lines.length,
+        truncated: false,
+      },
+    });
+
+    const panel = opened.live.thinking;
+    assert.equal(initial.live.thinking, null);
+    assert.equal(panel?.id, 7);
+    assert.equal(panel?.truncated, true);
+    assert.equal(panel?.sourceLines, lines.length);
+    assert.doesNotMatch(panel?.body ?? "", /\u001B/u);
+    assert.doesNotMatch(panel?.body ?? "", new RegExp(secret, "u"));
+    assert.match(panel?.body ?? "", /api_key=\[REDACTED\]/u);
+    assert.ok(Array.from(panel?.body ?? "").length <= MAX_THINKING_PANEL_CHARS);
+    const retainedLines = (panel?.body ?? "").split("\n");
+    assert.ok(retainedLines.length <= MAX_THINKING_PANEL_LINES);
+    assert.ok(retainedLines.every(
+      (line) => Array.from(line).length <= MAX_THINKING_PANEL_LINE_CHARS,
+    ));
+
+    const closed = applyEvent(opened, {
+      type: "thinking.toggle",
+      panel: { id: 7, body: "The same marker closes the panel." },
+    });
+    assert.equal(closed.live.thinking, null);
+
+    const replacement = applyEvent(opened, {
+      type: "thinking.toggle",
+      panel: { id: 8, body: "A different block replaces the open panel." },
+    });
+    assert.equal(replacement.live.thinking?.id, 8);
+    assert.equal(
+      applyEvent(replacement, { type: "thinking.hide", id: 7 }),
+      replacement,
+    );
+    assert.equal(
+      applyEvent(replacement, { type: "thinking.hide", id: 8 }).live.thinking,
+      null,
+    );
+    assert.equal(
+      applyEvent(initial, {
+        type: "thinking.toggle",
+        panel: { id: Number.NaN, body: "invalid" },
+      }),
+      initial,
     );
   });
 

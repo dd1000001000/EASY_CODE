@@ -5,10 +5,13 @@ import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UIEvent, UIProgressStatus } from "../src/ui/contracts.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
 import {
+  renderComposerStatusRegion,
   renderComposerFooter,
   renderComposerPrompt,
+  renderLiveActivityRegion,
   renderLiveRegion,
   renderSessionHeader,
+  renderThinkingPanel,
 } from "../src/ui/render/view.js";
 import { applyEvents, createUIState } from "../src/ui/store.js";
 import { describe, it } from "./harness.js";
@@ -100,7 +103,7 @@ function populatedState(): ReturnType<typeof createUIState> {
       type: "progress.set",
       progress: statuses.map((status, index) => ({
         id: `progress-${index}`,
-        kind: "step",
+        kind: index === 0 ? "tool" : "step",
         label: index === 0 ? "Read static/index.html" : "Reading workspace",
         status,
       })),
@@ -162,11 +165,13 @@ describe("pure terminal UI views", () => {
   });
 
   it("renders compact progress, task, agent, activity, busy composer, and footer", () => {
-    const rendered = renderLiveRegion(populatedState(), 15_000, {
+    const state = populatedState();
+    const options = {
       columns: 72,
       color: false,
       spinnerFrame: "⠹",
-    });
+    } as const;
+    const rendered = renderLiveRegion(state, 15_000, options);
 
     assert.match(rendered, /Progress/u);
     assert.match(rendered, /Tasks 2\/7/u);
@@ -181,6 +186,27 @@ describe("pure terminal UI views", () => {
     assert.match(
       rendered,
       /auto  deepseek\/v4-pro  medium  ctx 82\.4k  task 2\/7  agents 2/u,
+    );
+    const blocks = rendered.split("\n\n");
+    assert.equal(blocks.length, 6);
+    assert.match(blocks[0] ?? "", /^Progress/u);
+    assert.match(blocks[0] ?? "", /Read static\/index\.html/u);
+    assert.match(blocks[1] ?? "", /^⠹ Waiting/u);
+    assert.match(blocks[2] ?? "", /^╭─/u);
+    assert.match(blocks[2] ?? "", /> Working…/u);
+    assert.match(blocks[3] ?? "", /^Tasks 2\/7/u);
+    assert.match(blocks[4] ?? "", /^Agents 2\/4/u);
+    assert.match(blocks[5] ?? "", /^auto  deepseek/u);
+    assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
+    assert.doesNotMatch(blocks[3] ?? "", /Reading workspace/u);
+
+    assert.equal(
+      renderLiveActivityRegion(state, 15_000, options),
+      blocks.slice(0, 2).join("\n\n"),
+    );
+    assert.equal(
+      renderComposerStatusRegion(state, options),
+      blocks.slice(3).join("\n\n"),
     );
     assertBoundedLines(rendered, 72);
   });
@@ -223,6 +249,84 @@ describe("pure terminal UI views", () => {
     });
     assert.equal(colored.includes("\u001B["), true);
     assert.equal(stripAnsi(colored), rendered);
+  });
+
+  it("renders one gray Thinking panel with an exact toggle control and modal priority", () => {
+    const secret = "abcdefghijklmnopqrstuvwxyz";
+    const state = applyEvents(populatedState(), [{
+      type: "thinking.toggle",
+      panel: {
+        id: 4,
+        body:
+          "Inspect the repository before editing.\n" +
+          `api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz\n` +
+          "Reuse the existing task types.\n" +
+          Array.from({ length: 8 }, (_, index) => `reasoning line ${index}`).join("\n"),
+      },
+    }]);
+    const rendered = renderLiveRegion(state, 15_000, {
+      columns: 72,
+      color: false,
+      spinnerFrame: "⠹",
+      maxThinkingRows: 3,
+    });
+
+    assert.match(rendered, /╭─ Thinking #4/u);
+    assert.match(rendered, /Inspect the repository before editing\./u);
+    assert.match(rendered, /api_key=\[REDACTED\]/u);
+    assert.doesNotMatch(rendered, new RegExp(secret, "u"));
+    assert.equal(rendered.includes("\u001B"), false);
+    assert.match(
+      rendered,
+      /↕ Thinking #4 · Click again to close · \/thinking 4/u,
+    );
+    assert.equal(rendered.includes("reasoning line 7"), false);
+    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("Thinking #4"));
+    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("> Working…"));
+    assert.ok(rendered.indexOf("> Working…") < rendered.indexOf("Tasks 2/7"));
+    assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
+    assert.ok(rendered.indexOf("Agents 2/4") < rendered.lastIndexOf("auto  deepseek"));
+    assertBoundedLines(rendered, 72);
+
+    const activeComposerState = applyEvents(state, [{
+      type: "composer.patch",
+      patch: { busy: false },
+    }]);
+    const activeUpper = renderLiveActivityRegion(activeComposerState, 15_000, {
+      columns: 72,
+      color: false,
+      spinnerFrame: "⠹",
+    });
+    assert.match(activeUpper, /^Progress/u);
+    assert.match(activeUpper, /Waiting for deepseek-v4-pro/u);
+    assert.equal(activeUpper.includes("Thinking #4"), false);
+
+    const panel = state.live.thinking;
+    if (!panel) throw new Error("Expected an expanded Thinking panel");
+    const plainPanel = renderThinkingPanel(panel, { columns: 72, color: false });
+    const coloredPanel = renderThinkingPanel(panel, { columns: 72, color: true });
+    assert.match(coloredPanel, /\u001B\[90m/u);
+    assert.doesNotMatch(coloredPanel, /\u001B\[36m/u);
+    assert.equal(stripAnsi(coloredPanel), plainPanel);
+
+    const withOverlay = applyEvents(state, [{
+      type: "overlay.show",
+      overlay: {
+        id: "thinking-priority",
+        kind: "picker",
+        title: "Choose another block",
+        rows: [{ id: "one", label: "Thinking #1" }],
+        selectedIndex: 0,
+        hint: "Enter confirm",
+      },
+    }]);
+    const modal = renderLiveRegion(withOverlay, 15_000, {
+      columns: 72,
+      color: false,
+    });
+    assert.match(modal, /^╭─ Choose another block/u);
+    assert.equal(modal.includes("Click again to close"), false);
+    assert.equal(modal.includes("Working…"), false);
   });
 
   it("keeps composer and footer useful in a narrow terminal", () => {

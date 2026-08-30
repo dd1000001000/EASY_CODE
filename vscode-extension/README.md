@@ -1,6 +1,6 @@
 # EASY CODE Terminal Integration
 
-This UI extension adds native image paste and clickable thinking markers to EASY CODE in the VS Code integrated terminal.
+This UI extension adds native image paste and click-to-toggle Thinking details to EASY CODE in the VS Code integrated terminal.
 
 ## Image paste
 
@@ -29,21 +29,27 @@ ESC ] 6973 ; easy-code ; paste-image BEL
 
 It never sends image bytes through the terminal.
 
-## Thinking markers
+## Thinking toggles
 
-EASY CODE can print a marker such as:
+EASY CODE can print a collapsed marker such as:
 
 ```text
 ▶ Thinking #42 · completed in 1.2s · /thinking 42
 ```
 
-The extension makes `Thinking #42` clickable. Activating a current or historical marker sends its paired numeric ID back to the same terminal with no trailing newline:
+An expanded panel includes its own control line, so it can be closed without scrolling back to the original marker:
 
 ```text
-ESC ] 6973 ; easy-code ; show-thinking ; 42 BEL
+↕ Thinking #42 · Click again to close · /thinking 42
 ```
 
-Terminal links are offered only while that terminal is identified as an EASY CODE terminal through shell execution tracking or the explicit enable command. A marker must use the exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler emits only the fixed private OSC sequence above; marker text can never become a shell command.
+The extension makes the first `Thinking #42` span clickable in both forms. Every activation of a current marker, historical marker, or expanded-panel control sends its paired numeric ID back to the same terminal with no trailing newline:
+
+```text
+ESC ] 6973 ; easy-code ; toggle-thinking ; 42 BEL
+```
+
+Click the same link again to toggle the panel closed; there is no separate Esc shortcut. Terminal links are offered only while that terminal is identified as an EASY CODE terminal through shell execution tracking or the explicit enable command. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler emits only the fixed private OSC sequence above; marker text can never become a shell command.
 
 ## Development
 

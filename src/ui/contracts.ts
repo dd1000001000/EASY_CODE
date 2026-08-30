@@ -92,9 +92,34 @@ export interface UIProgressItem {
   readonly startedAt?: number;
 }
 
+interface UIThinkingPanelMetadata {
+  readonly id: number;
+  readonly sourceChars?: number;
+  readonly sourceLines?: number;
+  readonly truncated?: boolean;
+}
+
+/** Input may be a prepared ReasoningBlock or a caller-provided safe body. */
+export type UIThinkingPanelInput =
+  | (UIThinkingPanelMetadata & {
+      readonly body: string;
+      readonly text?: never;
+    })
+  | (UIThinkingPanelMetadata & {
+      readonly text: string;
+      readonly body?: never;
+    });
+
+/** The reducer stores only one bounded, terminal-safe Thinking body at a time. */
+export interface UIThinkingPanelState extends UIThinkingPanelMetadata {
+  readonly body: string;
+  readonly truncated: boolean;
+}
+
 export interface UILiveState {
   readonly activity: UIActivityState | null;
   readonly progress: readonly UIProgressItem[];
+  readonly thinking: UIThinkingPanelState | null;
   readonly tasks: TaskGraphView | null;
   readonly subagents: readonly SubagentView[];
 }
@@ -170,6 +195,11 @@ export type UIEvent =
       readonly progress: readonly UIProgressItem[];
     }
   | { readonly type: "progress.clear" }
+  | {
+      readonly type: "thinking.toggle";
+      readonly panel: UIThinkingPanelInput;
+    }
+  | { readonly type: "thinking.hide"; readonly id?: number }
   | { readonly type: "tasks.set"; readonly tasks: Readonly<TaskGraphView> }
   | { readonly type: "tasks.clear" }
   | {

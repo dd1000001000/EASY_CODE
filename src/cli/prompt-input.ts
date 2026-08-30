@@ -50,6 +50,10 @@ export interface ReadPromptOptions {
   readonly onShowThinking?: (
     id: number | "last",
   ) => void | Promise<void>;
+  /** Toggle one live Thinking panel from the private VS Code mouse protocol. */
+  readonly onToggleThinking?: (
+    id: number,
+  ) => void | Promise<void>;
   readonly onSessionReady?: (
     session: PromptInputSession | undefined,
   ) => void;
@@ -73,7 +77,17 @@ const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
 export const VSCODE_IMAGE_PASTE_SEQUENCE = "\u001B]6973;easy-code;paste-image\u0007";
 export const VSCODE_SHOW_THINKING_SEQUENCE_PREFIX =
   "\u001B]6973;easy-code;show-thinking;";
+export const VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX =
+  "\u001B]6973;easy-code;toggle-thinking;";
 
+export function vscodeToggleThinkingSequence(id: number): string {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("Thinking block ID must be a positive safe integer");
+  }
+  return `${VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX}${id}\u0007`;
+}
+
+/** @deprecated Compatibility helper for already-installed VS Code clients. */
 export function vscodeShowThinkingSequence(id: number): string {
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error("Thinking block ID must be a positive safe integer");
@@ -97,7 +111,7 @@ type PrivateOscParseResult =
       readonly length: number;
       readonly action:
         | { readonly type: "paste-image" }
-        | { readonly type: "show-thinking"; readonly id: number }
+        | { readonly type: "toggle-thinking"; readonly id: number }
         | { readonly type: "ignore" };
     };
 
@@ -133,14 +147,14 @@ function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
   if (payload === "paste-image") {
     return { status: "complete", length, action: { type: "paste-image" } };
   }
-  const thinking = /^show-thinking;([1-9][0-9]{0,15})$/u.exec(payload);
+  const thinking = /^(?:toggle|show)-thinking;([1-9][0-9]{0,15})$/u.exec(payload);
   if (thinking) {
     const id = Number(thinking[1]);
     if (Number.isSafeInteger(id)) {
       return {
         status: "complete",
         length,
-        action: { type: "show-thinking", id },
+        action: { type: "toggle-thinking", id },
       };
     }
   }
@@ -283,6 +297,9 @@ class ImagePasteInputProxy extends Transform {
     private readonly onShowThinking?: (
       id: number | "last",
     ) => void | Promise<void>,
+    private readonly onToggleThinking?: (
+      id: number,
+    ) => void | Promise<void>,
     private readonly signal?: AbortSignal,
   ) {
     super();
@@ -356,8 +373,8 @@ class ImagePasteInputProxy extends Transform {
         if (privateOsc.status === "complete") {
           if (privateOsc.action.type === "paste-image") {
             output.push(...Buffer.from(await this.captureMarker(), "utf8"));
-          } else if (privateOsc.action.type === "show-thinking") {
-            await this.onShowThinking?.(privateOsc.action.id);
+          } else if (privateOsc.action.type === "toggle-thinking") {
+            await this.onToggleThinking?.(privateOsc.action.id);
           }
           offset += privateOsc.length;
           continue;
@@ -644,12 +661,23 @@ export function readPrompt(
         }
       }
     : undefined;
+  const toggleThinking = options.onToggleThinking
+    ? async (id: number): Promise<void> => {
+        if (!suspendPrompt()) return;
+        try {
+          await options.onToggleThinking?.(id);
+        } finally {
+          resumePrompt();
+        }
+      }
+    : undefined;
   const proxy = new ImagePasteInputProxy(
     input,
     initialImageCount,
     options.captureImage,
     options.captureText,
     showThinking,
+    toggleThinking,
     captureController.signal,
   );
   rl = readline.createInterface({

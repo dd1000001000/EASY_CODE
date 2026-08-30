@@ -1,4 +1,5 @@
 import type { PlanProposal, SubagentTaskReport } from "../core/types.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type {
@@ -12,13 +13,19 @@ import type {
   UIProgressItem,
   UISessionInfo,
   UIState,
+  UIThinkingPanelInput,
+  UIThinkingPanelState,
   UITranscriptEntry,
 } from "./contracts.js";
+import { sanitizeTerminalText } from "./render/layout.js";
 
 export const MAX_TRANSCRIPT_ENTRIES = 1_000;
 export const MAX_LIVE_TASKS = 32;
 export const MAX_LIVE_SUBAGENTS = 64;
 export const MAX_LIVE_PROGRESS_ITEMS = 64;
+export const MAX_THINKING_PANEL_CHARS = 12_000;
+export const MAX_THINKING_PANEL_LINES = 120;
+export const MAX_THINKING_PANEL_LINE_CHARS = 1_000;
 export const MAX_OVERLAY_ROWS = 100;
 export const MAX_COMPOSER_IMAGES = 99;
 export const DEFAULT_COMPOSER_PLACEHOLDER = "Type your request…";
@@ -63,6 +70,82 @@ function mergeHeader(
 function boundedInteger(value: number, minimum: number, maximum: number): number {
   if (!Number.isFinite(value)) return minimum;
   return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
+}
+
+function takeCodePoints(
+  value: string,
+  maximum: number,
+): { text: string; truncated: boolean } {
+  let count = 0;
+  let end = 0;
+  for (const character of value) {
+    if (count === maximum) {
+      return { text: value.slice(0, end), truncated: true };
+    }
+    count += 1;
+    end += character.length;
+  }
+  return { text: value, truncated: false };
+}
+
+function boundedText(value: string, maximum: number): {
+  text: string;
+  truncated: boolean;
+} {
+  const retained = takeCodePoints(value, maximum);
+  if (!retained.truncated) return retained;
+  const body = takeCodePoints(value, Math.max(0, maximum - 1)).text;
+  return { text: `${body}…`, truncated: true };
+}
+
+function optionalCount(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || value < 0) {
+    return undefined;
+  }
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.trunc(value));
+}
+
+function thinkingPanelId(value: number): number | undefined {
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function normalizeThinkingPanel(
+  input: Readonly<UIThinkingPanelInput>,
+  id: number,
+): UIThinkingPanelState {
+  const source = "body" in input && typeof input.body === "string"
+    ? input.body
+    : "text" in input && typeof input.text === "string"
+      ? input.text
+      : "";
+  const safe = redactSensitiveInformation(
+    sanitizeTerminalText(source, { allowSgr: false }),
+  )
+    .replace(/[^\S\n]+/gu, " ")
+    .replace(/ *\n */gu, "\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+  const lines = safe.split("\n", MAX_THINKING_PANEL_LINES + 1);
+  let truncated = Boolean(input.truncated) || lines.length > MAX_THINKING_PANEL_LINES;
+  const retainedLines = lines.slice(0, MAX_THINKING_PANEL_LINES).map((line) => {
+    const retained = boundedText(line, MAX_THINKING_PANEL_LINE_CHARS);
+    truncated ||= retained.truncated;
+    return retained.text;
+  });
+  const retainedBody = boundedText(
+    retainedLines.join("\n").trim(),
+    MAX_THINKING_PANEL_CHARS,
+  );
+  truncated ||= retainedBody.truncated;
+  const sourceChars = optionalCount(input.sourceChars);
+  const sourceLines = optionalCount(input.sourceLines);
+  return {
+    id,
+    body: retainedBody.text,
+    truncated,
+    ...(sourceChars === undefined ? {} : { sourceChars }),
+    ...(sourceLines === undefined ? {} : { sourceLines }),
+  };
 }
 
 function mergeComposer(
@@ -221,6 +304,7 @@ export function createUIState(options: CreateUIStateOptions = {}): UIState {
     live: {
       activity: null,
       progress: [],
+      thinking: null,
       tasks: null,
       subagents: [],
     },
@@ -280,6 +364,31 @@ export function applyEvent(
       return {
         ...state,
         live: { ...state.live, progress: [] },
+      };
+    case "thinking.toggle": {
+      const id = thinkingPanelId(event.panel.id);
+      if (id === undefined) return state;
+      if (state.live.thinking?.id === id) {
+        return {
+          ...state,
+          live: { ...state.live, thinking: null },
+        };
+      }
+      return {
+        ...state,
+        live: {
+          ...state.live,
+          thinking: normalizeThinkingPanel(event.panel, id),
+        },
+      };
+    }
+    case "thinking.hide":
+      if (event.id !== undefined && state.live.thinking?.id !== event.id) {
+        return state;
+      }
+      return {
+        ...state,
+        live: { ...state.live, thinking: null },
       };
     case "tasks.set":
       return {

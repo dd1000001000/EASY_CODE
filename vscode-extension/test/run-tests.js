@@ -19,6 +19,7 @@ const {
   createThinkingLinkProvider,
   findThinkingMarkers,
   showThinkingSequence,
+  toggleThinkingSequence,
 } = require("../extension");
 
 const tests = [];
@@ -171,6 +172,13 @@ test("parses only paired EASY CODE thinking markers", () => {
     id: "42",
   }]);
 
+  const expanded = "prefix ↕ Thinking #42 · Click again to close · /thinking 42 suffix";
+  assert.deepEqual(findThinkingMarkers(expanded), [{
+    startIndex: expanded.indexOf("Thinking #42"),
+    length: "Thinking #42".length,
+    id: "42",
+  }]);
+
   assert.deepEqual(
     findThinkingMarkers("▶ Thinking #42 · completed · /thinking 43"),
     [],
@@ -183,17 +191,31 @@ test("parses only paired EASY CODE thinking markers", () => {
     findThinkingMarkers("▶ Thinking #042 · completed · /thinking 042"),
     [],
   );
+  assert.deepEqual(
+    findThinkingMarkers("↕ Thinking #42 · Click again to close · /thinking 43"),
+    [],
+  );
+  assert.deepEqual(
+    findThinkingMarkers("↕ Thinking #42 · click again to close · /thinking 42"),
+    [],
+    "the expanded control line must use the exact UI-owned form",
+  );
 });
 
-test("builds a fixed show-thinking OSC sequence from numeric IDs", () => {
+test("builds a fixed toggle-thinking OSC sequence from numeric IDs", () => {
+  assert.equal(
+    toggleThinkingSequence("42"),
+    "\x1b]6973;easy-code;toggle-thinking;42\x07",
+  );
   assert.equal(
     showThinkingSequence("42"),
-    "\x1b]6973;easy-code;show-thinking;42\x07",
+    "\x1b]6973;easy-code;toggle-thinking;42\x07",
+    "the deprecated alias must not retain one-way show behavior",
   );
-  assert.throws(() => showThinkingSequence("42;echo owned"), TypeError);
-  assert.throws(() => showThinkingSequence("0"), TypeError);
-  assert.throws(() => showThinkingSequence("9999999999999999"), TypeError);
-  assert.throws(() => showThinkingSequence("1".repeat(20)), TypeError);
+  assert.throws(() => toggleThinkingSequence("42;echo owned"), TypeError);
+  assert.throws(() => toggleThinkingSequence("0"), TypeError);
+  assert.throws(() => toggleThinkingSequence("9999999999999999"), TypeError);
+  assert.throws(() => toggleThinkingSequence("1".repeat(20)), TypeError);
 });
 
 test("thinking links are scoped to an identified EASY CODE terminal", () => {
@@ -213,19 +235,46 @@ test("thinking links are scoped to an identified EASY CODE terminal", () => {
   );
   assert.equal(links.length, 1);
   assert.equal(line.slice(links[0].startIndex, links[0].startIndex + links[0].length), "Thinking #7");
+  assert.equal(links[0].tooltip, "Toggle EASY CODE Thinking #7");
 
   provider.handleTerminalLink(links[0]);
-  assert.deepEqual(terminal.sent, [{
-    text: "\x1b]6973;easy-code;show-thinking;7\x07",
+  provider.handleTerminalLink(links[0]);
+  assert.deepEqual(terminal.sent, [
+    {
+      text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
+      addNewLine: false,
+    },
+    {
+      text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
+      addNewLine: false,
+    },
+  ], "the same historical marker must toggle on every click");
+
+  const expandedLine = "↕ Thinking #7 · Click again to close · /thinking 7";
+  const expandedLinks = provider.provideTerminalLinks(
+    { line: expandedLine, terminal },
+    { isCancellationRequested: false },
+  );
+  assert.equal(expandedLinks.length, 1);
+  assert.equal(
+    expandedLine.slice(
+      expandedLinks[0].startIndex,
+      expandedLinks[0].startIndex + expandedLinks[0].length,
+    ),
+    "Thinking #7",
+  );
+  provider.handleTerminalLink(expandedLinks[0]);
+  assert.deepEqual(terminal.sent[2], {
+    text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
     addNewLine: false,
-  }]);
+  });
 
   enabledTerminals.delete(terminal);
   provider.handleTerminalLink(links[0]);
-  assert.equal(terminal.sent.length, 1, "a stale link must be inert after EASY CODE exits");
+  assert.equal(terminal.sent.length, 3, "a stale link must be inert after EASY CODE exits");
 
   provider.handleTerminalLink({ ...links[0] });
-  assert.equal(terminal.sent.length, 1, "a forged link object must be inert");
+  assert.equal(terminal.sent.length, 3, "a forged link object must be inert");
 });
 
 test("thinking link provider ignores other terminals and cancellation", () => {

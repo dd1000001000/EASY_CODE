@@ -164,14 +164,16 @@ In an interactive terminal, EASY CODE keeps one inline interface in four regions
 | --- | --- |
 | Session header | Current mode, provider/model, thinking effort, context estimate, workspace, and Thread ID. |
 | Scrollback | Completed user/assistant messages, tool results, command output, diffs, and final results. This history is appended normally, so terminal scrolling and copy/select continue to work. |
-| Live status | Only the current request: progress rows, up to five compact task rows, up to five child-Agent rows, command/model activity, and elapsed time. This is the only output region EASY CODE redraws. |
-| Composer and footer | A boxed input area that wraps across terminal rows, followed by mode, model, effort, context, task, and active-Agent status. Attached images appear as `[Image #N]`. |
+| Live status | Above the composer, only currently running progress and command/model activity are shown. Completed tool results move to scrollback instead of remaining as duplicate progress rows. This is the only output region EASY CODE redraws. |
+| Composer and footer | A boxed input area that wraps across terminal rows, followed by compact Tasks and Agents sections; the mode, model, effort, context, task, and active-Agent summary is always the final line. Attached images appear as `[Image #N]`. |
 
-Completed activity moves out of the live status and into ordinary scrollback. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
+Completed tool activity moves out of the live status and into ordinary scrollback exactly once. Superseded Step/status rows are discarded rather than accumulated. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
 
 `/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
 
-In the composer, type or paste normally and press Enter to submit. `Ctrl+T` opens the latest available Thinking block without discarding the current draft; `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
+With the bundled VS Code extension installed, click the gray `Thinking #N` text in a completed marker to open that block in a gray panel inside the redrawable live region. Click the same marker—or the `Thinking #N` text in the panel's bottom `↕` control line—to close it. Clicking a different marker switches the panel to that block. Thinking panels do not support or consume Esc; Esc remains available to overlays and normal terminal input.
+
+In the composer, type or paste normally and press Enter to submit. `/thinking N` and `Ctrl+T` still write the complete retained Thinking content to stable scrollback without discarding the current draft; they do not toggle the temporary panel. `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
 
 When stdout/stdin is not an interactive TTY, or the terminal cannot safely support cursor-addressed redraws, EASY CODE falls back to plain append-only status snapshots and line-oriented input without ANSI color. Interactive overlay selection may be unavailable in that mode; use explicit CLI options or command arguments such as `/model <model-id>` and `/resume <thread-id>`.
 
@@ -250,7 +252,9 @@ Thinking effort affects model reasoning when the selected model supports it. It 
 
 `none` requests no model thinking where the provider supports disabling it. If a model does not support configurable thinking, the selected effort is still saved, but the thinking setting itself may not affect that model.
 
-When a model returns thinking content, EASY CODE shows a gray `Thinking #N` marker and a short gray preview. Use one of the following to view the expanded content:
+When a model returns Thinking content, EASY CODE writes a gray `Thinking #N` marker and short gray preview to stable scrollback. With the bundled VS Code extension installed, click `Thinking #N` to toggle a bounded gray panel in the live region. Clicking another marker switches blocks; clicking the active marker or the panel's bottom control closes it. Esc is not a Thinking-panel shortcut.
+
+To write the complete retained content to stable scrollback instead of opening the temporary panel, use:
 
 ```text
 /thinking
@@ -258,7 +262,7 @@ When a model returns thinking content, EASY CODE shows a gray `Thinking #N` mark
 /thinking last
 ```
 
-You can also press `Ctrl+T` in the interactive terminal.
+You can also press `Ctrl+T` in the interactive terminal to show the latest block. Both the command and shortcut preserve the current composer draft.
 
 Optional base limits can be configured in user configuration or `.easycode/config.toml`:
 
