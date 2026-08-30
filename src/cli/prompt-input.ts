@@ -171,7 +171,11 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
   private pendingPrivateOsc = false;
   private escapeTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(private readonly source: PromptInput) {
+  constructor(
+    private readonly source: PromptInput,
+    private readonly onToggleThinking?: (id: number) => void,
+    private readonly onInterrupt?: () => void,
+  ) {
     super();
   }
 
@@ -210,8 +214,12 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
       if (byte === ESCAPE) {
         const privateOsc = parsePrivateOsc(input, offset);
         if (privateOsc.status === "complete") {
-          // A private message is meaningful only to the main EASY CODE prompt.
-          // This filter is used by every other input UI, so always consume it.
+          if (privateOsc.action.type === "toggle-thinking") {
+            this.onToggleThinking?.(privateOsc.action.id);
+          }
+          // Private messages are always consumed. Callers without a toggle
+          // callback intentionally swallow them while another input UI owns
+          // stdin; the busy request owner handles only its narrow callback.
           offset += privateOsc.length;
           continue;
         }
@@ -224,6 +232,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
           break;
         }
       }
+      if (byte === CTRL_C) this.onInterrupt?.();
       if (byte !== undefined) output.push(byte);
       offset += 1;
     }

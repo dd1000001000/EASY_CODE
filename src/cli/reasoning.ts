@@ -181,7 +181,8 @@ export function renderReasoningMarker(
   const preview = retainedPreview.text || "(No visible Thinking text.)";
   const omitted = retainedPreview.truncated || block.truncated;
   return palette.gray(
-    `▶ Thinking #${block.id} · ${block.sourceChars} chars · /thinking ${block.id}\n` +
+    `▶ Thinking #${block.id} · ${block.sourceChars} chars · ` +
+      `Ctrl/Cmd+click to toggle · /thinking ${block.id}\n` +
       `  ${preview}${omitted ? "..." : ""}\n`,
   );
 }

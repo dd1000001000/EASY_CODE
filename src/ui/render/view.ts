@@ -252,7 +252,7 @@ export function renderThinkingPanel(
   }
   body.push("");
   body.push(palette.gray(
-    `↕ Thinking #${panel.id} · Click again to close · /thinking ${panel.id}`,
+    `↕ Thinking #${panel.id} · Ctrl/Cmd+click to close · /thinking ${panel.id}`,
   ));
   return renderBox(
     `Thinking #${panel.id}`,

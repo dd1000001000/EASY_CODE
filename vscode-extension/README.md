@@ -40,16 +40,16 @@ EASY CODE can print a collapsed marker such as:
 An expanded panel includes its own control line, so it can be closed without scrolling back to the original marker:
 
 ```text
-↕ Thinking #42 · Click again to close · /thinking 42
+↕ Thinking #42 · Ctrl/Cmd+click to close · /thinking 42
 ```
 
-The extension makes the first `Thinking #42` span clickable in both forms. Every activation of a current marker, historical marker, or expanded-panel control sends its paired numeric ID back to the same terminal with no trailing newline:
+The extension makes the first `Thinking #42` span a VS Code terminal link in both forms. Hold the platform modifier while clicking it: by default that is `Ctrl+click` on Windows and Linux, or `Cmd+click` on macOS. Every activation of a current marker, historical marker, or expanded-panel control sends its paired numeric ID back to the same terminal with no trailing newline:
 
 ```text
 ESC ] 6973 ; easy-code ; toggle-thinking ; 42 BEL
 ```
 
-Click the same link again to toggle the panel closed; there is no separate Esc shortcut. Terminal links are offered only while that terminal is identified as an EASY CODE terminal through shell execution tracking or the explicit enable command. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler emits only the fixed private OSC sequence above; marker text can never become a shell command.
+Use the same modifier+click action again to toggle the panel closed; there is no separate Esc shortcut. Thinking links are independent of image-paste execution tracking, so they keep working when EASY CODE was already running before this extension activated or reloaded. For compatibility, the extension also recognizes the older expanded hint `Click again to close`. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler is bound to the terminal that supplied the marker and emits only the fixed private OSC sequence above; marker text can never become a shell command.
 
 ## Development
 

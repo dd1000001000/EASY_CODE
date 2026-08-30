@@ -1270,7 +1270,6 @@ export class EasyCodeApp {
     if (images.length) this.requireCurrentModelVision();
     validateImageAttachmentCollection(images);
     validateProviderImageAttachments(this.state.provider, images);
-    this.terminal.setCurrentRequest(userInput, images);
     this.dirty = true;
     const controller = new AbortController();
     let interruptCount = 0;
@@ -1288,6 +1287,7 @@ export class EasyCodeApp {
     process.on("SIGINT", onInterrupt);
 
     try {
+      this.terminal.setCurrentRequest(userInput, images, { onInterrupt });
       const runtime = this.createRuntime(presentReasoning);
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.activeStepLimit(),
@@ -1303,10 +1303,13 @@ export class EasyCodeApp {
       this.terminal.write(`\n${result.text.trim()}\n\n`);
       return result;
     } finally {
-      process.removeListener("SIGINT", onInterrupt);
-      this.save();
-      this.terminal.clearCurrentRequest();
-      this.syncTerminalView();
+      try {
+        this.terminal.clearCurrentRequest();
+      } finally {
+        process.removeListener("SIGINT", onInterrupt);
+        this.save();
+        this.syncTerminalView();
+      }
     }
   }
 
