@@ -34,13 +34,14 @@ It never sends image bytes through the terminal.
 EASY CODE can print a collapsed marker such as:
 
 ```text
-▶ Thinking #42 · completed in 1.2s · /thinking 42
+▶ Thinking #42 · 315 chars · /thinking 42 · VS Code Ctrl/Cmd+click to toggle
 ```
 
 An expanded panel includes its own control line, so it can be closed without scrolling back to the original marker:
 
 ```text
-↕ Thinking #42 · Ctrl/Cmd+click to close · /thinking 42
+↕ Thinking #42 · /thinking 42
+  VS Code Ctrl/Cmd+click the Thinking label to close
 ```
 
 The extension makes the first `Thinking #42` span a VS Code terminal link in both forms. Hold the platform modifier while clicking it: by default that is `Ctrl+click` on Windows and Linux, or `Cmd+click` on macOS. Every activation of a current marker, historical marker, or expanded-panel control sends its paired numeric ID back to the same terminal with no trailing newline:
@@ -49,7 +50,7 @@ The extension makes the first `Thinking #42` span a VS Code terminal link in bot
 ESC ] 6973 ; easy-code ; toggle-thinking ; 42 BEL
 ```
 
-Use the same modifier+click action again to toggle the panel closed; there is no separate Esc shortcut. Thinking links are independent of image-paste execution tracking, so they keep working when EASY CODE was already running before this extension activated or reloaded. For compatibility, the extension also recognizes the older expanded hint `Click again to close`. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler is bound to the terminal that supplied the marker and emits only the fixed private OSC sequence above; marker text can never become a shell command.
+Use the same modifier+click action again to toggle the panel closed; there is no separate Esc shortcut. Links are offered while the terminal is tracked as running EASY CODE or after the explicit enable command. If the extension host reloads during an already-running session, only a terminal that existed before activation can recover from a strict paired marker; its next shell start/end event revokes that recovered state. For compatibility, the extension also recognizes the older expanded hints. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler is bound to the terminal that supplied the marker and emits only the fixed private OSC sequence above; marker text can never become a shell command.
 
 ## Development
 

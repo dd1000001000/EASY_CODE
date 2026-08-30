@@ -165,7 +165,7 @@ test("does not resolve a Linux clipboard helper from the workspace", () => {
 });
 
 test("parses only paired EASY CODE thinking markers", () => {
-  const line = "prefix ▶ Thinking #42 · completed in 1.2s · /thinking 42 suffix";
+  const line = "prefix ▶ Thinking #42 · 315 chars · /thinking 42 · VS Code Ctrl/Cmd+click to toggle";
   assert.deepEqual(findThinkingMarkers(line), [{
     startIndex: line.indexOf("Thinking #42"),
     length: "Thinking #42".length,
@@ -175,6 +175,13 @@ test("parses only paired EASY CODE thinking markers", () => {
   const expanded = "prefix ↕ Thinking #42 · Ctrl/Cmd+click to close · /thinking 42 suffix";
   assert.deepEqual(findThinkingMarkers(expanded), [{
     startIndex: expanded.indexOf("Thinking #42"),
+    length: "Thinking #42".length,
+    id: "42",
+  }]);
+
+  const compactExpanded = "prefix ↕ Thinking #42 · /thinking 42 suffix";
+  assert.deepEqual(findThinkingMarkers(compactExpanded), [{
+    startIndex: compactExpanded.indexOf("Thinking #42"),
     length: "Thinking #42".length,
     id: "42",
   }]);
@@ -203,6 +210,10 @@ test("parses only paired EASY CODE thinking markers", () => {
     [],
   );
   assert.deepEqual(
+    findThinkingMarkers("↕ Thinking #42 · /thinking 43"),
+    [],
+  );
+  assert.deepEqual(
     findThinkingMarkers("↕ Thinking #42 · click again to close · /thinking 42"),
     [],
     "the expanded control line must use the exact UI-owned form",
@@ -225,14 +236,17 @@ test("builds a fixed toggle-thinking OSC sequence from numeric IDs", () => {
   assert.throws(() => toggleThinkingSequence("1".repeat(20)), TypeError);
 });
 
-test("thinking links do not depend on image-paste execution tracking", () => {
+test("thinking links remain scoped to a tracked EASY CODE terminal", () => {
   const terminal = {
     sent: [],
     sendText(text, addNewLine) {
       this.sent.push({ text, addNewLine });
     },
   };
-  const provider = createThinkingLinkProvider();
+  const enabledTerminals = new Set([terminal]);
+  const provider = createThinkingLinkProvider((candidate) =>
+    enabledTerminals.has(candidate)
+  );
   const line = "▶ Thinking #7 · 315 tokens · /thinking 7";
 
   const links = provider.provideTerminalLinks(
@@ -256,7 +270,7 @@ test("thinking links do not depend on image-paste execution tracking", () => {
     },
   ], "the same historical marker must toggle on every click");
 
-  const expandedLine = "↕ Thinking #7 · Ctrl/Cmd+click to close · /thinking 7";
+  const expandedLine = "↕ Thinking #7 · /thinking 7";
   const expandedLinks = provider.provideTerminalLinks(
     { line: expandedLine, terminal },
     { isCancellationRequested: false },
@@ -275,30 +289,77 @@ test("thinking links do not depend on image-paste execution tracking", () => {
     addNewLine: false,
   });
 
+  enabledTerminals.delete(terminal);
   provider.handleTerminalLink(links[0]);
   assert.equal(
     terminal.sent.length,
-    4,
-    "a link must survive stale image-paste execution state after an extension reload",
+    3,
+    "a stale link must be inert after EASY CODE exits",
   );
 
   provider.handleTerminalLink({ ...links[0] });
-  assert.equal(terminal.sent.length, 4, "a forged link object must be inert");
+  assert.equal(terminal.sent.length, 3, "a forged link object must be inert");
 });
 
-test("thinking link provider handles any source terminal and honors cancellation", () => {
-  const provider = createThinkingLinkProvider();
-  const context = {
-    line: "▶ Thinking #9 · completed · /thinking 9",
-    terminal: { sendText: () => {} },
+test("thinking links recover only after a strict marker proves a pre-existing terminal", () => {
+  const terminal = {
+    sent: [],
+    sendText(text, addNewLine) {
+      this.sent.push({ text, addNewLine });
+    },
   };
-  assert.equal(
-    provider.provideTerminalLinks(context, { isCancellationRequested: false }).length,
-    1,
+  let enabled = false;
+  let recoveries = 0;
+  const provider = createThinkingLinkProvider(
+    (candidate) => candidate === terminal && enabled,
+    (candidate) => {
+      if (candidate !== terminal) return false;
+      recoveries += 1;
+      enabled = true;
+      return true;
+    },
   );
 
   assert.deepEqual(
-    provider.provideTerminalLinks(context, { isCancellationRequested: true }),
+    provider.provideTerminalLinks(
+      { line: "ordinary output", terminal },
+      { isCancellationRequested: false },
+    ),
+    [],
+  );
+  assert.equal(recoveries, 0, "ordinary output must not trigger recovery");
+
+  const links = provider.provideTerminalLinks(
+    { line: "▶ Thinking #8 · 25 chars · /thinking 8", terminal },
+    { isCancellationRequested: false },
+  );
+  assert.equal(recoveries, 1);
+  assert.equal(links.length, 1);
+  provider.handleTerminalLink(links[0]);
+  assert.deepEqual(terminal.sent, [{
+    text: "\x1b]6973;easy-code;toggle-thinking;8\x07",
+    addNewLine: false,
+  }]);
+
+  enabled = false;
+  provider.handleTerminalLink(links[0]);
+  assert.equal(terminal.sent.length, 1, "revocation must make a recovered link inert");
+});
+
+test("thinking link provider ignores unrelated terminals and honors cancellation", () => {
+  const provider = createThinkingLinkProvider(() => false);
+  const context = {
+    line: "▶ Thinking #9 · completed · /thinking 9",
+    terminal: { sendText: () => assert.fail("must not send") },
+  };
+  assert.deepEqual(
+    provider.provideTerminalLinks(context, { isCancellationRequested: false }),
+    [],
+  );
+
+  const enabledProvider = createThinkingLinkProvider(() => true);
+  assert.deepEqual(
+    enabledProvider.provideTerminalLinks(context, { isCancellationRequested: true }),
     [],
   );
 });

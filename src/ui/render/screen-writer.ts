@@ -47,7 +47,7 @@ export class ScreenWriter {
   private liveText = "";
   private liveCursor?: LiveCursor;
   private renderedLiveRows = 0;
-  /** Current cursor row relative to live-region start; may equal row count. */
+  /** Current cursor row relative to live-region start. */
   private renderedCursorRow = 0;
   private plainLastLive = "";
 
@@ -158,16 +158,18 @@ export class ScreenWriter {
 
   private drawLive(text: string, cursor?: LiveCursor): void {
     if (!this.atLineStart) {
-      this.write("\n");
+      this.write("\r\n");
       this.atLineStart = true;
     }
 
     const lines = wrapToWidth(text, this.columns, { preserveAnsi: true });
-    const block = `${lines.join("\n")}\n`;
-    this.write(block);
+    // Keep the cursor inside the final live row. A trailing LF would scroll the
+    // terminal once the viewport is full, permanently leaking the former top
+    // row into scrollback on every spinner refresh.
+    this.write(lines.join("\r\n"));
     this.renderedLiveRows = lines.length;
-    this.renderedCursorRow = lines.length;
-    this.atLineStart = true;
+    this.renderedCursorRow = Math.max(0, lines.length - 1);
+    this.atLineStart = displayWidth(lines.at(-1) ?? "") === 0;
 
     if (!cursor || lines.length === 0) return;
     const targetRow = Math.min(lines.length - 1, cursor.row);
@@ -175,7 +177,10 @@ export class ScreenWriter {
       lines[targetRow] ?? "",
       Math.min(cursor.column, displayWidth(lines[targetRow] ?? "")),
     );
-    const rowsUp = lines.length - targetRow;
+    // Rendering ends at the last row. Return to column zero before moving to
+    // the requested visual cell so CR/LF and autowrap modes cannot affect it.
+    this.write("\r");
+    const rowsUp = (lines.length - 1) - targetRow;
     this.write(cursorUp(rowsUp));
     if (targetColumn > 0) this.write(cursorRight(targetColumn));
     this.renderedCursorRow = targetRow;
@@ -183,7 +188,7 @@ export class ScreenWriter {
   }
 
   private eraseRenderedLive(): void {
-    // The cursor can be either below the block (normal status rendering) or in
+    // The cursor can be at the end of the block (normal status rendering) or in
     // the middle of it (composer editing). Return to column zero first, then to
     // the first live row, and clear only from there down.
     this.write("\r");

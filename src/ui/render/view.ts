@@ -121,9 +121,9 @@ export function renderLiveRegion(
 }
 
 /**
- * Render transient work above the composer. Thinking joins this upper region
- * only while the renderer owns the busy composer; an active readline renders
- * the clickable panel immediately below its own input border instead.
+ * Render transient work above the composer. Thinking stays first so its live
+ * expansion remains adjacent to the stable marker that introduced it. During
+ * active input, readline renders the same panel immediately above Request.
  */
 export function renderLiveActivityRegion(
   state: Readonly<UIState>,
@@ -136,9 +136,9 @@ export function renderLiveActivityRegion(
   const thinking = state.composer.busy && state.live.thinking
     ? renderThinkingPanel(state.live.thinking, options)
     : "";
+  if (thinking) blocks.push(thinking);
   if (progress) blocks.push(progress);
   if (activity) blocks.push(activity);
-  if (thinking) blocks.push(thinking);
   return blocks.join("\n\n");
 }
 
@@ -237,9 +237,18 @@ export function renderThinkingPanel(
     40,
   );
   const content = panel.body || "(No visible Thinking text.)";
-  const body = limitedWrappedLines(content, innerWidth, maximumRows).map((line) =>
+  const wrapped = limitedWrappedLineResult(content, innerWidth, maximumRows);
+  const body = wrapped.lines.map((line) =>
     palette.gray(line)
   );
+  if (wrapped.truncated) {
+    body.push(palette.gray(
+      `… ${wrapped.totalLines - maximumRows} more wrapped row(s).`,
+    ));
+    body.push(palette.gray(
+      `/thinking ${panel.id} shows all retained content.`,
+    ));
+  }
   if (panel.truncated) {
     const source = panel.sourceLines !== undefined && panel.sourceChars !== undefined
       ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`
@@ -252,7 +261,10 @@ export function renderThinkingPanel(
   }
   body.push("");
   body.push(palette.gray(
-    `↕ Thinking #${panel.id} · Ctrl/Cmd+click to close · /thinking ${panel.id}`,
+    `↕ Thinking #${panel.id} · /thinking ${panel.id}`,
+  ));
+  body.push(palette.gray(
+    "  VS Code Ctrl/Cmd+click the Thinking label to close",
   ));
   return renderBox(
     `Thinking #${panel.id}`,
@@ -705,10 +717,20 @@ function limitedWrappedLines(
   columns: number,
   maximumLines: number,
 ): string[] {
+  return limitedWrappedLineResult(value, columns, maximumLines).lines;
+}
+
+function limitedWrappedLineResult(
+  value: string,
+  columns: number,
+  maximumLines: number,
+): { lines: string[]; truncated: boolean; totalLines: number } {
   const lines = wrapToWidth(safeMultiline(value), columns, {
     preserveAnsi: false,
   });
-  if (lines.length <= maximumLines) return lines;
+  if (lines.length <= maximumLines) {
+    return { lines, truncated: false, totalLines: lines.length };
+  }
   const visible = lines.slice(0, maximumLines);
   const last = visible.length - 1;
   visible[last] = truncateToWidth(visible[last] ?? "", columns, {
@@ -720,7 +742,7 @@ function limitedWrappedLines(
       preserveAnsi: false,
     });
   }
-  return visible;
+  return { lines: visible, truncated: true, totalLines: lines.length };
 }
 
 function compactWindow(

@@ -173,7 +173,9 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 
 安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上按住 `Ctrl` 点击已完成标记中灰色的 `Thinking #N`，或在 macOS 上按住 `Cmd` 点击，即可在可重绘动态状态区内打开对应灰色面板。用相同手势再次激活该标记，或激活面板底部 `↕` 控制行中的 `Thinking #N`，即可关闭；激活其他标记会切换到对应内容。模型请求进行期间该控件也会保持响应。Thinking 面板不支持也不占用 Esc；Esc 仍留给 overlay 和普通终端输入。
 
-在输入框中可以正常输入或粘贴，按 Enter 提交。`/thinking N` 与 `Ctrl+T` 仍会把完整保留的 Thinking 内容写入稳定 scrollback，并保留当前草稿；它们不会切换临时面板。`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
+临时面板采用有界高度，确保折叠时可以安全擦除而不破坏终端 scrollback。如果保留的 Thinking 超出面板可见范围，面板会明确显示省略的行数，并给出对应的 `/thinking N`；执行该命令可把全部已保留内容写入稳定 scrollback。
+
+在输入框中可以正常输入或粘贴，按 Enter 提交。多行文字会先显示为紧凑的 `[Pasted text #N · M lines]` 块；只有用户明确提交时才会恢复完整换行和缩进，因此剪贴板中的换行不会再被误当作 Enter。`/thinking N` 与 `Ctrl+T` 仍会把完整保留的 Thinking 内容写入稳定 scrollback，并保留当前草稿；它们不会切换临时面板。`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
 
 当 stdin/stdout 不是交互式 TTY，或终端无法安全支持光标定位重绘时，EASY CODE 会降级为无 ANSI 颜色的纯文本追加式状态快照和单行输入。此时交互式覆盖选择器可能不可用，请改用明确的 CLI 选项或命令参数，例如 `/model <model-id>` 和 `/resume <thread-id>`。
 

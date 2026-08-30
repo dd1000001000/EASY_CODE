@@ -415,7 +415,11 @@ export class Terminal {
           this.activePromptSession = session;
         },
         ...(this.inlineShellActive
-          ? { renderBelow: () => this.composerPromptSuffix() }
+          ? {
+              renderPrompt: () => this.composerPromptPrefix(),
+              renderBelow: () => this.composerPromptSuffix(),
+              clearOnSubmit: true,
+            }
           : {}),
         onShowThinking: (id) => {
           const shown = id === "last"
@@ -443,7 +447,7 @@ export class Terminal {
             images: result.images,
           },
         });
-        this.screen?.commit(`${this.composerBottomBorder()}\n`);
+        this.screen?.commit(`${formatSubmittedRequest(result.text)}\n\n`);
       }
       return result;
     } finally {
@@ -1247,7 +1251,11 @@ export class Terminal {
     });
     const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(title)));
     const top = chalk.cyan(`╭─${title}${fill}╮`);
-    return `${top}\n${chalk.cyan("│")} > `;
+    const composer = `${top}\n${chalk.cyan("│")} > `;
+    const thinking = this.uiState.live.thinking
+      ? renderThinkingPanel(this.uiState.live.thinking, this.viewOptions())
+      : "";
+    return thinking ? `${thinking}\n${composer}` : composer;
   }
 
   private composerBottomBorder(): string {
@@ -1258,9 +1266,6 @@ export class Terminal {
   private composerPromptSuffix(): string {
     const options = this.viewOptions();
     const sections = [this.composerBottomBorder()];
-    if (this.uiState.live.thinking) {
-      sections.push(renderThinkingPanel(this.uiState.live.thinking, options));
-    }
     sections.push(renderComposerStatusRegion(this.uiState, options));
     return sections.join("\n");
   }
@@ -1360,6 +1365,14 @@ export class Terminal {
     this.activityStartedAt = 0;
     this.activityFrameIndex = 0;
   }
+}
+
+function formatSubmittedRequest(value: string): string {
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  return normalized
+    .split("\n")
+    .map((line, index) => `${index === 0 ? "> " : "  "}${line}`)
+    .join("\n");
 }
 
 export function printBanner(terminal: Terminal): void {

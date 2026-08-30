@@ -182,7 +182,7 @@ export function renderReasoningMarker(
   const omitted = retainedPreview.truncated || block.truncated;
   return palette.gray(
     `▶ Thinking #${block.id} · ${block.sourceChars} chars · ` +
-      `Ctrl/Cmd+click to toggle · /thinking ${block.id}\n` +
+      `/thinking ${block.id} · VS Code Ctrl/Cmd+click to toggle\n` +
       `  ${preview}${omitted ? "..." : ""}\n`,
   );
 }
