@@ -2,7 +2,7 @@
   "name": "easy-code-image-paste",
   "displayName": "EASY CODE Terminal Integration",
   "description": "Paste clipboard images and toggle Thinking details from EASY CODE in the VS Code integrated terminal.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "dd1000001000",
   "license": "MIT",
   "repository": {

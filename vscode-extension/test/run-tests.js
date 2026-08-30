@@ -172,9 +172,16 @@ test("parses only paired EASY CODE thinking markers", () => {
     id: "42",
   }]);
 
-  const expanded = "prefix ↕ Thinking #42 · Click again to close · /thinking 42 suffix";
+  const expanded = "prefix ↕ Thinking #42 · Ctrl/Cmd+click to close · /thinking 42 suffix";
   assert.deepEqual(findThinkingMarkers(expanded), [{
     startIndex: expanded.indexOf("Thinking #42"),
+    length: "Thinking #42".length,
+    id: "42",
+  }]);
+
+  const legacyExpanded = "prefix ↕ Thinking #42 · Click again to close · /thinking 42 suffix";
+  assert.deepEqual(findThinkingMarkers(legacyExpanded), [{
+    startIndex: legacyExpanded.indexOf("Thinking #42"),
     length: "Thinking #42".length,
     id: "42",
   }]);
@@ -192,7 +199,7 @@ test("parses only paired EASY CODE thinking markers", () => {
     [],
   );
   assert.deepEqual(
-    findThinkingMarkers("↕ Thinking #42 · Click again to close · /thinking 43"),
+    findThinkingMarkers("↕ Thinking #42 · Ctrl/Cmd+click to close · /thinking 43"),
     [],
   );
   assert.deepEqual(
@@ -218,15 +225,14 @@ test("builds a fixed toggle-thinking OSC sequence from numeric IDs", () => {
   assert.throws(() => toggleThinkingSequence("1".repeat(20)), TypeError);
 });
 
-test("thinking links are scoped to an identified EASY CODE terminal", () => {
+test("thinking links do not depend on image-paste execution tracking", () => {
   const terminal = {
     sent: [],
     sendText(text, addNewLine) {
       this.sent.push({ text, addNewLine });
     },
   };
-  const enabledTerminals = new Set([terminal]);
-  const provider = createThinkingLinkProvider((candidate) => enabledTerminals.has(candidate));
+  const provider = createThinkingLinkProvider();
   const line = "▶ Thinking #7 · 315 tokens · /thinking 7";
 
   const links = provider.provideTerminalLinks(
@@ -235,7 +241,7 @@ test("thinking links are scoped to an identified EASY CODE terminal", () => {
   );
   assert.equal(links.length, 1);
   assert.equal(line.slice(links[0].startIndex, links[0].startIndex + links[0].length), "Thinking #7");
-  assert.equal(links[0].tooltip, "Toggle EASY CODE Thinking #7");
+  assert.equal(links[0].tooltip, "Ctrl/Cmd+click to toggle EASY CODE Thinking #7");
 
   provider.handleTerminalLink(links[0]);
   provider.handleTerminalLink(links[0]);
@@ -250,7 +256,7 @@ test("thinking links are scoped to an identified EASY CODE terminal", () => {
     },
   ], "the same historical marker must toggle on every click");
 
-  const expandedLine = "↕ Thinking #7 · Click again to close · /thinking 7";
+  const expandedLine = "↕ Thinking #7 · Ctrl/Cmd+click to close · /thinking 7";
   const expandedLinks = provider.provideTerminalLinks(
     { line: expandedLine, terminal },
     { isCancellationRequested: false },
@@ -269,25 +275,30 @@ test("thinking links are scoped to an identified EASY CODE terminal", () => {
     addNewLine: false,
   });
 
-  enabledTerminals.delete(terminal);
   provider.handleTerminalLink(links[0]);
-  assert.equal(terminal.sent.length, 3, "a stale link must be inert after EASY CODE exits");
+  assert.equal(
+    terminal.sent.length,
+    4,
+    "a link must survive stale image-paste execution state after an extension reload",
+  );
 
   provider.handleTerminalLink({ ...links[0] });
-  assert.equal(terminal.sent.length, 3, "a forged link object must be inert");
+  assert.equal(terminal.sent.length, 4, "a forged link object must be inert");
 });
 
-test("thinking link provider ignores other terminals and cancellation", () => {
-  const provider = createThinkingLinkProvider(() => false);
+test("thinking link provider handles any source terminal and honors cancellation", () => {
+  const provider = createThinkingLinkProvider();
   const context = {
     line: "▶ Thinking #9 · completed · /thinking 9",
-    terminal: { sendText: () => assert.fail("must not send") },
+    terminal: { sendText: () => {} },
   };
-  assert.deepEqual(provider.provideTerminalLinks(context, { isCancellationRequested: false }), []);
+  assert.equal(
+    provider.provideTerminalLinks(context, { isCancellationRequested: false }).length,
+    1,
+  );
 
-  const enabledProvider = createThinkingLinkProvider(() => true);
   assert.deepEqual(
-    enabledProvider.provideTerminalLinks(context, { isCancellationRequested: true }),
+    provider.provideTerminalLinks(context, { isCancellationRequested: true }),
     [],
   );
 });

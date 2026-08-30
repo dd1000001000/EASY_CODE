@@ -15,7 +15,7 @@ describe("Thinking terminal presentation", () => {
 
     assert.equal(
       renderReasoningMarker(block),
-      "▶ Thinking #1 · 38 chars · /thinking 1\n" +
+      "▶ Thinking #1 · 38 chars · Ctrl/Cmd+click to toggle · /thinking 1\n" +
         "  Inspect the repository before editing.\n",
     );
     assert.match(renderReasoningMarker(block, { color: true }), /\u001b\[90m/u);
@@ -31,7 +31,8 @@ describe("Thinking terminal presentation", () => {
 
     assert.equal(
       renderReasoningMarker(block, { previewChars: 19 }),
-      `▶ Thinking #1 · ${block.sourceChars} chars · /thinking 1\n` +
+      `▶ Thinking #1 · ${block.sourceChars} chars · ` +
+        `Ctrl/Cmd+click to toggle · /thinking 1\n` +
         "  First line second l...\n",
     );
   });

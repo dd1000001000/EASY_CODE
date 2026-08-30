@@ -413,6 +413,143 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("toggles fragmented Thinking controls immediately while a request is busy", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      const initialDataListeners = input.listenerCount("data");
+      let interrupts = 0;
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication", [], {
+          onInterrupt: () => {
+            interrupts += 1;
+          },
+        });
+        assert.equal(input.isRaw, true);
+        assert.equal(input.readableFlowing, true);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
+
+        // Replacing a busy request must replace, not stack, its stdin owner.
+        terminal.setCurrentRequest("Implement authentication safely", [], {
+          onInterrupt: () => {
+            interrupts += 1;
+          },
+        });
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
+
+        const firstId = terminal.addReasoning("Inspect the authentication routes.");
+        const secondId = terminal.addReasoning("Verify the registration form.");
+        const sequence = Buffer.from(vscodeToggleThinkingSequence(firstId));
+        input.write(sequence.subarray(0, 8));
+        input.write(sequence.subarray(8, 23));
+        input.write(sequence.subarray(23));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, firstId);
+
+        input.write(vscodeToggleThinkingSequence(secondId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, secondId);
+        input.write(vscodeToggleThinkingSequence(secondId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+
+        input.write(Buffer.from([0x03, 0x03]));
+        input.write("discard this while busy");
+        await settlePromptInput();
+        assert.equal(interrupts, 2);
+
+        terminal.clearCurrentRequest();
+        assert.equal(input.isRaw, false);
+        assert.equal(input.readableFlowing, false);
+        assert.equal(input.listenerCount("data"), initialDataListeners);
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => ({
+            id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            label: `Image #${index}`,
+            mediaType: "image/png",
+            storageKey: `attachments/test/image-${index}.png`,
+            sha256: String(index).repeat(64).slice(0, 64),
+            byteSize: 68,
+            width: 1,
+            height: 1,
+          }),
+        });
+        input.write("fresh draft\r");
+        assert.equal((await prompt)?.text, "fresh draft");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("suspends the busy control owner while a modal input owns stdin", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication");
+        const id = terminal.addReasoning("Inspect the authentication routes.");
+
+        const choice = terminal.selectChoice("Continue?", [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ]);
+        await settlePromptInput();
+        input.write(`${vscodeToggleThinkingSequence(id)}\r`);
+        assert.equal(await choice, "yes");
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+
+        // Once the modal releases stdin, the busy owner resumes immediately.
+        assert.equal(input.isRaw, true);
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, id);
+        terminal.clearCurrentRequest();
+        assert.equal(input.isRaw, false);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("restores a pre-existing raw and flowing input state after busy ownership", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      input.setRawMode(true);
+      input.resume();
+      const terminal = new Terminal(input, output);
+      const initialDataListeners = input.listenerCount("data");
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication");
+        terminal.clearCurrentRequest();
+        assert.equal(input.isRaw, true);
+        assert.equal(input.readableFlowing, true);
+        assert.equal(input.listenerCount("data"), initialDataListeners);
+
+        terminal.setCurrentRequest("Implement authentication again");
+        terminal.emergencyRestore();
+        assert.equal(input.listenerCount("data"), initialDataListeners);
+
+        terminal.setCurrentRequest("Implement authentication once more");
+        terminal.close();
+        assert.equal(input.listenerCount("data"), initialDataListeners);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("toggles clicked Thinking blocks live while Ctrl+T remains stable scrollback", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
@@ -445,7 +582,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(
           stripAnsi(captured()),
           new RegExp(
-            `↕ Thinking #${firstId} · Click again to close · /thinking ${firstId}`,
+            `↕ Thinking #${firstId} · Ctrl/Cmd\\+click to close · /thinking ${firstId}`,
             "u",
           ),
         );

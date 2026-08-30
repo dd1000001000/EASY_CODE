@@ -83,6 +83,18 @@ export interface TerminalChoice {
   readonly disabled?: boolean;
 }
 
+export interface CurrentRequestOptions {
+  /** Preserve Ctrl+C cancellation while the busy UI owns stdin in raw mode. */
+  readonly onInterrupt?: () => void;
+}
+
+interface BusyInputOwner {
+  readonly filter: PrivateOscInputFilter;
+  readonly wasRaw: boolean;
+  readonly wasFlowing: boolean;
+  readonly onError: () => void;
+}
+
 type StableStatusKind = Extract<
   UITranscriptKind,
   "info" | "success" | "warning" | "error"
@@ -155,6 +167,8 @@ export class Terminal {
   private guardedInputActive = false;
   private activePromptController?: AbortController;
   private readlineInputFilter?: PrivateOscInputFilter;
+  private currentRequestOptions?: Readonly<CurrentRequestOptions>;
+  private busyInputOwner?: BusyInputOwner;
   private readonly reasoning = new ReasoningRegistry();
   private activityTimer?: NodeJS.Timeout;
   private activityStartedAt = 0;
@@ -226,7 +240,10 @@ export class Terminal {
   setCurrentRequest(
     text: string,
     images: readonly Readonly<ImageAttachment>[] = [],
+    options: Readonly<CurrentRequestOptions> = {},
   ): void {
+    this.stopBusyInputOwner();
+    this.currentRequestOptions = options;
     if (!this.inlineShellActive) return;
     this.progressItems = [];
     this.progressSequence = 0;
@@ -242,9 +259,12 @@ export class Terminal {
       },
     });
     this.refresh();
+    this.startBusyInputOwner();
   }
 
   clearCurrentRequest(): void {
+    this.currentRequestOptions = undefined;
+    this.stopBusyInputOwner();
     if (!this.inlineShellActive) return;
     this.progressItems = [];
     this.progressSequence = 0;
@@ -854,6 +874,8 @@ export class Terminal {
   }
 
   emergencyRestore(): void {
+    this.currentRequestOptions = undefined;
+    this.stopBusyInputOwner();
     try {
       this.screen?.clearLive();
       this.output.write("\u001B[?25h");
@@ -925,6 +947,8 @@ export class Terminal {
 
   close(): void {
     if (this.closed) return;
+    this.currentRequestOptions = undefined;
+    this.stopBusyInputOwner();
     this.stopActivity();
     if (this.inlineShellActive) {
       this.output.removeListener("resize", this.onResize);
@@ -980,6 +1004,89 @@ export class Terminal {
     if (!inputFilter.destroyed) inputFilter.destroy();
   }
 
+  /**
+   * Keep the extension's no-newline private protocol responsive while a model
+   * request owns the visible composer. All ordinary input is deliberately
+   * drained; only Thinking toggles and Ctrl+C have busy-phase semantics.
+   */
+  private startBusyInputOwner(): void {
+    if (
+      this.busyInputOwner ||
+      !this.currentRequestOptions ||
+      !this.inlineShellActive ||
+      this.closed ||
+      this.promptActive ||
+      this.guardedInputActive ||
+      this.rl
+    ) {
+      return;
+    }
+
+    const wasRaw = Boolean(this.input.isRaw);
+    const wasFlowing = this.input.readableFlowing === true;
+    let filter!: PrivateOscInputFilter;
+    const onError = (): void => {
+      if (this.busyInputOwner?.filter !== filter) return;
+      this.stopBusyInputOwner();
+    };
+    filter = new PrivateOscInputFilter(
+      this.input,
+      (id) => {
+        if (
+          this.busyInputOwner?.filter !== filter ||
+          !this.currentRequestOptions ||
+          this.guardedInputActive ||
+          this.promptActive ||
+          this.rl
+        ) {
+          return;
+        }
+        this.toggleReasoning(id);
+      },
+      () => {
+        if (
+          this.busyInputOwner?.filter !== filter ||
+          !this.currentRequestOptions ||
+          this.guardedInputActive ||
+          this.promptActive ||
+          this.rl
+        ) {
+          return;
+        }
+        this.currentRequestOptions.onInterrupt?.();
+      },
+    );
+    this.busyInputOwner = { filter, wasRaw, wasFlowing, onError };
+    filter.on("error", onError);
+
+    try {
+      this.input.setRawMode?.(true);
+      this.input.pipe(filter);
+      // The control owner has no downstream UI. Flowing the readable side
+      // drains ordinary keys after the filter has inspected private controls.
+      filter.resume();
+      this.input.resume();
+    } catch {
+      this.stopBusyInputOwner();
+    }
+  }
+
+  private stopBusyInputOwner(): void {
+    const owner = this.busyInputOwner;
+    if (!owner) return;
+    this.busyInputOwner = undefined;
+    owner.filter.removeListener("error", owner.onError);
+    this.input.unpipe(owner.filter);
+    if (!owner.filter.destroyed) owner.filter.destroy();
+    try {
+      this.input.setRawMode?.(owner.wasRaw);
+    } catch {
+      // A disappearing TTY must not prevent the remaining cleanup.
+    }
+    if (owner.wasFlowing) this.input.resume();
+    else this.input.pause();
+  }
+
   private async withPrivateProtocolFilteredInput<T>(
     action: (input: PrivateOscInputFilter) => Promise<T>,
   ): Promise<T> {
@@ -987,14 +1094,16 @@ export class Terminal {
       throw new Error("A terminal input operation is already active.");
     }
     this.guardedInputActive = true;
+    this.stopBusyInputOwner();
     const inputFilter = new PrivateOscInputFilter(this.input);
-    this.input.pipe(inputFilter);
     try {
+      this.input.pipe(inputFilter);
       return await action(inputFilter);
     } finally {
       this.input.unpipe(inputFilter);
       if (!inputFilter.destroyed) inputFilter.destroy();
       this.guardedInputActive = false;
+      this.startBusyInputOwner();
     }
   }
 

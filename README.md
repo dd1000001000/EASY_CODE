@@ -171,7 +171,7 @@ Completed tool activity moves out of the live status and into ordinary scrollbac
 
 `/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
 
-With the bundled VS Code extension installed, click the gray `Thinking #N` text in a completed marker to open that block in a gray panel inside the redrawable live region. Click the same marker—or the `Thinking #N` text in the panel's bottom `↕` control line—to close it. Clicking a different marker switches the panel to that block. Thinking panels do not support or consume Esc; Esc remains available to overlays and normal terminal input.
+With the bundled VS Code extension installed, hold `Ctrl` and click the gray `Thinking #N` text on Windows/Linux, or hold `Cmd` and click it on macOS, to open that block in a gray panel inside the redrawable live region. Repeat the same gesture on that marker—or on the `Thinking #N` text in the panel's bottom `↕` control line—to close it. Activating a different marker switches the panel to that block. The control remains responsive while a model request is running. Thinking panels do not support or consume Esc; Esc remains available to overlays and normal terminal input.
 
 In the composer, type or paste normally and press Enter to submit. `/thinking N` and `Ctrl+T` still write the complete retained Thinking content to stable scrollback without discarding the current draft; they do not toggle the temporary panel. `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
 
@@ -252,7 +252,7 @@ Thinking effort affects model reasoning when the selected model supports it. It 
 
 `none` requests no model thinking where the provider supports disabling it. If a model does not support configurable thinking, the selected effort is still saved, but the thinking setting itself may not affect that model.
 
-When a model returns Thinking content, EASY CODE writes a gray `Thinking #N` marker and short gray preview to stable scrollback. With the bundled VS Code extension installed, click `Thinking #N` to toggle a bounded gray panel in the live region. Clicking another marker switches blocks; clicking the active marker or the panel's bottom control closes it. Esc is not a Thinking-panel shortcut.
+When a model returns Thinking content, EASY CODE writes a gray `Thinking #N` marker and short gray preview to stable scrollback. With the bundled VS Code extension installed, use `Ctrl+click` on Windows/Linux or `Cmd+click` on macOS to toggle a bounded gray panel in the live region. Activating another marker switches blocks; activating the current marker or the panel's bottom control closes it. Esc is not a Thinking-panel shortcut.
 
 To write the complete retained content to stable scrollback instead of opening the temporary panel, use:
 

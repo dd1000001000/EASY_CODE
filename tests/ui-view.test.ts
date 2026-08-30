@@ -278,7 +278,7 @@ describe("pure terminal UI views", () => {
     assert.equal(rendered.includes("\u001B"), false);
     assert.match(
       rendered,
-      /↕ Thinking #4 · Click again to close · \/thinking 4/u,
+      /↕ Thinking #4 · Ctrl\/Cmd\+click to close · \/thinking 4/u,
     );
     assert.equal(rendered.includes("reasoning line 7"), false);
     assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("Thinking #4"));
@@ -325,7 +325,7 @@ describe("pure terminal UI views", () => {
       color: false,
     });
     assert.match(modal, /^╭─ Choose another block/u);
-    assert.equal(modal.includes("Click again to close"), false);
+    assert.equal(modal.includes("Ctrl/Cmd+click to close"), false);
     assert.equal(modal.includes("Working…"), false);
   });
 

@@ -171,7 +171,7 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 
 `/model`、命令审批、Plan 审核和 `/resume` 使用盒式覆盖选择器，不再向 scrollback 追加临时菜单文本。选择器打开时会替代普通动态状态和输入框。使用 `↑`/`↓` 移动，按 Enter 确认，按 Esc 取消；取消命令审批始终等同于拒绝。
 
-安装随项目提供的 VS Code 扩展后，可以点击已完成标记中灰色的 `Thinking #N`，在可重绘动态状态区内打开该内容的灰色面板。再次点击同一个标记，或点击面板底部 `↕` 控制行中的 `Thinking #N`，即可关闭；点击其他标记会把面板切换到对应内容。Thinking 面板不支持也不占用 Esc；Esc 仍留给 overlay 和普通终端输入。
+安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上按住 `Ctrl` 点击已完成标记中灰色的 `Thinking #N`，或在 macOS 上按住 `Cmd` 点击，即可在可重绘动态状态区内打开对应灰色面板。用相同手势再次激活该标记，或激活面板底部 `↕` 控制行中的 `Thinking #N`，即可关闭；激活其他标记会切换到对应内容。模型请求进行期间该控件也会保持响应。Thinking 面板不支持也不占用 Esc；Esc 仍留给 overlay 和普通终端输入。
 
 在输入框中可以正常输入或粘贴，按 Enter 提交。`/thinking N` 与 `Ctrl+T` 仍会把完整保留的 Thinking 内容写入稳定 scrollback，并保留当前草稿；它们不会切换临时面板。`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
 
@@ -252,7 +252,7 @@ Adjust plan with feedback
 
 对于允许关闭思考的模型，`none` 表示请求模型不进行思考。如果模型不支持可配置的思考强度，EASY CODE 仍会保存用户选择，但思考设置本身可能不会对该模型生效。
 
-当模型返回 Thinking 内容时，EASY CODE 会把灰色 `Thinking #N` 标记和简短灰色预览写入稳定 scrollback。安装随项目提供的 VS Code 扩展后，点击 `Thinking #N` 可以在动态状态区切换一个有界灰色面板。点击其他标记会切换内容；再次点击活动标记或面板底部控制行会关闭。Esc 不是 Thinking 面板快捷键。
+当模型返回 Thinking 内容时，EASY CODE 会把灰色 `Thinking #N` 标记和简短灰色预览写入稳定 scrollback。安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上使用 `Ctrl+点击`、在 macOS 上使用 `Cmd+点击`，即可在动态状态区切换一个有界灰色面板。激活其他标记会切换内容；再次激活当前标记或面板底部控制行会关闭。Esc 不是 Thinking 面板快捷键。
 
 如果要把完整保留的内容写入稳定 scrollback，而不是打开临时面板，请使用：
 

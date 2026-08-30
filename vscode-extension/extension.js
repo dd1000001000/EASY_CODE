@@ -36,7 +36,7 @@ function findThinkingMarkers(line) {
   const matches = [];
   // This RegExp is deliberately local: VS Code may invoke terminal link
   // providers concurrently, so no mutable global RegExp state is shared.
-  const markerPattern = /(?:▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})|↕ Thinking #([1-9][0-9]{0,15}) · Click again to close · \/thinking ([1-9][0-9]{0,15}))(?=$|[ \t])/g;
+  const markerPattern = /(?:▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})|↕ Thinking #([1-9][0-9]{0,15}) · (?:Ctrl\/Cmd\+click|Click again) to close · \/thinking ([1-9][0-9]{0,15}))(?=$|[ \t])/g;
   for (const match of line.matchAll(markerPattern)) {
     const id = match[1] ?? match[3];
     const pairedId = match[2] ?? match[4];
@@ -74,10 +74,9 @@ function showThinkingSequence(id) {
 }
 
 /**
- * @param {(terminal: import('vscode').Terminal | undefined) => boolean} isEnabled
  * @returns {import('vscode').TerminalLinkProvider}
  */
-function createThinkingLinkProvider(isEnabled) {
+function createThinkingLinkProvider() {
   // Metadata never comes from a command string and is retained only for link
   // objects created by this provider. A forged object passed to the handler is
   // therefore inert even if it copies visible link properties.
@@ -85,12 +84,12 @@ function createThinkingLinkProvider(isEnabled) {
 
   return {
     provideTerminalLinks(context, token) {
-      if (token?.isCancellationRequested || !isEnabled(context?.terminal)) return [];
+      if (token?.isCancellationRequested || !context?.terminal) return [];
       return findThinkingMarkers(context.line).map((marker) => {
         const link = {
           startIndex: marker.startIndex,
           length: marker.length,
-          tooltip: `Toggle EASY CODE Thinking #${marker.id}`,
+          tooltip: `Ctrl/Cmd+click to toggle EASY CODE Thinking #${marker.id}`,
         };
         linkMetadata.set(link, { id: marker.id, terminal: context.terminal });
         return link;
@@ -99,7 +98,7 @@ function createThinkingLinkProvider(isEnabled) {
 
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
-      if (!metadata || !isEnabled(metadata.terminal)) return;
+      if (!metadata) return;
       metadata.terminal.sendText(toggleThinkingSequence(metadata.id), false);
     },
   };
@@ -164,7 +163,7 @@ function activate(context) {
   };
 
   context.subscriptions.push(
-    vscode.window.registerTerminalLinkProvider(createThinkingLinkProvider(isEnabled)),
+    vscode.window.registerTerminalLinkProvider(createThinkingLinkProvider()),
     vscode.window.onDidStartTerminalShellExecution((event) => {
       void trackExecution(event);
     }),
