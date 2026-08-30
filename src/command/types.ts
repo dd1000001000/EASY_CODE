@@ -1,4 +1,5 @@
 import type { AgentMode, ApprovalRequest } from "../core/types.js";
+import type { SandboxExecutionMetadata } from "../sandbox/types.js";
 import type { WorkspaceDelta } from "../workspace/snapshot.js";
 
 export type CommandIntent = "inspect" | "build" | "test" | "run" | "install";
@@ -61,7 +62,13 @@ export interface WorkspaceDeltaSummary {
 
 export interface RunCommandOutput {
   commandId: string;
-  status: "exited" | "timed_out" | "canceled" | "spawn_failed" | "policy_denied";
+  status:
+    | "exited"
+    | "timed_out"
+    | "canceled"
+    | "spawn_failed"
+    | "policy_denied"
+    | "sandbox_unavailable";
   exitCode: number | null;
   signal: string | null;
   durationMs: number;
@@ -69,6 +76,7 @@ export interface RunCommandOutput {
   stderr: OutputDigest;
   workspaceDelta: WorkspaceDeltaSummary;
   policyDecision: CommandPolicyDecision;
+  sandbox: SandboxExecutionMetadata;
   executed: {
     program: string;
     args: string[];

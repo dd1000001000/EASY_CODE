@@ -13,6 +13,7 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 - 提供 Plan、Auto、Code 三种工作模式，其中 Auto 由模型控制路由。
 - 读取、新建、更新和删除工作区内的文件。
 - 运行命令、测试、构建工具以及受支持的 npm 安装命令。
+- 使用 `@anthropic-ai/sandbox-runtime` `0.0.74` 提供的操作系统级 `workspace-write` 沙箱运行整个命令进程树。
 - 显示带行号的代码 Diff：新增内容为绿色，删除内容为红色。
 - 已完成内容保留在终端 scrollback 中，当前工作则在紧凑的行内状态区持续更新。
 - 在会话中切换 Provider、模型和思考强度。
@@ -28,13 +29,19 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 
 ## 环境要求
 
-- Node.js `>=16.20.0` 和 npm。
+- Node.js `>=20.11.0` 和 npm。
 - Windows、macOS 或 Linux。
 - 至少一个受支持 Provider 的 API Key。
 - 共享子 Agent 不强制依赖 Git；显式 Worktree 隔离和 Branch Handoff 需要 Git。
 - 可选：VS Code `>=1.93`，用于在集成终端中原生粘贴图片。
 
 推荐使用仍在维护期内的 Node.js LTS 版本。
+
+命令沙箱还具有平台前置条件：
+
+- Windows 使用随依赖提供的 Anthropic SRT Windows 后端；该后端目前为 Alpha，并且需要一次显式的管理员初始化。
+- macOS 使用 Seatbelt，并需要 `ripgrep`。
+- Linux 使用 bubblewrap，并需要 `bubblewrap`、`socat` 和 `ripgrep`；宿主机还必须允许 bubblewrap 所需的 User Namespace。
 
 ## 安装
 
@@ -48,6 +55,21 @@ npm run build
 npm install --global .
 easy-code --version
 ```
+
+安装完成后检查命令沙箱：
+
+```bash
+easy-code sandbox doctor
+```
+
+Windows 需要完成一次机器级初始化并批准 UAC，然后再次验证：
+
+```bash
+easy-code sandbox setup
+easy-code sandbox doctor
+```
+
+在 macOS 或 Linux 上，`easy-code sandbox setup` 只检查前置条件，不会安装系统包或请求提权。请使用系统包管理器安装 `doctor` 报告的依赖，再重新检查。
 
 如果已经配置 GitHub SSH Key，也可以使用：
 
@@ -328,9 +350,12 @@ EASY CODE 可以：
 /commands
 /tools
 /permissions
+/approval
 ```
 
-文件操作会限制在所选工作区内。命令仍然使用启动 EASY CODE 的当前操作系统用户权限执行。
+EASY CODE 对命令应用两层相互独立的边界：命令策略与审批先决定解析后的命令能否启动；Anthropic Sandbox Runtime 再在操作系统层限制获准命令的整个进程树。内置文件工具仍通过 EASY CODE 的规范化工作区路径守卫执行。
+
+沙箱始终采用 `workspace-write`：命令只能写入当前物理工作区和 Runtime 管理的临时目录，EASY CODE 私有状态、常见凭据目录及受保护控制文件会被拒绝访问。如果 SRT 不支持当前平台、尚未初始化、缺少依赖或无法准备命令，执行会以 `sandbox_unavailable` 失败关闭；EASY CODE 绝不会回退到宿主机直接启动命令。
 
 命令需要批准时，可以使用 `↑`/`↓` 和 Enter 选择：
 
@@ -339,6 +364,18 @@ EASY CODE 可以：
 3. `Reject`：拒绝执行。
 
 第二项会作用于该可执行文件后续收到的不同参数，使用 `/resume` 后仍然有效，同一父 Thread 绑定的子 Agent 也可以复用；它不会进入 `/new` 或其他 Thread，子 Agent 自己也不能新增授权。Python、Node.js、`cmd`、PowerShell 等解释器或 Shell 的授权范围很大，因为后续脚本或 Shell 文本可能执行完全不同的操作。授权标识的是路径，而不是不可变的程序内容，因此替换该路径上的文件不会自动撤销授权。可以使用 `/permissions` 查看当前授权。永久策略拒绝、Plan mode 边界和 `--approval never` 始终拥有更高优先级。
+
+使用 `/approval` 可以通过上下箭头选择当前 EASY CODE 进程的命令执行状态：
+
+1. `Manual approval`：策略允许审批的高风险命令需要手动批准。
+2. `Auto approve`：自动执行策略允许审批的命令，但永久拒绝规则和结构边界仍然生效。
+3. `Unrestricted`：跳过命令分类、永久命令拒绝、Plan mode 的命令限制和审批提示。该选项需要再次确认危险提示；开启后，可重绘状态栏会持续显示红色 `! EASY CODE unrestricted`。退出 EASY CODE 或选择其他状态后结束危险模式。切换状态不会向 scrollback 再打印一份会话标题，但它**不会**关闭操作系统沙箱。
+
+因此，`/approval` 的三种状态全部位于同一个操作系统强制 `workspace-write` 文件系统边界内。危险模式仍然保留结构化程序与参数数组、工作区内的启动目录、受控环境、取消、超时、输出上限与敏感信息遮蔽、进程清理和命令审计。它可以修改工作区内受保护的 Git 元数据，并开放网络访问，所以即使宿主文件系统仍受沙箱保护，红色警告仍然具有实际意义。
+
+网络访问按能力分配，并使用 SRT 的严格 Allowlist。普通命令没有网络访问；受约束的精确版本 npm Registry 安装只能访问 `registry.npmjs.org`；显式获批的 Shell 和 Unrestricted 命令可以访问任意域名。允许域名不等同于允许特定目标或操作，因此 Shell 与危险模式仍可能把可读取的工作区数据发送出去。Unix Socket、本地端口监听、Apple Events、弱化嵌套隔离和弱化网络隔离均保持关闭。
+
+沙箱是第二道边界，不能替代用户审查。`@anthropic-ai/sandbox-runtime` 的 API 仍处于 Beta Research Preview，因此 EASY CODE 精确固定其版本；Windows 后端目前为 Alpha。由于 SRT 使用一个机器级沙箱身份，Windows 会在同一 EASY CODE 进程内串行执行沙箱命令。某些安装在用户目录的工具链，或依赖可执行文件目录之外资源的程序，可能无法运行。Git Worktree 本身仍只隔离 Git 工作状态；EASY CODE 会另外把命令沙箱应用于主 Agent 或子 Agent 当前使用的物理工作区。
 
 ## 图片
 
@@ -509,6 +546,13 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 
 在 Shell 中运行 `easy-code --help` 查看启动参数；进入 EASY CODE 后运行 `/help` 查看交互命令。
 
+沙箱维护命令在进入交互式 Agent 前执行：
+
+```text
+easy-code sandbox doctor    检查平台支持和前置条件
+easy-code sandbox setup     完成 Windows 一次性初始化；其他平台只检查依赖
+```
+
 ## 交互命令
 
 ```text
@@ -525,6 +569,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 /agents                    查看子 Agent
 /tools                     查看可用工具
 /permissions               查看命令权限
+/approval                  选择手动批准、自动批准或危险模式
 /commands                  查看近期命令
 /context                   查看上下文使用量
 /usage                     查看 Provider 累计报告的 Token 用量
@@ -543,11 +588,13 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 
 - 让 Agent 进行大范围修改前，建议先提交或备份重要工作。
 - 使用 `/permissions` 查看当前命令策略。
+- 使用 `easy-code sandbox doctor` 验证操作系统级文件系统和网络边界。
 - 除非信任当前 Thread 中传给该可执行文件的所有后续参数，否则优先选择一次性批准。
 - 只在可信工作区或隔离环境中使用 `--yes`。
 - `--yes` 不会绕过 Plan mode 的限制，也不会放行始终禁止的命令。
-- 获准执行的命令使用当前操作系统账户权限，可能访问工作区之外的资源。
-- Git Worktree 只隔离工作状态，不隔离操作系统进程，因此不是安全 Sandbox。
+- 手动批准、自动批准和 Unrestricted 都继续受到操作系统强制的 `workspace-write` 沙箱限制；沙箱初始化失败时会阻止命令，而不会回退到宿主进程。
+- 获准的 Shell 或 Unrestricted 命令可以访问任意网络目标，因此即使文件写入仍受沙箱限制，也可能把工作区数据发送出去。
+- Git Worktree 隔离的是 Git 工作状态，不直接提供安全边界；EASY CODE 会把命令沙箱另行应用到该物理 checkout。
 - 不要把 API Key 写入源码、聊天提示词、`EASYCODE.md` 或 Git 历史。
 
 ## 常见问题
@@ -593,6 +640,14 @@ npm run memory:verify
 
 使用 `/permissions` 查看当前模式和审批策略。Plan mode 不允许修改代码、构建、测试或安装依赖。
 
+如果结果包含 `sandbox_unavailable`，请检查平台沙箱：
+
+```bash
+easy-code sandbox doctor
+```
+
+Windows 请运行 `easy-code sandbox setup` 并批准一次 UAC；Linux 请安装 `bubblewrap`、`socat` 与 `ripgrep`，并确保 User Namespace 可用；macOS 请安装 `ripgrep`。EASY CODE 会失败关闭，不会在沙箱外重试命令。
+
 ### Node.js 版本过低
 
 查看当前版本：
@@ -601,4 +656,4 @@ npm run memory:verify
 node --version
 ```
 
-EASY CODE 要求 Node.js `>=16.20.0`。
+EASY CODE 要求 Node.js `>=20.11.0`，与当前固定版本的 Anthropic Sandbox Runtime 最低要求一致。

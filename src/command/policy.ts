@@ -158,8 +158,9 @@ function modeDecision(
   if (capability === "registry_install") {
     return decision("allow", capability, reason, rule);
   }
-  // No OS sandbox is implemented in this module. Executing repository or
-  // third-party code therefore requires an exact, one-shot approval.
+  // Approval remains independent from the OS sandbox. Repository or
+  // third-party code still requires an exact, one-shot approval even though
+  // the process will be confined to its Runtime-selected workspace.
   return decision("ask", capability, reason, rule);
 }
 
@@ -184,7 +185,7 @@ export class CommandPolicy {
       return modeDecision(
         mode,
         "shell_exec",
-        "Executes an explicit shell command as the current OS user without an OS sandbox",
+        "Executes an explicit shell command inside the workspace OS sandbox",
         "ask.shell_exec",
       );
     }
@@ -218,7 +219,7 @@ export class CommandPolicy {
       return modeDecision(
         mode,
         "workspace_exec",
-        "Executes workspace or interpreter code without an OS sandbox",
+        "Executes workspace or interpreter code inside the workspace OS sandbox",
         "ask.workspace_exec",
       );
     }
@@ -331,7 +332,7 @@ export class CommandPolicy {
       return modeDecision(
         mode,
         "workspace_exec",
-        `npm ${npmSubcommand} executes project-defined code without an OS sandbox`,
+        `npm ${npmSubcommand} executes project-defined code inside the workspace OS sandbox`,
         "ask.npm_script",
       );
     }

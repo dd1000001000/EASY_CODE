@@ -355,14 +355,14 @@ describe("credential configuration loading", () => {
     }
   });
 
-  it("round-trips an isolated Windows credential with Node 16 when requested", async () => {
+  it("round-trips an isolated Windows credential with Node 20.11.0 when requested", async () => {
     if (
       process.platform !== "win32" ||
       process.env.EASY_CODE_RUN_KEYRING_INTEGRATION !== "1"
     ) {
       return;
     }
-    assert.equal(process.versions.node, "16.20.2");
+    assert.equal(process.versions.node, "20.11.0");
 
     const service = `easy-code-agent-test-${process.pid}-${randomUUID()}`;
     const secret = `easy-code-test-${randomUUID()}`;

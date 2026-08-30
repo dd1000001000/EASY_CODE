@@ -164,6 +164,29 @@ describe("pure terminal UI views", () => {
     assertBoundedLines(rendered, 80);
   });
 
+  it("keeps one stable session title and renders unrestricted mode in the live footer", () => {
+    const state = applyEvents(createUIState(), [{
+      type: "session.set",
+      session: {
+        threadId: "danger-thread",
+        workspaceRoot: "F:\\projects\\danger",
+        mode: "code",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        thinkingEffort: "high",
+        commandExecutionMode: "unrestricted",
+      },
+    }]);
+
+    const header = renderSessionHeader(state, { columns: 80, color: true });
+    const footer = renderComposerFooter(state, { columns: 80, color: true });
+    assert.match(stripAnsi(header), /^╭─ EASY CODE /u);
+    assert.doesNotMatch(stripAnsi(header), /Unrestricted command execution/u);
+    assert.match(stripAnsi(footer), /^! EASY CODE unrestricted  code/u);
+    assert.doesNotMatch(header, /\u001B\[31m/u);
+    assert.match(footer, /\u001B\[31m/u);
+  });
+
   it("renders compact progress, task, agent, activity, busy composer, and footer", () => {
     const state = populatedState();
     const options = {

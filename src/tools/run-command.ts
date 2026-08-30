@@ -30,7 +30,7 @@ export class RunCommandTool implements AgentTool {
     function: {
       name: this.name,
       description:
-        "Run one controlled program with a structured argv array inside the workspace. Explicit one-shot shells are supported in Auto/Code mode (for example cmd /c, PowerShell -Command, or sh -c) and require approval unless EASY CODE was started with --yes.",
+        "Run one controlled program with a structured argv array inside the workspace. Every production command process tree is confined by Anthropic Sandbox Runtime and fails closed if that boundary is unavailable. Explicit one-shot shells are supported in Auto/Code mode (for example cmd /c, PowerShell -Command, or sh -c) and require approval unless command auto-approval or Unrestricted mode is active.",
       strict: true,
       parameters: {
         type: "object",
@@ -65,6 +65,8 @@ export class RunCommandTool implements AgentTool {
         output.workspaceDelta.deleted.length === 0;
       const summary = output.status === "policy_denied"
         ? `Command denied: ${output.policyDecision.reason}`
+        : output.status === "sandbox_unavailable"
+          ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}`
         : output.status === "exited"
           ? `Command exited with code ${output.exitCode}`
           : `Command ${output.status.replace(/_/gu, " ")}`;

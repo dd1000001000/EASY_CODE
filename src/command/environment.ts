@@ -12,6 +12,7 @@ const SAFE_ENVIRONMENT_KEYS = new Set([
   "USERPROFILE",
   "APPDATA",
   "LOCALAPPDATA",
+  "PROGRAMDATA",
   "LANG",
   "LANGUAGE",
   "LC_ALL",
@@ -38,4 +39,3 @@ export function buildCommandEnvironment(source: NodeJS.ProcessEnv = process.env)
   environment.FORCE_COLOR = "0";
   return environment;
 }
-

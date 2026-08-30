@@ -58,7 +58,7 @@ export async function terminateProcessTree(
     // Let taskkill enumerate and terminate the whole tree before touching the
     // direct child. Killing a cmd/npm shim first can orphan its real Node child
     // and leave that process holding the workspace as cwd. Awaiting taskkill is
-    // also required because Node 16 can report direct-child exit before Windows
+    // also required because Node can report direct-child exit before Windows
     // releases all process/directory handles.
     const treeTerminated = await runTaskkill(pid, true);
     if (treeTerminated) return;

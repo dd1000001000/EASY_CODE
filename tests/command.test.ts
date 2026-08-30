@@ -7,14 +7,52 @@ import {
   buildCommandEnvironment,
   CommandPolicy,
   CommandResolver,
+  CommandRuntime,
   inspectExplicitShellInvocation,
   normalizeExplicitShellArgs,
   sanitizeCommandOutput,
   type RunCommandInput,
 } from "../src/command/index.js";
-import { RunCommandTool } from "../src/tools/index.js";
+import type {
+  CommandExecutionBackend,
+  PreparedCommand,
+} from "../src/sandbox/index.js";
+import { RunCommandTool as ProductionRunCommandTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
+
+class HostCommandBackend implements CommandExecutionBackend {
+  describe(): PreparedCommand["metadata"] {
+    return {
+      backend: "host-test-only",
+      enforced: false,
+      filesystem: "host",
+      network: "host",
+    };
+  }
+
+  async prepare(
+    request: Parameters<CommandExecutionBackend["prepare"]>[0],
+  ): Promise<PreparedCommand> {
+    return {
+      executablePath: request.command.executablePath,
+      args: [...request.command.args],
+      cwdAbsolute: request.command.cwdAbsolute,
+      environment: { ...request.command.environment },
+      metadata: this.describe(),
+      cleanup: async () => undefined,
+    };
+  }
+}
+
+class RunCommandTool extends ProductionRunCommandTool {
+  constructor(manager: WorkspaceManager) {
+    super(
+      manager,
+      new CommandRuntime(manager, new CommandPolicy(), new HostCommandBackend()),
+    );
+  }
+}
 
 async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
   // Keep spawned-process fixtures under the checked-out workspace. Some CI and
@@ -44,6 +82,7 @@ function context(
   options: {
     mode?: ToolContext["mode"];
     approvalPolicy?: ToolContext["approvalPolicy"];
+    commandExecutionMode?: ToolContext["commandExecutionMode"];
     approve?: boolean;
     approvals?: ApprovalRequest[];
     audit?: CommandAuditEntry[];
@@ -57,6 +96,7 @@ function context(
     threadId: "thread-command",
     turnId: "turn-command",
     approvalPolicy: options.approvalPolicy ?? "safe",
+    commandExecutionMode: options.commandExecutionMode,
     requestApproval: async (request) => {
       options.approvals?.push(request);
       return options.approve ?? false;
@@ -296,7 +336,48 @@ describe("command runtime", () => {
     });
   });
 
-  it("requires exact approval for unsandboxed workspace code and records generated files", async () => {
+  it("bypasses every command policy and approval rule in unrestricted mode", async () => {
+    await withWorkspace(async (root, manager) => {
+      const approvals: ApprovalRequest[] = [];
+      const tool = new RunCommandTool(manager);
+      const result = await tool.execute(
+        {
+          program: "node",
+          args: ["-e", "process.stdout.write('unrestricted-ok')"],
+          intent: "run",
+        },
+        context(root, {
+          mode: "plan",
+          approvalPolicy: "never",
+          commandExecutionMode: "unrestricted",
+          approvals,
+        }),
+      );
+
+      assert.equal(result.ok, true);
+      assert.equal(approvals.length, 0);
+      const output = result.data as {
+        stdout: { text: string };
+        policyDecision: { effect: string; matchedRule: string };
+      };
+      assert.equal(output.stdout.text, "unrestricted-ok");
+      assert.equal(output.policyDecision.effect, "allow");
+      assert.equal(output.policyDecision.matchedRule, "allow.unrestricted");
+
+      const escapedCwd = await tool.execute(
+        { program: "node", args: ["--version"], cwd: "../", intent: "run" },
+        context(root, {
+          mode: "code",
+          approvalPolicy: "never",
+          commandExecutionMode: "unrestricted",
+        }),
+      );
+      assert.equal(escapedCwd.ok, false);
+      assert.match(escapedCwd.error ?? "", /traversal|workspace/iu);
+    });
+  });
+
+  it("requires exact approval for sandboxed workspace code and records generated files", async () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(
         path.join(root, "generate.cjs"),
@@ -363,7 +444,7 @@ describe("command runtime", () => {
       assert.equal(Number.isInteger(childPid), true);
       assert.equal(processIsAlive(childPid), false, "timed-out descendant is still running");
       // A timed-out command must not return while its process tree still holds
-      // the workspace as its cwd. This specifically guards the Node 16 Windows
+      // the workspace as its cwd. This specifically guards the Windows
       // EBUSY race between direct-child exit and asynchronous taskkill cleanup.
       await rm(root, { recursive: true, force: true });
     });

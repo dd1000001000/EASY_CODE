@@ -2,6 +2,7 @@ import type {
   AgentMode,
   ApprovalPolicyName,
   ApprovalRequest,
+  CommandExecutionMode,
   ImageAttachment,
   PlanProposal,
   ProviderName,
@@ -21,6 +22,7 @@ export interface UISessionInfo {
   readonly model: string;
   readonly thinkingEffort: ThinkingEffort;
   readonly approvalPolicy?: ApprovalPolicyName;
+  readonly commandExecutionMode?: CommandExecutionMode;
   /** Current context size when the provider exposes token accounting. */
   readonly contextTokens?: number;
   /** Model context limit when it is known. */

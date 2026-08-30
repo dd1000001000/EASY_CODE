@@ -817,6 +817,10 @@ export class Terminal {
     this.write(chalk.green(text) + "\n");
   }
 
+  warning(text: string): void {
+    this.write(chalk.yellow(text) + "\n");
+  }
+
   error(text: string): void {
     this.write(chalk.red(text) + "\n");
   }

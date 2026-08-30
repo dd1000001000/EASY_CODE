@@ -8,6 +8,7 @@ import { Command, Option } from "commander";
 
 import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
 import { registerConfigCommands } from "./config/config-command.js";
+import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
   THINKING_EFFORTS,
   type AgentMode,
@@ -28,7 +29,7 @@ interface CliOptions {
   image?: string[];
 }
 
-const MINIMUM_NODE_VERSION = [16, 20, 0] as const;
+const MINIMUM_NODE_VERSION = [20, 11, 0] as const;
 
 export function assertSupportedNodeVersion(version = process.versions.node): void {
   const parts = version.split(".").slice(0, 3).map((part) => Number.parseInt(part, 10));
@@ -157,6 +158,7 @@ export async function main(argv = process.argv): Promise<void> {
     });
 
   registerConfigCommands(program);
+  registerSandboxCommands(program);
 
   await program.parseAsync(argv);
 }

@@ -273,6 +273,35 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("updates command posture in the live footer without appending another session title", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.showSessionHeader();
+
+        const dangerOffset = captured().length;
+        terminal.setSessionInfo(session({ commandExecutionMode: "unrestricted" }));
+        const dangerFrame = stripAnsi(captured().slice(dangerOffset));
+        assert.match(dangerFrame, /! EASY CODE unrestricted/u);
+
+        const safeOffset = captured().length;
+        terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
+        const safeFrame = stripAnsi(captured().slice(safeOffset));
+        assert.doesNotMatch(safeFrame, /! EASY CODE unrestricted/u);
+        assert.equal(
+          (stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length,
+          1,
+        );
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("uses the retained generic picker for selectChoice and clears it afterward", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();

@@ -13,12 +13,13 @@ The main design goals are:
 - **Runtime authority:** prompts guide model behavior, but they never grant permissions.
 - **Least capability:** each model request receives only the capabilities required by its current mode, role, and execution phase.
 - **Workspace safety:** file access is confined to a selected project, with version checks before destructive changes.
+- **Process containment:** approved command process trees run inside an OS-enforced `workspace-write` boundary rather than inheriting unrestricted host access.
 - **Durable execution:** conversations, plans, task progress, child results, and audit data survive process restarts.
 - **Evidence over claims:** file and command outcomes are recorded, while task completion must include structured evidence that a user or parent agent can review.
 - **Local-first state:** session data, memory, image artifacts, and indexes are stored locally by default.
 - **Graceful degradation:** optional features such as semantic retrieval may fall back without making authoritative state unavailable.
 
-EASY CODE is not an operating-system sandbox. An approved project program or shell command still runs as the operating-system account that launched the CLI. The permission model reduces risk through capability restrictions, command classification, and approval; it does not provide container isolation.
+EASY CODE pins and embeds `@anthropic-ai/sandbox-runtime` `0.0.74` as its command-process sandbox. This raises the minimum runtime to Node.js `>=20.11.0`. Command policy and approval decide whether an action may start; the OS sandbox independently limits what the approved process tree can access. Sandbox preparation is fail-closed: an unsupported or uninitialized backend, missing dependency, or wrapper failure blocks execution and never falls back to a direct host launch.
 
 ## 2. System architecture
 
@@ -35,7 +36,9 @@ flowchart TB
 
     Provider --> APIs[Qwen, DeepSeek, and GLM APIs]
     Capabilities --> Workspace[Workspace file boundary]
-    Capabilities --> Commands[Controlled command execution]
+    Capabilities --> Commands[Command policy and approval]
+    Commands --> Sandbox[Anthropic SRT workspace-write sandbox]
+    Sandbox --> OS[Seatbelt, bubblewrap, or Windows SRT]
     Orchestration --> Children[Child sessions and DAG result lineage]
     Children --> Environments[Shared roots or managed Git worktrees]
     Environments --> Snapshots[Validated baselines and checkpoints]
@@ -56,7 +59,7 @@ flowchart TB
 | Application coordination | Configuration, credentials, workspace binding, model selection, thread lifecycle, resume, and presentation. |
 | Agent Runtime | Turn state machine, effective mode, capability selection, model-output validation, tool loop, and completion rules. |
 | Provider gateway | A common representation for messages, structured actions, thinking, images, timeouts, retries, and usage metadata. |
-| Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. |
+| Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. Command approval and OS sandboxing remain separate enforcement layers. |
 | Orchestration | Reviewed plans, dependency-aware task execution, child assignment, resumable execution environments, result lineage, and controlled handoff. |
 | State and retrieval | Authoritative thread events, queryable projections, checkpoints, long-term facts, semantic indexes, and binary artifacts. |
 
@@ -163,7 +166,7 @@ Commands are represented as an executable, an argument vector, and a workspace w
 | Safe inspection | May run without approval. |
 | Project code, tests, builds, or an explicit one-shot shell | Requires exact approval unless the session was explicitly started for non-interactive approval. |
 | Constrained local dependency installation | Allowed only as a restricted project-local Registry installation with lifecycle scripts disabled. |
-| System configuration, global installation, direct remote/network tools, destructive commands, dynamic download-and-execute, or remote Git writes | Direct structured forms are denied. An explicit shell is a separate high-risk capability that requires exact approval and is not semantically sandboxed. |
+| System configuration, global installation, direct remote/network tools, destructive commands, dynamic download-and-execute, or remote Git writes | Direct structured forms are denied. An explicit shell is a separate high-risk capability that requires exact approval; Runtime does not infer its script semantics, but its process tree still enters the OS sandbox. |
 
 The default one-time approval is bound to the exact executable, arguments, working directory, and relevant project material. The interactive terminal also offers a reusable Thread-scoped grant for the exact executable identity resolved by the Runtime. This is equality on the canonical executable path, not textual `startsWith` matching and not a value parsed back from the human-readable command preview. Such a grant deliberately ignores later arguments and working directories: granting Python, Node.js, a shell, or another interpreter therefore authorizes substantially more than one script. It is a path identity rather than a pin to immutable executable bytes, so replacing the file at that path does not automatically revoke the grant.
 
@@ -171,9 +174,37 @@ Reusable grants are created only by an explicit terminal selection, are written 
 
 Descriptive model intent does not influence classification. Permanent policy denial happens before approval lookup; disabling prompts turns approval-requiring commands into denials; and neither remembered nor automatic approval changes direct policy denials or Plan restrictions. A user-approved shell or interpreter remains capable of performing everything expressed by later arguments and must be treated as a high-risk unit.
 
+The interactive command posture is process-local and has three states. Manual approval preserves the ordinary decision path. Auto approval removes prompts only for commands the policy already considers approval-eligible. Unrestricted execution is an explicitly double-confirmed emergency posture: it replaces the command-policy decision with an allow decision, including for Git, network, system, interpreter, and shell invocations. Persistent red branding makes this exceptional authority visible until the process exits or the user switches back. None of these states disables the OS sandbox.
+
+Unrestricted execution changes only command policy. It does not widen built-in read, create, update, write, or delete capabilities, and the launched process still runs inside the same OS-enforced `workspace-write` filesystem boundary. Command resolution continues to require structured program and argument data, keep the working directory inside the active physical root, supply a controlled environment, and retain cancellation, time limits, output bounds, cleanup, snapshots, and audit. Unrestricted execution may modify protected Git metadata inside the workspace and receives open network destinations, which is why it remains visibly dangerous.
+
 Processes receive a small environment allowlist rather than the full parent environment. Commands have cancellation, time limits, bounded output, process-tree cleanup, secret redaction, and before/after workspace snapshots for audit.
 
-Permanent command classifications apply to the top-level invocation. An approved shell, interpreter, or project program may still access the network, read outside the workspace, or start other programs, and non-interactive approval can approve a shell that would otherwise require a prompt. Workspace snapshots are bounded audit aids rather than complete monitoring or rollback: they omit Git metadata, dependency directories, and private state, and may be truncated by file-count limits. Broad or unfamiliar work should therefore run in an isolated project or container.
+Permanent command classifications apply to the top-level invocation. A permitted shell, interpreter, or project program can still start descendants, but SRT applies the filesystem and network boundary to the whole wrapped process tree. Workspace snapshots remain bounded audit aids rather than complete monitoring or rollback: they omit Git metadata, dependency directories, and private state, and may be truncated by file-count limits.
+
+### OS command sandbox
+
+EASY CODE runs production commands through the pinned Anthropic Sandbox Runtime rather than its unsandboxed test backend. The original model action remains a structured executable and argument vector. A trusted worker turns that resolved invocation into SRT's platform wrapper, attributes violations with an opaque command identity, and launches the target without reinterpreting model text as the worker's own arguments. The parent process, Provider calls, memory database, credential store, terminal UI, and orchestration remain outside the command sandbox.
+
+The effective filesystem profile is always `workspace-write` for Manual, Auto approve, and Unrestricted command policy:
+
+- The active physical workspace and an invocation-private scratch directory are writable.
+- EASY CODE's private configuration, data, cache, common credential locations, and the user's home tree are denied for command reads, with narrow re-allow rules for the active workspace, trusted Runtime bridge, Node executable, and resolved target executable.
+- `.easycode`, and a Runtime checkout that is also the project being edited, remain protected from command writes. `.git` is protected under normal policy and becomes writable only under explicitly confirmed Unrestricted command policy.
+- Provider API-key environment variables are explicitly denied in the sandbox in addition to the parent's controlled environment construction.
+- Unix sockets, local port binding, Apple Events, weaker nested isolation, and weaker network isolation are disabled.
+
+Network authority is derived from the classified command capability rather than from the approval UI state alone. Ordinary commands receive an empty strict allowlist. Restricted exact-version npm Registry installation receives only `registry.npmjs.org`. An explicitly approved Shell and Unrestricted command policy receive `*`. This preserves the supported installation workflow, but an allowed domain is not an operation-level authorization: Shell or Unrestricted execution can transmit any workspace data that the process may read.
+
+Sandbox setup and execution are fail-closed. `prepare` failures and worker initialization failures become explicit `sandbox_unavailable` command results; no code path retries the resolved target through the host backend. The host backend exists only for focused unit tests. `/permissions` reports the active backend and policy, while `easy-code sandbox doctor` diagnoses platform prerequisites.
+
+| Platform | SRT backend and prerequisite |
+| --- | --- |
+| macOS | Seatbelt-backed SRT; `ripgrep` is required. |
+| Linux | bubblewrap-backed SRT; `bubblewrap`, `socat`, and `ripgrep` are required, together with usable user namespaces. |
+| Windows | Bundled SRT Windows backend, currently alpha. `easy-code sandbox setup` performs the explicit one-time elevated account and WFP setup; `easy-code sandbox doctor` verifies the filesystem identity and network fence. |
+
+The Windows backend uses one machine-wide sandbox identity and session-level ACL grants. EASY CODE therefore serializes Windows sandbox commands within one process so concurrent child Worktrees do not receive overlapping grants. SRT remains a Beta Research Preview, and user-scoped toolchains or programs that expect broader profile access can be incompatible. A backend dependency disappearing, a canceled UAC setup, or a worker cleanup problem is reported rather than treated as permission to execute directly on the host.
 
 ### Credentials and private state
 
@@ -373,7 +404,7 @@ Handoff request, completion, and failure are durable transitions. Shared childre
 
 Only manager-owned paths may be cleaned. Dirty, busy, retained, or unresolved Worktrees remain by default and continue counting toward a configurable managed-environment limit. A successfully handed-off clean checkout is eligible for automatic removal; removing it does not remove the durable result reference or its underlying Git objects. When the limit is reached, new Worktree provisioning fails closed until retained environments are safely delivered or otherwise handled.
 
-Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is **not** an operating-system sandbox: commands still run as the launching user and can access resources outside the checkout if command policy permits them.
+Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is not itself a security boundary, but every main or child command is separately wrapped in an SRT `workspace-write` sandbox rooted at that Agent's active physical workspace. On Windows, command execution is serialized because SRT's alpha backend uses one machine-wide sandbox identity; this is independent of the higher model-work concurrency limit.
 
 ## 9. Provider and multimodal design
 
@@ -417,8 +448,11 @@ Token efficiency follows several complementary strategies:
 
 Current trade-offs are explicit:
 
-- Policy and approval are not an OS sandbox.
-- Managed Worktrees isolate Git working state, not processes, credentials, the network, or the rest of the filesystem.
+- Policy and approval determine whether a command may start; SRT supplies a separate OS boundary after approval. Neither layer replaces the other.
+- Managed Worktrees isolate Git working state rather than supplying their own security boundary; SRT separately confines command process trees to the active physical workspace.
+- The pinned `@anthropic-ai/sandbox-runtime` is a Beta Research Preview and its Windows backend is alpha. Platform prerequisites and some user-profile toolchains can limit compatibility.
+- Network isolation is domain based rather than request-content based. Approved Shell and Unrestricted commands receive all domains and can transmit readable workspace data.
+- Windows sandbox commands are serialized within one EASY CODE process to avoid overlapping ACL grants through SRT's shared machine identity.
 - Shared mode remains necessary for non-Git projects and explicit low-overhead delegation, so concurrent external edits can still invalidate child operations.
 - Isolated results require an explicit local or branch Handoff; this extra transition avoids silently overwriting the user's checkout.
 - Provider responses are currently handled as complete responses, so the loading indicator communicates liveness but final text is not streamed Token by Token.
