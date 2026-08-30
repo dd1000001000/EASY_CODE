@@ -59,7 +59,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "old\n\r\u001B[1A\u001B[0Jnew\n\r\u001B[1A\u001B[0J",
+      "old\r\u001B[0Jnew\r\u001B[0J",
     );
     writer.close();
   });
@@ -74,8 +74,8 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "中ab\nxy\n\u001B[1A\u001B[1C" +
-        "\r\u001B[1A\u001B[0Jnext\n",
+      "中ab\r\nxy\r\u001B[1C" +
+        "\r\u001B[1A\u001B[0Jnext",
     );
     writer.close();
   });
@@ -87,7 +87,7 @@ describe("ScreenWriter", () => {
 
     writer.renderLive("a中b", { row: 0, column: 2 });
 
-    assert.equal(transcript.read(), "a中b\n\u001B[1A\u001B[1C");
+    assert.equal(transcript.read(), "a中b\r\u001B[1C");
     writer.close();
   });
 
@@ -101,7 +101,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "busy\n\r\u001B[1A\u001B[0Jdone\nbusy\n",
+      "busy\r\u001B[0Jdone\r\nbusy",
     );
     writer.close();
   });
@@ -118,7 +118,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "A中\n国B\n\r\u001B[2A\u001B[0JA中国B\n",
+      "A中\r\n国B\r\u001B[1A\u001B[0JA中国B",
     );
     writer.close();
   });
@@ -152,9 +152,26 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       closedTranscript,
-      "temporary\n\r\u001B[1A\u001B[0J",
+      "temporary\r\u001B[0J",
     );
     assert.equal(transcript.read(), closedTranscript);
     assert.equal(output.destroyed, false);
   });
+
+  it("never appends a scrolling line feed while refreshing a live region", () => {
+    const output = new CapturedOutput(true, 80);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+
+    for (let index = 0; index < 100; index += 1) {
+      writer.renderLive(`Request ${index}`);
+    }
+
+    const rendered = transcript.read();
+    assert.equal(rendered.endsWith("\n"), false);
+    assert.equal((rendered.match(/\n/gu) ?? []).length, 0);
+    assert.equal(rendered.endsWith("Request 99"), true);
+    writer.close();
+  });
+
 });

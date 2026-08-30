@@ -34,20 +34,26 @@ function findThinkingMarkers(line) {
   if (typeof line !== "string") return [];
 
   const matches = [];
-  // This RegExp is deliberately local: VS Code may invoke terminal link
+  // These RegExps are deliberately local: VS Code may invoke terminal link
   // providers concurrently, so no mutable global RegExp state is shared.
-  const markerPattern = /(?:▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})|↕ Thinking #([1-9][0-9]{0,15}) · (?:Ctrl\/Cmd\+click|Click again) to close · \/thinking ([1-9][0-9]{0,15}))(?=$|[ \t])/g;
-  for (const match of line.matchAll(markerPattern)) {
-    const id = match[1] ?? match[3];
-    const pairedId = match[2] ?? match[4];
-    if (!id || id !== pairedId || !Number.isSafeInteger(Number(id))) continue;
-    matches.push({
-      startIndex: match.index + match[0].indexOf(THINKING_LINK_PREFIX),
-      length: THINKING_LINK_PREFIX.length + id.length,
-      id,
-    });
+  const markerPatterns = [
+    /▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+    /↕ Thinking #([1-9][0-9]{0,15}) · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+    /↕ Thinking #([1-9][0-9]{0,15}) · (?:Ctrl\/Cmd\+click|Click again) to close · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+  ];
+  for (const markerPattern of markerPatterns) {
+    for (const match of line.matchAll(markerPattern)) {
+      const id = match[1];
+      const pairedId = match[2];
+      if (!id || id !== pairedId || !Number.isSafeInteger(Number(id))) continue;
+      matches.push({
+        startIndex: match.index + match[0].indexOf(THINKING_LINK_PREFIX),
+        length: THINKING_LINK_PREFIX.length + id.length,
+        id,
+      });
+    }
   }
-  return matches;
+  return matches.sort((left, right) => left.startIndex - right.startIndex);
 }
 
 /**
@@ -74,9 +80,11 @@ function showThinkingSequence(id) {
 }
 
 /**
+ * @param {(terminal: import('vscode').Terminal | undefined) => boolean} isEnabled
+ * @param {(terminal: import('vscode').Terminal) => boolean} [tryRecover]
  * @returns {import('vscode').TerminalLinkProvider}
  */
-function createThinkingLinkProvider() {
+function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
   // Metadata never comes from a command string and is retained only for link
   // objects created by this provider. A forged object passed to the handler is
   // therefore inert even if it copies visible link properties.
@@ -84,8 +92,12 @@ function createThinkingLinkProvider() {
 
   return {
     provideTerminalLinks(context, token) {
-      if (token?.isCancellationRequested || !context?.terminal) return [];
-      return findThinkingMarkers(context.line).map((marker) => {
+      const terminal = context?.terminal;
+      if (token?.isCancellationRequested || !terminal) return [];
+      const markers = findThinkingMarkers(context.line);
+      if (!markers.length) return [];
+      if (!isEnabled(terminal) && !tryRecover(terminal)) return [];
+      return markers.map((marker) => {
         const link = {
           startIndex: marker.startIndex,
           length: marker.length,
@@ -98,7 +110,7 @@ function createThinkingLinkProvider() {
 
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
-      if (!metadata) return;
+      if (!metadata || !isEnabled(metadata.terminal)) return;
       metadata.terminal.sendText(toggleThinkingSequence(metadata.id), false);
     },
   };
@@ -115,11 +127,19 @@ function activate(context) {
   const manualOverrides = new Map();
   /** @type {WeakSet<import('vscode').TerminalShellExecution>} */
   const endedExecutions = new WeakSet();
+  // Only terminals that predate this extension-host activation can recover a
+  // missed EASY CODE start event. New terminals must pass normal execution
+  // tracking, which prevents arbitrary marker text from enabling the channel.
+  /** @type {Set<import('vscode').Terminal>} */
+  const recoveryCandidates = new Set(vscode.window.terminals);
+  /** @type {Set<import('vscode').Terminal>} */
+  const recoveredTerminals = new Set();
 
   const isEnabled = (terminal) => {
     if (!terminal) return false;
     if (manualOverrides.has(terminal)) return manualOverrides.get(terminal) === true;
-    return (automaticExecutions.get(terminal)?.size ?? 0) > 0;
+    return (automaticExecutions.get(terminal)?.size ?? 0) > 0 ||
+      recoveredTerminals.has(terminal);
   };
 
   const updateContext = () => {
@@ -128,6 +148,18 @@ function activate(context) {
       CONTEXT_KEY,
       isEnabled(vscode.window.activeTerminal),
     );
+  };
+
+  const tryRecover = (terminal) => {
+    if (
+      !recoveryCandidates.has(terminal) ||
+      manualOverrides.get(terminal) === false
+    ) {
+      return false;
+    }
+    recoveredTerminals.add(terminal);
+    updateContext();
+    return true;
   };
 
   const pasteNormally = async () => {
@@ -163,21 +195,31 @@ function activate(context) {
   };
 
   context.subscriptions.push(
-    vscode.window.registerTerminalLinkProvider(createThinkingLinkProvider()),
+    vscode.window.registerTerminalLinkProvider(
+      createThinkingLinkProvider(isEnabled, tryRecover),
+    ),
     vscode.window.onDidStartTerminalShellExecution((event) => {
+      recoveryCandidates.delete(event.terminal);
+      recoveredTerminals.delete(event.terminal);
+      updateContext();
       void trackExecution(event);
     }),
     vscode.window.onDidEndTerminalShellExecution((event) => {
       endedExecutions.add(event.execution);
+      recoveryCandidates.delete(event.terminal);
+      recoveredTerminals.delete(event.terminal);
       const executions = automaticExecutions.get(event.terminal);
-      if (!executions?.delete(event.execution)) return;
-      if (executions.size === 0) automaticExecutions.delete(event.terminal);
+      if (executions?.delete(event.execution) && executions.size === 0) {
+        automaticExecutions.delete(event.terminal);
+      }
       updateContext();
     }),
     vscode.window.onDidChangeActiveTerminal(updateContext),
     vscode.window.onDidCloseTerminal((terminal) => {
       automaticExecutions.delete(terminal);
       manualOverrides.delete(terminal);
+      recoveryCandidates.delete(terminal);
+      recoveredTerminals.delete(terminal);
       updateContext();
     }),
     vscode.commands.registerCommand("easyCode.pasteImage", async () => {

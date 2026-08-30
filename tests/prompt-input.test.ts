@@ -122,6 +122,122 @@ describe("image-aware CLI prompt", () => {
     assert.deepEqual(result.images.map((image) => image.label), ["Image #1"]);
   });
 
+  it("keeps a bracketed multiline paste intact until an explicit Enter", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const source = [
+      "You are given an array $a_1, a_2, \\ldots, a_n$.",
+      "Let $f(l,r)$ be the smallest positive integer.",
+      "Determine every possible value.",
+    ].join("\n");
+    let settled = false;
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    input.write(`\u001B[200~${source}\u001B[201~`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.match(transcript, /\[Pasted text #1 · 3 lines\]/u);
+
+    input.write("\r");
+    const result = await promise;
+    assert.equal(result?.text, source);
+    assert.match(transcript, /\u001B\[\?2004h/u);
+    assert.match(transcript, /\u001B\[\?2004l/u);
+  });
+
+  it("handles fragmented bracketed-paste boundaries and a trailing Enter in order", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+    });
+    const pasted = "第一行\r\n\tsecond line\rthird line\n";
+    const packet = Buffer.from(`before:\u001B[200~${pasted}\u001B[201~:after\r`);
+    const cuts = [2, 9, 15, 20, 23, 31, 38, packet.length];
+    let start = 0;
+    for (const end of cuts) {
+      input.write(packet.subarray(start, end));
+      start = end;
+    }
+
+    const result = await promise;
+    assert.equal(result?.text, "before:第一行\n\tsecond line\nthird line\n:after");
+    assert.deepEqual(result?.pasteErrors, []);
+  });
+
+  it("expands multiple pasted text blocks without exposing their internal newlines to readline", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+    });
+
+    input.write("A\u001B[200~one\ntwo\u001B[201~B");
+    input.write("\u001B[200~three\nfour\u001B[201~C\r");
+
+    assert.equal((await promise)?.text, "Aone\ntwoBthree\nfourC");
+  });
+
+  it("does not expand visible pasted-text labels that the user typed themselves", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+    });
+    const visibleLabel = " [Pasted text #1 · 2 lines] ";
+
+    input.write(`${visibleLabel}\u001B[200~real\ntext\u001B[201~\r`);
+
+    assert.equal((await promise)?.text, `${visibleLabel}real\ntext`);
+  });
+
+  it("rejects an oversized bracketed paste even when both boundaries share one chunk", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+    });
+    const oversized = "x".repeat((256 * 1024 * 4) + 65);
+
+    input.write(`\u001B[200~${oversized}\u001B[201~\r`);
+    const result = await promise;
+
+    assert.match(result?.text ?? "", /Text paste failed/u);
+    assert.deepEqual(result?.pasteErrors, [
+      "Pasted text exceeds the 256 KiB input limit.",
+    ]);
+  });
+
   it("uses Ctrl+T to show the latest thinking without changing typed input", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
@@ -357,6 +473,122 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript.slice(lastFooter), /\u001B\[0J/u);
   });
 
+  it("redraws dynamic Thinking content above Request without losing the draft", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput(80);
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let expanded = false;
+    const request = "╭─ Request ─╮\n│ > ";
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: request,
+      renderPrompt: () => expanded
+        ? `╭─ Thinking #1 ─╮\nreasoning body\n╰────────────────╯\n${request}`
+        : request,
+      renderBelow: () => "╰─ Request ─╯\nfooter",
+      captureImage: async (index) => attachment(index),
+      onToggleThinking: (id) => {
+        assert.equal(id, 1);
+        expanded = !expanded;
+      },
+    });
+
+    input.write("draft");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const openOffset = transcript.length;
+    input.write(vscodeToggleThinkingSequence(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const openFrame = transcript.slice(openOffset);
+    assert.ok(openFrame.indexOf("reasoning body") >= 0);
+    assert.ok(openFrame.indexOf("reasoning body") < openFrame.indexOf("╭─ Request"));
+    assert.match(openFrame, /╭─ Request ─╮\n│ > draft/u);
+
+    const closeOffset = transcript.length;
+    input.write(vscodeToggleThinkingSequence(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const closeFrame = transcript.slice(closeOffset);
+    assert.equal(closeFrame.includes("reasoning body"), false);
+    assert.match(closeFrame, /╭─ Request ─╮\n│ > draft/u);
+
+    input.write("!\r");
+    assert.equal((await prompt)?.text, "draft!");
+  });
+
+  it("defers a resize redraw while an asynchronous Thinking toggle owns the prompt", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput(80);
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let expanded = false;
+    let renderCalls = 0;
+    let toggleStarted!: () => void;
+    let releaseToggle!: () => void;
+    const started = new Promise<void>((resolve) => {
+      toggleStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseToggle = resolve;
+    });
+    const request = "╭─ Request ─╮\n│ > ";
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: request,
+      renderPrompt: () => {
+        renderCalls += 1;
+        return expanded ? `THINKING\n${request}` : request;
+      },
+      renderBelow: () => "╰─ Request ─╯\nfooter",
+      captureImage: async (index) => attachment(index),
+      onToggleThinking: async () => {
+        expanded = true;
+        toggleStarted();
+        await release;
+      },
+    });
+
+    input.write("draft");
+    input.write(vscodeToggleThinkingSequence(1));
+    await started;
+    const callsBeforeResize = renderCalls;
+    const resizeOffset = transcript.length;
+    output.columns = 48;
+    output.emit("resize");
+    assert.equal(renderCalls, callsBeforeResize);
+    assert.match(transcript.slice(resizeOffset), /\u001B\[0J/u);
+    const secondResizeOffset = transcript.length;
+    output.columns = 64;
+    output.emit("resize");
+    assert.equal(renderCalls, callsBeforeResize);
+    assert.match(transcript.slice(secondResizeOffset), /\u001B\[0J/u);
+
+    const resumeOffset = transcript.length;
+    releaseToggle();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const resumeFrame = transcript.slice(resumeOffset);
+    assert.equal((resumeFrame.match(/THINKING/gu) ?? []).length, 1);
+    assert.equal((resumeFrame.match(/╭─ Request/gu) ?? []).length, 1);
+    assert.ok(resumeFrame.indexOf("THINKING") < resumeFrame.indexOf("╭─ Request"));
+    assert.match(resumeFrame, /│ > draft/u);
+
+    input.write("!\r");
+    assert.equal((await prompt)?.text, "draft!");
+  });
+
   it("clears live rows below the prompt when Ctrl+C cancels input", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
@@ -386,6 +618,8 @@ describe("image-aware CLI prompt", () => {
     assert.equal(activeSession, undefined);
     assert.equal(input.isRaw, false);
     assert.match(transcript.slice(transcript.indexOf("active footer")), /\u001B\[0J/u);
+    assert.match(transcript, /\u001B\[\?2004h/u);
+    assert.match(transcript, /\u001B\[\?2004l/u);
   });
 
   it("swallows private Thinking OSC during approval and secret input", async () => {
@@ -506,7 +740,7 @@ describe("image-aware CLI prompt", () => {
 
     const result = await promise;
 
-    assert.equal(result?.text, "const value = 1; console.log(value);");
+    assert.equal(result?.text, "const value = 1;\nconsole.log(value);");
     assert.deepEqual(result?.images, []);
     assert.deepEqual(result?.pasteErrors, []);
   });

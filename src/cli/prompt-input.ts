@@ -1,4 +1,5 @@
 import readline from "node:readline";
+import { randomBytes } from "node:crypto";
 import { Transform, type TransformCallback } from "node:stream";
 
 import { stripTerminalControls } from "../command/output-stream.js";
@@ -40,6 +41,12 @@ export interface ReadPromptOptions {
   readonly input: PromptInput;
   readonly output: PromptOutput;
   readonly prompt: string;
+  /**
+   * Rebuild the readline prefix while the prompt is active. This is used for
+   * interactive content that belongs above the edit buffer, such as an
+   * expanded Thinking panel. Terminal controls are filtered before display.
+   */
+  readonly renderPrompt?: () => string;
   readonly initialImageCount?: number;
   readonly signal?: AbortSignal;
   readonly captureImage: (
@@ -59,6 +66,8 @@ export interface ReadPromptOptions {
   ) => void;
   /** Render live rows below the readline buffer; terminal controls are filtered. */
   readonly renderBelow?: () => string;
+  /** Erase the readline chrome after submission so callers can commit a plain transcript row. */
+  readonly clearOnSubmit?: boolean;
 }
 
 const ESCAPE = 0x1b;
@@ -68,6 +77,11 @@ const CTRL_V = 0x16;
 const OSC_BEL = 0x07;
 const MAX_PRIVATE_OSC_BYTES = 160;
 const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
+const MAX_BRACKETED_PASTE_BYTES = (MAX_CLIPBOARD_TEXT_CHARS * 4) + 64;
+const BRACKETED_PASTE_START = Buffer.from("\u001B[200~");
+const BRACKETED_PASTE_END = Buffer.from("\u001B[201~");
+const ENABLE_BRACKETED_PASTE = "\u001B[?2004h";
+const DISABLE_BRACKETED_PASTE = "\u001B[?2004l";
 /**
  * Private input sequence sent by the bundled VS Code extension. It is framed
  * like an OSC message so it cannot be confused with text or a real key emitted
@@ -292,6 +306,11 @@ class ImagePasteInputProxy extends Transform {
   private pendingSequence = Buffer.alloc(0);
   private pendingPrivateOsc = false;
   private escapeTimer?: ReturnType<typeof setTimeout>;
+  private bracketedPasteActive = false;
+  private bracketedPasteRejected = false;
+  private bracketedPasteBuffer = Buffer.alloc(0);
+  private pastedTextSequence = 0;
+  private readonly pastedTextBlocks = new Map<string, string>();
 
   constructor(
     private readonly source: PromptInput,
@@ -345,12 +364,42 @@ class ImagePasteInputProxy extends Transform {
       callback(undefined, discard ? undefined : pending);
       return;
     }
+    this.bracketedPasteActive = false;
+    this.bracketedPasteRejected = false;
+    this.bracketedPasteBuffer = Buffer.alloc(0);
     callback();
   }
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.clearEscapeTimer();
+    this.bracketedPasteActive = false;
+    this.bracketedPasteRejected = false;
+    this.bracketedPasteBuffer = Buffer.alloc(0);
     callback(error);
+  }
+
+  expandPastedText(value: string): string {
+    let expanded = "";
+    let offset = 0;
+    while (offset < value.length) {
+      let nextIndex = -1;
+      let nextMarker: string | undefined;
+      for (const marker of this.pastedTextBlocks.keys()) {
+        const index = value.indexOf(marker, offset);
+        if (index >= 0 && (nextIndex === -1 || index < nextIndex)) {
+          nextIndex = index;
+          nextMarker = marker;
+        }
+      }
+      if (nextIndex === -1 || !nextMarker) {
+        expanded += stripInternalPasteNonce(value.slice(offset));
+        break;
+      }
+      expanded += stripInternalPasteNonce(value.slice(offset, nextIndex));
+      expanded += this.pastedTextBlocks.get(nextMarker) ?? nextMarker;
+      offset = nextIndex + nextMarker.length;
+    }
+    return expanded;
   }
 
   private async process(data: Buffer): Promise<Buffer> {
@@ -366,6 +415,57 @@ class ImagePasteInputProxy extends Transform {
     let offset = 0;
 
     while (offset < input.length) {
+      if (this.bracketedPasteActive) {
+        const existingLength = this.bracketedPasteBuffer.length;
+        const combined = existingLength > 0
+          ? Buffer.concat([this.bracketedPasteBuffer, input.subarray(offset)])
+          : input.subarray(offset);
+        const terminator = combined.indexOf(BRACKETED_PASTE_END);
+        if (terminator === -1) {
+          if (!this.bracketedPasteRejected && combined.length > MAX_BRACKETED_PASTE_BYTES) {
+            this.pasteErrors.push("Pasted text exceeds the 256 KiB input limit.");
+            output.push(...Buffer.from(" [Text paste failed] ", "utf8"));
+            this.bracketedPasteRejected = true;
+          }
+          if (this.bracketedPasteRejected) {
+            // Continue swallowing the rejected paste until its closing marker,
+            // retaining only enough bytes to recognize a fragmented terminator.
+            this.bracketedPasteBuffer = Buffer.from(
+              combined.subarray(Math.max(0, combined.length - BRACKETED_PASTE_END.length + 1)),
+            );
+          } else {
+            this.bracketedPasteBuffer = Buffer.from(combined);
+          }
+          break;
+        }
+
+        const consumedFromInput = Math.max(
+          0,
+          terminator + BRACKETED_PASTE_END.length - existingLength,
+        );
+        offset += consumedFromInput;
+        this.bracketedPasteActive = false;
+        this.bracketedPasteBuffer = Buffer.alloc(0);
+        if (!this.bracketedPasteRejected && terminator > MAX_BRACKETED_PASTE_BYTES) {
+          this.pasteErrors.push("Pasted text exceeds the 256 KiB input limit.");
+          output.push(...Buffer.from(" [Text paste failed] ", "utf8"));
+          this.bracketedPasteRejected = true;
+        }
+        if (!this.bracketedPasteRejected) {
+          try {
+            const body = combined.subarray(0, terminator).toString("utf8");
+            output.push(...Buffer.from(this.pastedTextForPrompt(body), "utf8"));
+          } catch (error) {
+            this.pasteErrors.push(
+              error instanceof Error ? error.message : String(error),
+            );
+            output.push(...Buffer.from(" [Text paste failed] ", "utf8"));
+          }
+        }
+        this.bracketedPasteRejected = false;
+        continue;
+      }
+
       const byte = input[offset];
       if (byte === CTRL_V) {
         output.push(...Buffer.from(await this.captureMarker(), "utf8"));
@@ -378,6 +478,17 @@ class ImagePasteInputProxy extends Transform {
         continue;
       }
       if (byte === ESCAPE) {
+        const tail = input.subarray(offset);
+        if (
+          tail.length >= BRACKETED_PASTE_START.length &&
+          tail.subarray(0, BRACKETED_PASTE_START.length).equals(BRACKETED_PASTE_START)
+        ) {
+          this.bracketedPasteActive = true;
+          this.bracketedPasteRejected = false;
+          this.bracketedPasteBuffer = Buffer.alloc(0);
+          offset += BRACKETED_PASTE_START.length;
+          continue;
+        }
         const privateOsc = parsePrivateOsc(input, offset);
         if (privateOsc.status === "complete") {
           if (privateOsc.action.type === "paste-image") {
@@ -396,9 +507,12 @@ class ImagePasteInputProxy extends Transform {
           offset += enhanced.length;
           continue;
         }
-        const tail = input.subarray(offset);
+        const partialBracketedPaste =
+          tail.length < BRACKETED_PASTE_START.length &&
+          BRACKETED_PASTE_START.subarray(0, tail.length).equals(tail);
         const mayBePasteSequence =
           privateOsc.status === "partial" ||
+          partialBracketedPaste ||
           tail.length === 1 ||
           IMAGE_PASTE_SEQUENCES.some(
             (sequence) => tail.length < sequence.length && sequence.subarray(0, tail.length).equals(tail),
@@ -406,7 +520,8 @@ class ImagePasteInputProxy extends Transform {
         if (mayBePasteSequence) {
           this.pendingSequence = Buffer.from(tail);
           this.pendingPrivateOsc =
-            tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d;
+            (tail.length >= 2 && tail[0] === ESCAPE && tail[1] === 0x5d) ||
+            partialBracketedPaste;
           this.startEscapeTimer(this.pendingPrivateOsc ? 250 : 60);
           break;
         }
@@ -436,7 +551,7 @@ class ImagePasteInputProxy extends Transform {
           const text = await this.captureText(this.signal);
           if (text) {
             try {
-              return clipboardTextForPrompt(text);
+              return this.pastedTextForPrompt(text);
             } catch (textError) {
               pasteError = textError;
             }
@@ -450,6 +565,22 @@ class ImagePasteInputProxy extends Transform {
       );
       return " [Image paste failed] ";
     }
+  }
+
+  private pastedTextForPrompt(value: string): string {
+    const normalized = stripTerminalControls(
+      value.replace(/\r\n?|\u2028|\u2029/gu, "\n"),
+    );
+    if (normalized.length > MAX_CLIPBOARD_TEXT_CHARS) {
+      throw new Error("Pasted text exceeds the 256 KiB input limit.");
+    }
+    if (!/[\n\t]/u.test(normalized)) return normalized;
+
+    this.pastedTextSequence += 1;
+    const lineCount = normalized.split("\n").length;
+    const marker = ` [Pasted text #${this.pastedTextSequence} · ${lineCount} ${lineCount === 1 ? "line" : "lines"}]${invisiblePasteNonce()} `;
+    this.pastedTextBlocks.set(marker, normalized);
+    return marker;
   }
 
   private startEscapeTimer(delayMs: number): void {
@@ -498,10 +629,33 @@ export function readPrompt(
   let suspendedCursor = 0;
   let belowRendered = false;
   let resizeInProgress = false;
+  let suspendedPromptVisibleAfterResize = false;
   let scheduledBelowDraw: ReturnType<typeof setImmediate> | undefined;
   let renderedCursorPosition: { rows: number; cols: number } | undefined;
   let renderedEndPosition: { rows: number; cols: number } | undefined;
+  let latestPromptEndPosition: { rows: number; cols: number } | undefined;
+  let bracketedPasteEnabled = false;
+  let renderedPrompt = options.prompt;
   let rl!: readline.Interface;
+
+  const resolvePrompt = (): string => {
+    if (!options.renderPrompt) return renderedPrompt;
+    try {
+      const next = sanitizeTerminalText(options.renderPrompt(), {
+        allowSgr: true,
+      });
+      return next || renderedPrompt;
+    } catch {
+      // A dynamic prefix is decorative. Keep the last valid prompt if its
+      // renderer fails so the user never loses the active edit buffer.
+      return renderedPrompt;
+    }
+  };
+  const updatePrompt = (): string => {
+    renderedPrompt = resolvePrompt();
+    rl.setPrompt(renderedPrompt);
+    return renderedPrompt;
+  };
 
   const promptGeometry = (
     line = rl.line,
@@ -530,6 +684,17 @@ export function readPrompt(
     if (rowsDown > 0) readline.moveCursor(options.output, 0, rowsDown);
     readline.cursorTo(options.output, endPosition.cols);
     return rowsDown;
+  };
+  const eraseSuspendedResizePrompt = (): void => {
+    if (!suspendedPromptVisibleAfterResize) return;
+    const position = rl.getCursorPos();
+    if (position.rows > 0) {
+      readline.moveCursor(options.output, 0, -position.rows);
+    }
+    readline.cursorTo(options.output, 0);
+    readline.clearScreenDown(options.output);
+    (rl as unknown as { prevRows?: number }).prevRows = 0;
+    suspendedPromptVisibleAfterResize = false;
   };
   const eraseBelow = (): void => {
     const cursorPosition = renderedCursorPosition;
@@ -594,6 +759,10 @@ export function readPrompt(
     if (promptSuspensionDepth > 0 || resizeInProgress) {
       return;
     }
+    if (resolvePrompt() !== renderedPrompt) {
+      if (suspendPrompt()) resumePrompt();
+      return;
+    }
     eraseBelow();
     drawBelow();
   };
@@ -607,7 +776,12 @@ export function readPrompt(
   const suspendPrompt = (): boolean => {
     if (!promptActive) return false;
     promptSuspensionDepth += 1;
-    if (promptSuspensionDepth > 1) return true;
+    if (promptSuspensionDepth > 1) {
+      // A resize can make readline repaint while an outer async suspension is
+      // active. Hide that synchronized repaint before nested stable output.
+      eraseSuspendedResizePrompt();
+      return true;
+    }
 
     eraseBelow();
     suspendedLine = rl.line;
@@ -621,6 +795,8 @@ export function readPrompt(
     }
     readline.cursorTo(options.output, 0);
     readline.clearScreenDown(options.output);
+    (rl as unknown as { prevRows?: number }).prevRows = 0;
+    suspendedPromptVisibleAfterResize = false;
     return true;
   };
   const resumePrompt = (): void => {
@@ -628,6 +804,15 @@ export function readPrompt(
     promptSuspensionDepth -= 1;
     if (promptSuspensionDepth > 0) return;
     if (!promptActive) return;
+
+    // readline is allowed to remain physically synchronized across any number
+    // of resize events during an async suspension. Remove that old repaint once
+    // at the latest geometry before drawing the state-derived prefix.
+    eraseSuspendedResizePrompt();
+
+    // Resolve the prefix after the state-changing callback. readline must know
+    // about every added/removed row before getCursorPos() calculates geometry.
+    const prompt = updatePrompt();
 
     // Recalculate visual positions in case the terminal was resized while an
     // asynchronous expansion kept the prompt hidden.
@@ -640,12 +825,13 @@ export function readPrompt(
 
     // readline.prompt() does not reliably repaint an existing edit buffer
     // after out-of-band output, so redraw it and restore its visual cursor.
-    options.output.write(`${options.prompt}${suspendedLine}`);
+    options.output.write(`${prompt}${suspendedLine}`);
     const rowsUp = Math.max(0, endPosition.rows - savedPosition.rows);
     if (rowsUp > 0) {
       readline.moveCursor(options.output, 0, -rowsUp);
     }
     readline.cursorTo(options.output, savedPosition.cols);
+    (rl as unknown as { prevRows?: number }).prevRows = savedPosition.rows;
     drawBelow();
   };
   const promptSession: PromptInputSession = {
@@ -703,6 +889,7 @@ export function readPrompt(
       scheduledBelowDraw = undefined;
       try {
         eraseBelow();
+        eraseSuspendedResizePrompt();
       } catch {
         // Raw-mode and stream cleanup still matter if the TTY disappeared.
       }
@@ -717,6 +904,14 @@ export function readPrompt(
         }
       }
       captureController.abort();
+      if (bracketedPasteEnabled) {
+        bracketedPasteEnabled = false;
+        try {
+          options.output.write(DISABLE_BRACKETED_PASTE);
+        } catch {
+          // The terminal may have disappeared while the prompt was active.
+        }
+      }
       rl.removeListener("close", onClose);
       rl.removeListener("line", onLine);
       proxy.removeListener("error", onError);
@@ -762,13 +957,23 @@ export function readPrompt(
         return;
       }
       resolve({
-        text: answer,
+        text: proxy.expandPastedText(answer),
         images: [...proxy.images],
         pasteErrors: [...proxy.pasteErrors],
       });
     };
     const onClose = (): void => finish(undefined, undefined, false);
-    const onLine = (answer: string): void => finish(answer);
+    const eraseSubmittedPrompt = (): void => {
+      if (!options.clearOnSubmit || !latestPromptEndPosition) return;
+      readline.cursorTo(options.output, 0);
+      readline.moveCursor(options.output, 0, -(latestPromptEndPosition.rows + 1));
+      readline.clearScreenDown(options.output);
+      latestPromptEndPosition = undefined;
+    };
+    const onLine = (answer: string): void => {
+      eraseSubmittedPrompt();
+      finish(answer);
+    };
     const onError = (): void => finish(undefined, new Error("Unable to read terminal input."));
     const onAbort = (): void => finish();
     const onRawInput = (chunk: Buffer | string): void => {
@@ -777,6 +982,9 @@ export function readPrompt(
     };
     const onBeforeKeypress = (): void => {
       eraseBelow();
+      if (options.clearOnSubmit) {
+        latestPromptEndPosition = promptGeometry().endPosition;
+      }
     };
     const onAfterKeypress = (): void => {
       // One input chunk can contain a large paste. Redraw once after readline
@@ -786,9 +994,17 @@ export function readPrompt(
     const onBeforeResize = (): void => {
       resizeInProgress = true;
       eraseBelow();
+      if (promptSuspensionDepth === 0) updatePrompt();
     };
     const onAfterResize = (): void => {
       resizeInProgress = false;
+      if (promptSuspensionDepth > 0) {
+        // Leave readline's repaint visible and internally synchronized. A
+        // later resize can now replace it without walking into stable output;
+        // resumePrompt() removes it once when the async action settles.
+        suspendedPromptVisibleAfterResize = true;
+        return;
+      }
       drawBelow();
     };
 
@@ -800,23 +1016,35 @@ export function readPrompt(
       finish();
       return;
     }
-    if (options.renderBelow) {
+    if (options.renderBelow || options.renderPrompt || options.clearOnSubmit) {
       // readline's own keypress/resize listeners remain the sole owners of the
       // edit buffer. We only clear decoration immediately before their redraw
       // and restore it immediately afterward.
       proxy.prependListener("keypress", onBeforeKeypress);
       proxy.on("keypress", onAfterKeypress);
-      options.output.prependListener("resize", onBeforeResize);
-      options.output.on("resize", onAfterResize);
+      if (options.renderBelow || options.renderPrompt) {
+        options.output.prependListener("resize", onBeforeResize);
+        options.output.on("resize", onAfterResize);
+      }
     }
     input.pipe(proxy);
     // Observe the source as well as the serialized Transform. A clipboard read
     // deliberately holds the Transform callback so Enter stays ordered behind
     // it, but Ctrl+C must still be able to abort that read immediately.
     input.on("data", onRawInput);
+    bracketedPasteEnabled = true;
+    try {
+      options.output.write(ENABLE_BRACKETED_PASTE);
+    } catch (error) {
+      finish(
+        undefined,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      return;
+    }
     // Keep the prompt and submitted line owned by the interface itself so an
     // inline Thinking expansion can inspect and redraw the current edit buffer.
-    rl.setPrompt(options.prompt);
+    updatePrompt();
     rl.prompt();
     drawBelow();
     if (options.onSessionReady) {
@@ -833,13 +1061,18 @@ export function readPrompt(
   });
 }
 
-function clipboardTextForPrompt(value: string): string {
-  const sanitized = stripTerminalControls(value)
-    // readline treats these bytes as editing or submission commands when they
-    // arrive from our Transform, so keep pasted text literal and single-line.
-    .replace(/[\t\r\n]+/gu, " ");
-  if (sanitized.length > MAX_CLIPBOARD_TEXT_CHARS) {
-    throw new Error("Clipboard text exceeds the 256 KiB input limit.");
+function invisiblePasteNonce(): string {
+  // Supplementary variation selectors have zero terminal width but remain in
+  // readline's edit buffer. They bind expansion to the marker we inserted, so
+  // identical visible text typed by the user is never mistaken for paste data.
+  let nonce = "";
+  for (const byte of randomBytes(8)) {
+    nonce += String.fromCodePoint(0xE0100 + (byte >> 4));
+    nonce += String.fromCodePoint(0xE0100 + (byte & 0x0f));
   }
-  return sanitized;
+  return nonce;
+}
+
+function stripInternalPasteNonce(value: string): string {
+  return value.replace(/[\u{E0100}-\u{E010F}]/gu, "");
 }

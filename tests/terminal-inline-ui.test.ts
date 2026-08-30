@@ -413,6 +413,44 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("replaces a submitted Request card with one plain transcript entry", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.columns = 48;
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async () => {
+            throw new Error("not used");
+          },
+        });
+
+        input.write("\u001B[200~first line\nsecond line\u001B[201~\r");
+        assert.equal((await prompt)?.text, "first line\nsecond line");
+
+        const plainAfterSubmit = stripAnsi(captured());
+        const transcriptOffset = plainAfterSubmit.lastIndexOf("> first line\n  second line");
+        assert.ok(transcriptOffset >= 0);
+        assert.doesNotMatch(plainAfterSubmit.slice(transcriptOffset), /╭─ Request /u);
+
+        const busyOffset = captured().length;
+        terminal.setCurrentRequest("Process the pasted request");
+        const busyOutput = stripAnsi(captured().slice(busyOffset));
+        assert.equal(
+          (busyOutput.match(/Working on: Process the pasted request/gu) ?? []).length,
+          1,
+          busyOutput,
+        );
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("toggles fragmented Thinking controls immediately while a request is busy", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
@@ -575,6 +613,7 @@ describe("Terminal retained inline shell", () => {
         });
 
         input.write("draft");
+        const openOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(firstId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
@@ -582,15 +621,25 @@ describe("Terminal retained inline shell", () => {
         assert.match(
           stripAnsi(captured()),
           new RegExp(
-            `↕ Thinking #${firstId} · Ctrl/Cmd\\+click to close · /thinking ${firstId}`,
+            `↕ Thinking #${firstId} · /thinking ${firstId}`,
             "u",
           ),
         );
+        const openFrame = stripAnsi(captured().slice(openOffset));
+        const expandedBody = openFrame.indexOf("Inspect the authentication routes.");
+        const requestCard = openFrame.indexOf("╭─ Request");
+        assert.ok(expandedBody >= 0);
+        assert.ok(requestCard > expandedBody);
+        assert.match(openFrame, /╭─ Request[^\n]*\n│ > draft/u);
 
+        const closeOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(firstId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
+        const closeFrame = stripAnsi(captured().slice(closeOffset));
+        assert.equal(closeFrame.includes("Inspect the authentication routes."), false);
+        assert.match(closeFrame, /╭─ Request[^\n]*\n│ > draft/u);
 
         input.write(vscodeToggleThinkingSequence(secondId));
         await settlePromptInput();

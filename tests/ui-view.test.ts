@@ -278,11 +278,13 @@ describe("pure terminal UI views", () => {
     assert.equal(rendered.includes("\u001B"), false);
     assert.match(
       rendered,
-      /↕ Thinking #4 · Ctrl\/Cmd\+click to close · \/thinking 4/u,
+      /↕ Thinking #4 · \/thinking 4/u,
     );
+    assert.match(rendered, /\/thinking 4 shows all retained content\./u);
+    assert.match(rendered, /VS Code Ctrl\/Cmd\+click the Thinking label to close/u);
     assert.equal(rendered.includes("reasoning line 7"), false);
-    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("Thinking #4"));
-    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("> Working…"));
+    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("Waiting for deepseek-v4-pro"));
+    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("> Working…"));
     assert.ok(rendered.indexOf("> Working…") < rendered.indexOf("Tasks 2/7"));
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
     assert.ok(rendered.indexOf("Agents 2/4") < rendered.lastIndexOf("auto  deepseek"));
@@ -325,7 +327,7 @@ describe("pure terminal UI views", () => {
       color: false,
     });
     assert.match(modal, /^╭─ Choose another block/u);
-    assert.equal(modal.includes("Ctrl/Cmd+click to close"), false);
+    assert.equal(modal.includes("Ctrl/Cmd+click the Thinking label to close"), false);
     assert.equal(modal.includes("Working…"), false);
   });
 

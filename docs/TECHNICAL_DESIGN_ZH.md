@@ -79,9 +79,9 @@ flowchart TB
 
 模态选择器的优先级高于普通动态状态，包括已经打开的 Thinking 面板。`/model`、命令审批、Plan 审核和 Resume 共用盒式 overlay 行为：选中行高亮，其他行弱化，按上/下方向键移动，按 Enter 确认，按 Esc 取消。菜单临时以 Raw Mode 独占 stdin，并在所有退出路径恢复此前的输入模式、光标和流状态。取消审批会映射为拒绝，以保持失败关闭。单一输入所有者也能防止后台子 Agent 或状态更新消费交互输入。模型请求进行期间，一条窄化的控制输入通道会持续接收私有 Thinking toggle 与 `Ctrl+C` 取消信号，并丢弃普通按键；任何模态输入开始前它都会交出 stdin，只在对方恢复此前 Raw Mode 与流状态后重新接管。
 
-点击切换 Thinking 与图片粘贴共用同一条有序私有终端通道。随附扩展只识别严格配对的折叠标记或展开面板控制行，并要求重复出现的正十进制 ID 是安全整数。Thinking 链接发现与图片粘贴使用的 shell-execution 跟踪刻意解耦，因此扩展重载不会让已经运行的 EASY CODE 终端失去链接。VS Code 默认在 Windows/Linux 上通过 `Ctrl+点击`、在 macOS 上通过 `Cmd+点击` 激活终端链接。每次激活都会向产生该链接的终端发送不带换行的固定序列 `ESC ] 6973 ; easy-code ; toggle-thinking ; <id> BEL`；终端解析器会把它作为协议消费，不会让它进入 composer 文本。为了兼容已经安装的旧客户端，`show-thinking;<id>` payload 仍会被接受并归一化为相同的 toggle 操作。两种协议都不赋予 Esc 任何含义。
+点击切换 Thinking 与图片粘贴共用同一条有序私有终端通道。随附扩展只识别严格配对的折叠标记或展开面板控制行，并要求重复出现的正十进制 ID 是安全整数。检测到正在运行的 EASY CODE shell execution 或用户明确启用后，扩展会提供链接。为了恢复扩展宿主重载时错过的 start 事件，只有激活前已经存在的终端才能通过严格标记进入恢复状态；下一次观测到 shell start/end 或终端关闭时，该状态会立即撤销。VS Code 默认在 Windows/Linux 上通过 `Ctrl+点击`、在 macOS 上通过 `Cmd+点击` 激活终端链接。每次激活都会向产生该链接的终端发送不带换行的固定序列 `ESC ] 6973 ; easy-code ; toggle-thinking ; <id> BEL`；终端解析器会把它作为协议消费，不会让它进入 composer 文本。为了兼容已经安装的旧客户端，`show-thinking;<id>` payload 仍会被接受并归一化为相同的 toggle 操作。两种协议都不赋予 Esc 任何含义。
 
-Toggle 最多选择一个有界灰色面板：点击活动标记或面板控制行会关闭，点击其他标记会替换内容。选择、面板可见性和渲染截断都属于临时 UI 状态，不会写入 Thread 日志、模型上下文、短期上下文或长期记忆；只有已经与助手响应关联的 Provider Thinking 内容本身是持久的。`/thinking N` 与 `Ctrl+T` 采用另一条路径，把保留内容提交到活动输入缓冲区上方的稳定 scrollback，同时保留 composer 草稿。
+Toggle 最多选择一个有界灰色面板：点击活动标记或面板控制行会关闭，点击其他标记会替换内容。可视行数上限确保面板能在普通终端 buffer 中安全擦除；达到上限时，面板会明确报告省略的换行后行数，并指向 `/thinking N` 以查看全部已保留内容，不会把局部内容伪装成完整结果。选择与面板可见性属于临时 UI 状态，不会写入 Thread 日志、模型上下文、短期上下文或长期记忆；只有已经与助手响应关联的 Provider Thinking 内容本身是持久的。`/thinking N` 与 `Ctrl+T` 采用另一条路径，把保留内容提交到活动输入缓冲区上方的稳定 scrollback，同时保留 composer 草稿。
 
 Composer 与 VS Code 粘贴桥接共用一条有序输入流。原生图片粘贴必须在后续 Enter 可以提交之前完成解析；composer 只接收可见附件标签，经过验证的图片字节仍保存在私有图片 Artifact 区。普通文字粘贴保持为文字。即使剪贴板捕获仍在进行，`Ctrl+C` 也必须可以取消它。
 
