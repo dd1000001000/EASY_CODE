@@ -239,9 +239,41 @@ async function activate(context) {
           );
           attachClient(client, terminal);
         }
-        updateContext();
+        await updateContext();
       });
     return reconcileQueue;
+  };
+
+  const acknowledgeMenuState = async (client, active, requestId) => {
+    if (!active) {
+      await updateContext();
+      return;
+    }
+    if (!client.terminal) await reconcileClients();
+    else await updateContext();
+
+    const bridge = navigationBridge;
+    if (
+      !bridge ||
+      !Number.isSafeInteger(requestId) ||
+      requestId <= 0 ||
+      !client.authenticated ||
+      !client.menuActive ||
+      client.menuRequestId !== requestId ||
+      client.socket.destroyed
+    ) {
+      return;
+    }
+    // `setContext` above has completed before this acknowledgement is sent.
+    // Therefore a true response guarantees that VS Code owns Up/Down before
+    // the CLI makes the menu visible. A false response tells the CLI to use
+    // its already-active Raw TTY input path.
+    const ready = Boolean(
+      client.terminal &&
+      client.terminal === vscode.window.activeTerminal &&
+      hasActiveMenu(client.terminal),
+    );
+    bridge.send(client, { type: "menu-ready", requestId, ready });
   };
 
   const closeTerminalClients = (terminal) => {
@@ -436,9 +468,12 @@ async function activate(context) {
     onHello: () => {
       void reconcileClients();
     },
-    onMenuState: (client) => {
-      if (!client.terminal) void reconcileClients();
-      updateContext();
+    onMenuState: (client, active, requestId) => {
+      void acknowledgeMenuState(client, active, requestId).catch(() => {
+        // The CLI has a bounded Raw TTY fallback when VS Code cannot install
+        // the keybinding context, so never turn a host API failure into an
+        // unhandled extension-host rejection.
+      });
     },
     onDisconnect: (client) => {
       detachClient(client);

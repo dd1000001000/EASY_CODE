@@ -170,6 +170,8 @@ export interface UIComposerState {
   /** UTF-16 offset into text, matching Node readline/string indexing. */
   readonly cursor: number;
   readonly busy: boolean;
+  /** Steering submissions accepted by the editor but not yet acknowledged. */
+  readonly pendingSubmissions: number;
   readonly placeholder: string;
   readonly images: readonly Readonly<ImageAttachment>[];
 }

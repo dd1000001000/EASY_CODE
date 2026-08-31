@@ -25,6 +25,8 @@ import {
   type TaskGraph,
   type ToolExecutionResult,
   type ToolName,
+  type TurnSteeringBatch,
+  type TurnSteeringBoundary,
 } from "../core/types.js";
 import {
   ContextManager,
@@ -66,6 +68,8 @@ import {
   determineAutoRoute,
   type AutoRouteAttempt,
 } from "./auto-router.js";
+import { createProviderAttemptSignal } from "./provider-attempt-signal.js";
+import type { TurnSteeringAttemptNotifier } from "./turn-steering-notifier.js";
 
 const MEMORY_FINALIZATION_STEP_ALLOWANCE = 2;
 const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
@@ -195,6 +199,34 @@ export interface AgentRuntimeDependencies {
   onReasoning?: (notification: AgentReasoningNotification) => void;
   /** Child-only FIFO parent guidance, drained at a model-step boundary. */
   takeAdditionalInstructions?: () => readonly string[];
+  /**
+   * Main-agent durable inbox drain. The implementation must commit the FIFO
+   * application event before returning the batch.
+   */
+  takeSteering?: (input: {
+    threadId: string;
+    turnId: string;
+    boundary: TurnSteeringBoundary;
+  }) => Promise<TurnSteeringBatch | undefined>;
+  /** Durable read-only check used to stop a stale batched tool suffix safely. */
+  hasPendingSteering?: (input: {
+    threadId: string;
+    turnId: string;
+  }) => Promise<boolean>;
+  /**
+   * Atomic finalization gate. It either seals this turn or returns the durable
+   * pending prefix that won the race and must be handled before finishing.
+   */
+  sealSteering?: (input: {
+    threadId: string;
+    turnId: string;
+  }) => Promise<TurnSteeringBatch | undefined>;
+  /** Process-local wakeup only; ThreadStore remains the durable source of truth. */
+  steeringNotifier?: TurnSteeringAttemptNotifier;
+  onSteeringApplied?: (
+    batch: Readonly<TurnSteeringBatch>,
+    boundary: TurnSteeringBoundary,
+  ) => void;
   attachImage?: (input: {
     threadId: string;
     label: string;
@@ -382,7 +414,126 @@ function isSubagentAssignmentSnapshot(
 }
 
 export class AgentRuntime {
-  constructor(private readonly dependencies: AgentRuntimeDependencies) {}
+  constructor(private readonly dependencies: AgentRuntimeDependencies) {
+    const steeringConfigured = Boolean(
+      dependencies.takeSteering ||
+      dependencies.sealSteering ||
+      dependencies.hasPendingSteering ||
+      dependencies.steeringNotifier ||
+      dependencies.onSteeringApplied,
+    );
+    if (
+      steeringConfigured &&
+      (!dependencies.takeSteering || !dependencies.sealSteering)
+    ) {
+      throw new Error(
+        "Turn steering requires both boundary consumption and finalization sealing",
+      );
+    }
+  }
+
+  private async takeAndApplySteering(
+    state: SessionState,
+    turnId: string,
+    boundary: TurnSteeringBoundary,
+    turnImages: ImageAttachment[],
+    seal = false,
+    memoryContext?: { userInput: string },
+  ): Promise<TurnSteeringBatch | undefined> {
+    const batch = seal
+      ? await this.dependencies.sealSteering?.({ threadId: state.threadId, turnId })
+      : await this.dependencies.takeSteering?.({
+          threadId: state.threadId,
+          turnId,
+          boundary,
+        });
+    if (!batch) return undefined;
+    if (
+      !Number.isSafeInteger(batch.throughSequence) ||
+      batch.throughSequence <= (state.steeringWatermark ?? 0) ||
+      batch.entries.length === 0 ||
+      batch.entries[batch.entries.length - 1]?.sequence !== batch.throughSequence ||
+      batch.message.role !== "user"
+    ) {
+      throw new Error("Runtime received an invalid or already-applied steering batch");
+    }
+    const batchImages = batch.message.images ?? [];
+    if (batchImages.length > 0) {
+      validateImageAttachmentCollection([...turnImages, ...batchImages]);
+      validateProviderImageAttachments(this.dependencies.provider.name, batchImages);
+      for (const image of batchImages) {
+        if (!turnImages.some((candidate) => candidate.id === image.id)) {
+          turnImages.push({ ...image });
+        }
+      }
+    }
+    state.messages.push({
+      role: "user",
+      content: batch.message.content,
+      ...(batchImages.length > 0
+        ? { images: batchImages.map((image) => ({ ...image })) }
+        : {}),
+    });
+    state.pendingSteering = (state.pendingSteering ?? [])
+      .filter((entry) => entry.sequence > batch.throughSequence);
+    state.steeringSequence = Math.max(
+      state.steeringSequence ?? 0,
+      batch.throughSequence,
+    );
+    state.steeringWatermark = batch.throughSequence;
+    state.updatedAt = new Date().toISOString();
+    if (memoryContext) {
+      const provenance = batch.entries.map((entry) => {
+        const labels = (entry.message.images ?? []).map((image) => image.label).join(", ");
+        return [entry.message.content, labels ? `[Attachments: ${labels}]` : ""]
+          .filter(Boolean)
+          .join("\n");
+      }).join("\n\n");
+      memoryContext.userInput += `\n\n[MID_TURN_USER_STEERING]\n${provenance}`;
+    }
+    this.dependencies.steeringNotifier?.consume(batch.throughSequence);
+    try {
+      this.dependencies.onSteeringApplied?.(batch, boundary);
+    } catch {
+      // Presentation is transient; durable application already succeeded.
+    }
+    return batch;
+  }
+
+  private async runProviderAttempt<T>(
+    turnSignal: AbortSignal | undefined,
+    operation: (signal: AbortSignal | undefined) => Promise<T>,
+  ): Promise<{ kind: "completed"; value: T } | { kind: "steering_interrupted" }> {
+    const steeringAttempt = this.dependencies.steeringNotifier?.openAttempt();
+    const attemptSignal = createProviderAttemptSignal({
+      turnSignal,
+      steeringSignal: steeringAttempt?.signal,
+    });
+    try {
+      if (attemptSignal.signal.aborted && attemptSignal.abortSource === "steering") {
+        return { kind: "steering_interrupted" };
+      }
+      const value = await operation(
+        turnSignal || steeringAttempt ? attemptSignal.signal : undefined,
+      );
+      if (attemptSignal.abortSource === "turn") {
+        throw turnSignal?.reason ?? new Error("The turn was interrupted");
+      }
+      if (attemptSignal.abortSource === "steering") {
+        return { kind: "steering_interrupted" };
+      }
+      return { kind: "completed", value };
+    } catch (error) {
+      if (attemptSignal.abortSource === "turn") throw error;
+      if (attemptSignal.abortSource === "steering") {
+        return { kind: "steering_interrupted" };
+      }
+      throw error;
+    } finally {
+      attemptSignal.dispose();
+      steeringAttempt?.dispose();
+    }
+  }
 
   async run(
     state: SessionState,
@@ -394,6 +545,8 @@ export class AgentRuntime {
     validateImageAttachmentCollection(inputImages);
     validateProviderImageAttachments(this.dependencies.provider.name, inputImages);
     const turnId = createId("turn");
+    const turnImages = [...inputImages];
+    this.dependencies.steeringNotifier?.consume(state.steeringWatermark ?? 0);
     const agentIdentity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
     if (agentIdentity.role === "subagent" && state.mode !== "code") {
       throw new Error("An isolated child runtime must remain in Code mode");
@@ -411,6 +564,7 @@ export class AgentRuntime {
       content: userInput,
       ...(inputImages.length ? { images: inputImages } : {}),
     };
+    const turnHistoryStart = state.messages.length;
     state.messages.push(userMessage);
 
     try {
@@ -504,7 +658,8 @@ export class AgentRuntime {
           state,
           turnId,
           userMessage,
-          inputImages,
+          turnImages,
+          memoryContext,
           options,
         );
       }
@@ -534,13 +689,35 @@ export class AgentRuntime {
           `Auto mode selected ${fixedSelection.mode} — ${fixedSelection.reason}`,
         );
       } else {
-        let decision;
-        try {
-          decision = await (async () => {
+        let routeResolved = false;
+        while (!routeResolved) {
+          await this.takeAndApplySteering(
+            state,
+            turnId,
+            "before_model",
+            turnImages,
+            false,
+            memoryContext,
+          );
+          let routed;
+          try {
             this.dependencies.onStatus?.("Auto mode is choosing how to handle this request...");
-            const routingInput = inputImages.length
-              ? `${userInput}\n\n[${inputImages.length} image attachment(s) are included.]`
-              : userInput;
+            const steeringText = state.messages
+              .slice(turnHistoryStart + 1)
+              .filter(
+                (message): message is Extract<ChatMessage, { role: "user" }> =>
+                  message.role === "user" &&
+                  message.content.startsWith("RUNTIME_USER_STEERING:"),
+              )
+              .map((message) => message.content)
+              .join("\n\n");
+            const routingInput = [
+              userInput,
+              turnImages.length
+                ? `[${turnImages.length} image attachment(s) are included.]`
+                : "",
+              steeringText,
+            ].filter(Boolean).join("\n\n");
             // Direct answers must inherit the same base security contract and
             // layered EASYCODE.md guidance as a normal agent request. Empty
             // workspace/memory inputs prevent this controller from answering
@@ -551,110 +728,148 @@ export class AgentRuntime {
               memories: [],
               toolNames: [],
             });
-            return this.withModelRequestActivity(
-              `Waiting for ${this.dependencies.provider.model} response`,
-              () => determineAutoRoute(
-                this.dependencies.provider,
-                routingInput,
-                options.signal,
-                inputImages,
-                state.thinkingEffort,
-                {
-                  workingSummary: state.workingSummary,
-                  priorMessages: state.messages.slice(
-                    Math.min(state.compactedMessageCount, state.messages.length - 1),
-                    -1,
-                  ),
-                },
-                controllerPolicy,
+            routed = await this.runProviderAttempt(
+              options.signal,
+              (attemptSignal) => this.withModelRequestActivity(
+                `Waiting for ${this.dependencies.provider.model} response`,
+                () => determineAutoRoute(
+                  this.dependencies.provider,
+                  routingInput,
+                  attemptSignal,
+                  turnImages,
+                  state.thinkingEffort,
+                  {
+                    workingSummary: state.workingSummary,
+                    priorMessages: state.messages.slice(
+                      Math.min(state.compactedMessageCount, turnHistoryStart),
+                      turnHistoryStart,
+                    ),
+                  },
+                  controllerPolicy,
+                ),
               ),
             );
-          })();
-        } catch (error) {
-          if (
-            error instanceof AutoRouteSelectionError ||
-            error instanceof AutoRouteRequestError
-          ) {
-            await this.reportAutoRouteUsage(state, turnId, error.attempts);
-          }
-          if (error instanceof AutoRouteRequestError) throw error.originalError;
-          throw error;
-        }
-        await this.reportAutoRouteUsage(state, turnId, decision.attempts);
-        if (decision.kind === "direct_response") {
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "mode.auto_direct_response",
-            phase: "completed",
-            payload: { attempts: decision.attempts.length },
-          });
-          this.dependencies.onStatus?.(
-            "Auto mode answered directly without starting a second model request.",
-          );
-          const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
-            role: "assistant",
-            content: decision.content,
-            ...(decision.reasoningContent
-              ? { reasoning_content: decision.reasoningContent }
-              : {}),
-          };
-          state.messages.push(directAssistant);
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "message.assistant",
-            phase: "completed",
-            payload: directAssistant,
-          });
-          if (
-            state.thinkingEffort !== "none" &&
-            decision.reasoningContent
-          ) {
-            try {
-              this.dependencies.onReasoning?.({
-                type: "reasoning",
-                text: decision.reasoningContent,
-                threadId: state.threadId,
-                turnId,
-                step: 0,
-                provider: this.dependencies.provider.name,
-                model: this.dependencies.provider.model,
-                thinkingEffort: state.thinkingEffort,
-              });
-            } catch {
-              // Direct-response reasoning presentation is transient; the
-              // assistant message above remains the durable source of truth.
+          } catch (error) {
+            if (
+              error instanceof AutoRouteSelectionError ||
+              error instanceof AutoRouteRequestError
+            ) {
+              await this.reportAutoRouteUsage(state, turnId, error.attempts);
             }
+            if (error instanceof AutoRouteRequestError) throw error.originalError;
+            throw error;
           }
-          this.dependencies.onText?.(decision.content);
-          return this.finish(
+          if (routed.kind === "steering_interrupted") {
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              type: "model.attempt.steering_interrupted",
+              phase: "interrupted",
+              payload: { purpose: "auto_route" },
+            });
+            await this.takeAndApplySteering(
+              state,
+              turnId,
+              "after_model",
+              turnImages,
+              false,
+              memoryContext,
+            );
+            continue;
+          }
+          const decision = routed.value;
+          await this.reportAutoRouteUsage(state, turnId, decision.attempts);
+          if (await this.takeAndApplySteering(
             state,
             turnId,
-            decision.content,
-            "success",
-            0,
+            "after_model",
+            turnImages,
+            false,
             memoryContext,
+          )) {
+            continue;
+          }
+          if (decision.kind === "direct_response") {
+            if (await this.takeAndApplySteering(
+              state,
+              turnId,
+              "before_final",
+              turnImages,
+              true,
+              memoryContext,
+            )) {
+              continue;
+            }
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              type: "mode.auto_direct_response",
+              phase: "completed",
+              payload: { attempts: decision.attempts.length },
+            });
+            this.dependencies.onStatus?.(
+              "Auto mode answered directly without starting a second model request.",
+            );
+            const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
+              role: "assistant",
+              content: decision.content,
+              ...(decision.reasoningContent
+                ? { reasoning_content: decision.reasoningContent }
+                : {}),
+            };
+            state.messages.push(directAssistant);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              type: "message.assistant",
+              phase: "completed",
+              payload: directAssistant,
+            });
+            if (state.thinkingEffort !== "none" && decision.reasoningContent) {
+              try {
+                this.dependencies.onReasoning?.({
+                  type: "reasoning",
+                  text: decision.reasoningContent,
+                  threadId: state.threadId,
+                  turnId,
+                  step: 0,
+                  provider: this.dependencies.provider.name,
+                  model: this.dependencies.provider.model,
+                  thinkingEffort: state.thinkingEffort,
+                });
+              } catch {
+                // Presentation is transient; the durable assistant remains authoritative.
+              }
+            }
+            this.dependencies.onText?.(decision.content);
+            return this.finish(
+              state,
+              turnId,
+              decision.content,
+              "success",
+              0,
+              memoryContext,
+            );
+          }
+          effectiveMode = decision.mode;
+          autoReason = decision.reason;
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "mode.auto_route",
+            phase: "completed",
+            payload: { mode: decision.mode, reason: decision.reason },
+          });
+          this.dependencies.onStatus?.(
+            `Auto mode selected ${decision.mode} — ${decision.reason}`,
           );
+          routeResolved = true;
         }
-        effectiveMode = decision.mode;
-        autoReason = decision.reason;
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          type: "mode.auto_route",
-          phase: "completed",
-          payload: { mode: decision.mode, reason: decision.reason },
-        });
-        this.dependencies.onStatus?.(
-          `Auto mode selected ${decision.mode} — ${decision.reason}`,
-        );
       }
     }
 
-    const memories = await this.dependencies.searchMemories(userInput);
+    const memories = await this.dependencies.searchMemories(memoryContext.userInput);
     let nextImageNumber = nextThreadImageNumber(state.messages);
-    const turnImages = [...inputImages];
     const toolMap = new Map<ToolName, AgentTool>();
     for (const tool of availableTools(
       this.dependencies.tools,
@@ -710,6 +925,16 @@ export class AgentRuntime {
           phase: "completed",
           payload: followUp,
         });
+      }
+      if (agentIdentity.role === "main_agent") {
+        await this.takeAndApplySteering(
+          state,
+          turnId,
+          "before_model",
+          turnImages,
+          false,
+          memoryContext,
+        );
       }
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const shortTermChars = this.dependencies.contextManager.estimateShortTermChars(state);
@@ -795,16 +1020,40 @@ export class AgentRuntime {
 
       let response;
       try {
-        response = await this.withModelRequestActivity(
-          `Waiting for ${this.dependencies.provider.model} response`,
-          () => this.dependencies.provider.complete({
-            messages,
-            currentTurnImageIds: turnImages.map((image) => image.id),
-            tools: enabledTools.map((tool) => tool.definition),
-            signal: options.signal,
-            thinkingEffort: state.thinkingEffort,
-          }),
+        const attempted = await this.runProviderAttempt(
+          options.signal,
+          (attemptSignal) => this.withModelRequestActivity(
+            `Waiting for ${this.dependencies.provider.model} response`,
+            () => this.dependencies.provider.complete({
+              messages,
+              currentTurnImageIds: turnImages.map((image) => image.id),
+              tools: enabledTools.map((tool) => tool.definition),
+              signal: attemptSignal,
+              thinkingEffort: state.thinkingEffort,
+            }),
+          ),
         );
+        if (attempted.kind === "steering_interrupted") {
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            stepId: `step_${step}`,
+            type: "model.attempt.steering_interrupted",
+            phase: "interrupted",
+            payload: { purpose: "agent_step" },
+          });
+          await this.takeAndApplySteering(
+            state,
+            turnId,
+            "after_model",
+            turnImages,
+            false,
+            memoryContext,
+          );
+          step -= 1;
+          continue;
+        }
+        response = attempted.value;
         const compactOnly =
           response.message.tool_calls?.length === 1 &&
           response.message.tool_calls[0]?.function.name === "compact_context";
@@ -836,6 +1085,24 @@ export class AgentRuntime {
           step,
           memoryContext,
         );
+      }
+
+      if (
+        agentIdentity.role === "main_agent" &&
+        await this.takeAndApplySteering(
+          state,
+          turnId,
+          "after_model",
+          turnImages,
+          false,
+          memoryContext,
+        )
+      ) {
+        // The response was never added to the transcript, so a tool-call
+        // protocol cannot be left half-open. Retry this logical step with the
+        // newly coalesced user message.
+        step -= 1;
+        continue;
       }
 
       const suppressFinalizationToolCalls =
@@ -1021,6 +1288,17 @@ export class AgentRuntime {
         }
         if (state.taskGraph?.status === "active" && runCommandUnavailable) {
           const pausedText = sandboxPauseText(text);
+          if (await this.takeAndApplySteering(
+            state,
+            turnId,
+            "before_final",
+            turnImages,
+            true,
+            memoryContext,
+          )) {
+            if (step === stepLimit) stepLimit += 1;
+            continue;
+          }
           this.dependencies.onText?.(pausedText);
           return this.finish(
             state,
@@ -1082,6 +1360,17 @@ export class AgentRuntime {
             memoryContext,
           );
         }
+        if (await this.takeAndApplySteering(
+          state,
+          turnId,
+          "before_final",
+          turnImages,
+          true,
+          memoryContext,
+        )) {
+          if (step === stepLimit) stepLimit += 1;
+          continue;
+        }
         this.dependencies.onText?.(text);
         const reason = state.taskGraph?.status === "blocked"
           ? "blocked"
@@ -1113,8 +1402,64 @@ export class AgentRuntime {
       let proposedPlan: PlanProposal | undefined;
       let submittedTaskReport: SubagentTaskReport | undefined;
       let sandboxPauseRequested = false;
+      let steeringAppliedBetweenTools = false;
 
-      for (const call of calls) {
+      for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+        const call = calls[callIndex]!;
+        if (
+          agentIdentity.role === "main_agent" &&
+          await this.dependencies.hasPendingSteering?.({
+            threadId: state.threadId,
+            turnId,
+          })
+        ) {
+          // Close the assistant's complete tool-call protocol before the
+          // durable steering application event adds a new user message.
+          for (const skipped of calls.slice(callIndex)) {
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "tool.call",
+              phase: "requested",
+              payload: skipped,
+            });
+            const skippedResult: ToolExecutionResult = {
+              ok: false,
+              summary: "Tool call skipped because newer user steering arrived.",
+              error: "superseded_by_user_steering",
+            };
+            const skippedMessage: ChatMessage = {
+              role: "tool",
+              tool_call_id: skipped.id,
+              name: skipped.function.name,
+              content: resultForModel(skippedResult, options.maxOutputChars),
+            };
+            state.messages.push(skippedMessage);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "tool.result",
+              phase: "interrupted",
+              payload: {
+                callId: skipped.id,
+                tool: skipped.function.name,
+                message: skippedMessage,
+              },
+            });
+          }
+          await this.takeAndApplySteering(
+            state,
+            turnId,
+            "between_tools",
+            turnImages,
+            false,
+            memoryContext,
+          );
+          steeringAppliedBetweenTools = true;
+          break;
+        }
         const toolName = call.function.name as ToolName;
         const tool = toolMap.get(toolName);
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
@@ -1606,8 +1951,34 @@ export class AgentRuntime {
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
       }
 
+      if (!steeringAppliedBetweenTools && agentIdentity.role === "main_agent") {
+        steeringAppliedBetweenTools = Boolean(await this.takeAndApplySteering(
+          state,
+          turnId,
+          "between_tools",
+          turnImages,
+          false,
+          memoryContext,
+        ));
+      }
+      if (steeringAppliedBetweenTools) {
+        if (step === stepLimit) stepLimit += 1;
+        continue;
+      }
+
       if (sandboxPauseRequested && state.taskGraph?.status === "active") {
         const pausedText = sandboxPauseText();
+        if (await this.takeAndApplySteering(
+          state,
+          turnId,
+          "before_final",
+          turnImages,
+          true,
+          memoryContext,
+        )) {
+          if (step === stepLimit) stepLimit += 1;
+          continue;
+        }
         this.dependencies.onText?.(pausedText);
         return this.finish(
           state,
@@ -1670,6 +2041,17 @@ export class AgentRuntime {
       }
 
       if (proposedPlan) {
+        if (await this.takeAndApplySteering(
+          state,
+          turnId,
+          "before_final",
+          turnImages,
+          true,
+          memoryContext,
+        )) {
+          if (step === stepLimit) stepLimit += 1;
+          continue;
+        }
         const text =
           `${formatPlanProposal(proposedPlan)}\n\n` +
           "This plan is waiting for user review.";
@@ -1794,7 +2176,8 @@ export class AgentRuntime {
     state: SessionState,
     turnId: string,
     currentUserMessage: Extract<ChatMessage, { role: "user" }>,
-    inputImages: readonly ImageAttachment[],
+    inputImages: ImageAttachment[],
+    memoryContext: { userInput: string },
     options: AgentRunOptions,
   ): Promise<void> {
     const compactTool = this.dependencies.tools.find(
@@ -1833,6 +2216,14 @@ export class AgentRuntime {
     };
 
     for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await this.takeAndApplySteering(
+        state,
+        turnId,
+        "before_model",
+        inputImages,
+        false,
+        memoryContext,
+      );
       const utilization =
         this.dependencies.contextManager.estimateShortTermChars(state) /
         options.maxContextChars;
@@ -1867,16 +2258,32 @@ export class AgentRuntime {
 
       let response;
       try {
-        response = await this.withModelRequestActivity(
-          `Waiting for ${this.dependencies.provider.model} response`,
-          () => this.dependencies.provider.complete({
-            messages,
-            currentTurnImageIds: inputImages.map((image) => image.id),
-            tools: [compactTool.definition],
-            signal: options.signal,
-            thinkingEffort: state.thinkingEffort,
-          }),
+        const attempted = await this.runProviderAttempt(
+          options.signal,
+          (attemptSignal) => this.withModelRequestActivity(
+            `Waiting for ${this.dependencies.provider.model} response`,
+            () => this.dependencies.provider.complete({
+              messages,
+              currentTurnImageIds: inputImages.map((image) => image.id),
+              tools: [compactTool.definition],
+              signal: attemptSignal,
+              thinkingEffort: state.thinkingEffort,
+            }),
+          ),
         );
+        if (attempted.kind === "steering_interrupted") {
+          await this.takeAndApplySteering(
+            state,
+            turnId,
+            "after_model",
+            inputImages,
+            false,
+            memoryContext,
+          );
+          attempt -= 1;
+          continue;
+        }
+        response = attempted.value;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await this.dependencies.appendEvent({
@@ -1888,6 +2295,17 @@ export class AgentRuntime {
           payload: { message },
         });
         throw error;
+      }
+      if (await this.takeAndApplySteering(
+        state,
+        turnId,
+        "after_model",
+        inputImages,
+        false,
+        memoryContext,
+      )) {
+        attempt -= 1;
+        continue;
       }
       await this.reportModelUsage(
         state,

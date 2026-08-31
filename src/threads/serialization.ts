@@ -10,6 +10,7 @@ import {
   type PlanReviewState,
   type SessionState,
   type TaskGraph,
+  type TurnSteeringEntry,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { clonePlanReviewState } from "../plans/plan.js";
@@ -34,6 +35,10 @@ export interface SerializedSessionState {
   readonly commandApprovalPrefixes?: string[];
   readonly taskGraph?: TaskGraph;
   readonly planReview?: PlanReviewState;
+  readonly pendingSteering?: TurnSteeringEntry[];
+  readonly steeringSequence?: number;
+  readonly steeringWatermark?: number;
+  readonly steeringSealedTurnId?: string;
   readonly workingSummary: string;
   readonly compactedMessageCount: number;
   readonly createdAt: string;
@@ -201,6 +206,76 @@ export function isChatMessage(value: unknown): value is ChatMessage {
   });
 }
 
+function isTurnSteeringEntry(value: unknown): value is TurnSteeringEntry {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    "id",
+    "sequence",
+    "targetTurnId",
+    "message",
+    "queuedAt",
+  ])) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    /^[A-Za-z0-9._-]{1,256}$/u.test(value.id) &&
+    Number.isSafeInteger(value.sequence) &&
+    Number(value.sequence) > 0 &&
+    typeof value.targetTurnId === "string" &&
+    /^[A-Za-z0-9._-]{1,256}$/u.test(value.targetTurnId) &&
+    isChatMessage(value.message) &&
+    value.message.role === "user" &&
+    typeof value.queuedAt === "string" &&
+    value.queuedAt.length > 0 &&
+    value.queuedAt.length <= 128
+  );
+}
+
+function normalizedSteeringState(state: Readonly<SessionState>): {
+  pendingSteering: TurnSteeringEntry[];
+  steeringSequence: number;
+  steeringWatermark: number;
+  steeringSealedTurnId?: string;
+} {
+  const pendingSteering = state.pendingSteering ?? [];
+  const steeringSequence = state.steeringSequence ?? 0;
+  const steeringWatermark = state.steeringWatermark ?? 0;
+  if (
+    !Array.isArray(pendingSteering) ||
+    !pendingSteering.every(isTurnSteeringEntry) ||
+    !Number.isSafeInteger(steeringSequence) ||
+    steeringSequence < 0 ||
+    !Number.isSafeInteger(steeringWatermark) ||
+    steeringWatermark < 0 ||
+    steeringWatermark > steeringSequence ||
+    (state.steeringSealedTurnId !== undefined &&
+      !/^[A-Za-z0-9._-]{1,256}$/u.test(state.steeringSealedTurnId))
+  ) {
+    throw new Error("Invalid steering inbox in serialized session state");
+  }
+  let previous = steeringWatermark;
+  for (const entry of pendingSteering) {
+    if (entry.sequence !== previous + 1 || entry.sequence > steeringSequence) {
+      throw new Error("Invalid steering FIFO sequence in serialized session state");
+    }
+    previous = entry.sequence;
+  }
+  return {
+    pendingSteering: pendingSteering.map((entry) => ({
+      ...entry,
+      message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<
+        ChatMessage,
+        { role: "user" }
+      >,
+    })),
+    steeringSequence,
+    steeringWatermark,
+    ...(state.steeringSealedTurnId
+      ? { steeringSealedTurnId: state.steeringSealedTurnId }
+      : {}),
+  };
+}
+
 export function serializeChatMessage(message: ChatMessage): string {
   if (!isChatMessage(message)) throw new Error("Cannot serialize an invalid chat message");
   return JSON.stringify(message);
@@ -240,6 +315,7 @@ export function deserializeChatMessages(serialized: string): ChatMessage[] {
 }
 
 export function serializeSessionState(state: SessionState): SerializedSessionState {
+  const steering = normalizedSteeringState(state);
   return {
     threadId: state.threadId,
     activeTurnId: state.activeTurnId,
@@ -265,6 +341,12 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     ),
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
+    pendingSteering: steering.pendingSteering,
+    steeringSequence: steering.steeringSequence,
+    steeringWatermark: steering.steeringWatermark,
+    ...(steering.steeringSealedTurnId
+      ? { steeringSealedTurnId: steering.steeringSealedTurnId }
+      : {}),
     workingSummary: state.workingSummary,
     compactedMessageCount: state.compactedMessageCount,
     createdAt: state.createdAt,
@@ -291,6 +373,18 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Array.isArray(value.commands) ||
     (value.taskGraph !== undefined && !isTaskGraph(value.taskGraph)) ||
     (value.planReview !== undefined && !isPlanReviewState(value.planReview)) ||
+    (value.pendingSteering !== undefined &&
+      (!Array.isArray(value.pendingSteering) ||
+        !value.pendingSteering.every(isTurnSteeringEntry))) ||
+    (value.steeringSequence !== undefined &&
+      (!Number.isSafeInteger(value.steeringSequence) ||
+        Number(value.steeringSequence) < 0)) ||
+    (value.steeringWatermark !== undefined &&
+      (!Number.isSafeInteger(value.steeringWatermark) ||
+        Number(value.steeringWatermark) < 0)) ||
+    (value.steeringSealedTurnId !== undefined &&
+      (typeof value.steeringSealedTurnId !== "string" ||
+        !/^[A-Za-z0-9._-]{1,256}$/u.test(value.steeringSealedTurnId))) ||
     typeof value.workingSummary !== "string" ||
     (value.compactedMessageCount !== undefined &&
       (!Number.isInteger(value.compactedMessageCount) ||
@@ -328,6 +422,35 @@ export function deserializeSessionState(value: unknown): SessionState {
     throw new Error("Invalid command approval prefixes in serialized session state");
   }
 
+  const steeringSequence = typeof value.steeringSequence === "number"
+    ? value.steeringSequence
+    : 0;
+  const steeringWatermark = typeof value.steeringWatermark === "number"
+    ? value.steeringWatermark
+    : 0;
+  const pendingSteering = value.pendingSteering === undefined
+    ? []
+    : (value.pendingSteering as TurnSteeringEntry[]).map((entry) => ({
+        ...entry,
+        message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<
+          ChatMessage,
+          { role: "user" }
+        >,
+      }));
+  if (steeringWatermark > steeringSequence) {
+    throw new Error("Invalid steering watermark in serialized session state");
+  }
+  let previousSteeringSequence = steeringWatermark;
+  for (const entry of pendingSteering) {
+    if (
+      entry.sequence !== previousSteeringSequence + 1 ||
+      entry.sequence > steeringSequence
+    ) {
+      throw new Error("Invalid steering FIFO sequence in serialized session state");
+    }
+    previousSteeringSequence = entry.sequence;
+  }
+
   return {
     threadId: value.threadId,
     activeTurnId:
@@ -359,6 +482,12 @@ export function deserializeSessionState(value: unknown): SessionState {
       : {}),
     ...(isPlanReviewState(value.planReview)
       ? { planReview: clonePlanReviewState(value.planReview) }
+      : {}),
+    pendingSteering,
+    steeringSequence,
+    steeringWatermark,
+    ...(typeof value.steeringSealedTurnId === "string"
+      ? { steeringSealedTurnId: value.steeringSealedTurnId }
       : {}),
     // Checkpoints created before model-controlled compaction used workingSummary as a
     // transient overflow cache and had no boundary. Dropping that derived value avoids

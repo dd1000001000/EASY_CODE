@@ -243,11 +243,15 @@ test("validates authenticated bridge protocol messages", () => {
     pid: 120,
     ppid: 42,
     cwd: "F:\\project",
+    protocol: 2,
   };
   assert.equal(isHelloFrame(hello), true);
   assert.equal(isHelloFrame({ ...hello, ppid: 0 }), false);
   assert.equal(isHelloFrame({ ...hello, cwd: 42 }), false);
+  assert.equal(isHelloFrame({ ...hello, protocol: "2" }), false);
   assert.equal(isMenuFrame({ type: "menu", active: true }), true);
+  assert.equal(isMenuFrame({ type: "menu", active: true, requestId: 17 }), true);
+  assert.equal(isMenuFrame({ type: "menu", active: true, requestId: 0 }), false);
   assert.equal(isMenuFrame({ type: "menu", active: "true" }), false);
   assert.equal(tokenMatches(hello.token, "a".repeat(64)), true);
   assert.equal(tokenMatches(hello.token, "b".repeat(64)), false);
@@ -305,24 +309,47 @@ test("uses an authenticated loopback socket for out-of-band navigation", async (
   let observedClient;
   const bridge = createMenuNavigationServer({
     token: "c".repeat(64),
-    onMenuState(client, active) {
+    onMenuState(client, active, requestId) {
       observedClient = client;
-      resolveMenu(active);
+      resolveMenu({ active, requestId });
     },
   });
   const endpoint = await bridge.listen();
   const [host, portText] = endpoint.split(":");
   const socket = net.createConnection({ host, port: Number(portText) });
   await once(socket, "connect");
+  const bridgeReady = once(socket, "data");
   socket.write(encodeBridgeFrame({
     type: "hello",
     token: bridge.token,
     pid: process.pid,
     ppid: process.ppid,
     cwd: process.cwd(),
+    protocol: 2,
   }));
-  socket.write(encodeBridgeFrame({ type: "menu", active: true }));
-  assert.equal(await menuSeen, true);
+  assert.equal(
+    (await bridgeReady)[0].toString("utf8"),
+    encodeBridgeFrame({ type: "bridge-ready", protocol: 2 }),
+  );
+  socket.write(encodeBridgeFrame({
+    type: "menu",
+    active: true,
+    requestId: 19,
+  }));
+  assert.deepEqual(await menuSeen, { active: true, requestId: 19 });
+  const menuReady = once(socket, "data");
+  assert.equal(
+    bridge.send(observedClient, {
+      type: "menu-ready",
+      requestId: 19,
+      ready: true,
+    }),
+    true,
+  );
+  assert.equal(
+    (await menuReady)[0].toString("utf8"),
+    encodeBridgeFrame({ type: "menu-ready", requestId: 19, ready: true }),
+  );
   const response = once(socket, "data");
   assert.equal(
     bridge.send(observedClient, { type: "navigate", direction: "down" }),

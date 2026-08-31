@@ -6,6 +6,7 @@ const net = require("node:net");
 const DEFAULT_MAX_FRAME_BYTES = 16 * 1024;
 const DEFAULT_MAX_CLIENTS = 32;
 const TOKEN_BYTES = 32;
+const BRIDGE_PROTOCOL_VERSION = 2;
 
 function isPositiveProcessId(value) {
   return Number.isSafeInteger(value) && value > 0;
@@ -21,7 +22,9 @@ function isHelloFrame(value) {
     isPositiveProcessId(value.pid) &&
     isPositiveProcessId(value.ppid) &&
     typeof value.cwd === "string" &&
-    Buffer.byteLength(value.cwd, "utf8") <= 4096,
+    Buffer.byteLength(value.cwd, "utf8") <= 4096 &&
+    (value.protocol === undefined ||
+      (Number.isSafeInteger(value.protocol) && value.protocol >= 1)),
   );
 }
 
@@ -31,7 +34,9 @@ function isMenuFrame(value) {
     typeof value === "object" &&
     !Array.isArray(value) &&
     value.type === "menu" &&
-    typeof value.active === "boolean",
+    typeof value.active === "boolean" &&
+    (value.requestId === undefined ||
+      (Number.isSafeInteger(value.requestId) && value.requestId > 0)),
   );
 }
 
@@ -115,7 +120,9 @@ function createMenuNavigationServer(options = {}) {
       pid: undefined,
       ppid: undefined,
       cwd: undefined,
+      protocol: 1,
       menuActive: false,
+      menuRequestId: undefined,
       terminal: undefined,
       lastActivity: 0,
     };
@@ -142,7 +149,14 @@ function createMenuNavigationServer(options = {}) {
           client.pid = frame.pid;
           client.ppid = frame.ppid;
           client.cwd = frame.cwd;
+          client.protocol = frame.protocol ?? 1;
           client.lastActivity = Date.now();
+          if (client.protocol >= BRIDGE_PROTOCOL_VERSION) {
+            socket.write(encodeBridgeFrame({
+              type: "bridge-ready",
+              protocol: BRIDGE_PROTOCOL_VERSION,
+            }));
+          }
           options.onHello?.(client);
           continue;
         }
@@ -151,8 +165,9 @@ function createMenuNavigationServer(options = {}) {
           return;
         }
         client.menuActive = frame.active;
+        client.menuRequestId = frame.requestId;
         client.lastActivity = Date.now();
-        options.onMenuState?.(client, frame.active);
+        options.onMenuState?.(client, frame.active, frame.requestId);
       }
     });
     socket.on("error", () => {
@@ -239,6 +254,7 @@ async function chooseTerminalForClient(client, terminals, isTracked, activeTermi
 }
 
 module.exports = {
+  BRIDGE_PROTOCOL_VERSION,
   chooseTerminalForClient,
   createMenuNavigationServer,
   DEFAULT_MAX_CLIENTS,

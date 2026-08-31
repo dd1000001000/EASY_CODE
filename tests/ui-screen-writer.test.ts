@@ -76,7 +76,7 @@ describe("ScreenWriter", () => {
     assert.equal(
       transcript.read(),
       "\r\n\u001B[1A中ab\r\nxy\r\u001B[1C" +
-        "\r\u001B[1A\u001B[0Jnext",
+        "\r\u001B[1A\u001B[0J\u001B[1Bnext",
     );
     writer.close();
   });
@@ -119,7 +119,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\r\u001B[0JA中国B",
+      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\r\u001B[0J\u001B[1BA中国B",
     );
     writer.close();
   });
@@ -191,6 +191,61 @@ describe("ScreenWriter", () => {
         "\r\n\r\n\r\n\r\n\u001B[4A" +
         "approval\r\ncommand\r\nchoice 1\r\nchoice 2\r\nchoice 3" +
         "\r\u001B[4A\r\u001B[0J",
+    );
+    writer.close();
+  });
+
+  it("bottom-aligns a shorter replacement inside existing reserved rows", () => {
+    const output = new CapturedOutput(true, 80, 24);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+
+    writer.renderLive("activity 1\nactivity 2\nactivity 3\nactivity 4\nstatus");
+    const beforeOverlay = transcript.read().length;
+    writer.renderLive("approval\nchoice 1\nchoice 2");
+    const beforeSelectionMove = transcript.read().length;
+    writer.renderLive("approval\nchoice 1\n> choice 2");
+    writer.clearLive();
+
+    const firstOverlay = transcript.read().slice(beforeOverlay, beforeSelectionMove);
+    const selectionMove = transcript.read().slice(beforeSelectionMove);
+
+    assert.equal(
+      firstOverlay,
+      "\r\u001B[0J" +
+        "\u001B[2B" +
+        "approval\r\nchoice 1\r\nchoice 2" +
+        "\r\u001B[2A",
+    );
+    assert.equal(
+      selectionMove,
+      "\r\u001B[2A\u001B[0J" +
+        "\u001B[2B" +
+        "approval\r\nchoice 1\r\n> choice 2" +
+        "\r\u001B[2A" +
+        "\r\u001B[2A\u001B[0J",
+    );
+    assert.equal(firstOverlay.includes("\n\r\n"), false);
+    assert.equal(selectionMove.includes("\n\r\n"), false);
+    writer.close();
+  });
+
+  it("keeps explicit composer cursors correct after a live block shrinks", () => {
+    const output = new CapturedOutput(true, 20, 24);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+
+    writer.renderLive("one\ntwo\nthree\nfour");
+    const beforeComposer = transcript.read().length;
+    writer.renderLive("input\nstatus", { row: 0, column: 2 });
+    writer.renderLive("next");
+
+    assert.equal(
+      transcript.read().slice(beforeComposer),
+      "\r\u001B[0J" +
+        "\u001B[2Binput\r\nstatus\r\u001B[1A\u001B[2C" +
+        "\r\u001B[2A\u001B[0J" +
+        "\u001B[3Bnext",
     );
     writer.close();
   });

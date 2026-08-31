@@ -230,6 +230,9 @@ export function renderComposerFooter(
     task ? `task ${task.current}/${task.total}` : "task –",
   ));
   metadata.push(palette.gray(`agents ${activeAgents}`));
+  if (state.composer.pendingSubmissions > 0) {
+    metadata.push(palette.gray(`steering ${state.composer.pendingSubmissions}`));
+  }
 
   const columns = viewColumns(options);
   const metadataLine = metadata.join("  ");

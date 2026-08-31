@@ -21,14 +21,26 @@ export interface MenuSelectorOverlay {
 
 export type MenuNavigationDirection = "up" | "down";
 
+export interface MenuSelectorNavigationActivation {
+  /**
+   * Settles after the host has installed its key interception. `false` means
+   * the selector must rely on ordinary TTY input instead.
+   */
+  readonly ready?: Promise<boolean>;
+  release(): void;
+}
+
 export interface MenuSelectorNavigation {
   /**
    * Activate an optional out-of-band navigation source for this selector.
    * The returned cleanup must be safe to call on every selector exit path.
+   * A host that supplies `ready` must not resolve it with `true` until its key
+   * binding is active; the selector remains hidden until that acknowledgement
+   * arrives so the first visible arrow cannot escape to terminal scrollback.
    */
   activate(
     onNavigate: (direction: MenuNavigationDirection) => void,
-  ): () => void;
+  ): MenuSelectorNavigationActivation;
 }
 
 export interface MenuSelectorOptions {
@@ -108,8 +120,10 @@ export function selectMenuIndex(
   let selectedIndex = Math.max(0, Math.min(initialIndex, choiceCount - 1));
   const lineCount = choiceCount + 2;
   let rendered = false;
+  let renderEnabled = true;
 
   const render = (): void => {
+    if (!renderEnabled) return;
     const lines = renderLines(selectedIndex);
     if (options.overlay) {
       options.overlay.render(lines);
@@ -184,6 +198,10 @@ export function selectMenuIndex(
       render();
     };
     const confirm = (): void => {
+      // Never accept a buffered Enter before the user has seen the first menu
+      // frame. VS Code navigation readiness is asynchronous, so confirmation
+      // must remain fail-closed while the overlay is deliberately hidden.
+      if (!renderEnabled || !rendered) return;
       let allowed = true;
       try {
         allowed = options.canConfirm?.() ?? true;
@@ -385,7 +403,11 @@ export function selectMenuIndex(
       input.once("close", onClose);
       input.once("error", onError);
       input.resume();
-      releaseNavigation = options.navigation?.activate((direction) => {
+      // An out-of-band host may invoke its listener synchronously while it is
+      // still installing key interception. Suppress every frame until the
+      // activation result below explicitly permits the menu to become visible.
+      renderEnabled = options.navigation === undefined;
+      const navigationActivation = options.navigation?.activate((direction) => {
         if (settled) return;
         try {
           move(direction === "up" ? -1 : 1);
@@ -396,7 +418,28 @@ export function selectMenuIndex(
           );
         }
       });
-      render();
+      releaseNavigation = navigationActivation?.release.bind(navigationActivation);
+      const navigationReady = navigationActivation?.ready;
+      if (navigationReady) {
+        // Keep the overlay invisible until VS Code confirms that Up/Down have
+        // been rebound. TTY input is already in Raw Mode, so a unavailable or
+        // legacy extension can safely resolve `false` and use the normal path.
+        void navigationReady.catch(() => false).then(() => {
+          if (settled) return;
+          renderEnabled = true;
+          try {
+            render();
+          } catch {
+            finish(
+              undefined,
+              new Error("Unable to render the interactive selection."),
+            );
+          }
+        });
+      } else {
+        renderEnabled = true;
+        render();
+      }
     } catch {
       finish(undefined, new Error("Unable to start the interactive selection."));
     }

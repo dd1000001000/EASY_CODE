@@ -579,6 +579,30 @@ export interface PlanReviewState {
   approvedAt?: string;
 }
 
+/** One independently persisted user follow-up targeting an active main turn. */
+export interface TurnSteeringEntry {
+  id: string;
+  /** Monotonic per-Thread FIFO sequence assigned by ThreadStore. */
+  sequence: number;
+  /** Turn that was active when the user submitted this entry. */
+  targetTurnId: string;
+  message: Extract<ChatMessage, { role: "user" }>;
+  queuedAt: string;
+}
+
+/** Exact pending prefix coalesced into one model-visible user message. */
+export interface TurnSteeringBatch {
+  entries: TurnSteeringEntry[];
+  throughSequence: number;
+  message: Extract<ChatMessage, { role: "user" }>;
+}
+
+export type TurnSteeringBoundary =
+  | "before_model"
+  | "after_model"
+  | "between_tools"
+  | "before_final";
+
 export interface SessionState {
   threadId: string;
   activeTurnId?: string;
@@ -599,6 +623,14 @@ export interface SessionState {
   taskGraph?: TaskGraph;
   /** Runtime-owned proposal awaiting a user review or an already-approved execution turn. */
   planReview?: PlanReviewState;
+  /** Event-authoritative main-turn steering inbox; legacy checkpoints omit it. */
+  pendingSteering?: TurnSteeringEntry[];
+  /** Highest sequence assigned to a durable steering entry. */
+  steeringSequence?: number;
+  /** Highest FIFO sequence durably applied to model context. */
+  steeringWatermark?: number;
+  /** Admission seal used to close the enqueue/final-response race. */
+  steeringSealedTurnId?: string;
   workingSummary: string;
   /** Number of leading messages represented by workingSummary and omitted from future model requests. */
   compactedMessageCount: number;

@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
 import { vscodeToggleThinkingSequence } from "../src/cli/prompt-input.js";
+import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UISessionInfo, UIState } from "../src/ui/contracts.js";
@@ -131,6 +132,19 @@ function agent(): SubagentView {
 
 function terminalState(terminal: Terminal): Readonly<UIState> {
   return (terminal as unknown as { readonly uiState: UIState }).uiState;
+}
+
+function steeringAttachment(index: number): ImageAttachment {
+  return {
+    id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    label: `Image #${index}`,
+    mediaType: "image/png",
+    storageKey: `attachments/test/steering-${index}.png`,
+    sha256: String(index % 10).repeat(64),
+    byteSize: 68,
+    width: 1,
+    height: 1,
+  };
 }
 
 async function settlePromptInput(): Promise<void> {
@@ -675,6 +689,148 @@ describe("Terminal retained inline shell", () => {
         terminal.clearCurrentRequest();
         assert.equal(input.isRaw, false);
       } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps one busy steering editor across submissions and modal approval", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      const submissions: Array<{ text: string; labels: string[] }> = [];
+      let releaseFirst!: () => void;
+      const firstAcknowledgement = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let first = true;
+      let interrupts = 0;
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication", [], {
+          initialImageCount: 2,
+          captureImage: async (index) => steeringAttachment(index),
+          onInterrupt: () => {
+            interrupts += 1;
+          },
+          onSteer: async (submission) => {
+            submissions.push({
+              text: submission.text,
+              labels: submission.images.map((image) => image.label),
+            });
+            if (first) {
+              first = false;
+              await firstAcknowledgement;
+            }
+          },
+        });
+        await settlePromptInput();
+
+        input.write("\u001B[200~first\nsecond\u001B[201~\r");
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).composer.pendingSubmissions, 1);
+
+        input.write("preserved ");
+        input.write(Buffer.from([0x16]));
+        await settlePromptInput();
+        assert.match(terminalState(terminal).composer.text, /preserved/u);
+        assert.deepEqual(
+          terminalState(terminal).composer.images.map((image) => image.label),
+          ["Image #3"],
+        );
+
+        const approval: ApprovalRequest = {
+          id: "steering-approval",
+          title: "Run verification",
+          description: "Run one workspace verification command.",
+          risk: "workspace",
+          commandPrefix: "node",
+          commandPreview: "node --check src/app.js",
+        };
+        const choice = terminal.approve(approval);
+        await settlePromptInput();
+        input.write("\u001B[B\r");
+        assert.equal(await choice, "allow_prefix");
+
+        // Auto-repeat from the modal must not submit or edit the restored
+        // draft. The first printable input ends the transition barrier.
+        input.write("\u001B[B\r\u001B[57353u\u001B[13u");
+        input.write("after\r");
+        input.write(Buffer.from([0x03]));
+        await settlePromptInput();
+        assert.equal(interrupts, 1);
+        assert.equal(terminalState(terminal).composer.pendingSubmissions, 2);
+        assert.deepEqual(submissions, [{ text: "first\nsecond", labels: [] }]);
+
+        releaseFirst();
+        await settlePromptInput();
+        await settlePromptInput();
+        assert.deepEqual(submissions, [
+          { text: "first\nsecond", labels: [] },
+          { text: "preserved  [Image #3] after", labels: ["Image #3"] },
+        ]);
+        assert.equal(terminalState(terminal).composer.pendingSubmissions, 0);
+        terminal.clearCurrentRequest();
+      } finally {
+        releaseFirst?.();
+        terminal.close();
+      }
+    });
+  });
+
+  it("freezes new steering, drains submitted lines before seal, and resumes when steering wins", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      const submissions: string[] = [];
+      let releaseDelivery!: () => void;
+      const delivery = new Promise<void>((resolve) => {
+        releaseDelivery = resolve;
+      });
+      let first = true;
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement authentication", [], {
+          onSteer: async (submission) => {
+            submissions.push(submission.text);
+            if (first) {
+              first = false;
+              await delivery;
+            }
+          },
+        });
+        await settlePromptInput();
+
+        input.write("submitted before seal\r");
+        const sealed = terminal.sealCurrentRequestSteering(async () => {
+          assert.deepEqual(submissions, ["submitted before seal"]);
+          return { throughSequence: 1 };
+        });
+        // The finalization barrier owns stdin synchronously. Text typed after
+        // it begins must not be replayed into the resumed editor.
+        input.write("discarded during seal\r");
+        await settlePromptInput();
+        let sealSettled = false;
+        void sealed.then(() => {
+          sealSettled = true;
+        });
+        assert.equal(sealSettled, false);
+
+        releaseDelivery();
+        assert.deepEqual(await sealed, { throughSequence: 1 });
+        input.write("accepted after resume\r");
+        await settlePromptInput();
+        assert.deepEqual(submissions, [
+          "submitted before seal",
+          "accepted after resume",
+        ]);
+        terminal.clearCurrentRequest();
+      } finally {
+        releaseDelivery?.();
         terminal.close();
       }
     });

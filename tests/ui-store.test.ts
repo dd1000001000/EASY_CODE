@@ -414,6 +414,7 @@ describe("pure terminal UI state", () => {
         text: "hello",
         cursor: 999,
         busy: true,
+        pendingSubmissions: 3,
         placeholder: "Continue…",
         images,
       },
@@ -422,10 +423,12 @@ describe("pure terminal UI state", () => {
       text: "",
       cursor: 0,
       busy: false,
+      pendingSubmissions: 0,
       placeholder: DEFAULT_COMPOSER_PLACEHOLDER,
       images: [],
     });
     assert.equal(populated.composer.cursor, 5);
+    assert.equal(populated.composer.pendingSubmissions, 3);
     assert.equal(populated.composer.images.length, MAX_COMPOSER_IMAGES);
     assert.notEqual(populated.composer.images[0], images[0]);
 
@@ -440,6 +443,7 @@ describe("pure terminal UI state", () => {
       text: "",
       cursor: 0,
       busy: false,
+      pendingSubmissions: 0,
       placeholder: DEFAULT_COMPOSER_PLACEHOLDER,
       images: [],
     });
