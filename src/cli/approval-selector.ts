@@ -10,6 +10,7 @@ const APPROVAL_DECISIONS = [
   "allow_prefix",
   "reject",
 ] as const satisfies readonly ApprovalDecision[];
+const MIN_SAFE_APPROVAL_ROWS = 4;
 
 export type ApprovalSelectorOptions = MenuSelectorOptions;
 
@@ -36,15 +37,25 @@ export async function selectApproval(
   commandPrefix: string,
   options: ApprovalSelectorOptions,
 ): Promise<ApprovalDecision> {
+  const callerGuard = options.canConfirm;
   const index = await selectMenuIndex(
     APPROVAL_DECISIONS.length,
     0,
     (selectedIndex) =>
       renderApprovalSelector(commandPrefix, selectedIndex, options.color ?? true),
-    options,
+    {
+      ...options,
+      canConfirm: () =>
+        hasSafeApprovalHeight(options.output.rows) &&
+        (callerGuard?.() ?? true),
+    },
     "No approval choices are available.",
   );
   return index === undefined
     ? "reject"
     : APPROVAL_DECISIONS[index] ?? "reject";
+}
+
+function hasSafeApprovalHeight(rows: number | undefined): boolean {
+  return !Number.isFinite(rows) || (rows ?? 0) >= MIN_SAFE_APPROVAL_ROWS;
 }

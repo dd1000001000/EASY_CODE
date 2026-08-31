@@ -30,6 +30,33 @@ class ScriptedPlanTerminal extends Terminal {
   }
 }
 
+class TtyInput extends PassThrough {
+  readonly isTTY = true;
+  isRaw = false;
+
+  setRawMode(mode: boolean): this {
+    this.isRaw = mode;
+    return this;
+  }
+}
+
+class TtyOutput extends PassThrough {
+  readonly isTTY = true;
+  readonly columns = 100;
+  readonly rows = 30;
+}
+
+async function waitForText(
+  read: () => string,
+  expected: RegExp,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (expected.test(read())) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`Timed out waiting for ${expected}`);
+}
+
 function plan(): PlanProposal {
   return {
     id: "plan_11111111-1111-4111-8111-111111111111",
@@ -86,6 +113,175 @@ describe("plan review terminal UI", () => {
       feedback: "Keep the existing CSS classes",
     });
     assert.match(terminal.transcript, /Plan feedback >/u);
+  });
+
+  it("keeps multiline pasted adjustment feedback intact until explicit Enter", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const terminal = new Terminal(input, output);
+    let settled = false;
+    const review = terminal.reviewPlan().then((decision) => {
+      settled = true;
+      return decision;
+    });
+
+    await waitForText(() => transcript, /Choose 1\/2/u);
+    input.write("3\r");
+    await waitForText(() => transcript, /Plan feedback >/u);
+    input.write("\u001B[200~A\nB\u001B[201~");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(settled, false);
+    assert.match(transcript, /\[Pasted text #1 · 2 lines\]/u);
+
+    input.write("\r");
+    assert.deepEqual(await review, {
+      action: "adjust",
+      feedback: "A\nB",
+    });
+    terminal.close();
+  });
+
+  it("keeps multiline feedback intact after choosing Adjust in the inline menu", async () => {
+    const previousCI = process.env.CI;
+    const previousTerm = process.env.TERM;
+    process.env.CI = "";
+    process.env.TERM = "xterm-256color";
+    try {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+      const terminal = new Terminal(input, output);
+      assert.equal(terminal.beginShell({
+        threadId: "thread_plan_review",
+        workspaceRoot: "F:\\projects\\plan-review",
+        mode: "auto",
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+        thinkingEffort: "medium",
+        contextTokens: 0,
+      }), true);
+      terminal.showPlan(plan());
+      let settled = false;
+      const review = terminal.reviewPlan().then((decision) => {
+        settled = true;
+        return decision;
+      });
+
+      await waitForText(() => transcript, /Review proposed plan/u);
+      input.write("\u001B[B\u001B[B\r");
+      await waitForText(() => transcript, /Plan feedback >/u);
+      input.write("\u001B[200~First line\nSecond line\u001B[201~");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+
+      input.write("\r");
+      assert.deepEqual(await review, {
+        action: "adjust",
+        feedback: "First line\nSecond line",
+      });
+      assert.equal(input.isRaw, false);
+      terminal.close();
+    } finally {
+      if (previousCI === undefined) delete process.env.CI;
+      else process.env.CI = previousCI;
+      if (previousTerm === undefined) delete process.env.TERM;
+      else process.env.TERM = previousTerm;
+    }
+  });
+
+  it("records only accepted feedback when retained UI uses the numbered path", async () => {
+    const previousCI = process.env.CI;
+    const previousTerm = process.env.TERM;
+    process.env.CI = "";
+    process.env.TERM = "xterm-256color";
+    try {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      assert.equal(terminal.beginShell({
+        threadId: "thread_numbered_plan_review",
+        workspaceRoot: "F:\\projects\\plan-review",
+        mode: "auto",
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+        thinkingEffort: "medium",
+        contextTokens: 0,
+      }), true);
+
+      const review = terminal.reviewPlan();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write("3\r");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write("\u001B[200~A\nB\u001B[201~\r");
+
+      assert.deepEqual(await review, {
+        action: "adjust",
+        feedback: "A\nB",
+      });
+      const state = terminal as unknown as {
+        uiState: {
+          transcript: Array<{ kind: string; text: string }>;
+        };
+      };
+      assert.deepEqual(
+        state.uiState.transcript
+          .filter((entry) => entry.kind === "user")
+          .map((entry) => entry.text),
+        ["A\nB"],
+      );
+      terminal.close();
+    } finally {
+      if (previousCI === undefined) delete process.env.CI;
+      else process.env.CI = previousCI;
+      if (previousTerm === undefined) delete process.env.TERM;
+      else process.env.TERM = previousTerm;
+    }
+  });
+
+  it("re-prompts instead of submitting a failed clipboard marker as feedback", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    const terminal = new Terminal(input, output);
+    const review = terminal.reviewPlan({
+      captureText: async () => {
+        throw new Error("clipboard helper unavailable");
+      },
+    });
+
+    await waitForText(() => transcript, /Choose 1\/2/u);
+    input.write("3\r");
+    await waitForText(() => transcript, /Plan feedback >/u);
+    input.write("\u0016");
+    await waitForText(() => transcript, /Text paste failed/u);
+    input.write("\r");
+    await waitForText(() => transcript, /Plan feedback paste failed/u);
+    assert.match(transcript, /clipboard helper unavailable/u);
+    input.write("\u001B[200~A\nB\u001B[201~\r");
+
+    assert.deepEqual(await review, {
+      action: "adjust",
+      feedback: "A\nB",
+    });
+    terminal.close();
   });
 
   it("defers without rejecting when terminal input closes", async () => {

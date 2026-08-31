@@ -76,6 +76,13 @@ export type PlanReviewDecision =
   | { action: "adjust"; feedback: string }
   | { action: "defer" };
 
+export interface PlanReviewInputOptions {
+  /** Read clipboard text when a terminal sends a paste hotkey to EASY CODE. */
+  readonly captureText?: (
+    signal?: AbortSignal,
+  ) => Promise<string | undefined>;
+}
+
 export interface TerminalChoice {
   readonly id: string;
   readonly label: string;
@@ -390,6 +397,94 @@ export class Terminal {
     });
   }
 
+  /**
+   * Read text that may contain a bracketed multiline paste. Plain readline
+   * treats every pasted newline as an immediate submission, so plan feedback
+   * must use the same atomic paste transport as the main composer. Images are
+   * intentionally rejected here; the optional clipboard-text fallback keeps
+   * native paste shortcuts useful across supported terminals.
+   */
+  private async multilineTextQuestion(
+    prompt: string,
+    captureText?: PlanReviewInputOptions["captureText"],
+  ): Promise<Pick<PromptSubmission, "text" | "pasteErrors"> | null> {
+    if (this.closed) return null;
+    if (this.rl || this.promptActive || this.guardedInputActive) {
+      throw new Error("A terminal prompt is already active.");
+    }
+    if (
+      !this.input.isTTY ||
+      !(this.output as NodeJS.WriteStream).isTTY
+    ) {
+      const text = await this.question(prompt);
+      return text === null ? null : { text, pasteErrors: [] };
+    }
+    if (typeof this.input.setRawMode !== "function") {
+      this.warning(
+        "Multiline plan feedback requires terminal Raw Mode support.",
+      );
+      return null;
+    }
+
+    if (this.inlineShellActive) this.screen?.clearLive();
+    this.promptActive = true;
+    const promptController = new AbortController();
+    this.activePromptController = promptController;
+    try {
+      const result = await readPrompt({
+        input: this.input,
+        output: this.output as import("./prompt-input.js").PromptOutput,
+        prompt,
+        signal: promptController.signal,
+        captureImage: async () => {
+          throw new Error("Images are not supported in plan feedback.");
+        },
+        captureText,
+        textOnlyPaste: true,
+        clearOnSubmit: this.inlineShellActive,
+      });
+      if (result === null) {
+        this.closed = true;
+        return null;
+      }
+      return { text: result.text, pasteErrors: result.pasteErrors };
+    } finally {
+      if (this.activePromptController === promptController) {
+        this.activePromptController = undefined;
+      }
+      this.promptActive = false;
+      if (!this.closed) this.refresh();
+    }
+  }
+
+  private async planTextQuestion(
+    prompt: string,
+    captureText?: PlanReviewInputOptions["captureText"],
+  ): Promise<string | null> {
+    while (!this.closed) {
+      const submission = await this.multilineTextQuestion(prompt, captureText);
+      if (submission === null) return null;
+      if (submission.pasteErrors.length === 0) return submission.text;
+      this.warning(
+        `Plan feedback paste failed: ${submission.pasteErrors.join("; ")}`,
+      );
+    }
+    return null;
+  }
+
+  private recordAcceptedPlanFeedback(feedback: string): void {
+    if (!this.inlineShellActive) return;
+    this.uiState = applyEvent(this.uiState, {
+      type: "transcript.append",
+      entry: {
+        kind: "user",
+        text: feedback,
+        images: [],
+      },
+    });
+    this.screen?.commit(`${formatSubmittedRequest(feedback)}\n\n`);
+  }
+
   async readPrompt(
     prompt: string,
     options: {
@@ -617,7 +712,9 @@ export class Terminal {
     this.write(`\n${formatPlanProposal(plan)}\n`);
   }
 
-  async reviewPlan(): Promise<PlanReviewDecision> {
+  async reviewPlan(
+    options: Readonly<PlanReviewInputOptions> = {},
+  ): Promise<PlanReviewDecision> {
     if (!this.isInteractive()) return { action: "defer" };
     if (this.inlineShellActive && this.lastPlan) {
       const choices = [
@@ -651,20 +748,24 @@ export class Terminal {
       if (selection === undefined) return { action: "defer" };
       if (selection === 0) return { action: "approve" };
       if (selection === 1) return { action: "reject" };
-      const feedback = await this.question("Plan feedback > ");
+      const feedback = await this.planTextQuestion(
+        "Plan feedback > ",
+        options.captureText,
+      );
       if (feedback === null) return { action: "defer" };
       const sanitized = sanitizePlanText(feedback, MAX_PLAN_FEEDBACK_CHARS);
-      return sanitized
-        ? { action: "adjust", feedback: sanitized }
-        : { action: "defer" };
+      if (!sanitized) return { action: "defer" };
+      this.recordAcceptedPlanFeedback(sanitized);
+      return { action: "adjust", feedback: sanitized };
     }
     while (!this.closed) {
       this.write("\nWhat would you like to do?\n\n");
       this.write("1. Yes, use Auto mode\n");
       this.write("2. No, reject plan\n");
       this.write("3. Type feedback and press Enter to adjust the plan\n\n");
-      const response = await this.question(
+      const response = await this.planTextQuestion(
         "Choose 1/2, or type feedback to adjust > ",
+        options.captureText,
       );
       if (response === null) return { action: "defer" };
       const answer = sanitizePlanText(response, MAX_PLAN_FEEDBACK_CHARS);
@@ -677,12 +778,17 @@ export class Terminal {
         return { action: "reject" };
       }
       if (normalized === "3") {
-        const feedback = await this.question("Plan feedback > ");
+        const feedback = await this.planTextQuestion(
+          "Plan feedback > ",
+          options.captureText,
+        );
         if (feedback === null) return { action: "defer" };
         const sanitized = sanitizePlanText(feedback, MAX_PLAN_FEEDBACK_CHARS);
         if (!sanitized) continue;
+        this.recordAcceptedPlanFeedback(sanitized);
         return { action: "adjust", feedback: sanitized };
       }
+      this.recordAcceptedPlanFeedback(answer);
       return { action: "adjust", feedback: answer };
     }
     return { action: "defer" };
@@ -1129,6 +1235,39 @@ export class Terminal {
       throw new Error("A terminal input operation is already active.");
     }
     this.guardedInputActive = true;
+
+    // A command approval normally interrupts the busy request owner. Borrow
+    // its already-piped raw input filter instead of tearing process.stdin down
+    // and immediately rebuilding it. Rapid raw-mode/pipe transitions can lose
+    // the first key on real Windows ConPTY terminals even though PassThrough
+    // tests look correct. The modal selector pauses the drain, owns the same
+    // filter temporarily, and hands it back after cleanup; extra key repeats
+    // are then drained by the busy owner rather than leaking into a later
+    // composer.
+    const borrowedOwner = this.busyInputOwner;
+    if (borrowedOwner && !borrowedOwner.filter.destroyed) {
+      borrowedOwner.filter.pause();
+      borrowedOwner.filter.resetPendingInput();
+      try {
+        return await action(borrowedOwner.filter);
+      } finally {
+        this.guardedInputActive = false;
+        if (
+          this.busyInputOwner === borrowedOwner &&
+          this.currentRequestOptions &&
+          !this.closed &&
+          !borrowedOwner.filter.destroyed
+        ) {
+          borrowedOwner.filter.resume();
+        } else {
+          // The request may have been replaced while the modal was open. Its
+          // setter cannot start a new owner while guarded input is active, so
+          // re-establish the current request's owner after releasing the guard.
+          this.startBusyInputOwner();
+        }
+      }
+    }
+
     this.stopBusyInputOwner();
     const inputFilter = new PrivateOscInputFilter(this.input);
     try {
@@ -1162,13 +1301,16 @@ export class Terminal {
 
   private viewOptions(): {
     columns: number;
+    rows?: number;
     color: boolean;
     agentConcurrencyLimit?: number;
     spinnerFrame: number;
   } {
+    const rows = Number((this.output as NodeJS.WriteStream).rows);
     return {
       columns: this.screen?.columns ??
         (Number((this.output as NodeJS.WriteStream).columns) || 80),
+      ...(Number.isFinite(rows) && rows > 0 ? { rows: Math.floor(rows) } : {}),
       color: this.colorEnabled(),
       ...(this.agentConcurrencyLimit === undefined
         ? {}
