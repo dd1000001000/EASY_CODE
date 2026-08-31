@@ -18,10 +18,12 @@ const BRIDGE_ENDPOINT_ENV = "EASY_CODE_VSCODE_BRIDGE_ENDPOINT";
 const BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 const PASTE_IMAGE_SEQUENCE = "\x1b]6973;easy-code;paste-image\x07";
 const TOGGLE_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-thinking;";
+const TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-adjustment;";
 // Deprecated compatibility export. New callers should use the toggle name;
 // the old symbol deliberately emits the new action as well.
 const SHOW_THINKING_SEQUENCE_PREFIX = TOGGLE_THINKING_SEQUENCE_PREFIX;
 const THINKING_LINK_PREFIX = "Thinking #";
+const ADJUSTMENT_LINK_PREFIX = "Queued adjustment #";
 const THINKING_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
 let activeBridgeRuntime;
 
@@ -66,6 +68,37 @@ function findThinkingMarkers(line) {
 }
 
 /**
+ * Parse only paired EASY CODE queued-adjustment controls. The numeric ID is
+ * repeated after `/adjustment`, so arbitrary terminal output cannot forge a
+ * clickable control by mentioning the visible label alone.
+ *
+ * @param {string} line
+ * @returns {Array<{ startIndex: number, length: number, id: string, kind: "adjustment" }>}
+ */
+function findAdjustmentMarkers(line) {
+  if (typeof line !== "string") return [];
+  const matches = [];
+  const markerPatterns = [
+    /▶ Queued adjustment #([1-9][0-9]{0,15}) · [^\r\n]*? · \/adjustment ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+    /↕ Queued adjustment #([1-9][0-9]{0,15}) · [^\r\n]*?\/adjustment ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+  ];
+  for (const markerPattern of markerPatterns) {
+    for (const match of line.matchAll(markerPattern)) {
+      const id = match[1];
+      const pairedId = match[2];
+      if (!id || id !== pairedId || !Number.isSafeInteger(Number(id))) continue;
+      matches.push({
+        startIndex: match.index + match[0].indexOf(ADJUSTMENT_LINK_PREFIX),
+        length: ADJUSTMENT_LINK_PREFIX.length + id.length,
+        id,
+        kind: "adjustment",
+      });
+    }
+  }
+  return matches.sort((left, right) => left.startIndex - right.startIndex);
+}
+
+/**
  * @param {string | number} id
  */
 function toggleThinkingSequence(id) {
@@ -77,6 +110,18 @@ function toggleThinkingSequence(id) {
     throw new TypeError("EASY CODE thinking IDs must be positive decimal integers.");
   }
   return `${TOGGLE_THINKING_SEQUENCE_PREFIX}${value}\x07`;
+}
+
+/** @param {string | number} id */
+function toggleAdjustmentSequence(id) {
+  const value = String(id);
+  if (
+    !THINKING_ID_PATTERN.test(value) ||
+    !Number.isSafeInteger(Number(value))
+  ) {
+    throw new TypeError("EASY CODE adjustment IDs must be positive decimal integers.");
+  }
+  return `${TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX}${value}\x07`;
 }
 
 /**
@@ -103,16 +148,28 @@ function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
     provideTerminalLinks(context, token) {
       const terminal = context?.terminal;
       if (token?.isCancellationRequested || !terminal) return [];
-      const markers = findThinkingMarkers(context.line);
+      const markers = [
+        ...findThinkingMarkers(context.line).map((marker) => ({
+          ...marker,
+          kind: "thinking",
+        })),
+        ...findAdjustmentMarkers(context.line),
+      ].sort((left, right) => left.startIndex - right.startIndex);
       if (!markers.length) return [];
       if (!isEnabled(terminal) && !tryRecover(terminal)) return [];
       return markers.map((marker) => {
         const link = {
           startIndex: marker.startIndex,
           length: marker.length,
-          tooltip: `Ctrl/Cmd+click to toggle EASY CODE Thinking #${marker.id}`,
+          tooltip: marker.kind === "adjustment"
+            ? `Ctrl/Cmd+click to toggle EASY CODE queued adjustment #${marker.id}`
+            : `Ctrl/Cmd+click to toggle EASY CODE Thinking #${marker.id}`,
         };
-        linkMetadata.set(link, { id: marker.id, terminal: context.terminal });
+        linkMetadata.set(link, {
+          id: marker.id,
+          kind: marker.kind,
+          terminal: context.terminal,
+        });
         return link;
       });
     },
@@ -120,7 +177,12 @@ function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
       if (!metadata || !isEnabled(metadata.terminal)) return;
-      metadata.terminal.sendText(toggleThinkingSequence(metadata.id), false);
+      metadata.terminal.sendText(
+        metadata.kind === "adjustment"
+          ? toggleAdjustmentSequence(metadata.id)
+          : toggleThinkingSequence(metadata.id),
+        false,
+      );
     },
   };
 }
@@ -548,11 +610,14 @@ module.exports = {
   createThinkingLinkProvider,
   deactivate,
   findThinkingMarkers,
+  findAdjustmentMarkers,
   PASTE_IMAGE_SEQUENCE,
   showThinkingSequence,
   SHOW_THINKING_SEQUENCE_PREFIX,
   toggleThinkingSequence,
+  toggleAdjustmentSequence,
   TOGGLE_THINKING_SEQUENCE_PREFIX,
+  TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX,
   BRIDGE_ENDPOINT_ENV,
   BRIDGE_TOKEN_ENV,
   MENU_NAVIGATION_CONTEXT_KEY,

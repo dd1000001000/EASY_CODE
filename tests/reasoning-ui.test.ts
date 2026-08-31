@@ -79,4 +79,21 @@ describe("Thinking terminal presentation", () => {
     const second = registry.add("new thread");
     assert.equal(second.id, first.id + 1);
   });
+
+  it("retains complete sanitized Thinking by default without a hidden registry cap", () => {
+    const source = Array.from(
+      { length: 300 },
+      (_, index) => `reasoning row ${index + 1}: ${"x".repeat(80)}`,
+    ).join("\n");
+    const registry = new ReasoningRegistry();
+    const first = registry.add(source);
+    assert.equal(first.truncated, false);
+    assert.equal(first.text, source);
+    assert.match(renderReasoningBody(first), /reasoning row 300:/u);
+
+    for (let index = 0; index < 300; index += 1) {
+      registry.add(`later block ${index + 1}`);
+    }
+    assert.equal(registry.get(first.id)?.text, source);
+  });
 });

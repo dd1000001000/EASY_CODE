@@ -19,10 +19,6 @@ import {
   MAX_LIVE_PROGRESS_ITEMS,
   MAX_LIVE_TASKS,
   MAX_OVERLAY_ROWS,
-  MAX_THINKING_PANEL_CHARS,
-  MAX_THINKING_PANEL_LINE_CHARS,
-  MAX_THINKING_PANEL_LINES,
-  MAX_TRANSCRIPT_ENTRIES,
   applyEvent,
   applyEvents,
   createInitialUIState,
@@ -138,7 +134,7 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(createInitialUIState(), createUIState());
   });
 
-  it("appends every transcript category and evicts only the oldest entries", () => {
+  it("appends every transcript category without evicting terminal history", () => {
     const kinds: readonly UITranscriptKind[] = [
       "user",
       "assistant",
@@ -158,18 +154,19 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(categorized.transcript.map((entry) => entry.kind), kinds);
     assert.deepEqual(initial.transcript, []);
 
-    let bounded = createUIState();
-    for (let index = 0; index < MAX_TRANSCRIPT_ENTRIES + 3; index += 1) {
-      bounded = applyEvent(bounded, {
+    let retained = createUIState();
+    const transcriptCount = 1_003;
+    for (let index = 0; index < transcriptCount; index += 1) {
+      retained = applyEvent(retained, {
         type: "transcript.append",
         entry: { kind: "raw", text: String(index) },
       });
     }
-    assert.equal(bounded.transcript.length, MAX_TRANSCRIPT_ENTRIES);
-    assert.equal(bounded.transcript[0]?.text, "3");
+    assert.equal(retained.transcript.length, transcriptCount);
+    assert.equal(retained.transcript[0]?.text, "0");
     assert.equal(
-      bounded.transcript[MAX_TRANSCRIPT_ENTRIES - 1]?.text,
-      String(MAX_TRANSCRIPT_ENTRIES + 2),
+      retained.transcript[transcriptCount - 1]?.text,
+      String(transcriptCount - 1),
     );
 
     const presentation = {
@@ -252,13 +249,13 @@ describe("pure terminal UI state", () => {
     );
   });
 
-  it("toggles one bounded, sanitized Thinking panel with stale-safe hiding", () => {
+  it("toggles one complete, sanitized Thinking panel with stale-safe hiding", () => {
     const secret = "abcdefghijklmnopqrstuvwxyz";
     const lines = [
       `Inspect api_key=abcde\u001B[31mfghijklmnopqrstuvwxyz`,
-      "x".repeat(MAX_THINKING_PANEL_LINE_CHARS + 20),
+      "x".repeat(1_020),
       ...Array.from(
-        { length: MAX_THINKING_PANEL_LINES + 3 },
+        { length: 123 },
         (_, index) => `reasoning line ${index}`,
       ),
     ];
@@ -278,17 +275,15 @@ describe("pure terminal UI state", () => {
     const panel = opened.live.thinking;
     assert.equal(initial.live.thinking, null);
     assert.equal(panel?.id, 7);
-    assert.equal(panel?.truncated, true);
+    assert.equal(panel?.truncated, false);
     assert.equal(panel?.sourceLines, lines.length);
     assert.doesNotMatch(panel?.body ?? "", /\u001B/u);
     assert.doesNotMatch(panel?.body ?? "", new RegExp(secret, "u"));
     assert.match(panel?.body ?? "", /api_key=\[REDACTED\]/u);
-    assert.ok(Array.from(panel?.body ?? "").length <= MAX_THINKING_PANEL_CHARS);
     const retainedLines = (panel?.body ?? "").split("\n");
-    assert.ok(retainedLines.length <= MAX_THINKING_PANEL_LINES);
-    assert.ok(retainedLines.every(
-      (line) => Array.from(line).length <= MAX_THINKING_PANEL_LINE_CHARS,
-    ));
+    assert.equal(retainedLines.length, lines.length);
+    assert.equal(retainedLines[1], "x".repeat(1_020));
+    assert.equal(retainedLines.at(-1), "reasoning line 122");
 
     const closed = applyEvent(opened, {
       type: "thinking.toggle",

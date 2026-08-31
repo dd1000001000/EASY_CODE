@@ -45,8 +45,8 @@ export type UITranscriptKind =
   | "raw";
 
 /**
- * One completed scrollback item. Items are only appended; the store may evict
- * the oldest items to keep the in-memory viewport bounded.
+ * One completed scrollback item. Items are append-only and remain available to
+ * the managed terminal viewport for the lifetime of this UI state.
  */
 export interface UITranscriptEntry {
   readonly kind: UITranscriptKind;
@@ -112,7 +112,7 @@ export type UIThinkingPanelInput =
       readonly body?: never;
     });
 
-/** The reducer stores only one bounded, terminal-safe Thinking body at a time. */
+/** The reducer stores one complete, terminal-safe Thinking body at a time. */
 export interface UIThinkingPanelState extends UIThinkingPanelMetadata {
   readonly body: string;
   readonly truncated: boolean;

@@ -455,9 +455,9 @@ describe("pure terminal UI views", () => {
     assert.match(plainPanel, /Inspect the repository before editing\./u);
     assert.match(plainPanel, /api_key=\[REDACTED\]/u);
     assert.doesNotMatch(plainPanel, new RegExp(secret, "u"));
-    assert.match(plainPanel, /\/thinking 4 shows all retained content\./u);
+    assert.doesNotMatch(plainPanel, /more wrapped row\(s\)|shows all retained content/u);
     assert.match(plainPanel, /VS Code Ctrl\/Cmd\+click to toggle/u);
-    assert.equal(plainPanel.includes("reasoning line 7"), false);
+    assert.equal(plainPanel.includes("reasoning line 7"), true);
     assert.match(coloredPanel, /\u001B\[90m/u);
     assert.doesNotMatch(coloredPanel, /\u001B\[36m/u);
     assert.equal(stripAnsi(coloredPanel), plainPanel);

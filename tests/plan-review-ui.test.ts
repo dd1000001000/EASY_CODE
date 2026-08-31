@@ -115,6 +115,16 @@ describe("plan review terminal UI", () => {
     assert.match(terminal.transcript, /Plan feedback >/u);
   });
 
+  it("does not silently truncate long plan adjustment feedback", async () => {
+    const feedback = `${"detail ".repeat(800)}PLAN-FEEDBACK-TAIL`;
+    const terminal = new ScriptedPlanTerminal([feedback]);
+    const decision = await terminal.reviewPlan();
+    assert.equal(decision.action, "adjust");
+    if (decision.action !== "adjust") return;
+    assert.equal(decision.feedback, feedback);
+    assert.match(decision.feedback, /PLAN-FEEDBACK-TAIL$/u);
+  });
+
   it("keeps multiline pasted adjustment feedback intact until explicit Enter", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();

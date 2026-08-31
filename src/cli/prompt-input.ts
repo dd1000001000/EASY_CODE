@@ -41,6 +41,12 @@ export interface PromptInputSession {
    * consumer beside readline.
    */
   suspendInput(): boolean;
+  /**
+   * Feed raw terminal bytes into the preserved readline editor while another
+   * UI owns physical stdin. Input is accepted only for an active, suspended
+   * session and still passes through the normal paste/image/marker pipeline.
+   */
+  feedInput(chunk: Buffer | string): boolean;
   /** Restore a session previously suspended with suspendInput(). */
   resumeInput(options?: { readonly discardLeadingModalControls?: boolean }): void;
   /**
@@ -81,6 +87,10 @@ export interface ReadPromptOptions {
   ) => void | Promise<void>;
   /** Toggle one live Thinking panel from the private VS Code mouse protocol. */
   readonly onToggleThinking?: (
+    id: number,
+  ) => void | Promise<void>;
+  /** Toggle one live queued-adjustment disclosure from the VS Code protocol. */
+  readonly onToggleAdjustment?: (
     id: number,
   ) => void | Promise<void>;
   readonly onSessionReady?: (
@@ -135,12 +145,21 @@ export const VSCODE_SHOW_THINKING_SEQUENCE_PREFIX =
   "\u001B]6973;easy-code;show-thinking;";
 export const VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX =
   "\u001B]6973;easy-code;toggle-thinking;";
+export const VSCODE_TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX =
+  "\u001B]6973;easy-code;toggle-adjustment;";
 
 export function vscodeToggleThinkingSequence(id: number): string {
   if (!Number.isSafeInteger(id) || id <= 0) {
     throw new Error("Thinking block ID must be a positive safe integer");
   }
   return `${VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX}${id}\u0007`;
+}
+
+export function vscodeToggleAdjustmentSequence(id: number): string {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error("Adjustment ID must be a positive safe integer");
+  }
+  return `${VSCODE_TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX}${id}\u0007`;
 }
 
 /** @deprecated Compatibility helper for already-installed VS Code clients. */
@@ -168,6 +187,7 @@ type PrivateOscParseResult =
       readonly action:
         | { readonly type: "paste-image" }
         | { readonly type: "toggle-thinking"; readonly id: number }
+        | { readonly type: "toggle-adjustment"; readonly id: number }
         | { readonly type: "ignore" };
     };
 
@@ -214,6 +234,17 @@ function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
       };
     }
   }
+  const adjustment = /^toggle-adjustment;([1-9][0-9]{0,15})$/u.exec(payload);
+  if (adjustment) {
+    const id = Number(adjustment[1]);
+    if (Number.isSafeInteger(id)) {
+      return {
+        status: "complete",
+        length,
+        action: { type: "toggle-adjustment", id },
+      };
+    }
+  }
   return { status: "complete", length, action: { type: "ignore" } };
 }
 
@@ -231,6 +262,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
     private readonly source: PromptInput,
     private readonly onToggleThinking?: (id: number) => void,
     private readonly onInterrupt?: () => void,
+    private readonly onToggleAdjustment?: (id: number) => void,
   ) {
     super();
   }
@@ -282,6 +314,8 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
         if (privateOsc.status === "complete") {
           if (privateOsc.action.type === "toggle-thinking") {
             this.onToggleThinking?.(privateOsc.action.id);
+          } else if (privateOsc.action.type === "toggle-adjustment") {
+            this.onToggleAdjustment?.(privateOsc.action.id);
           }
           // Private messages are always consumed. Callers without a toggle
           // callback intentionally swallow them while another input UI owns
@@ -390,6 +424,9 @@ class ImagePasteInputProxy extends Transform {
       id: number | "last",
     ) => void | Promise<void>,
     private readonly onToggleThinking?: (
+      id: number,
+    ) => void | Promise<void>,
+    private readonly onToggleAdjustment?: (
       id: number,
     ) => void | Promise<void>,
     private readonly onAtomicBackspace?: () => boolean,
@@ -701,6 +738,8 @@ class ImagePasteInputProxy extends Transform {
             output.push(...Buffer.from(this.beginCaptureMarker(), "utf8"));
           } else if (privateOsc.action.type === "toggle-thinking") {
             await this.onToggleThinking?.(privateOsc.action.id);
+          } else if (privateOsc.action.type === "toggle-adjustment") {
+            await this.onToggleAdjustment?.(privateOsc.action.id);
           }
           offset += privateOsc.length;
           continue;
@@ -979,10 +1018,43 @@ export function readPrompt(
   let bracketedPasteEnabled = false;
   let inputConnected = false;
   let inputSuspended = false;
+  let readlineOutputMuted = false;
   let connectInput = (): void => undefined;
   let disconnectInput = (): void => undefined;
   let renderedPrompt = options.prompt;
   let rl!: readline.Interface;
+
+  // readline remains the canonical editor while a full-screen disclosure UI
+  // owns the terminal. Proxying only readline's output lets its state machine
+  // continue processing injected bytes without letting its prompt repaint over
+  // the alternate-screen renderer. All ordinary output still uses the real
+  // stream in `options.output`.
+  const writeReadlineOutput = (...args: unknown[]): boolean => {
+    if (readlineOutputMuted) {
+      const callback = args.at(-1);
+      if (typeof callback === "function") {
+        queueMicrotask(() => {
+          try {
+            (callback as () => void)();
+          } catch {
+            // Writable callbacks are observational; a consumer callback must
+            // not break the canonical editor while its output is muted.
+          }
+        });
+      }
+      return true;
+    }
+    return (options.output.write as unknown as (
+      ...values: unknown[]
+    ) => boolean).apply(options.output, args);
+  };
+  const readlineOutput = new Proxy(options.output, {
+    get(target, property): unknown {
+      if (property === "write") return writeReadlineOutput;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as PromptOutput;
 
   const resolvePrompt = (): string => {
     if (!options.renderPrompt) return renderedPrompt;
@@ -1187,8 +1259,9 @@ export function readPrompt(
     writeAbove(text: string): void {
       if (!text || !suspendPrompt()) return;
       try {
-        const atLineStart = stripTerminalControls(text).endsWith("\n");
-        options.output.write(atLineStart ? text : `${text}\n`);
+        const safe = sanitizeTerminalText(text, { allowSgr: true });
+        const atLineStart = stripTerminalControls(safe).endsWith("\n");
+        options.output.write(atLineStart ? safe : `${safe}\n`);
       } finally {
         resumePrompt();
       }
@@ -1198,19 +1271,47 @@ export function readPrompt(
       if (!promptActive) return false;
       if (inputSuspended) return true;
       if (!suspendPrompt()) return false;
+      // The prompt is now physically erased. Mute readline before releasing
+      // stdin so feedInput() can edit the same buffer without drawing a second
+      // prompt underneath the alternate-screen owner.
+      readlineOutputMuted = true;
+      latestPromptEndPosition = undefined;
       disconnectInput();
       input.pause();
       inputSuspended = true;
       return true;
+    },
+    feedInput(chunk: Buffer | string): boolean {
+      if (
+        !promptActive ||
+        !inputSuspended ||
+        proxy.destroyed ||
+        proxy.writableEnded
+      ) {
+        return false;
+      }
+      try {
+        // Writing to the existing proxy preserves bracketed-paste expansion,
+        // image capture, atomic marker deletion, readline cursor movement, and
+        // serialized line submission exactly as physical stdin does.
+        proxy.write(chunk);
+        return true;
+      } catch {
+        return false;
+      }
     },
     resumeInput(options): void {
       if (!promptActive || !inputSuspended) return;
       if (options?.discardLeadingModalControls) {
         proxy.discardLeadingModalControls();
       }
-      connectInput();
       inputSuspended = false;
+      readlineOutputMuted = false;
       resumePrompt();
+      // Reconnect only after the preserved prompt is visible. pipe() can make
+      // an already-buffered TTY flow synchronously, so connecting first could
+      // echo keys into a prompt that is still suspended.
+      connectInput();
     },
     async flushSubmissions(): Promise<void> {
       await proxy.flushPendingInput();
@@ -1240,6 +1341,16 @@ export function readPrompt(
         if (!suspendPrompt()) return;
         try {
           await options.onToggleThinking?.(id);
+        } finally {
+          resumePrompt();
+        }
+      }
+    : undefined;
+  const toggleAdjustment = options.onToggleAdjustment
+    ? async (id: number): Promise<void> => {
+        if (!suspendPrompt()) return;
+        try {
+          await options.onToggleAdjustment?.(id);
         } finally {
           resumePrompt();
         }
@@ -1299,6 +1410,7 @@ export function readPrompt(
     options.textOnlyPaste ?? false,
     showThinking,
     toggleThinking,
+    toggleAdjustment,
     deleteAtomicMarker,
     replaceAtomicMarker,
     Boolean(options.keepOpen && options.onInterrupt),
@@ -1308,7 +1420,7 @@ export function readPrompt(
   );
   rl = readline.createInterface({
     input: proxy,
-    output: options.output,
+    output: readlineOutput,
     terminal: true,
   });
   notifyDraft = (): void => {
@@ -1381,6 +1493,8 @@ export function readPrompt(
       }
       if (wasFlowing) input.resume();
       else input.pause();
+      inputSuspended = false;
+      readlineOutputMuted = false;
       try {
         options.onDraftChange?.({ text: "", cursor: 0, images: [] });
       } catch {
@@ -1427,7 +1541,10 @@ export function readPrompt(
       latestPromptEndPosition = undefined;
     };
     const onLine = (answer: string): void => {
-      eraseSubmittedPrompt();
+      // During alternate-screen editing there is no physical readline prompt
+      // to erase. Its last pre-suspension geometry is intentionally discarded
+      // by suspendInput().
+      if (!inputSuspended) eraseSubmittedPrompt();
       if (!options.keepOpen || !options.onSubmit) {
         finish(answer);
         return;
@@ -1443,6 +1560,10 @@ export function readPrompt(
           .then(() => options.onSubmit?.(submission))
           .then(() => undefined)
           .catch(() => undefined);
+      }
+      if (inputSuspended) {
+        suspendedLine = rl.line;
+        suspendedCursor = rl.cursor;
       }
       notifyDraft();
       if (!promptActive || inputSuspended) return;
@@ -1466,6 +1587,7 @@ export function readPrompt(
       finish();
     };
     const onBeforeKeypress = (): void => {
+      if (inputSuspended) return;
       eraseBelow();
       if (options.clearOnSubmit) {
         latestPromptEndPosition = promptGeometry().endPosition;
@@ -1474,8 +1596,12 @@ export function readPrompt(
     const onAfterKeypress = (): void => {
       // One input chunk can contain a large paste. Redraw once after readline
       // consumes the burst instead of once for every decoded character.
+      if (inputSuspended) {
+        suspendedLine = rl.line;
+        suspendedCursor = rl.cursor;
+      }
       notifyDraft();
-      scheduleBelowDraw();
+      if (!inputSuspended) scheduleBelowDraw();
     };
     const onBeforeResize = (): void => {
       resizeInProgress = true;
@@ -1488,7 +1614,9 @@ export function readPrompt(
         // Leave readline's repaint visible and internally synchronized. A
         // later resize can now replace it without walking into stable output;
         // resumePrompt() removes it once when the async action settles.
-        suspendedPromptVisibleAfterResize = true;
+        // readline receives the resize event through its proxied output, but
+        // cannot have repainted while the alternate-screen owner muted it.
+        suspendedPromptVisibleAfterResize = !readlineOutputMuted;
         return;
       }
       drawBelow();
@@ -1503,7 +1631,12 @@ export function readPrompt(
       finish();
       return;
     }
-    if (options.renderBelow || options.renderPrompt || options.clearOnSubmit) {
+    if (
+      options.renderBelow ||
+      options.renderPrompt ||
+      options.clearOnSubmit ||
+      options.onDraftChange
+    ) {
       // readline's own keypress/resize listeners remain the sole owners of the
       // edit buffer. We only clear decoration immediately before their redraw
       // and restore it immediately afterward.

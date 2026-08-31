@@ -1068,6 +1068,31 @@ export class EasyCodeApp {
         }
         return false;
       }
+      case "adjustment": {
+        if (command.args.length > 1) {
+          throw new Error("Usage: /adjustment [id|last]");
+        }
+        const rawTarget = command.args[0]?.toLowerCase();
+        let target: number | "last" = "last";
+        if (rawTarget && rawTarget !== "last") {
+          if (!/^[1-9][0-9]{0,15}$/u.test(rawTarget)) {
+            throw new Error("Usage: /adjustment [id|last]");
+          }
+          const id = Number(rawTarget);
+          if (!Number.isSafeInteger(id)) {
+            throw new Error("Usage: /adjustment [id|last]");
+          }
+          target = id;
+        }
+        if (!this.terminal.showAdjustment(target)) {
+          this.terminal.info(
+            target === "last"
+              ? "No queued adjustment is available in this thread."
+              : `Queued adjustment #${target} is not available in this thread.`,
+          );
+        }
+        return false;
+      }
       case "sessions":
         this.printSessions();
         return false;
@@ -1414,6 +1439,11 @@ export class EasyCodeApp {
             capturedSteeringImages.delete(attachment.id);
           }
           steeringNotifier.notify(entry.sequence);
+          this.terminal.addQueuedAdjustment(
+            entry.sequence,
+            text,
+            submission.images,
+          );
           try {
             // Commit only removes orphan markers after the message reference
             // is durable, matching initial-turn image ordering.
@@ -1427,12 +1457,6 @@ export class EasyCodeApp {
             );
             return;
           }
-          this.terminal.info(
-            `Queued adjustment #${entry.sequence}` +
-              (submission.images.length
-                ? ` with ${submission.images.map((image) => image.label).join(", ")}.`
-                : "."),
-          );
         },
       });
       const runtime = this.createRuntime(presentReasoning, steeringNotifier);
@@ -1563,7 +1587,12 @@ export class EasyCodeApp {
         }
       },
       onToolCompleted: async (_state, toolName, result) => {
-        this.terminal.toolCompleted(toolName, result.ok, result.summary);
+        this.terminal.toolCompleted(
+          toolName,
+          result.ok,
+          result.summary,
+          result.error,
+        );
         let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
         if (result.ok && result.subagentLifecycle) {
           const artifacts = this.subagentCoordinator.commitLifecycle(

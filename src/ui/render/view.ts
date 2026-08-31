@@ -284,22 +284,10 @@ export function renderThinkingPanel(
   const columns = viewColumns(options);
   const palette = viewPalette(options);
   const innerWidth = Math.max(1, columns - 2);
-  const maximumRows = boundedOption(
-    options.maxThinkingRows ?? options.maxThinkingLines,
-    MAX_THINKING_PANEL_ROWS,
-    1,
-    40,
-  );
   const content = ("body" in panel ? panel.body : panel.text) ||
     "(No visible Thinking text.)";
-  const wrapped = limitedWrappedLineResult(content, innerWidth, maximumRows);
-  const body = wrapped.lines.map((line) => palette.gray(`  ${line}`));
-  if (wrapped.truncated) {
-    body.push(palette.gray(
-      `  … ${wrapped.totalLines - maximumRows} more wrapped row(s); ` +
-        `/thinking ${panel.id} shows all retained content.`,
-    ));
-  }
+  const body = wrapToWidth(content, innerWidth, { preserveAnsi: false })
+    .map((line) => palette.gray(`  ${line}`));
   if (panel.truncated) {
     const source = panel.sourceLines !== undefined && panel.sourceChars !== undefined
       ? ` from ${panel.sourceLines} lines / ${panel.sourceChars} chars`

@@ -74,6 +74,29 @@ describe("terminal UI layout", () => {
     }
   });
 
+  it("replays SGR styles on every independently paintable wrapped row", () => {
+    const wrapped = wrapToWidth(
+      "\u001B[90mabcdefgh\u001B[0m",
+      3,
+      { preserveAnsi: true },
+    );
+
+    assert.deepEqual(wrapped.map(stripAnsi), ["abc", "def", "gh"]);
+    for (const row of wrapped) {
+      assert.ok(row.startsWith("\u001B[90m"));
+      assert.ok(row.endsWith("\u001B[0m"));
+    }
+
+    const explicitRows = wrapToWidth(
+      "\u001B[2mfirst\nsecond\u001B[0m",
+      80,
+      { preserveAnsi: true },
+    );
+    assert.deepEqual(explicitRows.map(stripAnsi), ["first", "second"]);
+    assert.ok(explicitRows[1]?.startsWith("\u001B[2m"));
+    assert.ok(explicitRows[1]?.endsWith("\u001B[0m"));
+  });
+
   it("clamps cursor columns to wide-character boundaries", () => {
     assert.equal(clampVisualColumn("a中b", 0), 0);
     assert.equal(clampVisualColumn("a中b", 2), 1);

@@ -14,14 +14,12 @@ export interface SubagentRenderOptions {
   readonly concurrencyLimit?: number;
 }
 
-function safeInline(value: string, maximum: number): string {
-  const safe = redactSensitiveInformation(
+function safeInline(value: string): string {
+  return redactSensitiveInformation(
     sanitizeCommandOutput(stripTerminalControls(value)),
   )
     .replace(/\s+/gu, " ")
     .trim();
-  if (safe.length <= maximum) return safe;
-  return `${safe.slice(0, Math.max(0, maximum - 1))}…`;
 }
 
 function isActive(status: SubagentStatus): boolean {
@@ -35,9 +33,9 @@ function environmentDetails(
   const effectiveIsolation = agent.environment?.kind ?? "pending";
   const environmentStatus = agent.environment?.status ?? "pending";
   return palette.gray(
-    `  thread ${safeInline(agent.childThreadId, 80)} · ` +
+    `  thread ${safeInline(agent.childThreadId)} · ` +
     `isolation ${agent.requestedIsolation} → ${effectiveIsolation} · ` +
-    `environment ${safeInline(agent.environmentId, 80)} (${environmentStatus})`,
+    `environment ${safeInline(agent.environmentId)} (${environmentStatus})`,
   );
 }
 
@@ -64,12 +62,12 @@ function resultDetails(
   const handoffStatus = artifact.delivery === "local"
     ? "local"
     : artifact.delivery === "branch"
-      ? `branch ${safeInline(artifact.branchName ?? "unknown", 80)}`
+      ? `branch ${safeInline(artifact.branchName ?? "unknown")}`
       : artifact.environmentKind === "shared"
         ? "shared workspace"
         : "pending";
   return palette.gray(
-    `  artifact ${safeInline(artifact.id, 80)} (${artifact.status}) · ` +
+    `  artifact ${safeInline(artifact.id)} (${artifact.status}) · ` +
     `${changedFiles} · handoff ${handoffStatus}`,
   );
 }
@@ -98,12 +96,12 @@ export function renderSubagents(
       ? tasks.findIndex((task) => task.id === agent.taskId)
       : -1;
     const taskLabel = agent.assignmentKind === "standalone"
-      ? `Standalone [${safeInline(agent.taskId, 48)}]`
+      ? `Standalone [${safeInline(agent.taskId)}]`
       : `${currentTaskIndex >= 0 ? `Task ${currentTaskIndex + 1} ` : "Task "}` +
-        `[${safeInline(agent.taskId, 48)}]`;
+        `[${safeInline(agent.taskId)}]`;
     const label =
-      `${index + 1}. ${safeInline(agent.id, 72)} · ${taskLabel} ` +
-      `${safeInline(agent.taskTitle, 160)} ` +
+      `${index + 1}. ${safeInline(agent.id)} · ${taskLabel} ` +
+      `${safeInline(agent.taskTitle)} ` +
       `(${agent.status})`;
 
     let statusLine: string;

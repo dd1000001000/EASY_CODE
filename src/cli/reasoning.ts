@@ -6,11 +6,7 @@ import {
 } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 
-const DEFAULT_MAX_REASONING_CHARS = 12_000;
-const DEFAULT_MAX_REASONING_LINES = 120;
-const DEFAULT_MAX_REASONING_LINE_CHARS = 1_000;
 const DEFAULT_REASONING_PREVIEW_CHARS = 160;
-const MAX_RETAINED_REASONING_BLOCKS = 256;
 
 export interface ReasoningRenderLimits {
   readonly maxChars?: number;
@@ -41,6 +37,15 @@ function boundedInteger(
   return Math.max(1, Math.min(Math.trunc(value), maximum));
 }
 
+function optionalBoundedInteger(
+  value: number | undefined,
+  maximum: number,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value)) return undefined;
+  return Math.max(1, Math.min(Math.trunc(value), maximum));
+}
+
 function countText(value: string): { chars: number; lines: number } {
   let chars = 0;
   let lines = value ? 1 : 0;
@@ -67,26 +72,21 @@ function takeCodePoints(
   return { text: value, truncated: false };
 }
 
-/** Prepare an untrusted provider reasoning field for bounded terminal display. */
+/**
+ * Prepare an untrusted provider reasoning field for terminal display.
+ *
+ * The default path deliberately retains the complete sanitized provider value.
+ * Optional limits remain available to callers that explicitly need a bounded
+ * diagnostic fixture, but presentation defaults must never destroy Thinking
+ * content before the user asks to expand or inspect it.
+ */
 export function prepareReasoningText(
   value: string,
   limits: ReasoningRenderLimits = {},
 ): Omit<ReasoningBlock, "id"> {
-  const maxChars = boundedInteger(
-    limits.maxChars,
-    DEFAULT_MAX_REASONING_CHARS,
-    100_000,
-  );
-  const maxLines = boundedInteger(
-    limits.maxLines,
-    DEFAULT_MAX_REASONING_LINES,
-    2_000,
-  );
-  const maxLineChars = boundedInteger(
-    limits.maxLineChars,
-    DEFAULT_MAX_REASONING_LINE_CHARS,
-    10_000,
-  );
+  const maxChars = optionalBoundedInteger(limits.maxChars, 10_000_000);
+  const maxLines = optionalBoundedInteger(limits.maxLines, 100_000);
+  const maxLineChars = optionalBoundedInteger(limits.maxLineChars, 1_000_000);
   const normalized = value.replace(/\r\n/gu, "\n").replace(/\r/gu, "\n");
   const source = countText(normalized);
   // Strip terminal controls before the second, broader redaction pass. This
@@ -95,21 +95,26 @@ export function prepareReasoningText(
   const safe = redactSensitiveInformation(
     sanitizeCommandOutput(stripTerminalControls(normalized)),
   ).replace(/\t/gu, "    ");
-  // A split limit prevents a provider response with millions of newlines from
-  // allocating a correspondingly large array before the display is bounded.
-  const candidateLines = safe.split("\n", maxLines + 1);
-  let truncated = candidateLines.length > maxLines;
-  const retainedLines = candidateLines.slice(0, maxLines).map((line) => {
-    const retained = takeCodePoints(line, maxLineChars);
-    if (!retained.truncated) return retained.text;
-    truncated = true;
-    return `${retained.text}… [line truncated]`;
-  });
+  const candidateLines = maxLines === undefined
+    ? safe.split("\n")
+    : safe.split("\n", maxLines + 1);
+  let truncated = maxLines !== undefined && candidateLines.length > maxLines;
+  const retainedLines = (maxLines === undefined
+    ? candidateLines
+    : candidateLines.slice(0, maxLines)).map((line) => {
+      if (maxLineChars === undefined) return line;
+      const retained = takeCodePoints(line, maxLineChars);
+      if (!retained.truncated) return retained.text;
+      truncated = true;
+      return `${retained.text}… [line truncated]`;
+    });
   let text = retainedLines.join("\n").trim();
-  const retainedText = takeCodePoints(text, maxChars);
-  if (retainedText.truncated) {
-    text = `${retainedText.text}…`;
-    truncated = true;
+  if (maxChars !== undefined) {
+    const retainedText = takeCodePoints(text, maxChars);
+    if (retainedText.truncated) {
+      text = `${retainedText.text}…`;
+      truncated = true;
+    }
   }
   return {
     text,
@@ -119,7 +124,7 @@ export function prepareReasoningText(
   };
 }
 
-/** Bounded in-process registry; IDs remain monotonic even after clear(). */
+/** Thread-local registry; IDs remain monotonic even after clear(). */
 export class ReasoningRegistry {
   private readonly blocks = new Map<number, ReasoningBlock>();
   private nextId = 1;
@@ -138,11 +143,6 @@ export class ReasoningRegistry {
     this.nextId += 1;
     this.latestId = block.id;
     this.blocks.set(block.id, block);
-    while (this.blocks.size > MAX_RETAINED_REASONING_BLOCKS) {
-      const oldest = this.blocks.keys().next().value as number | undefined;
-      if (oldest === undefined) break;
-      this.blocks.delete(oldest);
-    }
     return block;
   }
 
