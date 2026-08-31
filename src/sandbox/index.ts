@@ -4,3 +4,6 @@ export * from "./control.js";
 export * from "./startup.js";
 export * from "./unrestricted-host-backend.js";
 export * from "./types.js";
+export * from "./windows-acl-preflight.js";
+export * from "./windows-sandbox-read-probe.js";
+export * from "./windows-workspace-repair.js";

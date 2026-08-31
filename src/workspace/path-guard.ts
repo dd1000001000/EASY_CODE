@@ -61,16 +61,20 @@ export class WorkspacePathGuard {
 
     // Treat both separators as boundaries even when tests emulate another OS.
     const segments = input.split(/[\\/]+/u);
+    const significantSegments = segments.filter((segment) => segment && segment !== ".");
     if (segments.some((segment) => segment === "..")) {
       throw new Error("Parent-directory traversal is not allowed");
     }
     if (segments.some((segment) => segment.toLowerCase() === ".git")) {
       throw new Error("Git control paths are reserved for the EASY CODE Runtime");
     }
+    if (significantSegments[0]?.toLowerCase() === ".easy-code-srt-runtime") {
+      throw new Error("Sandbox scratch paths are reserved for the EASY CODE Runtime");
+    }
     if (
-      segments.length >= 2 &&
-      segments[0]?.toLowerCase() === ".easycode" &&
-      segments[1]?.toLowerCase() === "config.toml"
+      significantSegments.length >= 2 &&
+      significantSegments[0]?.toLowerCase() === ".easycode" &&
+      significantSegments[1]?.toLowerCase() === "config.toml"
     ) {
       throw new Error("Workspace trust configuration cannot be accessed through agent file tools");
     }

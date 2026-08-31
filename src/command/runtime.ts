@@ -379,6 +379,9 @@ export class CommandRuntime {
     const targetSpawnError = extractedStderr.controls.find((control) =>
       control.type === "target_spawn_error"
     );
+    const lastSandboxStage = [...extractedStderr.controls].reverse().find((control) =>
+      control.type === "stage"
+    );
     const sandboxReady = !prepared.metadata.enforced ||
       extractedStderr.controls.some((control) => control.type === "ready");
     const sandboxUnavailableMessage = sandboxError?.type === "sandbox_error"
@@ -386,7 +389,10 @@ export class CommandRuntime {
       : !sandboxReady
         ? timeoutPhase === "initialization" || result.timedOut
           ? `OS sandbox initialization did not become ready within ${sandboxStartupTimeoutMs}ms; ` +
-            "the target process was not confirmed started"
+            "the target process was not confirmed started" +
+            (lastSandboxStage?.type === "stage"
+              ? ` (last worker stage: ${lastSandboxStage.stage})`
+              : " (the worker reported no startup stage)")
           : "Sandbox worker exited without confirming that enforcement was active"
         : undefined;
     const reportedStderr = sandboxUnavailableMessage

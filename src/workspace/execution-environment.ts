@@ -31,6 +31,22 @@ import { WorkspacePathGuard } from "./path-guard.js";
 const MAX_INCLUDED_FILES = 2_000;
 const MAX_INCLUDED_BYTES = 128 * 1024 * 1024;
 const ENVIRONMENT_SCHEMA_VERSION = 1;
+function runtimeScratchGitExcludes(relativeWorkspace: string): readonly string[] {
+  const normalizedWorkspace = relativeWorkspace.split(path.sep).join("/").replace(/^\.\//u, "");
+  if (
+    normalizedWorkspace === ".." ||
+    normalizedWorkspace.startsWith("../") ||
+    path.posix.isAbsolute(normalizedWorkspace)
+  ) {
+    throw new Error("Cannot build Runtime scratch exclusions outside the repository");
+  }
+  const reservedRoot = normalizedWorkspace
+    ? `${normalizedWorkspace}/.easy-code-srt-runtime`
+    : ".easy-code-srt-runtime";
+  // A literal directory pathspec applies recursively to its descendants while
+  // keeping valid Windows filename characters such as '[' out of Git's glob parser.
+  return [`:(top,exclude,literal)${reservedRoot}`];
+}
 
 interface PersistedEnvironment {
   schemaVersion: number;
@@ -160,6 +176,9 @@ export class ExecutionEnvironmentManager {
     if (!kind) {
       throw new Error("Worktree isolation requires the workspace to be inside a Git repository");
     }
+    if (kind === "worktree" && repository) {
+      await assertRuntimeScratchIsUntracked(repository, this.logicalWorkspaceRoot);
+    }
     const dependencyArtifacts = [...(input.dependencyArtifacts ?? [])];
     for (const artifact of dependencyArtifacts) {
       if (artifact.status === "conflicted" || artifact.status === "retained") {
@@ -220,6 +239,7 @@ export class ExecutionEnvironmentManager {
     const executionRoot = relativeWorkspace
       ? path.join(managedRoot, relativeWorkspace)
       : managedRoot;
+    const scratchExcludes = runtimeScratchGitExcludes(relativeWorkspace);
     const descriptor: ExecutionEnvironmentSnapshot = {
       id,
       agentId: input.agentId,
@@ -271,13 +291,14 @@ export class ExecutionEnvironmentManager {
       if (dependencyCommits.length > 1) {
         await mergeDependencyCommits(managedRoot, dependencyCommits.slice(1), descriptor);
       } else if (dependencyCommits.length === 0 && this.baseMode === "current-snapshot") {
-        await applyCurrentWorkspaceSnapshot(repositoryRoot, managedRoot);
+        await applyCurrentWorkspaceSnapshot(repositoryRoot, managedRoot, scratchExcludes);
       }
 
-      await copyWorktreeIncludes(repositoryRoot, managedRoot);
+      await copyWorktreeIncludes(repositoryRoot, managedRoot, scratchExcludes);
       descriptor.baselineCommit = await checkpointWorktree(
         managedRoot,
         "EASY CODE internal baseline snapshot",
+        scratchExcludes,
       );
       const dependencyBases = uniqueNonEmpty(
         dependencyArtifacts.flatMap((artifact) =>
@@ -390,6 +411,9 @@ export class ExecutionEnvironmentManager {
       descriptor.resultCommit = await checkpointWorktree(
         descriptor.worktreeRoot,
         `EASY CODE resumable checkpoint for ${descriptor.id}`,
+        runtimeScratchGitExcludes(
+          path.relative(descriptor.worktreeRoot, descriptor.executionRoot),
+        ),
       );
       descriptor.snapshotRef = environmentRef(descriptor.id, "result");
       await git(descriptor.repositoryRoot, [
@@ -430,9 +454,13 @@ export class ExecutionEnvironmentManager {
         descriptor.baseCommit;
       if (!baseline) throw new Error(`Worktree environment ${descriptor.id} has no baseline`);
       artifactBaseCommit = baseline;
+      const scratchExcludes = runtimeScratchGitExcludes(
+        path.relative(descriptor.worktreeRoot, descriptor.executionRoot),
+      );
       descriptor.resultCommit = await checkpointWorktree(
         descriptor.worktreeRoot,
         `EASY CODE result for ${input.agentId} / ${input.taskId}`,
+        scratchExcludes,
       );
       descriptor.snapshotRef = environmentRef(descriptor.id, "result");
       await git(descriptor.repositoryRoot, [
@@ -442,7 +470,16 @@ export class ExecutionEnvironmentManager {
       ]);
       changedFiles = nulList(await git(
         descriptor.repositoryRoot,
-        ["diff", "--name-only", "-z", baseline, descriptor.resultCommit, "--"],
+        [
+          "diff",
+          "--name-only",
+          "-z",
+          baseline,
+          descriptor.resultCommit,
+          "--",
+          ".",
+          ...scratchExcludes,
+        ],
       ));
       descriptor.status = input.accepted ? "result_ready" : "retained";
     } else {
@@ -537,12 +574,17 @@ export class ExecutionEnvironmentManager {
       artifact.delivery = "branch";
       artifact.branchName = branchName;
     } else {
+      const scratchExcludes = runtimeScratchGitExcludes(
+        path.relative(repositoryRoot, artifact.logicalWorkspaceRoot),
+      );
       const patch = await git(repositoryRoot, [
         "diff",
         "--binary",
         artifact.baseCommit,
         artifact.resultCommit,
         "--",
+        ".",
+        ...scratchExcludes,
       ]);
       if (patch.length > 0) {
         let alreadyApplied = false;
@@ -597,10 +639,16 @@ export class ExecutionEnvironmentManager {
     }
     if (existsSync(descriptor.worktreeRoot)) {
       await verifyManagedWorktree(descriptor.repositoryRoot, descriptor.worktreeRoot);
+      const scratchExcludes = runtimeScratchGitExcludes(
+        path.relative(descriptor.worktreeRoot, descriptor.executionRoot),
+      );
       const status = await git(descriptor.worktreeRoot, [
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
+        "--",
+        ".",
+        ...scratchExcludes,
       ]);
       if (status.trim() && !force) {
         descriptor.status = "retained";
@@ -608,6 +656,7 @@ export class ExecutionEnvironmentManager {
         await this.persistEnvironment(descriptor);
         return descriptor;
       }
+      await removeValidatedRuntimeScratch(descriptor.executionRoot);
       await git(descriptor.repositoryRoot, [
         "worktree",
         "remove",
@@ -782,6 +831,54 @@ export class ExecutionEnvironmentManager {
   }
 }
 
+async function removeValidatedRuntimeScratch(executionRoot: string): Promise<void> {
+  const scratchRoot = path.join(executionRoot, ".easy-code-srt-runtime");
+  let info;
+  try {
+    info = await lstat(scratchRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) {
+    throw new Error("Refusing to remove a linked or non-directory Runtime scratch root");
+  }
+  const canonical = await realpath(scratchRoot);
+  if (normalizePathIdentity(canonical) !== normalizePathIdentity(scratchRoot)) {
+    throw new Error("Refusing to remove a redirected Runtime scratch root");
+  }
+  await rm(scratchRoot, { recursive: true, force: true });
+  try {
+    await lstat(scratchRoot);
+    throw new Error("Runtime scratch root remained after cleanup");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function assertRuntimeScratchIsUntracked(
+  repositoryRoot: string,
+  logicalWorkspaceRoot: string,
+): Promise<void> {
+  const relativeWorkspace = path.relative(repositoryRoot, logicalWorkspaceRoot)
+    .split(path.sep)
+    .join("/");
+  const reservedRoot = relativeWorkspace
+    ? `${relativeWorkspace}/.easy-code-srt-runtime`
+    : ".easy-code-srt-runtime";
+  const tracked = nulList(await git(repositoryRoot, [
+    "ls-files",
+    "-z",
+    "--",
+    `:(top,literal)${reservedRoot}`,
+  ]));
+  if (tracked.length > 0) {
+    throw new Error(
+      `Git tracks the EASY CODE Runtime-reserved path ${reservedRoot}; move or untrack it before using Worktree isolation`,
+    );
+  }
+}
+
 async function discoverRepository(workspaceRoot: string): Promise<string | undefined> {
   try {
     return path.normalize((await git(workspaceRoot, ["rev-parse", "--show-toplevel"])).trim());
@@ -812,8 +909,16 @@ async function resolveBaseCommit(
 async function applyCurrentWorkspaceSnapshot(
   repositoryRoot: string,
   worktreeRoot: string,
+  scratchExcludes: readonly string[],
 ): Promise<void> {
-  const patch = await git(repositoryRoot, ["diff", "--binary", "HEAD", "--"]);
+  const patch = await git(repositoryRoot, [
+    "diff",
+    "--binary",
+    "HEAD",
+    "--",
+    ".",
+    ...scratchExcludes,
+  ]);
   if (patch.length > 0) {
     await git(worktreeRoot, ["apply", "--whitespace=nowarn", "-"], patch);
   }
@@ -822,11 +927,18 @@ async function applyCurrentWorkspaceSnapshot(
     "--others",
     "--exclude-standard",
     "-z",
+    "--",
+    ".",
+    ...scratchExcludes,
   ]));
   await copyRepositoryPaths(repositoryRoot, worktreeRoot, untracked);
 }
 
-async function copyWorktreeIncludes(repositoryRoot: string, worktreeRoot: string): Promise<void> {
+async function copyWorktreeIncludes(
+  repositoryRoot: string,
+  worktreeRoot: string,
+  scratchExcludes: readonly string[],
+): Promise<void> {
   const includePath = path.join(repositoryRoot, ".worktreeinclude");
   let source: string;
   try {
@@ -849,6 +961,7 @@ async function copyWorktreeIncludes(repositoryRoot: string, worktreeRoot: string
       "-z",
       "--",
       pattern,
+      ...scratchExcludes,
     ]))) {
       matches.add(filename);
       if (matches.size > MAX_INCLUDED_FILES) {
@@ -906,10 +1019,17 @@ async function mergeDependencyCommits(
   commits: readonly string[],
   descriptor: ExecutionEnvironmentSnapshot,
 ): Promise<void> {
+  const scratchExcludes = runtimeScratchGitExcludes(
+    path.relative(worktreeRoot, descriptor.executionRoot),
+  );
   for (const commit of commits) {
     try {
       await git(worktreeRoot, ["merge", "--no-ff", "--no-commit", commit]);
-      await checkpointWorktree(worktreeRoot, "EASY CODE dependency integration snapshot");
+      await checkpointWorktree(
+        worktreeRoot,
+        "EASY CODE dependency integration snapshot",
+        scratchExcludes,
+      );
     } catch (error) {
       const files = nulList(await git(worktreeRoot, [
         "diff",
@@ -928,8 +1048,18 @@ async function mergeDependencyCommits(
   }
 }
 
-async function checkpointWorktree(worktreeRoot: string, message: string): Promise<string> {
-  await git(worktreeRoot, ["add", "-A", "--", "."]);
+async function checkpointWorktree(
+  worktreeRoot: string,
+  message: string,
+  scratchExcludes: readonly string[],
+): Promise<string> {
+  await git(worktreeRoot, [
+    "add",
+    "-A",
+    "--",
+    ".",
+    ...scratchExcludes,
+  ]);
   const staged = await git(worktreeRoot, ["diff", "--cached", "--name-only", "-z"]);
   if (staged.length > 0) {
     await git(worktreeRoot, [
