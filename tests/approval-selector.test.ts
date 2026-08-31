@@ -13,11 +13,20 @@ class TtyInput extends PassThrough {
   readonly isTTY = true;
   isRaw = false;
   readonly rawModeTransitions: boolean[] = [];
+  readonly rawModeAtPipe: boolean[] = [];
 
   setRawMode(mode: boolean): this {
     this.isRaw = mode;
     this.rawModeTransitions.push(mode);
     return this;
+  }
+
+  override pipe<T extends NodeJS.WritableStream>(
+    destination: T,
+    options?: { end?: boolean },
+  ): T {
+    this.rawModeAtPipe.push(this.isRaw);
+    return super.pipe(destination, options);
   }
 }
 
@@ -326,6 +335,7 @@ describe("command approval selector", () => {
     const approval = terminal.approve(approvalRequest());
     input.write("\u001B[B\r");
     assert.equal(await approval, "allow_prefix");
+    assert.deepEqual(input.rawModeAtPipe, [true]);
     terminal.close();
 
     const nonTtyOutput = new PassThrough();

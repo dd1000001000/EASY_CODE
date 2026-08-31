@@ -86,12 +86,14 @@ class ThrowingSandboxBackend implements CommandExecutionBackend {
   prepareCalls = 0;
   lastRequest?: SandboxExecutionRequest;
 
+  constructor(private readonly enforced = false) {}
+
   describe(): SandboxExecutionMetadata {
     return {
       backend: "host-test-only",
-      enforced: false,
-      filesystem: "host",
-      network: "host",
+      enforced: this.enforced,
+      filesystem: this.enforced ? "workspace-write" : "host",
+      network: this.enforced ? "denied" : "host",
     };
   }
 
@@ -99,6 +101,28 @@ class ThrowingSandboxBackend implements CommandExecutionBackend {
     this.prepareCalls += 1;
     this.lastRequest = request;
     throw new Error("focused backend preparation failure");
+  }
+}
+
+class NeverReadySandboxBackend implements CommandExecutionBackend {
+  describe(): SandboxExecutionMetadata {
+    return {
+      backend: "anthropic-srt-windows",
+      enforced: true,
+      filesystem: "workspace-write",
+      network: "denied",
+    };
+  }
+
+  async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
+    return {
+      executablePath: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwdAbsolute: request.command.cwdAbsolute,
+      environment: { ...process.env },
+      metadata: this.describe(),
+      cleanup: async () => undefined,
+    };
   }
 }
 
@@ -327,6 +351,18 @@ describe("sandbox command execution boundary", () => {
           true,
         );
         assert.equal(payload.filesystem.denyRead.includes(payloadPath), true);
+        assert.equal(
+          payload.filesystem.denyWrite.includes(
+            `${path.join(root, ".easycode")}${path.sep}`,
+          ),
+          true,
+        );
+        assert.equal(
+          payload.filesystem.denyWrite.includes(
+            `${path.join(root, ".git")}${path.sep}`,
+          ),
+          true,
+        );
       } finally {
         await prepared.cleanup();
         await prepared.cleanup();
@@ -382,6 +418,50 @@ describe("sandbox command execution boundary", () => {
       );
     });
   });
+
+  it("does not leak a sandbox failure cooldown across independent command calls", async () => {
+    await withWorkspace(async (root, manager) => {
+      const backend = new ThrowingSandboxBackend(true);
+      const runtime = new CommandRuntime(manager, new CommandPolicy(), backend);
+      const input = {
+        program: "node",
+        args: ["--version"],
+        intent: "inspect" as const,
+      };
+
+      const first = await runtime.run(input, toolContext(root));
+      const second = await runtime.run(input, toolContext(root));
+
+      assert.equal(first.status, "sandbox_unavailable");
+      assert.equal(second.status, "sandbox_unavailable");
+      assert.equal(backend.prepareCalls, 2);
+      assert.match(first.stderr.text, /focused backend preparation failure/u);
+      assert.match(second.stderr.text, /focused backend preparation failure/u);
+    });
+  });
+
+  it("classifies a timeout before the ready marker as sandbox initialization failure", async () => {
+    await withWorkspace(async (root, manager) => {
+      const runtime = new CommandRuntime(
+        manager,
+        new CommandPolicy(),
+        new NeverReadySandboxBackend(),
+      );
+
+      const output = await runtime.run(
+        {
+          program: "node",
+          args: ["--version"],
+          intent: "inspect",
+          timeoutMs: 50,
+        },
+        toolContext(root),
+      );
+
+      assert.equal(output.status, "sandbox_unavailable");
+      assert.match(output.stderr.text, /not confirmed started/iu);
+    });
+  });
 });
 
 describe("sandbox first-interactive startup guide", () => {
@@ -405,6 +485,8 @@ describe("sandbox first-interactive startup guide", () => {
     assert.equal(setupCalls, 0);
     assert.deepEqual(terminal.choices, []);
     assert.deepEqual(terminal.warningMessages, []);
+    assert.deepEqual(terminal.activities, ["Checking the command sandbox"]);
+    assert.equal(terminal.stopCount, 1);
   });
 
   it("runs setup once, uses its verified readiness, and clears activity", async () => {
@@ -432,8 +514,11 @@ describe("sandbox first-interactive startup guide", () => {
     assert.equal(setupInput, before);
     assert.deepEqual(terminal.choices[0]?.ids, ["setup", "recheck", "continue", "exit"]);
     assert.equal(terminal.choices[0]?.initialId, "setup");
-    assert.deepEqual(terminal.activities, ["Setting up the command sandbox"]);
-    assert.equal(terminal.stopCount, 1);
+    assert.deepEqual(terminal.activities, [
+      "Checking the command sandbox",
+      "Setting up the command sandbox",
+    ]);
+    assert.equal(terminal.stopCount, 2);
     assert.deepEqual(terminal.successMessages, ["Setup and verification completed."]);
   });
 
@@ -468,19 +553,54 @@ describe("sandbox first-interactive startup guide", () => {
 describe("platform sandbox startup service", () => {
   it("recognizes a fully provisioned Windows sandbox", async () => {
     let verifyCalls = 0;
+    let probeCommand: SandboxSystemCommand | undefined;
     const service = new DefaultSandboxStartupService({
       platform: "win32",
+      environment: {},
       loadRuntime: async () => runtimeFixture({
         onVerify: () => {
           verifyCalls += 1;
         },
       }),
+      runWindowsProbeWorker: async (command) => {
+        probeCommand = command;
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      },
     });
 
     const result = await service.inspect();
     assert.equal(result.status, "ready");
     assert.equal(result.canSetup, false);
     assert.equal(verifyCalls, 1);
+    assert.equal(probeCommand?.executablePath, process.execPath);
+    assert.match(probeCommand?.args[0] ?? "", /sandbox-probe-worker\.js$/u);
+    assert.equal(probeCommand?.timeoutMs, 30_000);
+    assert.equal(probeCommand?.environment?.EASY_CODE_SANDBOX_PROBE_WORKER, "1");
+    assert.equal(probeCommand?.environment?.DEEPSEEK_API_KEY, undefined);
+  });
+
+  it("fails a hung Windows ACL probe at the parent-owned deadline", async () => {
+    let workerCalls = 0;
+    const service = new DefaultSandboxStartupService({
+      platform: "win32",
+      environment: { DEEPSEEK_API_KEY: "must-not-reach-probe" },
+      loadRuntime: async () => runtimeFixture(),
+      windowsProbeTimeoutMs: 37,
+      runWindowsProbeWorker: async (command) => {
+        workerCalls += 1;
+        assert.equal(command.timeoutMs, 37);
+        assert.equal(command.environment?.DEEPSEEK_API_KEY, undefined);
+        return { exitCode: null, stdout: "", stderr: "", timedOut: true };
+      },
+    });
+
+    const result = await service.inspect();
+
+    assert.equal(workerCalls, 1);
+    assert.equal(result.status, "probe_failed");
+    assert.equal(result.canSetup, false);
+    assert.match(result.details.join(" "), /timed out after 37ms/iu);
+    assert.match(result.details.join(" "), /process tree was terminated/iu);
   });
 
   it("requires Windows setup, installs once, and verifies the live result", async () => {
@@ -505,7 +625,9 @@ describe("platform sandbox startup service", () => {
     };
     const service = new DefaultSandboxStartupService({
       platform: "win32",
+      environment: {},
       loadRuntime: async () => runtime,
+      probe: async () => undefined,
     });
 
     const before = await service.inspect();
@@ -524,6 +646,7 @@ describe("platform sandbox startup service", () => {
     let installCalls = 0;
     const service = new DefaultSandboxStartupService({
       platform: "win32",
+      environment: {},
       loadRuntime: async () => runtimeFixture({
         windowsReady: () => false,
         installCancelled: () => true,
@@ -539,6 +662,47 @@ describe("platform sandbox startup service", () => {
     assert.equal(result.readiness, before);
     assert.equal(result.readiness.status, "setup_required");
     assert.equal(installCalls, 1);
+  });
+
+  it("fails fast when Windows SRT is nested inside a restricted Codex process", async () => {
+    let runtimeLoads = 0;
+    const service = new DefaultSandboxStartupService({
+      platform: "win32",
+      environment: {
+        CODEX_PERMISSION_PROFILE: ":workspace",
+        CODEX_SANDBOX_NETWORK_DISABLED: "1",
+      },
+      loadRuntime: async () => {
+        runtimeLoads += 1;
+        return runtimeFixture();
+      },
+    });
+
+    const result = await service.inspect();
+
+    assert.equal(result.status, "probe_failed");
+    assert.equal(result.canSetup, false);
+    assert.equal(runtimeLoads, 0);
+    assert.match(result.details.join(" "), /restricted Codex process sandbox/iu);
+    assert.match(result.details.join(" "), /ordinary PowerShell/iu);
+  });
+
+  it("does not mistake a full-access Codex profile for a restricted outer sandbox", async () => {
+    let workerCalls = 0;
+    const service = new DefaultSandboxStartupService({
+      platform: "win32",
+      environment: { CODEX_PERMISSION_PROFILE: ":full" },
+      loadRuntime: async () => runtimeFixture(),
+      runWindowsProbeWorker: async () => {
+        workerCalls += 1;
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      },
+    });
+
+    const result = await service.inspect();
+
+    assert.equal(result.status, "ready");
+    assert.equal(workerCalls, 1);
   });
 
   it("uses only fixed Linux package-manager argv and non-interactive sudo", async () => {

@@ -261,13 +261,52 @@ describe("Terminal retained inline shell", () => {
         const tasksOffset = rendered.lastIndexOf("Tasks 2/3");
         const agentsOffset = rendered.lastIndexOf("Agents 1/4");
         const footerOffset = rendered.lastIndexOf("auto  deepseek/v4-pro");
-        assert.ok(progressOffset >= 0 && progressOffset < activityOffset);
-        assert.ok(activityOffset < composerOffset);
+        assert.ok(progressOffset >= 0 && progressOffset < composerOffset);
         assert.ok(composerOffset < tasksOffset);
         assert.ok(tasksOffset < agentsOffset);
-        assert.ok(agentsOffset < footerOffset);
+        assert.ok(agentsOffset < activityOffset);
+        assert.ok(activityOffset < footerOffset);
       } finally {
         terminal.stopActivity();
+        terminal.close();
+      }
+    });
+  });
+
+  it("uses activity tokens and clears requesting progress only when model activity ends", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Run and verify the command");
+        terminal.status("Step 4/12: requesting deepseek-v4-pro");
+
+        const modelActivity = terminal.startActivity(
+          "Waiting for deepseek-v4-pro response",
+          "model",
+        );
+        assert.equal(typeof modelActivity, "string");
+        assert.equal(terminalState(terminal).live.progress[0]?.kind, "step");
+
+        terminal.stopActivity(modelActivity);
+        assert.equal(terminalState(terminal).live.activity, null);
+        assert.equal(
+          terminalState(terminal).live.progress.some((item) => item.kind === "step"),
+          false,
+        );
+
+        const toolActivity = terminal.startActivity(
+          "Running Tool: run_command",
+          "tool",
+        );
+        assert.equal(terminalState(terminal).live.activity?.kind, "tool");
+        terminal.stopActivity(modelActivity);
+        assert.equal(terminalState(terminal).live.activity?.id, toolActivity);
+        terminal.stopActivity(toolActivity);
+        assert.equal(terminalState(terminal).live.activity, null);
+      } finally {
         terminal.close();
       }
     });
@@ -438,14 +477,19 @@ describe("Terminal retained inline shell", () => {
         assert.equal(activeState.live.progress.at(-1)?.label, "Tool: read_file");
         assert.equal(activeState.live.activity?.label, "Waiting for deepseek-v4-pro");
         const activeSuffix = stripAnsi(captured().slice(liveOnlyOffset));
-        assert.doesNotMatch(activeSuffix, /Progress|Tool: read_file|Waiting for deepseek-v4-pro/u);
+        assert.doesNotMatch(activeSuffix, /Progress|Tool: read_file/u);
+        assert.match(activeSuffix, /⠋ Waiting for deepseek.* · 0s/u);
         const composerBottomOffset = activeSuffix.lastIndexOf("╰");
         const tasksOffset = activeSuffix.lastIndexOf("Tasks 2/3");
         const agentsOffset = activeSuffix.lastIndexOf("Agents 1/4");
-        const footerOffset = activeSuffix.lastIndexOf("auto  deepseek/v4-pro");
+        const activityOffset = activeSuffix.lastIndexOf("⠋ Waiting for deepseek");
         assert.ok(composerBottomOffset >= 0 && composerBottomOffset < tasksOffset);
         assert.ok(tasksOffset < agentsOffset);
-        assert.ok(agentsOffset < footerOffset);
+        assert.ok(agentsOffset < activityOffset);
+        assert.doesNotMatch(
+          activeSuffix.slice(activityOffset),
+          /auto  deepseek\/v4-pro/u,
+        );
         terminal.stopActivity();
 
         input.write("A request long enough to wrap across several terminal rows");
@@ -467,7 +511,7 @@ describe("Terminal retained inline shell", () => {
 
         output.columns = 44;
         output.emit("resize");
-        assert.match(stripAnsi(captured()), new RegExp(`╰${"─".repeat(42)}╯`, "u"));
+        assert.match(stripAnsi(captured()), new RegExp(`╰${"─".repeat(41)}╯`, "u"));
 
         input.write(Buffer.from([0x16, 0x0d]));
         const result = await prompt;

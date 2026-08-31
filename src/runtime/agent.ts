@@ -153,8 +153,11 @@ export interface AgentRuntimeDependencies {
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
   /** Transient presentation lifecycle around each provider API request. */
-  onModelRequestStart?: (text: string) => void;
-  onModelRequestEnd?: () => void;
+  onModelRequestStart?: (text: string) => unknown;
+  onModelRequestEnd?: (activityToken: unknown) => void;
+  /** Transient presentation lifecycle around one concrete tool execution. */
+  onToolExecutionStart?: (toolName: string, text: string) => unknown;
+  onToolExecutionEnd?: (toolName: string, activityToken: unknown) => void;
   /** Durable accounting hook; failures are reported but never replace model output. */
   onModelUsage?: (record: ModelUsageRecord) => Promise<void>;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
@@ -645,6 +648,7 @@ export class AgentRuntime {
     let subagentResultAllowanceGranted = false;
     let subagentCollectionReminderIssued = false;
     let subagentCollectionAllowanceGranted = false;
+    let runCommandUnavailable = false;
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -724,7 +728,9 @@ export class AgentRuntime {
           ? state.taskGraph?.status === "completed"
             ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
             : []
-          : [...toolMap.values()];
+          : [...toolMap.values()].filter((tool) =>
+              !runCommandUnavailable || tool.name !== "run_command"
+            );
       const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
         mode: effectiveMode,
         workspaceSummary,
@@ -1127,6 +1133,15 @@ export class AgentRuntime {
             summary: `Tool ${call.function.name} is not available in the current mode.`,
             error: "tool_not_available"
           };
+        } else if (toolName === "run_command" && runCommandUnavailable) {
+          result = {
+            ok: false,
+            summary:
+              "run_command is disabled for the rest of this turn because the OS sandbox " +
+              "failed before a previous command started. Do not retry it; continue with " +
+              "file tools or report command-based verification as blocked.",
+            error: "sandbox_unavailable_for_turn",
+          };
         } else {
           try {
             const graphError = taskGraphToolError(state.taskGraph, toolName, turnId);
@@ -1221,7 +1236,10 @@ export class AgentRuntime {
                   }
                 : {}),
             };
-            result = await tool.execute(input, toolContext);
+            result = await this.withToolExecutionActivity(
+              tool.name,
+              () => tool.execute(input, toolContext),
+            );
             preparedSubagentLifecycle = result.subagentLifecycle;
           } catch (error) {
             result = {
@@ -1230,6 +1248,17 @@ export class AgentRuntime {
               error: error instanceof Error ? error.message : String(error)
             };
           }
+        }
+
+        if (
+          toolName === "run_command" &&
+          !result.ok &&
+          result.data &&
+          typeof result.data === "object" &&
+          "status" in result.data &&
+          result.data.status === "sandbox_unavailable"
+        ) {
+          runCommandUnavailable = true;
         }
 
         if (
@@ -1987,8 +2016,13 @@ export class AgentRuntime {
     text: string,
     request: () => Promise<T>,
   ): Promise<T> {
+    let activityToken: unknown;
+    let activityStarted = false;
     try {
-      this.dependencies.onModelRequestStart?.(text);
+      if (this.dependencies.onModelRequestStart) {
+        activityToken = this.dependencies.onModelRequestStart(text);
+        activityStarted = true;
+      }
     } catch {
       // Transient terminal presentation must never prevent an API request.
     }
@@ -1996,9 +2030,41 @@ export class AgentRuntime {
       return await request();
     } finally {
       try {
-        this.dependencies.onModelRequestEnd?.();
+        if (activityStarted) {
+          this.dependencies.onModelRequestEnd?.(activityToken);
+        }
       } catch {
         // A broken presentation hook must not replace a model result or error.
+      }
+    }
+  }
+
+  private async withToolExecutionActivity<T>(
+    toolName: string,
+    request: () => Promise<T>,
+  ): Promise<T> {
+    let activityToken: unknown;
+    let activityStarted = false;
+    try {
+      if (this.dependencies.onToolExecutionStart) {
+        activityToken = this.dependencies.onToolExecutionStart(
+          toolName,
+          `Running Tool: ${toolName}`,
+        );
+        activityStarted = true;
+      }
+    } catch {
+      // Tool execution remains authoritative if presentation fails.
+    }
+    try {
+      return await request();
+    } finally {
+      try {
+        if (activityStarted) {
+          this.dependencies.onToolExecutionEnd?.(toolName, activityToken);
+        }
+      } catch {
+        // A broken presentation hook must not replace a tool result or error.
       }
     }
   }

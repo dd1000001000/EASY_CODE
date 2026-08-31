@@ -115,8 +115,8 @@ export interface SubagentCoordinatorOptions {
   readonly now?: () => Date;
   readonly createAgentId?: () => string;
   readonly defaultIsolation?: SubagentIsolationMode;
-  readonly onWaitStart?: (text: string) => void;
-  readonly onWaitEnd?: () => void;
+  readonly onWaitStart?: (text: string) => unknown;
+  readonly onWaitEnd?: (activityToken: unknown) => void;
   readonly handoff?: (
     artifact: Readonly<ResultArtifact>,
     destination: { type: "local" } | { type: "branch"; branchName?: string },
@@ -160,8 +160,8 @@ export class SubagentCoordinator implements SubagentControl {
   private readonly now: () => Date;
   private readonly createAgentId: () => string;
   private readonly defaultIsolation: SubagentIsolationMode;
-  private readonly onWaitStart: ((text: string) => void) | undefined;
-  private readonly onWaitEnd: (() => void) | undefined;
+  private readonly onWaitStart: ((text: string) => unknown) | undefined;
+  private readonly onWaitEnd: ((activityToken: unknown) => void) | undefined;
   private readonly handoffResult: SubagentCoordinatorOptions["handoff"];
 
   constructor(options: SubagentCoordinatorOptions) {
@@ -336,18 +336,23 @@ export class SubagentCoordinator implements SubagentControl {
     if (!mergeable && request.timeoutMs > 0) {
       const unsettled = jobs.filter((job) => !isTerminal(job.record.status));
       if (unsettled.length) {
+        let activityToken: unknown;
+        let activityStarted = false;
         try {
           try {
-            this.onWaitStart?.(
-              `Waiting for ${unsettled.length} subagent result${unsettled.length === 1 ? "" : "s"}`,
-            );
+            if (this.onWaitStart) {
+              activityToken = this.onWaitStart(
+                `Waiting for ${unsettled.length} subagent result${unsettled.length === 1 ? "" : "s"}`,
+              );
+              activityStarted = true;
+            }
           } catch {
             // Presentation is advisory and cannot change child lifecycle state.
           }
           await waitForFirstSettlement(unsettled, request.timeoutMs, context.signal);
         } finally {
           try {
-            this.onWaitEnd?.();
+            if (activityStarted) this.onWaitEnd?.(activityToken);
           } catch {
             // Presentation is advisory and cannot replace a wait result.
           }

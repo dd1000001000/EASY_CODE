@@ -1,7 +1,15 @@
 import { constants as fsConstants } from "node:fs";
-import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { spawn, type ChildProcess } from "node:child_process";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { execa } from "execa";
 
@@ -96,6 +104,11 @@ export interface DefaultSandboxStartupServiceOptions {
   readonly resolveExecutable?: (candidates: readonly string[]) => Promise<string | undefined>;
   readonly getUid?: () => number | undefined;
   readonly probe?: (runtime: SandboxRuntimeModule) => Promise<void>;
+  readonly runWindowsProbeWorker?: (
+    command: SandboxSystemCommand,
+  ) => Promise<SandboxSystemCommandResult>;
+  readonly windowsProbeTimeoutMs?: number;
+  readonly environment?: NodeJS.ProcessEnv;
 }
 
 interface LinuxInstallRecipe {
@@ -109,6 +122,9 @@ type LinuxPackageManager = "apt-get" | "apt" | "dnf" | "yum" | "pacman" | "zyppe
 
 const POSIX_INSTALL_TIMEOUT_MS = 10 * 60 * 1_000;
 const PROBE_TIMEOUT_MS = 20_000;
+const WINDOWS_PROBE_TIMEOUT_MS = 30_000;
+const WINDOWS_PROBE_KILL_TIMEOUT_MS = 3_000;
+const PROBE_OUTPUT_LIMIT = 16 * 1024;
 const SYSTEM_EXECUTABLE_ROOTS = [
   "/bin",
   "/sbin",
@@ -130,6 +146,25 @@ function safeDetail(value: string, maximum = 2_000): string {
     .replace(/\s+/gu, " ")
     .trim();
   return normalized.length <= maximum ? normalized : `${normalized.slice(0, maximum - 1)}…`;
+}
+
+function restrictedOuterSandbox(environment: NodeJS.ProcessEnv): string | undefined {
+  if (environment.EASY_CODE_SANDBOXED === "1") {
+    return "EASY CODE is already running inside an EASY CODE command sandbox";
+  }
+  const codexProfile = environment.CODEX_PERMISSION_PROFILE?.trim().toLowerCase() ?? "";
+  const restrictedProfile = codexProfile !== "" &&
+    !/\b(?:full|unrestricted)\b/u.test(codexProfile) &&
+    /\b(?:workspace(?:-write)?|read-?only|managed|restricted|sandbox(?:ed)?)\b/u.test(
+      codexProfile,
+    );
+  if (
+    restrictedProfile ||
+    environment.CODEX_SANDBOX_NETWORK_DISABLED === "1"
+  ) {
+    return "EASY CODE is running inside a restricted Codex process sandbox";
+  }
+  return undefined;
 }
 
 function backendLabel(platform: NodeJS.Platform): string {
@@ -300,6 +335,155 @@ async function defaultRunCommand(
   }
 }
 
+function appendProbeOutput(current: string, chunk: Buffer | string): string {
+  if (current.length >= PROBE_OUTPUT_LIMIT) return current;
+  const value = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+  return `${current}${value}`.slice(0, PROBE_OUTPUT_LIMIT);
+}
+
+function windowsTaskkillPath(environment: NodeJS.ProcessEnv): string {
+  const configuredRoot = environment.SystemRoot ?? environment.WINDIR;
+  const systemRoot = configuredRoot && path.win32.isAbsolute(configuredRoot)
+    ? configuredRoot
+    : "C:\\Windows";
+  return path.win32.join(systemRoot, "System32", "taskkill.exe");
+}
+
+function tryKill(child: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    child.kill(signal);
+  } catch {
+    // The process may already have exited or the host may forbid termination.
+  }
+}
+
+async function terminateProbeProcessTree(
+  child: ChildProcess,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const pid = child.pid;
+  if (pid === undefined) return;
+
+  if (process.platform !== "win32") {
+    tryKill(child, "SIGKILL");
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    let completed = false;
+    const finish = (): void => {
+      if (completed) return;
+      completed = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    let killer: ChildProcess;
+    try {
+      killer = spawn(
+        windowsTaskkillPath(environment),
+        ["/PID", String(pid), "/T", "/F"],
+        {
+          env: environment,
+          shell: false,
+          stdio: "ignore",
+          windowsHide: true,
+        },
+      );
+    } catch {
+      tryKill(child, "SIGKILL");
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      tryKill(killer, "SIGKILL");
+      tryKill(child, "SIGKILL");
+      finish();
+    }, WINDOWS_PROBE_KILL_TIMEOUT_MS);
+    timer.unref?.();
+    killer.once("error", () => {
+      tryKill(child, "SIGKILL");
+      finish();
+    });
+    killer.once("exit", () => {
+      tryKill(child, "SIGKILL");
+      finish();
+    });
+  });
+}
+
+/**
+ * Runs the Windows ACL probe out of process. SRT's ACL stamp/reset path can
+ * block inside native or synchronous process calls, so a Promise race in the
+ * CLI process is not sufficient. The parent owns the deadline and tears down
+ * the whole worker process tree with taskkill when the deadline expires.
+ */
+async function defaultRunWindowsProbeWorker(
+  command: SandboxSystemCommand,
+): Promise<SandboxSystemCommandResult> {
+  const environment = command.environment ?? process.env;
+  const timeoutMs = Math.max(1, command.timeoutMs ?? WINDOWS_PROBE_TIMEOUT_MS);
+  return await new Promise<SandboxSystemCommandResult>((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let state: "running" | "timing_out" | "finished" = "running";
+    let child: ChildProcess;
+    try {
+      child = spawn(command.executablePath, [...command.args], {
+        cwd: command.cwd,
+        env: environment,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+        detached: false,
+      });
+    } catch (error) {
+      resolve({
+        exitCode: null,
+        stdout: "",
+        stderr: errorMessage(error),
+        timedOut: false,
+      });
+      return;
+    }
+
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      stdout = appendProbeOutput(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr = appendProbeOutput(stderr, chunk);
+    });
+
+    const timer = setTimeout(() => {
+      if (state !== "running") return;
+      state = "timing_out";
+      void terminateProbeProcessTree(child, environment).finally(() => {
+        if (state === "finished") return;
+        state = "finished";
+        resolve({ exitCode: null, stdout, stderr, timedOut: true });
+      });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.once("error", (error) => {
+      if (state !== "running") return;
+      state = "finished";
+      clearTimeout(timer);
+      resolve({
+        exitCode: null,
+        stdout,
+        stderr: appendProbeOutput(stderr, errorMessage(error)),
+        timedOut: false,
+      });
+    });
+    child.once("exit", (code) => {
+      if (state !== "running") return;
+      state = "finished";
+      clearTimeout(timer);
+      resolve({ exitCode: code, stdout, stderr, timedOut: false });
+    });
+  });
+}
+
 function posixQuote(value: string): string {
   return `'${value.replace(/'/gu, `'"'"'`)}'`;
 }
@@ -334,7 +518,7 @@ async function defaultProbe(runtime: SandboxRuntimeModule): Promise<void> {
       },
       filesystem: {
         denyRead: [],
-        allowRead: [scratch],
+        allowRead: [scratch, path.dirname(truePath)],
         allowWrite: [scratch],
         denyWrite: [],
         allowGitConfig: false,
@@ -394,6 +578,51 @@ async function defaultProbe(runtime: SandboxRuntimeModule): Promise<void> {
   }
 }
 
+function sandboxProbeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const environment = { ...source };
+  for (const name of [
+    "QWEN_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "ZAI_API_KEY",
+    "GLM_API_KEY",
+    "ZHIPUAI_API_KEY",
+  ]) delete environment[name];
+  environment.EASY_CODE_SANDBOX_PROBE_WORKER = "1";
+  return environment;
+}
+
+async function runWindowsProbeInWorker(
+  runWorker: (command: SandboxSystemCommand) => Promise<SandboxSystemCommandResult>,
+  timeoutMs: number,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const workerPath = path.join(moduleDirectory, "sandbox-probe-worker.js");
+  const result = await runWorker({
+    executablePath: process.execPath,
+    args: [workerPath],
+    cwd: moduleDirectory,
+    environment: sandboxProbeEnvironment(environment),
+    timeoutMs,
+  });
+  if (result.timedOut) {
+    throw new Error(
+      `Windows sandbox ACL/process probe timed out after ${String(timeoutMs)}ms; ` +
+      "the isolated probe process tree was terminated",
+    );
+  }
+  if (result.exitCode !== 0) {
+    const detail = safeDetail(
+      result.stderr || result.stdout || "probe worker exited without output",
+      1_000,
+    );
+    throw new Error(
+      `Windows sandbox ACL/process probe worker failed (exit ${String(result.exitCode)}): ${detail}`,
+    );
+  }
+}
+
 export class DefaultSandboxStartupService implements SandboxStartupService {
   private readonly platform: NodeJS.Platform;
   private readonly loadRuntime: () => Promise<SandboxRuntimeModule>;
@@ -402,6 +631,7 @@ export class DefaultSandboxStartupService implements SandboxStartupService {
   private readonly resolveExecutable: (candidates: readonly string[]) => Promise<string | undefined>;
   private readonly getUid: () => number | undefined;
   private readonly probe: (runtime: SandboxRuntimeModule) => Promise<void>;
+  private readonly environment: NodeJS.ProcessEnv;
 
   constructor(options: DefaultSandboxStartupServiceOptions = {}) {
     this.platform = options.platform ?? process.platform;
@@ -411,11 +641,42 @@ export class DefaultSandboxStartupService implements SandboxStartupService {
     this.readTextFile = options.readTextFile ?? (async (filePath) => await readFile(filePath, "utf8"));
     this.resolveExecutable = options.resolveExecutable ?? resolveTrustedSystemExecutable;
     this.getUid = options.getUid ?? (() => process.getuid?.());
-    this.probe = options.probe ?? defaultProbe;
+    this.environment = options.environment ?? process.env;
+    const windowsProbeRunner = options.runWindowsProbeWorker ?? defaultRunWindowsProbeWorker;
+    const windowsProbeTimeoutMs = Math.max(
+      1,
+      options.windowsProbeTimeoutMs ?? WINDOWS_PROBE_TIMEOUT_MS,
+    );
+    this.probe = options.probe ?? (
+      this.platform === "win32"
+        ? async () => await runWindowsProbeInWorker(
+            windowsProbeRunner,
+            windowsProbeTimeoutMs,
+            this.environment,
+          )
+        : defaultProbe
+    );
   }
 
   async inspect(): Promise<SandboxReadiness> {
     const backend = backendLabel(this.platform);
+    const outerSandbox = this.platform === "win32"
+      ? restrictedOuterSandbox(this.environment)
+      : undefined;
+    if (outerSandbox) {
+      return {
+        status: "probe_failed",
+        platform: this.platform,
+        backend,
+        details: [
+          `${outerSandbox}. Anthropic SRT cannot safely change Windows ACLs from inside ` +
+          "another restricted process sandbox. Launch EASY CODE from an ordinary PowerShell, " +
+          "Command Prompt, or VS Code terminal that was not inherited from that sandbox.",
+        ],
+        warnings: [],
+        canSetup: false,
+      };
+    }
     let runtime: SandboxRuntimeModule;
     try {
       runtime = await this.loadRuntime();
@@ -584,14 +845,29 @@ export class DefaultSandboxStartupService implements SandboxStartupService {
         }
       }
       if (userReady && networkReady) {
-        return {
-          status: "ready",
-          platform: this.platform,
-          backend,
-          details: [],
-          warnings: [],
-          canSetup: false,
-        };
+        try {
+          await this.probe(runtime);
+          return {
+            status: "ready",
+            platform: this.platform,
+            backend,
+            details: [],
+            warnings: [],
+            canSetup: false,
+          };
+        } catch (error) {
+          return {
+            status: "probe_failed",
+            platform: this.platform,
+            backend,
+            details: [
+              `Windows sandbox ACL/process probe failed: ${errorMessage(error)}. ` +
+              "Close other EASY CODE or srt-win processes and retry from an ordinary interactive terminal.",
+            ],
+            warnings: [],
+            canSetup: false,
+          };
+        }
       }
       return {
         status: "setup_required",
@@ -796,7 +1072,13 @@ export async function runSandboxStartupGuide(
   service: SandboxStartupService,
   terminal: SandboxStartupTerminal,
 ): Promise<boolean> {
-  let readiness = await service.inspect();
+  terminal.startActivity("Checking the command sandbox");
+  let readiness: SandboxReadiness;
+  try {
+    readiness = await service.inspect();
+  } finally {
+    terminal.stopActivity();
+  }
   if (sandboxIsReady(readiness)) return true;
 
   while (true) {

@@ -1,4 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -30,8 +36,8 @@ class AsyncGate {
 // SRT's Windows backend uses one machine-wide sandbox account/SID. Serializing
 // within this EASY CODE process prevents concurrent child Worktrees from
 // receiving overlapping ACL grants through that identity.
-const WINDOWS_SANDBOX_GATE = new AsyncGate();
 const SANDBOX_SCRATCH_PARENT = path.join(os.tmpdir(), "easy-code-srt-runtime");
+const WINDOWS_SANDBOX_GATE = new AsyncGate();
 
 export interface AnthropicSandboxBackendOptions {
   sensitiveReadPaths?: readonly string[];
@@ -43,10 +49,12 @@ function uniquePaths(values: readonly string[]): string[] {
   for (const value of values) {
     if (!value) continue;
     const resolved = path.resolve(value);
-    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    const directoryHint = /[\\/]$/u.test(value);
+    const normalized = directoryHint ? `${resolved}${path.sep}` : resolved;
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
     if (seen.has(key)) continue;
     seen.add(key);
-    result.push(resolved);
+    result.push(normalized);
   }
   return result;
 }
@@ -98,6 +106,24 @@ function assertScratchPath(scratchRoot: string): void {
   if (path.dirname(resolved) !== temporaryRoot || !path.basename(resolved).startsWith("command-")) {
     throw new Error("Refusing to clean an invalid EASY CODE sandbox scratch path");
   }
+}
+
+async function protectedMetadataPaths(values: readonly string[]): Promise<string[]> {
+  const resolved = await Promise.all(values.map(async (value) => {
+    try {
+      await stat(value);
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // SRT uses a trailing separator to materialize a directory placeholder
+        // instead of the old zero-byte file shape. Keeping the deny closes the
+        // TOCTOU where a sandboxed command creates reserved metadata later.
+        return `${value}${path.sep}`;
+      }
+      throw error;
+    }
+  }));
+  return resolved;
 }
 
 export class AnthropicSandboxBackend implements CommandExecutionBackend {
@@ -174,9 +200,12 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         XDG_CACHE_HOME: scratchCache,
         EASY_CODE_SANDBOXED: "1",
       };
-      const protectedWorkspacePaths = [
+      const protectedMetadata = await protectedMetadataPaths([
         path.join(this.workspace.root, ".easycode"),
         path.join(this.workspace.root, ".git"),
+      ]);
+      const protectedWorkspacePaths = [
+        ...protectedMetadata,
         this.workerPath,
         this.bridgePath,
         this.srtPackageRoot,

@@ -50,6 +50,7 @@ import {
   type MenuSelectorOverlay,
 } from "./menu-selector.js";
 import type {
+  UIActivityKind,
   UIOverlayState,
   UIProgressItem,
   UISessionInfo,
@@ -190,6 +191,7 @@ export class Terminal {
   private progressItems: UIProgressItem[] = [];
   private progressSequence = 0;
   private activeActivityId?: string;
+  private activitySequence = 0;
   private agentConcurrencyLimit?: number;
   private readonly onResize = (): void => this.refresh();
 
@@ -853,21 +855,26 @@ export class Terminal {
   }
 
   /** Show a transient TTY spinner until the pending operation completes. */
-  startActivity(text: string): void {
+  startActivity(
+    text: string,
+    kind: UIActivityKind = "model",
+  ): string | undefined {
     this.stopActivity();
-    if (!this.canAnimateActivity()) return;
+    if (!this.canAnimateActivity()) return undefined;
 
     const sanitized = this.safeInline(text, 160);
     this.activityText = sanitized || "Waiting for the model response";
     this.activityStartedAt = Date.now();
     this.activityFrameIndex = 0;
+    this.activitySequence += 1;
+    this.activeActivityId =
+      `activity_${this.activityStartedAt}_${this.activitySequence}`;
     if (this.inlineShellActive) {
-      this.activeActivityId = `activity_${this.activityStartedAt}`;
       this.uiState = applyEvent(this.uiState, {
         type: "activity.start",
         activity: {
           id: this.activeActivityId,
-          kind: "model",
+          kind,
           label: this.activityText,
           startedAt: this.activityStartedAt,
         },
@@ -876,37 +883,54 @@ export class Terminal {
     try {
       this.renderActivity();
     } catch {
+      if (this.inlineShellActive) {
+        this.uiState = applyEvent(this.uiState, {
+          type: "activity.stop",
+          ...(this.activeActivityId ? { id: this.activeActivityId } : {}),
+        });
+      }
       this.resetActivityState();
-      return;
+      this.activeActivityId = undefined;
+      return undefined;
     }
 
+    const activityId = this.activeActivityId;
     this.activityTimer = setInterval(() => {
       try {
         if (!this.canAnimateActivity()) {
-          this.stopActivity();
+          this.stopActivity(activityId);
           return;
         }
         this.activityFrameIndex =
           (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
         this.renderActivity();
       } catch {
-        this.resetActivityState();
+        try {
+          this.stopActivity(activityId);
+        } catch {
+          this.resetActivityState();
+          this.activeActivityId = undefined;
+        }
       }
     }, Terminal.ACTIVITY_INTERVAL_MS);
     this.activityTimer.unref();
+    return activityId;
   }
 
   /** Clear the transient spinner without adding a blank line. */
-  stopActivity(): void {
+  stopActivity(activityId?: string): void {
+    if (activityId !== undefined && activityId !== this.activeActivityId) return;
     const wasVisible = this.activityVisible;
-    const activityId = this.activeActivityId;
+    const activeActivityId = this.activeActivityId;
+    const activityKind = this.uiState.live.activity?.kind;
     this.resetActivityState();
     this.activeActivityId = undefined;
     if (this.inlineShellActive) {
       this.uiState = applyEvent(this.uiState, {
         type: "activity.stop",
-        ...(activityId ? { id: activityId } : {}),
+        ...(activeActivityId ? { id: activeActivityId } : {}),
       });
+      if (activityKind === "model") this.removeRunningProgress("step");
       this.refresh();
       return;
     }
@@ -1115,8 +1139,10 @@ export class Terminal {
     if (this.closed) throw new Error("Terminal input is closed.");
     if (!this.rl) {
       const inputFilter = new PrivateOscInputFilter(this.input);
-      this.input.pipe(inputFilter);
       try {
+        // readline enables Raw Mode through the filter. Create it before
+        // piping process.stdin so Windows ConPTY never starts a cooked-mode
+        // read that would swallow the first arrow keys until Enter arrives.
         const rl = readline.createInterface({
           input: inputFilter,
           output: this.output,
@@ -1124,6 +1150,7 @@ export class Terminal {
             Boolean(this.input.isTTY) &&
             Boolean((this.output as NodeJS.WriteStream).isTTY),
         });
+        this.input.pipe(inputFilter);
         this.rl = rl;
         this.readlineInputFilter = inputFilter;
       } catch (error) {
@@ -1269,13 +1296,32 @@ export class Terminal {
     }
 
     this.stopBusyInputOwner();
+    const wasRaw = Boolean(this.input.isRaw);
+    const wasFlowing = this.input.readableFlowing === true;
     const inputFilter = new PrivateOscInputFilter(this.input);
+    let pending: Promise<T> | undefined;
     try {
+      // A Windows console read inherits cooked/raw behavior when the read is
+      // first issued. Piping before Raw Mode therefore makes the first menu
+      // ignore arrows until Enter completes that cooked read. Acquire Raw Mode
+      // first, synchronously let the modal install its data listener, and only
+      // then start source flow into the filter.
+      this.input.pause();
+      if (!wasRaw) this.input.setRawMode?.(true);
+      pending = action(inputFilter);
       this.input.pipe(inputFilter);
-      return await action(inputFilter);
+      this.input.resume();
+      return await pending;
     } finally {
+      this.input.pause();
       this.input.unpipe(inputFilter);
       if (!inputFilter.destroyed) inputFilter.destroy();
+      try {
+        if (!wasRaw) this.input.setRawMode?.(false);
+      } catch {
+        // Input restoration is best effort if the terminal disappeared.
+      }
+      if (wasFlowing) this.input.resume();
       this.guardedInputActive = false;
       this.startBusyInputOwner();
     }
@@ -1439,7 +1485,7 @@ export class Terminal {
   private composerPromptSuffix(): string {
     const options = this.viewOptions();
     const sections = [this.composerBottomBorder()];
-    sections.push(renderComposerStatusRegion(this.uiState, options));
+    sections.push(renderComposerStatusRegion(this.uiState, options, Date.now()));
     return sections.join("\n");
   }
 
