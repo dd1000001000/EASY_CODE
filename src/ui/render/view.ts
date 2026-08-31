@@ -46,7 +46,7 @@ export interface RenderViewOptions {
   /** Emit EASY CODE-owned SGR styles. `colors` is accepted as an alias. */
   readonly color?: boolean;
   readonly colors?: boolean;
-  /** Both compact lists have a hard safety ceiling of five rows. */
+  /** Both compact lists have a hard safety ceiling of five detail entries. */
   readonly maxTasks?: number;
   readonly maxTaskRows?: number;
   readonly maxAgents?: number;
@@ -62,6 +62,27 @@ export interface RenderViewOptions {
   /** Deterministic spinner override, useful for a renderer-owned animation tick. */
   readonly spinnerFrame?: number | string;
   readonly busyPlaceholder?: string;
+}
+
+/** Physical-row budgets for the persistent regions below the composer. */
+export interface FixedBottomRegionBudget {
+  /** Maximum rows across status, Tasks, and Agents. Omit for no total cap. */
+  readonly totalRows?: number;
+  /** Maximum rows shared by Tasks and Agents, excluding the status line. */
+  readonly detailRows?: number;
+  /** Optional physical-row cap for the complete Tasks region, including title. */
+  readonly taskRows?: number;
+  /** Optional physical-row cap for the complete Agents region, including title. */
+  readonly agentRows?: number;
+}
+
+/** Independently reusable, already ordered persistent bottom regions. */
+export interface FixedBottomRegions {
+  readonly status: readonly string[];
+  readonly tasks: readonly string[];
+  readonly agents: readonly string[];
+  /** Contiguous rows in the required status -> Tasks -> Agents order. */
+  readonly lines: readonly string[];
 }
 
 /** Naming aliases for integrations that group these helpers under the UI view. */
@@ -144,25 +165,82 @@ export function renderLiveRegion(
  */
 export function renderLiveActivityRegion(
   state: Readonly<UIState>,
-  _nowMs: number,
+  nowMs: number,
   options: RenderViewOptions = {},
 ): string {
-  return renderProgress(state, options);
+  const progress = renderProgress(state, options);
+  const activity = renderActivity(state, nowMs, options);
+  return [progress, activity].filter(Boolean).join("\n");
 }
 
-/** Render Tasks and Agents below the composer, followed by the activity footer. */
+/**
+ * Render the persistent rows below the composer.
+ *
+ * Compatibility note: the public string view retains blank separators between
+ * non-empty sections. Fixed-frame callers should consume
+ * `renderFixedBottomRegions(...).lines` so they can place contiguous physical
+ * rows without reparsing presentation text.
+ */
 export function renderComposerStatusRegion(
   state: Readonly<UIState>,
   options: RenderViewOptions = {},
   nowMs = state.live.activity?.startedAt ?? 0,
 ): string {
-  const blocks: string[] = [];
-  const tasks = renderTasks(state.live.tasks, options);
-  const agents = renderAgents(state, options);
-  if (tasks) blocks.push(tasks);
-  if (agents) blocks.push(agents);
-  blocks.push(renderComposerFooter(state, options, nowMs));
+  const regions = renderFixedBottomRegions(state, options, nowMs);
+  const blocks = [regions.status, regions.tasks, regions.agents]
+    .filter((lines) => lines.length > 0)
+    .map((lines) => lines.join("\n"));
   return blocks.join("\n\n");
+}
+
+/**
+ * Render independently budgetable bottom regions in fixed physical-row order.
+ * The status line always has first priority; remaining rows are shared
+ * deterministically between Tasks and Agents so either section cannot consume
+ * the complete short-terminal budget merely because it was rendered first.
+ */
+export function renderFixedBottomRegions(
+  state: Readonly<UIState>,
+  options: RenderViewOptions = {},
+  nowMs = state.live.activity?.startedAt ?? 0,
+  budget: Readonly<FixedBottomRegionBudget> = {},
+): FixedBottomRegions {
+  const totalRows = physicalRowBudget(budget.totalRows);
+  if (totalRows === 0) return emptyFixedBottomRegions();
+
+  const statusText = renderComposerFooter(state, options, nowMs);
+  const status = statusText ? [statusText] : [];
+  const totalDetailCapacity = Math.max(0, totalRows - status.length);
+  const detailCapacity = Math.min(
+    totalDetailCapacity,
+    physicalRowBudget(budget.detailRows),
+  );
+
+  const desiredTaskRows = Math.min(
+    renderTaskStatusLines(state.live.tasks, options).length,
+    physicalRowBudget(budget.taskRows),
+  );
+  const desiredAgentRows = Math.min(
+    renderAgentStatusLines(state, options).length,
+    physicalRowBudget(budget.agentRows),
+  );
+  const allocation = allocateDetailRows(
+    detailCapacity,
+    desiredTaskRows,
+    desiredAgentRows,
+  );
+  const tasks = renderTaskStatusLines(
+    state.live.tasks,
+    options,
+    allocation.taskRows,
+  );
+  const agents = renderAgentStatusLines(
+    state,
+    options,
+    allocation.agentRows,
+  );
+  const lines = [...status, ...tasks, ...agents];
+  return { status, tasks, agents, lines };
 }
 
 /** Render the persistent, multiline input card (without a trailing newline). */
@@ -203,7 +281,7 @@ export function renderComposerPrompt(
 export function renderComposerFooter(
   state: Readonly<UIState>,
   options: RenderViewOptions = {},
-  nowMs = state.live.activity?.startedAt ?? 0,
+  _nowMs = state.live.activity?.startedAt ?? 0,
 ): string {
   const palette = viewPalette(options);
   const session = state.header.session;
@@ -213,10 +291,7 @@ export function renderComposerFooter(
     isActiveAgent(agent.status)
   ).length;
   const metadata: string[] = [];
-  const danger = session?.commandExecutionMode === "unrestricted"
-    ? palette.red.bold("! EASY CODE DANGER: FULL ACCESS")
-    : "";
-  const activity = renderActivity(state, nowMs, options);
+  const danger = renderDangerStatusLabel(state, options);
 
   if (session) {
     metadata.push(palette.cyan(safeInline(session.mode) || "auto"));
@@ -236,17 +311,7 @@ export function renderComposerFooter(
 
   const columns = viewColumns(options);
   const metadataLine = metadata.join("  ");
-  let priority = danger;
-  if (activity) {
-    const dangerAndActivity = danger ? `${danger}  ${activity}` : activity;
-    // The full-access warning is a safety boundary and therefore wins on a
-    // terminal too narrow to show it alongside activity. Otherwise activity
-    // owns the row so its right-aligned elapsed time is never truncated by
-    // lower-priority mode/context metadata.
-    if (!danger || displayWidth(dangerAndActivity) <= columns) {
-      priority = dangerAndActivity;
-    }
-  }
+  const priority = danger;
   if (priority) {
     const fittedPriority = truncateToWidth(priority, columns, {
       preserveAnsi: viewColor(options),
@@ -261,6 +326,15 @@ export function renderComposerFooter(
   return truncateToWidth(metadataLine, columns, {
     preserveAnsi: viewColor(options),
   });
+}
+
+/** Shared compact warning used anywhere the normal footer is replaced. */
+export function renderDangerStatusLabel(
+  state: Readonly<UIState>,
+  options: RenderViewOptions = {},
+): string {
+  if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
+  return viewPalette(options).red.bold("! EASY CODE DANGER: FULL ACCESS");
 }
 
 function renderDangerIndicator(
@@ -517,11 +591,21 @@ function renderProgress(
   return lines.join("\n");
 }
 
-function renderTasks(
+/**
+ * Render the Tasks section as physical terminal rows.
+ *
+ * `rowBudget` includes the heading. An omitted budget preserves the historical
+ * compact-window presentation, while an explicit short budget prioritizes the
+ * focused task and uses at most one deterministic omission row.
+ */
+export function renderTaskStatusLines(
   graph: Readonly<TaskGraphView> | null,
-  options: RenderViewOptions,
-): string {
-  if (!graph || graph.tasks.length === 0) return "";
+  options: RenderViewOptions = {},
+  rowBudget?: number,
+): readonly string[] {
+  if (!graph || graph.tasks.length === 0) return [];
+  const physicalRows = physicalRowBudget(rowBudget);
+  if (physicalRows === 0) return [];
   const palette = viewPalette(options);
   const columns = viewColumns(options);
   const position = taskPosition(graph);
@@ -532,36 +616,71 @@ function renderTasks(
     MAX_COMPACT_TASK_ROWS,
   );
   const focusIndex = Math.max(0, position.current - 1);
-  const window = compactWindow(graph.tasks.length, focusIndex, maximum);
-  const lines = [palette.bold(`Tasks ${position.current}/${position.total}`)];
-  if (window.start > 0) lines.push(palette.gray(`  … ${window.start} earlier`));
+  const heading = palette.bold(truncateToWidth(
+    `Tasks ${position.current}/${position.total}`,
+    columns,
+    { preserveAnsi: false },
+  ));
+  if (physicalRows === 1) return [heading];
 
-  for (let index = window.start; index < window.end; index += 1) {
-    const task = graph.tasks[index];
-    if (!task) continue;
-    const blocker = task.status === "blocked" && task.blocker
-      ? ` · ${safeInline(task.blocker)}`
-      : "";
-    const text = `  ${taskIcon(task.status)} ${index + 1}. ` +
-      `${safeInline(task.title) || safeInline(task.id) || "Task"}${blocker}`;
-    lines.push(styleTaskStatus(
-      task.status,
-      truncateToWidth(text, columns, { preserveAnsi: false }),
-      palette,
-    ));
+  if (rowBudget !== undefined && Number.isFinite(rowBudget)) {
+    const remaining = physicalRows - 1;
+    const configuredItems = Math.min(maximum, graph.tasks.length);
+    const needsOmission = graph.tasks.length > Math.min(configuredItems, remaining);
+    const itemCapacity = Math.max(
+      1,
+      Math.min(
+        configuredItems,
+        remaining - (needsOmission && remaining >= 2 ? 1 : 0),
+      ),
+    );
+    const window = compactWindow(graph.tasks.length, focusIndex, itemCapacity);
+    const lines = [heading];
+    appendTaskRows(lines, graph, window.start, window.end, columns, palette);
+    const hidden = graph.tasks.length - (window.end - window.start);
+    if (hidden > 0 && lines.length < physicalRows) {
+      lines.push(palette.gray(truncateToWidth(
+        `  … ${hidden} other task${hidden === 1 ? "" : "s"}`,
+        columns,
+        { preserveAnsi: false },
+      )));
+    }
+    return lines.slice(0, physicalRows);
   }
+
+  const window = compactWindow(graph.tasks.length, focusIndex, maximum);
+  const lines = [heading];
+  if (window.start > 0) {
+    lines.push(palette.gray(truncateToWidth(
+      `  … ${window.start} earlier`,
+      columns,
+      { preserveAnsi: false },
+    )));
+  }
+  appendTaskRows(lines, graph, window.start, window.end, columns, palette);
   if (window.end < graph.tasks.length) {
-    lines.push(palette.gray(`  … ${graph.tasks.length - window.end} more`));
+    lines.push(palette.gray(truncateToWidth(
+      `  … ${graph.tasks.length - window.end} more`,
+      columns,
+      { preserveAnsi: false },
+    )));
   }
-  return lines.join("\n");
+  return lines;
 }
 
-function renderAgents(
+/**
+ * Render the Agents section as physical terminal rows. `rowBudget` includes
+ * the heading and, when space permits, one explicit omission row.
+ */
+export function renderAgentStatusLines(
   state: Readonly<UIState>,
-  options: RenderViewOptions,
-): string {
+  options: RenderViewOptions = {},
+  rowBudget?: number,
+): readonly string[] {
   const agents = state.live.subagents;
-  if (agents.length === 0) return "";
+  if (agents.length === 0) return [];
+  const physicalRows = physicalRowBudget(rowBudget);
+  if (physicalRows === 0) return [];
   const palette = viewPalette(options);
   const columns = viewColumns(options);
   const maximum = boundedOption(
@@ -570,7 +689,6 @@ function renderAgents(
     1,
     MAX_COMPACT_AGENT_ROWS,
   );
-  const visible = agents.slice(0, maximum);
   const active = agents.filter((agent) => isActiveAgent(agent.status)).length;
   const capacity = boundedOption(
     options.agentConcurrencyLimit ?? options.concurrencyLimit,
@@ -578,7 +696,28 @@ function renderAgents(
     1,
     99,
   );
-  const lines = [palette.bold(`Agents ${active}/${capacity}`)];
+  const heading = palette.bold(truncateToWidth(
+    `Agents ${active}/${capacity}`,
+    columns,
+    { preserveAnsi: false },
+  ));
+  if (physicalRows === 1) return [heading];
+
+  const explicitBudget = rowBudget !== undefined && Number.isFinite(rowBudget);
+  const remaining = physicalRows - 1;
+  const desiredItems = Math.min(maximum, agents.length);
+  const needsOmission = agents.length > Math.min(desiredItems, remaining);
+  const itemCapacity = explicitBudget
+    ? Math.max(
+        1,
+        Math.min(
+          desiredItems,
+          remaining - (needsOmission && remaining >= 2 ? 1 : 0),
+        ),
+      )
+    : desiredItems;
+  const visible = agents.slice(0, itemCapacity);
+  const lines = [heading];
   for (const agent of visible) {
     // Full UUIDs consume the entire row in ordinary terminals and hide the
     // assignment the user actually needs to monitor. Keep a stable short
@@ -594,9 +733,83 @@ function renderAgents(
     ));
   }
   if (visible.length < agents.length) {
-    lines.push(palette.gray(`  … ${agents.length - visible.length} more`));
+    const more = palette.gray(truncateToWidth(
+      `  … ${agents.length - visible.length} more`,
+      columns,
+      { preserveAnsi: false },
+    ));
+    if (!explicitBudget || lines.length < physicalRows) lines.push(more);
   }
-  return lines.join("\n");
+  return lines.slice(0, physicalRows);
+}
+
+function appendTaskRows(
+  lines: string[],
+  graph: Readonly<TaskGraphView>,
+  start: number,
+  end: number,
+  columns: number,
+  palette: ChalkInstance,
+): void {
+  for (let index = start; index < end; index += 1) {
+    const task = graph.tasks[index];
+    if (!task) continue;
+    const blocker = task.status === "blocked" && task.blocker
+      ? ` · ${safeInline(task.blocker)}`
+      : "";
+    const text = `  ${taskIcon(task.status)} ${index + 1}. ` +
+      `${safeInline(task.title) || safeInline(task.id) || "Task"}${blocker}`;
+    lines.push(styleTaskStatus(
+      task.status,
+      truncateToWidth(text, columns, { preserveAnsi: false }),
+      palette,
+    ));
+  }
+}
+
+function allocateDetailRows(
+  capacity: number,
+  desiredTaskRows: number,
+  desiredAgentRows: number,
+): { readonly taskRows: number; readonly agentRows: number } {
+  let remaining = Math.max(0, capacity);
+  let taskRows = 0;
+  let agentRows = 0;
+
+  // Keep both section headings visible before either section receives detail.
+  if (desiredTaskRows > 0 && remaining > 0) {
+    taskRows = 1;
+    remaining -= 1;
+  }
+  if (desiredAgentRows > 0 && remaining > 0) {
+    agentRows = 1;
+    remaining -= 1;
+  }
+
+  // Give the focused task first use of the next row, then alternate. This is
+  // deterministic and prevents a long Tasks list from starving Agents.
+  let preferTasks = true;
+  while (remaining > 0) {
+    const taskAvailable = taskRows < desiredTaskRows;
+    const agentAvailable = agentRows < desiredAgentRows;
+    if (!taskAvailable && !agentAvailable) break;
+    if ((preferTasks && taskAvailable) || !agentAvailable) taskRows += 1;
+    else agentRows += 1;
+    preferTasks = !preferTasks;
+    remaining -= 1;
+  }
+  return { taskRows, agentRows };
+}
+
+function emptyFixedBottomRegions(): FixedBottomRegions {
+  return { status: [], tasks: [], agents: [], lines: [] };
+}
+
+function physicalRowBudget(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.max(0, Math.floor(value));
 }
 
 function renderActivity(

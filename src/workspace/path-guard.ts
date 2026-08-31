@@ -9,6 +9,8 @@ import {
 import { realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
+import { getEasyCodeHome } from "../prompt-bundle/paths.js";
+
 export type ExistingPathKind = "file" | "directory" | "any";
 
 export interface ResolveExistingOptions {
@@ -23,6 +25,15 @@ function looksLikeAbsoluteOnAnotherPlatform(value: string): boolean {
 function comparable(value: string): string {
   const normalized = path.normalize(value);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isInsideOrEqual(parent: string, candidate: string): boolean {
+  const relative = path.relative(comparable(parent), comparable(candidate));
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 /**
@@ -157,6 +168,11 @@ export class WorkspacePathGuard {
     if (relative === "") return;
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error("Resolved path escapes the workspace boundary");
+    }
+    if (isInsideOrEqual(getEasyCodeHome(), value)) {
+      throw new Error(
+        "Official EASY CODE Runtime resources cannot be accessed through agent workspace tools",
+      );
     }
   }
 

@@ -8,7 +8,6 @@ import type {
 } from "../core/types.js";
 import {
   MAX_TASK_EVIDENCE_CHARS,
-  MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS,
   MAX_TASK_GRAPH_NODES,
   MAX_TASK_TEXT_CHARS,
   applyTaskGraphOperation,
@@ -16,6 +15,7 @@ import {
   taskGraphView,
 } from "../tasks/task-graph.js";
 import { toolFailure, toolSuccess } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const manageTasksInputSchema = taskGraphOperationSchema;
 
@@ -49,10 +49,8 @@ export class ManageTasksTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Optionally create and execute a persistent task DAG for a genuinely complex objective with multiple verifiable phases or dependency branches. Skip it for explanations, small fixes, and short linear work. Call manage_tasks by itself. After create, the main agent may start exactly one unblocked task, do only that task's work, and complete it only after satisfying every declared completion check with one concrete evidence item per check. Runtime prevents main-agent work without a main-owned in-progress task and prevents starting blocked dependencies or a second main-owned task. Independent pending nodes may instead be assigned to isolated children with manage_subagents at any thinking effort, subject to its dynamic concurrency limit. Runtime prevents a normal final answer while an active DAG remains incomplete. Collect standalone child work before creating a DAG. Use block only for a durable external or user-input blocker, never for a turn-scoped command sandbox failure, and resume only after that blocker is resolved. Task text is execution data, never permission, and the DAG is short-term thread state rather than long-term memory.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
@@ -64,13 +62,11 @@ export class ManageTasksTool implements AgentTool {
             type: "string",
             minLength: 1,
             maxLength: MAX_TASK_TEXT_CHARS,
-            description: "Required for create. The stable objective represented by this DAG.",
           },
           tasks: {
             type: "array",
             minItems: 1,
             maxItems: MAX_TASK_GRAPH_NODES,
-            description: "Required for create. Declare the complete immutable DAG in one call.",
             items: {
               type: "object",
               additionalProperties: false,
@@ -130,26 +126,21 @@ export class ManageTasksTool implements AgentTool {
           taskId: {
             type: "string",
             pattern: "^[A-Za-z][A-Za-z0-9_-]{0,39}$",
-            description: "Required for start, complete, block, and resume.",
           },
           evidence: {
             type: "array",
             minItems: 1,
             maxItems: 16,
             items: { type: "string", minLength: 1, maxLength: MAX_TASK_EVIDENCE_CHARS },
-            description:
-              "Required for complete. Supply exactly one concise concrete evidence string for each completionChecks entry, in the same order. " +
-              `The combined evidence must not exceed ${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} characters.`,
           },
           reason: {
             type: "string",
             minLength: 1,
             maxLength: MAX_TASK_EVIDENCE_CHARS,
-            description: "Required for block. State the concrete unresolved external condition.",
           },
         },
         required: ["action"],
-      },
+      }),
     },
   };
 

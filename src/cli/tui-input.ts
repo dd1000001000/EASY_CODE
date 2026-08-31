@@ -5,6 +5,7 @@ const CTRL_A = 0x01;
 const CTRL_C = 0x03;
 const CTRL_E = 0x05;
 const CTRL_J = 0x0a;
+const CTRL_V = 0x16;
 const CARRIAGE_RETURN = 0x0d;
 const BACKSPACE = 0x08;
 const DELETE = 0x7f;
@@ -240,6 +241,7 @@ export class TuiInputDecoder {
     this.consumeBytes(1);
     if (first === CTRL_J) events.push({ type: "key", key: "newline" });
     else if (first === CTRL_C) events.push({ type: "key", key: "interrupt" });
+    else if (first === CTRL_V) events.push({ type: "paste-image" });
     else if (first === BACKSPACE || first === DELETE) {
       events.push({ type: "key", key: "backspace" });
     } else if (first === CTRL_A) events.push({ type: "key", key: "home" });
@@ -605,6 +607,13 @@ function parseKittyKey(payload: string): TuiInputEvent | undefined {
   if (codePoint === 13) return keyEvent(shift ? "newline" : "enter");
   if (codePoint === 10 || (ctrl && codePoint === 106)) return keyEvent("newline");
   if (ctrl && codePoint === 99) return keyEvent("interrupt");
+  if (
+    codePoint === 118 &&
+    ((ctrl && !alt && !superKey) ||
+      (superKey && !ctrl && !alt && !shift))
+  ) {
+    return { type: "paste-image" };
+  }
   if (codePoint === 127) return keyEvent("backspace");
 
   const associatedText = decodeKittyAssociatedText(fields[2]);

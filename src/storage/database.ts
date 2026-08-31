@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { sha256 } from "../utils/hash.js";
+import { ensureEasyCodeDataRootMarker } from "./data-root.js";
 import { runMigrations } from "./migrations.js";
 import { SqliteDatabase } from "./sqlite-database.js";
 
@@ -25,6 +26,8 @@ export function createStorage(dataDir: string): EasyCodeStorage {
   }
 
   const resolvedDataDir = path.resolve(dataDir);
+  mkdirSync(resolvedDataDir, { recursive: true });
+  ensureEasyCodeDataRootMarker(resolvedDataDir);
   const threadsDir = path.join(resolvedDataDir, "threads");
   const artifactsDir = path.join(resolvedDataDir, "artifacts");
   mkdirSync(threadsDir, { recursive: true });

@@ -10,6 +10,7 @@ import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { recordFileToolRead, resolveExistingFileToolTarget } from "./file-access.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const readFileInputSchema = z
   .object({
@@ -57,23 +58,17 @@ export class ReadFileTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Read a UTF-8 text file by a 1-based line range and return its full-file SHA-256 version hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: {
-            type: "string",
-            description:
-              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
-          },
+          path: { type: "string" },
           startLine: { type: "integer", minimum: 1 },
           endLine: { type: "integer", minimum: 1 },
         },
         required: ["path"],
-      },
+      }),
     },
   };
 

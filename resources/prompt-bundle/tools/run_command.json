@@ -1,0 +1,14 @@
+{
+  "id": "run_command",
+  "contractVersion": "1.0.0",
+  "description": "Run one structured program/argv command. Manual and auto-approved modes use Runtime policy plus the Anthropic workspace sandbox. User-confirmed dangerous mode runs directly as the current OS user with host filesystem, working-directory, environment, and internet access and no EASY CODE approval prompt. Explicit one-shot shells remain supported.",
+  "propertyDescriptions": {
+    "program": "Executable name or workspace-relative executable; absolute host executables require dangerous mode.",
+    "args": "The structured argument vector passed directly to the program.",
+    "cwd": "Workspace-relative existing directory, or an absolute host directory only in dangerous mode.",
+    "intent": "The purpose of the command, used by Runtime when applying execution policy.",
+    "timeoutMs": "An optional command timeout requested for this invocation.",
+    "reason": "A concise explanation of why this command is needed for the current task."
+  },
+  "guidance": "run_command executes a structured program/argument-vector command under the active Runtime posture. Prefer existing project scripts. An explicit one-shot shell may be requested with cmd /c, PowerShell -Command, or sh -c; never request an interactive, login, or encoded shell. Outside Dangerous full access, Runtime independently classifies, approves, and sandboxes every process. If Runtime classifies the first sandbox_unavailable result as retryable and explicitly requests one bounded retry, retry exactly once and do not block a DAG for that transient failure. If Runtime then reports a turn-scoped sandbox pause, do not retry again; continue non-command work or return a concise pause report so the next turn can retry."
+}

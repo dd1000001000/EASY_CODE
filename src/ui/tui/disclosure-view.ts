@@ -16,7 +16,12 @@ export interface DisclosureViewTarget {
 
 export interface CreateDisclosureViewOptions {
   readonly nodes: readonly VirtualDocumentNode[];
-  readonly target: DisclosureViewTarget;
+  /**
+   * Disclosure to inspect in place. Omit this for the ordinary conversation
+   * viewport: every disclosure is collapsed and the transcript follows its
+   * tail until the user scrolls away.
+   */
+  readonly target?: DisclosureViewTarget;
   readonly columns: number;
   readonly rows: number;
   readonly headerLines?: readonly string[];
@@ -45,7 +50,7 @@ export interface UpdateDisclosureViewChromeOptions {
 
 export interface DisclosureViewState {
   readonly nodes: readonly VirtualDocumentNode[];
-  readonly target: DisclosureViewTarget;
+  readonly target?: DisclosureViewTarget;
   readonly targetExpanded: boolean;
   readonly columns: number;
   readonly rows: number;
@@ -142,8 +147,8 @@ export function createDisclosureViewState(
   const columns = positiveInteger(options.columns, 1);
   const rows = positiveInteger(options.rows, 1);
   const nodes = cloneNodes(options.nodes);
-  const target = cloneTarget(options.target);
-  assertTarget(nodes, target);
+  const target = cloneOptionalTarget(options.target);
+  validateNodesAndTarget(nodes, target);
   const preserveAnsi = options.preserveAnsi ?? true;
   const headerLines = cloneLines(options.headerLines);
   const composerLines = cloneLines(options.composerLines);
@@ -168,7 +173,7 @@ export function createDisclosureViewState(
   const state: DisclosureViewState = {
     nodes,
     target,
-    targetExpanded: options.expanded ?? true,
+    targetExpanded: target === undefined ? false : options.expanded ?? true,
     columns,
     rows,
     headerLines,
@@ -176,7 +181,7 @@ export function createDisclosureViewState(
     footerLines,
     anchorScreenRow,
     scrollOffset: 0,
-    followTail: false,
+    followTail: target === undefined,
     preserveAnsi,
   };
   const bounds = viewBounds(state);
@@ -222,7 +227,9 @@ export function renderDisclosureView(
       nodeKind: line.nodeKind,
       nodeRow: line.nodeRow,
       partRow: line.partRow,
-      targetTitle: line.nodeId === state.target.id && line.part === "title",
+      targetTitle: state.target !== undefined &&
+        line.nodeId === state.target.id &&
+        line.part === "title",
     });
   }
 
@@ -257,18 +264,35 @@ export function renderDisclosureView(
   };
 }
 
+/**
+ * Resize the frame and optionally replace its chrome in one atomic reflow.
+ *
+ * Passing chrome here avoids validating an intermediate state where the old
+ * footer/composer no longer fits the new terminal dimensions.
+ */
 export function resizeDisclosureView(
   state: Readonly<DisclosureViewState>,
   columns: number,
   rows: number,
+  chromeUpdates: Readonly<UpdateDisclosureViewChromeOptions> = {},
 ): DisclosureViewState {
   const before = renderDisclosureView(state);
+  const beforeLayout = stateDocumentLayout(state);
   const nextColumns = positiveInteger(columns, 1);
   const nextRows = positiveInteger(rows, 1);
   const provisional: DisclosureViewState = {
     ...state,
     columns: nextColumns,
     rows: nextRows,
+    headerLines: chromeUpdates.headerLines === undefined
+      ? state.headerLines
+      : cloneLines(chromeUpdates.headerLines),
+    composerLines: chromeUpdates.composerLines === undefined
+      ? state.composerLines
+      : cloneLines(chromeUpdates.composerLines),
+    footerLines: chromeUpdates.footerLines === undefined
+      ? state.footerLines
+      : cloneLines(chromeUpdates.footerLines),
   };
   const chrome = stateChrome(provisional);
   const oldTitleRow = before.viewport.targetTitleScreenRow;
@@ -279,13 +303,22 @@ export function resizeDisclosureView(
   );
   const next = { ...provisional, anchorScreenRow: nextAnchor };
   const bounds = viewBounds(next);
+  const logicalTopOffset = state.target === undefined && !state.followTail
+    ? resizedLogicalTopOffset(
+      before,
+      beforeLayout,
+      stateDocumentLayout(next),
+      bounds,
+    )
+    : undefined;
   return {
     ...next,
     scrollOffset: oldTitleRow !== undefined
       ? bounds.anchorOffset
       : state.followTail
       ? bounds.maximum
-      : clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
+      : logicalTopOffset ??
+        clamp(state.scrollOffset, bounds.minimum, bounds.maximum),
   };
 }
 
@@ -346,7 +379,7 @@ export function replaceDisclosureViewNodes(
 ): DisclosureViewState {
   const before = renderDisclosureView(state);
   const nextNodes = cloneNodes(nodes);
-  assertTarget(nextNodes, state.target);
+  validateNodesAndTarget(nextNodes, state.target);
   const visibleTitleRow = before.viewport.targetTitleScreenRow;
   const provisional = {
     ...state,
@@ -378,13 +411,18 @@ export function appendDisclosureViewNode(
  */
 export function toggleDisclosureView(
   state: Readonly<DisclosureViewState>,
-  target: DisclosureViewTarget = state.target,
+  target: DisclosureViewTarget | undefined = state.target,
   expanded?: boolean,
 ): DisclosureViewState {
+  // A target-less call remains a no-op in the ordinary conversation state.
+  // Existing targeted callers can continue passing `undefined` to mean the
+  // currently selected disclosure.
+  if (target === undefined) return state;
   const nextTarget = cloneTarget(target);
   assertTarget(state.nodes, nextTarget);
   const before = renderDisclosureView(state);
-  const sameTarget = targetsEqual(state.target, nextTarget);
+  const sameTarget = state.target !== undefined &&
+    targetsEqual(state.target, nextTarget);
   const targetRow = before.visibleRows.find(
     (row) => row.nodeId === nextTarget.id && row.part === "title",
   )?.screenRow;
@@ -403,6 +441,52 @@ export function toggleDisclosureView(
   };
   const bounds = viewBounds(provisional);
   return { ...provisional, scrollOffset: bounds.anchorOffset };
+}
+
+/**
+ * Return a disclosure-focused viewport to the ordinary conversation state.
+ *
+ * The selected body is collapsed in place and, when its title is visible, the
+ * title remains on the same physical transcript row. Tail following is not
+ * re-enabled implicitly: collapsing an inspection must not jump the user's
+ * scrollbar to the newest output. Call `scrollDisclosureViewToEnd` when the
+ * caller intentionally wants to resume following streamed output.
+ */
+export function clearDisclosureViewTarget(
+  state: Readonly<DisclosureViewState>,
+): DisclosureViewState {
+  if (state.target === undefined) return state;
+
+  const before = renderDisclosureView(state);
+  const previousTarget = state.target;
+  const chrome = stateChrome(state);
+  const visibleTitleRow = before.viewport.targetTitleScreenRow;
+  const anchorScreenRow = clamp(
+    visibleTitleRow ?? state.anchorScreenRow,
+    chrome.transcriptStartRow,
+    chrome.transcriptStartRow + chrome.viewportRows - 1,
+  );
+  const provisional: DisclosureViewState = {
+    ...state,
+    target: undefined,
+    targetExpanded: false,
+    anchorScreenRow,
+    followTail: false,
+  };
+  const layout = stateDocumentLayout(provisional);
+  const bounds = viewBoundsFrom(provisional, chrome, layout);
+  const titleRow = visibleTitleRow === undefined
+    ? undefined
+    : layout.titleRows.get(previousTarget.id);
+  const scrollOffset = titleRow === undefined || visibleTitleRow === undefined
+    ? clamp(state.scrollOffset, bounds.minimum, bounds.maximum)
+    : clamp(
+      titleRow - (visibleTitleRow - chrome.transcriptStartRow),
+      bounds.minimum,
+      bounds.maximum,
+    );
+
+  return { ...provisional, scrollOffset };
 }
 
 export function scrollDisclosureView(
@@ -465,7 +549,8 @@ function materializeNodes(
     if (node.kind === "text") return { ...node };
     return {
       ...node,
-      expanded: state.targetExpanded &&
+      expanded: state.target !== undefined &&
+        state.targetExpanded &&
         node.id === state.target.id &&
         node.kind === state.target.kind,
     };
@@ -502,6 +587,15 @@ function viewBoundsFrom(
   chrome: ChromeLayout,
   layout: ReturnType<typeof layoutVirtualDocument>,
 ): ViewBounds {
+  if (state.target === undefined) {
+    const maximum = Math.max(0, layout.totalRows - chrome.viewportRows);
+    return {
+      minimum: 0,
+      maximum,
+      // In the ordinary view the natural anchor is the transcript tail.
+      anchorOffset: maximum,
+    };
+  }
   const titleRow = layout.titleRows.get(state.target.id);
   if (titleRow === undefined) {
     throw new Error(`Disclosure target has no title row: ${state.target.id}`);
@@ -572,16 +666,29 @@ function appendChromeRows(
 function validateState(state: Readonly<DisclosureViewState>): void {
   positiveInteger(state.columns, 1);
   positiveInteger(state.rows, 1);
-  assertTarget(state.nodes, state.target);
+  validateNodesAndTarget(state.nodes, state.target);
   stateChrome(state);
+}
+
+function validateNodesAndTarget(
+  nodes: readonly VirtualDocumentNode[],
+  target: DisclosureViewTarget | undefined,
+): void {
+  // Laying out validates empty/duplicate IDs even when no disclosure is
+  // selected by the ordinary conversation viewport.
+  layoutVirtualDocument(nodes, 1, { preserveAnsi: false });
+  if (target !== undefined) assertTarget(nodes, target, false);
 }
 
 function assertTarget(
   nodes: readonly VirtualDocumentNode[],
   target: DisclosureViewTarget,
+  validateNodes = true,
 ): void {
   // Laying out also validates duplicate IDs.
-  layoutVirtualDocument(nodes, 1, { preserveAnsi: false });
+  if (validateNodes) {
+    layoutVirtualDocument(nodes, 1, { preserveAnsi: false });
+  }
   const node = nodes.find((candidate) => candidate.id === target.id);
   if (!node || node.kind === "text" || node.kind !== target.kind) {
     throw new Error(
@@ -604,6 +711,12 @@ function cloneTarget(target: DisclosureViewTarget): DisclosureViewTarget {
   return { id: target.id, kind: target.kind };
 }
 
+function cloneOptionalTarget(
+  target: DisclosureViewTarget | undefined,
+): DisclosureViewTarget | undefined {
+  return target === undefined ? undefined : cloneTarget(target);
+}
+
 function targetsEqual(
   left: DisclosureViewTarget,
   right: DisclosureViewTarget,
@@ -622,4 +735,28 @@ function finiteInteger(value: number, fallback: number): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+/**
+ * Preserve the first visible logical transcript row across rewrapping when
+ * the ordinary (target-less) viewport is not following the tail.
+ */
+function resizedLogicalTopOffset(
+  before: Readonly<DisclosureViewFrame>,
+  beforeLayout: ReturnType<typeof layoutVirtualDocument>,
+  afterLayout: ReturnType<typeof layoutVirtualDocument>,
+  bounds: Readonly<ViewBounds>,
+): number | undefined {
+  const top = before.viewport.lines[0];
+  if (!top) return undefined;
+  const oldNodeStart = beforeLayout.nodeRows.get(top.nodeId);
+  const newNodeStart = afterLayout.nodeRows.get(top.nodeId);
+  if (oldNodeStart === undefined || newNodeStart === undefined) {
+    return undefined;
+  }
+
+  // nodeRow is the best stable row-level anchor exposed by the virtual
+  // document. It preserves the same logical item and approximate row without
+  // coupling this view to renderer-specific character offsets.
+  return clamp(newNodeStart + top.nodeRow, bounds.minimum, bounds.maximum);
 }

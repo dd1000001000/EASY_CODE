@@ -1,0 +1,1 @@
+RUNTIME_CONTEXT_PRESSURE: Short-term context is approximately {{percent}}% of its configured limit. Consider calling compact_context by itself after the next meaningful milestone. This is advisory; other work may continue.

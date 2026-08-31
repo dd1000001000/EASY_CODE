@@ -1,0 +1,1 @@
+- Background commands do not request approval while dangerous full access remains active. Minimize host access and report every external effect.

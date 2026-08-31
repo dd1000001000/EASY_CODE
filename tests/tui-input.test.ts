@@ -149,6 +149,24 @@ describe("raw TUI input decoder", () => {
     );
   });
 
+  it("maps native Ctrl+V and enhanced Ctrl/Super+V to image paste", () => {
+    const decoder = new TuiInputDecoder();
+    assert.deepEqual(
+      decoder.feed(
+        "\u0016" + // classic terminal Ctrl+V
+        "\u001B[118;5u" + // CSI-u Ctrl+V
+        "\u001B[118;9u" + // CSI-u Super/Command+V
+        "\u001B[118;5:3u", // released Ctrl+V (ignored)
+      ),
+      [
+        { type: "paste-image" },
+        { type: "paste-image" },
+        { type: "paste-image" },
+      ],
+    );
+    assert.equal(decoder.awaitingInput, false);
+  });
+
   it("decodes SGR mouse click, release, modifiers, and wheel", () => {
     const decoder = new TuiInputDecoder();
     const events = decoder.feed(

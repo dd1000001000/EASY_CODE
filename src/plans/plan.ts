@@ -4,6 +4,7 @@ import type {
   PlanReviewState,
 } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { createId } from "../utils/ids.js";
 
 export const MAX_PLAN_TITLE_CHARS = 200;
@@ -109,29 +110,30 @@ export function returnPlanExecutionToReview(
   return {
     status: "awaiting_review",
     proposal: clonePlanReviewState(value).proposal,
-    feedback:
-      `The previously approved execution ${outcomeText}. It may have partially modified ` +
-      "the workspace; inspect the current workspace state before approving this plan again.",
+    feedback: loadPromptBundleCatalog().render(
+      "runtime/plan-execution-return.md",
+      { outcome: outcomeText },
+    ).trimEnd(),
   };
 }
 
 export function formatPlanProposal(plan: Readonly<PlanProposal>): string {
-  const lines = [
-    `Plan: ${plan.title}`,
-    `Plan ID: ${plan.id} (revision ${plan.revision})`,
-    "",
-    plan.overview,
-    "",
+  const catalog = loadPromptBundleCatalog();
+  const sections = [
+    catalog.render("runtime/plan-proposal-header.md", {
+      title: plan.title,
+      planId: plan.id,
+      revision: plan.revision,
+      overview: plan.overview,
+    }).trimEnd(),
+    ...plan.steps.map((step, index) =>
+      catalog.render("runtime/plan-proposal-step.md", {
+        index: index + 1,
+        title: step.title,
+        description: step.description,
+        verification: step.verification,
+      }).trimEnd()
+    ),
   ];
-  for (let index = 0; index < plan.steps.length; index += 1) {
-    const step = plan.steps[index];
-    if (!step) continue;
-    lines.push(
-      `${index + 1}. ${step.title}`,
-      `   ${step.description}`,
-      `   Verification: ${step.verification}`,
-      "",
-    );
-  }
-  return lines.join("\n").trimEnd();
+  return sections.join("\n\n");
 }

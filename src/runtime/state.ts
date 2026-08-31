@@ -1,11 +1,13 @@
 import type { EasyCodeConfig, SessionState } from "../core/types.js";
+import type { PromptBundleBinding } from "../prompt-bundle/types.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
 
 export function createSessionState(
   config: EasyCodeConfig,
-  threadId = createId("thread")
+  threadId = createId("thread"),
+  promptBundle?: PromptBundleBinding,
 ): SessionState {
   const now = new Date().toISOString();
   const provider = config[config.provider];
@@ -16,6 +18,7 @@ export function createSessionState(
     model: provider.model,
     thinkingEffort: config.thinkingEffort,
     workspaceRoot: config.workspaceRoot,
+    ...(promptBundle ? { promptBundle: { ...promptBundle } } : {}),
     constraints: [],
     messages: [],
     filesRead: new Map(),
@@ -35,6 +38,7 @@ export function createSessionState(
 export function cloneSessionState(state: SessionState): SessionState {
   return {
     ...state,
+    ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
     constraints: [...state.constraints],
     messages: [...state.messages],
     filesRead: new Map(state.filesRead),

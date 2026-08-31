@@ -55,6 +55,8 @@ describe("FullScreenWriter", () => {
     assert.equal(FULL_SCREEN_ENTER_SEQUENCE.includes("\u001B[?1006h"), false);
     assert.equal(FULL_SCREEN_EXIT_SEQUENCE.includes("\u001B[?1000l"), false);
     assert.equal(FULL_SCREEN_EXIT_SEQUENCE.includes("\u001B[?1006l"), false);
+    assert.equal(FULL_SCREEN_ENTER_SEQUENCE.includes("\u001B[?1007h"), true);
+    assert.equal(FULL_SCREEN_EXIT_SEQUENCE.includes("\u001B[?1007l"), true);
   });
 
   it("does not write an identical frame twice", () => {

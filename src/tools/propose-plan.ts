@@ -16,6 +16,7 @@ import {
   normalizePlanDraft,
 } from "../plans/plan.js";
 import { toolFailure } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 const boundedPlanText = (maximum: number) =>
   z.string().trim().min(1).max(maximum);
@@ -50,12 +51,8 @@ export class ProposePlanTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Submit the complete implementation plan for user review. Use this only in Plan mode and call it by itself. " +
-        "Keep every step concrete and ordered, and give each step a verification method. A successful call ends the " +
-        "planning turn; Runtime assigns the proposal ID and revision and waits for the user to approve, reject, or adjust it.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
@@ -98,7 +95,7 @@ export class ProposePlanTool implements AgentTool {
           },
         },
         required: ["title", "overview", "steps"],
-      },
+      }),
     },
   };
 

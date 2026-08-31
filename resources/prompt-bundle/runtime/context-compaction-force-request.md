@@ -1,0 +1,1 @@
+RUNTIME_CONTEXT_COMPACTION_FORCE: Context utilization reached {{percent}}%. Before continuing the task, call compact_context by itself with a cumulative summary preserving the objective, constraints, verified findings, relevant files, tool and test outcomes, blockers, and exact next steps.

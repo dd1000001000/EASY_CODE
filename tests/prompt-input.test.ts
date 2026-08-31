@@ -241,6 +241,149 @@ describe("image-aware CLI prompt", () => {
     await prompt;
   });
 
+  it("can suspend an idle editor without repainting the retained primary prompt", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+
+      const controller = new AbortController();
+      let session: PromptInputSession | undefined;
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        signal: controller.signal,
+        captureImage: async (index) => attachment(index),
+        onSessionReady: (value) => {
+          if (value) session = value;
+        },
+      });
+
+      input.write("draft");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.ok(session);
+      const suspensionOffset = transcript.length;
+      assert.equal(session.suspendInput({ preserveDisplay: true }), true);
+      session.resumeInput({ preserveDisplay: true });
+      assert.equal(
+        transcript.slice(suspensionOffset),
+        "",
+        "an unchanged primary prompt must not emit a redraw on resume",
+      );
+
+      input.write("!\r");
+      assert.equal((await prompt)?.text, "draft!");
+    });
+  });
+
+  it("offers a start-suspended editor before touching stdin, modes, or prompt pixels", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+
+    let retainedSession: PromptInputSession | undefined;
+    let dataListenersAtOffer = -1;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      startSuspended: true,
+      captureImage: async (index) => attachment(index),
+      onSessionReady: (session) => {
+        if (!session) return;
+        retainedSession = session;
+        dataListenersAtOffer = input.listenerCount("data");
+        assert.equal(transcript, "");
+        assert.deepEqual(input.rawModeTransitions, []);
+        assert.equal(session.suspendInput(), true);
+      },
+    });
+
+    assert.ok(retainedSession);
+    assert.equal(dataListenersAtOffer, 0);
+    assert.equal(input.listenerCount("data"), 0);
+    assert.equal(transcript, "");
+    assert.deepEqual(input.rawModeTransitions, []);
+    assert.equal(retainedSession.feedInput("owned by viewer\r"), true);
+    assert.equal((await prompt)?.text, "owned by viewer");
+    assert.equal(transcript, "");
+    assert.deepEqual(input.rawModeTransitions, []);
+  });
+
+  it("resumes a start-suspended editor with its terminal modes and prompt intact", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+
+    let retainedSession: PromptInputSession | undefined;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      startSuspended: true,
+      captureImage: async (index) => attachment(index),
+      onSessionReady: (session) => {
+        if (!session) return;
+        retainedSession = session;
+        assert.equal(session.suspendInput(), true);
+      },
+    });
+
+    assert.ok(retainedSession);
+    retainedSession.resumeInput();
+    assert.equal(input.isRaw, true);
+    assert.match(transcript, /^\u001B\[\?2004h> /u);
+    assert.equal(input.listenerCount("data") > 0, true);
+
+    input.write("after close\r");
+    assert.equal((await prompt)?.text, "after close");
+    assert.equal(input.isRaw, false);
+    assert.match(transcript, /\u001B\[\?2004l/u);
+  });
+
+  it("falls back to legacy inline startup when an early session is not claimed", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      startSuspended: true,
+      captureImage: async (index) => attachment(index),
+      onSessionReady: () => {
+        // Observers that do not acquire the lease retain historical behavior.
+      },
+    });
+
+    assert.equal(input.isRaw, true);
+    assert.match(transcript, /^\u001B\[\?2004h> /u);
+    input.write("legacy\r");
+    assert.equal((await prompt)?.text, "legacy");
+  });
+
   it("keeps the canonical busy editor editable while its physical prompt is suspended", async () => {
     await withInteractiveTerm(async () => {
       const input = new TtyInput();
@@ -435,7 +578,11 @@ describe("image-aware CLI prompt", () => {
 
     assert.ok(activeSession);
     assert.equal(activeSession.suspendInput(), true);
+    // Model the persistent full-screen renderer taking ownership after the
+    // readline session releases stdin. Completion must preserve this state.
+    input.resume();
     const suspendedOutputOffset = transcript.length;
+    const suspendedRawTransitionOffset = input.rawModeTransitions.length;
     assert.equal(
       activeSession.feedInput("\u001B[200~line one\nline two\u001B[201~"),
       true,
@@ -448,7 +595,18 @@ describe("image-aware CLI prompt", () => {
     assert.equal(activeSession, undefined);
     assert.equal(retainedSession?.feedInput("after completion"), false);
     const suspendedWrites = transcript.slice(suspendedOutputOffset);
-    assert.doesNotMatch(suspendedWrites, /line one|Pasted text|> /u);
+    assert.equal(
+      suspendedWrites,
+      "",
+      "suspended cleanup must not erase pixels or disable bracketed paste",
+    );
+    assert.deepEqual(
+      input.rawModeTransitions.slice(suspendedRawTransitionOffset),
+      [],
+      "readline cleanup must not restore raw mode behind the full-screen owner",
+    );
+    assert.equal(input.isRaw, true);
+    assert.equal(input.readableFlowing, true);
   });
 
   it("recognizes Windows Ctrl+V and numbers after queued images", async () => {

@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { getEasyCodeHome } from "../prompt-bundle/paths.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type {
   CommandExecutionBackend,
@@ -91,6 +92,17 @@ function uniquePaths(values: readonly string[]): string[] {
     result.push(normalized);
   }
   return result;
+}
+
+function pathIsInsideOrEqual(parent: string, candidate: string): boolean {
+  const resolvedParent = path.resolve(parent);
+  const resolvedCandidate = path.resolve(candidate);
+  const relative = path.relative(resolvedParent, resolvedCandidate);
+  return relative === "" || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 function environmentValue(
@@ -1130,10 +1142,21 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         XDG_CACHE_HOME: scratchCache,
         EASY_CODE_SANDBOXED: "1",
       };
-      const protectedMetadata = await protectedMetadataPaths([
+      const officialRuntimeHome = getEasyCodeHome();
+      const protectedMetadataCandidates = [
         path.join(this.workspace.root, ".easycode"),
         path.join(this.workspace.root, ".git"),
-      ]);
+      ];
+      // If the workspace is the user's home directory (or one of its
+      // ancestors), carve the official prompt/tool bundle back out of the
+      // otherwise writable workspace. In Dangerous mode this backend is
+      // bypassed deliberately; startup integrity checks still repair changes.
+      if (pathIsInsideOrEqual(this.workspace.root, officialRuntimeHome)) {
+        protectedMetadataCandidates.push(officialRuntimeHome);
+      }
+      const protectedMetadata = await protectedMetadataPaths(
+        protectedMetadataCandidates,
+      );
       const payloadPath = path.join(scratchRoot, "worker-payload.json");
       const scratchMarkerPath = path.join(scratchRoot, WINDOWS_SANDBOX_SCRATCH_MARKER);
       const stagedBridgePath = await this.stageSandboxBridge(scratchRoot);

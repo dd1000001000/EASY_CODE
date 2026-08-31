@@ -1,3 +1,6 @@
+import type { PromptBundleBinding } from "../prompt-bundle/types.js";
+export type { PromptBundleBinding } from "../prompt-bundle/types.js";
+
 export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
 export type ProviderName = "qwen" | "deepseek" | "glm";
@@ -611,6 +614,8 @@ export interface SessionState {
   model: string;
   thinkingEffort: ThinkingEffort;
   workspaceRoot: string;
+  /** Exact trusted prompt/tool resource identity used for this session. */
+  promptBundle?: PromptBundleBinding;
   goal?: string;
   constraints: string[];
   messages: ChatMessage[];

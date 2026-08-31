@@ -34,6 +34,7 @@ export interface SnapshotOptions {
 const DEFAULT_IGNORED_DIRECTORIES = new Set([
   ".git",
   ".easycode",
+  ".easy_code",
   "node_modules",
 ]);
 const RUNTIME_SCRATCH_DIRECTORY = ".easy-code-srt-runtime";

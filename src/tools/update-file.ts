@@ -25,6 +25,7 @@ import {
   resolveExistingFileToolTarget,
   type FileToolTarget,
 } from "./file-access.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const textEditSchema = z
   .object({
@@ -63,18 +64,12 @@ export class UpdateFileTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Update a previously read UTF-8 file using exact text replacements and its expected SHA-256 hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: {
-            type: "string",
-            description:
-              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
-          },
+          path: { type: "string" },
           expectedHash: { type: "string", pattern: "^[a-fA-F0-9]{64}$" },
           edits: {
             type: "array",
@@ -92,7 +87,7 @@ export class UpdateFileTool implements AgentTool {
           },
         },
         required: ["path", "expectedHash", "edits"],
-      },
+      }),
     },
   };
 

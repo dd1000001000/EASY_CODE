@@ -10,6 +10,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "resources/prompt-bundle",
     "scripts/embedding-model.cjs",
     "scripts/postinstall.cjs",
     "scripts/install-vscode-extension.cjs",
@@ -25,12 +26,13 @@
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "bundle:build": "node scripts/build-prompt-bundle.cjs",
+    "build": "npm run bundle:build && tsc -p tsconfig.json",
     "dev": "npm run build && node dist/index.js",
     "start": "node dist/index.js",
     "test": "npm run build:test && node scripts/run-tests.cjs && npm run test:vscode",
     "test:vscode": "npm --prefix vscode-extension test",
-    "build:test": "tsc -p tsconfig.test.json",
+    "build:test": "npm run bundle:build && tsc -p tsconfig.test.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "postinstall": "node scripts/postinstall.cjs",
     "memory:install": "node scripts/embedding-model.cjs prepare",

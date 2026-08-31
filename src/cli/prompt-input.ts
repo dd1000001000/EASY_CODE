@@ -40,15 +40,34 @@ export interface PromptInputSession {
    * Modal selectors use this lease instead of attaching a second stdin
    * consumer beside readline.
    */
-  suspendInput(): boolean;
+  suspendInput(options?: { readonly preserveDisplay?: boolean }): boolean;
   /**
    * Feed raw terminal bytes into the preserved readline editor while another
    * UI owns physical stdin. Input is accepted only for an active, suspended
    * session and still passes through the normal paste/image/marker pipeline.
    */
   feedInput(chunk: Buffer | string): boolean;
+  /**
+   * Ignore the short arrow/Enter auto-repeat burst that can follow a modal
+   * selector before accepting the next printable edit.
+   */
+  discardLeadingModalControls(): void;
   /** Restore a session previously suspended with suspendInput(). */
-  resumeInput(options?: { readonly discardLeadingModalControls?: boolean }): void;
+  resumeInput(options?: {
+    readonly discardLeadingModalControls?: boolean;
+    /**
+     * The temporary owner restored/disabled terminal modes before returning
+     * the lease, so readline must explicitly reacquire Raw Mode and bracketed
+     * paste even when it enabled them before suspension.
+     */
+    readonly reacquireTerminalModes?: boolean;
+    /**
+     * Reuse the prompt already present in the primary terminal buffer instead
+     * of painting it again. Callers may request this only when neither the
+     * draft nor the surrounding live UI changed during the suspension.
+     */
+    readonly preserveDisplay?: boolean;
+  }): void;
   /**
    * Wait until every line already accepted by this editor has reached its
    * serialized onSubmit callback. Pending clipboard capture that was followed
@@ -96,6 +115,14 @@ export interface ReadPromptOptions {
   readonly onSessionReady?: (
     session: PromptInputSession | undefined,
   ) => void;
+  /**
+   * Offer the editor to `onSessionReady` before readline connects physical
+   * stdin, changes terminal modes, or paints prompt pixels. A full-screen
+   * owner claims the offered lease by synchronously calling `suspendInput()`;
+   * if it does not, the editor automatically continues with the legacy
+   * inline startup path.
+   */
+  readonly startSuspended?: boolean;
   /** Keep the editor alive after Enter and deliver each non-empty submission. */
   readonly keepOpen?: boolean;
   readonly onSubmit?: (
@@ -405,6 +432,7 @@ class ImagePasteInputProxy extends Transform {
   private processTail: Promise<void> = Promise.resolve();
   private successfulImageCount = 0;
   private discardModalControlsUntil = 0;
+  private terminalStateForwarding = true;
   private readonly pastedTextBlocks = new Map<string, string>();
   private readonly imageMarkers = new Map<string, string>();
   private readonly pendingMarkers = new Set<string>();
@@ -449,8 +477,19 @@ class ImagePasteInputProxy extends Transform {
   }
 
   setRawMode(mode: boolean): this {
-    this.source.setRawMode?.(mode);
+    if (this.terminalStateForwarding) {
+      this.source.setRawMode?.(mode);
+    }
     return this;
+  }
+
+  /**
+   * readline normally owns raw-mode transitions while this proxy is its TTY.
+   * A suspended prompt has handed the physical terminal to another renderer,
+   * so readline must not restore that renderer's raw state when it closes.
+   */
+  setTerminalStateForwarding(enabled: boolean): void {
+    this.terminalStateForwarding = enabled;
   }
 
   override _transform(
@@ -1018,6 +1057,9 @@ export function readPrompt(
   let bracketedPasteEnabled = false;
   let inputConnected = false;
   let inputSuspended = false;
+  let inputSuspendedWithPreservedDisplay = false;
+  let startupSuspensionPending = false;
+  let startupSuspensionClaimed = false;
   let readlineOutputMuted = false;
   let connectInput = (): void => undefined;
   let disconnectInput = (): void => undefined;
@@ -1267,14 +1309,33 @@ export function readPrompt(
       }
     },
     refreshBelow,
-    suspendInput(): boolean {
+    suspendInput(suspendOptions): boolean {
       if (!promptActive) return false;
-      if (inputSuspended) return true;
-      if (!suspendPrompt()) return false;
-      // The prompt is now physically erased. Mute readline before releasing
-      // stdin so feedInput() can edit the same buffer without drawing a second
-      // prompt underneath the alternate-screen owner.
+      if (inputSuspended) {
+        if (startupSuspensionPending) startupSuspensionClaimed = true;
+        return true;
+      }
+      if (suspendOptions?.preserveDisplay && promptSuspensionDepth === 0) {
+        // Alternate-screen UIs can leave the primary buffer byte-for-byte
+        // untouched. Retain its prompt and decorations so switching back does
+        // not emit a redraw that makes terminal emulators follow the cursor to
+        // the bottom of scrollback.
+        promptSuspensionDepth = 1;
+        suspendedLine = rl.line;
+        suspendedCursor = rl.cursor;
+        inputSuspendedWithPreservedDisplay = true;
+      } else if (!suspendPrompt()) {
+        // The legacy OSC path reaches this method from a prompt callback that
+        // has already suspended and erased the editor. Nest that suspension
+        // instead of rejecting the disclosure open; resumeInput() and the
+        // callback's finally block will unwind the two levels in order.
+        return false;
+      }
+      // Mute readline before releasing stdin so feedInput() can edit the same
+      // buffer without drawing over the alternate-screen owner. The ordinary
+      // path erased the prompt; preserveDisplay leaves it hidden in primary.
       readlineOutputMuted = true;
+      proxy.setTerminalStateForwarding(false);
       latestPromptEndPosition = undefined;
       disconnectInput();
       input.pause();
@@ -1300,14 +1361,67 @@ export function readPrompt(
         return false;
       }
     },
-    resumeInput(options): void {
+    discardLeadingModalControls(): void {
+      if (!promptActive) return;
+      proxy.discardLeadingModalControls();
+    },
+    resumeInput(resumeOptions): void {
       if (!promptActive || !inputSuspended) return;
-      if (options?.discardLeadingModalControls) {
+      if (resumeOptions?.discardLeadingModalControls) {
         proxy.discardLeadingModalControls();
       }
       inputSuspended = false;
       readlineOutputMuted = false;
-      resumePrompt();
+      proxy.setTerminalStateForwarding(true);
+      if (resumeOptions?.reacquireTerminalModes) {
+        bracketedPasteEnabled = false;
+      }
+      // readline requested Raw Mode when its interface was created. A
+      // start-suspended editor deliberately suppressed that request, and a
+      // full-screen owner restores its own prior mode before handing control
+      // back, so reassert the editor's terminal modes before reconnecting.
+      try {
+        if (!input.isRaw) input.setRawMode?.(true);
+      } catch {
+        // A disappearing TTY is handled by the normal stream/error lifecycle.
+      }
+      if (!bracketedPasteEnabled) {
+        bracketedPasteEnabled = true;
+        try {
+          options.output.write(ENABLE_BRACKETED_PASTE);
+        } catch {
+          // Keep the logical editor recoverable even if the terminal vanished.
+        }
+      }
+      const canReusePreservedDisplay = Boolean(
+        resumeOptions?.preserveDisplay &&
+          inputSuspendedWithPreservedDisplay &&
+          rl.line === suspendedLine &&
+          rl.cursor === suspendedCursor,
+      );
+      if (canReusePreservedDisplay) {
+        // Nothing was erased and nothing changed. Dropping the logical
+        // suspension is sufficient; any output here would force VS Code's
+        // terminal viewport to jump to the active cursor at the bottom.
+        promptSuspensionDepth = Math.max(0, promptSuspensionDepth - 1);
+      } else {
+        if (inputSuspendedWithPreservedDisplay) {
+          // The primary prompt was deliberately retained, but its state is now
+          // stale. Erase that old copy before using the ordinary state-derived
+          // resume path so drafts never appear twice.
+          eraseBelow();
+          const savedPosition = rl.getCursorPos();
+          if (savedPosition.rows > 0) {
+            readline.moveCursor(options.output, 0, -savedPosition.rows);
+          }
+          readline.cursorTo(options.output, 0);
+          readline.clearScreenDown(options.output);
+          (rl as unknown as { prevRows?: number }).prevRows = 0;
+          suspendedPromptVisibleAfterResize = false;
+        }
+        resumePrompt();
+      }
+      inputSuspendedWithPreservedDisplay = false;
       // Reconnect only after the preserved prompt is visible. pipe() can make
       // an already-buffered TTY flow synchronously, so connecting first could
       // echo keys into a prompt that is still suspended.
@@ -1418,6 +1532,18 @@ export function readPrompt(
     options.bracketedPasteIdleTimeoutMs,
     options.clipboardCaptureTimeoutMs,
   );
+  const startSuspended = Boolean(
+    options.startSuspended && options.onSessionReady,
+  );
+  if (startSuspended) {
+    // readline configures Raw Mode during createInterface(). Suppress that
+    // physical transition until the lifecycle hook has either transferred
+    // ownership to a full-screen renderer or declined the lease.
+    proxy.setTerminalStateForwarding(false);
+    inputSuspended = true;
+    readlineOutputMuted = true;
+    promptSuspensionDepth = 1;
+  }
   rl = readline.createInterface({
     input: proxy,
     output: readlineOutput,
@@ -1448,13 +1574,20 @@ export function readPrompt(
     };
 
     const cleanup = (): void => {
+      // While suspended, the prompt has handed both pixels and terminal modes
+      // to the persistent full-screen renderer. Cleanup must only detach its
+      // logical editor state; writing control sequences or restoring the
+      // pre-prompt raw/flow state would corrupt the renderer behind it.
+      const suspendedAtCleanup = inputSuspended;
       if (scheduledBelowDraw) clearImmediate(scheduledBelowDraw);
       scheduledBelowDraw = undefined;
-      try {
-        eraseBelow();
-        eraseSuspendedResizePrompt();
-      } catch {
-        // Raw-mode and stream cleanup still matter if the TTY disappeared.
+      if (!suspendedAtCleanup) {
+        try {
+          eraseBelow();
+          eraseSuspendedResizePrompt();
+        } catch {
+          // Raw-mode and stream cleanup still matter if the TTY disappeared.
+        }
       }
       promptActive = false;
       promptSuspensionDepth = 0;
@@ -1469,10 +1602,12 @@ export function readPrompt(
       captureController.abort();
       if (bracketedPasteEnabled) {
         bracketedPasteEnabled = false;
-        try {
-          options.output.write(DISABLE_BRACKETED_PASTE);
-        } catch {
-          // The terminal may have disappeared while the prompt was active.
+        if (!suspendedAtCleanup) {
+          try {
+            options.output.write(DISABLE_BRACKETED_PASTE);
+          } catch {
+            // The terminal may have disappeared while the prompt was active.
+          }
         }
       }
       rl.removeListener("close", onClose);
@@ -1486,13 +1621,15 @@ export function readPrompt(
       disconnectInput();
       discardImages(proxy.consumeUnsubmittedImages());
       if (!proxy.destroyed) proxy.destroy();
-      try {
-        input.setRawMode?.(wasRaw);
-      } catch {
-        // The TTY may have disappeared while the prompt was active.
+      if (!suspendedAtCleanup) {
+        try {
+          input.setRawMode?.(wasRaw);
+        } catch {
+          // The TTY may have disappeared while the prompt was active.
+        }
+        if (wasFlowing) input.resume();
+        else input.pause();
       }
-      if (wasFlowing) input.resume();
-      else input.pause();
       inputSuspended = false;
       readlineOutputMuted = false;
       try {
@@ -1514,10 +1651,12 @@ export function readPrompt(
       if (consumed) discardImages(consumed.discardedImages);
       rl.removeListener("close", onClose);
       if (closeInterface) {
-        try {
-          eraseBelow();
-        } catch {
-          // Closing the interface must not depend on decorative output.
+        if (!inputSuspended) {
+          try {
+            eraseBelow();
+          } catch {
+            // Closing the interface must not depend on decorative output.
+          }
         }
         rl.close();
       }
@@ -1660,6 +1799,31 @@ export function readPrompt(
       input.unpipe(proxy);
       inputConnected = false;
     };
+    if (startSuspended) {
+      suspendedLine = rl.line;
+      suspendedCursor = rl.cursor;
+      startupSuspensionPending = true;
+      sessionReady = true;
+      try {
+        options.onSessionReady?.(promptSession);
+      } catch (error) {
+        startupSuspensionPending = false;
+        finish(
+          undefined,
+          error instanceof Error ? error : new Error(String(error)),
+        );
+        return;
+      }
+      startupSuspensionPending = false;
+      if (settled) return;
+      if (!startupSuspensionClaimed && inputSuspended) {
+        // Backwards-compatible fallback: merely observing the early session
+        // does not require a caller to implement terminal ownership.
+        promptSession.resumeInput();
+      }
+      notifyDraft();
+      return;
+    }
     connectInput();
     // Observe the source as well as the serialized Transform. A clipboard read
     // deliberately holds the Transform callback so Enter stays ordered behind

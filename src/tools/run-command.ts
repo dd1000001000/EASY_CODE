@@ -9,6 +9,7 @@ import { CommandRuntime } from "../command/runtime.js";
 import type { RunCommandInput } from "../command/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const runCommandInputSchema = z
   .object({
@@ -29,30 +30,20 @@ export class RunCommandTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Run one structured program/argv command. Manual and auto-approved modes use Runtime policy plus the Anthropic workspace sandbox. User-confirmed dangerous mode runs directly as the current OS user with host filesystem, working-directory, environment, and internet access and no EASY CODE approval prompt. Explicit one-shot shells remain supported.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          program: {
-            type: "string",
-            description:
-              "Executable name or workspace-relative executable; absolute host executables require dangerous mode",
-          },
+          program: { type: "string" },
           args: { type: "array", items: { type: "string" }, maxItems: 256 },
-          cwd: {
-            type: "string",
-            description:
-              "Workspace-relative existing directory, or an absolute host directory only in dangerous mode",
-          },
+          cwd: { type: "string" },
           intent: { type: "string", enum: ["inspect", "build", "test", "run", "install"] },
           timeoutMs: { type: "integer", minimum: 1 },
           reason: { type: "string" },
         },
         required: ["program", "intent"],
-      },
+      }),
     },
   };
 

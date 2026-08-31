@@ -4,9 +4,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { createDefaultEasyCodeConfig } from "../src/config/index.js";
+import {
+  EASY_CODE_RUNTIME_VERSION,
+  PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
+} from "../src/prompt-bundle/generated.js";
+import { ensurePromptBundleForTesting } from "../src/prompt-bundle/manager.js";
 import { buildSystemPrompt } from "../src/prompts/index.js";
 import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { describe, it } from "./harness.js";
+
+async function activatePromptBundle(homeDirectory: string): Promise<void> {
+  await ensurePromptBundleForTesting({
+    homeDirectory,
+    packagedBundleDirectory: path.resolve("resources", "prompt-bundle"),
+    expectedManifestHash: PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
+    runtimeVersion: EASY_CODE_RUNTIME_VERSION,
+  });
+}
 
 describe("system prompt builder", () => {
   it("includes dynamic environment facts and layered EASYCODE.md files", async () => {
@@ -15,6 +29,7 @@ describe("system prompt builder", () => {
     const cwd = path.join(workspace, "packages", "api");
     const configDir = path.join(temporary, "config");
     try {
+      await activatePromptBundle(path.join(temporary, "prompt-home"));
       await mkdir(cwd, { recursive: true });
       await mkdir(configDir, { recursive: true });
       await writeFile(
@@ -149,6 +164,7 @@ describe("system prompt builder", () => {
     const workspace = path.join(temporary, "workspace");
     const configDir = path.join(temporary, "config");
     try {
+      await activatePromptBundle(path.join(temporary, "prompt-home"));
       await mkdir(workspace, { recursive: true });
       await mkdir(configDir, { recursive: true });
       const config = createDefaultEasyCodeConfig(workspace, {
@@ -193,6 +209,7 @@ describe("system prompt builder", () => {
     const workspace = path.join(temporary, "workspace");
     const configDir = path.join(temporary, "config");
     try {
+      await activatePromptBundle(path.join(temporary, "prompt-home"));
       await mkdir(workspace, { recursive: true });
       await mkdir(configDir, { recursive: true });
       const config = createDefaultEasyCodeConfig(workspace, {
@@ -267,6 +284,7 @@ describe("system prompt builder", () => {
     const workspace = path.join(temporary, "workspace");
     const configDir = path.join(temporary, "config");
     try {
+      await activatePromptBundle(path.join(temporary, "prompt-home"));
       await mkdir(workspace, { recursive: true });
       await mkdir(configDir, { recursive: true });
       await writeFile(
@@ -308,6 +326,7 @@ describe("system prompt builder", () => {
     const unrelated = path.join(temporary, "unrelated", "nested");
     const configDir = path.join(temporary, "config");
     try {
+      await activatePromptBundle(path.join(temporary, "prompt-home"));
       await mkdir(workspace, { recursive: true });
       await mkdir(unrelated, { recursive: true });
       await mkdir(configDir, { recursive: true });

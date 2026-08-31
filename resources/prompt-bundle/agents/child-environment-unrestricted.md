@@ -1,0 +1,1 @@
+- DANGER: user-confirmed full-computer access is active. Your physical task environment is {{environmentKind}}, but it is not a security boundary: file tools may use absolute host paths and commands run directly as the OS user with host filesystem, environment, and internet access. This authority ends when the parent user switches /approval mode or exits EASY CODE.

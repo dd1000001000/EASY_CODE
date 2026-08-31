@@ -11,6 +11,11 @@ const MAX_ROWS = 10_000;
 
 const ALTERNATE_SCREEN_ON = "\u001B[?1049h";
 const ALTERNATE_SCREEN_OFF = "\u001B[?1049l";
+// Translate the wheel to cursor-up/down while the alternate buffer is active.
+// Unlike DEC mouse reporting (1000/1002/1003 + 1006), this mode does not own
+// button presses, so native terminal drag-selection and copy remain available.
+const ALTERNATE_SCROLL_ON = "\u001B[?1007h";
+const ALTERNATE_SCROLL_OFF = "\u001B[?1007l";
 const CURSOR_HIDE = "\u001B[?25l";
 const CURSOR_SHOW = "\u001B[?25h";
 const BRACKETED_PASTE_ON = "\u001B[?2004h";
@@ -30,6 +35,7 @@ const RESET_STYLE = "\u001B[0m";
  */
 export const FULL_SCREEN_ENTER_SEQUENCE =
   ALTERNATE_SCREEN_ON +
+  ALTERNATE_SCROLL_ON +
   CURSOR_HIDE +
   BRACKETED_PASTE_ON +
   AUTOWRAP_OFF +
@@ -38,6 +44,7 @@ export const FULL_SCREEN_ENTER_SEQUENCE =
 
 export const FULL_SCREEN_EXIT_SEQUENCE =
   RESET_STYLE +
+  ALTERNATE_SCROLL_OFF +
   BRACKETED_PASTE_OFF +
   AUTOWRAP_ON +
   CURSOR_SHOW +
@@ -69,7 +76,9 @@ export interface FullScreenWriterOptions {
  * Mouse reporting is deliberately left disabled. VS Code's terminal-link
  * provider owns disclosure clicks, while leaving DEC mouse reporting off lets
  * the terminal keep native drag selection and copy semantics in this view.
- * Keyboard PageUp/PageDown remains the portable scrolling path.
+ * Alternate-scroll mode converts only wheel motion to cursor keys; the input
+ * owner turns those into continuous viewport scrolling. PageUp/PageDown remain
+ * the portable fallback for terminal emulators that ignore mode 1007.
  */
 export class FullScreenWriter {
   private readonly output: ScreenOutput;

@@ -22,6 +22,7 @@ import {
   refreshWorkspaceForFileToolTarget,
   resolveCreateFileToolTarget,
 } from "./file-access.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const createFileInputSchema = z
   .object({
@@ -41,23 +42,17 @@ export class CreateFileTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Create a new UTF-8 text file. The operation fails if the file already exists. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: {
-            type: "string",
-            description:
-              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
-          },
+          path: { type: "string" },
           content: { type: "string" },
           encoding: { type: "string", enum: ["utf-8"] },
         },
         required: ["path", "content"],
-      },
+      }),
     },
   };
 

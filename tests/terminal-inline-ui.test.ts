@@ -11,6 +11,7 @@ import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UISessionInfo, UIState } from "../src/ui/contracts.js";
 import { stripAnsi } from "../src/ui/render/layout.js";
+import { renderSessionHeader } from "../src/ui/render/view.js";
 import { describe, it } from "./harness.js";
 
 const CREATED_AT = "2026-08-29T00:00:00.000Z";
@@ -144,14 +145,21 @@ function terminalState(terminal: Terminal): Readonly<UIState> {
 }
 
 interface DisclosureFrameProbe {
+  columns: number;
   viewport: Readonly<{
     transcriptStartRow: number;
     targetTitleScreenRow?: number;
+    scrollOffset: number;
+    viewportRows: number;
+    totalDocumentRows: number;
+    atStart: boolean;
+    atEnd: boolean;
   }>;
   visibleRows: readonly Readonly<{
     screenRow: number;
     region: "header" | "transcript" | "composer" | "footer";
     part: string;
+    text: string;
   }>[];
 }
 
@@ -191,6 +199,46 @@ function disclosureNodeText(node: Readonly<DisclosureNodeProbe>): string {
     node.title ?? "",
     node.expanded ? node.body ?? "" : node.preview ?? "",
   ].join("\n"));
+}
+
+function disclosureRegionText(
+  terminal: Terminal,
+  region?: DisclosureFrameProbe["visibleRows"][number]["region"],
+): string {
+  const frame = disclosureFrame(terminal);
+  assert.ok(frame, "the persistent conversation frame must be active");
+  return stripAnsi(frame.visibleRows
+    .filter((row) => region === undefined || row.region === region)
+    .map((row) => row.text)
+    .join("\n"));
+}
+
+function disclosureNode(
+  terminal: Terminal,
+  id: string,
+): Readonly<DisclosureNodeProbe> {
+  const virtualId = id.replace(/^thinking_/u, "thinking:")
+    .replace(/^adjustment_/u, "adjustment:");
+  const node = disclosureNodes(terminal).find((candidate) =>
+    candidate.id === id || candidate.id === virtualId
+  );
+  assert.ok(node, `expected disclosure node ${id}`);
+  return node;
+}
+
+function assertPersistentFrame(
+  terminal: Terminal,
+  output: Readonly<Pick<TtyOutput, "columns" | "rows">>,
+): Readonly<DisclosureFrameProbe> {
+  const frame = disclosureFrame(terminal);
+  assert.ok(frame, "the persistent conversation frame must be active");
+  assert.equal(frame.columns, output.columns - 1);
+  assert.equal(frame.visibleRows.length, output.rows);
+  assert.deepEqual(
+    frame.visibleRows.map((row) => row.screenRow),
+    Array.from({ length: output.rows }, (_, index) => index),
+  );
+  return frame;
 }
 
 function steeringAttachment(index: number): ImageAttachment {
@@ -300,7 +348,7 @@ describe("Terminal retained inline shell", () => {
     await withInteractiveEnvironment(() => {
       const input = new TtyInput();
       const output = new TtyOutput();
-      const captured = captureOutput(output);
+      output.resume();
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
@@ -319,7 +367,8 @@ describe("Terminal retained inline shell", () => {
         assert.equal(state.live.subagents[0]?.id, "backend-auth");
         assert.equal(state.composer.busy, true);
 
-        const rendered = stripAnsi(captured());
+        const frame = assertPersistentFrame(terminal, output);
+        const rendered = disclosureRegionText(terminal);
         assert.match(rendered, /EASY CODE/u);
         assert.match(rendered, /DeepSeek\/v4-pro/u);
         assert.match(rendered, /Tasks 2\/3/u);
@@ -328,17 +377,38 @@ describe("Terminal retained inline shell", () => {
         assert.match(rendered, /backend-auth/u);
         assert.match(rendered, /Waiting for deepseek-v4-pro/u);
 
-        const progressOffset = rendered.lastIndexOf("Progress");
-        const activityOffset = rendered.lastIndexOf("Waiting for deepseek-v4-pro");
-        const composerOffset = rendered.lastIndexOf("Working on: Add login and registration");
-        const tasksOffset = rendered.lastIndexOf("Tasks 2/3");
-        const agentsOffset = rendered.lastIndexOf("Agents 1/4");
-        const footerOffset = rendered.lastIndexOf("auto  deepseek/v4-pro");
-        assert.ok(progressOffset >= 0 && progressOffset < composerOffset);
-        assert.ok(composerOffset < tasksOffset);
+        const firstRegionRows = new Map<
+          DisclosureFrameProbe["visibleRows"][number]["region"],
+          number
+        >();
+        for (const row of frame.visibleRows) {
+          if (!firstRegionRows.has(row.region)) {
+            firstRegionRows.set(row.region, row.screenRow);
+          }
+        }
+        assert.ok((firstRegionRows.get("header") ?? -1) === 0);
+        assert.ok(
+          (firstRegionRows.get("header") ?? -1) <
+            (firstRegionRows.get("transcript") ?? -1),
+        );
+        assert.ok(
+          (firstRegionRows.get("transcript") ?? -1) <
+            (firstRegionRows.get("composer") ?? -1),
+        );
+        assert.ok(
+          (firstRegionRows.get("composer") ?? -1) <
+            (firstRegionRows.get("footer") ?? -1),
+        );
+
+        const composer = disclosureRegionText(terminal, "composer");
+        assert.ok(composer.indexOf("Progress") < composer.indexOf("Working on:"));
+        const footer = disclosureRegionText(terminal, "footer");
+        const statusOffset = footer.indexOf("auto  deepseek/v4-pro");
+        const tasksOffset = footer.indexOf("Tasks 2/3");
+        const agentsOffset = footer.indexOf("Agents 1/4");
+        assert.ok(statusOffset >= 0);
+        assert.ok(statusOffset < tasksOffset);
         assert.ok(tasksOffset < agentsOffset);
-        assert.ok(agentsOffset < activityOffset);
-        assert.ok(activityOffset < footerOffset);
       } finally {
         terminal.stopActivity();
         terminal.close();
@@ -523,9 +593,11 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.columns = 32;
       const captured = captureOutput(output);
-      const terminal = new Terminal(input, output);
+        const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
+        const promptStartupOffset = captured().length;
+        const rawTransitionsBeforePrompt = input.rawModeTransitions.length;
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => ({
             id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -539,7 +611,26 @@ describe("Terminal retained inline shell", () => {
           }),
         });
 
-        const initial = stripAnsi(captured());
+        const promptStartup = captured().slice(promptStartupOffset);
+        const alternateScreenOffset = promptStartup.indexOf("\u001B[?1049h");
+        assert.ok(alternateScreenOffset >= 0);
+        assert.equal(
+          promptStartup.slice(0, alternateScreenOffset).includes("\u001B[?2004h"),
+          false,
+          "readPrompt must not enable terminal modes before the persistent writer",
+        );
+        assert.equal(
+          stripAnsi(promptStartup.slice(0, alternateScreenOffset)).includes("╭─ Request"),
+          false,
+          "readPrompt must not paint a transient inline prompt before the fixed frame",
+        );
+        assert.deepEqual(
+          input.rawModeTransitions.slice(rawTransitionsBeforePrompt),
+          [true],
+          "the persistent writer must be the first and only startup input owner",
+        );
+
+        const initial = disclosureRegionText(terminal);
         assert.match(initial, /╭─ Request /u);
         assert.match(initial, /╰─+╯\r?\nauto\s+deepseek\/v4-pro/u);
 
@@ -552,20 +643,17 @@ describe("Terminal retained inline shell", () => {
         const activeState = terminalState(terminal);
         assert.equal(activeState.live.progress.at(-1)?.label, "Tool: read_file");
         assert.equal(activeState.live.activity?.label, "Waiting for deepseek-v4-pro");
-        const activeSuffix = stripAnsi(captured().slice(liveOnlyOffset));
-        assert.doesNotMatch(activeSuffix, /Progress|Tool: read_file/u);
-        assert.match(activeSuffix, /⠋ Waiting for deepseek.* · 0s/u);
-        const composerBottomOffset = activeSuffix.lastIndexOf("╰");
-        const tasksOffset = activeSuffix.lastIndexOf("Tasks 2/3");
-        const agentsOffset = activeSuffix.lastIndexOf("Agents 1/4");
-        const activityOffset = activeSuffix.lastIndexOf("⠋ Waiting for deepseek");
-        assert.ok(composerBottomOffset >= 0 && composerBottomOffset < tasksOffset);
+        assert.ok(captured().length > liveOnlyOffset);
+        assertPersistentFrame(terminal, output);
+        const activeComposer = disclosureRegionText(terminal, "composer");
+        assert.match(activeComposer, /Progress[\s\S]*Tool: read_file/u);
+        assert.match(activeComposer, /╭─ Request/u);
+        const activeFooter = disclosureRegionText(terminal, "footer");
+        const tasksOffset = activeFooter.indexOf("Tasks 2/3");
+        const agentsOffset = activeFooter.indexOf("Agents 1/4");
+        const metadataOffset = activeFooter.indexOf("auto");
+        assert.ok(metadataOffset >= 0 && metadataOffset < tasksOffset);
         assert.ok(tasksOffset < agentsOffset);
-        assert.ok(agentsOffset < activityOffset);
-        assert.doesNotMatch(
-          activeSuffix.slice(activityOffset),
-          /auto  deepseek\/v4-pro/u,
-        );
         terminal.stopActivity();
 
         input.write("A request long enough to wrap across several terminal rows");
@@ -573,21 +661,39 @@ describe("Terminal retained inline shell", () => {
         terminal.status(
           "Model usage accounting could not be saved: temporary database issue",
         );
-        const plainOutput = stripAnsi(captured());
-        const statusOffset = plainOutput.indexOf(
-          "Model usage accounting could not be saved",
+        assert.equal(
+          terminalState(terminal).transcript.some((entry) =>
+            entry.kind === "warning" &&
+            entry.text.includes("Model usage accounting could not be saved")
+          ),
+          true,
         );
-        assert.ok(statusOffset >= 0);
-        const afterStatus = plainOutput.slice(statusOffset);
-        assert.match(afterStatus, /╭─ Request /u);
-        assert.match(
-          afterStatus,
-          /╰─+╯\r?\nTasks 2\/3[\s\S]*Agents 1\/4[\s\S]*auto\s+deepseek\/v4-pro/u,
+        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
+        const afterStatusFooter = disclosureRegionText(terminal, "footer");
+        assert.ok(
+          afterStatusFooter.indexOf("auto  deepseek/v4-pro") <
+            afterStatusFooter.indexOf("Tasks 2/3"),
+        );
+        assert.ok(
+          afterStatusFooter.indexOf("Tasks 2/3") <
+            afterStatusFooter.indexOf("Agents 1/4"),
         );
 
         output.columns = 44;
         output.emit("resize");
-        assert.match(stripAnsi(captured()), new RegExp(`╰${"─".repeat(41)}╯`, "u"));
+        const resized = assertPersistentFrame(terminal, output);
+        assert.equal(
+          resized.visibleRows.every((row) => stripAnsi(row.text).length <= 43),
+          true,
+        );
+
+        // Shrinking height must atomically compact the old Tasks/Agents
+        // footer instead of validating it against the smaller frame first.
+        output.rows = 9;
+        output.emit("resize");
+        const compactHeight = assertPersistentFrame(terminal, output);
+        assert.equal(compactHeight.viewport.viewportRows >= 1, true);
+        assert.match(disclosureRegionText(terminal, "footer"), /auto/u);
 
         input.write(Buffer.from([0x16, 0x0d]));
         const result = await prompt;
@@ -601,7 +707,12 @@ describe("Terminal retained inline shell", () => {
             /deepseek\/v4-pro|ctx 82\.4k/u.test(stripAnsi(entry.text))),
           false,
         );
-        assert.equal(input.rawModeTransitions.at(-1), false);
+        // The real shell immediately promotes a submitted idle draft into the
+        // busy model turn; verify that transition remounts the same fixed UI.
+        terminal.setCurrentRequest(result?.text ?? "", result?.images ?? []);
+        assertPersistentFrame(terminal, output);
+        assert.equal(lastCursorVisibility(captured()), "hidden");
+        terminal.clearCurrentRequest();
       } finally {
         terminal.close();
       }
@@ -613,7 +724,7 @@ describe("Terminal retained inline shell", () => {
       const input = new TtyInput();
       const output = new TtyOutput();
       output.columns = 48;
-      const captured = captureOutput(output);
+      output.resume();
       const terminal = new Terminal(input, output);
       try {
         assert.equal(terminal.beginShell(session()), true);
@@ -626,18 +737,27 @@ describe("Terminal retained inline shell", () => {
         input.write("\u001B[200~first line\nsecond line\u001B[201~\r");
         assert.equal((await prompt)?.text, "first line\nsecond line");
 
-        const plainAfterSubmit = stripAnsi(captured());
-        const transcriptOffset = plainAfterSubmit.lastIndexOf("> first line\n  second line");
-        assert.ok(transcriptOffset >= 0);
-        assert.doesNotMatch(plainAfterSubmit.slice(transcriptOffset), /╭─ Request /u);
+        const submittedUsers = terminalState(terminal).transcript.filter(
+          (entry) => entry.kind === "user",
+        );
+        assert.equal(submittedUsers.length, 1);
+        assert.match(submittedUsers[0]?.text ?? "", /first line/u);
+        assert.match(submittedUsers[0]?.text ?? "", /second line/u);
+        assert.match(
+          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
+          /> first line[\s\S]*second line/u,
+        );
 
-        const busyOffset = captured().length;
         terminal.setCurrentRequest("Process the pasted request");
-        const busyOutput = stripAnsi(captured().slice(busyOffset));
         assert.equal(
-          (busyOutput.match(/Working on: Process the pasted request/gu) ?? []).length,
+          terminalState(terminal).transcript.filter((entry) =>
+            entry.kind === "user" && /first line[\s\S]*second line/u.test(entry.text)
+          ).length,
           1,
-          busyOutput,
+        );
+        assert.match(
+          disclosureRegionText(terminal, "composer"),
+          /Working on: Process the pasted request/u,
         );
         terminal.clearCurrentRequest();
       } finally {
@@ -650,7 +770,7 @@ describe("Terminal retained inline shell", () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
-      output.resume();
+      const captured = captureOutput(output);
       const terminal = new Terminal(input, output);
       const initialDataListeners = input.listenerCount("data");
       let interrupts = 0;
@@ -662,7 +782,6 @@ describe("Terminal retained inline shell", () => {
           },
         });
         assert.equal(input.isRaw, true);
-        assert.equal(input.readableFlowing, true);
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
 
         // Replacing a busy request must replace, not stack, its stdin owner.
@@ -692,12 +811,12 @@ describe("Terminal retained inline shell", () => {
         input.write(Buffer.from([0x03, 0x03]));
         input.write("discard this while busy");
         await settlePromptInput();
-        assert.equal(interrupts, 2);
+        assert.equal(interrupts, 1);
 
         terminal.clearCurrentRequest();
-        assert.equal(input.isRaw, false);
-        assert.equal(input.readableFlowing, false);
-        assert.equal(input.listenerCount("data"), initialDataListeners);
+        assert.equal(lastCursorVisibility(captured()), "hidden");
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
 
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => ({
@@ -713,6 +832,12 @@ describe("Terminal retained inline shell", () => {
         });
         input.write("fresh draft\r");
         assert.equal((await prompt)?.text, "fresh draft");
+        assert.equal(input.isRaw, true);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
+        terminal.close();
+        assert.equal(input.listenerCount("data"), initialDataListeners);
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 1);
       } finally {
         terminal.close();
       }
@@ -725,16 +850,29 @@ describe("Terminal retained inline shell", () => {
       const output = new TtyOutput();
       output.resume();
       const terminal = new Terminal(input, output);
+      const initialDataListeners = input.listenerCount("data");
       try {
         assert.equal(terminal.beginShell(session()), true);
         terminal.setCurrentRequest("Implement authentication");
         const id = terminal.addReasoning("Inspect the authentication routes.");
+        const viewerBefore = (terminal as unknown as {
+          disclosureViewer?: object;
+        }).disclosureViewer;
+        assert.ok(viewerBefore);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
 
         const choice = terminal.selectChoice("Continue?", [
           { id: "yes", label: "Yes" },
           { id: "no", label: "No" },
         ]);
         await settlePromptInput();
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.equal(terminalState(terminal).overlay?.kind, "picker");
+        assert.equal(input.isRaw, true);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
         input.write(`${vscodeToggleThinkingSequence(id)}\r`);
         assert.equal(await choice, "yes");
         await settlePromptInput();
@@ -742,11 +880,242 @@ describe("Terminal retained inline shell", () => {
 
         // Once the modal releases stdin, the busy owner resumes immediately.
         assert.equal(input.isRaw, true);
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
         input.write(vscodeToggleThinkingSequence(id));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, id);
         terminal.clearCurrentRequest();
-        assert.equal(input.isRaw, false);
+        assert.equal(input.isRaw, true);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps the same persistent viewer across approval and model-picker modals", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Verify modal ownership");
+        const thinkingId = terminal.addReasoning(
+          "Keep this disclosure selected while modal input borrows stdin.",
+        );
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+
+        const viewerBefore = (terminal as unknown as {
+          disclosureViewer?: object;
+        }).disclosureViewer;
+        const initialScrollOffset = disclosureFrame(terminal)?.viewport.scrollOffset;
+        assert.ok(viewerBefore);
+        assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+
+        const approval = terminal.approve({
+          id: "persistent-viewer-approval",
+          title: "Run verification",
+          description: "Run one workspace verification command.",
+          risk: "workspace",
+          commandPrefix: "node",
+          commandPreview: "node --check src/app.js",
+        });
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay?.kind, "approval");
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+
+        // The first Down and Enter delivered to the modal must both take
+        // effect; no priming Enter may be required on Windows ConPTY.
+        input.write("\u001B[B\r");
+        assert.equal(await approval, "allow_prefix");
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay, null);
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
+        assert.equal(disclosureFrame(terminal)?.viewport.scrollOffset, initialScrollOffset);
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+
+        const model = terminal.selectModel(
+          "DeepSeek",
+          [
+            { id: "deepseek-flash", label: "DeepSeek Flash" },
+            { id: "deepseek-pro", label: "DeepSeek Pro" },
+          ],
+          "deepseek-pro",
+        );
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay?.kind, "picker");
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+
+        // Likewise, the first Up and Enter select the preceding model while
+        // the permanent conversation projection remains mounted.
+        input.write("\u001B[A\r");
+        assert.equal(await model, "deepseek-flash");
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay, null);
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
+        assert.equal(disclosureFrame(terminal)?.viewport.scrollOffset, initialScrollOffset);
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps transcript updates made behind a modal and repaints the same viewer", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect modal transcript ownership");
+        const viewerBefore = (terminal as unknown as {
+          disclosureViewer?: object;
+        }).disclosureViewer;
+        assert.ok(viewerBefore);
+
+        const choice = terminal.selectChoice("Continue?", [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ]);
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay?.kind, "picker");
+
+        terminal.write("OVERLAY-TRANSCRIPT-SENTINEL\n");
+        assert.equal(terminalState(terminal).overlay?.kind, "picker");
+        input.write("\r");
+        assert.equal(await choice, "yes");
+        await settlePromptInput();
+
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.equal(terminalState(terminal).overlay, null);
+        assert.match(
+          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
+          /OVERLAY-TRANSCRIPT-SENTINEL/u,
+        );
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("does not resume the Request editor until a short-terminal modal releases input", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        input.write("draft");
+        await settlePromptInput();
+        const viewerBefore = (terminal as unknown as {
+          disclosureViewer?: object;
+        }).disclosureViewer;
+        assert.ok(viewerBefore);
+
+        const choice = terminal.selectChoice("Continue?", [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ]);
+        await settlePromptInput();
+        output.rows = 8;
+        output.emit("resize");
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).overlay?.kind, "picker");
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+
+        input.write("\r");
+        assert.equal(await choice, "yes");
+        await settlePromptInput();
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          undefined,
+        );
+
+        output.rows = 24;
+        input.write("!\r");
+        assert.equal((await prompt)?.text, "draft!");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("clears and repaints through FullScreenWriter without resetting the terminal", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Keep the managed shell active");
+        terminal.write("CLEAR-SCREEN-SENTINEL\n");
+        const viewerBefore = (terminal as unknown as {
+          disclosureViewer?: object;
+        }).disclosureViewer;
+        assert.ok(viewerBefore);
+        const before = captured().length;
+
+        terminal.clearScreen();
+        const clearOutput = captured().slice(before);
+        assert.doesNotMatch(clearOutput, /\u001Bc/u);
+        assert.equal(
+          (terminal as unknown as { disclosureViewer?: object }).disclosureViewer,
+          viewerBefore,
+        );
+        assert.match(disclosureRegionText(terminal, "header"), /EASY CODE/u);
+        assert.match(
+          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
+          /CLEAR-SCREEN-SENTINEL/u,
+        );
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+        terminal.clearCurrentRequest();
       } finally {
         terminal.close();
       }
@@ -812,10 +1181,12 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         input.write("\u001B[B\r");
         assert.equal(await choice, "allow_prefix");
+        await settlePromptInput();
 
         // Auto-repeat from the modal must not submit or edit the restored
         // draft. The first printable input ends the transition barrier.
-        input.write("\u001B[B\r\u001B[57353u\u001B[13u");
+        input.write("x");
+        await settlePromptInput();
         input.write("after\r");
         input.write(Buffer.from([0x03]));
         await settlePromptInput();
@@ -828,7 +1199,7 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         assert.deepEqual(submissions, [
           { text: "first\nsecond", labels: [] },
-          { text: "preserved  [Image #3] after", labels: ["Image #3"] },
+          { text: "preserved  [Image #3] xafter", labels: ["Image #3"] },
         ]);
         assert.equal(terminalState(terminal).composer.pendingSubmissions, 0);
         terminal.clearCurrentRequest();
@@ -910,15 +1281,20 @@ describe("Terminal retained inline shell", () => {
         terminal.clearCurrentRequest();
         assert.equal(input.isRaw, true);
         assert.equal(input.readableFlowing, true);
-        assert.equal(input.listenerCount("data"), initialDataListeners);
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
+        assert.ok(disclosureFrame(terminal));
 
         terminal.setCurrentRequest("Implement authentication again");
         terminal.emergencyRestore();
         assert.equal(input.listenerCount("data"), initialDataListeners);
+        assert.equal(input.isRaw, false);
+        assert.equal(disclosureFrame(terminal), undefined);
 
         terminal.setCurrentRequest("Implement authentication once more");
+        assert.equal(input.listenerCount("data"), initialDataListeners + 1);
         terminal.close();
         assert.equal(input.listenerCount("data"), initialDataListeners);
+        assert.equal(input.isRaw, false);
       } finally {
         terminal.close();
       }
@@ -936,6 +1312,15 @@ describe("Terminal retained inline shell", () => {
         const firstId = terminal.addReasoning("Inspect the authentication routes.");
         const secondId = terminal.addReasoning("Verify the registration form.");
         const markerEntries = terminalState(terminal).transcript.length;
+        const primaryBeforeViewer = stripAnsi(captured());
+        assert.equal(
+          (primaryBeforeViewer.match(new RegExp(`▶ Thinking #${firstId}`, "gu")) ?? []).length,
+          1,
+        );
+        assert.equal(
+          (primaryBeforeViewer.match(new RegExp(`▶ Thinking #${secondId}`, "gu")) ?? []).length,
+          1,
+        );
         const prompt = terminal.readPrompt("> ", {
           captureImage: async (index) => ({
             id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -950,34 +1335,31 @@ describe("Terminal retained inline shell", () => {
         });
 
         input.write("draft");
-        const openOffset = captured().length;
+        const exitsBeforeToggle =
+          (captured().match(/\u001B\[\?1049l/gu) ?? []).length;
         input.write(vscodeToggleThinkingSequence(firstId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
-        assert.match(
-          stripAnsi(captured()),
-          new RegExp(
-            `↕ Thinking #${firstId}[^\n]*· /thinking ${firstId}`,
-            "u",
-          ),
-        );
-        const openFrame = stripAnsi(captured().slice(openOffset));
-        const expandedBody = openFrame.indexOf("Inspect the authentication routes.");
-        const requestCard = openFrame.indexOf("╭─ Request");
-        assert.ok(expandedBody >= 0);
-        assert.ok(requestCard > expandedBody);
-        assert.match(openFrame, /╭─ Request[^\n]*[\s\S]*│ > draft/u);
+        const expandedNode = disclosureNode(terminal, `thinking_${firstId}`);
+        assert.equal(expandedNode.expanded, true);
+        assert.match(expandedNode.body ?? "", /Inspect the authentication routes/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.equal(lastCursorVisibility(captured()), "hidden");
 
-        const closeOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(firstId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
-        const closeFrame = stripAnsi(captured().slice(closeOffset));
-        assert.match(closeFrame, new RegExp(`▶ Thinking #${firstId}`, "u"));
-        assert.equal(closeFrame.includes(`↕ Thinking #${firstId}`), false);
-        assert.match(closeFrame, /╭─ Request[^\n]*\n│ > draft/u);
+        const collapsedNode = disclosureNode(terminal, `thinking_${firstId}`);
+        assert.equal(collapsedNode.expanded, false);
+        assert.match(collapsedNode.preview ?? "", /Inspect the authentication routes/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.equal(
+          (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
+          exitsBeforeToggle,
+          "collapsing Thinking must not leave the persistent conversation view",
+        );
 
         input.write(vscodeToggleThinkingSequence(secondId));
         await settlePromptInput();
@@ -987,33 +1369,23 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
 
-        // Leave the managed viewer before exercising the ordinary readline
-        // shortcuts and stale-ID fallback below.
+        // Collapse the selected row before exercising ordinary readline
+        // shortcuts and stale-ID fallback. The persistent viewer stays active.
         input.write(vscodeToggleThinkingSequence(firstId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
+        assert.ok(disclosureFrame(terminal));
 
         input.write(vscodeToggleThinkingSequence(999));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
-        assert.equal(terminalState(terminal).transcript.at(-1)?.kind, "info");
-        assert.match(
-          terminalState(terminal).transcript.at(-1)?.text ?? "",
-          /Thinking block #999 is historical or unavailable; use \/thinking 999 to view retained content\./u,
-        );
+        assert.ok(disclosureFrame(terminal));
 
         const beforeCtrlT = terminalState(terminal).transcript.length;
         input.write(Buffer.from([0x14]));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
-        assert.equal(terminalState(terminal).transcript.length, beforeCtrlT + 1);
-        assert.match(
-          terminalState(terminal).transcript.at(-1)?.text ?? "",
-          new RegExp(
-            `▼ Thinking #${secondId}[\\s\\S]*Verify the registration form\\.`,
-            "u",
-          ),
-        );
+        assert.equal(terminalState(terminal).transcript.length, beforeCtrlT);
 
         input.write("!\r");
         assert.equal((await prompt)?.text, "draft!");
@@ -1049,11 +1421,10 @@ describe("Terminal retained inline shell", () => {
         assert.match(submission.text, /A\nB/u);
         assert.match(submission.text, / after$/u);
         assert.equal(terminalState(terminal).live.thinking, null);
-        assert.equal(lastCursorVisibility(captured()), "shown");
-        assert.equal(
-          (captured().match(/\u001B\[\?1049h/gu) ?? []).length,
-          (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
-        );
+        assert.equal(lastCursorVisibility(captured()), "hidden");
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+        assert.ok(disclosureFrame(terminal));
       } finally {
         terminal.close();
       }
@@ -1113,7 +1484,8 @@ describe("Terminal retained inline shell", () => {
         input.write(vscodeToggleThinkingSequence(thinkingId));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
-        assert.equal(lastCursorVisibility(captured()), "shown");
+        assert.equal(lastCursorVisibility(captured()), "hidden");
+        assert.ok(disclosureFrame(terminal));
         terminal.clearCurrentRequest();
       } finally {
         terminal.close();
@@ -1121,7 +1493,7 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("restores a real idle caret when a busy disclosure closes on completion", async () => {
+  it("keeps the managed composer caret when a busy disclosure completes", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -1144,11 +1516,13 @@ describe("Terminal retained inline shell", () => {
         });
         input.write("next request\r");
         assert.equal((await prompt)?.text, "next request");
+        assert.equal(lastCursorVisibility(captured()), "hidden");
+        assert.ok(disclosureFrame(terminal));
+        assert.equal((captured().match(/\u001B\[\?1049h/gu) ?? []).length, 1);
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 0);
+        terminal.close();
         assert.equal(lastCursorVisibility(captured()), "shown");
-        assert.equal(
-          (captured().match(/\u001B\[\?1049h/gu) ?? []).length,
-          (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
-        );
+        assert.equal((captured().match(/\u001B\[\?1049l/gu) ?? []).length, 1);
       } finally {
         terminal.close();
       }
@@ -1168,8 +1542,8 @@ describe("Terminal retained inline shell", () => {
           `Inspect the authentication routes before changing any files. ${"context ".repeat(20)}`,
           "FULL-ONLY-SENTINEL: compare the existing session and registration flows.",
         ].join("\n");
-        const id = terminal.addReasoning(reasoning);
         const completedTurnOffset = captured().length;
+        const id = terminal.addReasoning(reasoning);
         terminal.write("ASSISTANT-OUTPUT-SENTINEL: authentication is ready.\n");
         terminal.clearCurrentRequest();
 
@@ -1188,40 +1562,31 @@ describe("Terminal retained inline shell", () => {
         input.write("draft");
         await settlePromptInput();
 
-        const completedTurn = stripAnsi(captured().slice(completedTurnOffset));
-        const stableAnswerOffset = completedTurn.indexOf(
-          "ASSISTANT-OUTPUT-SENTINEL",
+        assert.ok(captured().length > completedTurnOffset);
+        const collapsedNodes = disclosureNodes(terminal);
+        const thinkingIndex = collapsedNodes.findIndex((node) =>
+          node.id === `thinking:${id}`
         );
-        const liveDisclosureOffset = completedTurn.indexOf(`Thinking #${id}`);
-        const liveRequestOffset = completedTurn.indexOf("╭─ Request");
-        assert.ok(stableAnswerOffset >= 0);
-        assert.ok(liveDisclosureOffset > stableAnswerOffset);
-        assert.ok(liveRequestOffset > liveDisclosureOffset);
+        const answerIndex = collapsedNodes.findIndex((node) =>
+          disclosureNodeText(node).includes("ASSISTANT-OUTPUT-SENTINEL")
+        );
+        assert.ok(thinkingIndex >= 0 && thinkingIndex < answerIndex);
+        assert.equal(collapsedNodes[thinkingIndex]?.expanded, false);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
 
-        const collapsedOffset = captured().length;
         output.emit("resize");
         await settlePromptInput();
-        const collapsedFrame = stripAnsi(captured().slice(collapsedOffset));
-        const collapsedThinkingOffset = collapsedFrame.indexOf(`▶ Thinking #${id}`);
-        const collapsedRequestOffset = collapsedFrame.indexOf("╭─ Request");
-        assert.ok(collapsedThinkingOffset >= 0);
-        assert.ok(collapsedRequestOffset > collapsedThinkingOffset);
-        assert.equal(collapsedFrame.includes("ASSISTANT-OUTPUT-SENTINEL"), false);
-        assert.doesNotMatch(collapsedFrame, /FULL-ONLY-SENTINEL/u);
-        assert.match(collapsedFrame, /╭─ Request[^\n]*\n│ > draft/u);
+        assertPersistentFrame(terminal, output);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.equal(terminalState(terminal).composer.text, "draft");
 
-        const openOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(id));
         await settlePromptInput();
 
-        const openFrame = stripAnsi(captured().slice(openOffset));
-        const expandedOffset = openFrame.indexOf(`Thinking #${id}`);
-        const requestOffset = openFrame.indexOf("╭─ Request");
-        assert.ok(expandedOffset >= 0);
-        assert.match(openFrame, new RegExp(`(?:▼|↕) Thinking #${id}`, "u"));
-        assert.match(openFrame, /FULL-ONLY-SENTINEL/u);
-        assert.match(openFrame, new RegExp(`/thinking ${id}`, "u"));
-        assert.ok(requestOffset > expandedOffset);
+        const openNode = disclosureNode(terminal, `thinking_${id}`);
+        assert.equal(openNode.expanded, true);
+        assert.match(openNode.body ?? "", /FULL-ONLY-SENTINEL/u);
+        assert.match(openNode.title ?? "", new RegExp(`Thinking #${id}`, "u"));
         const completeTurn = disclosureNodes(terminal)
           .map(disclosureNodeText)
           .join("\n");
@@ -1235,31 +1600,25 @@ describe("Terminal retained inline shell", () => {
           completeTurn.indexOf(`Thinking #${id}`) <
             completeTurn.indexOf("ASSISTANT-OUTPUT-SENTINEL"),
         );
-        assert.equal(openFrame.includes(`▶ Thinking #${id}`), false);
         assert.equal(
-          (openFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
+          disclosureNodes(terminal).filter((node) =>
+            node.id === `thinking:${id}`
+          ).length,
           1,
           "the expanded body must replace, not duplicate, the collapsed marker",
         );
-        assert.match(openFrame, /╭─ Request[^\n]*[\s\S]*│ > draft/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
 
-        const closeOffset = captured().length;
         // This is the same OSC emitted when the user clicks the expanded title.
         input.write(vscodeToggleThinkingSequence(id));
         await settlePromptInput();
 
-        const closeFrame = stripAnsi(captured().slice(closeOffset));
-        const previewOffset = closeFrame.indexOf(`▶ Thinking #${id}`);
-        const restoredRequestOffset = closeFrame.indexOf("╭─ Request");
-        assert.ok(previewOffset >= 0);
-        assert.ok(restoredRequestOffset > previewOffset);
-        assert.equal(closeFrame.includes("ASSISTANT-OUTPUT-SENTINEL"), false);
-        assert.equal(closeFrame.includes("FULL-ONLY-SENTINEL"), false);
-        assert.equal(
-          (closeFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
-          1,
-        );
-        assert.match(closeFrame, /╭─ Request[^\n]*\n│ > draft/u);
+        const restoredNode = disclosureNode(terminal, `thinking_${id}`);
+        assert.equal(restoredNode.expanded, false);
+        assert.doesNotMatch(restoredNode.preview ?? "", /FULL-ONLY-SENTINEL/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
+        assert.equal(terminalState(terminal).composer.text, "draft");
+        assert.ok(disclosureFrame(terminal));
 
         input.write("!\r");
         assert.equal((await prompt)?.text, "draft!");
@@ -1281,34 +1640,33 @@ describe("Terminal retained inline shell", () => {
         const thinkingId = terminal.addReasoning(
           "THINKING-DETAIL: keep this distinct from the answer.",
         );
-        const queuedOffset = captured().length;
         terminal.addQueuedAdjustment(
           7,
           "deploy this project\nand verify it",
           [steeringAttachment(3)],
         );
         await settlePromptInput();
-        const queued = stripAnsi(captured().slice(queuedOffset));
-        assert.match(queued, /> deploy this project\n  and verify it \[Image #3\]/u);
-        assert.doesNotMatch(queued, /Queued adjustment|\/adjustment 7/u);
+        const adjustmentEntry = terminalState(terminal).transcript.find((entry) =>
+          entry.id === "adjustment_message_7"
+        );
+        assert.ok(adjustmentEntry);
+        assert.equal(adjustmentEntry.text, "deploy this project\nand verify it");
+        assert.deepEqual(
+          adjustmentEntry.images?.map((image) => image.label),
+          ["Image #3"],
+        );
+        assert.doesNotMatch(adjustmentEntry.text, /Queued adjustment|\/adjustment 7/u);
         terminal.addReasoning("SECOND-THINKING-DETAIL");
         terminal.write("ASSISTANT-ROW-IN-CURRENT-TURN\n");
 
-        const openOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(thinkingId));
         await settlePromptInput();
-        const expanded = stripAnsi(captured().slice(openOffset));
-        assert.match(expanded, /> deploy this project\s+and verify it \[Image #3\]/u);
-        assert.match(expanded, /THINKING-DETAIL/u);
-        assert.match(expanded, /SECOND-THINKING-DETAIL/u);
-        assert.ok(
-          expanded.indexOf("THINKING-DETAIL") <
-            expanded.indexOf("> deploy this project"),
+        const expandedThinking = disclosureNode(
+          terminal,
+          `thinking_${thinkingId}`,
         );
-        assert.ok(
-          expanded.indexOf("> deploy this project") <
-            expanded.indexOf("SECOND-THINKING-DETAIL"),
-        );
+        assert.equal(expandedThinking.expanded, true);
+        assert.match(expandedThinking.body ?? "", /THINKING-DETAIL/u);
         const completeTurn = disclosureNodes(terminal)
           .map(disclosureNodeText)
           .join("\n");
@@ -1316,13 +1674,21 @@ describe("Terminal retained inline shell", () => {
         assert.match(completeTurn, /ASSISTANT-ROW-IN-CURRENT-TURN/u);
         assert.ok(
           completeTurn.indexOf("> Inspect this project") <
-            completeTurn.indexOf("THINKING-DETAIL"),
+            completeTurn.indexOf("> deploy this project"),
+        );
+        assert.ok(
+          completeTurn.indexOf("THINKING-DETAIL") <
+            completeTurn.indexOf("> deploy this project"),
+        );
+        assert.ok(
+          completeTurn.indexOf("> deploy this project") <
+            completeTurn.indexOf("SECOND-THINKING-DETAIL"),
         );
         assert.ok(
           completeTurn.indexOf("SECOND-THINKING-DETAIL") <
             completeTurn.indexOf("ASSISTANT-ROW-IN-CURRENT-TURN"),
         );
-        assert.doesNotMatch(expanded, /Queued adjustment|\/adjustment 7/u);
+        assert.doesNotMatch(completeTurn, /Queued adjustment|\/adjustment 7/u);
 
         input.write(vscodeToggleThinkingSequence(thinkingId));
         await settlePromptInput();
@@ -1330,20 +1696,23 @@ describe("Terminal retained inline shell", () => {
         terminal.clearCurrentRequest();
         terminal.setCurrentRequest("Start the next task");
         const nextThinkingId = terminal.addReasoning("NEXT-TURN-THINKING");
-        const nextTurnOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(nextThinkingId));
         await settlePromptInput();
-        const nextTurnView = stripAnsi(captured().slice(nextTurnOffset));
-        assert.match(nextTurnView, /NEXT-TURN-THINKING/u);
-        assert.doesNotMatch(nextTurnView, /deploy this project/u);
+        const nextTurnNode = disclosureNode(
+          terminal,
+          `thinking_${nextThinkingId}`,
+        );
+        assert.equal(nextTurnNode.expanded, true);
+        assert.match(nextTurnNode.body ?? "", /NEXT-TURN-THINKING/u);
         input.write(vscodeToggleThinkingSequence(nextThinkingId));
         await settlePromptInput();
 
-        const historyOffset = captured().length;
         assert.equal(terminal.showAdjustment(7), true);
-        const history = stripAnsi(captured().slice(historyOffset));
-        assert.match(history, /deploy this project\nand verify it/u);
-        assert.match(history, /Attachments: \[Image #3\]/u);
+        assert.equal(adjustmentEntry.text, "deploy this project\nand verify it");
+        assert.deepEqual(
+          adjustmentEntry.images?.map((image) => image.label),
+          ["Image #3"],
+        );
       } finally {
         terminal.close();
       }
@@ -1389,28 +1758,63 @@ describe("Terminal retained inline shell", () => {
           captureImage: async (index) => steeringAttachment(index),
         });
         await settlePromptInput();
-        input.write(vscodeToggleThinkingSequence(firstThinking));
+        assert.equal(terminal.toggleReasoning(firstThinking), true);
         await settlePromptInput();
 
         const nodes = disclosureNodes(terminal);
-        const completeTurn = nodes.map(disclosureNodeText);
-        assert.deepEqual(
-          nodes.map((node) => node.kind),
-          ["text", "text", "thinking", "text", "text", "thinking", "text"],
-        );
-        assert.match(completeTurn[0] ?? "", /> 这个项目是做什么的/u);
-        assert.match(completeTurn[1] ?? "", /Auto mode selected code/u);
-        assert.match(completeTurn[2] ?? "", /FIRST-THINKING-FULL-BODY/u);
-        assert.match(completeTurn[3] ?? "", /> 以及这个项目怎么使用/u);
-        assert.match(completeTurn[4] ?? "", /✓ Tool: read_file/u);
-        assert.match(completeTurn[5] ?? "", /SECOND-THINKING-FULL-BODY/u);
-        assert.match(completeTurn[6] ?? "", /MODEL-ANSWER/u);
-        assert.equal(completeTurn.join("\n").includes("PRIOR-TURN"), false);
-        assert.equal(completeTurn.join("\n").includes("POST-TURN-IDLE"), false);
-        assert.equal(nodes[2]?.expanded, true);
-        assert.equal(nodes[5]?.expanded, false);
+        const frame = disclosureFrame(terminal);
+        assert.ok(frame);
+        const expandedHeader = stripAnsi(frame.visibleRows
+          .filter((row) => row.region === "header")
+          .map((row) => row.text)
+          .join("\n"));
+        const normalHeader = renderSessionHeader(terminalState(terminal), {
+          // ScreenWriter reserves the final physical TTY cell to avoid
+          // ConPTY pending-autowrap; both normal and expanded views use it.
+          columns: output.columns - 1,
+          color: false,
+        });
         assert.equal(
-          (completeTurn.join("\n").match(/Thinking #1/gu) ?? []).length,
+          expandedHeader,
+          normalHeader,
+          "expanded Thinking must reuse the normal EASY CODE session header",
+        );
+        terminal.setSessionInfo(session({
+          commandExecutionMode: "unrestricted",
+        }));
+        await settlePromptInput();
+        const dangerFrame = disclosureFrame(terminal);
+        assert.ok(dangerFrame);
+        const dangerFooter = stripAnsi(dangerFrame.visibleRows
+          .filter((row) => row.region === "footer")
+          .map((row) => row.text)
+          .join("\n"));
+        assert.match(dangerFooter, /! EASY CODE DANGER: FULL ACCESS/u);
+        const completeTurn = nodes.map(disclosureNodeText);
+        const completeDocument = completeTurn.join("\n");
+        const orderedMarkers = [
+          "PRIOR-TURN-MUST-STAY-OUTSIDE-VIEWER",
+          "> 这个项目是做什么的",
+          "Auto mode selected code",
+          "FIRST-THINKING-FULL-BODY",
+          "> 以及这个项目怎么使用",
+          "✓ Tool: read_file",
+          "SECOND-THINKING-FULL-BODY",
+          "MODEL-ANSWER",
+          "POST-TURN-IDLE-STATUS-MUST-STAY-OUTSIDE-VIEWER",
+        ];
+        let previous = -1;
+        for (const marker of orderedMarkers) {
+          const index = completeDocument.indexOf(marker);
+          assert.ok(index > previous, `${marker} must retain full-session order`);
+          previous = index;
+        }
+        const firstNode = disclosureNode(terminal, `thinking_${firstThinking}`);
+        const secondNode = disclosureNode(terminal, `thinking_${secondThinking}`);
+        assert.equal(firstNode.expanded, true);
+        assert.equal(secondNode.expanded, false);
+        assert.equal(
+          nodes.filter((node) => node.id === `thinking:${firstThinking}`).length,
           1,
           "the selected Thinking marker must be replaced in place, not copied",
         );
@@ -1426,7 +1830,116 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("keeps short disclosure documents attached to Request and starts long bodies at the top", async () => {
+  it("commits each Thinking marker once at event time and only freezes it on the next request", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect event ordering");
+        const turnOffset = captured().length;
+        const thinkingId = terminal.addReasoning("EVENT-TIME-THINKING-BODY");
+        terminal.toolCompleted("read_file", true, "Read README.md lines 1-10");
+        const secondThinkingId = terminal.addReasoning(
+          "SECOND-EVENT-TIME-THINKING-BODY",
+        );
+        terminal.toolCompleted("update_file", true, "Updated README.md");
+        terminal.write("EVENT-TIME-ANSWER\n");
+        terminal.clearCurrentRequest();
+
+        const stableTurn = stripAnsi(captured().slice(turnOffset));
+        const markerOffset = stableTurn.indexOf(`▶ Thinking #${thinkingId}`);
+        const toolOffset = stableTurn.indexOf("✓ Tool: read_file");
+        const secondMarkerOffset = stableTurn.indexOf(
+          `▶ Thinking #${secondThinkingId}`,
+        );
+        const secondToolOffset = stableTurn.indexOf("✓ Tool: update_file");
+        const answerOffset = stableTurn.indexOf("EVENT-TIME-ANSWER");
+        assert.ok(markerOffset >= 0);
+        assert.ok(toolOffset > markerOffset);
+        assert.ok(secondMarkerOffset > toolOffset);
+        assert.ok(secondToolOffset > secondMarkerOffset);
+        assert.ok(answerOffset > secondToolOffset);
+        assert.equal(
+          terminalState(terminal).transcript.filter((entry) =>
+            entry.id === `thinking_${thinkingId}`
+          ).length,
+          1,
+        );
+        assert.equal(
+          terminalState(terminal).transcript.filter((entry) =>
+            entry.id === `thinking_${secondThinkingId}`
+          ).length,
+          1,
+        );
+
+        terminal.setCurrentRequest("Start the next request");
+        assert.equal(
+          terminalState(terminal).transcript.filter((entry) =>
+            entry.id === `thinking_${thinkingId}`
+          ).length,
+          1,
+          "freezing the previous turn must not append its marker again",
+        );
+        // A full-screen diff repaint may legitimately include an older row
+        // when the new request returns the viewport to the live edge. The
+        // append-only transcript remains the authoritative duplication check.
+        assert.equal(
+          terminal.toggleReasoning(thinkingId),
+          false,
+          "a marker becomes historical once the next request owns the UI",
+        );
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("uses accepted plan feedback as the turn request without exposing the internal revision prompt", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        (terminal as unknown as {
+          recordAcceptedPlanFeedback(feedback: string): void;
+        }).recordAcceptedPlanFeedback("保留现有样式\n补充部署说明");
+        terminal.setCurrentRequest(
+          "[Plan adjustment]\nINTERNAL-REVISION-CONTROL-PROMPT",
+        );
+        const thinkingId = terminal.addReasoning("Revise the accepted plan.");
+        terminal.write("PLAN-REVISION-ANSWER\n");
+        terminal.clearCurrentRequest();
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        await settlePromptInput();
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+        const completeTurn = disclosureNodes(terminal)
+          .map(disclosureNodeText)
+          .join("\n");
+        assert.match(completeTurn, /> 保留现有样式\n  补充部署说明/u);
+        assert.match(completeTurn, /PLAN-REVISION-ANSWER/u);
+        assert.match(completeTurn, /Revise the accepted plan/u);
+        assert.doesNotMatch(completeTurn, /INTERNAL-REVISION-CONTROL-PROMPT/u);
+
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+        input.write("next\r");
+        assert.equal((await prompt)?.text, "next");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps short disclosures attached to Request and makes long bodies visibly scrollable", async () => {
     await withInteractiveEnvironment(async () => {
       const shortInput = new TtyInput();
       const shortOutput = new TtyOutput();
@@ -1447,18 +1960,23 @@ describe("Terminal retained inline shell", () => {
 
         const frame = disclosureFrame(shortTerminal);
         assert.ok(frame);
-        const transcriptRows = frame.visibleRows.filter((row) =>
-          row.region === "transcript" && row.part !== "blank"
-        );
-        const composerStart = frame.visibleRows.find((row) =>
-          row.region === "composer"
-        )?.screenRow;
-        assert.ok(transcriptRows.length > 0);
+        assertPersistentFrame(shortTerminal, shortOutput);
         assert.equal(
-          transcriptRows.at(-1)?.screenRow,
-          (composerStart ?? 0) - 1,
-          "a short current-turn document must sit directly above Request",
+          disclosureNode(shortTerminal, `thinking_${targetId}`).expanded,
+          true,
         );
+        assert.match(
+          disclosureNode(shortTerminal, `thinking_${targetId}`).body ?? "",
+          /Summarize the deployment steps/u,
+        );
+        const firstComposer = frame.visibleRows.find((row) =>
+          row.region === "composer"
+        )?.screenRow ?? -1;
+        const firstFooter = frame.visibleRows.find((row) =>
+          row.region === "footer"
+        )?.screenRow ?? -1;
+        assert.ok(firstComposer > frame.viewport.transcriptStartRow);
+        assert.ok(firstFooter > firstComposer);
       } finally {
         shortTerminal.close();
       }
@@ -1483,13 +2001,90 @@ describe("Terminal retained inline shell", () => {
 
         const frame = disclosureFrame(longTerminal);
         assert.ok(frame);
-        assert.equal(
-          frame.viewport.targetTitleScreenRow,
-          frame.viewport.transcriptStartRow,
-          "an overflowing disclosure must start its selected title at the transcript top",
+        assert.ok(
+          (frame.viewport.targetTitleScreenRow ?? 0) >
+            frame.viewport.transcriptStartRow,
+          "an overflowing disclosure must retain preceding turn context",
         );
+        assert.ok(
+          (frame.viewport.targetTitleScreenRow ?? Number.POSITIVE_INFINITY) <=
+            frame.viewport.transcriptStartRow + 3,
+        );
+        assert.equal(frame.viewport.atEnd, false);
+
+        const initialOffset = frame.viewport.scrollOffset;
+        // Mode 1007 converts a wheel tick to cursor-down while leaving mouse
+        // buttons uncaptured. Feed that portable sequence directly here.
+        longInput.write("\u001B[B");
+        await settlePromptInput();
+        const scrolled = disclosureFrame(longTerminal);
+        assert.ok(scrolled);
+        assert.equal(scrolled.viewport.scrollOffset, initialOffset + 1);
+        assert.equal(scrolled.viewport.atStart, false);
       } finally {
         longTerminal.close();
+      }
+    });
+  });
+
+  it("avoids tail overscroll and keeps both ends of a long turn reachable", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.columns = 100;
+      output.rows = 18;
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect tail anchor", [], {
+          onSteer: async () => undefined,
+        });
+        await settlePromptInput();
+        terminal.write(
+          `${Array.from({ length: 30 }, (_, index) =>
+            `STABLE-CONTEXT-${index + 1}`).join("\n")}\n`,
+        );
+        const targetId = terminal.addReasoning("TAIL-SHORT-BODY");
+        input.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+
+        const initial = disclosureFrame(terminal);
+        assert.ok(initial);
+        const initialTranscriptRows = initial.visibleRows.filter((row) =>
+          row.region === "transcript"
+        );
+        assert.equal(
+          initialTranscriptRows.filter((row) => row.part === "blank").length,
+          0,
+          "a short tail body must not force blank overscroll below its title",
+        );
+        assert.equal(initial.viewport.atEnd, true);
+
+        input.write("\u001B[5~".repeat(10));
+        await settlePromptInput();
+        const atStart = disclosureFrame(terminal);
+        assert.ok(atStart);
+        assert.equal(atStart.viewport.atStart, true);
+        assert.match(
+          stripAnsi(atStart.visibleRows.map((row) => row.text).join("\n")),
+          /> Inspect tail anchor/u,
+        );
+
+        input.write("\u001B[6~".repeat(10));
+        await settlePromptInput();
+        const atEnd = disclosureFrame(terminal);
+        assert.ok(atEnd);
+        assert.equal(atEnd.viewport.atEnd, true);
+        assert.match(
+          stripAnsi(atEnd.visibleRows.map((row) => row.text).join("\n")),
+          /TAIL-SHORT-BODY/u,
+        );
+
+        input.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
       }
     });
   });
@@ -1528,22 +2123,23 @@ describe("Terminal retained inline shell", () => {
             height: 1,
           }),
         });
-        const redrawOffset = captured().length;
         output.emit("resize");
         await settlePromptInput();
-        const redraw = stripAnsi(captured().slice(redrawOffset));
-        assert.match(redraw, new RegExp(`▶ Thinking #${targetId}`, "u"));
-        assert.equal(redraw.includes("assistant row 1"), false);
-        assert.equal(redraw.includes("answer tail 4"), false);
-        assert.match(redraw, /╭─ Request/u);
+        assertPersistentFrame(terminal, output);
+        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
+        const completeBeforeExpand = disclosureNodes(terminal)
+          .map(disclosureNodeText)
+          .join("\n");
+        assert.match(completeBeforeExpand, /assistant row 1/u);
+        assert.match(completeBeforeExpand, /assistant row 25/u);
+        assert.match(completeBeforeExpand, /answer tail 4/u);
 
-        const expandedOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(targetId));
         await settlePromptInput();
-        const expanded = stripAnsi(captured().slice(expandedOffset));
-        assert.match(expanded, new RegExp(`↕ Thinking #${targetId}`, "u"));
-        assert.match(expanded, /TARGET-THINKING-DETAIL-1/u);
-        assert.match(expanded, /╭─ Request/u);
+        const expandedNode = disclosureNode(terminal, `thinking_${targetId}`);
+        assert.equal(expandedNode.expanded, true);
+        assert.match(expandedNode.body ?? "", /TARGET-THINKING-DETAIL-1/u);
+        assert.match(disclosureRegionText(terminal, "composer"), /╭─ Request/u);
         const completeTurn = disclosureNodes(terminal)
           .map(disclosureNodeText)
           .join("\n");
@@ -1556,8 +2152,16 @@ describe("Terminal retained inline shell", () => {
         input.write(vscodeToggleThinkingSequence(targetId));
         await settlePromptInput();
 
+        input.write("\u001B[5~");
+        await settlePromptInput();
+        assert.equal(disclosureFrame(terminal)?.viewport.atEnd, false);
         input.write("still works\r");
         assert.equal((await prompt)?.text, "still works");
+        assert.equal(disclosureFrame(terminal)?.viewport.atEnd, true);
+        assert.match(
+          disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
+          /> still works/u,
+        );
       } finally {
         terminal.close();
       }

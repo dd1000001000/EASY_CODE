@@ -1,481 +1,377 @@
 # EASY CODE Technical Design
 
-[简体中文](./TECHNICAL_DESIGN_ZH.md) | [Back to README](../README.md)
+English | [简体中文](./TECHNICAL_DESIGN_ZH.md) | [Back to README](../README.md)
 
-This document explains the design of EASY CODE as a controlled local coding agent. It focuses on architectural decisions, terminal interaction, trust boundaries, state management, orchestration, and reliability. User-facing installation and command instructions remain in the main README.
+This document describes the architecture and engineering choices behind EASY CODE. It focuses on stable design boundaries rather than individual functions, private protocols, or implementation line numbers. Installation and command usage belong in the [README](../README.md).
 
-Licensing is independent of these trust boundaries: EASY CODE's original source is covered by its [MIT License](../LICENSE), while embedded or installed third-party components retain their own terms. See [Third-Party Notices](../THIRD_PARTY_NOTICES.md), including the Apache-2.0 notice for the pinned Anthropic Sandbox Runtime.
+EASY CODE's original source is [MIT licensed](../LICENSE). Third-party components retain their own licenses; see [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
-## 1. Design goals and boundaries
+## 1. Design goals
 
-EASY CODE is designed around one central rule: **the model proposes actions, while the local Runtime decides what is allowed and owns every state transition**.
+EASY CODE treats the language model as a planner and code-producing component, not as the security boundary. The local Runtime remains authoritative for permissions, state transitions, persistence, and completion.
 
-The main design goals are:
+The design is guided by five invariants:
 
-- **Runtime authority:** prompts guide model behavior, but they never grant permissions.
-- **Least capability:** each model request receives only the capabilities required by its current mode, role, and execution phase.
-- **Workspace safety:** Manual and Auto approval confine file access to a selected project, with version checks before destructive changes; only an explicit Dangerous full access selection removes that location boundary.
-- **Process containment:** Manual and Auto-approved command process trees run inside an OS-enforced `workspace-write` boundary rather than inheriting direct host access.
-- **Durable execution:** conversations, plans, task progress, child results, and audit data survive process restarts.
-- **Evidence over claims:** file and command outcomes are recorded, while task completion must include structured evidence that a user or parent agent can review.
-- **Local-first state:** session data, memory, image artifacts, and indexes are stored locally by default.
-- **Graceful degradation:** optional features such as semantic retrieval may fall back without making authoritative state unavailable.
+1. **Authority and data are separate.** Project files, model output, memory, images, command output, and task descriptions are untrusted data. None can grant more authority.
+2. **Validate before effect.** Structured intent is checked against the current mode, role, workspace, policy, and state before a local side effect is allowed.
+3. **Persist before activation.** Important transitions become durable before the UI or another Agent treats them as committed.
+4. **Isolation layers solve different problems.** Private Threads isolate context, Git Worktrees isolate source state, and the operating-system sandbox isolates command processes.
+5. **Recovery never guesses.** An interrupted external action is not considered successful unless durable evidence proves it.
 
-EASY CODE pins and embeds `@anthropic-ai/sandbox-runtime` `0.0.74` as the command-process sandbox for Manual and Auto approval. This raises the minimum runtime to Node.js `>=20.11.0`. In those protected postures, command policy and approval decide whether an action may start, and the OS sandbox independently limits what the approved process tree can access. Sandbox preparation is fail-closed: an unsupported or uninitialized backend, missing dependency, or wrapper failure blocks execution and never falls back to a direct host launch. Dangerous full access is a separate, explicitly confirmed posture that intentionally selects a direct host backend; a sandbox failure can never select it.
+Other goals follow from these invariants:
 
-## 2. System architecture
+- fail closed when a permission, sandbox, binding, or recovery check is uncertain;
+- keep user-visible actions reviewable through diffs, command audit, task evidence, and result artifacts;
+- preserve long-running work across process restarts;
+- bound model context without discarding authoritative history;
+- keep provider-specific behavior away from workspace security;
+- degrade optional retrieval or terminal features without corrupting primary state.
+
+## 2. Technology stack
+
+| Area | Technology | Role |
+| --- | --- | --- |
+| Runtime | TypeScript on Node.js 20+ | Cross-platform orchestration, state management, and tool execution. |
+| CLI and terminal UI | Commander, Chalk, Node terminal APIs | Command parsing, interactive selection, retained conversation UI, and non-TTY fallback. |
+| Contract validation | TypeScript types, JSON Schema, Zod | Validation of configuration, model tool calls, persisted state, and external data. |
+| Provider access | OpenAI-compatible Chat Completions adapters | Shared message, tool, reasoning, image, retry, timeout, and usage model for Qwen, DeepSeek, and GLM. |
+| Durable storage | Append-only JSONL and SQLite WASM | Authoritative Thread history, checkpoints, query projections, memory, and audit records. |
+| Retrieval | SQLite FTS5, Orama, ONNX Runtime, Hugging Face tokenization | Hybrid lexical and semantic retrieval for long-term memory. |
+| Command execution | Structured process execution and Anthropic Sandbox Runtime | Argument-safe process launch, approval enforcement, and operating-system containment. |
+| Source isolation | Git, Worktrees, snapshots, and result artifacts | Reproducible child environments, checkpoints, dependency lineage, and Handoff. |
+| Editor integration | Bundled VS Code extension | Native clipboard image routing, Thinking interaction, and scroll-safe menu navigation. |
+| Packaging | npm and a versioned Prompt Bundle | Cross-platform installation of executable code and verified model-facing resources. |
+
+The Runtime is local, but selected model requests are remote. API credentials remain in the operating-system credential store or user-selected environment variables rather than being copied into project configuration.
+
+## 3. Architecture
 
 ```mermaid
 flowchart TB
-    User[User] --> UI[Terminal CLI and VS Code paste bridge]
-    UI --> App[Application and session controller]
-    App --> Runtime[Agent Runtime state machine]
+    User[User] --> UI[CLI and retained terminal UI]
+    UI --> App[Application controller]
+    App --> Runtime[Trusted Agent Runtime]
 
+    Runtime --> Context[Context and memory assembly]
     Runtime --> Provider[Provider gateway]
-    Runtime --> Context[Context assembly and retrieval]
-    Runtime --> Orchestration[Plan, task DAG, and child orchestration]
-    Runtime --> Capabilities[Capability and policy boundary]
+    Runtime --> Tools[Capability boundary]
+    Runtime --> Orchestration[Plan, DAG, and child orchestration]
+    Runtime --> State[Durable state]
 
-    Provider --> APIs[Qwen, DeepSeek, and GLM APIs]
-    Capabilities --> Workspace[Workspace file boundary]
-    Capabilities --> Commands[Command policy and approval]
-    Commands --> Sandbox[Manual and Auto: Anthropic SRT workspace-write]
-    Sandbox --> OS[Seatbelt, bubblewrap, or Windows SRT]
-    Commands --> Host[Dangerous full access: direct host backend]
-    Host --> HostOS[Current OS user: host filesystem, environment, and network]
-    Orchestration --> Children[Child sessions and DAG result lineage]
-    Children --> Environments[Shared roots or managed Git worktrees]
-    Environments --> Snapshots[Validated baselines and checkpoints]
-    Children --> Results[Immutable result artifacts]
-    Results --> Handoff[Local or branch Handoff]
-    Handoff --> Workspace
+    Provider --> APIs[Qwen, DeepSeek, GLM]
+    Tools --> Files[Workspace file operations]
+    Tools --> Commands[Command policy and approval]
+    Commands --> Sandbox[OS command sandbox]
+    Orchestration --> Children[Private child Threads]
+    Children --> Environments[Shared roots or Git Worktrees]
+    Environments --> Artifacts[Result artifacts and Handoff]
 
-    Runtime --> State[Durable state layer]
-    State --> Journal[Append-only thread journal]
-    State --> Database[SQLite projections and long-term memory]
-    State --> Artifacts[Private image artifacts]
+    State --> Journal[Append-only Thread events]
+    State --> Database[SQLite projections and memory]
+    State --> Binary[Private image and child artifacts]
     Context --> Database
 ```
 
 | Layer | Responsibility |
 | --- | --- |
-| Interaction | Terminal input, slash commands, loading feedback, thinking previews, diffs, task status, and image paste integration. |
-| Application coordination | Configuration, credentials, workspace binding, model selection, thread lifecycle, resume, and presentation. |
-| Agent Runtime | Turn state machine, effective mode, capability selection, model-output validation, tool loop, and completion rules. |
-| Provider gateway | A common representation for messages, structured actions, thinking, images, timeouts, retries, and usage metadata. |
-| Capability boundary | File, command, planning, task, memory, context, and child-agent operations exposed as validated structured actions. Manual and Auto keep command approval and OS sandboxing as separate enforcement layers; Dangerous full access explicitly removes both. |
-| Orchestration | Reviewed plans, dependency-aware task execution, child assignment, resumable execution environments, result lineage, and controlled handoff. |
-| State and retrieval | Authoritative thread events, queryable projections, checkpoints, long-term facts, semantic indexes, and binary artifacts. |
+| Interaction | Accept text, paste, images, menu choices, approvals, and cancellation; render conversation and status. |
+| Application controller | Load configuration and credentials, bind a workspace, own a Thread, and coordinate Resume. |
+| Agent Runtime | Select effective capabilities, validate model output, drive the tool loop, and enforce completion rules. |
+| Provider gateway | Normalize messages, structured actions, reasoning, images, cancellation, errors, and usage. |
+| Capability boundary | Enforce file, command, planning, task, context, memory, and child-Agent policies. |
+| Orchestration | Manage reviewed plans, dependency-aware tasks, child ownership, execution environments, and result lineage. |
+| Durable state | Preserve authoritative events and maintain queryable local projections and artifacts. |
 
-This separation keeps provider-specific behavior out of workspace security and keeps model output from directly mutating local state.
+Model output cannot call the filesystem, process APIs, database, or Git directly. It can only request a capability currently exposed by the Runtime, and every request is locally validated.
 
-### Inline terminal UI and output ownership
+## 4. Request lifecycle and modes
 
-The interactive UI is a projection of structured state rather than a collection of independent print calls. Its state separates a stable session header, append-only transcript entries, ephemeral live activity, retained Thinking disclosures, ordinary user-authored Adjustment messages, a modal overlay, and the persistent composer. Reducer-style updates make stale activity stops harmless and keep task, child-Agent, progress, image, and picker summaries bounded before rendering. Thinking bodies and final assistant answers are source content rather than summaries, so presentation limits are not applied to them.
+A normal turn follows this high-level sequence:
 
-The visible interface has four regions with different ownership rules:
-
-| Region | Lifetime and update rule |
-| --- | --- |
-| Session header | Rendered from stable Thread/session facts: mode, provider/model, effort, context estimate, workspace, and Thread ID. |
-| Terminal scrollback | Owns completed conversation, tool/command output, diffs, and results. New entries are appended and are never cursor-erased by a live refresh. |
-| Live region | Above the composer, owns only currently running progress, activity, and elapsed time. A screen writer may erase and replace only these bottom rows. |
-| Composer and footer | Keeps the wrapping input box, then compact task-DAG and child-Agent snapshots, with the mode/model/context/task/Agent status line last. Image attachments are represented by stable `[Image #N]` labels. |
-
-Before a stable transcript entry is committed, the screen writer removes the current live rows, appends the entry at their former start, and redraws the latest live snapshot underneath. Live progress contains running work only: a newer item replaces the prior item of the same kind, and a completed tool is removed before its single durable transcript entry is committed. Ending a request clears all transient progress. Cursor restoration uses visual rows and display-cell columns rather than UTF-16 indexes, so a cursor is never placed in the second cell of a wide grapheme. Resize rendering uses the current terminal width. ANSI control families from external text are removed; only UI-owned SGR styling may survive, and CJK, combining characters, flags, and joined emoji are measured as terminal cells.
-
-A modal picker has precedence over the ordinary live region; the persistent Dangerous full access marker is security chrome and remains visible above or alongside the picker. `/model`, command approval, Plan review, and Resume all use the same boxed overlay behavior: the selected row is visually distinct, other rows are subdued, `Up`/`Down` changes selection, Enter confirms, and Esc cancels. The menu temporarily owns stdin in Raw Mode and restores the previous input, cursor, and flow state on every exit path. Approval cancellation maps to rejection, preserving fail-closed behavior. This single-owner rule also prevents a background child or status update from consuming interactive input. While a model request is active, the persistent composer accepts steering messages and keeps private disclosure toggles and `Ctrl+C` cancellation responsive. A disclosure renderer may own physical stdin and suppress readline's terminal writes, but decoded editing input is forwarded into that same suspended canonical composer; it never creates a second draft or submission queue. A true modal resumes the unchanged text, attachments, cursor, Raw Mode, and stream-flow state only after releasing stdin.
-
-Click-to-toggle for Thinking uses the same ordered private terminal channel as image paste. The bundled extension recognizes only an exact Thinking title and requires its positive decimal ID to be a safe integer. Links are enabled for a terminal with a tracked EASY CODE shell execution or an explicit user override. To recover a start event missed by an extension-host reload, only terminals already present at activation may enter a marker-proven recovery state; the next observed shell start/end or terminal close revokes it. VS Code activates terminal links with `Ctrl+click` on Windows/Linux or `Cmd+click` on macOS by default. Activation sends a fixed, no-newline toggle message containing the Thinking ID back to the terminal that produced the link; the terminal parser consumes it as protocol rather than composer text. Compatibility payloads from already-installed clients are normalized to the same action. The protocol does not assign a meaning to Esc.
-
-Native terminal scrollback cannot safely replace an arbitrary historical row, so opening Thinking switches to a managed alternate-screen transcript backed by a retained virtual document. Every Thinking node keeps both its preview and complete body. At most one node is expanded: its complete body replaces its preview at the same logical document position, while all other Thinking nodes remain folded. Closing restores the preview at that position; selecting another title moves the expansion without duplicating either body. The virtual document projects one explicit current-turn transcript range in append order, including the initial user request, adjustments, status and tool entries, Thinking nodes, and final answer. It excludes preceding turns. Primary scrollback remains unchanged and every stable entry is still committed exactly once.
-
-The managed transcript presents the complete current-turn content and Thinking body as continuous terminal content. It has no page model, disclosure-row cap, silent omission, or `truncated` substitute. Short documents are bottom-aligned directly above the composer; when the document exceeds the viewport, the selected title is anchored at the transcript top and Page Up/Page Down changes the window over the same retained content. The alternate-screen writer deliberately leaves DEC mouse reporting disabled, preserving terminal-native drag selection and copy; VS Code disclosure activation remains an independent terminal-link protocol. Ordinary cursor/edit keys stay assigned to the composer. Resize reflows from retained source text. Output arriving while the view is open is appended to the same current-turn projection immediately and deferred for one physical commit to primary scrollback; new Adjustments appear as ordinary user rows. The canonical composer remains active in this view: its text, attachments, cursor, multiline-paste markers, image-capture work, and FIFO submissions continue without a duplicated editor. Closing changes only the projection and restores normal readline rendering and physical cursor ownership. Thinking selection is ephemeral UI state and is not written to the Thread journal, model context, short-term context, or long-term memory; retained Thinking and user-authored Adjustment data remain durable. `/thinking N`, `/adjustment N`, and `Ctrl+T` follow a separate read-only path that commits complete retained content to stable scrollback while preserving the composer draft.
-
-Final assistant responses, completed tool output, command output, and diffs are ordinary transcript entries rather than disclosures. They remain append-only primary scrollback content and are not shortened by disclosure or live-region presentation limits. Any source-level safety bound, such as an explicit command-output capture limit, must be labeled separately and must not masquerade as a UI preview.
-
-The composer and the VS Code paste bridge share one ordered input stream. Native image paste is resolved before a following Enter can submit, and the composer receives only a visible attachment label; verified bytes remain in the private image-artifact store. Text paste stays text. `Ctrl+C` remains able to cancel an in-flight clipboard capture.
-
-Mid-turn steering is a Runtime-owned FIFO rather than a second concurrent conversation. Every submitted text/image message is journaled independently before the UI acknowledges it. At a safe boundary, Runtime snapshots the current FIFO prefix and exposes it to the model as one ordered user message; later entries remain pending for the next boundary. A new entry can cancel only the active Provider attempt, not the whole Turn. Between tool calls, completed results remain valid while not-yet-started calls from the stale response are closed as superseded before steering is appended, preserving the assistant/tool protocol. Finalization closes input admission and checks the durable inbox atomically, so a message cannot be silently lost at the response boundary. Steering changes task guidance only: it never changes capabilities, approvals, sandbox posture, workspace confinement, or task ownership.
-
-Non-TTY output does not attempt cursor movement, screen erasure, Raw Mode, or color. It emits append-only plain status messages and uses line-oriented input; workflows that require an interactive picker must instead provide an explicit model, Resume ID, or other command argument. This degradation preserves readable logs for pipes, redirected output, CI, and terminals with incomplete control-sequence support.
-
-## 3. Request lifecycle and working modes
-
-A normal turn follows this control flow:
-
-1. The application loads trusted configuration and credentials, then loads lower-priority project guidance as untrusted data, binds the selected workspace, and obtains exclusive ownership of the thread.
-2. The current user message and image references are made durable before agent work begins.
-3. In Auto mode, a restricted controller chooses direct response, Plan, or Code using structured output rather than keyword matching.
-4. The Runtime derives the effective capabilities from mode, agent role, context pressure, plan state, task state, and outstanding child work.
-5. The model context is assembled from the security contract, environment facts, relevant project guidance, active conversation, current control state, and a small set of retrieved memories.
-6. Provider output is locally validated before any requested action is accepted.
-7. Action requests, results, state transitions, and usage metadata are appended to the thread history.
-8. The loop continues until a final response, a plan awaiting review, a blocked task, a configured limit, a failure, or an interruption.
-9. Eligible long-term-memory changes are committed only at an allowed successful turn boundary. During Plan, eligibility is limited to durable preferences or conventions explicitly stated by the user.
+1. Load trusted user configuration, credentials, the Prompt Bundle, and lower-trust project guidance.
+2. Acquire ownership of the selected Thread and make the new user message and image references durable.
+3. In Auto mode, ask a restricted controller to choose direct response, Plan, or Code.
+4. Build the model context from current state, applicable instructions, a working summary, active messages, and retrieved memories.
+5. Send a provider request with only the capabilities allowed for this step.
+6. Validate each structured response before executing tools or changing state.
+7. Record tool results, model usage, task transitions, and other durable evidence.
+8. Continue until the Runtime accepts a final response, presents a plan, reaches a blocked state, or stops on a limit or interruption.
+9. Commit eligible long-term-memory changes only at a successful boundary.
 
 ### Mode semantics
 
-| Mode | Design intent | Effective boundary |
+| Mode | Purpose | Main restriction |
 | --- | --- | --- |
-| Plan | Investigate and produce a structured proposal for review. | Read-only workspace investigation and safe inspection; no project mutation or side-effecting execution. |
-| Auto | Let the model choose the appropriate workflow. | The controller itself has no workspace capability. It may answer a bounded tool-free request or enter Plan/Code. |
-| Code | Implement and verify immediately. | Workspace mutations and controlled commands are available, but all normal policy and approval checks remain active. |
+| Plan | Investigate and produce a proposal for user review. | Project mutation and ordinary side-effecting commands are unavailable. |
+| Auto | Let the model select the appropriate workflow. | The routing controller itself has no workspace tools. |
+| Code | Implement and verify directly. | Mutations and commands remain subject to capability, policy, approval, and sandbox controls. |
 
-Plan approval, rejection, and adjustment are explicit persisted states. They are not inferred from similar-looking user text. If approved execution fails or is interrupted before a durable task DAG takes over, the plan returns to review instead of being silently treated as a new request. Once a DAG is active, its persisted state becomes the recovery control plane.
+Auto routing is structured rather than keyword-based. A direct answer is accepted only when it can be produced without workspace access or side effects. Otherwise, Auto enters Plan or Code.
 
-An unfinished task graph or an uncollected child result keeps Auto in Code so the parent cannot abandon active work. When context pressure requires compaction, Auto compacts first and only then chooses its route.
+Plan review is a persisted state, not a conversational guess. Approval, rejection, and revision feedback are explicit transitions. If an approved execution is interrupted before a durable execution graph takes ownership, the plan returns to review instead of being silently treated as complete.
 
-## 4. Capability, permission, and trust model
+### Mid-turn adjustment
 
-### Capability matrix
+The active composer remains available while the model works. Each adjustment is independently persisted in FIFO order. At a safe boundary, the Runtime snapshots the pending prefix and adds it to the next model request as user input. Later entries remain queued for the following boundary.
 
-| Capability category | Plan | Main Agent in Code | Child Agent |
-| --- | ---: | ---: | ---: |
-| Read workspace text files | Yes | Yes | Yes |
-| Read validated images with a compatible model | Yes | Yes | No |
-| Create, update, or delete workspace files | No | Yes | Yes |
-| Run commands | Safe inspection only | Policy controlled | Policy controlled, without interactive approval |
-| Submit a plan for review | Yes | No | No |
-| Manage the task graph | No | Yes | No |
-| Create or control child agents | No | Yes | No |
-| Maintain long-term memory | Strictly limited | Yes | No |
-| Submit a bound child-task result | No | No | Yes |
+An adjustment can redirect work but cannot change the effective mode, command posture, sandbox boundary, task owner, or child identity. Completed tool results remain valid; tool calls from a superseded provider response that have not started are not executed.
 
-The capability set is rebuilt for every model step. A forged request for an unavailable capability is rejected locally even if the model believes it should be allowed.
-
-The matrix describes the normal role boundary under Manual and Auto approval. While Dangerous full access is active, the Runtime intentionally overrides the protected command and filesystem-location restrictions for the main Agent and every child Agent. That authority comes only from the user's local posture selection, never from model output, project text, memory, or a child Agent.
+## 5. Trust, capability, and permission model
 
 ### Instruction trust
 
-The Runtime and base system contract have higher priority than the current user request. Project guidance can refine how work should be performed but cannot grant filesystem, command, network, installation, or credential access.
+Runtime policy and the base security contract have higher authority than user requests. User requests have higher authority than project guidance. Files such as `EASYCODE.md` may describe how to work, but they cannot grant filesystem, process, network, credential, installation, or child-Agent authority.
 
-Workspace files, source comments, command output, task descriptions, retrieved memory, images, dependency metadata, and generated artifacts are treated as untrusted data. Instructions embedded in those sources cannot expand authority.
+Source comments, dependency metadata, command output, retrieved memory, task text, images, and generated artifacts are all treated as data. Prompt injection in any of those sources does not bypass the local control plane.
 
-### Workspace mutation boundary
+### Capability shaping
 
-Under Manual and Auto approval, file operations use workspace-relative paths and verify both textual containment and the canonical disk location. This rejects absolute paths, parent traversal, symbolic-link escapes, and Windows junction escapes. Under Dangerous full access, checked file operations also accept explicit absolute host paths and may create, update, or delete anything available to the current OS user; relative paths retain their workspace interpretation. Canonical resolution and inspect-before-change version checks remain, but they are not a containment boundary.
+The Runtime rebuilds the available capability set for each model step. It considers:
 
-Mutation safety follows an inspect-before-change protocol:
+- Plan, Auto, or Code mode;
+- main-Agent or child-Agent role;
+- active plan and DAG state;
+- child assignments and uncollected results;
+- context pressure and compaction state;
+- provider and model capabilities;
+- current command posture and sandbox readiness.
 
-- Creating a file cannot silently replace an existing target.
-- Updating or deleting requires a previously observed full-file version.
-- The current version is checked again immediately before mutation.
-- A user, editor, external process, or another agent changing the file invalidates the operation instead of being overwritten.
-- Successful changes produce durable audit records and line-numbered terminal diffs.
-- Resume restores a historical read authorization only when the file still matches the observed version.
+An unavailable tool remains unavailable even if the model invents its name or schema. Batching a state-control action with incompatible work actions is rejected as a whole where atomicity matters.
 
-The user-selected project remains the **logical workspace root** for policy, memory, project instructions, and paths shown to the parent. Each child also has a **physical execution root**. In shared mode those roots coincide; in Worktree mode the physical root is a manager-owned linked checkout outside the project. In Manual and Auto approval, file capabilities are confined relative to the child's physical root, while commands start there and remain subject to command policy; durable identity stays attached to the logical project. Dangerous full access removes that location boundary for both the main Agent and children. Mutations outside the selected workspace are not incorporated into workspace snapshots, `/changes`, Worktree result artifacts, or Handoff.
+### Workspace file boundary
 
-Shared-mode mutations use one fair queue and version checks to reduce conflicts. Independent Worktrees do not need that global mutation queue because their Git state is separate; they instead meet at an explicit result boundary. Neither mechanism locks out the user's editor or unrelated processes.
+Protected file operations are relative to the selected workspace and are checked against the canonical filesystem location. Parent traversal and link-based escapes are rejected.
 
-### Command policy and approval
+Mutation follows an inspect-before-change protocol:
 
-Commands are represented as an executable, an argument vector, and a working directory. Ordinary input is not implicitly interpreted by a shell. The following classification and approval table governs Manual and Auto approval; Dangerous full access bypasses it after explicit confirmation.
+- creation does not silently replace an existing file;
+- update and deletion require a previously observed complete version;
+- the observed content identity is checked again immediately before mutation;
+- concurrent edits produce a conflict instead of an overwrite;
+- accepted changes become durable audit entries and line-numbered diffs;
+- Resume restores a previous read authorization only when the file still matches.
 
-| Risk class | Policy direction |
-| --- | --- |
-| Safe inspection | May run without approval. |
-| Project code, tests, builds, or an explicit one-shot shell | Requires exact approval unless the session was explicitly started for non-interactive approval. |
-| Constrained local dependency installation | Allowed only as a restricted project-local Registry installation with lifecycle scripts disabled. |
-| System configuration, global installation, direct remote/network tools, destructive commands, dynamic download-and-execute, or remote Git writes | Direct structured forms are denied. An explicit shell is a separate high-risk capability that requires exact approval; Runtime does not infer its script semantics, but its process tree still enters the OS sandbox. |
+Shared child Agents use serialized workspace mutation plus the same version checks. Worktree children have separate Git state, but user edits and later Handoff can still conflict.
 
-The default one-time approval is bound to the exact executable, arguments, working directory, and relevant project material. The interactive terminal also offers a reusable Thread-scoped grant for the exact executable identity resolved by the Runtime. This is equality on the canonical executable path, not textual `startsWith` matching and not a value parsed back from the human-readable command preview. Such a grant deliberately ignores later arguments and working directories: granting Python, Node.js, a shell, or another interpreter therefore authorizes substantially more than one script. It is a path identity rather than a pin to immutable executable bytes, so replacing the file at that path does not automatically revoke the grant.
+### Commands and approval
 
-Reusable grants are created only by an explicit terminal selection, are written to the authoritative Thread history before the command may run, survive Resume, and are absent from a new or unrelated Thread. A bound child Agent may consume its parent Thread's existing grant without taking over terminal input, but cannot prompt for or create a grant. Checkpoints can preserve but cannot invent or erase the event-authoritative set, and malformed identities fail closed. `/permissions` exposes the current set for inspection.
+Commands are represented as a resolved executable, an argument vector, and a working directory. Ordinary task text is not implicitly interpreted as a shell program.
 
-Outside Dangerous full access, descriptive model intent does not influence classification. Permanent policy denial happens before approval lookup; disabling prompts turns approval-requiring commands into denials; and neither remembered nor automatic approval changes direct policy denials or Plan restrictions. A user-approved shell or interpreter remains capable of performing everything expressed by later arguments and must be treated as a high-risk unit.
+Protected execution has three independent gates:
 
-The interactive command posture is process-local and has three states. Manual approval preserves the ordinary decision path. Auto approval removes prompts only for commands the policy already considers approval-eligible. `Dangerous full access` is an explicitly double-confirmed emergency posture with **no EASY CODE sandbox and no approval boundary**. Before activation, the confirmation warns that the main Agent and all child Agents will receive current-user access to the full host filesystem, inherited host environment, and internet. After activation, persistent red `! EASY CODE DANGER: FULL ACCESS` branding remains in the live interface, including while modal pickers are open.
+1. **Capability gate:** determines whether this Agent, mode, and phase may request command execution.
+2. **Policy and approval gate:** classifies the command, applies permanent denials, and obtains any required user decision or Thread grant.
+3. **Sandbox gate:** starts an approved process tree inside an operating-system workspace boundary.
 
-Dangerous full access disables command classification, permanent command denials, Plan command restrictions, approval prompts, and SRT wrapping. A separate production host backend launches absolute executables in arbitrary current-user-accessible working directories, inherits the host environment, and uses the host network directly. Checked file tools accept explicit absolute host paths as well as workspace-relative paths. The authority is inherited by every child Agent regardless of shared-root or Worktree execution. EASY CODE does not bypass OS ACLs, UAC, `sudo`, or another account's permissions.
+An approval can apply once or to the same canonical executable identity for the current Thread. Child Agents can use an existing Thread grant but cannot open an approval prompt or mint a new grant.
 
-Switching from Dangerous full access to Manual or Auto immediately revokes this authority from the main Agent and all children. Queued or waiting host operations are rejected, in-flight host command trees are canceled and cleaned up, and later actions are evaluated under the newly selected protected posture. Side effects completed before revocation are not rolled back.
+Manual and Auto approval use the OS sandbox. Sandbox preparation or launch failure blocks the command and never falls back to a direct host process.
 
-Structured executable/argv validation, the non-interactive shell shape, cancellation, time limits, bounded and redacted output, process-tree cleanup, and command audit remain active in Dangerous full access. They are operational controls, **not a sandbox, permission boundary, complete monitor, or rollback mechanism**. Host processes inherit environment variables and can expose credentials. Workspace snapshots and `/changes` remain bounded workspace-only audit aids: they omit arbitrary host modifications, Git metadata, dependency directories, and private state, and may be truncated by file-count limits.
+Dangerous full access is a separate, process-local posture selected by the user with a second confirmation. It bypasses command policy, approval prompts, the command sandbox, and workspace-only file restrictions. It still runs with the current OS account's permissions and ends when the user disables it or exits.
 
-In Manual and Auto approval, processes receive a small environment allowlist rather than the full parent environment. Permanent command classifications apply to the top-level invocation; a permitted shell, interpreter, or project program can still start descendants, but SRT applies the filesystem and network boundary to the whole wrapped process tree.
+### Credentials and sensitive data
 
-### OS command sandbox and Dangerous full access host backend
+Provider keys are stored in the operating-system credential store or supplied through environment variables. They are not accepted in workspace configuration. Terminal output, model-facing errors, memory writes, and persisted summaries pass through secret and control-character filtering.
 
-EASY CODE runs production Manual and Auto-approved commands through the pinned Anthropic Sandbox Runtime. The original model action remains a structured executable and argument vector. A trusted worker turns that resolved invocation into SRT's platform wrapper, attributes violations with an opaque command identity, and launches the target without reinterpreting model text as the worker's own arguments. The parent process, Provider calls, memory database, credential store, terminal UI, and orchestration remain outside the command sandbox. Only explicitly confirmed Dangerous full access selects the separate production host backend and launches without SRT.
+The command environment uses a constrained allowlist in protected modes. Provider keys are not forwarded to child processes by default.
 
-The effective filesystem profile for Manual and Auto approval is `workspace-write`:
+## 6. Prompt Bundle and configuration
 
-- The active physical workspace and an invocation-private scratch directory are writable.
-- EASY CODE's private configuration, data, cache, common credential locations, and the user's home tree are denied for command reads, with narrow re-allow rules for the active workspace, trusted Runtime bridge, Node executable, and resolved target executable.
-- `.easycode`, `.git`, and a Runtime checkout that is also the project being edited remain protected from command writes.
-- Provider API-key environment variables are explicitly denied in the sandbox in addition to the parent's controlled environment construction.
-- Unix sockets, local port binding, Apple Events, weaker nested isolation, and weaker network isolation are disabled.
+System guidance, runtime control text, and tool descriptions are installed in a fixed per-user Prompt Bundle. The package includes a manifest that binds resource versions and content identities to the compatible Runtime.
 
-In Manual and Auto approval, network authority is derived from the classified command capability rather than from the approval UI state alone. Ordinary commands receive an empty strict allowlist. Restricted exact-version npm Registry installation receives only `registry.npmjs.org`. An explicitly approved Shell receives its classified SRT network capability. An allowed domain is not an operation-level authorization: a Shell can transmit any data its sandboxed process tree may read. Dangerous full access bypasses SRT network allowlists entirely and uses the host's full network access.
+At startup, EASY CODE verifies the bundle before model use and loads an immutable in-process view. Missing, modified, or unlisted resources are repaired from the installed package. Tool executable schemas and permission logic remain compiled into the Runtime; editable prose cannot redefine them.
 
-Manual and Auto sandbox setup and execution are fail-closed. `prepare` failures and worker initialization failures become explicit `sandbox_unavailable` command results; no error path retries the resolved target through the host backend. The production host backend is reachable only through the separately confirmed Dangerous full access posture, never through automatic degradation. Installation performs a non-privileged prerequisite check. The first interactive launch performs a live readiness probe inside the existing retained UI before model selection, and only then offers a Runtime-owned, fixed setup recipe. Explicit maintenance commands use the same readiness service, so install, startup, and diagnosis do not drift into separate policy implementations.
+Threads record the compatible Prompt Bundle identity so Resume cannot silently continue with an incompatible tool contract.
 
-Automatic setup is deliberately narrower than Agent command execution. Windows delegates the fixed one-time account and WFP operation to SRT's UAC flow. Linux may invoke only a built-in package-manager recipe for prerequisites that the runtime explicitly reported missing, using an absolute trusted executable and structured arguments. The Linux worker likewise resolves bubblewrap, socat, and ripgrep from fixed system locations and passes their absolute paths to SRT instead of trusting a workspace-influenced `PATH`. Setup does not update package indexes, enable repositories, collect passwords, alter User Namespace/AppArmor/kernel settings, or accept package names from the model or project. After setup, a real sandboxed process probe must pass. Reduced-isolation warnings are treated as unavailable rather than silently accepted.
+Configuration is layered from defaults, trusted user configuration, safe project configuration, environment variables, and explicit CLI options. Project configuration cannot redirect credentials, provider endpoints, application data, or managed Worktree storage.
 
-| Platform | SRT backend and prerequisite |
-| --- | --- |
-| macOS | Seatbelt-backed SRT using the operating-system facility; the pinned runtime has no additional hard package prerequisite. |
-| Linux | bubblewrap-backed SRT; `bubblewrap`, `socat`, and `ripgrep` are required, together with usable user namespaces. |
-| Windows | Bundled SRT Windows backend, currently alpha. `easy-code sandbox setup` performs the explicit one-time elevated account and WFP setup; `easy-code sandbox doctor` verifies the filesystem identity and network fence. |
+`EASYCODE.md` is loaded as project guidance from the user and workspace hierarchy. It is intentionally lower-trust than the Runtime contract.
 
-The Windows backend uses one machine-wide sandbox identity and session-level ACL grants. EASY CODE therefore serializes Windows sandbox commands within one process so concurrent child Worktrees do not receive overlapping grants. SRT remains a Beta Research Preview, and user-scoped toolchains or programs that expect broader profile access can be incompatible. In Manual and Auto approval, a backend dependency disappearing, a canceled UAC setup, a failed Linux user-namespace probe, or a worker cleanup problem is reported rather than treated as permission to execute directly on the host. The user must separately choose and confirm Dangerous full access.
+## 7. Terminal and editor integration
 
-### Credentials and private state
+The interactive UI is a projection of structured state rather than a set of unrelated print calls. It separates:
 
-API keys are read through hidden input, the operating-system credential store, or explicit environment variables. Workspace configuration cannot set API keys, Provider base URLs, or EASY CODE's private data directories, although it may select normal workflow options such as provider, model, mode, effort, approval policy, and budgets. Configuration views report presence rather than secret values. A compatibility path may still read a legacy user-level plaintext key, so migrating such keys to the operating-system credential store is recommended. Dangerous full access processes inherit the host environment and can read any credential files available to the current OS user; output redaction does not prevent a process from using or transmitting those secrets.
+- a stable session header;
+- an append-only conversation transcript;
+- a redrawable live-activity region;
+- the persistent composer and status footer;
+- modal pickers for model selection, approvals, plan review, and Resume.
 
-Runtime-generated errors, command data, task and memory channels, and other known control-plane outputs use bounded redaction and control-character filtering. This is defense in depth, not complete data-loss prevention: source content, file diffs, user messages, and final model text do not pass through one universal DLP layer, and a source file read for a task can still be sent to the selected model provider.
+Stable content is committed once and remains ordinary terminal scrollback. Only temporary activity is redrawn. This preserves scrolling, selection, copying, and a consistent location for the input box.
 
-Most application-private state is kept outside the selected workspace to reduce accidental commits. Worktree execution deliberately spans two storage boundaries:
+One component owns terminal input at a time. Modal menus temporarily suspend the composer and restore its exact draft, attachments, cursor, and terminal state afterward. Background progress and child activity cannot consume menu keystrokes.
 
-| State | Location and effect |
-| --- | --- |
-| Thread journals, SQLite, images, environment descriptors, and managed checkout directories | EASY CODE data locations outside the logical workspace and, for managed checkouts, outside the entire Git repository. |
-| Resumable Worktree baselines, checkpoints, and results | Local Git objects anchored by Runtime-owned namespaced refs in the repository's common Git database. They do not move or commit the user's current branch, but their content can remain in local Git storage after the physical checkout is removed. These refs are locally inspectable and are not confidential storage. |
-| Delivered result | Local Handoff changes the user's working tree without committing; Branch Handoff adds a local branch without checking it out or pushing it. |
+Thinking blocks retain a short preview and complete body. The VS Code extension routes an authenticated toggle action back to the originating terminal. A managed transcript view replaces the selected preview with the complete body at the same logical event position while keeping the composer active. The expansion state is UI-only; it does not alter model context or memory.
 
-Trusted user configuration may relocate application data only outside the selected logical workspace. The managed Worktree checkout root has the stricter rule that it must remain outside the entire containing repository. EASY CODE does not encrypt these records at the application layer, so confidentiality depends on the operating-system account and filesystem permissions. Secrets must not be placed into task artifacts or Worktree snapshot inputs.
+Reasoning, tool activity, adjustments, and model answers appear in provider/event order rather than in separate fixed sections. Final assistant responses and expanded Thinking are presentation-complete; only source data with an explicit safety limit, such as captured command output, is bounded.
 
-## 5. Durable state and Resume
+Clipboard handling preserves submission ordering. Multiline text remains one paste object until the user presses Enter, while verified images become stable attachment labels. Non-TTY environments fall back to append-only text without cursor-addressed UI behavior.
 
-EASY CODE uses an event-first session model:
+## 8. Durable state and Resume
 
-- Each thread has a sequential append-only journal containing conversation messages and important control transitions.
-- SQLite provides queryable projections for thread discovery, turns, audit records, and long-term memory. Token usage is aggregated from durable thread events rather than a dedicated usage projection.
-- Checkpoints speed recovery but cannot override newer authoritative events.
-- Images are stored as private artifacts; the journal stores verified metadata and references rather than encoded image bytes.
+Every Thread has an append-only event history that is the authoritative record of accepted actions and transitions. SQLite maintains query-friendly projections for sessions, memory, usage, and recovery, but a stale projection cannot override newer authoritative events.
 
-The journal records user and assistant messages, queued/applied steering entries and their consumption watermark, structured action requests and results, mode decisions, plan review, context compaction, task transitions, child lifecycle events, file and command audit data, and provider-reported usage. Stable identities and sequence ordering make replay deterministic and make duplicate projection safe.
+Checkpoints reduce replay time. They do not replace the event history. Resume replays newer events, validates persisted identities, and reconstructs the effective state.
 
-Resume rebuilds the latest valid state, then reconciles the queryable projection. It preserves completed work and can reattach an active child assignment to its bound child thread and execution environment. An unfinished command or provider request is never assumed successful or blindly replayed; only durably recorded terminal work is treated as complete, while unfinished child execution resumes from the latest validated checkpoint.
+Durable state includes:
 
-Additional recovery rules include:
+- user and assistant messages, tool requests, and results;
+- working summary and compaction boundary;
+- plan review state and task DAG;
+- file observations, changes, commands, and Thread grants;
+- pending adjustments and their delivery watermark;
+- child assignments, lifecycle, execution environments, and result references;
+- provider-reported usage accounting.
 
-- A partial final journal record may be discarded, while corruption in established history fails closed.
-- A thread lease prevents two local processes from concurrently owning the same session.
-- File versions are revalidated against the current workspace.
-- An interrupted approved plan returns to review when execution has not already transitioned into a durable task DAG.
-- Parent thread, child thread, task, agent, and execution environment are cross-referenced by one immutable binding. The child journal owns detailed conversation and tool progress; the parent journal keeps bounded lifecycle and result references. Observation events must match the full binding before they can close an assignment.
-- Persisted execution descriptors are treated as untrusted input during recovery. Repository identity, manager-owned path, logical-to-physical root mapping, and real-path containment are revalidated before a child can run.
-- Child restoration is transactional: the complete binding set is prepared and validated before any child is activated. One invalid binding rolls back the batch. Starting a new thread or resuming another thread first pauses and checkpoints current children; if the ownership transition fails, the original thread rebuilds those children from its durable bindings.
-- A missing managed checkout directory can be reconstructed only after key descriptor identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata is inconsistent with an existing modern child, fails closed rather than silently provisioning a different checkout. Supported legacy records receive only deterministic compatibility recovery.
-- Persisted result artifacts and handoff dispositions are recovered without projecting isolated changes into the parent workspace a second time.
-- An event-confirmed compaction boundary, plan transition, or task transition cannot be rolled back by a stale checkpoint.
+Thread leases prevent two local processes from owning the same active Thread. Resume verifies the workspace and any managed child environment before restoring authority.
 
-## 6. Context and memory architecture
+Interrupted provider calls and commands are not blindly replayed. A partially approved plan returns to review, an unfinished DAG remains active or blocked, and child work without a durable completion result is treated as interrupted. Recovery favors an explicit user-visible state over invented success.
 
-Short-term context and long-term memory solve different problems and have different lifecycles.
+## 9. Context and memory
 
 ### Short-term context
 
-Short-term context belongs to one thread. Its durable state includes the active conversation, thinking returned by providers, bounded tool results, plan and task state, collected child results, image references, and a cumulative working summary.
+The authoritative conversation remains in the Thread event history. The model request contains a bounded view composed of:
 
-Full message content remains in the durable event history even after compaction. It remains in the active model context only until an explicit compaction boundary advances. Context pressure is measured against a configurable character budget scaled by thinking effort:
+- the active system contract and current environment;
+- the latest cumulative working summary;
+- messages after the monotonic compaction boundary;
+- current task, plan, child, and adjustment control state;
+- a small set of relevant long-term facts.
 
-| Pressure | Runtime behavior |
-| --- | --- |
-| Below 60% | No intervention. |
-| 60% or above | Remind the model to consider compaction. |
-| 80% or above | Require the next model step to compact context. |
-| 90% or above | Inject a mandatory compaction request. |
+The model creates the cumulative summary through a dedicated context action. The Runtime limits and redacts it, verifies that the boundary only moves forward, and persists both together. A last-resort request-size fallback may omit old active messages for one request, but it does not rewrite the official summary or compaction boundary.
 
-The model produces a cumulative semantic summary, while the Runtime validates its size, removes likely secrets, and enforces a monotonic boundary. The summary is reintroduced as untrusted historical data so it cannot override newer user input.
+Context pressure is progressive: normal operation, a suggestion to compact, a mandatory compaction step, and finally a forced compaction request before the configured boundary is exceeded. Character budgets are used for deterministic local enforcement, while Token values shown in the UI are estimates unless reported by the provider.
 
-A request-level size fallback may temporarily trim older material to keep one provider call safe. It does not rewrite the official working summary or advance the durable compaction boundary. The terminal Token counter is an approximate multilingual estimate; pressure decisions use the configured character budget.
+Thinking effort scales the local step and context budgets. These are execution safeguards, not promises about the provider's own context window.
 
 ### Long-term memory
 
-Long-term memory is scoped to a normalized workspace and can be reused across threads. It stores short, atomic, independently retrievable facts rather than conversation transcripts.
+Long-term memory stores short atomic facts scoped to a normalized workspace. Supported fact types include preferences, conventions, architecture, decisions, and environment notes.
 
-Appropriate memory includes durable user preferences, project conventions, verified architecture, established decisions, and stable environment facts. Secrets, uncertain claims, proposed-but-unverified designs, and one-off task details are rejected.
+The model searches before proposing a write. Additions, revisions, and removals are staged during the turn and committed atomically only when the turn reaches an allowed successful boundary. Superseded and forgotten facts retain enough audit history for consistency without remaining active retrieval candidates.
 
-The lifecycle is model-managed but Runtime-controlled:
+Retrieval is hybrid:
 
-1. Relevant existing facts are searched before a change is proposed.
-2. New, revised, or retired facts are tied to the current thread, turn, and evidence.
-3. Proposed mutations remain staged during execution.
-4. The complete batch commits atomically only at an allowed successful turn boundary; Plan can commit only explicit durable user preferences or project conventions.
-5. Revision and retirement preserve an audit trail rather than silently overwriting history.
+- SQLite FTS5 supplies lexical matching;
+- a local multilingual ONNX embedding model supplies semantic vectors;
+- Orama provides in-memory vector ranking;
+- results are combined into a small top set for context assembly.
 
-SQLite is the authoritative memory store. Retrieval combines lexical relevance with local embedding similarity and confidence signals. The semantic index is a rebuildable projection: if local inference or the vector index is unavailable, memory remains accessible through lexical search and can be backfilled later.
+SQLite remains authoritative. The vector index is a rebuildable projection, so semantic retrieval can degrade to lexical search without losing memory. Secret filtering and workspace scoping apply before persistence and retrieval.
 
-Users can inspect short- and long-term memory but cannot directly edit internal memory records. This prevents manual state changes from bypassing evidence and lifecycle rules.
+## 10. Plan review and task DAG
 
-## 7. Planning and task DAG orchestration
+A reviewed Plan and an execution DAG solve different problems:
 
-A reviewed plan and a task DAG are related but distinct controls:
+- **Plan review** lets the user approve direction before implementation.
+- **Task DAG** controls dependency order, ownership, completion evidence, and result lineage during execution.
 
-| Mechanism | Purpose |
+A task describes its purpose, dependencies, required inputs, expected artifacts, completion checks, failure handling, owner, and status. The Runtime validates that the graph is acyclic and that dependencies exist.
+
+Only dependency-ready work can be claimed. One task has one active owner. Completion requires evidence for its declared checks; a model statement alone does not complete a task. A blocked task records its blocker, while dependent work remains unavailable.
+
+An active DAG prevents the main Agent from giving an ordinary final answer before every reachable task has reached a valid terminal state. DAG state is durable and restored by Resume.
+
+Child-produced result artifacts can be attached to completed nodes. Downstream tasks receive bounded references and lineage rather than large child histories or manifests.
+
+## 11. Child Agents, Worktrees, and Handoff
+
+Only the main Agent can create and control child Agents. A child is a private Code-mode Thread bound to one Runtime-issued assignment. It receives the task, required context, dependency results, and completion checks, but not the parent's complete conversation.
+
+Children have a narrower capability set:
+
+- they can inspect, edit, and verify within their assigned execution root;
+- they cannot create nested Agents;
+- they cannot manage the parent DAG or long-term memory;
+- they cannot interactively expand command authority;
+- they must return a structured completed or blocked result tied to their assignment.
+
+The parent can create DAG-bound or standalone children, send follow-up guidance, wait for results, stop work, and collect the final report. Parent, Thread, Agent, task, and environment identities are durably bound so a recovered child cannot be silently reassigned.
+
+### Execution environments
+
+The logical workspace identifies project policy and memory. The physical execution root identifies where a child actually reads and writes.
+
+| Environment | Behavior |
 | --- | --- |
-| Reviewed plan | Agree with the user on direction before implementation. |
-| Task DAG | Enforce execution order, ownership, artifacts, and completion checks after work has entered Code. |
+| Shared | Child works in the parent workspace; mutations are serialized and version-checked. |
+| Managed Worktree | Child works in a separate Git checkout with its own source state and checkpoint chain. |
 
-The model decides whether a DAG is useful. Short or linear work should remain a normal single-agent loop. A DAG is intended for dependency branches, several independently verifiable phases, multiple artifacts, or explicit quality gates.
+Automatic isolation prefers a Worktree for a valid Git workspace and uses shared execution outside Git. An explicit Worktree request fails closed if the repository or storage root cannot be validated.
 
-Each task node describes a stable identity, title, objective, dependencies, inputs, expected artifacts, completion checks, failure handling, owner, status, and evidence.
+Worktree baselines can represent a fresh remote-oriented base, local `HEAD`, or a point-in-time snapshot of current local changes. A snapshot is not live synchronization: later parent edits do not appear automatically in an existing child.
 
-The Runtime enforces these graph invariants:
+On completion, the Runtime records an immutable result artifact describing the verified source result and its dependency lineage. The full artifact stays in private storage; the DAG and parent context receive bounded references.
 
-- Task identities are unique, dependencies exist, and the graph is acyclic.
-- A node cannot start until every dependency is completed.
-- The main agent may own only one in-progress node at a time.
-- Work capabilities cannot be used against an active graph unless an eligible node has been started or assigned.
-- Completion requires one concrete evidence item for every declared check.
-- A normal final response is rejected while the graph is still active.
-- Blocking is reserved for a genuine external condition rather than an informal pause.
-- Task text is untrusted data and cannot grant additional permissions.
+### Handoff
 
-Every accepted transition is durable, so task numbers, ownership, status, blockers, evidence, and result references can be reconstructed after Resume.
+Handoff is an explicit delivery step, not an automatic merge:
 
-Every completed Worktree child, whether standalone or DAG-bound, produces an immutable Runtime-internal result artifact containing its baseline, result checkpoint, and complete changed-file manifest. The DAG and parent-facing status retain only a bounded reference with identities, lineage, commits, and a changed-file count. A DAG-bound reference names the available direct-dependency artifacts in dependency order.
+- **Local Handoff** applies the accumulated result to the current checkout after conflict checks.
+- **Branch Handoff** materializes or updates a validated local branch without pushing it remotely.
 
-Worktree dependency artifacts seed a downstream Worktree through their result commits. If any direct dependency has a Runtime artifact, every direct dependency must have one; the complete artifact set also cannot mix shared and Worktree environment kinds. When none has an artifact, downstream state comes only from the selected repository baseline. Shared and main-agent results already live in the logical workspace; they enter a later Worktree only when its selected baseline captures them, such as `current-snapshot`. The `head` and `fresh` policies intentionally exclude such uncommitted shared results.
+Both paths preserve user changes, report conflicts, and are designed to be safely repeatable. Worktree isolation reduces concurrent Git-state conflicts but is not a security sandbox; command containment remains the responsibility of the OS sandbox.
 
-At a join, dependency commits are combined in a newly provisioned managed Worktree seeded from their common logical Handoff baseline. A merge conflict becomes explicit environment state and prevents node completion, leaving the task available for a deliberate retry; it is never silently resolved by model prose. This gives the DAG a bounded, auditable result chain without copying full patches or child logs into the parent's active context.
+## 12. Provider and multimodal boundary
 
-A DAG must be completed and have exactly one terminal leaf when its final result is handed off, and the selected child must own that terminal task. These guards prevent the parent from choosing one of several incomparable branch results—or an unrelated child artifact—as if it represented the completed graph. Multiple terminal branches must first converge through an explicit join task.
+The provider gateway exposes one internal representation for chat messages, structured actions, reasoning content, images, cancellation, retry, timeout, and usage metadata. Provider-specific request fields are added only for exact catalog entries with known support.
 
-## 8. Child sessions, Worktrees, and Handoff
+The model catalog is conservative:
 
-Child agents are isolated workers controlled by the main agent, not peers sharing one live conversation.
+- an unknown model is not assumed to support images or controllable thinking;
+- a thinking selection is stored even when the current model cannot apply it;
+- provider-specific reasoning controls are normalized from the four EASY CODE effort levels;
+- switching to a text-only model prevents historical images from being loaded into that request.
 
-```text
-Parent agent
-  ├─ sends a bounded assignment and required context
-  ├─ observes status or supplies scoped follow-up guidance
-  ├─ child works in a private Code-mode conversation
-  └─ collects a bounded result and completion evidence
-```
+Images are decoded and validated locally, copied into private Thread artifact storage, and represented in journals by metadata and a content hash rather than Base64. Bytes are loaded only at the provider boundary after integrity and model-compatibility checks.
 
-The execution environment has an explicit lifecycle rather than being treated as a temporary directory:
+Current-turn images are treated more strictly than historical context. A provider or model switch can safely omit incompatible historical images without mutating the durable conversation.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Provisioning
-    Provisioning --> Ready
-    Provisioning --> Conflicted
-    Provisioning --> Failed
-    Ready --> Running
-    Running --> Running: post-tool checkpoint
-    Running --> Ready: pause checkpoint
-    Running --> ResultReady: verified completion
-    Running --> Retained: non-accepted terminal result
-    ResultReady --> HandedOff: local or branch delivery
-    ResultReady --> Conflicted: Handoff preflight conflict
-    HandedOff --> Removed: safe cleanup
-```
+Provider-reported usage is recorded separately by provider, model, actor, purpose, and retry. Missing usage remains explicitly unreported rather than being fabricated from estimates.
 
-A child may claim one dependency-ready DAG task. When no unfinished DAG exists, it may instead receive a standalone assignment with explicit completion checks. It inherits the selected provider, model, and thinking effort, but not the parent's full chat history. Each assignment receives both a durable child-thread identity and a durable execution-environment identity; the pair cannot be silently rebound to another task or path.
+## 13. Reliability and observability
 
-Child capability is deliberately narrower:
+EASY CODE uses several complementary reliability techniques:
 
-- It cannot create another child.
-- It cannot manage or rewrite the task graph.
-- It cannot maintain long-term memory.
-- It cannot switch into Plan or change the parent workflow.
-- Its lifecycle and final report are bound to one assignment, and it must return structured evidence or a genuine blocker.
+- strict schema validation at model, configuration, persistence, and extension boundaries;
+- append-only evidence before state activation;
+- atomic database transactions for related projections and memory updates;
+- canonical paths and ownership markers for managed storage;
+- timeouts, cancellation, output bounds, and process-tree cleanup for commands;
+- content hashes for file observations, image integrity, Prompt Bundle resources, and result provenance;
+- bounded retries only for classified transient failures;
+- fail-closed handling for unknown sandbox, Worktree, approval, and recovery states;
+- durable command, file-change, task, child, and model-usage audit records.
 
-The parent can observe, wait, send scoped follow-up guidance, request cancellation, or explicitly hand off a completed result. All child results must be collected before the parent finishes, starts a new graph, or enters Plan.
+The terminal exposes useful state without making logs authoritative. `/changes`, `/commands`, `/permissions`, `/tasks`, `/agents`, `/context`, `/memory`, and `/usage` are read-only views over Runtime-owned state.
 
-Isolation is selected per child:
+Token efficiency comes from model-controlled compaction, bounded memory retrieval, small DAG/result references, private child contexts, direct Auto answers, and keeping raw child logs and image bytes out of the parent prompt.
 
-| Choice | Behavior |
-| --- | --- |
-| `auto` | Use a managed Git Worktree when the logical workspace belongs to a Git repository; otherwise fall back to shared mode. |
-| `worktree` | Require a separate linked checkout. Provisioning fails closed if Git or a valid repository is unavailable. |
-| `shared` | Intentionally use the logical workspace directly, which is useful for read-heavy work or non-Git projects but retains shared-write conflict risk. |
+## 14. Local data and lifecycle
 
-A managed Worktree is a detached checkout selected from one of three point-in-time base policies:
+| Data | Location class | Lifecycle |
+| --- | --- | --- |
+| Prompt Bundle | Fixed per-user `~/.easy_code` root | Installed, verified, and repaired with the package. |
+| Thread journals, SQLite, attachments, and child artifacts | Platform application-data directory | Durable across sessions and removed by the EASY CODE data uninstaller. |
+| User configuration | Platform configuration directory | Preserved by the data uninstaller. |
+| API keys | Operating-system credential store | Preserved unless explicitly removed with config commands. |
+| Embedding/model resources | Platform cache directory | Rebuildable and preserved by default. |
+| Project guidance and project configuration | Workspace | User-owned and never removed by EASY CODE uninstall. |
+| Managed Worktrees and Handoff branches | Git/application-managed locations | Preserved when they may contain undelivered code. |
 
-| Base policy | Snapshot semantics |
-| --- | --- |
-| `fresh` | Use the already configured `origin/HEAD`, falling back to local `HEAD`. Provisioning never fetches remote state. |
-| `head` | Use the current local `HEAD` and exclude uncommitted changes from the containing repository. |
-| `current-snapshot` | Start at local `HEAD`, then capture staged, unstaged, and non-ignored untracked state across the containing repository when the child is created. |
+Managed data roots carry an ownership identity. Cleanup only removes known EASY CODE data from a verified real directory and does not recursively follow links. An active database lock or ambiguous custom root causes cleanup to stop.
 
-The parent checkout is not live-synchronized after provisioning. In a monorepo,
-the baseline covers the containing repository while child file capabilities in
-Manual and Auto approval remain confined to the mapped logical workspace.
-Dangerous full access removes that boundary. The containing repository root may opt
-specific ignored runtime files into every newly provisioned Worktree through a
-`.worktreeinclude` file whose patterns are relative to that repository root;
-entries are bounded safe patterns and symbolic links are rejected. Those ignored
-files are checkout inputs rather than guaranteed checkpoint content, so they may
-need to be supplied again after reconstruction and must never contain credentials
-or private keys.
+The one-step uninstaller clears Prompt Bundle resources plus discoverable short- and long-term memory before removing the global npm package. It deliberately preserves credentials, configuration, caches, workspaces, and potentially unmerged Git results.
 
-Runtime-owned local commits and namespaced refs anchor the baseline, post-tool and lifecycle checkpoints, and final result in the repository's common object database. These refs are ordinary locally inspectable Git metadata, not a confidentiality boundary. Git hooks and signing are disabled for internal operations; provisioning does not fetch or push, and it does not advance a user branch. Worktree dependency artifacts are incorporated before a DAG child begins. Shared results have no isolated result commit and are represented only when the chosen repository baseline includes their workspace changes. Because snapshot objects may outlive a physical checkout, sensitive material must be excluded before child creation.
+## 15. Trade-offs and extension points
 
-The child journal durably records its own messages, tool activity, workspace observations, and checkpoints. The parent journal records the assignment, environment state, bounded progress, immutable result reference, and Handoff outcome. On Resume, the Runtime validates the entire binding batch before activation, restores a missing managed checkout from its saved checkpoint when possible, and continues the same child session. Durably recorded terminal work is not rerun; interrupted provider or command activity is not assumed complete.
+- **Local-first is not offline.** Project state is local, but provider inference requires network access unless a future local provider is added.
+- **Character budgets are deterministic but approximate Tokens.** Provider usage is more accurate when reported, while local estimates remain suitable for early pressure control.
+- **Hybrid memory improves relevance but adds local resources.** Lexical search remains available when embeddings are missing or rebuilding.
+- **Shared children support non-Git projects but need serialized mutation.** Worktrees provide better source isolation at the cost of Git and storage complexity.
+- **Worktrees isolate source state, not process authority.** They must remain paired with capability and OS-sandbox controls.
+- **Non-streaming provider requests simplify durable step boundaries.** The UI therefore emphasizes elapsed-time activity and mid-turn adjustment rather than token streaming.
+- **Cross-platform sandbox behavior differs.** The Runtime exposes one fail-closed contract while platform setup and enforcement remain platform-specific.
 
-Parent-visible status is deliberately bounded: it exposes the child/thread/task identities, isolation and lifecycle state, artifact lineage, and a changed-file count, but not the physical checkout path or complete file manifest. Managed Worktree storage must also remain outside the entire parent repository. Runtime-owned Git operations disable repository hooks so environment provisioning cannot silently execute checkout hooks.
-
-Worktree changes remain outside the user's checkout after result collection. Handoff is a separate, explicit transition:
-
-- **Local Handoff** derives the complete delta from the logical Handoff baseline to the terminal result, preflights it against the current checkout, then applies it without staging or committing. The baseline includes any parent dirty state captured by `current-snapshot`, so only child/DAG changes are delivered. Unrelated current edits remain; overlapping edits mark the artifact and environment conflicted instead of overwriting them. Repeating the same completed delivery is recognized as already applied.
-- **Branch Handoff** creates or validates a local branch at the immutable result commit without checking it out or pushing it. Repeating the same branch/result pair is idempotent; an existing branch at another commit is a conflict. The branch tree contains the selected baseline plus the child result.
-
-Handoff request, completion, and failure are durable transitions. Shared children already mutate the logical workspace, so they have no isolated result commit for Branch Handoff.
-
-Only manager-owned paths may be cleaned. Dirty, busy, retained, or unresolved Worktrees remain by default and continue counting toward a configurable managed-environment limit. A successfully handed-off clean checkout is eligible for automatic removal; removing it does not remove the durable result reference or its underlying Git objects. When the limit is reached, new Worktree provisioning fails closed until retained environments are safely delivered or otherwise handled.
-
-Concurrency is effort-aware: none/low permits up to two active children, medium up to four, and high up to eight. Worktrees reduce file-level collisions between children; shared-mode mutations remain serialized and version checked. A Worktree is not itself a security boundary. In Manual and Auto approval, every main or child command is separately wrapped in an SRT `workspace-write` sandbox rooted at that Agent's active physical workspace. In Dangerous full access, the main Agent and every child instead inherit the same direct host authority and can reach outside every Worktree. On Windows, protected command execution is serialized because SRT's alpha backend uses one machine-wide sandbox identity; this is independent of the higher model-work concurrency limit.
-
-## 9. Provider and multimodal design
-
-The provider gateway normalizes messages, structured actions, thinking content, image input, retry behavior, timeouts, and usage metadata for Qwen, DeepSeek, and GLM.
-
-Model capabilities come from an explicit catalog. Vision and configurable-thinking support are treated conservatively; unknown or unsupported combinations do not receive speculative provider parameters. Timeout budgets scale with thinking effort, while retries are limited to transient transport or service failures.
-
-Images follow an artifact boundary:
-
-1. Clipboard or workspace input is decoded and validated locally.
-2. Static format, dimensions, pixel count, byte size, and integrity are checked.
-3. The bytes are copied into a private thread-scoped store outside the selected workspace.
-4. Durable state keeps only metadata, hashes, and stable `[Image #N]` references.
-5. Image bytes are loaded only at the provider boundary for a compatible vision model.
-
-This keeps large binary payloads out of SQLite and thread journals while preserving ordering, integrity, and resume behavior.
-
-## 10. Reliability, observability, and Token efficiency
-
-EASY CODE exposes enough local evidence for the user and Runtime to distinguish progress from a stalled or fabricated result:
-
-- Model calls have visible activity, cancellation, bounded retries, and explicit timeouts.
-- Thinking is durably associated with its assistant response but shown as a short preview by default.
-- File changes produce line-numbered diffs.
-- Commands record policy, exit status, duration, bounded output, and detected workspace changes.
-- Plans, task nodes, and child assignments have explicit states rather than relying on prose.
-- Provider-reported usage is accumulated by provider/model, request purpose, and main/child actor.
-- Missing provider usage is reported as unknown rather than estimated as exact billing data. A request that fails before a complete provider response has no exact Token record, so cumulative totals may be lower than the provider's billing view.
-
-Token efficiency follows several complementary strategies:
-
-- Auto can answer a bounded tool-free request in its routing call, avoiding a second model request.
-- System instructions include only the capabilities exposed for that step.
-- Older context is replaced by a cumulative summary at controlled boundaries.
-- Long-term retrieval injects a small relevant set instead of the entire memory store.
-- Child search logs stay in private contexts; the parent receives only bounded results.
-- Images remain references until a compatible visual request actually needs their bytes.
-- Usage events and most audit metadata are not fed back into model context.
-
-## 11. Trade-offs and extension points
-
-Current trade-offs are explicit:
-
-- In Manual and Auto approval, policy and approval determine whether a command may start, and SRT supplies a separate OS boundary after approval. Neither layer replaces the other. Dangerous full access intentionally removes both layers.
-- Managed Worktrees isolate Git working state rather than supplying their own security boundary. SRT separately confines protected command process trees to the active physical workspace; Dangerous full access can reach outside every Worktree.
-- The pinned `@anthropic-ai/sandbox-runtime` is a Beta Research Preview and its Windows backend is alpha. Platform prerequisites and some user-profile toolchains can limit compatibility.
-- Protected-mode network isolation is domain based rather than request-content based. Approved Shell processes can transmit readable sandbox data; Dangerous full access uses the host network without an SRT domain boundary and can transmit any host data it can read.
-- Windows sandbox commands in Manual and Auto approval are serialized within one EASY CODE process to avoid overlapping ACL grants through SRT's shared machine identity.
-- Shared mode remains necessary for non-Git projects and explicit low-overhead delegation, so concurrent external edits can still invalidate child operations.
-- Isolated results require an explicit local or branch Handoff; this extra transition avoids silently overwriting the user's checkout.
-- Provider responses are currently handled as complete responses, so the loading indicator communicates liveness but final text is not streamed Token by Token.
-- Local semantic memory favors installability, privacy, and rebuildability over very large-scale retrieval.
-- Append-only history improves recovery and auditability but may eventually require journal segmentation and archival for very long-lived threads.
-- Structured completion evidence improves control and review but is not independent proof that a model's claim is true.
-- Redaction reduces common accidental leaks but is not a complete DLP system.
-
-The architecture leaves clear extension points for new providers, capability policies, child roles, richer DAG scheduling, streaming transports, container isolation, and remote/team state backends. New capabilities should preserve the same core rule: model output proposes a transition; trusted local code validates and commits it.
+The architecture can add more providers, retrieval backends, child roles, or execution environments as long as new components preserve the same authority, persistence, isolation, and recovery invariants.

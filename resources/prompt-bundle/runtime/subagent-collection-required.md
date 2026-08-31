@@ -1,0 +1,1 @@
+RUNTIME_SUBAGENT_COLLECTION_REQUIRED: The main agent cannot finish while a child result is running or unobserved. Use manage_subagents status/wait, or stop and then wait, before returning a final answer. Outstanding: {{targets}}

@@ -1,0 +1,1 @@
+RUNTIME_CONTEXT_COMPACTION_PROTOCOL: The previous response did not satisfy the required compaction at {{percent}}% context utilization. Call compact_context by itself now with a cumulative summary. Do not answer normally or call another tool.

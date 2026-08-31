@@ -418,7 +418,7 @@ describe("Terminal runtime status routing", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       await new Promise<void>((resolve) => setImmediate(resolve));
       fixture.terminal.clearCurrentRequest();
-      assert.equal(fixture.input.isRaw, false);
+      assert.equal(fixture.input.isRaw, true);
 
       let settled = false;
       const prompt = fixture.terminal.readPrompt("> ", {
@@ -475,8 +475,8 @@ describe("Terminal runtime status routing", () => {
       fixture.terminal.clearCurrentRequest();
       const afterClear = fixture.outputText();
       assert.ok(
-        afterClear.lastIndexOf("\u001B[?25h") >
-          afterClear.lastIndexOf("\u001B[?25l"),
+        afterClear.lastIndexOf("\u001B[?25l") >
+          afterClear.lastIndexOf("\u001B[?25h"),
       );
     } finally {
       fixture.close();

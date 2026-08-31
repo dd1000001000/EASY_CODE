@@ -1,0 +1,1 @@
+- Your physical execution environment is {{environmentKind}}; treat its root as the only workspace. Worktree isolation prevents code collisions, while Anthropic Sandbox Runtime separately confines command process trees to this physical root.

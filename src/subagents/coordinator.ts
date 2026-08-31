@@ -20,6 +20,7 @@ import {
   cloneTaskGraph,
   type SubagentTaskTransitionOperation,
 } from "../tasks/task-graph.js";
+import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { createId } from "../utils/ids.js";
 import { sanitizeSubagentText } from "./types.js";
 import type {
@@ -38,6 +39,10 @@ import type {
 
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 2;
 const MAX_FOLLOW_UPS_PER_SUBAGENT = 32;
+
+function agentPromptText(path: string): string {
+  return loadPromptBundleCatalog().readText(path).trimEnd();
+}
 
 /** Scale child concurrency from the user's selected parent thinking effort. */
 export function maxConcurrentSubagents(thinkingEffort: ThinkingEffort): number {
@@ -714,7 +719,7 @@ export class SubagentCoordinator implements SubagentControl {
           inputs: [],
           expectedArtifacts: [],
           completionChecks: [...assignment.completionChecks],
-          failureHandling: "Return a blocked result only for a concrete external condition.",
+          failureHandling: agentPromptText("agents/default-failure-handling.md"),
           owner: "subagent",
           assignedAgentId: assignment.agentId,
           status: "in_progress",
@@ -748,8 +753,7 @@ export class SubagentCoordinator implements SubagentControl {
       requestedIsolation: assignment.requestedIsolation ?? "shared",
       status,
       revision: terminal ? 2 : 1,
-      instructions:
-        "Resume the persisted child session and continue only the Runtime-bound assignment.",
+      instructions: agentPromptText("agents/child-restored-instruction.md"),
       followUpCount: 0,
       ...(input.report && status !== "stopped"
         ? { result: validateAndCloneReport(task, input.report) }
@@ -1146,7 +1150,7 @@ function standaloneTask(
     inputs: [],
     expectedArtifacts: [],
     completionChecks: definition.completionChecks.map(sanitizeSubagentText),
-    failureHandling: "Return a blocked result only for a concrete external condition.",
+    failureHandling: agentPromptText("agents/default-failure-handling.md"),
     owner: "subagent",
     assignedAgentId: agentId,
     status: "in_progress",

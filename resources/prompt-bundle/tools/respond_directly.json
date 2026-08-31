@@ -1,0 +1,9 @@
+{
+  "id": "respond_directly",
+  "contractVersion": "1.0.0",
+  "description": "Return the final answer to the user only when it can be answered completely and safely from the current request and bounded thread context, without inspecting the workspace, calling tools, changing state, or proposing an implementation. Do not use this for requests that require codebase facts, file or command access, implementation, side effects, or a reviewable plan; call select_mode for those requests instead.",
+  "propertyDescriptions": {
+    "content": "The complete final response to show to the user."
+  },
+  "guidance": "Use this Runtime-only controller action by itself only for a bounded, tool-free request that can be answered completely from the supplied context. Use select_mode whenever workspace inspection, implementation, side effects, or a reviewable plan is required."
+}
