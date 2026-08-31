@@ -74,6 +74,39 @@ easy-code sandbox setup
 easy-code sandbox doctor
 ```
 
+If a Windows command reports a stale `CodexSandboxOffline` owner or missing
+`WRITE_DAC`, preview the exact owner-only repair first, then apply the same
+confirmed target. Applying opens UAC, preserves every existing DACL and
+inheritance setting, and keeps an audit manifest under the local EASY CODE data
+directory.
+
+```powershell
+easy-code sandbox repair-workspace --target "C:\path\to\project"
+easy-code sandbox repair-workspace --target "C:\path\to\project" --apply --confirm "C:\path\to\project"
+```
+
+Before each Windows sandbox launch, EASY CODE now checks the exact ACL paths
+that SRT would mutate and fails immediately with the owner and repair target if
+the current token cannot change them. It also probes sensitive credential paths
+through the real restricted SRT account: an expensive deny stamp is skipped
+only when that account proves the complete existing path tree unreadable;
+unknown, changed, linked, or readable paths remain denied. Command scratch data
+is Runtime-reserved, excluded from workspace snapshots, and cleaned through a
+validated crash-recovery record; if an old command directory cannot be verified
+and removed, the next command fails closed instead of exposing it through the
+workspace grant. Restricted-account probe failures and bounded local scans stop
+before the 75-second worker initialization. External executable fallback grants
+cover the exact canonical file only, never its parent directory. A private
+interpreter distribution that requires unreadable sibling DLLs or libraries must
+use a separately declared runtime closure; EASY CODE will not silently widen the
+grant to make it work.
+
+Missing built-in credential directories are checked again for every command and
+are omitted only when the nearest existing profile ancestor is already denied
+to the restricted account. A sandboxed command cannot create those paths outside
+the workspace. A separate host process concurrently creating one with a custom,
+permissive ACL is outside this per-command isolation transaction.
+
 If Linux administrator credentials are not already available non-interactively, EASY CODE prints the exact package-manager command instead of collecting a password inside the terminal UI. Run it yourself, then choose recheck or run `easy-code sandbox doctor`.
 
 If your GitHub SSH key is configured, you can clone with:
@@ -567,6 +600,7 @@ Sandbox maintenance commands run before entering the interactive Agent:
 ```text
 easy-code sandbox doctor    Diagnose dependencies and run an enforcement probe
 easy-code sandbox setup     Run Windows UAC setup or install fixed missing Linux prerequisites
+easy-code sandbox repair-workspace --target <absolute-path>  Preview a Windows stale-owner repair
 ```
 
 ## Interactive commands

@@ -405,6 +405,33 @@ describe("workspace file tools", () => {
     });
   });
 
+  it("always hides Runtime sandbox scratch data from file tools and snapshots", async () => {
+    await withWorkspace(async (root, manager) => {
+      const scratch = path.join(root, ".easy-code-srt-runtime", "command-fixture");
+      await mkdir(scratch, { recursive: true });
+      await writeFile(path.join(scratch, "worker-payload.json"), "secret argv", "utf8");
+      await writeFile(path.join(root, "visible.txt"), "workspace content\n", "utf8");
+
+      const snapshot = await captureWorkspaceSnapshot(manager.pathGuard, {
+        ignoredDirectoryNames: new Set<string>(),
+      });
+      assert.deepEqual([...snapshot.files.keys()], ["visible.txt"]);
+
+      const result = await new ReadFileTool(manager).execute(
+        { path: ".easy-code-srt-runtime/command-fixture/worker-payload.json" },
+        context(root),
+      );
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /Sandbox scratch paths are reserved/iu);
+      const dotted = await new ReadFileTool(manager).execute(
+        { path: "./.easy-code-srt-runtime/command-fixture/worker-payload.json" },
+        context(root),
+      );
+      assert.equal(dotted.ok, false);
+      assert.match(dotted.error ?? "", /Sandbox scratch paths are reserved/iu);
+    });
+  });
+
   it("rejects a directory symlink or junction that escapes the workspace", async () => {
     const outside = await mkdtemp(path.join(os.tmpdir(), "easy-code-outside-"));
     try {

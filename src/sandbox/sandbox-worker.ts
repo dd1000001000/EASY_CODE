@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { encodeSandboxControl } from "./control.js";
 import { resolveTrustedSystemExecutable } from "./startup.js";
@@ -10,6 +9,25 @@ import type {
   SandboxWorkerControl,
   SandboxWorkerPayload,
 } from "./types.js";
+
+const workerStartedAt = Date.now();
+
+if (process.env.SRT_DEBUG) {
+  const originalConsoleError = console.error.bind(console);
+  console.error = (...values: unknown[]): void => {
+    originalConsoleError(
+      `[EASY CODE sandbox worker +${String(Date.now() - workerStartedAt)}ms]`,
+      ...values,
+    );
+  };
+}
+
+function debugWorker(stage: string): void {
+  if (!process.env.SRT_DEBUG) return;
+  process.stderr.write(
+    `[EASY CODE sandbox worker +${String(Date.now() - workerStartedAt)}ms] ${stage}\n`,
+  );
+}
 
 function backendName(): SandboxBackendName {
   return process.platform === "win32"
@@ -33,6 +51,18 @@ function writeControl(commandId: string, control: SandboxWorkerControl): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function assertScratchFile(scratchRoot: string, filename: string, label: string): void {
+  const relative = path.relative(path.resolve(scratchRoot), path.resolve(filename));
+  if (
+    !relative ||
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(`${label} must be a file inside the command scratch root`);
+  }
 }
 
 async function waitForChild(
@@ -61,11 +91,21 @@ async function main(): Promise<void> {
   const payloadPath = process.argv[2];
   if (!payloadPath) throw new Error("Missing EASY CODE sandbox worker payload");
   const payload = JSON.parse(await readFile(payloadPath, "utf8")) as SandboxWorkerPayload;
-  if (payload.version !== 1 || !payload.commandId || !payload.target?.executablePath) {
+  if (
+    payload.version !== 1 ||
+    !payload.commandId ||
+    !payload.target?.executablePath ||
+    !payload.bridgePath
+  ) {
     throw new Error("Invalid EASY CODE sandbox worker payload");
   }
+  writeControl(payload.commandId, { type: "stage", stage: "worker_started" });
+  debugWorker("worker_started");
+  assertScratchFile(payload.scratchRoot, payload.bridgePath, "Sandbox bridge");
 
   const srt = await import("@anthropic-ai/sandbox-runtime");
+  writeControl(payload.commandId, { type: "stage", stage: "runtime_loaded" });
+  debugWorker("runtime_loaded");
   const { SandboxManager } = srt;
   if (!SandboxManager.isSupportedPlatform()) {
     throw new Error(`Anthropic Sandbox Runtime does not support ${process.platform}`);
@@ -108,11 +148,9 @@ async function main(): Promise<void> {
     encoding: "utf8",
     mode: 0o600,
   });
-  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const bridgePath = path.join(moduleDirectory, "argv-bridge.js");
   const command = process.platform === "win32"
-    ? `& ${powershellQuote(process.execPath)} ${powershellQuote(bridgePath)} ${powershellQuote(targetPayloadPath)}`
-    : posixQuote([process.execPath, bridgePath, targetPayloadPath]);
+    ? `& ${powershellQuote(process.execPath)} ${powershellQuote(payload.bridgePath)} ${powershellQuote(targetPayloadPath)}`
+    : posixQuote([process.execPath, payload.bridgePath, targetPayloadPath]);
   const config = {
     network: {
       allowedDomains: payload.network.allowedDomains,
@@ -152,8 +190,13 @@ async function main(): Promise<void> {
 
   let initialized = false;
   try {
+    writeControl(payload.commandId, { type: "stage", stage: "initialize_start" });
+    debugWorker("initialize_start");
     await SandboxManager.initialize(config);
     initialized = true;
+    writeControl(payload.commandId, { type: "stage", stage: "initialize_complete" });
+    debugWorker("initialize_complete");
+    writeControl(payload.commandId, { type: "stage", stage: "wrap_start" });
     const wrapped = await SandboxManager.wrapWithSandboxArgv(
       command,
       process.platform === "win32" ? "powershell" : undefined,
@@ -162,13 +205,17 @@ async function main(): Promise<void> {
       payload.target.cwdAbsolute,
       { commandId: payload.commandId, commandText: payload.commandPreview },
     );
+    writeControl(payload.commandId, { type: "stage", stage: "wrap_complete" });
+    debugWorker("wrap_complete");
     writeControl(payload.commandId, { type: "ready", backend: backendName() });
     let exitCode: number;
     try {
+      debugWorker("target_spawn_start");
       exitCode = await waitForChild(wrapped.argv[0]!, wrapped.argv.slice(1), {
         cwd: payload.target.cwdAbsolute,
         env: wrapped.env,
       });
+      debugWorker(`target_exit_${String(exitCode)}`);
     } catch (error) {
       writeControl(payload.commandId, {
         type: "target_spawn_error",
@@ -184,7 +231,9 @@ async function main(): Promise<void> {
     process.exitCode = exitCode;
   } finally {
     if (initialized) SandboxManager.cleanupAfterCommand();
+    debugWorker("reset_start");
     await SandboxManager.reset();
+    debugWorker("reset_complete");
   }
 }
 

@@ -85,6 +85,30 @@ describe("ExecutionEnvironmentManager", () => {
     });
   });
 
+  it("rejects a repository that tracks the Runtime-reserved scratch path", async () => {
+    await withGitFixture(async ({ root, dataDir }) => {
+      const reservedRoot = path.join(root, ".easy-code-srt-runtime");
+      await mkdir(reservedRoot);
+      await writeFile(path.join(reservedRoot, "tracked.txt"), "user data\n", "utf8");
+      await git(root, ["add", "-f", "--", ".easy-code-srt-runtime/tracked.txt"]);
+      await git(root, ["commit", "--no-gpg-sign", "-m", "track reserved collision"]);
+      const manager = createManager(root, dataDir);
+
+      await assert.rejects(
+        manager.provision({
+          agentId: "subagent_reserved_collision",
+          environmentId: "environment_reserved_collision",
+          requestedIsolation: "worktree",
+        }),
+        /tracks the EASY CODE Runtime-reserved path/u,
+      );
+      assert.equal(
+        await readFile(path.join(reservedRoot, "tracked.txt"), "utf8"),
+        "user data\n",
+      );
+    });
+  });
+
   it("disables repository checkout hooks during Runtime-managed Git operations", async () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const hook = path.join(root, ".git", "hooks", "post-checkout");
@@ -114,6 +138,9 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       await writeFile(path.join(root, "tracked.txt"), "parent dirty tracked\n", "utf8");
       await writeFile(path.join(root, "untracked.txt"), "parent untracked\n", "utf8");
+      const scratch = path.join(root, ".easy-code-srt-runtime", "command-fixture");
+      await mkdir(scratch, { recursive: true });
+      await writeFile(path.join(scratch, "worker-payload.json"), "private argv", "utf8");
       const manager = createManager(root, dataDir);
 
       const active = await manager.provision({
@@ -132,9 +159,14 @@ describe("ExecutionEnvironmentManager", () => {
         await readFile(path.join(active.workspace.root, "untracked.txt"), "utf8"),
         "parent untracked\n",
       );
+      assert.equal(
+        await fileExists(path.join(active.workspace.root, ".easy-code-srt-runtime")),
+        false,
+      );
       assert.ok(active.descriptor.baseCommit);
       assert.ok(active.descriptor.baselineCommit);
       assert.notEqual(active.descriptor.baselineCommit, active.descriptor.baseCommit);
+      await rm(path.join(root, ".easy-code-srt-runtime"), { recursive: true, force: true });
       assert.equal(await git(root, ["status", "--porcelain"]), " M tracked.txt\n?? untracked.txt");
     });
   });
@@ -159,6 +191,13 @@ describe("ExecutionEnvironmentManager", () => {
         "new result\n",
         "utf8",
       );
+      const scratch = path.join(
+        active.workspace.root,
+        ".easy-code-srt-runtime",
+        "command-fixture",
+      );
+      await mkdir(scratch, { recursive: true });
+      await writeFile(path.join(scratch, "worker-payload.json"), "private argv", "utf8");
 
       const artifact = await manager.finalize(active, {
         agentId: "subagent_finalize",
@@ -182,6 +221,96 @@ describe("ExecutionEnvironmentManager", () => {
         "parent baseline change\n",
       );
       assert.equal(await fileExists(path.join(root, "child-only.txt")), false);
+    });
+  });
+
+  it("ignores Runtime scratch state when deciding whether a worktree is clean", async () => {
+    await withGitFixture(async ({ root, dataDir }) => {
+      const manager = createManager(root, dataDir);
+      const active = await manager.provision({
+        agentId: "subagent_cleanup_scratch",
+        environmentId: "environment_cleanup_scratch",
+        requestedIsolation: "worktree",
+      });
+      const scratch = path.join(
+        active.workspace.root,
+        ".easy-code-srt-runtime",
+        "command-fixture",
+      );
+      await mkdir(scratch, { recursive: true });
+      await writeFile(path.join(scratch, "target-payload.json"), "private argv", "utf8");
+
+      const cleaned = await manager.cleanup("environment_cleanup_scratch");
+      assert.equal(cleaned.status, "removed");
+      assert.equal(await fileExists(active.descriptor.worktreeRoot!), false);
+    });
+  });
+
+  it("keeps Runtime scratch out of a repository-subdirectory workspace lifecycle", async () => {
+    await withGitFixture(async ({ root, dataDir }) => {
+      const logicalWorkspace = path.join(root, "packages", "[app]");
+      await mkdir(logicalWorkspace, { recursive: true });
+      await writeFile(path.join(logicalWorkspace, "app.txt"), "committed app\n", "utf8");
+      await git(root, ["add", "--", "packages/[app]/app.txt"]);
+      await git(root, ["commit", "--no-gpg-sign", "-m", "add nested workspace"]);
+      await writeFile(path.join(logicalWorkspace, "parent-untracked.txt"), "parent\n", "utf8");
+      const parentScratch = path.join(
+        logicalWorkspace,
+        ".easy-code-srt-runtime",
+        "command-parent",
+      );
+      await mkdir(parentScratch, { recursive: true });
+      await writeFile(path.join(parentScratch, "worker-payload.json"), "private parent", "utf8");
+
+      const manager = new ExecutionEnvironmentManager({
+        logicalWorkspaceRoot: logicalWorkspace,
+        dataDir,
+        defaultIsolation: "worktree",
+        baseMode: "current-snapshot",
+        worktreeRoot: path.join(dataDir, "worktrees"),
+      });
+      const active = await manager.provision({
+        agentId: "subagent_nested_workspace",
+        environmentId: "environment_nested_workspace",
+        taskId: "task_nested_workspace",
+        requestedIsolation: "worktree",
+      });
+      assert.equal(
+        await readFile(path.join(active.workspace.root, "parent-untracked.txt"), "utf8"),
+        "parent\n",
+      );
+      assert.equal(
+        await fileExists(path.join(active.workspace.root, ".easy-code-srt-runtime")),
+        false,
+      );
+
+      await writeFile(path.join(active.workspace.root, "child.txt"), "child\n", "utf8");
+      const childScratch = path.join(
+        active.workspace.root,
+        ".easy-code-srt-runtime",
+        "command-child",
+      );
+      await mkdir(childScratch, { recursive: true });
+      await writeFile(path.join(childScratch, "target-payload.json"), "private child", "utf8");
+      const checkpoint = await manager.checkpoint(active);
+      assert.ok(checkpoint.resultCommit);
+      const checkpointTree = await git(root, [
+        "ls-tree",
+        "-r",
+        "--name-only",
+        checkpoint.resultCommit!,
+      ]);
+      assert.doesNotMatch(checkpointTree, /\.easy-code-srt-runtime/u);
+
+      const artifact = await manager.finalize(active, {
+        agentId: "subagent_nested_workspace",
+        taskId: "task_nested_workspace",
+        accepted: true,
+      });
+      assert.deepEqual(artifact.changedFiles, ["packages/[app]/child.txt"]);
+      const cleaned = await manager.cleanup("environment_nested_workspace");
+      assert.equal(cleaned.status, "removed");
+      assert.equal(await fileExists(active.descriptor.worktreeRoot!), false);
     });
   });
 

@@ -74,6 +74,31 @@ easy-code sandbox setup
 easy-code sandbox doctor
 ```
 
+如果 Windows 命令报告残留的 `CodexSandboxOffline` Owner 或缺少
+`WRITE_DAC`，先预览精确的 Owner-only 修复范围，再对同一路径确认应用。
+应用时会打开 UAC，但会保留原有 DACL 与继承设置，并在 EASY CODE 本地数据目录
+保留审计清单。
+
+```powershell
+easy-code sandbox repair-workspace --target "C:\path\to\project"
+easy-code sandbox repair-workspace --target "C:\path\to\project" --apply --confirm "C:\path\to\project"
+```
+
+每次启动 Windows 沙箱前，EASY CODE 都会先检查 SRT 实际要修改的 ACL
+路径；如果当前令牌不能修改，会立即给出准确的路径、Owner 和修复目标，而不是等待
+初始化超时。敏感凭据目录会由真实的 SRT 受限账号进行读取探测：只有完整的现有路径树
+被证明不可读时才跳过昂贵的 deny 加签；未知、已变化、包含链接或确实可读的路径仍然
+保持拒绝。命令临时数据属于 Runtime 保留区域，不会进入工作区快照，并通过经过校验的
+崩溃恢复记录清理；如果旧命令目录无法验证并删除，下一条命令会失败关闭，而不会让它
+通过工作区授权暴露给新命令。受限账号探测失败或有界的本地扫描失败时，会在进入 75 秒
+Worker 初始化前终止。外部可执行文件的兜底授权只覆盖规范化后的精确文件，绝不会隐式
+扩大到父目录；如果某个私有解释器依赖不可读的同目录 DLL 或库，需要以后显式声明其
+Runtime closure，EASY CODE 不会为了兼容而静默放宽整个目录。
+
+不存在的内置凭据目录会在每条命令前重新检查；只有受限账号已无法访问其最近的现有
+Profile 祖先时才省略加签。沙箱命令本身无法在工作区外创建这些路径；如果另一个宿主
+进程在同一时刻用自定义宽松 ACL 创建该路径，则不属于这次单命令隔离事务的覆盖范围。
+
 如果 Linux 当前没有可非交互使用的管理员凭据，EASY CODE 不会在终端 UI 中收集密码，而是输出准确的包管理器命令。用户手动执行后，可以选择重新检查或运行 `easy-code sandbox doctor`。
 
 如果已经配置 GitHub SSH Key，也可以使用：
@@ -556,6 +581,7 @@ EASY CODE 可以读取用户级规则，以及工作区路径中的项目规则�
 ```text
 easy-code sandbox doctor    检查依赖并运行真实的强制边界探测
 easy-code sandbox setup     执行 Windows UAC 初始化或安装固定的 Linux 缺失依赖
+easy-code sandbox repair-workspace --target <绝对路径>  预览 Windows 残留 Owner 修复
 ```
 
 ## 交互命令

@@ -46,7 +46,8 @@ export interface SandboxWorkerPayload {
   commandPreview: string;
   workspaceRoot: string;
   scratchRoot: string;
-  runtimeRoot: string;
+  /** Standalone ESM launcher staged inside this command's scratch root. */
+  bridgePath: string;
   target: {
     executablePath: string;
     args: string[];
@@ -67,5 +68,15 @@ export interface SandboxWorkerPayload {
 
 export type SandboxWorkerControl =
   | { type: "ready"; backend: SandboxBackendName }
+  | {
+      type: "stage";
+      stage:
+        | "worker_started"
+        | "runtime_loaded"
+        | "initialize_start"
+        | "initialize_complete"
+        | "wrap_start"
+        | "wrap_complete";
+    }
   | { type: "sandbox_error"; message: string }
   | { type: "target_spawn_error"; message: string };

@@ -36,6 +36,7 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
   ".easycode",
   "node_modules",
 ]);
+const RUNTIME_SCRATCH_DIRECTORY = ".easy-code-srt-runtime";
 
 async function hashFile(filename: string): Promise<string> {
   const hash = createHash("sha256");
@@ -74,6 +75,13 @@ export async function captureWorkspaceSnapshot(
       // Linked worktrees store `.git` as a regular control file, not a
       // directory. Never hash or expose either form as workspace content.
       if (entry.name.toLowerCase() === ".git") continue;
+      // Sandbox command payloads can briefly live here on Windows. This is a
+      // Runtime control directory, never project state, and remains excluded
+      // even when a caller supplies a custom ignoredDirectoryNames set.
+      if (
+        directory === guard.root &&
+        entry.name.toLowerCase() === RUNTIME_SCRATCH_DIRECTORY
+      ) continue;
       if (entry.isDirectory() && ignored.has(entry.name)) continue;
 
       const absolute = path.join(directory, entry.name);

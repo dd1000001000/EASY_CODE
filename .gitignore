@@ -6,6 +6,7 @@ coverage/
 .env
 .easycode/
 .easy-code-command-*/
+/.easy-code-srt-runtime/
 .node16-install-test/
 .npm-cache-test/
 *.db

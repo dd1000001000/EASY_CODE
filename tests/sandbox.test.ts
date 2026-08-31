@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
 import type { CommandAuditEntry, ToolContext } from "../src/core/types.js";
@@ -9,6 +12,8 @@ import {
   DefaultSandboxStartupService,
   encodeSandboxControl,
   extractSandboxControls,
+  formatWindowsAclPreflightFailure,
+  isWindowsSharedExecutablePath,
   runSandboxStartupGuide,
   UnrestrictedHostBackend,
   type CommandExecutionBackend,
@@ -24,6 +29,29 @@ import {
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { WindowsSandboxProcessLock } from "../src/sandbox/windows-process-lock.js";
 import { describe, it } from "./harness.js";
+
+const execFileAsync = promisify(execFile);
+
+const runtimeReadableWindowsProbe = {
+  pathAccess: async (paths: readonly string[]) => {
+    return new Map(paths.map((candidate) => {
+      const normalized = path.win32.resolve(candidate).toLowerCase();
+      return [
+        normalized,
+        path.win32.basename(normalized) === "node.exe" ? "readable" : "denied",
+      ] as const;
+    }));
+  },
+};
+
+function pathIsWithin(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return !relative || (
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
 
 async function withWorkspace(
   run: (root: string, manager: WorkspaceManager) => Promise<void>,
@@ -116,9 +144,16 @@ class NeverReadySandboxBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
+    const stage = encodeSandboxControl(request.commandId, {
+      type: "stage",
+      stage: "initialize_start",
+    });
     return {
       executablePath: process.execPath,
-      args: ["-e", "setInterval(() => {}, 1000)"],
+      args: [
+        "-e",
+        `process.stderr.write(${JSON.stringify(stage)}); setInterval(() => {}, 1000);`,
+      ],
       cwdAbsolute: request.command.cwdAbsolute,
       environment: { ...process.env },
       metadata: this.describe(),
@@ -388,6 +423,8 @@ describe("sandbox command execution boundary", () => {
     await withWorkspace(async (root, manager) => {
       const backend = new AnthropicSandboxBackend(manager, {
         sensitiveReadPaths: [path.join(root, "private-fixture")],
+        windowsAclPreflight: { check: async () => undefined },
+        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
       });
       const request = sandboxRequest(root);
       const prepared = await backend.prepare(request);
@@ -408,6 +445,14 @@ describe("sandbox command execution boundary", () => {
         assert.equal(payload.commandId, request.commandId);
         assert.equal(payload.commandPreview, request.commandPreview);
         assert.equal(payload.workspaceRoot, root);
+        assert.equal(pathIsWithin(payload.scratchRoot, payload.bridgePath), true);
+        assert.match(payload.bridgePath, /argv-bridge\.mjs$/u);
+        assert.match(await readFile(payload.bridgePath, "utf8"), /node:child_process/u);
+        assert.equal(
+          await access(path.join(path.dirname(payload.bridgePath), "node_modules"))
+            .then(() => true, () => false),
+          false,
+        );
         assert.equal(payload.target.executablePath, process.execPath);
         assert.deepEqual(payload.target.args, request.command.args);
         assert.equal(payload.target.cwdAbsolute, root);
@@ -422,9 +467,24 @@ describe("sandbox command execution boundary", () => {
         );
         assert.equal(
           payload.filesystem.denyRead.includes(path.dirname(payload.scratchRoot)),
-          true,
+          process.platform !== "win32",
         );
         assert.equal(payload.filesystem.denyRead.includes(payloadPath), true);
+        if (process.platform === "win32") {
+          assert.equal(payload.filesystem.denyRead.includes(path.resolve(os.homedir())), false);
+          assert.equal(
+            payload.filesystem.denyRead.includes(path.resolve(os.homedir(), ".ssh")),
+            false,
+          );
+        }
+        assert.equal(payload.filesystem.allowRead.includes(path.dirname(process.execPath)), false);
+        assert.equal(payload.filesystem.allowRead.includes(root), false);
+        const runtimeRoot = path.resolve(path.dirname(prepared.args[0]!), "..", "..");
+        assert.equal(payload.filesystem.allowRead.includes(runtimeRoot), false);
+        assert.equal(
+          payload.filesystem.denyWrite.every((filename) => pathIsWithin(root, filename)),
+          true,
+        );
         assert.equal(
           payload.filesystem.denyWrite.includes(
             `${path.join(root, ".easycode")}${path.sep}`,
@@ -446,6 +506,243 @@ describe("sandbox command execution boundary", () => {
         access(payloadPath),
         (error: NodeJS.ErrnoException) => error.code === "ENOENT",
       );
+    });
+  });
+
+  it("does not request redundant Windows grants for shared installed-program roots", () => {
+    const environment = {
+      SystemDrive: "C:",
+      SystemRoot: "C:\\Windows",
+      ProgramFiles: "C:\\Program Files",
+      "ProgramFiles(x86)": "C:\\Program Files (x86)",
+      ProgramW6432: "C:\\Program Files",
+      ProgramData: "C:\\ProgramData",
+    };
+    assert.equal(
+      isWindowsSharedExecutablePath("C:\\Program Files\\Git\\cmd\\git.exe", environment),
+      true,
+    );
+    assert.equal(
+      isWindowsSharedExecutablePath("C:\\Windows\\System32\\cmd.exe", environment),
+      true,
+    );
+    assert.equal(
+      isWindowsSharedExecutablePath("E:\\nvm\\v20.20.2\\node.exe", environment),
+      false,
+    );
+  });
+
+  it("omits an external sensitive deny only after the restricted account proves it unreadable", async () => {
+    if (process.platform !== "win32") return;
+    const outside = await mkdtemp(path.join(os.tmpdir(), "easy-code-sensitive-unreadable-"));
+    try {
+      await withWorkspace(async (root, manager) => {
+        const backend = new AnthropicSandboxBackend(manager, {
+          sensitiveReadPaths: [outside],
+          windowsAclPreflight: { check: async () => undefined },
+          windowsSandboxReadProbe: runtimeReadableWindowsProbe,
+        });
+        const prepared = await backend.prepare(sandboxRequest(root));
+        try {
+          const payload = JSON.parse(
+            await readFile(prepared.args[1]!, "utf8"),
+          ) as SandboxWorkerPayload;
+          assert.equal(
+            payload.filesystem.denyRead.includes(path.resolve(outside)),
+            false,
+          );
+        } finally {
+          await prepared.cleanup();
+        }
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when the restricted-account read proof is unavailable", async () => {
+    if (process.platform !== "win32") return;
+    const outside = await mkdtemp(path.join(os.tmpdir(), "easy-code-sensitive-unknown-"));
+    try {
+      await withWorkspace(async (root, manager) => {
+        const backend = new AnthropicSandboxBackend(manager, {
+          sensitiveReadPaths: [outside],
+          windowsAclPreflight: { check: async () => undefined },
+          windowsSandboxReadProbe: {
+            pathAccess: async () => {
+              throw new Error("probe unavailable");
+            },
+          },
+        });
+        const startedAt = Date.now();
+        await assert.rejects(
+          backend.prepare(sandboxRequest(root)),
+          /Windows SRT restricted-account preflight failed before sandbox initialization: probe unavailable/u,
+        );
+        assert.ok(Date.now() - startedAt < 5_000);
+      });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels Windows sensitive-path preparation and releases the process lease", async () => {
+    if (process.platform !== "win32") return;
+    await withWorkspace(async (root, manager) => {
+      const backend = new AnthropicSandboxBackend(manager, {
+        windowsAclPreflight: { check: async () => undefined },
+        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
+      });
+      const cancelled = sandboxRequest(root);
+      const controller = new AbortController();
+      controller.abort();
+      cancelled.context.signal = controller.signal;
+      await assert.rejects(
+        backend.prepare(cancelled),
+        (error: Error) => error.name === "AbortError",
+      );
+
+      const prepared = await backend.prepare(sandboxRequest(root));
+      await prepared.cleanup();
+    });
+  });
+
+  it("uses an exact-file grant when a private Windows executable is not readable", async () => {
+    if (process.platform !== "win32") return;
+    await withWorkspace(async (root, manager) => {
+      const backend = new AnthropicSandboxBackend(manager, {
+        windowsAclPreflight: { check: async () => undefined },
+        windowsSandboxReadProbe: {
+          pathAccess: async (paths) => new Map(paths.map((candidate) => [
+            path.win32.resolve(candidate).toLowerCase(),
+            "unknown" as const,
+          ])),
+        },
+      });
+      const prepared = await backend.prepare(sandboxRequest(root));
+      try {
+        const payload = JSON.parse(
+          await readFile(prepared.args[1]!, "utf8"),
+        ) as SandboxWorkerPayload;
+        const executable = await realpath(process.execPath);
+        assert.equal(payload.filesystem.allowRead.includes(executable), true);
+        assert.equal(
+          payload.filesystem.allowRead.includes(path.dirname(executable)),
+          false,
+        );
+      } finally {
+        await prepared.cleanup();
+      }
+    });
+  });
+
+  it("stages a standalone argv bridge that preserves structured arguments", async () => {
+    await withWorkspace(async (root, manager) => {
+      const backend = new AnthropicSandboxBackend(manager, {
+        windowsAclPreflight: { check: async () => undefined },
+        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
+      });
+      const prepared = await backend.prepare(sandboxRequest(root));
+      const workerPayloadPath = prepared.args[1]!;
+      try {
+        const workerPayload = JSON.parse(
+          await readFile(workerPayloadPath, "utf8"),
+        ) as SandboxWorkerPayload;
+        const fixturePath = path.join(workerPayload.scratchRoot, "capture-argv.cjs");
+        const outputPath = path.join(workerPayload.scratchRoot, "captured.json");
+        const targetPayloadPath = path.join(workerPayload.scratchRoot, "bridge-target.json");
+        await writeFile(
+          fixturePath,
+          "require('node:fs').writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n",
+          "utf8",
+        );
+        const expected = ["argument with spaces", "literal;&|value", "quote\"value", "tail\\"];
+        await writeFile(targetPayloadPath, JSON.stringify({
+          executablePath: process.execPath,
+          args: [fixturePath, outputPath, ...expected],
+          cwdAbsolute: root,
+          environment: {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+          },
+        }), "utf8");
+
+        await execFileAsync(process.execPath, [workerPayload.bridgePath, targetPayloadPath]);
+        assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), expected);
+
+        if (process.platform === "win32") {
+          const batchPath = path.join(workerPayload.scratchRoot, "capture-argv.cmd");
+          const batchOutputPath = path.join(workerPayload.scratchRoot, "captured-batch.json");
+          const batchPayloadPath = path.join(workerPayload.scratchRoot, "bridge-batch-target.json");
+          await writeFile(
+            batchPath,
+            `@echo off\r\n"${process.execPath}" "${fixturePath}" %*\r\n`,
+            "utf8",
+          );
+          await writeFile(batchPayloadPath, JSON.stringify({
+            executablePath: batchPath,
+            args: [batchOutputPath, ...expected],
+            cwdAbsolute: root,
+            environment: {
+              PATH: process.env.PATH,
+              SystemRoot: process.env.SystemRoot,
+            },
+          }), "utf8");
+          await execFileAsync(process.execPath, [workerPayload.bridgePath, batchPayloadPath]);
+          assert.deepEqual(JSON.parse(await readFile(batchOutputPath, "utf8")), expected);
+        }
+      } finally {
+        await prepared.cleanup();
+      }
+    });
+  });
+
+  it("fails fast with the owner and path when Windows cannot change a required DACL", async () => {
+    await withWorkspace(async (root, manager) => {
+      let observedProbes: readonly { path: string; reasons: readonly string[] }[] = [];
+      const backend = new AnthropicSandboxBackend(manager, {
+        platform: "win32",
+        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
+        windowsAclPreflight: {
+          check: async (probes) => {
+            observedProbes = probes;
+            const message = formatWindowsAclPreflightFailure(
+              {
+                identity: "DESKTOP\\developer",
+                entries: [{
+                  path: root,
+                  owner: "DESKTOP\\CodexSandboxOffline",
+                  canWriteDacl: false,
+                }],
+              },
+              probes,
+              root,
+            );
+            assert.ok(message);
+            throw new Error(message);
+          },
+        },
+      });
+      const startedAt = Date.now();
+      await assert.rejects(
+        () => backend.prepare(sandboxRequest(root)),
+        (error: Error) => {
+          assert.match(error.message, /WRITE_DAC \(Change permissions\)/u);
+          assert.match(error.message, /CodexSandboxOffline/u);
+          assert.match(error.message, /target command was not started/u);
+          assert.match(error.message, /before the 75-second SRT initialization timeout/u);
+          assert.match(error.message, /sandbox repair-workspace --target/u);
+          assert.match(error.message, /--apply --confirm/u);
+          assert.match(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+          return true;
+        },
+      );
+      assert.ok(Date.now() - startedAt < 1_000, "ACL preflight did not fail fast");
+      const workspaceProbe = observedProbes.find(
+        (probe) => path.resolve(probe.path).toLowerCase() === path.resolve(root).toLowerCase(),
+      );
+      assert.ok(workspaceProbe, "workspace ACL was not preflighted");
+      assert.equal(workspaceProbe.reasons.includes("allow-write grant"), true);
     });
   });
 
@@ -536,6 +833,7 @@ describe("sandbox command execution boundary", () => {
 
       assert.equal(output.status, "sandbox_unavailable");
       assert.match(output.stderr.text, /not confirmed started/iu);
+      assert.match(output.stderr.text, /last worker stage: initialize_start/iu);
       assert.equal(output.sandboxFailure?.phase, "initialization");
       assert.equal(output.sandboxFailure?.retryable, true);
     });

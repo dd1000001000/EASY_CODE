@@ -18,6 +18,7 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     if (!value || typeof value !== "object" || !("type" in value)) return undefined;
     const type = (value as { type?: unknown }).type;
     if (type === "ready") return value as SandboxWorkerControl;
+    if (type === "stage") return value as SandboxWorkerControl;
     if (type === "sandbox_error" || type === "target_spawn_error") {
       return value as SandboxWorkerControl;
     }
