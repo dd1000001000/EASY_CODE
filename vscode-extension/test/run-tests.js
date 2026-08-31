@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const net = require("node:net");
+const { once } = require("node:events");
 
 const {
   isEasyCodeCommand,
@@ -14,6 +16,16 @@ const {
   parseWindowsClipboardResult,
   resolveExecutable,
 } = require("../lib/clipboard");
+const {
+  chooseTerminalForClient,
+  createMenuNavigationServer,
+  encodeBridgeFrame,
+  isHelloFrame,
+  isMenuFrame,
+  NdjsonFrameDecoder,
+  tokenMatches,
+} = require("../lib/menu-navigation-bridge");
+const { createTerminalPasteQueue } = require("../lib/paste-command-queue");
 const {
   clipboardContainsText,
   createThinkingLinkProvider,
@@ -112,6 +124,241 @@ test("prefers native text paste when the clipboard contains text", () => {
   assert.equal(clipboardContainsText("   "), true);
   assert.equal(clipboardContainsText(""), false);
   assert.equal(clipboardContainsText(undefined), false);
+});
+
+test("serializes repeated paste commands for the same terminal", async () => {
+  const queue = createTerminalPasteQueue();
+  const terminal = {};
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = queue.enqueue(terminal, async () => {
+    events.push("first:start");
+    await firstGate;
+    events.push("first:end");
+  });
+  const second = queue.enqueue(terminal, async () => {
+    events.push("second:start");
+    events.push("second:end");
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, ["first:start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(events, [
+    "first:start",
+    "first:end",
+    "second:start",
+    "second:end",
+  ]);
+});
+
+test("does not serialize paste commands across different terminals", async () => {
+  const queue = createTerminalPasteQueue();
+  const firstTerminal = {};
+  const secondTerminal = {};
+  const events = [];
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+
+  const first = queue.enqueue(firstTerminal, async () => {
+    events.push("first:start");
+    await firstGate;
+    events.push("first:end");
+  });
+  const second = queue.enqueue(secondTerminal, async () => {
+    events.push("second");
+  });
+
+  await second;
+  assert.deepEqual(events, ["first:start", "second"]);
+  releaseFirst();
+  await first;
+});
+
+test("continues a terminal paste queue after an earlier command fails", async () => {
+  const queue = createTerminalPasteQueue();
+  const terminal = {};
+  const failure = queue.enqueue(terminal, async () => {
+    throw new Error("clipboard probe failed");
+  });
+  const recovery = queue.enqueue(terminal, async () => "recovered");
+
+  await assert.rejects(failure, /clipboard probe failed/);
+  assert.equal(await recovery, "recovered");
+});
+
+test("lets a queued paste keep its captured-terminal guard", async () => {
+  const queue = createTerminalPasteQueue();
+  const firstTerminal = {};
+  const secondTerminal = {};
+  let activeTerminal = firstTerminal;
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const pastedInto = [];
+
+  const first = queue.enqueue(firstTerminal, async () => {
+    await firstGate;
+  });
+  const queued = queue.enqueue(firstTerminal, async () => {
+    if (activeTerminal !== firstTerminal) return;
+    pastedInto.push(firstTerminal);
+  });
+  activeTerminal = secondTerminal;
+  releaseFirst();
+
+  await Promise.all([first, queued]);
+  assert.deepEqual(pastedInto, []);
+});
+
+test("decodes fragmented bounded menu bridge frames", () => {
+  const decoder = new NdjsonFrameDecoder(128);
+  assert.deepEqual(decoder.push('{"type":"menu",'), []);
+  assert.deepEqual(decoder.push('"active":true}\n'), [{
+    type: "menu",
+    active: true,
+  }]);
+  assert.throws(
+    () => new NdjsonFrameDecoder(8).push("123456789"),
+    /exceeded its limit/,
+  );
+  assert.throws(
+    () => new NdjsonFrameDecoder(128).push("not-json\n"),
+    /not valid JSON/,
+  );
+});
+
+test("validates authenticated bridge protocol messages", () => {
+  const hello = {
+    type: "hello",
+    token: "a".repeat(64),
+    pid: 120,
+    ppid: 42,
+    cwd: "F:\\project",
+  };
+  assert.equal(isHelloFrame(hello), true);
+  assert.equal(isHelloFrame({ ...hello, ppid: 0 }), false);
+  assert.equal(isHelloFrame({ ...hello, cwd: 42 }), false);
+  assert.equal(isMenuFrame({ type: "menu", active: true }), true);
+  assert.equal(isMenuFrame({ type: "menu", active: "true" }), false);
+  assert.equal(tokenMatches(hello.token, "a".repeat(64)), true);
+  assert.equal(tokenMatches(hello.token, "b".repeat(64)), false);
+  assert.equal(encodeBridgeFrame({ type: "navigate", direction: "up" }),
+    '{"type":"navigate","direction":"up"}\n');
+});
+
+test("maps bridge clients by parent pid before guarded fallbacks", async () => {
+  const first = { processId: Promise.resolve(11) };
+  const second = { processId: Promise.resolve(22) };
+  const tracked = new Set([first, second]);
+  assert.equal(
+    await chooseTerminalForClient(
+      { ppid: 22 },
+      [first, second],
+      (terminal) => tracked.has(terminal),
+      first,
+    ),
+    second,
+  );
+  assert.equal(
+    await chooseTerminalForClient(
+      { ppid: 99 },
+      [first, second],
+      (terminal) => tracked.has(terminal),
+      first,
+    ),
+    first,
+  );
+  assert.equal(
+    await chooseTerminalForClient(
+      { ppid: 99 },
+      [first, second],
+      (terminal) => terminal === second,
+      first,
+    ),
+    second,
+  );
+  assert.equal(
+    await chooseTerminalForClient(
+      { ppid: 99 },
+      [first, second],
+      () => false,
+      first,
+    ),
+    undefined,
+  );
+});
+
+test("uses an authenticated loopback socket for out-of-band navigation", async () => {
+  let resolveMenu;
+  const menuSeen = new Promise((resolve) => {
+    resolveMenu = resolve;
+  });
+  let observedClient;
+  const bridge = createMenuNavigationServer({
+    token: "c".repeat(64),
+    onMenuState(client, active) {
+      observedClient = client;
+      resolveMenu(active);
+    },
+  });
+  const endpoint = await bridge.listen();
+  const [host, portText] = endpoint.split(":");
+  const socket = net.createConnection({ host, port: Number(portText) });
+  await once(socket, "connect");
+  socket.write(encodeBridgeFrame({
+    type: "hello",
+    token: bridge.token,
+    pid: process.pid,
+    ppid: process.ppid,
+    cwd: process.cwd(),
+  }));
+  socket.write(encodeBridgeFrame({ type: "menu", active: true }));
+  assert.equal(await menuSeen, true);
+  const response = once(socket, "data");
+  assert.equal(
+    bridge.send(observedClient, { type: "navigate", direction: "down" }),
+    true,
+  );
+  assert.equal(
+    (await response)[0].toString("utf8"),
+    encodeBridgeFrame({ type: "navigate", direction: "down" }),
+  );
+  socket.destroy();
+  bridge.dispose();
+});
+
+test("rejects unauthenticated menu bridge clients", async () => {
+  let menuUpdates = 0;
+  const bridge = createMenuNavigationServer({
+    token: "d".repeat(64),
+    onMenuState() {
+      menuUpdates += 1;
+    },
+  });
+  const endpoint = await bridge.listen();
+  const [host, portText] = endpoint.split(":");
+  const socket = net.createConnection({ host, port: Number(portText) });
+  await once(socket, "connect");
+  const closed = once(socket, "close");
+  socket.write(encodeBridgeFrame({
+    type: "hello",
+    token: "wrong-token",
+    pid: process.pid,
+    ppid: process.ppid,
+    cwd: process.cwd(),
+  }));
+  await closed;
+  assert.equal(menuUpdates, 0);
+  bridge.dispose();
 });
 
 test("uses fixed platform helpers without a shell", async () => {

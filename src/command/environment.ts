@@ -1,5 +1,10 @@
 import path from "node:path";
 
+const PRIVATE_HOST_ENVIRONMENT_KEYS = new Set([
+  "EASY_CODE_VSCODE_BRIDGE_ENDPOINT",
+  "EASY_CODE_VSCODE_BRIDGE_TOKEN",
+]);
+
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH",
   "PATHEXT",
@@ -51,7 +56,12 @@ export function buildUnrestrictedCommandEnvironment(
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined) environment[key] = value;
+    if (
+      value !== undefined &&
+      !PRIVATE_HOST_ENVIRONMENT_KEYS.has(key.toUpperCase())
+    ) {
+      environment[key] = value;
+    }
   }
   environment.NO_COLOR = "1";
   environment.FORCE_COLOR = "0";

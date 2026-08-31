@@ -36,7 +36,7 @@ EASY CODE 直接运行在当前终端中，不会另外打开桌面窗口。
 - Windows、macOS 或 Linux。
 - 至少一个受支持 Provider 的 API Key。
 - 共享子 Agent 不强制依赖 Git；显式 Worktree 隔离和 Branch Handoff 需要 Git。
-- 可选：VS Code `>=1.93`，用于在集成终端中原生粘贴图片。
+- 可选：VS Code `>=1.93`，用于在集成终端中原生粘贴图片、点击 Thinking，以及保持滚动位置的菜单导航。
 
 推荐使用仍在维护期内的 Node.js LTS 版本。
 
@@ -221,7 +221,7 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 
 工具活动完成后只会进入普通 scrollback 一次；已被后续状态替代的 Step/status 行会直接移除，不会累计。重绘只清除终端底部的动态行，不会重新绘制或擦除更早的对话、命令输出和 Diff。布局按终端显示单元格计算，因此窄窗口、中文等全角字符以及 Emoji 都能保持对齐。
 
-`/model`、命令审批、Plan 审核和 `/resume` 使用盒式覆盖选择器，不再向 scrollback 追加临时菜单文本。选择器打开时会替代普通动态状态和输入框，但已开启的 Dangerous full access（危险完全访问）警告会继续显示。使用 `↑`/`↓` 移动，按 Enter 确认，按 Esc 取消；取消命令审批始终等同于拒绝。
+`/model`、命令审批、Plan 审核和 `/resume` 使用盒式覆盖选择器，不再向 scrollback 追加临时菜单文本。选择器打开时会替代普通动态状态和输入框，但已开启的 Dangerous full access（危险完全访问）警告会继续显示。使用 `↑`/`↓` 移动，按 Enter 确认，按 Esc 取消；取消命令审批始终等同于拒绝。在 VS Code 集成终端中，随项目提供的扩展只会把当前菜单的 `↑`/`↓` 导航通过经过认证的本地桥接发送给 EASY CODE，因此切换选项不会把已经滚动到历史位置的视口强制拉回审批卡。安装或更新扩展后需重新加载 VS Code 窗口并新建终端，桥接才会生效。
 
 安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上按住 `Ctrl` 点击已完成标记中灰色的 `Thinking #N`，或在 macOS 上按住 `Cmd` 点击，即可在可重绘动态状态区内打开对应灰色面板。用相同手势再次激活该标记，或激活面板底部 `↕` 控制行中的 `Thinking #N`，即可关闭；激活其他标记会切换到对应内容。模型请求进行期间该控件也会保持响应。Thinking 面板不支持也不占用 Esc；Esc 仍留给 overlay 和普通终端输入。
 

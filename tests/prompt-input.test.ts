@@ -870,6 +870,230 @@ describe("image-aware CLI prompt", () => {
     assert.deepEqual(result?.pasteErrors, []);
   });
 
+  it("keeps a second image paste and ordinary typing live while captures settle serially", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let startFirst: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      startFirst = resolve;
+    });
+    let startSecond: (() => void) | undefined;
+    const secondStarted = new Promise<void>((resolve) => {
+      startSecond = resolve;
+    });
+    let finishFirst: ((image: ImageAttachment) => void) | undefined;
+    const firstFinished = new Promise<ImageAttachment>((resolve) => {
+      finishFirst = resolve;
+    });
+    let finishSecond: ((image: ImageAttachment) => void) | undefined;
+    const secondFinished = new Promise<ImageAttachment>((resolve) => {
+      finishSecond = resolve;
+    });
+    let captureCount = 0;
+    let settled = false;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        captureCount += 1;
+        if (captureCount === 1) {
+          startFirst?.();
+          return firstFinished;
+        }
+        startSecond?.();
+        return secondFinished;
+      },
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    await firstStarted;
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    input.write("typed while pending");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(captureCount, 1, "native clipboard reads must remain serialized");
+    assert.match(transcript, /Pasting clipboard #2/u);
+    assert.match(transcript, /typed while pending/u);
+
+    input.write("\r");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "Enter must wait for every pending capture");
+
+    finishFirst?.(attachment(1));
+    await secondStarted;
+    finishSecond?.(attachment(2));
+    const result = await prompt;
+
+    assert.match(result?.text ?? "", /\[Image #1\].*\[Image #2\].*typed while pending/u);
+    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1", "Image #2"]);
+  });
+
+  it("accepts a multiline paste and typing while an earlier image capture is pending", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+    let markCaptureStarted: (() => void) | undefined;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    let finishCapture: ((image: ImageAttachment) => void) | undefined;
+    const captureFinished = new Promise<ImageAttachment>((resolve) => {
+      finishCapture = resolve;
+    });
+    let settled = false;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        markCaptureStarted?.();
+        return captureFinished;
+      },
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    await captureStarted;
+    input.write("\u001B[200~first line\nsecond line\u001B[201~");
+    input.write("tail");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.match(transcript, /Pasted text #1 · 2 lines/u);
+    assert.match(transcript, /tail/u);
+    input.write("\r");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+
+    finishCapture?.(attachment(1));
+    const result = await prompt;
+    assert.match(result?.text ?? "", /\[Image #1\].*first line\nsecond linetail/u);
+    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+  });
+
+  it("accepts another paste after a pending clipboard capture times out", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    let captureCount = 0;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => {
+        captureCount += 1;
+        if (captureCount === 1) {
+          return new Promise<ImageAttachment>(() => undefined);
+        }
+        return attachment(index);
+      },
+      clipboardCaptureTimeoutMs: 20,
+    });
+
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    await new Promise<void>((resolve) => setTimeout(resolve, 35));
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    input.write("after timeout\r");
+
+    const result = await prompt;
+    assert.equal(captureCount, 2);
+    assert.match(result?.text ?? "", /\[Image paste failed\].*\[Image #1\].*after timeout/u);
+    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(result?.pasteErrors, [
+      "Clipboard image capture timed out after 20ms.",
+    ]);
+  });
+
+  it("does not reattach a pending image marker deleted before capture finishes", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    let markCaptureStarted: (() => void) | undefined;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    let finishCapture: ((image: ImageAttachment) => void) | undefined;
+    const captureFinished = new Promise<ImageAttachment>((resolve) => {
+      finishCapture = resolve;
+    });
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        markCaptureStarted?.();
+        return captureFinished;
+      },
+    });
+
+    input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+    await captureStarted;
+    input.write(Buffer.from([0x7f]));
+    input.write("plain text\r");
+    finishCapture?.(attachment(1));
+
+    const result = await prompt;
+    assert.equal(result?.text, "plain text");
+    assert.deepEqual(result?.images, []);
+  });
+
+  it("keeps a partially edited pending image marker as ordinary text", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      let markCaptureStarted: (() => void) | undefined;
+      const captureStarted = new Promise<void>((resolve) => {
+        markCaptureStarted = resolve;
+      });
+      let finishCapture: ((image: ImageAttachment) => void) | undefined;
+      const captureFinished = new Promise<ImageAttachment>((resolve) => {
+        finishCapture = resolve;
+      });
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async () => {
+          markCaptureStarted?.();
+          return captureFinished;
+        },
+      });
+
+      input.write(VSCODE_IMAGE_PASTE_SEQUENCE);
+      await captureStarted;
+      input.write(Buffer.from([0x01, 0x06, 0x06, 0x06, 0x06, 0x06]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.from([0x7f]));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      input.write(Buffer.from([0x05, 0x0d]));
+      finishCapture?.(attachment(1));
+
+      const result = await prompt;
+      assert.match(result?.text ?? "", /Pating clipboard #1/u);
+      assert.equal(result?.text.includes("[Image #1]"), false);
+      assert.deepEqual(result?.images, []);
+    });
+  });
+
   it("accepts more typing while asynchronous clipboard text fallback is still being captured", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
@@ -907,6 +1131,176 @@ describe("image-aware CLI prompt", () => {
     assert.deepEqual(result?.pasteErrors, []);
   });
 
+  it("keeps the Request editor live while a second image paste is still loading", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+
+      let markSecondStarted!: () => void;
+      const secondStarted = new Promise<void>((resolve) => {
+        markSecondStarted = resolve;
+      });
+      let finishSecond!: (image: ImageAttachment) => void;
+      const secondFinished = new Promise<ImageAttachment>((resolve) => {
+        finishSecond = resolve;
+      });
+      let settled = false;
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async (index) => {
+          if (index === 1) return attachment(index);
+          markSecondStarted();
+          return secondFinished;
+        },
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      input.write(Buffer.from([0x16]));
+      input.write(Buffer.from([0x16]));
+      await secondStarted;
+      const liveOffset = transcript.length;
+      input.write("tail");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      assert.match(transcript.slice(liveOffset), /tail/u);
+      input.write("\r");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+
+      finishSecond(attachment(2));
+      const result = await prompt;
+      assert.equal(result?.text, " [Image #1]  [Image #2] tail");
+      assert.deepEqual(result?.images.map((image) => image.label), [
+        "Image #1",
+        "Image #2",
+      ]);
+      assert.deepEqual(result?.pasteErrors, []);
+    });
+  });
+
+  it("accepts multiline text and typing while an earlier image paste is pending", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+
+      let markCaptureStarted!: () => void;
+      const captureStarted = new Promise<void>((resolve) => {
+        markCaptureStarted = resolve;
+      });
+      let finishCapture!: (image: ImageAttachment) => void;
+      const captureFinished = new Promise<ImageAttachment>((resolve) => {
+        finishCapture = resolve;
+      });
+      let settled = false;
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async () => {
+          markCaptureStarted();
+          return captureFinished;
+        },
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      input.write(Buffer.from([0x16]));
+      await captureStarted;
+      const liveOffset = transcript.length;
+      input.write("\u001B[200~A\nB\u001B[201~tail");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      assert.match(transcript.slice(liveOffset), /Pasted text #1/u);
+      assert.match(transcript.slice(liveOffset), /tail/u);
+      input.write("\r");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+
+      finishCapture(attachment(1));
+      const result = await prompt;
+      assert.equal(result?.text, " [Image #1] A\nBtail");
+      assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+      assert.deepEqual(result?.pasteErrors, []);
+    });
+  });
+
+  it("keeps a second clipboard text fallback responsive and ordered", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+
+      let textCaptureCount = 0;
+      let markSecondStarted!: () => void;
+      const secondStarted = new Promise<void>((resolve) => {
+        markSecondStarted = resolve;
+      });
+      let finishSecond!: (value: string) => void;
+      const secondFinished = new Promise<string>((resolve) => {
+        finishSecond = resolve;
+      });
+      let settled = false;
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        captureImage: async () => {
+          throw new Error("clipboard does not contain an image");
+        },
+        captureText: async () => {
+          textCaptureCount += 1;
+          if (textCaptureCount === 1) return "A\nB";
+          markSecondStarted();
+          return secondFinished;
+        },
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+
+      input.write(Buffer.from([0x16]));
+      input.write(Buffer.from([0x16]));
+      await secondStarted;
+      const liveOffset = transcript.length;
+      input.write("tail\r");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      assert.match(transcript.slice(liveOffset), /tail/u);
+      assert.equal(settled, false);
+      finishSecond("C\nD");
+
+      const result = await prompt;
+      assert.equal(result?.text, "A\nBC\nDtail");
+      assert.deepEqual(result?.images, []);
+      assert.deepEqual(result?.pasteErrors, []);
+    });
+  });
+
   it("releases queued input when clipboard capture never settles", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
@@ -926,6 +1320,48 @@ describe("image-aware CLI prompt", () => {
     const result = await prompt;
     assert.match(result?.text ?? "", /^before: \[Image paste failed\] :after$/u);
     assert.deepEqual(result?.images, []);
+    assert.deepEqual(result?.pasteErrors, [
+      "Clipboard image capture timed out after 20ms.",
+    ]);
+  });
+
+  it("allows another paste after a prior clipboard capture times out", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    let captureCount = 0;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => {
+        captureCount += 1;
+        if (captureCount === 2) {
+          return new Promise<ImageAttachment>(() => undefined);
+        }
+        return attachment(index);
+      },
+      clipboardCaptureTimeoutMs: 20,
+    });
+
+    input.write(Buffer.from([0x16]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    input.write(Buffer.from([0x16]));
+    await new Promise<void>((resolve) => setTimeout(resolve, 35));
+    input.write(Buffer.from([0x16]));
+    input.write("tail\r");
+
+    const result = await prompt;
+    assert.equal(captureCount, 3);
+    assert.match(
+      result?.text ?? "",
+      /\[Image #1\].*\[Image paste failed\].*\[Image #2\].*tail/u,
+    );
+    assert.deepEqual(result?.images.map((image) => image.label), [
+      "Image #1",
+      "Image #2",
+    ]);
     assert.deepEqual(result?.pasteErrors, [
       "Clipboard image capture timed out after 20ms.",
     ]);

@@ -351,7 +351,7 @@ describe("VS Code extension installer", () => {
 
   it("verifies that the bundled VSIX matches its generated manifest and sources", () => {
     const result = vsixVerifier.verifyBundledVsix({ packageRoot: process.cwd() });
-    assert.equal(result.extensionVersion, "0.1.6");
+    assert.equal(result.extensionVersion, "0.1.8");
     assert.equal(result.sourcesVerified, true);
   });
 
@@ -371,6 +371,8 @@ describe("VS Code extension installer", () => {
         "easy-code-vscode.vsix",
         "lib/clipboard.js",
         "lib/command-detection.js",
+        "lib/menu-navigation-bridge.js",
+        "lib/paste-command-queue.js",
       ]) {
         copyFileSync(
           path.join(source, ...relative.split("/")),

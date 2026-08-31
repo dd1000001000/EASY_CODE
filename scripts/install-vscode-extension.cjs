@@ -278,7 +278,7 @@ module.exports = {
 if (require.main === module) {
   const result = installBundledVsCodeExtension();
   if (result.installed.length) {
-    process.stdout.write(`EASY CODE: installed the VS Code image-paste extension into ${result.installed.length} installation(s).\n`);
+    process.stdout.write(`EASY CODE: installed the VS Code terminal-integration extension into ${result.installed.length} installation(s).\n`);
   } else if (result.reason === "missing-vscode") {
     process.stdout.write("EASY CODE: VS Code CLI was not found; the bundled extension was not installed.\n");
   } else if (result.reason === "missing-vsix") {

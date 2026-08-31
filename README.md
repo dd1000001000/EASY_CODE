@@ -36,7 +36,7 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 - Windows, macOS, or Linux.
 - An API key for at least one supported provider.
 - Git is optional for shared child agents, but required for explicit Worktree isolation and branch Handoff.
-- Optional: VS Code `>=1.93` for native image paste in the integrated terminal.
+- Optional: VS Code `>=1.93` for native image paste, clickable Thinking, and scroll-safe menu navigation in the integrated terminal.
 
 A maintained Node.js LTS release is recommended.
 
@@ -229,7 +229,7 @@ In an interactive terminal, EASY CODE keeps one inline interface in four regions
 
 Completed tool activity moves out of the live status and into ordinary scrollback exactly once. Superseded Step/status rows are discarded rather than accumulated. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
 
-`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer, but an active Dangerous full access warning remains visible. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection.
+`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer, but an active Dangerous full access warning remains visible. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection. In the VS Code integrated terminal, the bundled extension routes only active-menu `↑`/`↓` navigation over an authenticated local bridge, so changing the selected action does not pull a scrolled viewport back to the approval card. Reload VS Code and create a new terminal after installing or updating the extension so that bridge is available.
 
 With the bundled VS Code extension installed, hold `Ctrl` and click the gray `Thinking #N` text on Windows/Linux, or hold `Cmd` and click it on macOS, to open that block in a gray panel inside the redrawable live region. Repeat the same gesture on that marker—or on the `Thinking #N` text in the panel's bottom `↕` control line—to close it. Activating a different marker switches the panel to that block. The control remains responsive while a model request is running. Thinking panels do not support or consume Esc; Esc remains available to overlays and normal terminal input.
 

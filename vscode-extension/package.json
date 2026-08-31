@@ -1,8 +1,8 @@
 {
   "name": "easy-code-image-paste",
   "displayName": "EASY CODE Terminal Integration",
-  "description": "Paste clipboard images and toggle Thinking details from EASY CODE in the VS Code integrated terminal.",
-  "version": "0.1.6",
+  "description": "Integrate EASY CODE image paste, Thinking details, and scroll-safe menu navigation with the VS Code terminal.",
+  "version": "0.1.8",
   "publisher": "dd1000001000",
   "license": "MIT",
   "repository": {
@@ -30,7 +30,9 @@
     "onStartupFinished",
     "onCommand:easyCode.pasteImage",
     "onCommand:easyCode.enableTerminalImagePaste",
-    "onCommand:easyCode.disableTerminalImagePaste"
+    "onCommand:easyCode.disableTerminalImagePaste",
+    "onCommand:easyCode.navigateMenuUp",
+    "onCommand:easyCode.navigateMenuDown"
   ],
   "contributes": {
     "commands": [
@@ -48,6 +50,18 @@
         "command": "easyCode.disableTerminalImagePaste",
         "title": "Disable Image Paste for Current Terminal",
         "category": "EASY CODE"
+      },
+      {
+        "command": "easyCode.navigateMenuUp",
+        "title": "Move EASY CODE Menu Selection Up",
+        "category": "EASY CODE",
+        "enablement": "easyCode.menuNavigationEnabled"
+      },
+      {
+        "command": "easyCode.navigateMenuDown",
+        "title": "Move EASY CODE Menu Selection Down",
+        "category": "EASY CODE",
+        "enablement": "easyCode.menuNavigationEnabled"
       }
     ],
     "keybindings": [
@@ -65,6 +79,16 @@
         "command": "easyCode.pasteImage",
         "key": "cmd+v",
         "when": "terminalFocus && easyCode.imagePasteEnabled && isMac"
+      },
+      {
+        "command": "easyCode.navigateMenuUp",
+        "key": "up",
+        "when": "terminalFocus && easyCode.menuNavigationEnabled"
+      },
+      {
+        "command": "easyCode.navigateMenuDown",
+        "key": "down",
+        "when": "terminalFocus && easyCode.menuNavigationEnabled"
       }
     ]
   },

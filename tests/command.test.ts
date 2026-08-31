@@ -6,6 +6,7 @@ import type { ApprovalRequest, CommandAuditEntry, ToolContext } from "../src/cor
 import {
   analyzeNpmInstall,
   buildCommandEnvironment,
+  buildUnrestrictedCommandEnvironment,
   CommandPolicy,
   CommandResolver,
   CommandRuntime,
@@ -519,6 +520,18 @@ describe("command runtime", () => {
     assert.equal(environment.NODE_OPTIONS, undefined);
     assert.equal(environment.SAFE_CUSTOM, undefined);
     assert.equal(environment.CI, "1");
+  });
+
+  it("does not expose the private VS Code navigation channel in dangerous mode", () => {
+    const environment = buildUnrestrictedCommandEnvironment({
+      PATH: process.env.PATH,
+      EASY_CODE_VSCODE_BRIDGE_ENDPOINT: "127.0.0.1:43123",
+      EASY_CODE_VSCODE_BRIDGE_TOKEN: "a".repeat(64),
+      CUSTOM_TOOLCHAIN_SETTING: "preserved",
+    });
+    assert.equal(environment.EASY_CODE_VSCODE_BRIDGE_ENDPOINT, undefined);
+    assert.equal(environment.EASY_CODE_VSCODE_BRIDGE_TOKEN, undefined);
+    assert.equal(environment.CUSTOM_TOOLCHAIN_SETTING, "preserved");
   });
 
   it("strictly validates local npm installs and adds safe defaults", () => {
