@@ -191,25 +191,34 @@ export class ScreenWriter {
     const lines = wrappedLines.slice(0, rowLimit);
     this.reservedLiveRows = Math.min(this.reservedLiveRows, rowLimit);
     this.reserveLiveRows(lines.length);
+    // Keep a shorter replacement attached to the bottom of the rows that are
+    // already reserved for this live-region anchor. Modal overlays commonly
+    // replace a taller activity/task block. Painting them back at row zero
+    // leaves the stale reservation below the modal, so xterm exposes a large
+    // blank area and appears to pull the approval box to the top. Cursor-down
+    // stays inside the existing reservation and, unlike CR/LF, cannot advance
+    // terminal scrollback.
+    const topOffset = Math.max(0, this.reservedLiveRows - lines.length);
+    if (topOffset > 0) this.write(cursorDown(topOffset));
     // Keep the cursor inside the final live row. A trailing LF would scroll the
     // terminal once the viewport is full, permanently leaking the former top
     // row into scrollback on every spinner refresh.
     this.write(lines.join("\r\n"));
     this.renderedLiveRows = lines.length;
-    this.renderedCursorRow = Math.max(0, lines.length - 1);
+    this.renderedCursorRow = topOffset + Math.max(0, lines.length - 1);
     this.atLineStart = displayWidth(lines.at(-1) ?? "") === 0;
 
     if (lines.length === 0) return;
     if (!cursor) {
-      // Leave the physical cursor at the live-region origin. When xterm or
-      // ConPTY shrinks the viewport, blank rows below the cursor can be
-      // discarded; leaving it on the last live row instead pushes the first
-      // Progress rows into permanent scrollback, where no later erase can
-      // remove them.
+      // Leave the physical cursor at the rendered content's origin. This is
+      // normally the live-region origin; when a shorter block is bottom-aligned
+      // inside an existing reservation it is the first row of that block. In
+      // both cases the cursor remains above live content, which prevents resize
+      // and refresh cycles from leaking the leading rows into scrollback.
       if (lines.length > 1) {
         this.write("\r");
         this.write(cursorUp(lines.length - 1));
-        this.renderedCursorRow = 0;
+        this.renderedCursorRow = topOffset;
         this.atLineStart = true;
       }
       return;
@@ -225,7 +234,7 @@ export class ScreenWriter {
     const rowsUp = (lines.length - 1) - targetRow;
     this.write(cursorUp(rowsUp));
     if (targetColumn > 0) this.write(cursorRight(targetColumn));
-    this.renderedCursorRow = targetRow;
+    this.renderedCursorRow = topOffset + targetRow;
     this.atLineStart = targetColumn === 0;
   }
 

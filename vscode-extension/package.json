@@ -2,7 +2,7 @@
   "name": "easy-code-image-paste",
   "displayName": "EASY CODE Terminal Integration",
   "description": "Integrate EASY CODE image paste, Thinking details, and scroll-safe menu navigation with the VS Code terminal.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "dd1000001000",
   "license": "MIT",
   "repository": {

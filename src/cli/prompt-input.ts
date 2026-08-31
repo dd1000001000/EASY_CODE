@@ -35,6 +35,26 @@ export interface PromptInputSession {
   writeAbove(text: string): void;
   /** Re-render optional live content below the active edit buffer. */
   refreshBelow(): void;
+  /**
+   * Temporarily release the underlying TTY while preserving the edit buffer.
+   * Modal selectors use this lease instead of attaching a second stdin
+   * consumer beside readline.
+   */
+  suspendInput(): boolean;
+  /** Restore a session previously suspended with suspendInput(). */
+  resumeInput(options?: { readonly discardLeadingModalControls?: boolean }): void;
+  /**
+   * Wait until every line already accepted by this editor has reached its
+   * serialized onSubmit callback. Pending clipboard capture that was followed
+   * by Enter is included in the barrier.
+   */
+  flushSubmissions(): Promise<void>;
+}
+
+export interface PromptDraft {
+  readonly text: string;
+  readonly cursor: number;
+  readonly images: readonly Readonly<ImageAttachment>[];
 }
 
 export interface ReadPromptOptions {
@@ -66,6 +86,19 @@ export interface ReadPromptOptions {
   readonly onSessionReady?: (
     session: PromptInputSession | undefined,
   ) => void;
+  /** Keep the editor alive after Enter and deliver each non-empty submission. */
+  readonly keepOpen?: boolean;
+  readonly onSubmit?: (
+    submission: Readonly<PromptSubmission>,
+  ) => void | Promise<void>;
+  /** Observe the logical draft after readline and atomic paste updates. */
+  readonly onDraftChange?: (draft: Readonly<PromptDraft>) => void;
+  /** Busy composers route Ctrl+C to the active Runtime instead of closing. */
+  readonly onInterrupt?: () => void;
+  /** Dispose images whose markers were removed or whose editor was cancelled. */
+  readonly onDiscardImages?: (
+    images: readonly Readonly<ImageAttachment>[],
+  ) => void | Promise<void>;
   /** Render live rows below the readline buffer; terminal controls are filtered. */
   readonly renderBelow?: () => string;
   /** Erase the readline chrome after submission so callers can commit a plain transcript row. */
@@ -86,6 +119,7 @@ const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
 const MAX_BRACKETED_PASTE_BYTES = (MAX_CLIPBOARD_TEXT_CHARS * 4) + 64;
 const DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS = 1_500;
 const DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS = 8_000;
+const MODAL_CONTROL_BURST_MS = 120;
 const BRACKETED_PASTE_START = Buffer.from("\u001B[200~");
 const BRACKETED_PASTE_END = Buffer.from("\u001B[201~");
 const ENABLE_BRACKETED_PASTE = "\u001B[?2004h";
@@ -334,6 +368,9 @@ class ImagePasteInputProxy extends Transform {
   private pendingCaptureCount = 0;
   private submitRequested = false;
   private captureQueue: Promise<void> = Promise.resolve();
+  private processTail: Promise<void> = Promise.resolve();
+  private successfulImageCount = 0;
+  private discardModalControlsUntil = 0;
   private readonly pastedTextBlocks = new Map<string, string>();
   private readonly imageMarkers = new Map<string, string>();
   private readonly pendingMarkers = new Set<string>();
@@ -360,6 +397,7 @@ class ImagePasteInputProxy extends Transform {
       marker: string,
       replacement: string,
     ) => boolean,
+    private readonly swallowInterrupt = false,
     private readonly signal?: AbortSignal,
     private readonly bracketedPasteIdleTimeoutMs =
       DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS,
@@ -384,10 +422,15 @@ class ImagePasteInputProxy extends Transform {
     callback: TransformCallback,
   ): void {
     const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding);
+    let releaseProcess!: () => void;
+    const activeProcess = new Promise<void>((resolve) => {
+      releaseProcess = resolve;
+    });
+    this.processTail = this.processTail.catch(() => undefined).then(() => activeProcess);
     void this.process(data).then(
       (output) => callback(undefined, output.length ? output : undefined),
       (error: unknown) => callback(error instanceof Error ? error : new Error(String(error))),
-    );
+    ).finally(releaseProcess);
   }
 
   override _flush(callback: TransformCallback): void {
@@ -441,6 +484,72 @@ class ImagePasteInputProxy extends Transform {
     });
   }
 
+  /**
+   * Build one logical submission and reset all per-draft marker state while
+   * preserving monotonic image numbering for the next busy-editor message.
+   */
+  consumeSubmission(value: string): {
+    readonly submission: PromptSubmission;
+    readonly discardedImages: readonly ImageAttachment[];
+  } {
+    const images = this.referencedImages(value);
+    const referencedIds = new Set(images.map((image) => image.id));
+    const discardedImages = this.images.filter((image) => !referencedIds.has(image.id));
+    const submission = {
+      text: this.expandPastedText(value),
+      images,
+      pasteErrors: [...this.pasteErrors],
+    } satisfies PromptSubmission;
+
+    this.images.length = 0;
+    this.pasteErrors.length = 0;
+    this.pastedTextBlocks.clear();
+    this.imageMarkers.clear();
+    this.pendingMarkers.clear();
+    this.pendingCaptureCount = 0;
+    this.submitRequested = false;
+    return { submission, discardedImages };
+  }
+
+  /** Images still owned by a cancelled editor were never submitted. */
+  consumeUnsubmittedImages(): readonly ImageAttachment[] {
+    const images = [...this.images];
+    this.images.length = 0;
+    this.pastedTextBlocks.clear();
+    this.imageMarkers.clear();
+    this.pendingMarkers.clear();
+    return images;
+  }
+
+  /**
+   * A modal may release on an Enter/arrow key-repeat burst. Suppress only that
+   * leading control burst; the first printable edit immediately reopens the
+   * normal input path.
+   */
+  discardLeadingModalControls(): void {
+    this.discardModalControlsUntil = Date.now() + MODAL_CONTROL_BURST_MS;
+  }
+
+  /** Drain transform and clipboard work that was admitted before input froze. */
+  async flushPendingInput(): Promise<void> {
+    while (true) {
+      const processTail = this.processTail;
+      const captureTail = this.captureQueue;
+      await processTail.catch(() => undefined);
+      await captureTail.catch(() => undefined);
+      // Capture completion can inject the delayed Enter that readline turns
+      // into a line event. Give that event and its onSubmit queue one turn.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (
+        processTail === this.processTail &&
+        captureTail === this.captureQueue &&
+        this.pendingCaptureCount === 0
+      ) {
+        return;
+      }
+    }
+  }
+
   collapseMarkerBefore(
     value: string,
     cursor: number,
@@ -482,6 +591,19 @@ class ImagePasteInputProxy extends Transform {
     let offset = 0;
 
     while (offset < input.length) {
+      if (this.discardModalControlsUntil > 0) {
+        if (Date.now() > this.discardModalControlsUntil) {
+          this.discardModalControlsUntil = 0;
+        } else {
+          const discarded = leadingModalControlLength(input, offset);
+          if (discarded > 0) {
+            offset += discarded;
+            continue;
+          }
+          // Ctrl+C remains an interrupt even inside the short transition.
+          if (input[offset] !== CTRL_C) this.discardModalControlsUntil = 0;
+        }
+      }
       if (this.submitRequested) {
         // Enter fixes the logical end of this submission. Ignore everything
         // that follows while pending clipboard work settles; Ctrl+C is still
@@ -542,6 +664,10 @@ class ImagePasteInputProxy extends Transform {
       }
 
       const byte = input[offset];
+      if (byte === CTRL_C && this.swallowInterrupt) {
+        offset += 1;
+        continue;
+      }
       if ((byte === 0x08 || byte === 0x7f) && this.onAtomicBackspace?.()) {
         offset += 1;
         continue;
@@ -681,7 +807,7 @@ class ImagePasteInputProxy extends Transform {
       }
     }
 
-    const index = this.initialImageCount + this.images.length + 1;
+    const index = this.initialImageCount + this.successfulImageCount + 1;
     try {
       if (this.signal?.aborted) throw new Error("Image paste was canceled.");
       const attachment = await this.captureWithTimeout(
@@ -695,6 +821,7 @@ class ImagePasteInputProxy extends Transform {
       }
       const marker = ` [${expectedLabel}]${invisiblePasteNonce()} `;
       this.images.push(attachment);
+      this.successfulImageCount += 1;
       this.imageMarkers.set(attachment.id, marker);
       return marker;
     } catch (error) {
@@ -829,6 +956,9 @@ export function readPrompt(
   if (!Number.isInteger(initialImageCount) || initialImageCount < 0) {
     throw new Error("Initial image count must be a non-negative integer.");
   }
+  if (options.keepOpen && !options.onSubmit) {
+    throw new Error("A persistent prompt requires an onSubmit callback.");
+  }
 
   const input = options.input;
   const wasRaw = Boolean(input.isRaw);
@@ -847,6 +977,10 @@ export function readPrompt(
   let renderedEndPosition: { rows: number; cols: number } | undefined;
   let latestPromptEndPosition: { rows: number; cols: number } | undefined;
   let bracketedPasteEnabled = false;
+  let inputConnected = false;
+  let inputSuspended = false;
+  let connectInput = (): void => undefined;
+  let disconnectInput = (): void => undefined;
   let renderedPrompt = options.prompt;
   let rl!: readline.Interface;
 
@@ -1046,6 +1180,9 @@ export function readPrompt(
     (rl as unknown as { prevRows?: number }).prevRows = savedPosition.rows;
     drawBelow();
   };
+  let proxy!: ImagePasteInputProxy;
+  let submissionQueue: Promise<void> = Promise.resolve();
+  let notifyDraft = (): void => undefined;
   const promptSession: PromptInputSession = {
     writeAbove(text: string): void {
       if (!text || !suspendPrompt()) return;
@@ -1057,6 +1194,36 @@ export function readPrompt(
       }
     },
     refreshBelow,
+    suspendInput(): boolean {
+      if (!promptActive) return false;
+      if (inputSuspended) return true;
+      if (!suspendPrompt()) return false;
+      disconnectInput();
+      input.pause();
+      inputSuspended = true;
+      return true;
+    },
+    resumeInput(options): void {
+      if (!promptActive || !inputSuspended) return;
+      if (options?.discardLeadingModalControls) {
+        proxy.discardLeadingModalControls();
+      }
+      connectInput();
+      inputSuspended = false;
+      resumePrompt();
+    },
+    async flushSubmissions(): Promise<void> {
+      await proxy.flushPendingInput();
+      // onLine serializes callbacks so multiline/image submissions cannot
+      // overtake one another. Loop because a delayed image Enter may append a
+      // callback while the previous queue is settling.
+      while (true) {
+        const pending = submissionQueue;
+        await pending.catch(() => undefined);
+        await Promise.resolve();
+        if (pending === submissionQueue) return;
+      }
+    },
   };
   const showThinking = options.onShowThinking
     ? async (id: number | "last"): Promise<void> => {
@@ -1078,7 +1245,6 @@ export function readPrompt(
         }
       }
     : undefined;
-  let proxy!: ImagePasteInputProxy;
   const deleteAtomicMarker = (): boolean => {
     const collapsed = proxy.collapseMarkerBefore(rl.line, rl.cursor);
     if (!collapsed || !suspendPrompt()) return false;
@@ -1091,6 +1257,7 @@ export function readPrompt(
     suspendedLine = collapsed.line;
     suspendedCursor = collapsed.cursor;
     resumePrompt();
+    notifyDraft();
     return true;
   };
   const replaceAtomicMarker = (
@@ -1121,6 +1288,7 @@ export function readPrompt(
       return true;
     } finally {
       resumePrompt();
+      notifyDraft();
     }
   };
   proxy = new ImagePasteInputProxy(
@@ -1133,6 +1301,7 @@ export function readPrompt(
     toggleThinking,
     deleteAtomicMarker,
     replaceAtomicMarker,
+    Boolean(options.keepOpen && options.onInterrupt),
     captureController.signal,
     options.bracketedPasteIdleTimeoutMs,
     options.clipboardCaptureTimeoutMs,
@@ -1142,9 +1311,29 @@ export function readPrompt(
     output: options.output,
     terminal: true,
   });
+  notifyDraft = (): void => {
+    try {
+      const visibleText = stripInternalPasteNonce(rl.line);
+      const visibleCursor = stripInternalPasteNonce(rl.line.slice(0, rl.cursor)).length;
+      options.onDraftChange?.({
+        text: visibleText,
+        cursor: visibleCursor,
+        images: proxy.referencedImages(rl.line),
+      });
+    } catch {
+      // A presentation callback cannot own the editor lifecycle.
+    }
+  };
 
   return new Promise((resolve, reject) => {
     let settled = false;
+
+    const discardImages = (
+      images: readonly Readonly<ImageAttachment>[],
+    ): void => {
+      if (images.length === 0 || !options.onDiscardImages) return;
+      void Promise.resolve(options.onDiscardImages(images)).catch(() => undefined);
+    };
 
     const cleanup = (): void => {
       if (scheduledBelowDraw) clearImmediate(scheduledBelowDraw);
@@ -1178,12 +1367,12 @@ export function readPrompt(
       rl.removeListener("line", onLine);
       proxy.removeListener("error", onError);
       options.signal?.removeEventListener("abort", onAbort);
-      input.removeListener("data", onRawInput);
       proxy.removeListener("keypress", onBeforeKeypress);
       proxy.removeListener("keypress", onAfterKeypress);
       options.output.removeListener("resize", onBeforeResize);
       options.output.removeListener("resize", onAfterResize);
-      input.unpipe(proxy);
+      disconnectInput();
+      discardImages(proxy.consumeUnsubmittedImages());
       if (!proxy.destroyed) proxy.destroy();
       try {
         input.setRawMode?.(wasRaw);
@@ -1192,6 +1381,11 @@ export function readPrompt(
       }
       if (wasFlowing) input.resume();
       else input.pause();
+      try {
+        options.onDraftChange?.({ text: "", cursor: 0, images: [] });
+      } catch {
+        // Cleanup must not depend on a presentation callback.
+      }
     };
     const finish = (
       answer?: string,
@@ -1200,6 +1394,10 @@ export function readPrompt(
     ): void => {
       if (settled) return;
       settled = true;
+      const consumed = answer === undefined
+        ? undefined
+        : proxy.consumeSubmission(answer);
+      if (consumed) discardImages(consumed.discardedImages);
       rl.removeListener("close", onClose);
       if (closeInterface) {
         try {
@@ -1218,11 +1416,7 @@ export function readPrompt(
         resolve(null);
         return;
       }
-      resolve({
-        text: proxy.expandPastedText(answer),
-        images: proxy.referencedImages(answer),
-        pasteErrors: [...proxy.pasteErrors],
-      });
+      resolve(consumed?.submission ?? { text: answer, images: [], pasteErrors: [] });
     };
     const onClose = (): void => finish(undefined, undefined, false);
     const eraseSubmittedPrompt = (): void => {
@@ -1234,13 +1428,42 @@ export function readPrompt(
     };
     const onLine = (answer: string): void => {
       eraseSubmittedPrompt();
-      finish(answer);
+      if (!options.keepOpen || !options.onSubmit) {
+        finish(answer);
+        return;
+      }
+
+      const consumed = proxy.consumeSubmission(answer);
+      discardImages(consumed.discardedImages);
+      const submission = consumed.submission;
+      const hasContent = submission.text.trim().length > 0 ||
+        submission.images.length > 0 || submission.pasteErrors.length > 0;
+      if (hasContent) {
+        submissionQueue = submissionQueue
+          .then(() => options.onSubmit?.(submission))
+          .then(() => undefined)
+          .catch(() => undefined);
+      }
+      notifyDraft();
+      if (!promptActive || inputSuspended) return;
+      updatePrompt();
+      rl.prompt();
+      drawBelow();
     };
     const onError = (): void => finish(undefined, new Error("Unable to read terminal input."));
     const onAbort = (): void => finish();
     const onRawInput = (chunk: Buffer | string): void => {
       const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (data.includes(CTRL_C)) finish();
+      if (!data.includes(CTRL_C)) return;
+      if (options.keepOpen && options.onInterrupt) {
+        try {
+          options.onInterrupt();
+        } catch {
+          // Runtime cancellation remains best effort at the presentation edge.
+        }
+        return;
+      }
+      finish();
     };
     const onBeforeKeypress = (): void => {
       eraseBelow();
@@ -1251,6 +1474,7 @@ export function readPrompt(
     const onAfterKeypress = (): void => {
       // One input chunk can contain a large paste. Redraw once after readline
       // consumes the burst instead of once for every decoded character.
+      notifyDraft();
       scheduleBelowDraw();
     };
     const onBeforeResize = (): void => {
@@ -1271,7 +1495,8 @@ export function readPrompt(
     };
 
     rl.once("close", onClose);
-    rl.once("line", onLine);
+    if (options.keepOpen) rl.on("line", onLine);
+    else rl.once("line", onLine);
     proxy.once("error", onError);
     options.signal?.addEventListener("abort", onAbort, { once: true });
     if (options.signal?.aborted) {
@@ -1289,11 +1514,23 @@ export function readPrompt(
         options.output.on("resize", onAfterResize);
       }
     }
-    input.pipe(proxy);
+    connectInput = (): void => {
+      if (inputConnected || settled) return;
+      input.pipe(proxy);
+      input.on("data", onRawInput);
+      inputConnected = true;
+      input.resume();
+    };
+    disconnectInput = (): void => {
+      if (!inputConnected) return;
+      input.removeListener("data", onRawInput);
+      input.unpipe(proxy);
+      inputConnected = false;
+    };
+    connectInput();
     // Observe the source as well as the serialized Transform. A clipboard read
     // deliberately holds the Transform callback so Enter stays ordered behind
     // it, but Ctrl+C must still be able to abort that read immediately.
-    input.on("data", onRawInput);
     bracketedPasteEnabled = true;
     try {
       options.output.write(ENABLE_BRACKETED_PASTE);
@@ -1309,6 +1546,7 @@ export function readPrompt(
     updatePrompt();
     rl.prompt();
     drawBelow();
+    notifyDraft();
     if (options.onSessionReady) {
       sessionReady = true;
       try {
@@ -1337,4 +1575,28 @@ function invisiblePasteNonce(): string {
 
 function stripInternalPasteNonce(value: string): string {
   return value.replace(/[\u{E0100}-\u{E010F}]/gu, "");
+}
+
+function leadingModalControlLength(input: Buffer, offset: number): number {
+  const byte = input[offset];
+  if (byte === 0x0d || byte === 0x0a) return 1;
+  if (byte !== ESCAPE) return 0;
+  const text = input.subarray(offset, Math.min(input.length, offset + 80)).toString("utf8");
+  const match = /^\u001B(?:\[[0-9:;]*[ABu~]|O[ABM])/u.exec(text);
+  if (!match) return 0;
+  const sequence = match[0];
+  if (sequence.endsWith("A") || sequence.endsWith("B") || sequence.endsWith("M")) {
+    return Buffer.byteLength(sequence);
+  }
+  if (sequence.endsWith("~")) {
+    return /^\u001B\[27;[1-9][0-9]*;13~$/u.test(sequence)
+      ? Buffer.byteLength(sequence)
+      : 0;
+  }
+  const csiU = /^\u001B\[([0-9]+)(?::[0-9]+)?(?:;[^u]*)?u$/u.exec(sequence);
+  if (!csiU) return 0;
+  const keyCode = Number(csiU[1]);
+  return [13, 57352, 57353, 57414, 57419, 57420].includes(keyCode)
+    ? Buffer.byteLength(sequence)
+    : 0;
 }

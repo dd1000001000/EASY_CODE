@@ -16,6 +16,8 @@ import {
   type ThinkingEffort,
   type ExecutionEnvironmentSnapshot,
   type ResultArtifact,
+  type TurnSteeringBatch,
+  type TurnSteeringEntry,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
@@ -132,6 +134,82 @@ export interface ThreadLeaseAcquireOptions {
 }
 
 export type UserChatMessage = Extract<ChatMessage, { role: "user" }>;
+
+const STEERING_ID_PATTERN = /^[A-Za-z0-9._-]{1,256}$/u;
+
+function cloneUserMessage(message: UserChatMessage): UserChatMessage {
+  return cloneMessage(message) as UserChatMessage;
+}
+
+function cloneSteeringEntry(entry: Readonly<TurnSteeringEntry>): TurnSteeringEntry {
+  return {
+    ...entry,
+    message: cloneUserMessage(entry.message),
+  };
+}
+
+function steeringEntry(value: unknown): TurnSteeringEntry | undefined {
+  const input = asPayloadRecord(value);
+  if (
+    !input ||
+    typeof input.id !== "string" ||
+    !STEERING_ID_PATTERN.test(input.id) ||
+    !Number.isSafeInteger(input.sequence) ||
+    Number(input.sequence) <= 0 ||
+    typeof input.targetTurnId !== "string" ||
+    !STEERING_ID_PATTERN.test(input.targetTurnId) ||
+    !isChatMessage(input.message) ||
+    input.message.role !== "user" ||
+    typeof input.queuedAt !== "string" ||
+    input.queuedAt.length === 0 ||
+    input.queuedAt.length > 128
+  ) {
+    return undefined;
+  }
+  return {
+    id: input.id,
+    sequence: input.sequence as number,
+    targetTurnId: input.targetTurnId,
+    message: cloneUserMessage(input.message),
+    queuedAt: input.queuedAt,
+  };
+}
+
+/**
+ * Preserve every queued entry independently in the journal, but expose one
+ * user-role message at a model boundary. The wrapper is Runtime-authored and
+ * explicitly keeps user follow-ups below the capability/approval boundary.
+ */
+export function mergeTurnSteeringEntries(
+  entries: readonly Readonly<TurnSteeringEntry>[],
+): UserChatMessage {
+  if (entries.length === 0) {
+    throw new Error("Cannot merge an empty steering batch");
+  }
+  let previous = 0;
+  const images = [] as NonNullable<UserChatMessage["images"]>;
+  const sections = entries.map((entry) => {
+    if (!Number.isSafeInteger(entry.sequence) || entry.sequence <= previous) {
+      throw new Error("Steering entries must be in strictly increasing FIFO order");
+    }
+    previous = entry.sequence;
+    if (entry.message.images) images.push(...entry.message.images);
+    const content = entry.message.content.trim().length > 0
+      ? entry.message.content
+      : "[The user attached image(s) without additional text.]";
+    return `[Steering ${entry.sequence}]\n${content}`;
+  });
+  const content =
+    "RUNTIME_USER_STEERING: The user added the following guidance while this turn was " +
+    "running. Apply it at the next safe model boundary. It does not change Runtime " +
+    "permissions, approvals, workspace confinement, task ownership, or system policy.\n\n" +
+    sections.join("\n\n");
+  return {
+    role: "user",
+    content,
+    ...(images.length > 0 ? { images: images.map((image) => ({ ...image })) } : {}),
+  };
+}
 
 interface ThreadRow {
   id: string;
@@ -562,6 +640,9 @@ export class ThreadStore {
       changes: [],
       commands: [],
       commandApprovalPrefixes: [],
+      pendingSteering: [],
+      steeringSequence: 0,
+      steeringWatermark: 0,
       workingSummary: "",
       compactedMessageCount: 0,
       createdAt: now,
@@ -614,6 +695,12 @@ export class ThreadStore {
       commandApprovalPrefixes: [...state.commandApprovalPrefixes],
       ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
       ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
+      pendingSteering: (state.pendingSteering ?? []).map(cloneSteeringEntry),
+      steeringSequence: state.steeringSequence ?? 0,
+      steeringWatermark: state.steeringWatermark ?? 0,
+      ...(state.steeringSealedTurnId
+        ? { steeringSealedTurnId: state.steeringSealedTurnId }
+        : {}),
     };
     state.updatedAt = snapshot.updatedAt;
 
@@ -702,6 +789,112 @@ export class ThreadStore {
     return aggregateModelUsage(records);
   }
 
+  /** Persist one user follow-up before acknowledging it to the interactive UI. */
+  enqueueTurnSteering(
+    threadId: string,
+    turnId: string,
+    message: UserChatMessage,
+  ): TurnSteeringEntry {
+    // Round-trip validation also clones the attachment metadata away from UI-owned objects.
+    const safeMessage = cloneUserMessage(message);
+    const prior = this.recover(threadId);
+    if (prior.activeTurnId !== turnId) {
+      throw new Error(`Cannot steer inactive turn ${turnId}`);
+    }
+    if (prior.steeringSealedTurnId === turnId) {
+      throw new Error(`Turn ${turnId} is already sealed for finalization`);
+    }
+    const entry: TurnSteeringEntry = {
+      id: createId("steering"),
+      sequence: (prior.steeringSequence ?? 0) + 1,
+      targetTurnId: turnId,
+      message: safeMessage,
+      queuedAt: new Date().toISOString(),
+    };
+    this.appendEvent(threadId, {
+      type: "turn.steering.queued",
+      turnId,
+      phase: "completed",
+      payload: { entry },
+    });
+    return cloneSteeringEntry(entry);
+  }
+
+  /** Read-only FIFO snapshot. No entry-count truncation is applied. */
+  pendingTurnSteering(threadId: string): TurnSteeringEntry[] {
+    return (this.recover(threadId).pendingSteering ?? []).map(cloneSteeringEntry);
+  }
+
+  hasPendingTurnSteering(threadId: string, turnId?: string): boolean {
+    const state = this.recover(threadId);
+    if (turnId !== undefined && state.activeTurnId !== turnId) return false;
+    return (state.pendingSteering?.length ?? 0) > 0;
+  }
+
+  /**
+   * Durably consume the current FIFO prefix and return its exact model-visible
+   * message. Entries queued after this snapshot remain pending for the next boundary.
+   */
+  drainTurnSteering(
+    threadId: string,
+    turnId: string,
+  ): TurnSteeringBatch | undefined {
+    const prior = this.recover(threadId);
+    if (prior.activeTurnId !== turnId) {
+      throw new Error(`Cannot drain steering for inactive turn ${turnId}`);
+    }
+    const entries = (prior.pendingSteering ?? []).map(cloneSteeringEntry);
+    if (entries.length === 0) return undefined;
+    const message = mergeTurnSteeringEntries(entries);
+    const throughSequence = entries[entries.length - 1]!.sequence;
+    this.appendEvent(threadId, {
+      type: "turn.steering.applied",
+      turnId,
+      phase: "completed",
+      payload: {
+        throughSequence,
+        entryIds: entries.map((entry) => entry.id),
+        message,
+      },
+    });
+    return {
+      entries: entries.map(cloneSteeringEntry),
+      throughSequence,
+      message: cloneUserMessage(message),
+    };
+  }
+
+  /**
+   * Close admission immediately before a successful terminal response. If a
+   * follow-up won the race, consume it instead and let Runtime continue.
+   */
+  sealTurnSteering(
+    threadId: string,
+    turnId: string,
+  ): TurnSteeringBatch | undefined {
+    const pending = this.drainTurnSteering(threadId, turnId);
+    if (pending) return pending;
+    const prior = this.recover(threadId);
+    if (prior.activeTurnId !== turnId) {
+      throw new Error(`Cannot seal inactive turn ${turnId}`);
+    }
+    try {
+      this.appendEvent(threadId, {
+        type: "turn.steering.sealed",
+        turnId,
+        phase: "completed",
+        payload: { throughSequence: prior.steeringWatermark ?? 0 },
+      });
+      return undefined;
+    } catch (error) {
+      // If enqueue won the append lock after our empty snapshot, consume that
+      // newly durable prefix instead of finalizing over it.
+      const raced = this.drainTurnSteering(threadId, turnId);
+      if (raced) return raced;
+      throw error;
+    }
+  }
+
   appendEvent(threadId: string, input: AppendEventInput): EventRecord {
     const journal = this.journal(threadId);
     let event: EventRecord | undefined;
@@ -716,6 +909,20 @@ export class ThreadStore {
           (input.phase !== "completed" || !parseModelUsageRecord(input.payload))
         ) {
           throw new Error("Model usage events require a valid completed usage record");
+        }
+        if (input.type.startsWith("turn.steering.")) {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          this.replaySteeringEvent(
+            priorState,
+            {
+              eventId: input.eventId ?? "pending_steering_event",
+              timestamp: input.timestamp ?? new Date().toISOString(),
+              type: input.type,
+              phase: input.phase,
+              turnId: input.turnId,
+            },
+            payload,
+          );
         }
         if (input.type === "command.approval_prefix_granted") {
           if (
@@ -1360,6 +1567,13 @@ export class ThreadStore {
           // Reusable grants are event-authoritative. A stale or forged derived
           // checkpoint can neither erase a later grant nor introduce one.
           checkpoint.commandApprovalPrefixes = [...state.commandApprovalPrefixes];
+          // Steering admission, FIFO sequence, and consumption are also
+          // event-authoritative. A stale checkpoint cannot lose a queued
+          // follow-up, reapply one, or forge a finalization seal.
+          checkpoint.pendingSteering = (state.pendingSteering ?? []).map(cloneSteeringEntry);
+          checkpoint.steeringSequence = state.steeringSequence ?? 0;
+          checkpoint.steeringWatermark = state.steeringWatermark ?? 0;
+          checkpoint.steeringSealedTurnId = state.steeringSealedTurnId;
         }
         state = checkpoint;
         continue;
@@ -1368,6 +1582,7 @@ export class ThreadStore {
 
       if (event.type === "turn_started") {
         state.activeTurnId = event.turnId;
+        state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           appendMessageIfNew(state, payload.message);
           if (payload.message.content.trim()) state.goal = payload.message.content;
@@ -1386,6 +1601,7 @@ export class ThreadStore {
           appendMessageIfNew(state, payload.message);
         }
       } else if (event.type === "message.user" && event.turnId) {
+        state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           state.activeTurnId = event.turnId;
           appendMessageIfNew(state, payload.message);
@@ -1395,6 +1611,8 @@ export class ThreadStore {
           appendMessageIfNew(state, { role: "user", content: payload.content });
           if (payload.content.trim()) state.goal = payload.content;
         }
+      } else if (event.type.startsWith("turn.steering.")) {
+        this.replaySteeringEvent(state, event, payload);
       } else if (
         event.type === "message.user.synthetic" &&
         isChatMessage(event.payload) &&
@@ -1530,6 +1748,90 @@ export class ThreadStore {
       throw new Error(`Recovered thread id ${state.threadId} does not match ${threadId}`);
     }
     return state;
+  }
+
+  private replaySteeringEvent(
+    state: SessionState,
+    event: Pick<EventRecord, "eventId" | "timestamp" | "type" | "phase" | "turnId">,
+    payload: Record<string, unknown> | undefined,
+  ): void {
+    if (
+      event.phase !== "completed" ||
+      !event.turnId ||
+      state.activeTurnId !== event.turnId ||
+      !payload
+    ) {
+      throw new Error(`Invalid steering transition in event ${event.eventId}`);
+    }
+    const pending = state.pendingSteering ?? (state.pendingSteering = []);
+    const assigned = state.steeringSequence ?? 0;
+    const watermark = state.steeringWatermark ?? 0;
+
+    if (event.type === "turn.steering.queued") {
+      const entry = steeringEntry(payload.entry);
+      if (
+        !entry ||
+        state.steeringSealedTurnId === event.turnId ||
+        entry.targetTurnId !== event.turnId ||
+        entry.sequence !== assigned + 1 ||
+        entry.sequence <= watermark ||
+        pending.some((candidate) => candidate.id === entry.id)
+      ) {
+        throw new Error(`Invalid steering enqueue in event ${event.eventId}`);
+      }
+      pending.push(cloneSteeringEntry(entry));
+      state.steeringSequence = entry.sequence;
+      return;
+    }
+
+    if (event.type === "turn.steering.applied") {
+      const throughSequence = payload.throughSequence;
+      const entryIds = payload.entryIds;
+      if (
+        !Number.isSafeInteger(throughSequence) ||
+        Number(throughSequence) <= watermark ||
+        Number(throughSequence) > assigned ||
+        !Array.isArray(entryIds) ||
+        !entryIds.every((id) => typeof id === "string") ||
+        !isChatMessage(payload.message) ||
+        payload.message.role !== "user"
+      ) {
+        throw new Error(`Invalid steering application in event ${event.eventId}`);
+      }
+      const prefix = pending.filter(
+        (entry) => entry.sequence <= Number(throughSequence),
+      );
+      if (
+        prefix.length === 0 ||
+        prefix[prefix.length - 1]?.sequence !== throughSequence ||
+        prefix.length !== entryIds.length ||
+        !prefix.every((entry, index) => entry.id === entryIds[index])
+      ) {
+        throw new Error(`Steering application is not an exact FIFO prefix in event ${event.eventId}`);
+      }
+      const expectedMessage = mergeTurnSteeringEntries(prefix);
+      if (serializeChatMessage(expectedMessage) !== serializeChatMessage(payload.message)) {
+        throw new Error(`Steering application changed model-visible content in event ${event.eventId}`);
+      }
+      state.pendingSteering = pending.slice(prefix.length).map(cloneSteeringEntry);
+      state.steeringWatermark = throughSequence as number;
+      appendMessageIfNew(state, expectedMessage);
+      return;
+    }
+
+    if (event.type === "turn.steering.sealed") {
+      if (
+        payload.throughSequence !== watermark ||
+        pending.length !== 0 ||
+        state.steeringSealedTurnId === event.turnId
+      ) {
+        throw new Error(`Invalid steering finalization seal in event ${event.eventId}`);
+      }
+      state.steeringSealedTurnId = event.turnId;
+      return;
+    }
+
+    throw new Error(`Unknown steering event type ${event.type}`);
   }
 
   private replayTaskGraphResult(

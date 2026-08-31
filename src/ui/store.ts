@@ -44,6 +44,7 @@ const EMPTY_COMPOSER: UIComposerState = {
   text: "",
   cursor: 0,
   busy: false,
+  pendingSubmissions: 0,
   placeholder: DEFAULT_COMPOSER_PLACEHOLDER,
   images: [],
 };
@@ -161,6 +162,11 @@ function mergeComposer(
     text,
     cursor,
     busy: patch.busy ?? current.busy,
+    pendingSubmissions: boundedInteger(
+      patch.pendingSubmissions ?? current.pendingSubmissions,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ),
     placeholder: patch.placeholder ?? current.placeholder,
     images,
   };

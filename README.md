@@ -19,6 +19,7 @@ EASY CODE runs entirely in the current terminal. It does not open a separate des
 - Optionally enable process-local Dangerous full access, with a second confirmation and persistent red warning, to run without sandboxing or approval as the current OS user.
 - Show line-numbered code diffs with green additions and red removals.
 - Keep completed output in terminal scrollback while updating current work in a compact inline status area.
+- Queue text or image adjustments while a request is running, then apply all pending messages at the next safe model boundary.
 - Switch providers, models, and thinking effort while the session is running.
 - Attach screenshots and image files to supported vision models.
 - Automatically manage short-term context and long-term project memory.
@@ -237,6 +238,8 @@ The temporary panel is bounded so it can always be erased safely without damagin
 
 In the composer, type or paste normally and press Enter to submit. A multiline text paste appears as a compact `[Pasted text #N · M lines]` block; its complete line breaks and indentation are restored only when you explicitly submit, so a newline inside the clipboard never acts as Enter. `/thinking N` and `Ctrl+T` still write the complete retained Thinking content to stable scrollback without discarding the current draft; they do not toggle the temporary panel. `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
 
+The composer remains available while the current request is running. Each submitted text/image adjustment is durably queued without an artificial message-count limit. At the next safe boundary—before another model request, between tool calls, or before finalizing—EASY CODE combines the currently pending adjustments in FIFO order into one short-term user message. Adjustments arriving after that snapshot remain queued for the following boundary. They can redirect the work, but cannot expand Runtime permissions or bypass command approval, sandbox, workspace, or task-ownership rules.
+
 When stdout/stdin is not an interactive TTY, or the terminal cannot safely support cursor-addressed redraws, EASY CODE falls back to plain append-only status snapshots and line-oriented input without ANSI color. Interactive overlay selection may be unavailable in that mode; use explicit CLI options or command arguments such as `/model <model-id>` and `/resume <thread-id>`.
 
 ## Supported models
@@ -299,7 +302,7 @@ No, reject plan
 Adjust plan with feedback
 ```
 
-Approving returns to Auto and executes the accepted plan. Rejecting stops it. Choosing the feedback row opens a line prompt, then asks the model to revise the proposal.
+Approving returns to Auto and executes the accepted plan. Rejecting stops it. Choosing the feedback row opens the normal paste-safe composer, including multiline input, then asks the model to revise the proposal.
 
 ## Thinking effort
 
@@ -564,7 +567,7 @@ Resume while EASY CODE is already running:
 
 Omit the ID to open the boxed Resume picker; provide it to resume that Thread directly.
 
-Resume restores as much saved state as possible, including the selected model and mode, conversation, accepted plan, task progress, file/command history, context summary, completed child results, and valid active child Thread/environment bindings. A missing managed checkout directory can be reconstructed only after key identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata does not validate for the existing child, fails closed rather than provisioning a different checkout. Durably completed child work is not rerun; interrupted commands or model calls are not automatically repeated.
+Resume restores as much saved state as possible, including the selected model and mode, conversation, unapplied mid-turn adjustments, accepted plan, task progress, file/command history, context summary, completed child results, and valid active child Thread/environment bindings. A missing managed checkout directory can be reconstructed only after key identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata does not validate for the existing child, fails closed rather than provisioning a different checkout. Durably completed child work is not rerun; interrupted commands or model calls are not automatically repeated.
 
 Use `/new` to start a separate thread.
 

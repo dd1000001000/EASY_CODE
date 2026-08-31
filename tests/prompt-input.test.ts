@@ -90,6 +90,156 @@ async function submitWithSequence(
 }
 
 describe("image-aware CLI prompt", () => {
+  it("keeps one busy editor open for repeated steering text, paste, and images", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const controller = new AbortController();
+    const submissions: Array<{ text: string; labels: string[] }> = [];
+    const drafts: string[] = [];
+    let session: PromptInputSession | undefined;
+    let interrupts = 0;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      signal: controller.signal,
+      keepOpen: true,
+      clearOnSubmit: true,
+      captureImage: async (index) => attachment(index),
+      onSubmit: (submission) => {
+        submissions.push({
+          text: submission.text,
+          labels: submission.images.map((image) => image.label),
+        });
+      },
+      onInterrupt: () => {
+        interrupts += 1;
+      },
+      onDraftChange: (draft) => drafts.push(draft.text),
+      onSessionReady: (value) => {
+        session = value;
+      },
+    });
+
+    input.write("\u001B[200~first\nsecond\u001B[201~\r");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    input.write(Buffer.concat([
+      Buffer.from("image "),
+      Buffer.from([0x16]),
+      Buffer.from("\r"),
+    ]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    input.write("third\r");
+    input.write(Buffer.from([0x03]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(submissions, [
+      { text: "first\nsecond", labels: [] },
+      { text: "image  [Image #1] ", labels: ["Image #1"] },
+      { text: "third", labels: [] },
+    ]);
+    assert.equal(interrupts, 1);
+    assert.equal(session !== undefined, true);
+    assert.ok(drafts.includes(""));
+
+    controller.abort();
+    assert.equal(await prompt, null);
+    assert.equal(session, undefined);
+  });
+
+  it("flushes an entered image submission through its durable callback", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const controller = new AbortController();
+    let session: PromptInputSession | undefined;
+    let releaseCapture!: (value: ImageAttachment) => void;
+    const capture = new Promise<ImageAttachment>((resolve) => {
+      releaseCapture = resolve;
+    });
+    let releaseDelivery!: () => void;
+    const delivery = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
+    });
+    const submissions: string[] = [];
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      signal: controller.signal,
+      keepOpen: true,
+      clearOnSubmit: true,
+      captureImage: async () => capture,
+      onSubmit: async (submission) => {
+        submissions.push(submission.images[0]?.label ?? "missing");
+        await delivery;
+      },
+      onSessionReady: (value) => {
+        session = value;
+      },
+    });
+
+    input.write(Buffer.concat([Buffer.from([0x16]), Buffer.from("\r")]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(session);
+    const flushed = session.flushSubmissions();
+    let didFlush = false;
+    void flushed.then(() => {
+      didFlush = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(didFlush, false);
+
+    releaseCapture(attachment(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(submissions, ["Image #1"]);
+    assert.equal(didFlush, false);
+    releaseDelivery();
+    await flushed;
+    assert.equal(didFlush, true);
+
+    controller.abort();
+    await prompt;
+  });
+
+  it("suspends a persistent editor for a modal and discards its leading key-repeat burst", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const controller = new AbortController();
+    const submissions: string[] = [];
+    let session: PromptInputSession | undefined;
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      signal: controller.signal,
+      keepOpen: true,
+      clearOnSubmit: true,
+      captureImage: async (index) => attachment(index),
+      onSubmit: (submission) => {
+        submissions.push(submission.text);
+      },
+      onSessionReady: (value) => {
+        session = value;
+      },
+    });
+
+    input.write("preserved draft");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(session?.suspendInput(), true);
+    session?.resumeInput({ discardLeadingModalControls: true });
+    input.write("\u001B[B\r\u001B[57353u\u001B[13u");
+    input.write(" plus\r");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(submissions, ["preserved draft plus"]);
+
+    controller.abort();
+    await prompt;
+  });
+
   it("recognizes Windows Ctrl+V and numbers after queued images", async () => {
     const result = await submitWithSequence(Buffer.from([0x16]), 1);
     assert.match(result.text, /inspect \[Image #2\]/u);

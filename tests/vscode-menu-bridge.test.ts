@@ -72,24 +72,90 @@ describe("VS Code out-of-band menu navigation", () => {
       pid: 321,
       ppid: 123,
       cwd: "C:\\workspace",
+      protocol: 2,
     });
 
     const received: string[] = [];
-    const release = bridge.activate((direction) => received.push(direction));
+    const activation = bridge.activate((direction) => received.push(direction));
+    const menuFrame = frames(socket)[1];
+    assert.deepEqual(menuFrame, {
+      type: "menu",
+      active: true,
+      requestId: 1,
+    });
+    socket.receive({ type: "bridge-ready", protocol: 2 });
+    socket.receive({
+      type: "menu-ready",
+      requestId: menuFrame?.requestId,
+      ready: true,
+    });
     socket.receive({ type: "navigate", direction: "down" });
     socket.receive({ type: "navigate", direction: "left" });
     socket.receive({ type: "navigate", direction: "up", extra: true });
     await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(await activation.ready, true);
     assert.deepEqual(received, ["down"]);
 
-    release();
+    activation.release();
     socket.receive({ type: "navigate", direction: "up" });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.deepEqual(received, ["down"]);
     assert.deepEqual(
-      frames(socket).slice(1).map((frame) => frame.active),
+      frames(socket)
+        .filter((frame) => frame.type === "menu")
+        .map((frame) => frame.active),
       [true, false],
     );
+    bridge.close();
+  });
+
+  it("falls back to Raw TTY when a legacy extension does not acknowledge readiness", async () => {
+    const socket = new FakeSocket();
+    const bridge = createVsCodeMenuBridge({
+      environment: {
+        [VSCODE_BRIDGE_ENDPOINT_ENV]: "127.0.0.1:43123",
+        [VSCODE_BRIDGE_TOKEN_ENV]: TOKEN,
+      },
+      identity: { pid: 321, ppid: 123, cwd: "C:\\workspace" },
+      connect: () => socket as unknown as Socket,
+      legacyFallbackMs: 5,
+      readyAckTimeoutMs: 20,
+    });
+    assert.ok(bridge);
+    socket.connect();
+
+    const activation = bridge.activate(() => undefined);
+    assert.equal(await activation.ready, false);
+    activation.release();
+    bridge.close();
+  });
+
+  it("does not use the short legacy timeout before the socket connects", async () => {
+    const socket = new FakeSocket();
+    const bridge = createVsCodeMenuBridge({
+      environment: {
+        [VSCODE_BRIDGE_ENDPOINT_ENV]: "127.0.0.1:43123",
+        [VSCODE_BRIDGE_TOKEN_ENV]: TOKEN,
+      },
+      identity: { pid: 321, ppid: 123, cwd: "C:\\workspace" },
+      connect: () => socket as unknown as Socket,
+      legacyFallbackMs: 5,
+      readyAckTimeoutMs: 100,
+    });
+    assert.ok(bridge);
+
+    const activation = bridge.activate(() => undefined);
+    const ready = activation.ready;
+    assert.ok(ready);
+    const beforeConnect = await Promise.race([
+      ready.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 15)),
+    ]);
+    assert.equal(beforeConnect, "pending");
+
+    socket.connect();
+    assert.equal(await ready, false);
+    activation.release();
     bridge.close();
   });
 

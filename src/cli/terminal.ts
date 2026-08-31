@@ -98,6 +98,23 @@ export interface TerminalChoice {
 export interface CurrentRequestOptions {
   /** Preserve Ctrl+C cancellation while the busy UI owns stdin in raw mode. */
   readonly onInterrupt?: () => void;
+  /** Queue one user-authored adjustment without ending the busy editor. */
+  readonly onSteer?: (
+    submission: Readonly<PromptSubmission>,
+  ) => void | Promise<void>;
+  readonly captureImage?: (
+    index: number,
+    signal?: AbortSignal,
+  ) => Promise<ImageAttachment>;
+  readonly captureText?: (
+    signal?: AbortSignal,
+  ) => Promise<string | undefined>;
+  /** Last image number already allocated in the Thread. */
+  readonly initialImageCount?: number;
+  /** Release images whose draft markers were removed or cancelled. */
+  readonly onDiscardImages?: (
+    images: readonly Readonly<ImageAttachment>[],
+  ) => void | Promise<void>;
 }
 
 interface BusyInputOwner {
@@ -186,6 +203,11 @@ export class Terminal {
   private readlineInputFilter?: PrivateOscInputFilter;
   private currentRequestOptions?: Readonly<CurrentRequestOptions>;
   private busyInputOwner?: BusyInputOwner;
+  private busyPromptController?: AbortController;
+  private busyPromptSession?: PromptInputSession;
+  private busyPromptGeneration = 0;
+  private steeringDeliveryQueue: Promise<void> = Promise.resolve();
+  private steeringAdmissionPaused = false;
   private readonly reasoning = new ReasoningRegistry();
   /**
    * The most recent turn remains redrawable until the next request is
@@ -270,7 +292,9 @@ export class Terminal {
     images: readonly Readonly<ImageAttachment>[] = [],
     options: Readonly<CurrentRequestOptions> = {},
   ): void {
+    this.stopBusyComposer();
     this.stopBusyInputOwner();
+    this.steeringAdmissionPaused = false;
     this.currentRequestOptions = options;
     if (!this.inlineShellActive) return;
     // A completed turn remains interactive while its idle Request editor is
@@ -286,16 +310,24 @@ export class Terminal {
       patch: {
         busy: true,
         text: "",
-        placeholder: summary ? `Working on: ${summary}` : "Working…",
+        pendingSubmissions: 0,
+        placeholder: options.onSteer
+          ? "Type an adjustment for the current task…"
+          : summary
+            ? `Working on: ${summary}`
+            : "Working…",
         images,
       },
     });
     this.refresh();
-    this.startBusyInputOwner();
+    if (options.onSteer) this.startBusyComposer();
+    else this.startBusyInputOwner();
   }
 
   clearCurrentRequest(): void {
     this.currentRequestOptions = undefined;
+    this.steeringAdmissionPaused = false;
+    this.stopBusyComposer();
     this.stopBusyInputOwner();
     if (!this.inlineShellActive) return;
     this.progressItems = [];
@@ -303,6 +335,62 @@ export class Terminal {
     this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
     this.uiState = applyEvent(this.uiState, { type: "composer.reset" });
     this.refresh();
+  }
+
+  /**
+   * Establish the final-answer steering barrier.
+   *
+   * New text is drained before the first await, while every line that already
+   * crossed Enter (including an image capture still settling) is allowed to
+   * reach the durable onSteer callback. A returned value means steering won
+   * the seal, so the same editor is resumed for the next model attempt. When
+   * the callback returns undefined the editor remains frozen until the request
+   * is cleared.
+   */
+  async sealCurrentRequestSteering<T>(
+    seal: () => T | undefined | Promise<T | undefined>,
+  ): Promise<T | undefined> {
+    const requestOptions = this.currentRequestOptions;
+    if (!requestOptions?.onSteer || this.steeringAdmissionPaused) {
+      return seal();
+    }
+
+    this.steeringAdmissionPaused = true;
+    const session = this.busyPromptSession;
+    const editorSuspended = session?.suspendInput() ?? false;
+    if (editorSuspended) {
+      if (this.activePromptSession === session) this.activePromptSession = undefined;
+      this.promptActive = false;
+    }
+    // Own and drain stdin during the barrier. Merely pausing the source lets a
+    // real ConPTY buffer late keystrokes and replay them after resume.
+    this.startBusyInputOwner();
+
+    const resume = (): void => {
+      if (this.currentRequestOptions !== requestOptions || this.closed) return;
+      this.steeringAdmissionPaused = false;
+      this.stopBusyInputOwner();
+      if (editorSuspended && session && this.busyPromptSession === session) {
+        session.resumeInput();
+        this.activePromptSession = session;
+        this.promptActive = true;
+        this.refresh();
+        return;
+      }
+      this.startBusyComposer();
+      this.startBusyInputOwner();
+    };
+
+    try {
+      await session?.flushSubmissions();
+      await this.steeringDeliveryQueue.catch(() => undefined);
+      const result = await seal();
+      if (result !== undefined) resume();
+      return result;
+    } catch (error) {
+      resume();
+      throw error;
+    }
   }
 
   /** Route audited runtime progress to live UI and retain all other notices. */
@@ -370,6 +458,7 @@ export class Terminal {
   /** Clear every process-local UI projection when a new Thread becomes active. */
   resetForNewThread(session: Readonly<UISessionInfo>): void {
     this.currentRequestOptions = undefined;
+    this.stopBusyComposer();
     this.stopBusyInputOwner();
     this.resetActivityState();
     this.activeActivityId = undefined;
@@ -726,7 +815,7 @@ export class Terminal {
       this.closed ||
       !this.isInteractive() ||
       this.rl ||
-      this.promptActive ||
+      (this.promptActive && !this.busyPromptSession) ||
       this.guardedInputActive
     ) {
       return "reject";
@@ -852,7 +941,11 @@ export class Terminal {
     initialId?: string,
   ): Promise<string | undefined> {
     if (this.closed || choices.length === 0) return undefined;
-    if (!this.isInteractive() || this.promptActive || this.guardedInputActive) {
+    if (
+      !this.isInteractive() ||
+      (this.promptActive && !this.busyPromptSession) ||
+      this.guardedInputActive
+    ) {
       return undefined;
     }
     const initialIndex = Math.max(
@@ -1087,6 +1180,7 @@ export class Terminal {
 
   emergencyRestore(): void {
     this.currentRequestOptions = undefined;
+    this.stopBusyComposer();
     this.stopBusyInputOwner();
     try {
       this.screen?.clearLive();
@@ -1189,6 +1283,7 @@ export class Terminal {
     this.vscodeMenuBridge?.close();
     if (this.closed) return;
     this.currentRequestOptions = undefined;
+    this.stopBusyComposer();
     this.stopBusyInputOwner();
     this.stopActivity();
     if (this.inlineShellActive) {
@@ -1253,6 +1348,157 @@ export class Terminal {
    * request owns the visible composer. All ordinary input is deliberately
    * drained; only Thinking toggles and Ctrl+C have busy-phase semantics.
    */
+  private startBusyComposer(): void {
+    const requestOptions = this.currentRequestOptions;
+    if (
+      !requestOptions?.onSteer ||
+      this.steeringAdmissionPaused ||
+      this.busyPromptController ||
+      !this.inlineShellActive ||
+      this.closed ||
+      this.promptActive ||
+      this.guardedInputActive ||
+      this.rl
+    ) {
+      return;
+    }
+
+    const generation = this.busyPromptGeneration + 1;
+    this.busyPromptGeneration = generation;
+    const controller = new AbortController();
+    this.busyPromptController = controller;
+    this.promptActive = true;
+    this.screen?.clearLive();
+    let ownedSession: PromptInputSession | undefined;
+
+    const pendingCount = (delta: number): void => {
+      if (this.busyPromptGeneration !== generation) return;
+      this.uiState = applyEvent(this.uiState, {
+        type: "composer.patch",
+        patch: {
+          pendingSubmissions: Math.max(
+            0,
+            this.uiState.composer.pendingSubmissions + delta,
+          ),
+        },
+      });
+      this.refresh();
+    };
+
+    const deliver = (submission: Readonly<PromptSubmission>): void => {
+      for (const error of submission.pasteErrors) {
+        this.writeStableStatus(`Steering paste failed: ${error}`, "error");
+      }
+      if (submission.text.trim().length === 0 && submission.images.length === 0) {
+        return;
+      }
+      pendingCount(1);
+      const queued = this.steeringDeliveryQueue
+        .catch(() => undefined)
+        .then(() => requestOptions.onSteer?.(submission));
+      this.steeringDeliveryQueue = queued.then(
+        () => pendingCount(-1),
+        (error: unknown) => {
+          pendingCount(-1);
+          this.writeStableStatus(
+            `Unable to queue steering input: ${error instanceof Error ? error.message : String(error)}`,
+            "error",
+          );
+        },
+      );
+    };
+
+    void readPrompt({
+      input: this.input as import("./prompt-input.js").PromptInput,
+      output: this.output as import("./prompt-input.js").PromptOutput,
+      prompt: this.composerPromptPrefix(),
+      initialImageCount: requestOptions.initialImageCount ?? 0,
+      signal: controller.signal,
+      captureImage: requestOptions.captureImage ?? (async () => {
+        throw new Error("Image steering is unavailable for this request.");
+      }),
+      captureText: requestOptions.captureText,
+      keepOpen: true,
+      onSubmit: (submission) => deliver(submission),
+      onInterrupt: requestOptions.onInterrupt,
+      onDiscardImages: requestOptions.onDiscardImages,
+      renderPrompt: () => this.composerPromptPrefix(),
+      renderBelow: () => this.composerPromptSuffix(),
+      clearOnSubmit: true,
+      onDraftChange: (draft) => {
+        if (
+          this.busyPromptGeneration !== generation ||
+          this.currentRequestOptions !== requestOptions
+        ) return;
+        this.uiState = applyEvent(this.uiState, {
+          type: "composer.patch",
+          patch: {
+            text: draft.text,
+            cursor: draft.cursor,
+            images: draft.images,
+          },
+        });
+        this.refresh();
+      },
+      onSessionReady: (session) => {
+        if (
+          this.busyPromptGeneration !== generation ||
+          this.currentRequestOptions !== requestOptions
+        ) return;
+        if (session) {
+          ownedSession = session;
+          this.busyPromptSession = session;
+          this.activePromptSession = session;
+        } else {
+          if (this.busyPromptSession === ownedSession) {
+            this.busyPromptSession = undefined;
+          }
+          if (this.activePromptSession === ownedSession) {
+            this.activePromptSession = undefined;
+          }
+        }
+      },
+      onToggleThinking: (id) => {
+        this.toggleReasoning(id);
+      },
+      onShowThinking: (id) => {
+        const shown = id === "last"
+          ? this.showLatestReasoning()
+          : this.showReasoning(id);
+        if (!shown) this.info("No Thinking content is available in this thread.");
+      },
+    }).catch((error: unknown) => {
+      if (this.busyPromptGeneration !== generation || this.closed) return;
+      this.writeStableStatus(
+        `Busy input editor failed: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+    }).finally(() => {
+      if (this.busyPromptGeneration !== generation) return;
+      this.busyPromptController = undefined;
+      if (this.busyPromptSession === ownedSession) this.busyPromptSession = undefined;
+      if (this.activePromptSession === ownedSession) this.activePromptSession = undefined;
+      this.promptActive = false;
+      if (this.currentRequestOptions === requestOptions && !this.closed) {
+        // Preserve Ctrl+C/Thinking controls if the richer editor becomes
+        // unavailable on a particular terminal.
+        this.startBusyInputOwner();
+      }
+    });
+  }
+
+  private stopBusyComposer(): void {
+    const controller = this.busyPromptController;
+    const session = this.busyPromptSession;
+    if (!controller && !session) return;
+    this.busyPromptGeneration += 1;
+    this.busyPromptController = undefined;
+    this.busyPromptSession = undefined;
+    if (this.activePromptSession === session) this.activePromptSession = undefined;
+    controller?.abort();
+    this.promptActive = false;
+  }
+
   private startBusyInputOwner(): void {
     if (
       this.busyInputOwner ||
@@ -1339,6 +1585,19 @@ export class Terminal {
     }
     this.guardedInputActive = true;
 
+    // A busy steering editor is the sole normal stdin owner. Freeze its
+    // readline buffer before a modal selector attaches, then restore the same
+    // session after the selector has removed every listener. This preserves
+    // draft text/images/cursor without ever piping stdin to two consumers.
+    const suspendedBusySession = this.busyPromptSession;
+    const busyEditorSuspended = suspendedBusySession?.suspendInput() ?? false;
+    if (busyEditorSuspended) {
+      if (this.activePromptSession === suspendedBusySession) {
+        this.activePromptSession = undefined;
+      }
+      this.promptActive = false;
+    }
+
     // A command approval normally interrupts the busy request owner. Borrow
     // its already-piped raw input filter instead of tearing process.stdin down
     // and immediately rebuilding it. Rapid raw-mode/pipe transitions can lose
@@ -1399,7 +1658,24 @@ export class Terminal {
       }
       if (wasFlowing) this.input.resume();
       this.guardedInputActive = false;
-      this.startBusyInputOwner();
+      if (
+        busyEditorSuspended &&
+        suspendedBusySession !== undefined &&
+        this.busyPromptSession === suspendedBusySession &&
+        this.currentRequestOptions?.onSteer &&
+        !this.closed
+      ) {
+        // The overlay cleanup may briefly paint the static busy card through
+        // ScreenWriter. Remove it before readline restores its saved rows.
+        this.screen?.clearLive();
+        this.promptActive = true;
+        this.activePromptSession = suspendedBusySession;
+        suspendedBusySession.resumeInput({
+          discardLeadingModalControls: true,
+        });
+      } else {
+        this.startBusyInputOwner();
+      }
     }
   }
 
@@ -1724,7 +2000,10 @@ export class Terminal {
 
   private composerPromptPrefix(): string {
     const columns = Math.max(12, this.screen?.columns ?? 80);
-    const title = truncateToWidth(" Request ", Math.max(1, columns - 3), {
+    const label = this.uiState.composer.busy
+      ? " Adjust current task "
+      : " Request ";
+    const title = truncateToWidth(label, Math.max(1, columns - 3), {
       preserveAnsi: false,
     });
     const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(title)));

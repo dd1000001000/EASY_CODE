@@ -39,6 +39,8 @@ import type {
   SessionState,
   ThinkingEffort,
   ToolPresentation,
+  TurnSteeringBatch,
+  TurnSteeringEntry,
   ResultArtifact,
   ResultArtifactRef,
 } from "./core/types.js";
@@ -77,6 +79,7 @@ import {
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { AgentRuntime } from "./runtime/agent.js";
+import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { AnthropicSandboxBackend } from "./sandbox/anthropic-backend.js";
 import {
   DefaultSandboxStartupService,
@@ -1311,6 +1314,17 @@ export class EasyCodeApp {
     validateProviderImageAttachments(this.state.provider, images);
     this.dirty = true;
     const controller = new AbortController();
+    const steeringNotifier = new TurnSteeringAttemptNotifier();
+    const capturedSteeringImages = new Map<string, ImageAttachment>();
+    const pendingSteering = this.threadStore.pendingTurnSteering(this.state.threadId);
+    const pendingSteeringImages = pendingSteering.flatMap(
+      (entry) => entry.message.images ?? [],
+    );
+    if (pendingSteeringImages.length > 0) this.requireCurrentModelVision();
+    validateImageAttachmentCollection([...images, ...pendingSteeringImages]);
+    validateProviderImageAttachments(this.state.provider, pendingSteeringImages);
+    const latestPendingSteering = pendingSteering.at(-1);
+    if (latestPendingSteering) steeringNotifier.notify(latestPendingSteering.sequence);
     let interruptCount = 0;
     const onInterrupt = (): void => {
       interruptCount += 1;
@@ -1326,8 +1340,102 @@ export class EasyCodeApp {
     process.on("SIGINT", onInterrupt);
 
     try {
-      this.terminal.setCurrentRequest(userInput, images, { onInterrupt });
-      const runtime = this.createRuntime(presentReasoning);
+      const steeringImages = (): ImageAttachment[] => {
+        const unique = new Map<string, ImageAttachment>();
+        for (const image of images) unique.set(image.id, image);
+        for (const entry of this.threadStore.pendingTurnSteering(this.state.threadId)) {
+          for (const image of entry.message.images ?? []) unique.set(image.id, image);
+        }
+        for (const image of capturedSteeringImages.values()) unique.set(image.id, image);
+        return [...unique.values()];
+      };
+      const discardCapturedSteeringImages = async (
+        attachments: readonly Readonly<ImageAttachment>[],
+      ): Promise<void> => {
+        const discarded: ImageAttachment[] = [];
+        for (const attachment of attachments) {
+          const owned = capturedSteeringImages.get(attachment.id);
+          if (!owned) continue;
+          capturedSteeringImages.delete(attachment.id);
+          discarded.push(owned);
+        }
+        await this.discardImages(discarded);
+      };
+      this.terminal.setCurrentRequest(userInput, images, {
+        onInterrupt,
+        initialImageCount:
+          nextThreadImageNumber(
+            this.state.messages,
+            [...images, ...pendingSteeringImages],
+          ) - 1,
+        captureImage: async (index, signal) => {
+          const attachment = await this.captureClipboardImage(
+            index,
+            steeringImages(),
+            signal,
+          );
+          capturedSteeringImages.set(attachment.id, attachment);
+          return attachment;
+        },
+        captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
+        onDiscardImages: discardCapturedSteeringImages,
+        onSteer: async (submission) => {
+          const text = stripPasteFailureMarkers(submission.text);
+          if (!text.trim() && submission.images.length === 0) return;
+          const turnId = this.state.activeTurnId;
+          if (!turnId) {
+            await discardCapturedSteeringImages(submission.images);
+            throw new Error("The active task finished before this adjustment could be queued.");
+          }
+          let entry: TurnSteeringEntry;
+          try {
+            if (submission.images.length > 0) this.requireCurrentModelVision();
+            validateImageAttachmentCollection(steeringImages());
+            validateProviderImageAttachments(this.state.provider, submission.images);
+            entry = this.threadStore.enqueueTurnSteering(
+              this.state.threadId,
+              turnId,
+              {
+                role: "user",
+                content: text,
+                ...(submission.images.length
+                  ? { images: submission.images.map((image) => ({ ...image })) }
+                : {}),
+              },
+            );
+          } catch (error) {
+            await discardCapturedSteeringImages(submission.images);
+            throw error;
+          }
+          this.dirty = true;
+          // The journal is the ownership boundary. From this point onward the
+          // durable entry, rather than the editor, owns every attachment.
+          for (const attachment of submission.images) {
+            capturedSteeringImages.delete(attachment.id);
+          }
+          steeringNotifier.notify(entry.sequence);
+          try {
+            // Commit only removes orphan markers after the message reference
+            // is durable, matching initial-turn image ordering.
+            for (const attachment of submission.images) {
+              await this.imageStore.commit(this.state.threadId, attachment);
+            }
+          } catch (error) {
+            this.terminal.error(
+              `Adjustment #${entry.sequence} is queued, but attachment finalization failed: ` +
+                (error instanceof Error ? error.message : String(error)),
+            );
+            return;
+          }
+          this.terminal.info(
+            `Queued adjustment #${entry.sequence}` +
+              (submission.images.length
+                ? ` with ${submission.images.map((image) => image.label).join(", ")}.`
+                : "."),
+          );
+        },
+      });
+      const runtime = this.createRuntime(presentReasoning, steeringNotifier);
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.activeStepLimit(),
         maxContextChars: this.activeContextCharLimit(),
@@ -1348,6 +1456,8 @@ export class EasyCodeApp {
     } finally {
       try {
         this.terminal.clearCurrentRequest();
+        await this.discardImages([...capturedSteeringImages.values()]);
+        capturedSteeringImages.clear();
       } finally {
         process.removeListener("SIGINT", onInterrupt);
         this.save();
@@ -1356,7 +1466,10 @@ export class EasyCodeApp {
     }
   }
 
-  private createRuntime(presentReasoning: boolean): AgentRuntime {
+  private createRuntime(
+    presentReasoning: boolean,
+    steeringNotifier?: TurnSteeringAttemptNotifier,
+  ): AgentRuntime {
     const effectiveConfig = this.effectiveConfig();
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
     const provider = createProvider(
@@ -1413,6 +1526,33 @@ export class EasyCodeApp {
         this.threadStore.appendEvent(threadId, input);
         this.dirty = true;
       },
+      ...(steeringNotifier
+        ? {
+            steeringNotifier,
+            takeSteering: async ({ threadId, turnId }: {
+              threadId: string;
+              turnId: string;
+            }) => this.threadStore.drainTurnSteering(threadId, turnId),
+            sealSteering: async ({ threadId, turnId }: {
+              threadId: string;
+              turnId: string;
+            }) => this.terminal.sealCurrentRequestSteering(
+              () => this.threadStore.sealTurnSteering(threadId, turnId),
+            ),
+            hasPendingSteering: async ({ threadId, turnId }: {
+              threadId: string;
+              turnId: string;
+            }) => this.threadStore.hasPendingTurnSteering(threadId, turnId),
+            onSteeringApplied: (
+              batch: Readonly<TurnSteeringBatch>,
+            ) => {
+              const first = batch.entries[0]?.sequence;
+              const last = batch.throughSequence;
+              const range = first === last ? `#${last}` : `#${first}-#${last}`;
+              this.terminal.success(`Applied adjustment${first === last ? "" : "s"} ${range}.`);
+            },
+          }
+        : {}),
       recordCommand: (turnId, entry) => {
         this.threadStore.recordToolAudit(this.state.threadId, turnId, entry);
         this.dirty = true;

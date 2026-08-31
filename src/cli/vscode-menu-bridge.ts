@@ -2,6 +2,7 @@ import { createConnection, type Socket } from "node:net";
 
 import type {
   MenuNavigationDirection,
+  MenuSelectorNavigationActivation,
   MenuSelectorNavigation,
 } from "./menu-selector.js";
 
@@ -12,6 +13,9 @@ export const VSCODE_BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 const MAX_FRAME_CHARS = 16 * 1024;
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/u;
 const ENDPOINT_PATTERN = /^127\.0\.0\.1:([1-9]\d{0,4})$/u;
+const BRIDGE_PROTOCOL_VERSION = 2;
+const DEFAULT_LEGACY_FALLBACK_MS = 300;
+const DEFAULT_READY_ACK_TIMEOUT_MS = 2_000;
 
 interface BridgeIdentity {
   readonly pid: number;
@@ -25,6 +29,18 @@ export interface VsCodeMenuBridgeOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly identity?: Readonly<BridgeIdentity>;
   readonly connect?: (port: number) => BridgeSocket;
+  /** Test/compatibility override for extensions that predate ready ACKs. */
+  readonly legacyFallbackMs?: number;
+  /** Upper bound for a negotiated extension to install its key binding. */
+  readonly readyAckTimeoutMs?: number;
+}
+
+interface PendingActivation {
+  readonly id: number;
+  readonly ready: Promise<boolean>;
+  readonly resolve: (ready: boolean) => void;
+  settled: boolean;
+  fallbackTimer?: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -44,12 +60,17 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
   private connected = false;
   private active = false;
   private closed = false;
+  private protocolReady = false;
+  private nextActivationId = 1;
+  private activation?: PendingActivation;
 
   constructor(
     private readonly endpointPort: number,
     private readonly token: string,
     private readonly identity: Readonly<BridgeIdentity>,
     connect: (port: number) => BridgeSocket = defaultConnect,
+    private readonly legacyFallbackMs = DEFAULT_LEGACY_FALLBACK_MS,
+    private readonly readyAckTimeoutMs = DEFAULT_READY_ACK_TIMEOUT_MS,
   ) {
     try {
       const socket = connect(endpointPort);
@@ -68,30 +89,42 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
 
   activate(
     onNavigate: (direction: MenuNavigationDirection) => void,
-  ): () => void {
-    if (this.closed) return () => undefined;
+  ): MenuSelectorNavigationActivation {
+    if (this.closed) {
+      return { ready: Promise.resolve(false), release: () => undefined };
+    }
     this.listeners.add(onNavigate);
     if (!this.active) {
       this.active = true;
-      this.send({ type: "menu", active: true });
+      this.activation = this.createActivation();
+      this.sendMenuState(true);
+      this.armActivationFallback();
     }
+    const activation = this.activation;
     let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.listeners.delete(onNavigate);
-      if (this.listeners.size === 0 && this.active) {
-        this.active = false;
-        this.send({ type: "menu", active: false });
-      }
+    return {
+      ready: activation?.ready ?? Promise.resolve(false),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.listeners.delete(onNavigate);
+        if (this.listeners.size === 0 && this.active) {
+          this.active = false;
+          this.sendMenuState(false);
+          this.settleActivation(false);
+          this.activation = undefined;
+        }
+      },
     };
   }
 
   close(): void {
     if (this.closed) return;
-    if (this.active) this.send({ type: "menu", active: false });
+    if (this.active) this.sendMenuState(false);
     this.closed = true;
     this.active = false;
+    this.settleActivation(false);
+    this.activation = undefined;
     this.listeners.clear();
     const socket = this.socket;
     this.socket = undefined;
@@ -106,14 +139,20 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
   private readonly onConnect = (): void => {
     if (this.closed) return;
     this.connected = true;
+    this.protocolReady = false;
     this.send({
       type: "hello",
       token: this.token,
       pid: this.identity.pid,
       ppid: this.identity.ppid,
       cwd: this.identity.cwd,
+      protocol: BRIDGE_PROTOCOL_VERSION,
     });
-    if (this.active) this.send({ type: "menu", active: true });
+    if (this.active) {
+      this.sendMenuState(true);
+      this.clearActivationFallback();
+      this.armActivationFallback();
+    }
   };
 
   private readonly onData = (chunk: Buffer | string): void => {
@@ -136,10 +175,13 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
 
   private readonly onError = (): void => {
     // The ordinary TTY selector remains active when the optional bridge fails.
+    this.settleActivation(false);
   };
 
   private readonly onClose = (): void => {
     this.connected = false;
+    this.protocolReady = false;
+    this.settleActivation(false);
     this.socket = undefined;
     this.inputBuffer = "";
   };
@@ -149,6 +191,18 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     try {
       message = JSON.parse(frame);
     } catch {
+      return;
+    }
+    if (isBridgeReadyMessage(message)) {
+      this.protocolReady = true;
+      this.clearActivationFallback();
+      this.armActivationFallback();
+      return;
+    }
+    if (isMenuReadyMessage(message)) {
+      if (message.requestId === this.activation?.id) {
+        this.settleActivation(message.ready);
+      }
       return;
     }
     if (!isNavigationMessage(message) || !this.active) return;
@@ -168,6 +222,61 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     } catch {
       // Fall back to the normal terminal input path.
     }
+  }
+
+  private createActivation(): PendingActivation {
+    const id = this.nextActivationId;
+    this.nextActivationId = id >= Number.MAX_SAFE_INTEGER ? 1 : id + 1;
+    let resolveReady: (ready: boolean) => void = () => undefined;
+    const ready = new Promise<boolean>((resolve) => {
+      resolveReady = resolve;
+    });
+    return {
+      id,
+      ready,
+      resolve: resolveReady,
+      settled: false,
+    };
+  }
+
+  private sendMenuState(active: boolean): void {
+    const requestId = this.activation?.id;
+    this.send({
+      type: "menu",
+      active,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+  }
+
+  private armActivationFallback(): void {
+    const activation = this.activation;
+    if (!activation || activation.settled || activation.fallbackTimer) return;
+    const timeoutMs = !this.connected || this.protocolReady
+      ? this.readyAckTimeoutMs
+      : this.legacyFallbackMs;
+    activation.fallbackTimer = setTimeout(() => {
+      activation.fallbackTimer = undefined;
+      // A legacy extension never sends the immediate bridge-ready frame, so
+      // this short deadline falls back to Raw TTY input. A negotiated extension
+      // gets the longer ready-ACK deadline selected above.
+      this.settleActivation(false);
+    }, timeoutMs);
+  }
+
+  private settleActivation(ready: boolean): void {
+    const activation = this.activation;
+    if (!activation || activation.settled) return;
+    activation.settled = true;
+    if (activation.fallbackTimer) clearTimeout(activation.fallbackTimer);
+    activation.fallbackTimer = undefined;
+    activation.resolve(ready);
+  }
+
+  private clearActivationFallback(): void {
+    const activation = this.activation;
+    if (!activation?.fallbackTimer) return;
+    clearTimeout(activation.fallbackTimer);
+    activation.fallbackTimer = undefined;
   }
 }
 
@@ -203,6 +312,8 @@ export function createVsCodeMenuBridge(
     token,
     identity,
     options.connect ?? defaultConnect,
+    normalizeTimeout(options.legacyFallbackMs, DEFAULT_LEGACY_FALLBACK_MS),
+    normalizeTimeout(options.readyAckTimeoutMs, DEFAULT_READY_ACK_TIMEOUT_MS),
   );
 }
 
@@ -218,4 +329,38 @@ function isNavigationMessage(
   return record.type === "navigate" &&
     (record.direction === "up" || record.direction === "down") &&
     Object.keys(record).every((key) => key === "type" || key === "direction");
+}
+
+function isBridgeReadyMessage(
+  value: unknown,
+): value is { readonly type: "bridge-ready"; readonly protocol: number } {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return record.type === "bridge-ready" &&
+    record.protocol === BRIDGE_PROTOCOL_VERSION &&
+    Object.keys(record).every((key) => key === "type" || key === "protocol");
+}
+
+function isMenuReadyMessage(
+  value: unknown,
+): value is {
+  readonly type: "menu-ready";
+  readonly requestId: number;
+  readonly ready: boolean;
+} {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return record.type === "menu-ready" &&
+    Number.isSafeInteger(record.requestId) &&
+    Number(record.requestId) > 0 &&
+    typeof record.ready === "boolean" &&
+    Object.keys(record).every((key) =>
+      key === "type" || key === "requestId" || key === "ready"
+    );
+}
+
+function normalizeTimeout(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && Number(value) >= 1
+    ? Number(value)
+    : fallback;
 }

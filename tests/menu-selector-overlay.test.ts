@@ -143,9 +143,11 @@ describe("menu selector overlay renderer", () => {
           activate: (listener) => {
             active = true;
             navigate = listener;
-            return () => {
-              active = false;
-              navigate = undefined;
+            return {
+              release: () => {
+                active = false;
+                navigate = undefined;
+              },
             };
           },
         },
@@ -161,5 +163,46 @@ describe("menu selector overlay renderer", () => {
     assert.equal(await selection, 1);
     assert.equal(active, false);
     assert.equal(navigate, undefined);
+  });
+
+  it("does not expose the menu until host navigation is ready", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    const overlay = new RecordingOverlay();
+    let acknowledge: ((ready: boolean) => void) | undefined;
+    const ready = new Promise<boolean>((resolve) => {
+      acknowledge = resolve;
+    });
+
+    const rows = ["First", "Second"];
+    const selection = selectMenuIndex(
+      rows.length,
+      0,
+      (selectedIndex) => renderMenu("Choose", rows, selectedIndex, false),
+      {
+        input,
+        output,
+        overlay,
+        navigation: {
+          activate: () => ({ ready, release: () => undefined }),
+        },
+      },
+      "No choices.",
+    );
+
+    assert.equal(overlay.frames.length, 0);
+    assert.equal(input.isRaw, true);
+    let settled = false;
+    void selection.then(() => {
+      settled = true;
+    });
+    input.write("\r");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    acknowledge?.(false);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(overlay.frames.length, 1);
+    input.write("\r");
+    assert.equal(await selection, 0);
   });
 });

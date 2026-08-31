@@ -22,6 +22,9 @@ export function createSessionState(
     changes: [],
     commands: [],
     commandApprovalPrefixes: [],
+    pendingSteering: [],
+    steeringSequence: 0,
+    steeringWatermark: 0,
     workingSummary: "",
     compactedMessageCount: 0,
     createdAt: now,
@@ -40,5 +43,16 @@ export function cloneSessionState(state: SessionState): SessionState {
     commandApprovalPrefixes: [...state.commandApprovalPrefixes],
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
+    pendingSteering: (state.pendingSteering ?? []).map((entry) => ({
+      ...entry,
+      message: {
+        ...entry.message,
+        ...(entry.message.images
+          ? { images: entry.message.images.map((image) => ({ ...image })) }
+          : {}),
+      },
+    })),
+    steeringSequence: state.steeringSequence ?? 0,
+    steeringWatermark: state.steeringWatermark ?? 0,
   };
 }
