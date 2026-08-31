@@ -11,6 +11,7 @@ class CapturedOutput extends PassThrough implements ScreenOutput {
   constructor(
     readonly isTTY: boolean,
     readonly columns: number = 80,
+    readonly rows: number = 24,
   ) {
     super();
   }
@@ -74,7 +75,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "中ab\r\nxy\r\u001B[1C" +
+      "\r\n\u001B[1A中ab\r\nxy\r\u001B[1C" +
         "\r\u001B[1A\u001B[0Jnext",
     );
     writer.close();
@@ -118,7 +119,7 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "A中\r\n国B\r\u001B[1A\u001B[0JA中国B",
+      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\u001B[0JA中国B",
     );
     writer.close();
   });
@@ -171,6 +172,41 @@ describe("ScreenWriter", () => {
     assert.equal(rendered.endsWith("\n"), false);
     assert.equal((rendered.match(/\n/gu) ?? []).length, 0);
     assert.equal(rendered.endsWith("Request 99"), true);
+    writer.close();
+  });
+
+  it("reserves blank rows before a live region grows", () => {
+    const output = new CapturedOutput(true, 80);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+
+    writer.renderLive("busy");
+    writer.renderLive("approval\ncommand\nchoice 1\nchoice 2\nchoice 3");
+    writer.clearLive();
+
+    assert.equal(
+      transcript.read(),
+      "busy" +
+        "\r\u001B[0J" +
+        "\r\n\r\n\r\n\r\n\u001B[4A" +
+        "approval\r\ncommand\r\nchoice 1\r\nchoice 2\r\nchoice 3" +
+        "\r\u001B[4A\u001B[0J",
+    );
+    writer.close();
+  });
+
+  it("never paints a live block taller than the terminal viewport", () => {
+    const output = new CapturedOutput(true, 80, 3);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+
+    writer.renderLive("one\ntwo\nthree\nfour\nfive");
+
+    assert.equal(
+      transcript.read(),
+      "\r\n\r\n\u001B[2Aone\r\ntwo\r\nthree",
+    );
+    assert.equal(transcript.read().includes("four"), false);
     writer.close();
   });
 

@@ -1201,7 +1201,10 @@ export class EasyCodeApp {
       }
 
       if (shouldShowPlan) this.terminal.showPlan(proposal);
-      const decision = await this.terminal.reviewPlan();
+      const decision = await this.terminal.reviewPlan({
+        captureText: async (signal) =>
+          this.clipboardImageReader.readText?.(signal),
+      });
       if (decision.action === "defer") {
         this.dirty = true;
         this.save();
@@ -2253,8 +2256,14 @@ export class EasyCodeApp {
     }
 
     const decision = await this.terminal.approve(request);
-    if (decision === "reject") return false;
-    if (decision === "allow_once") return true;
+    if (decision === "reject") {
+      this.terminal.info("Command execution rejected.");
+      return false;
+    }
+    if (decision === "allow_once") {
+      this.terminal.info("Approved once; starting the command.");
+      return true;
+    }
 
     // Validate and derive the next in-memory state before writing the
     // authoritative event. If the durable append fails, the exception reaches

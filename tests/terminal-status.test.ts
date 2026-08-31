@@ -325,4 +325,90 @@ describe("Terminal runtime status routing", () => {
     assert.match(transcript, /This migration modifies the workspace database\./u);
     fallback.close();
   });
+
+  it("hands busy input to an enhanced-key approval without leaking repeated Enter", async () => {
+    const fixture = createInlineFixture();
+    try {
+      fixture.terminal.setCurrentRequest("Verify the updated JavaScript file");
+      fixture.terminal.status("Step 2/160: requesting deepseek-v4-flash");
+      fixture.terminal.status("Tool: run_command");
+
+      const decision = fixture.terminal.approve(approvalRequest());
+      assert.equal(terminalState(fixture.terminal).overlay?.kind, "approval");
+      assert.equal(fixture.input.isRaw, true);
+
+      fixture.input.write("\u001B[57353u\u001B[13u");
+      assert.equal(await decision, "allow_prefix");
+      assert.equal(terminalState(fixture.terminal).overlay, null);
+      assert.equal(fixture.input.isRaw, true);
+
+      // Auto-repeat after confirmation belongs to the still-busy request and
+      // must never pre-submit the next composer.
+      fixture.input.write("\r");
+      fixture.input.write("\r");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      fixture.terminal.clearCurrentRequest();
+      assert.equal(fixture.input.isRaw, false);
+
+      let settled = false;
+      const prompt = fixture.terminal.readPrompt("> ", {
+        captureImage: async () => {
+          throw new Error("Image capture is not expected in this test.");
+        },
+      }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(settled, false);
+
+      fixture.input.write("fresh request\r");
+      assert.equal((await prompt)?.text, "fresh request");
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("restores busy input when the active request changes during approval", async () => {
+    const fixture = createInlineFixture();
+    try {
+      fixture.terminal.setCurrentRequest("Original request");
+      const decision = fixture.terminal.approve(approvalRequest());
+      fixture.terminal.setCurrentRequest("Replacement request");
+
+      assert.equal(await decision, "reject");
+      const internals = fixture.terminal as unknown as {
+        busyInputOwner?: unknown;
+      };
+      assert.notEqual(internals.busyInputOwner, undefined);
+      assert.equal(fixture.input.isRaw, true);
+      assert.match(
+        terminalState(fixture.terminal).composer.placeholder,
+        /Replacement request/u,
+      );
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("drops a partial busy Escape before handing input to approval", async () => {
+    const fixture = createInlineFixture();
+    try {
+      fixture.terminal.setCurrentRequest("Request with pending input");
+      fixture.input.write("\u001B");
+      const decision = fixture.terminal.approve(approvalRequest());
+      let settled = false;
+      void decision.then(() => {
+        settled = true;
+      });
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      assert.equal(settled, false);
+      fixture.input.write("\r");
+      assert.equal(await decision, "allow_once");
+    } finally {
+      fixture.close();
+    }
+  });
 });

@@ -11,6 +11,7 @@ export interface MenuSelectorInput extends NodeJS.ReadableStream {
 
 export interface MenuSelectorOutput extends NodeJS.WritableStream {
   readonly isTTY?: boolean;
+  readonly rows?: number;
 }
 
 export interface MenuSelectorOverlay {
@@ -23,6 +24,8 @@ export interface MenuSelectorOptions {
   readonly output: MenuSelectorOutput;
   readonly color?: boolean;
   readonly overlay?: MenuSelectorOverlay;
+  /** Resolve false to fail closed when a choice cannot be reviewed safely. */
+  readonly canConfirm?: () => boolean;
 }
 
 const HIDE_CURSOR = "\u001B[?25l";
@@ -112,9 +115,12 @@ export function selectMenuIndex(
     const input = options.input;
     const decoder = new StringDecoder("utf8");
     const wasRaw = Boolean(input.isRaw);
+    const mustEnableRawMode = !wasRaw;
     const wasFlowing = input.readableFlowing === true;
     let settled = false;
     let escapeState: "none" | "start" | "control" = "none";
+    let escapeIntroducer: "[" | "O" | undefined;
+    let escapeBody = "";
     let escapeTimer: ReturnType<typeof setTimeout> | undefined;
 
     const clearEscapeTimer = (): void => {
@@ -123,12 +129,12 @@ export function selectMenuIndex(
     };
     const cleanup = (): void => {
       clearEscapeTimer();
-      input.removeListener("data", onData);
+      input.removeListener("data", guardedOnData);
       input.removeListener("end", onEnd);
       input.removeListener("close", onClose);
       input.removeListener("error", onError);
       try {
-        input.setRawMode?.(wasRaw);
+        if (mustEnableRawMode) input.setRawMode?.(false);
       } catch {
         // The terminal may have disappeared while the selector was active.
       }
@@ -148,14 +154,124 @@ export function selectMenuIndex(
       if (error) reject(error);
       else resolve(index);
     };
-    const startEscapeTimer = (): void => {
+    const startEscapeTimer = (delayMs = 60): void => {
       clearEscapeTimer();
-      escapeTimer = setTimeout(() => finish(undefined), 60);
+      escapeTimer = setTimeout(() => finish(undefined), delayMs);
       escapeTimer.unref?.();
     };
     const move = (offset: number): void => {
       selectedIndex = (selectedIndex + offset + choiceCount) % choiceCount;
       render();
+    };
+    const confirm = (): void => {
+      let allowed = true;
+      try {
+        allowed = options.canConfirm?.() ?? true;
+      } catch {
+        allowed = false;
+      }
+      finish(allowed ? selectedIndex : undefined);
+    };
+    const parseCsiU = (
+      body: string,
+    ): {
+      readonly keyCode: number;
+      readonly modifier?: number;
+      readonly event?: 1 | 2 | 3;
+    } | undefined => {
+      const fields = body.split(";");
+      if (fields.length < 1 || fields.length > 3) return undefined;
+      const keyFields = fields[0]?.split(":") ?? [];
+      if (
+        keyFields.length < 1 ||
+        keyFields.length > 3 ||
+        !keyFields.every(isSafeProtocolInteger)
+      ) return undefined;
+      const keyCode = Number(keyFields[0]);
+
+      let modifier: number | undefined;
+      let event: 1 | 2 | 3 | undefined;
+      if (fields.length >= 2) {
+        const modifierFields = fields[1]?.split(":") ?? [];
+        if (
+          modifierFields.length < 1 ||
+          modifierFields.length > 2 ||
+          !isPositiveSafeProtocolInteger(modifierFields[0] ?? "")
+        ) return undefined;
+        modifier = Number(modifierFields[0]);
+        if (modifierFields.length === 2) {
+          if (!/^[123]$/u.test(modifierFields[1] ?? "")) return undefined;
+          event = Number(modifierFields[1]) as 1 | 2 | 3;
+        }
+      }
+      if (fields.length === 3) {
+        const textCodePoints = fields[2]?.split(":") ?? [];
+        if (
+          textCodePoints.length < 1 ||
+          !textCodePoints.every((value) =>
+            isSafeProtocolInteger(value) && Number(value) <= 0x10ffff
+          )
+        ) return undefined;
+      }
+      return { keyCode, modifier, event };
+    };
+    const parseArrowEvent = (body: string): 1 | 2 | 3 | undefined | false => {
+      if (body === "" || body === "1") return undefined;
+      const match = /^1;(\d+)(?::([123]))?$/u.exec(body);
+      if (!match) return false;
+      const modifier = Number(match[1]);
+      if (!Number.isSafeInteger(modifier) || modifier < 1) return false;
+      return match[2] === undefined
+        ? undefined
+        : Number(match[2]) as 1 | 2 | 3;
+    };
+    const handleControlSequence = (
+      introducer: "[" | "O" | undefined,
+      body: string,
+      final: string,
+    ): void => {
+      if (final === "A" || final === "B") {
+        if (introducer === "O") {
+          if (body !== "") return;
+        } else if (introducer === "[") {
+          const event = parseArrowEvent(body);
+          if (event === false || event === 3) return;
+        } else {
+          return;
+        }
+        move(final === "A" ? -1 : 1);
+        return;
+      }
+      if (introducer === "O" && body === "" && final === "M") {
+        confirm();
+        return;
+      }
+      if (introducer !== "[") return;
+
+      if (final === "u") {
+        const key = parseCsiU(body);
+        if (!key || key.event === 3) return;
+        if (key.keyCode === 57352 || key.keyCode === 57419) move(-1);
+        else if (key.keyCode === 57353 || key.keyCode === 57420) move(1);
+        else if (key.keyCode === 13 || key.keyCode === 57414) confirm();
+        else if (key.keyCode === 27) finish(undefined);
+        else if (
+          (key.keyCode === 99 || key.keyCode === 67) &&
+          key.modifier !== undefined &&
+          ((key.modifier - 1) & 4) !== 0
+        ) {
+          finish(undefined);
+        }
+        return;
+      }
+
+      if (final === "~") {
+        // xterm modifyOtherKeys encodes modified Enter as CSI 27;mod;13~.
+        const match = /^27;(\d+);13$/u.exec(body);
+        if (match && isPositiveSafeProtocolInteger(match[1] ?? "")) {
+          confirm();
+        }
+      }
     };
     const onData = (chunk: Buffer | string): void => {
       const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
@@ -164,21 +280,46 @@ export function selectMenuIndex(
           clearEscapeTimer();
           if (character === "[" || character === "O") {
             escapeState = "control";
+            escapeIntroducer = character;
+            escapeBody = "";
+            startEscapeTimer(250);
           } else {
             escapeState = "none";
+            escapeIntroducer = undefined;
+            escapeBody = "";
           }
           continue;
         }
         if (escapeState === "control") {
+          if (character === "\u001B") {
+            escapeState = "start";
+            escapeIntroducer = undefined;
+            escapeBody = "";
+            startEscapeTimer();
+            continue;
+          }
           if (character >= "@" && character <= "~") {
+            clearEscapeTimer();
+            const introducer = escapeIntroducer;
+            const body = escapeBody;
             escapeState = "none";
-            if (character === "A") move(-1);
-            if (character === "B") move(1);
+            escapeIntroducer = undefined;
+            escapeBody = "";
+            handleControlSequence(introducer, body, character);
+            if (settled) return;
+          } else if (escapeBody.length < 64) {
+            escapeBody += character;
+            startEscapeTimer(250);
+          } else {
+            finish(undefined);
+            return;
           }
           continue;
         }
         if (character === "\u001B") {
           escapeState = "start";
+          escapeIntroducer = undefined;
+          escapeBody = "";
           startEscapeTimer();
           continue;
         }
@@ -187,9 +328,19 @@ export function selectMenuIndex(
           return;
         }
         if (character === "\r" || character === "\n") {
-          finish(selectedIndex);
+          confirm();
           return;
         }
+      }
+    };
+    const guardedOnData = (chunk: Buffer | string): void => {
+      try {
+        onData(chunk);
+      } catch {
+        finish(
+          undefined,
+          new Error("Unable to process the interactive selection."),
+        );
       }
     };
     const onEnd = (): void => finish(undefined);
@@ -199,8 +350,8 @@ export function selectMenuIndex(
     try {
       if (!options.overlay) options.output.write(HIDE_CURSOR);
       render();
-      input.setRawMode?.(true);
-      input.on("data", onData);
+      if (mustEnableRawMode) input.setRawMode?.(true);
+      input.on("data", guardedOnData);
       input.once("end", onEnd);
       input.once("close", onClose);
       input.once("error", onError);
@@ -209,4 +360,14 @@ export function selectMenuIndex(
       finish(undefined, new Error("Unable to start the interactive selection."));
     }
   });
+}
+
+function isSafeProtocolInteger(value: string): boolean {
+  if (!/^\d+$/u.test(value)) return false;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0;
+}
+
+function isPositiveSafeProtocolInteger(value: string): boolean {
+  return isSafeProtocolInteger(value) && Number(value) >= 1;
 }

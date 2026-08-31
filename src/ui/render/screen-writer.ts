@@ -14,6 +14,7 @@ const ERASE_SCREEN_DOWN = "\u001B[0J";
 export interface ScreenOutput extends NodeJS.WritableStream {
   readonly isTTY?: boolean;
   readonly columns?: number;
+  readonly rows?: number;
 }
 
 export type ScreenWidthSource = number | (() => number | undefined);
@@ -47,6 +48,15 @@ export class ScreenWriter {
   private liveText = "";
   private liveCursor?: LiveCursor;
   private renderedLiveRows = 0;
+  /**
+   * Rows physically reserved for the live region at its current anchor.
+   *
+   * A live block can grow while the terminal cursor is already on the last
+   * viewport row. Writing the larger block immediately would scroll its first
+   * rows into permanent scrollback before a later clear can erase them. Reserve
+   * blank rows first, then return to the anchor and paint the block in place.
+   */
+  private reservedLiveRows = 0;
   /** Current cursor row relative to live-region start. */
   private renderedCursorRow = 0;
   private plainLastLive = "";
@@ -102,6 +112,9 @@ export class ScreenWriter {
     const pendingLive = this.liveText;
     const pendingCursor = this.liveCursor;
     if (this.renderedLiveRows > 0) this.eraseRenderedLive();
+    // Stable output changes the live region's anchor. Any rows reserved below
+    // the former anchor no longer describe the space available at the new one.
+    this.reservedLiveRows = 0;
     this.write(sanitized);
     this.updateLineStart(sanitized);
     if (pendingLive) this.drawLive(pendingLive, pendingCursor);
@@ -162,7 +175,15 @@ export class ScreenWriter {
       this.atLineStart = true;
     }
 
-    const lines = wrapToWidth(text, this.columns, { preserveAnsi: true });
+    const wrappedLines = wrapToWidth(text, this.columns, { preserveAnsi: true });
+    // A block taller than the viewport cannot be erased reliably: cursor-up
+    // clamps at the top while painting would scroll its leading rows into
+    // permanent history. Keep the redrawable block within the physical screen;
+    // a resize-triggered refresh can reveal more rows when space returns.
+    const rowLimit = terminalRowLimit(this.output.rows);
+    const lines = wrappedLines.slice(0, rowLimit);
+    this.reservedLiveRows = Math.min(this.reservedLiveRows, rowLimit);
+    this.reserveLiveRows(lines.length);
     // Keep the cursor inside the final live row. A trailing LF would scroll the
     // terminal once the viewport is full, permanently leaking the former top
     // row into scrollback on every spinner refresh.
@@ -201,11 +222,29 @@ export class ScreenWriter {
     this.atLineStart = true;
   }
 
+  private reserveLiveRows(rows: number): void {
+    if (rows <= this.reservedLiveRows) return;
+
+    const previousRows = this.reservedLiveRows;
+    const additionalRows = rows - Math.max(1, previousRows);
+
+    // Move to the last already-reserved row, append only blank rows, and then
+    // return to the original live-region anchor. If this reaches the viewport
+    // bottom, only blank space (never live content) is allowed to scroll.
+    if (previousRows > 1) this.write(cursorDown(previousRows - 1));
+    if (additionalRows > 0) this.write("\r\n".repeat(additionalRows));
+    if (rows > 1) this.write(cursorUp(rows - 1));
+
+    this.reservedLiveRows = rows;
+    this.atLineStart = true;
+  }
+
   private resetLiveState(): void {
     this.liveText = "";
     this.liveCursor = undefined;
     this.renderedLiveRows = 0;
     this.renderedCursorRow = 0;
+    this.reservedLiveRows = 0;
     this.plainLastLive = "";
   }
 
@@ -236,6 +275,13 @@ function normalizeColumns(value: number | undefined): number {
   return Math.min(MAX_COLUMNS, Math.max(1, Math.floor(value ?? DEFAULT_COLUMNS)));
 }
 
+function terminalRowLimit(value: number | undefined): number {
+  if (!Number.isFinite(value) || (value ?? 0) < 1) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.max(1, Math.floor(value ?? 1));
+}
+
 function normalizeCursorInput(cursor: LiveCursor): LiveCursor {
   return {
     row: finiteNonNegativeInteger(cursor.row),
@@ -249,6 +295,10 @@ function finiteNonNegativeInteger(value: number): number {
 
 function cursorUp(rows: number): string {
   return rows > 0 ? `\u001B[${rows}A` : "";
+}
+
+function cursorDown(rows: number): string {
+  return rows > 0 ? `\u001B[${rows}B` : "";
 }
 
 function cursorRight(columns: number): string {

@@ -54,6 +54,8 @@ export interface ReadPromptOptions {
     signal?: AbortSignal,
   ) => Promise<ImageAttachment>;
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
+  /** Treat paste hotkeys as text-only and report the real clipboard failure. */
+  readonly textOnlyPaste?: boolean;
   readonly onShowThinking?: (
     id: number | "last",
   ) => void | Promise<void>;
@@ -206,6 +208,16 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
     return this;
   }
 
+  /** Drop incomplete input from a previous owner before a modal borrows us. */
+  resetPendingInput(): void {
+    this.clearEscapeTimer();
+    this.pendingSequence = Buffer.alloc(0);
+    this.pendingPrivateOsc = false;
+    while (this.read() !== null) {
+      // Ordinary bytes typed before the ownership boundary are stale too.
+    }
+  }
+
   override _transform(
     chunk: Buffer | string,
     encoding: BufferEncoding,
@@ -323,6 +335,7 @@ class ImagePasteInputProxy extends Transform {
     private readonly captureText?: (
       signal?: AbortSignal,
     ) => Promise<string | undefined>,
+    private readonly textOnlyPaste = false,
     private readonly onShowThinking?: (
       id: number | "last",
     ) => void | Promise<void>,
@@ -573,6 +586,24 @@ class ImagePasteInputProxy extends Transform {
   }
 
   private async captureMarker(): Promise<string> {
+    if (this.textOnlyPaste) {
+      try {
+        if (this.signal?.aborted) throw new Error("Text paste was canceled.");
+        if (!this.captureText) {
+          throw new Error("Clipboard text capture is unavailable.");
+        }
+        const text = await this.captureText(this.signal);
+        if (this.signal?.aborted) throw new Error("Text paste was canceled.");
+        if (!text) throw new Error("Clipboard does not contain text.");
+        return this.pastedTextForPrompt(text);
+      } catch (error) {
+        this.pasteErrors.push(
+          error instanceof Error ? error.message : String(error),
+        );
+        return " [Text paste failed] ";
+      }
+    }
+
     const index = this.initialImageCount + this.images.length + 1;
     try {
       if (this.signal?.aborted) throw new Error("Image paste was canceled.");
@@ -928,6 +959,7 @@ export function readPrompt(
     initialImageCount,
     options.captureImage,
     options.captureText,
+    options.textOnlyPaste ?? false,
     showThinking,
     toggleThinking,
     deleteAtomicMarker,

@@ -41,6 +41,8 @@ export interface RenderViewOptions {
   /** Terminal display cells. `width` is accepted as a descriptive alias. */
   readonly columns?: number;
   readonly width?: number;
+  /** Physical terminal rows used to keep modal controls visible. */
+  readonly rows?: number;
   /** Emit EASY CODE-owned SGR styles. `colors` is accepted as an alias. */
   readonly color?: boolean;
   readonly colors?: boolean;
@@ -111,9 +113,17 @@ export function renderLiveRegion(
   options: RenderViewOptions = {},
 ): string {
   if (state.overlay) {
-    const overlay = renderOverlay(state.overlay, options);
     const danger = renderDangerIndicator(state, options);
-    return danger ? `${overlay}\n\n${danger}` : overlay;
+    const overlay = renderOverlay(state.overlay, options);
+    const rendered = danger ? `${overlay}\n\n${danger}` : overlay;
+    const rowBudget = viewRows(options);
+    if (rendered.split("\n").length <= rowBudget) return rendered;
+
+    const compactOverlay = renderOverlay(state.overlay, {
+      ...options,
+      rows: Math.max(1, rowBudget - (danger ? 1 : 0)),
+    });
+    return danger ? `${compactOverlay}\n${danger}` : compactOverlay;
   }
 
   const blocks: string[] = [];
@@ -370,9 +380,105 @@ export function renderOverlay(
     ));
   }
 
-  return renderBox(
+  const rendered = renderBox(
     safeInline(overlay.title) || "Select",
     body,
+    columns,
+    palette,
+  );
+  if (rendered.split("\n").length <= viewRows(options)) return rendered;
+  return renderCompactOverlay(overlay, options, palette);
+}
+
+function renderCompactOverlay(
+  overlay: Readonly<UIOverlayState>,
+  options: RenderViewOptions,
+  palette: ChalkInstance,
+): string {
+  const columns = viewColumns(options);
+  const innerWidth = Math.max(1, boxContentWidth(columns));
+  const rowBudget = viewRows(options);
+  const bodyBudget = Math.max(1, rowBudget - (columns >= 6 ? 2 : 0));
+  const title = safeInline(overlay.title) || "Select";
+  if (overlay.kind === "approval" && rowBudget < 4) {
+    const warning = palette.yellow(truncateToWidth(
+      "Approval disabled: enlarge the terminal to review the command.",
+      columns >= 6 ? innerWidth : columns,
+      { preserveAnsi: false },
+    ));
+    if (rowBudget === 1) return warning;
+    if (rowBudget === 2) {
+      return [palette.bold(truncateToWidth(title, columns, {
+        preserveAnsi: false,
+      })), warning].join("\n");
+    }
+    return renderBox(title, [warning], columns, palette);
+  }
+  const selectedIndex = overlay.rows.length === 0
+    ? 0
+    : clampInteger(overlay.selectedIndex, 0, overlay.rows.length - 1);
+  const hint = safeInline(overlay.hint);
+  const body: string[] = [];
+  let remaining = bodyBudget;
+
+  const command = overlay.kind === "approval" && overlay.request.commandPreview
+    ? truncateToWidth(
+      `Command: ${safeInline(overlay.request.commandPreview)}`,
+      innerWidth,
+      { preserveAnsi: false },
+    )
+    : "";
+  const detail = overlay.detail ??
+    (overlay.kind === "approval"
+      ? overlay.request.description
+      : overlay.kind === "plan-review"
+        ? overlay.proposal.overview
+        : undefined);
+  const context = command || (detail
+    ? truncateToWidth(safeInline(detail), innerWidth, { preserveAnsi: false })
+    : "");
+
+  // Keep one choice and, when possible, the key hint visible. Context is
+  // useful but must never push the currently selected action off a short UI.
+  const contextRowsNeeded = overlay.kind === "approval" ? 2 : 3;
+  if (context && remaining >= contextRowsNeeded) {
+    body.push(palette.gray(context));
+    remaining -= 1;
+  }
+  const reserveHint = hint && remaining >= 2 ? 1 : 0;
+  const choiceCapacity = Math.max(1, remaining - reserveHint);
+  if (overlay.rows.length === 0) {
+    body.push(palette.gray("No choices available."));
+  } else {
+    const window = compactWindow(
+      overlay.rows.length,
+      selectedIndex,
+      Math.min(choiceCapacity, overlay.rows.length),
+    );
+    for (let index = window.start; index < window.end; index += 1) {
+      const row = overlay.rows[index];
+      if (!row) continue;
+      const selected = index === selectedIndex;
+      const detailText = row.detail ? ` · ${safeInline(row.detail)}` : "";
+      const disabled = row.disabled ? " (disabled)" : "";
+      const line = truncateToWidth(
+        `${selected ? "›" : " "} ${safeInline(row.label) || "(unnamed)"}` +
+          `${detailText}${disabled}`,
+        innerWidth,
+        { preserveAnsi: false },
+      );
+      body.push(selected ? palette.white.bold(line) : palette.gray(line));
+    }
+  }
+  if (reserveHint > 0 && body.length < bodyBudget) {
+    body.push(palette.gray(truncateToWidth(hint, innerWidth, {
+      preserveAnsi: false,
+    })));
+  }
+
+  return renderBox(
+    title,
+    body.slice(0, bodyBudget),
     columns,
     palette,
   );
@@ -840,6 +946,13 @@ function viewColor(options: RenderViewOptions): boolean {
 
 function viewColumns(options: RenderViewOptions): number {
   return boundedOption(options.columns ?? options.width, DEFAULT_VIEW_COLUMNS, 1, 10_000);
+}
+
+function viewRows(options: RenderViewOptions): number {
+  if (options.rows === undefined || !Number.isFinite(options.rows)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.max(1, Math.floor(options.rows));
 }
 
 function boxContentWidth(columns: number): number {

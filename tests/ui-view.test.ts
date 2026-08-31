@@ -305,6 +305,69 @@ describe("pure terminal UI views", () => {
     assert.equal(stripAnsi(colored), rendered);
   });
 
+  it("keeps the selected approval action visible in a short terminal", () => {
+    const base = {
+      id: "short-approval",
+      kind: "approval" as const,
+      title: "Approve command execution",
+      request: {
+        id: "approval-short",
+        title: "Run command",
+        description: "Executes workspace code inside the sandbox.",
+        risk: "workspace" as const,
+        commandPrefix: "node",
+        commandPreview: "node --check src/app.js",
+      },
+      rows: [
+        { id: "once", label: "Yes, allow execute one time" },
+        { id: "prefix", label: "Yes, don't ask me again" },
+        { id: "reject", label: "Reject" },
+      ],
+      hint: "Use ↑/↓ to move, Enter to confirm",
+    };
+    const first = applyEvent(createUIState(), {
+      type: "overlay.show",
+      overlay: { ...base, selectedIndex: 0 },
+    });
+    const second = applyEvent(createUIState(), {
+      type: "overlay.show",
+      overlay: { ...base, selectedIndex: 1 },
+    });
+
+    const firstRendered = stripAnsi(renderLiveRegion(first, 0, {
+      columns: 100,
+      rows: 5,
+      color: false,
+    }));
+    const secondRendered = stripAnsi(renderLiveRegion(second, 0, {
+      columns: 100,
+      rows: 5,
+      color: false,
+    }));
+
+    assert.equal(firstRendered.split("\n").length, 5);
+    assert.equal(secondRendered.split("\n").length, 5);
+    assert.match(firstRendered, /› Yes, allow execute one time/u);
+    assert.match(secondRendered, /› Yes, don't ask me again/u);
+    assert.notEqual(firstRendered, secondRendered);
+
+    const fourRows = stripAnsi(renderLiveRegion(first, 0, {
+      columns: 100,
+      rows: 4,
+      color: false,
+    }));
+    assert.match(fourRows, /Command: node --check src\/app\.js/u);
+    assert.match(fourRows, /› Yes, allow execute one time/u);
+
+    const threeRows = stripAnsi(renderLiveRegion(first, 0, {
+      columns: 100,
+      rows: 3,
+      color: false,
+    }));
+    assert.match(threeRows, /Approval disabled: enlarge the terminal/u);
+    assert.doesNotMatch(threeRows, /Yes, allow execute/u);
+  });
+
   it("renders one gray Thinking panel with an exact toggle control and modal priority", () => {
     const secret = "abcdefghijklmnopqrstuvwxyz";
     const state = applyEvents(populatedState(), [{

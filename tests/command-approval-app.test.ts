@@ -101,7 +101,15 @@ describe("application command approval decisions", () => {
       harness.terminal.decisions.push("allow_once", "reject");
       assert.equal(await harness.request(approvalRequest()), true);
       assert.deepEqual(harness.state.commandApprovalPrefixes, []);
+      assert.match(
+        harness.terminal.messages[0] ?? "",
+        /Approved once; starting the command\./u,
+      );
       assert.equal(await harness.request(approvalRequest()), false);
+      assert.match(
+        harness.terminal.messages[1] ?? "",
+        /Command execution rejected\./u,
+      );
       assert.equal(harness.terminal.requests.length, 2);
       assert.deepEqual(
         harness.threads.recover(harness.state.threadId).commandApprovalPrefixes,
