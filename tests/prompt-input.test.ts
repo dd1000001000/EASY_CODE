@@ -836,6 +836,124 @@ describe("image-aware CLI prompt", () => {
     assert.match(result?.text ?? "", /\[Image #1\]/u);
   });
 
+  it("accepts more typing while an asynchronous image paste is still being captured", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    let markCaptureStarted: (() => void) | undefined;
+    const captureStarted = new Promise<void>((resolve) => {
+      markCaptureStarted = resolve;
+    });
+    let finishCapture: ((image: ImageAttachment) => void) | undefined;
+    const captureFinished = new Promise<ImageAttachment>((resolve) => {
+      finishCapture = resolve;
+    });
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        markCaptureStarted?.();
+        return captureFinished;
+      },
+    });
+
+    input.write("before:");
+    input.write(Buffer.from([0x16]));
+    await captureStarted;
+    input.write(":after\r");
+    finishCapture?.(attachment(1));
+
+    const result = await prompt;
+    assert.equal(result?.text, "before: [Image #1] :after");
+    assert.deepEqual(result?.images.map((image) => image.label), ["Image #1"]);
+    assert.deepEqual(result?.pasteErrors, []);
+  });
+
+  it("accepts more typing while asynchronous clipboard text fallback is still being captured", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    let markTextCaptureStarted: (() => void) | undefined;
+    const textCaptureStarted = new Promise<void>((resolve) => {
+      markTextCaptureStarted = resolve;
+    });
+    let finishTextCapture: ((text: string) => void) | undefined;
+    const textCaptureFinished = new Promise<string>((resolve) => {
+      finishTextCapture = resolve;
+    });
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => {
+        throw new Error("clipboard does not contain an image");
+      },
+      captureText: async () => {
+        markTextCaptureStarted?.();
+        return textCaptureFinished;
+      },
+    });
+
+    input.write("before:");
+    input.write(Buffer.from([0x16]));
+    await textCaptureStarted;
+    input.write(":after\r");
+    finishTextCapture?.("A\nB");
+
+    const result = await prompt;
+    assert.equal(result?.text, "before:A\nB:after");
+    assert.deepEqual(result?.images, []);
+    assert.deepEqual(result?.pasteErrors, []);
+  });
+
+  it("releases queued input when clipboard capture never settles", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async () => new Promise<ImageAttachment>(() => undefined),
+      clipboardCaptureTimeoutMs: 20,
+    });
+
+    input.write("before:");
+    input.write(Buffer.from([0x16]));
+    input.write(":after\r");
+
+    const result = await prompt;
+    assert.match(result?.text ?? "", /^before: \[Image paste failed\] :after$/u);
+    assert.deepEqual(result?.images, []);
+    assert.deepEqual(result?.pasteErrors, [
+      "Clipboard image capture timed out after 20ms.",
+    ]);
+  });
+
+  it("recovers when a terminal omits the bracketed-paste closing marker", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      bracketedPasteIdleTimeoutMs: 20,
+    });
+
+    input.write("before:\u001B[200~A\nB");
+    await new Promise<void>((resolve) => setTimeout(resolve, 35));
+    input.write(":after\r");
+
+    const result = await prompt;
+    assert.match(result?.text ?? "", /^before: \[Text paste failed\] :after$/u);
+    assert.deepEqual(result?.pasteErrors, [
+      "Pasted text was incomplete because the terminal did not send its closing marker.",
+    ]);
+  });
+
   it("reports clipboard failures without attaching a phantom image", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();

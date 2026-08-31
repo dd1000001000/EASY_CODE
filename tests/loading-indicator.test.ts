@@ -266,6 +266,89 @@ describe("model request loading indicator", () => {
     assert.equal(advertisedTools[0]?.includes("run_command"), true);
   });
 
+  it("allows one bounded retry after a transient Windows SRT ACL failure", async () => {
+    let requestCount = 0;
+    let executionCount = 0;
+    const advertisedTools: string[][] = [];
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete(request) {
+        requestCount += 1;
+        advertisedTools.push((request.tools ?? []).map((tool) => tool.function.name));
+        if (requestCount <= 2) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `call_retry_${requestCount}`,
+                type: "function",
+                function: {
+                  name: "run_command",
+                  arguments: '{"program":"node","intent":"inspect"}',
+                },
+              }],
+            },
+          };
+        }
+        return {
+          message: { role: "assistant", content: "verification passed", tool_calls: [] },
+        };
+      },
+    };
+    const tool: AgentTool = {
+      name: "run_command",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "run_command",
+          description: "run",
+          parameters: { type: "object" },
+        },
+      },
+      async execute(): Promise<ToolExecutionResult> {
+        executionCount += 1;
+        if (executionCount === 1) {
+          return {
+            ok: false,
+            summary: "srt-win acl stamp timed out",
+            error: "sandbox unavailable",
+            data: {
+              status: "sandbox_unavailable",
+              sandboxFailure: { phase: "initialization", retryable: true },
+            },
+          };
+        }
+        return { ok: true, summary: "command passed" };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [tool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(runtimeState("code"), "Verify the project", {
+      maxSteps: 3,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(executionCount, 2);
+    assert.equal(advertisedTools[0]?.includes("run_command"), true);
+    assert.equal(advertisedTools[1]?.includes("run_command"), true);
+  });
+
   it("shows a TTY spinner and clears it without adding a blank line", async () => {
     await withoutAnimationSuppressors(() => {
       const input = new PassThrough();

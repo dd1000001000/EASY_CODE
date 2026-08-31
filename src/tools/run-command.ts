@@ -71,12 +71,34 @@ export class RunCommandTool implements AgentTool {
         output.status === "exited" &&
         output.exitCode === 0 &&
         output.workspaceDelta.deleted.length === 0;
+      const retryableSandboxFailure =
+        output.status === "sandbox_unavailable" &&
+        output.sandboxFailure?.retryable === true;
+      const sandboxRecovery = retryableSandboxFailure
+        ? (
+            "This appears to be a transient Windows SRT initialization/ACL failure. Retry " +
+            "this exact command once now; Runtime permits only that bounded recovery attempt. " +
+            "Do not mark the task permanently blocked after this first failure."
+          )
+        : context.agentRole === "subagent"
+        ? (
+            "Do not retry run_command in this turn. Continue file work if possible; otherwise " +
+            "submit a blocked child result naming the transient sandbox condition so the parent " +
+            "can requeue the assignment."
+          )
+        : (
+            "Do not retry run_command in this turn and do not persistently block a DAG task " +
+            "solely for this transient failure. Continue with file tools or return a plain-text " +
+            "pause report; Runtime re-enables commands next turn."
+          );
       const summary = output.status === "policy_denied"
         ? `Command denied: ${output.policyDecision.reason}`
         : output.status === "sandbox_unavailable"
           ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
-            "Do not retry run_command in this turn; continue with file tools or report " +
-            "command-based verification as blocked. Run `easy-code sandbox doctor` outside the agent."
+            `The command did not start. ${sandboxRecovery} ` +
+            (retryableSandboxFailure
+              ? ""
+              : "Run `easy-code sandbox doctor` outside the agent.")
         : output.status === "exited"
           ? `Command exited with code ${output.exitCode}`
           : `Command ${output.status.replace(/_/gu, " ")}`;

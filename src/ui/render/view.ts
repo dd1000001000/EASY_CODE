@@ -9,7 +9,7 @@ import type {
   UIProgressStatus,
   UISessionInfo,
   UIState,
-  UIThinkingPanelState,
+  UIThinkingPanelInput,
 } from "../contracts.js";
 import {
   displayWidth,
@@ -136,24 +136,18 @@ export function renderLiveRegion(
 }
 
 /**
- * Render transient detail above the composer. Thinking stays first so its live
- * expansion remains adjacent to the stable marker that introduced it. The
- * animated activity itself lives in the footer so it remains visible beside
- * elapsed time without adding another redrawable block.
+ * Render transient detail above the composer. Thinking is owned by Terminal's
+ * ordered mutable-turn tail so its expanded body can replace the preview at
+ * the exact same logical position. The animated activity itself lives in the
+ * footer so it remains visible beside elapsed time without adding another
+ * redrawable block.
  */
 export function renderLiveActivityRegion(
   state: Readonly<UIState>,
   _nowMs: number,
   options: RenderViewOptions = {},
 ): string {
-  const blocks: string[] = [];
-  const progress = renderProgress(state, options);
-  const thinking = state.composer.busy && state.live.thinking
-    ? renderThinkingPanel(state.live.thinking, options)
-    : "";
-  if (thinking) blocks.push(thinking);
-  if (progress) blocks.push(progress);
-  return blocks.join("\n\n");
+  return renderProgress(state, options);
 }
 
 /** Render Tasks and Agents below the composer, followed by the activity footer. */
@@ -279,31 +273,28 @@ function renderDangerIndicator(
   );
 }
 
-/** Render one expanded, bounded Thinking block inside the redrawable region. */
+/** Render one expanded Thinking item in the same slot as its collapsed marker. */
 export function renderThinkingPanel(
-  panel: Readonly<UIThinkingPanelState>,
+  panel: Readonly<UIThinkingPanelInput>,
   options: RenderViewOptions = {},
 ): string {
   const columns = viewColumns(options);
   const palette = viewPalette(options);
-  const innerWidth = Math.max(1, boxContentWidth(columns));
+  const innerWidth = Math.max(1, columns - 2);
   const maximumRows = boundedOption(
     options.maxThinkingRows ?? options.maxThinkingLines,
     MAX_THINKING_PANEL_ROWS,
     1,
     40,
   );
-  const content = panel.body || "(No visible Thinking text.)";
+  const content = ("body" in panel ? panel.body : panel.text) ||
+    "(No visible Thinking text.)";
   const wrapped = limitedWrappedLineResult(content, innerWidth, maximumRows);
-  const body = wrapped.lines.map((line) =>
-    palette.gray(line)
-  );
+  const body = wrapped.lines.map((line) => palette.gray(`  ${line}`));
   if (wrapped.truncated) {
     body.push(palette.gray(
-      `… ${wrapped.totalLines - maximumRows} more wrapped row(s).`,
-    ));
-    body.push(palette.gray(
-      `/thinking ${panel.id} shows all retained content.`,
+      `  … ${wrapped.totalLines - maximumRows} more wrapped row(s); ` +
+        `/thinking ${panel.id} shows all retained content.`,
     ));
   }
   if (panel.truncated) {
@@ -314,22 +305,13 @@ export function renderThinkingPanel(
         : panel.sourceChars !== undefined
           ? ` from ${panel.sourceChars} chars`
           : "";
-    body.push(palette.gray(`… [Thinking truncated${source}.]`));
+    body.push(palette.gray(`  … [Thinking truncated${source}.]`));
   }
-  body.push("");
-  body.push(palette.gray(
-    `↕ Thinking #${panel.id} · /thinking ${panel.id}`,
-  ));
-  body.push(palette.gray(
-    "  VS Code Ctrl/Cmd+click the Thinking label to close",
-  ));
-  return renderBox(
-    `Thinking #${panel.id}`,
-    body,
-    columns,
-    palette,
-    "gray",
+  const header = palette.gray(
+    `↕ Thinking #${panel.id} · /thinking ${panel.id} · ` +
+      "VS Code Ctrl/Cmd+click to toggle",
   );
+  return [header, ...body].join("\n");
 }
 
 /** Render a modal picker card. All request/model/plan strings remain data. */

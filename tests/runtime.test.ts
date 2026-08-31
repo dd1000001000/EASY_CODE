@@ -958,6 +958,362 @@ describe("AgentRuntime", () => {
     assert.equal(currentState.taskGraph?.tasks[0]?.completionEvidence, undefined);
   });
 
+  it("pauses a DAG on transient sandbox failure and retries the in-progress task next turn", async () => {
+    let requestCount = 0;
+    let commandExecutions = 0;
+    let sawRetryToolAvailable = false;
+    let sawPauseInstruction = false;
+    let sawRunCommandRemoved = false;
+    const call = (
+      id: string,
+      name: "manage_tasks" | "run_command",
+      input: unknown,
+    ) => ({
+      id,
+      type: "function" as const,
+      function: { name, arguments: JSON.stringify(input) },
+    });
+    const responses: ProviderResponse[] = [
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("create", "manage_tasks", {
+            action: "create",
+            goal: "Verify one implementation with a command",
+            tasks: [{
+              id: "verify",
+              title: "Verify implementation",
+              description: "Run the project verification command",
+              dependencies: [],
+              inputs: ["Current workspace"],
+              expectedArtifacts: ["Command verification result"],
+              completionChecks: ["The verification command exits successfully"],
+              failureHandling: "Block only for a durable external condition",
+            }],
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("start", "manage_tasks", {
+            action: "start",
+            taskId: "verify",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("sandbox_failure", "run_command", {
+            program: "node",
+            args: ["--check", "src/app.ts"],
+            intent: "test",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("incorrect_block", "manage_tasks", {
+            action: "block",
+            taskId: "verify",
+            reason: "The OS sandbox is temporarily unavailable",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("retry_failure", "run_command", {
+            program: "node",
+            args: ["--check", "src/app.ts"],
+            intent: "test",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("second_incorrect_block", "manage_tasks", {
+            action: "block",
+            taskId: "verify",
+            reason: "The OS sandbox retry also failed temporarily",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("next_turn_command", "run_command", {
+            program: "node",
+            args: ["--check", "src/app.ts"],
+            intent: "test",
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [call("complete", "manage_tasks", {
+            action: "complete",
+            taskId: "verify",
+            evidence: ["The retried verification command exited successfully"],
+          })],
+        },
+      },
+      {
+        message: {
+          role: "assistant",
+          content: "Verification completed after the transient sandbox failure cleared.",
+          tool_calls: [],
+        },
+      },
+    ];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requestCount += 1;
+        if (requestCount === 4) {
+          sawRetryToolAvailable = (request.tools ?? []).some(
+            (tool) => tool.function.name === "run_command",
+          );
+        }
+        if (requestCount === 6) {
+          sawPauseInstruction = request.messages.some(
+            (message) =>
+              message.role === "system" &&
+              message.content.includes("RUNTIME_COMMAND_SANDBOX_PAUSED"),
+          );
+          sawRunCommandRemoved = !(request.tools ?? []).some(
+            (tool) => tool.function.name === "run_command",
+          );
+        }
+        const response = responses.shift();
+        if (!response) throw new Error("Unexpected model request");
+        return response;
+      },
+    };
+    const runCommandTool: AgentTool = {
+      name: "run_command",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "run_command",
+          description: "run",
+          parameters: { type: "object" },
+        },
+      },
+      async execute() {
+        commandExecutions += 1;
+        return commandExecutions <= 2
+          ? {
+              ok: false,
+              summary: "Sandbox unavailable before command start",
+              error: "sandbox unavailable",
+              data: {
+                status: "sandbox_unavailable",
+                sandboxFailure: { phase: "initialization", retryable: true },
+              },
+            }
+          : {
+              ok: true,
+              summary: "Command exited with code 0",
+              data: { status: "exited", exitCode: 0 },
+            };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [new ManageTasksTool(), runCommandTool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+    const currentState = state();
+    const first = await runtime.run(currentState, "Verify the implementation", {
+      maxSteps: 6,
+      maxContextChars: 30_000,
+      maxOutputChars: 8_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(first.reason, "blocked");
+    assert.match(first.text, /current DAG task remains in progress/iu);
+    assert.equal(commandExecutions, 2);
+    assert.equal(sawRetryToolAvailable, true);
+    assert.equal(sawPauseInstruction, true);
+    assert.equal(sawRunCommandRemoved, true);
+    assert.equal(currentState.taskGraph?.status, "active");
+    assert.equal(currentState.taskGraph?.tasks[0]?.status, "in_progress");
+    assert.equal(currentState.taskGraph?.tasks[0]?.blocker, undefined);
+    assert.equal(
+      currentState.messages.some(
+        (message) =>
+          message.role === "tool" &&
+          message.content.includes("cannot persistently block a DAG task"),
+      ),
+      true,
+    );
+
+    const second = await runtime.run(currentState, "Retry the paused verification", {
+      maxSteps: 3,
+      maxContextChars: 30_000,
+      maxOutputChars: 8_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(second.reason, "success");
+    assert.equal(commandExecutions, 3);
+    assert.equal(currentState.taskGraph?.status, "completed");
+    assert.equal(currentState.taskGraph?.tasks[0]?.status, "completed");
+  });
+
+  it("clears transient sandbox recovery after a retry reaches a real command failure", async () => {
+    const definition = {
+      id: "verify",
+      title: "Verify implementation",
+      description: "Run a verification command that depends on an external service",
+      dependencies: [],
+      inputs: ["Current workspace"],
+      expectedArtifacts: ["Verification result"],
+      completionChecks: ["The external verification completes"],
+      failureHandling: "Block if required external credentials are unavailable",
+    };
+    const currentState = state();
+    const created = applyTaskGraphOperation(undefined, {
+      action: "create",
+      goal: "Verify against the external service",
+      tasks: [definition],
+    }, { turnId: "turn_seed" });
+    currentState.taskGraph = applyTaskGraphOperation(created, {
+      action: "start",
+      taskId: "verify",
+    }, { turnId: "turn_seed" });
+    let requestCount = 0;
+    let commandExecutions = 0;
+    const call = (
+      id: string,
+      name: "manage_tasks" | "run_command",
+      input: unknown,
+    ) => ({
+      id,
+      type: "function" as const,
+      function: { name, arguments: JSON.stringify(input) },
+    });
+    const runtime = new AgentRuntime({
+      provider: {
+        name: "qwen",
+        model: "mock",
+        async complete() {
+          requestCount += 1;
+          if (requestCount <= 2) {
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [call(`command_${String(requestCount)}`, "run_command", {
+                  program: "node",
+                  intent: "test",
+                })],
+              },
+            };
+          }
+          if (requestCount === 3) {
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [call("durable_block", "manage_tasks", {
+                  action: "block",
+                  taskId: "verify",
+                  reason: "The external service requires credentials that only the user can provide",
+                })],
+              },
+            };
+          }
+          return {
+            message: {
+              role: "assistant",
+              content: "External verification needs user credentials.",
+              tool_calls: [],
+            },
+          };
+        },
+      },
+      tools: [
+        new ManageTasksTool(),
+        {
+          name: "run_command",
+          mutating: true,
+          definition: {
+            type: "function",
+            function: {
+              name: "run_command",
+              description: "run",
+              parameters: { type: "object" },
+            },
+          },
+          async execute() {
+            commandExecutions += 1;
+            return commandExecutions === 1
+              ? {
+                  ok: false,
+                  summary: "Transient sandbox initialization failure",
+                  error: "sandbox unavailable",
+                  data: {
+                    status: "sandbox_unavailable",
+                    sandboxFailure: { phase: "initialization", retryable: true },
+                  },
+                }
+              : {
+                  ok: false,
+                  summary: "Command exited with code 1",
+                  error: "External credentials are missing",
+                  data: { status: "exited", exitCode: 1 },
+                };
+          },
+        },
+      ],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, "Retry verification once", {
+      maxSteps: 3,
+      maxContextChars: 30_000,
+      maxOutputChars: 8_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "blocked");
+    assert.equal(result.steps, 4);
+    assert.equal(commandExecutions, 2);
+    assert.equal(currentState.taskGraph.status, "blocked");
+    assert.equal(currentState.taskGraph.tasks[0]?.status, "blocked");
+    assert.match(currentState.taskGraph.tasks[0]?.blocker ?? "", /credentials/iu);
+  });
+
   it("uses one finalization step when the final task completes at the limit", async () => {
     let requestCount = 0;
     let finalRequestTools: string[] = [];

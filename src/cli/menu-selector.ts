@@ -353,7 +353,13 @@ export function selectMenuIndex(
       // frame. VS Code/ConPTY can deliver the first key immediately after the
       // overlay becomes visible; rendering first left a small window where
       // that key was still consumed by the previous prompt owner.
-      if (mustEnableRawMode) input.setRawMode?.(true);
+      // Reassert Raw Mode even when Node's cached `isRaw` flag is already true.
+      // Windows ConPTY can leave the console input handle in cooked mode after
+      // a focus/owner transition while the JavaScript ReadStream still reports
+      // `isRaw === true`. In that state the first arrows are buffered until an
+      // Enter completes the cooked read. `setRawMode(true)` is idempotent for a
+      // healthy TTY and repairs that drift before the selector becomes visible.
+      input.setRawMode?.(true);
       input.on("data", guardedOnData);
       input.once("end", onEnd);
       input.once("close", onClose);

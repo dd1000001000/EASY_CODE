@@ -18,6 +18,7 @@ import type {
   SandboxExecutionRequest,
   SandboxWorkerPayload,
 } from "./types.js";
+import { WindowsSandboxProcessLock } from "./windows-process-lock.js";
 
 class AsyncGate {
   private tail: Promise<void> = Promise.resolve();
@@ -38,6 +39,9 @@ class AsyncGate {
 // receiving overlapping ACL grants through that identity.
 const SANDBOX_SCRATCH_PARENT = path.join(os.tmpdir(), "easy-code-srt-runtime");
 const WINDOWS_SANDBOX_GATE = new AsyncGate();
+const WINDOWS_SANDBOX_PROCESS_LOCK = new WindowsSandboxProcessLock(
+  path.join(SANDBOX_SCRATCH_PARENT, "windows-acl.lock"),
+);
 
 export interface AnthropicSandboxBackendOptions {
   sensitiveReadPaths?: readonly string[];
@@ -172,9 +176,15 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
     const releaseGate = process.platform === "win32"
       ? await WINDOWS_SANDBOX_GATE.acquire()
       : () => undefined;
+    let releaseProcessLock: () => Promise<void> = async () => undefined;
     let scratchRoot = "";
     try {
       await mkdir(SANDBOX_SCRATCH_PARENT, { recursive: true, mode: 0o700 });
+      if (process.platform === "win32") {
+        releaseProcessLock = await WINDOWS_SANDBOX_PROCESS_LOCK.acquire(
+          request.context.signal,
+        );
+      }
       scratchRoot = await mkdtemp(path.join(SANDBOX_SCRATCH_PARENT, "command-"));
       const scratchHome = path.join(scratchRoot, "home");
       const scratchTemp = path.join(scratchRoot, "tmp");
@@ -269,7 +279,11 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
             assertScratchPath(scratchRoot);
             await rm(scratchRoot, { recursive: true, force: true });
           } finally {
-            releaseGate();
+            try {
+              await releaseProcessLock();
+            } finally {
+              releaseGate();
+            }
           }
         },
       };
@@ -280,7 +294,11 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
           await rm(scratchRoot, { recursive: true, force: true });
         }
       } finally {
-        releaseGate();
+        try {
+          await releaseProcessLock();
+        } finally {
+          releaseGate();
+        }
       }
       throw error;
     }
