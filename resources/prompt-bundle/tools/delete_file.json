@@ -1,0 +1,10 @@
+{
+  "id": "delete_file",
+  "contractVersion": "1.0.0",
+  "description": "Delete a previously read regular file only if its current SHA-256 hash still matches expectedHash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
+  "propertyDescriptions": {
+    "path": "Workspace-relative file path, or an absolute host path only in unrestricted mode.",
+    "expectedHash": "Full-file SHA-256 hash returned by read_file."
+  },
+  "guidance": "delete_file deletes a previously read regular file using its expected hash. Use it only when removing the whole file is necessary; never substitute a shell deletion command for this checked tool when the checked tool can perform the operation."
+}

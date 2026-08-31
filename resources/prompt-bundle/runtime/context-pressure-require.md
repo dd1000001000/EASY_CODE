@@ -1,0 +1,1 @@
+RUNTIME_CONTEXT_COMPACTION_REQUIRED: Short-term context is approximately {{percent}}% of its configured limit. Before any other work or final answer, call compact_context by itself with a cumulative summary. Runtime exposes only that tool and rejects every other action until compaction succeeds.

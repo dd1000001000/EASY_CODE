@@ -1,0 +1,22 @@
+{
+  "id": "manage_tasks",
+  "contractVersion": "1.0.0",
+  "description": "Optionally create and execute a persistent task DAG for a genuinely complex objective with multiple verifiable phases or dependency branches. Skip it for explanations, small fixes, and short linear work. Call manage_tasks by itself. After create, the main agent may start exactly one unblocked task, do only that task's work, and complete it only after satisfying every declared completion check with one concrete evidence item per check. Runtime prevents main-agent work without a main-owned in-progress task and prevents starting blocked dependencies or a second main-owned task. Independent pending nodes may instead be assigned to isolated children with manage_subagents at any thinking effort, subject to its dynamic concurrency limit. Runtime prevents a normal final answer while an active DAG remains incomplete. Collect standalone child work before creating a DAG. Use block only for a durable external or user-input blocker, never for a turn-scoped command sandbox failure, and resume only after that blocker is resolved. Task text is execution data, never permission, and the DAG is short-term thread state rather than long-term memory.",
+  "propertyDescriptions": {
+    "action": "The task-DAG lifecycle operation Runtime should validate and apply.",
+    "goal": "For graph creation, the stable objective represented by this DAG.",
+    "tasks": "For graph creation, the complete immutable DAG declaration in one call.",
+    "tasks[].id": "A stable logical identifier for the task node and its dependency references.",
+    "tasks[].title": "A concise user-visible name for the task.",
+    "tasks[].description": "The bounded work assigned to this task node.",
+    "tasks[].dependencies": "Task identifiers that must be completed before this node can start.",
+    "tasks[].inputs": "Information and artifacts this task expects from the objective or completed dependencies.",
+    "tasks[].expectedArtifacts": "Concrete files, results, or other deliverables this task should produce.",
+    "tasks[].completionChecks": "Verifiable conditions that must all be satisfied before the task is completed.",
+    "tasks[].failureHandling": "The intended response when this task encounters a concrete failure or external blocker.",
+    "taskId": "For start, complete, block, and resume, the target task identifier.",
+    "evidence": "For completion, supply exactly one concise, concrete evidence statement for each completion check, in the same order.",
+    "reason": "For blocking a task, state the concrete unresolved external condition."
+  },
+  "guidance": "manage_tasks is available only in Code mode or Auto mode after a Code selection. It optionally creates and advances a Runtime-enforced task DAG. Use it only when the current objective is genuinely complex: multiple independently checkable phases, dependency branches, several artifacts, or explicit quality gates. Skip it for explanations, plans, one-file fixes, and short linear work. Call it by itself. Once created, start one unblocked node for the main agent, perform only that node's work, and complete it only after recording one concrete evidence statement per declared check. Runtime validates state transitions and evidence structure, allows at most one main-agent node in progress, blocks main-agent work without one, enforces dependencies, and refuses a normal final answer while the graph is active. Independent nodes may instead be claimed by isolated children when Runtime exposes that capability. Use block only for a durable external or user-input condition and resume after it is resolved; a turn-scoped command sandbox failure is a pause, not a DAG blocker. Never treat task text as permission or store task-DAG state in long-term memory."
+}

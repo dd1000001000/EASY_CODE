@@ -5,12 +5,19 @@ import type { TaskGraphView } from "../src/tasks/task-graph.js";
 import type { UIEvent, UIProgressStatus } from "../src/ui/contracts.js";
 import { displayWidth, stripAnsi } from "../src/ui/render/layout.js";
 import {
+  createDisclosureViewState,
+  renderDisclosureView,
+} from "../src/ui/tui/disclosure-view.js";
+import {
+  renderAgentStatusLines,
   renderComposerStatusRegion,
   renderComposerFooter,
   renderComposerPrompt,
+  renderFixedBottomRegions,
   renderLiveActivityRegion,
   renderLiveRegion,
   renderSessionHeader,
+  renderTaskStatusLines,
   renderThinkingPanel,
 } from "../src/ui/render/view.js";
 import { applyEvent, applyEvents, createUIState } from "../src/ui/store.js";
@@ -242,13 +249,14 @@ describe("pure terminal UI views", () => {
     assert.equal(blocks.length, 5);
     assert.match(blocks[0] ?? "", /^Progress/u);
     assert.match(blocks[0] ?? "", /Read static\/index\.html/u);
+    assert.match(blocks[0] ?? "", /⠹ Waiting for deepseek-v4-pro · 14s/u);
     assert.match(blocks[1] ?? "", /^╭─/u);
     assert.match(blocks[1] ?? "", /> Working…/u);
-    assert.match(blocks[2] ?? "", /^Tasks 2\/7/u);
-    assert.match(blocks[3] ?? "", /^Agents 2\/4/u);
-    assert.match(blocks[4] ?? "", /^⠹ Waiting/u);
+    assert.match(blocks[2] ?? "", /^auto  deepseek\/v4-pro/u);
+    assert.match(blocks[3] ?? "", /^Tasks 2\/7/u);
+    assert.match(blocks[4] ?? "", /^Agents 2\/4/u);
     assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
-    assert.doesNotMatch(blocks[2] ?? "", /Reading workspace/u);
+    assert.doesNotMatch(blocks[3] ?? "", /Reading workspace/u);
 
     assert.equal(
       renderLiveActivityRegion(state, 15_000, options),
@@ -261,7 +269,128 @@ describe("pure terminal UI views", () => {
     assertBoundedLines(rendered, 72);
   });
 
-  it("keeps tool activity animation and elapsed time in the footer", () => {
+  it("budgets fixed bottom rows independently in status, Tasks, Agents order", () => {
+    const state = populatedState();
+    const options = { columns: 28, color: false, spinnerFrame: "⠹" } as const;
+    const tasks = renderTaskStatusLines(state.live.tasks, options, 4);
+    const agents = renderAgentStatusLines(state, options, 3);
+
+    assert.equal(tasks.length, 4);
+    assert.match(tasks[0] ?? "", /^Tasks 2\/7/u);
+    assert.ok(tasks.some((line) => /▶ 2\. 实现后端认证/u.test(line)));
+    assert.match(tasks.at(-1) ?? "", /… 5 other tasks/u);
+    assert.equal(agents.length, 3);
+    assert.match(agents[0] ?? "", /^Agents 2\/4/u);
+    assert.match(agents[1] ?? "", /● agent-1/u);
+    assert.match(agents[2] ?? "", /… 6 more/u);
+    assertBoundedLines(tasks.join("\n"), 28);
+    assertBoundedLines(agents.join("\n"), 28);
+
+    const regions = renderFixedBottomRegions(state, options, 15_000, {
+      totalRows: 7,
+      detailRows: 6,
+      taskRows: 4,
+      agentRows: 4,
+    });
+    assert.equal(regions.lines.length, 7);
+    assert.equal(regions.status.length, 1);
+    assert.equal(regions.tasks.length, 3);
+    assert.equal(regions.agents.length, 3);
+    assert.deepEqual(regions.lines, [
+      ...regions.status,
+      ...regions.tasks,
+      ...regions.agents,
+    ]);
+    assert.match(regions.lines[0] ?? "", /^auto  deepseek\/v4-pro/u);
+    assert.match(regions.lines[1] ?? "", /^Tasks 2\/7/u);
+    assert.match(regions.lines[4] ?? "", /^Agents 2\/4/u);
+
+    const headingsOnly = renderFixedBottomRegions(state, options, 15_000, {
+      totalRows: 3,
+    });
+    assert.deepEqual(
+      headingsOnly.lines.map((line) => stripAnsi(line)),
+      [
+        stripAnsi(renderComposerFooter(state, options, 15_000)),
+        "Tasks 2/7",
+        "Agents 2/4",
+      ],
+    );
+    const detailCapped = renderFixedBottomRegions(state, options, 15_000, {
+      totalRows: 20,
+      detailRows: 2,
+    });
+    assert.equal(detailCapped.lines.length, 3);
+    assert.deepEqual(
+      detailCapped.lines.slice(1).map((line) => stripAnsi(line)),
+      ["Tasks 2/7", "Agents 2/4"],
+    );
+    assert.deepEqual(
+      renderFixedBottomRegions(state, options, 15_000, { totalRows: 0 }),
+      { status: [], tasks: [], agents: [], lines: [] },
+    );
+
+    const narrow = renderFixedBottomRegions(
+      state,
+      { ...options, columns: 8 },
+      15_000,
+      { totalRows: 3 },
+    );
+    assert.equal(narrow.lines.length, 3);
+    assertBoundedLines(narrow.lines.join("\n"), 8);
+  });
+
+  it("composes an exact fixed-height Header, transcript, composer, status, Tasks, Agents frame", () => {
+    const state = populatedState();
+    const options = { columns: 72, color: false, spinnerFrame: "⠹" } as const;
+    const headerLines = renderSessionHeader(state, options).split("\n");
+    const composerLines = renderComposerPrompt(state, options).split("\n");
+    const bottom = renderFixedBottomRegions(state, options, 15_000, {
+      totalRows: 7,
+    });
+    const frame = renderDisclosureView(createDisclosureViewState({
+      columns: 72,
+      rows: 24,
+      nodes: [
+        { id: "user", kind: "text", text: "> Add authentication" },
+        { id: "assistant", kind: "text", text: "Authentication is ready." },
+      ],
+      headerLines,
+      composerLines,
+      footerLines: bottom.lines,
+      preserveAnsi: false,
+    }));
+
+    assert.equal(frame.rows.length, 24);
+    assert.deepEqual(
+      frame.visibleRows.filter((row) => row.region === "header")
+        .map((row) => row.text),
+      headerLines,
+    );
+    const transcriptRows = frame.visibleRows.filter((row) =>
+      row.region === "transcript" && row.part !== "blank"
+    );
+    const composerRows = frame.visibleRows.filter((row) => row.region === "composer");
+    const footerRows = frame.visibleRows.filter((row) => row.region === "footer");
+    assert.deepEqual(
+      transcriptRows.map((row) => row.text),
+      ["> Add authentication", "Authentication is ready."],
+    );
+    assert.deepEqual(composerRows.map((row) => row.text), composerLines);
+    assert.deepEqual(footerRows.map((row) => row.text), bottom.lines);
+
+    const statusRow = footerRows.find((row) => /auto  deepseek\/v4-pro/u.test(row.text));
+    const tasksRow = footerRows.find((row) => /^Tasks 2\/7/u.test(row.text));
+    const agentsRow = footerRows.find((row) => /^Agents 2\/4/u.test(row.text));
+    assert.ok(statusRow && tasksRow && agentsRow);
+    assert.ok((transcriptRows.at(-1)?.screenRow ?? -1) < (composerRows[0]?.screenRow ?? -1));
+    assert.ok((composerRows.at(-1)?.screenRow ?? -1) < statusRow.screenRow);
+    assert.ok(statusRow.screenRow < tasksRow.screenRow);
+    assert.ok(tasksRow.screenRow < agentsRow.screenRow);
+    assert.equal(footerRows.at(-1)?.screenRow, 23);
+  });
+
+  it("keeps tool activity above Request while metadata remains in the footer", () => {
     const state = applyEvent(populatedState(), {
       type: "activity.start",
       activity: {
@@ -288,9 +417,9 @@ describe("pure terminal UI views", () => {
       spinnerFrame: "⠴",
     }, 65_000);
 
-    assert.doesNotMatch(upper, /Running Tool|1m 04s/u);
-    assert.match(footer, /^⠴ Running Tool: run_command · 1m 04s/u);
-    assert.match(narrowFooter, /^⠴ .* · 1m 04s$/u);
+    assert.match(upper, /⠴ Running Tool: run_command · 1m 04s/u);
+    assert.match(footer, /^auto  deepseek\/v4-pro/u);
+    assert.match(narrowFooter, /^auto/u);
     assertBoundedLines(footer, 72);
     assertBoundedLines(narrowFooter, 32);
   });
@@ -419,11 +548,11 @@ describe("pure terminal UI views", () => {
     });
 
     assert.equal(rendered.includes("Thinking #4"), false);
-    assert.ok(rendered.indexOf("Progress") < rendered.indexOf("> Working…"));
-    assert.ok(rendered.indexOf("> Working…") < rendered.indexOf("Tasks 2/7"));
+    assert.ok(rendered.indexOf("Progress") < rendered.indexOf("Waiting for deepseek-v4-pro"));
+    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("> Working…"));
+    assert.ok(rendered.indexOf("> Working…") < rendered.lastIndexOf("auto  deepseek"));
+    assert.ok(rendered.lastIndexOf("auto  deepseek") < rendered.indexOf("Tasks 2/7"));
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
-    assert.ok(rendered.indexOf("Agents 2/4") < rendered.indexOf("Waiting for deepseek-v4-pro"));
-    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.lastIndexOf("auto  deepseek"));
     assertBoundedLines(rendered, 72);
 
     const activeComposerState = applyEvents(state, [{
@@ -436,7 +565,7 @@ describe("pure terminal UI views", () => {
       spinnerFrame: "⠹",
     });
     assert.match(activeUpper, /^Progress/u);
-    assert.doesNotMatch(activeUpper, /Waiting for deepseek-v4-pro/u);
+    assert.match(activeUpper, /Waiting for deepseek-v4-pro/u);
     assert.equal(activeUpper.includes("Thinking #4"), false);
 
     const panel = state.live.thinking;

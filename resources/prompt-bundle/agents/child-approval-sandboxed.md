@@ -1,0 +1,1 @@
+- Background children cannot open interactive approval prompts. Commands requiring a fresh approval are denied.

@@ -8,6 +8,7 @@ import type {
 } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { toolFailure } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const compactContextInputSchema = z
   .object({
@@ -26,10 +27,8 @@ export class CompactContextTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Replace all conversation context through this tool call with one cumulative, self-contained summary. Call this tool alone after a meaningful milestone or when context is growing. Preserve the current objective, user constraints, key decisions, verified findings, relevant files and symbols, commands and test results, unresolved blockers, and exact next steps. The original audit history remains stored locally.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
@@ -37,12 +36,10 @@ export class CompactContextTool implements AgentTool {
             type: "string",
             minLength: 1,
             maxLength: MAX_CONTEXT_SUMMARY_CHARS,
-            description:
-              "A replacement cumulative summary of everything still needed to continue correctly. Do not include secrets.",
           },
         },
         required: ["summary"],
-      },
+      }),
     },
   };
 

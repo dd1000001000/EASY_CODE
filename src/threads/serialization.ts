@@ -8,6 +8,7 @@ import {
   type FileVersion,
   type ImageAttachment,
   type PlanReviewState,
+  type PromptBundleBinding,
   type SessionState,
   type TaskGraph,
   type TurnSteeringEntry,
@@ -25,6 +26,8 @@ export interface SerializedSessionState {
   readonly model: string;
   readonly thinkingEffort: ThinkingEffort;
   readonly workspaceRoot: string;
+  /** Optional only for checkpoints created before Prompt Bundle binding. */
+  readonly promptBundle?: PromptBundleBinding;
   readonly goal?: string;
   readonly constraints: string[];
   readonly messages: ChatMessage[];
@@ -47,6 +50,23 @@ export interface SerializedSessionState {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPromptBundleBinding(value: unknown): value is PromptBundleBinding {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    "formatVersion",
+    "bundleVersion",
+    "bundleHash",
+    "manifestHash",
+    "toolCatalogHash",
+  ])) return false;
+  const hash = /^sha256:[a-f0-9]{64}$/u;
+  return value.formatVersion === 1 &&
+    typeof value.bundleVersion === "string" &&
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.test(value.bundleVersion) &&
+    typeof value.bundleHash === "string" && hash.test(value.bundleHash) &&
+    typeof value.manifestHash === "string" && hash.test(value.manifestHash) &&
+    typeof value.toolCatalogHash === "string" && hash.test(value.toolCatalogHash);
 }
 
 function hasOnlyKeys(
@@ -324,6 +344,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     model: state.model,
     thinkingEffort: state.thinkingEffort,
     workspaceRoot: state.workspaceRoot,
+    ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
     goal: state.goal,
     constraints: [...state.constraints],
     messages: deserializeChatMessages(serializeChatMessages(state.messages)),
@@ -364,6 +385,7 @@ export function deserializeSessionState(value: unknown): SessionState {
     (value.thinkingEffort !== undefined &&
       !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort)) ||
     typeof value.workspaceRoot !== "string" ||
+    (value.promptBundle !== undefined && !isPromptBundleBinding(value.promptBundle)) ||
     !Array.isArray(value.constraints) ||
     !value.constraints.every((item) => typeof item === "string") ||
     !Array.isArray(value.messages) ||
@@ -465,6 +487,9 @@ export function deserializeSessionState(value: unknown): SessionState {
         ? DEFAULT_THINKING_EFFORT
         : value.thinkingEffort as ThinkingEffort,
     workspaceRoot: value.workspaceRoot,
+    ...(isPromptBundleBinding(value.promptBundle)
+      ? { promptBundle: { ...value.promptBundle } }
+      : {}),
     goal: typeof value.goal === "string" ? value.goal : undefined,
     constraints: [...value.constraints] as string[],
     messages: deserializeChatMessages(JSON.stringify(value.messages)),

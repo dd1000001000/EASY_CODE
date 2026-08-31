@@ -2,54 +2,47 @@
 
 English | [简体中文](./README_zh.md)
 
-Technical design (architecture, terminal UI, permissions, memory, DAG, child sessions, Worktrees, and Handoff): [English](./docs/TECHNICAL_DESIGN.md) | [简体中文](./docs/TECHNICAL_DESIGN_ZH.md)
+[Technical design](./docs/TECHNICAL_DESIGN.md) | [中文技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [Third-party notices](./THIRD_PARTY_NOTICES.md)
 
-License: EASY CODE's original source is [MIT licensed](./LICENSE). Third-party components retain their own licenses; see [Third-Party Notices](./THIRD_PARTY_NOTICES.md).
+EASY CODE is a cross-platform CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Run it inside a project, describe the result you want, and let the agent inspect the workspace, edit files, run commands, verify changes, manage longer tasks, and resume previous work.
 
-EASY CODE is a local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Start it inside a project directory, describe the result you want, and let it inspect files, edit code, run commands, verify changes, manage context, and resume previous work.
+The interface stays inside the terminal. Model requests go to the selected provider; project operations, session state, memory, and orchestration remain local.
 
-EASY CODE runs entirely in the current terminal. It does not open a separate desktop window.
+## Highlights
 
-## Features
-
-- Three working modes: Plan, Auto, and Code, with model-controlled routing in Auto.
-- Read, create, update, and delete files inside the selected workspace; explicitly confirmed Dangerous full access also accepts absolute host paths.
-- Run commands, tests, build tools, and supported npm installation commands.
-- Run Manual and Auto-approved command process trees inside an OS-enforced `workspace-write` sandbox powered by `@anthropic-ai/sandbox-runtime` `0.0.74`.
-- Optionally enable process-local Dangerous full access, with a second confirmation and persistent red warning, to run without sandboxing or approval as the current OS user.
-- Show line-numbered code diffs with green additions and red removals.
-- Keep completed output in terminal scrollback while updating current work in a compact inline status area.
-- Queue text or image adjustments while a request is running, then apply all pending messages at the next safe model boundary.
-- Switch providers, models, and thinking effort while the session is running.
-- Attach screenshots and image files to supported vision models.
-- Automatically manage short-term context and long-term project memory.
-- Reduce model-request size with direct Auto answers and tool-relevant instructions.
-- Inspect cumulative provider-reported Token usage with `/usage`.
-- Save and resume conversations, plans, task progress, child sessions, and managed execution environments.
-- Optionally organize complex work as a task DAG with dependency result lineage.
-- Delegate work to children in shared roots or per-child Git Worktrees, then explicitly hand off an isolated result locally or to a branch.
-- Load project instructions from `EASYCODE.md` files.
-- Work on Windows, macOS, and Linux.
+- **Plan, Auto, and Code modes.** Auto lets the model choose whether to answer directly, propose a reviewable plan, or start implementation.
+- **Controlled coding tools.** Read, create, update, and delete files; run builds, tests, formatters, and supported installation commands.
+- **Reviewable changes.** File edits are shown as line-numbered diffs with green additions and red removals.
+- **Retained terminal UI.** Conversation, live activity, tasks, child Agents, model information, and the composer stay in one structured shell interface.
+- **Thinking display.** Provider reasoning is shown in gray, collapsed by default, and can be expanded in place in the VS Code terminal.
+- **Mid-turn adjustments.** Send more text or images while a request is running; pending adjustments are delivered at the next safe model boundary.
+- **Image input.** Paste screenshots or attach files to supported vision models using stable `[Image #N]` labels.
+- **Durable Threads.** Resume conversations together with plans, task progress, approvals, child sessions, and execution environments.
+- **Short- and long-term memory.** Keep active conversational context while retrieving compact project facts across sessions.
+- **Task DAGs and child Agents.** Complex work can be divided into dependency-aware tasks and delegated to isolated child sessions.
+- **Git Worktree isolation and Handoff.** Run selected child tasks in managed Worktrees, preserve checkpoints, and deliver results locally or to a branch.
+- **Layered safety.** Structured tools, workspace confinement, command policy, approvals, an operating-system sandbox, and explicit Dangerous full access are separate controls.
+- **Trusted Prompt Bundle.** System guidance and tool descriptions are installed as a versioned, integrity-checked per-user resource rather than mixed into source code.
 
 ## Requirements
 
 - Node.js `>=20.11.0` and npm.
 - Windows, macOS, or Linux.
 - An API key for at least one supported provider.
-- Git is optional for shared child agents, but required for explicit Worktree isolation and branch Handoff.
-- Optional: VS Code `>=1.93` for native image paste, clickable Thinking, and scroll-safe menu navigation in the integrated terminal.
+- Git for Worktree isolation and branch Handoff. Git is optional for ordinary use and shared child sessions.
+- Optional: VS Code `>=1.93` for native image paste, clickable Thinking entries, and scroll-safe interactive menus.
 
-A maintained Node.js LTS release is recommended.
+The protected command runner also depends on the platform sandbox:
 
-The command sandbox has platform prerequisites:
-
-- Windows uses the bundled Anthropic SRT Windows backend, which is currently alpha and requires a one-time elevated setup.
-- macOS uses the operating system's built-in Seatbelt sandbox and has no additional hard package prerequisite in the pinned runtime.
-- Linux uses bubblewrap and requires `bubblewrap`, `socat`, and `ripgrep`; the host must also permit the user namespaces required by bubblewrap.
+| Platform | Sandbox support |
+| --- | --- |
+| Windows | Bundled Anthropic Sandbox Runtime backend; currently alpha and may require one elevated setup. |
+| macOS | Uses the operating system Seatbelt sandbox. |
+| Linux | Uses bubblewrap and requires `bubblewrap`, `socat`, and `ripgrep`, plus host support for unprivileged user namespaces. |
 
 ## Installation
 
-The package is currently installed from the GitHub repository:
+Clone and install the project:
 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -60,65 +53,40 @@ npm install --global .
 easy-code --version
 ```
 
-The npm postinstall hook performs a read-only prerequisite check. It never opens UAC, runs `sudo`, or changes machine policy. On the first interactive `easy-code` launch, an unready sandbox is shown in the retained terminal UI and you can choose guided setup, recheck, continue with sandboxed commands blocked, or exit. Dangerous full access is never enabled by installation or a failed probe; it always requires its own in-session confirmation.
+Installation prepares the local memory resources, installs the verified Prompt Bundle under `~/.easy_code`, checks sandbox prerequisites, and attempts to install the bundled VS Code terminal extension. For a normal installation, do not use `--ignore-scripts`.
 
-You can also check or repair the command sandbox explicitly:
+Check the sandbox after installation:
 
 ```bash
 easy-code sandbox doctor
 ```
 
-On Windows, setup opens the one-time SRT UAC flow. On Linux, setup can install only the fixed packages reported as missing through a recognized system package manager; it uses structured arguments and non-interactive existing administrator credentials. It never changes User Namespace, AppArmor, kernel, repository, or other machine security policy. macOS normally needs no package setup.
+If setup is required:
 
 ```bash
 easy-code sandbox setup
 easy-code sandbox doctor
 ```
 
-If a Windows command reports a stale `CodexSandboxOffline` owner or missing
-`WRITE_DAC`, preview the exact owner-only repair first, then apply the same
-confirmed target. Applying opens UAC, preserves every existing DACL and
-inheritance setting, and keeps an audit manifest under the local EASY CODE data
-directory.
+On Windows, setup may open a UAC confirmation. On Linux, EASY CODE only uses recognized package managers and fixed prerequisite packages; if administrator credentials are not already available non-interactively, it prints the command for you to run. macOS normally needs no additional package setup.
 
-```powershell
-easy-code sandbox repair-workspace --target "C:\path\to\project"
-easy-code sandbox repair-workspace --target "C:\path\to\project" --apply --confirm "C:\path\to\project"
-```
-
-Before each Windows sandbox launch, EASY CODE now checks the exact ACL paths
-that SRT would mutate and fails immediately with the owner and repair target if
-the current token cannot change them. It also probes sensitive credential paths
-through the real restricted SRT account: an expensive deny stamp is skipped
-only when that account proves the complete existing path tree unreadable;
-unknown, changed, linked, or readable paths remain denied. Command scratch data
-is Runtime-reserved, excluded from workspace snapshots, and cleaned through a
-validated crash-recovery record; if an old command directory cannot be verified
-and removed, the next command fails closed instead of exposing it through the
-workspace grant. Restricted-account probe failures and bounded local scans stop
-before the 75-second worker initialization. External executable fallback grants
-cover the exact canonical file only, never its parent directory. A private
-interpreter distribution that requires unreadable sibling DLLs or libraries must
-use a separately declared runtime closure; EASY CODE will not silently widen the
-grant to make it work.
-
-Missing built-in credential directories are checked again for every command and
-are omitted only when the nearest existing profile ancestor is already denied
-to the restricted account. A sandboxed command cannot create those paths outside
-the workspace. A separate host process concurrently creating one with a custom,
-permissive ACL is outside this per-command isolation transaction.
-
-If Linux administrator credentials are not already available non-interactively, EASY CODE prints the exact package-manager command instead of collecting a password inside the terminal UI. Run it yourself, then choose recheck or run `easy-code sandbox doctor`.
-
-If your GitHub SSH key is configured, you can clone with:
+To run without a global installation:
 
 ```bash
-git clone git@github.com:dd1000001000/EASY_CODE.git
+npm install
+npm run build
+npm start -- --workspace /path/to/project
 ```
 
-The npm installation prepares the resources required by automatic memory and tries to install the bundled VS Code terminal extension. Do not use `--ignore-scripts` for a normal installation.
+If the VS Code extension was not installed automatically:
 
-To update an existing installation:
+```bash
+npm run vscode:install
+```
+
+Set `EASY_CODE_SKIP_VSCODE_EXTENSION=1` before installation to skip the extension in CI or managed environments.
+
+### Update
 
 ```bash
 cd EASY_CODE
@@ -128,25 +96,9 @@ npm run build
 npm install --global .
 ```
 
-To run directly from the repository without installing globally:
-
-```bash
-npm install
-npm run build
-npm start -- --workspace /path/to/project
-```
-
-If VS Code was not detected during installation, run this from the EASY CODE repository:
-
-```bash
-npm run vscode:install
-```
-
-Set `EASY_CODE_SKIP_VSCODE_EXTENSION=1` before installation to skip the extension in CI or managed environments.
-
 ## Configure API keys
 
-The recommended method stores API keys in the operating system credential store:
+The recommended method stores keys in the operating-system credential store:
 
 ```bash
 easy-code config set qwen.api-key
@@ -154,18 +106,13 @@ easy-code config set deepseek.api-key
 easy-code config set glm.api-key
 ```
 
-The command asks for the key through hidden input. Do not add the key after the command.
+The command reads the key through hidden input. Do not append the secret to the command line.
 
-Check configuration status:
+Inspect or remove saved credentials:
 
 ```bash
 easy-code config list
 easy-code config get qwen.api-key
-```
-
-Remove a saved key:
-
-```bash
 easy-code config unset qwen.api-key
 ```
 
@@ -177,7 +124,7 @@ Environment variables are also supported:
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | Zhipu GLM | `ZAI_API_KEY`, `GLM_API_KEY`, or `ZHIPUAI_API_KEY` |
 
-If the selected provider has no configured API key, EASY CODE prompts for one before starting.
+If the selected provider has no key, interactive startup asks for one before the first request.
 
 ## Quick start
 
@@ -188,20 +135,20 @@ cd /path/to/project
 easy-code
 ```
 
-On interactive startup:
+At startup:
 
 1. Select DeepSeek, Alibaba Qwen, or Zhipu GLM.
 2. Select a model.
 3. Select `none`, `low`, `medium`, or `high` thinking effort.
-4. Use the Up/Down arrow keys and press Enter to confirm.
-5. Enter your request in the boxed composer at the bottom of the terminal and press Enter.
+4. Use `Up`/`Down` and Enter to confirm.
+5. Type a request in the composer and press Enter.
 
 Example requests:
 
 ```text
 Explain this project and identify its main entry points.
 Fix the login error and run the relevant tests.
-Add a settings page that follows the existing code style.
+Add a settings page that follows the existing style.
 Review the current changes for security and maintainability issues.
 ```
 
@@ -211,40 +158,17 @@ Start with explicit settings:
 easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinking-effort high --mode code
 ```
 
-Run one task non-interactively and exit:
+Run one non-interactive task and exit:
 
 ```bash
 easy-code --workspace ./my-project --mode code run "Fix the login error and run the tests"
 ```
 
-## Terminal interface
-
-In an interactive terminal, EASY CODE keeps one inline interface in four regions:
-
-| Region | What it shows |
-| --- | --- |
-| Session header | Current mode, provider/model, thinking effort, context estimate, workspace, and Thread ID. |
-| Scrollback | Completed user/assistant messages, tool results, command output, diffs, and final results. This history is appended normally, so terminal scrolling and copy/select continue to work. |
-| Live status | Above the composer, only currently running progress and command/model activity are shown. Completed tool results move to scrollback instead of remaining as duplicate progress rows. This is the only ordinary-work output region EASY CODE redraws. |
-| Composer and footer | A boxed input area that wraps across terminal rows, followed by compact Tasks and Agents sections; the mode, model, effort, context, task, and active-Agent summary is always the final line. Attached images appear as `[Image #N]`. |
-
-Completed tool activity moves out of the live status and into ordinary scrollback exactly once. Superseded Step/status rows are discarded rather than accumulated. A redraw clears only the live rows at the bottom; it does not repaint or erase earlier conversation, command output, or diffs. The layout measures terminal display cells, so narrow windows and wide Chinese, Japanese, Korean, and emoji characters remain aligned.
-
-`/model`, command approval, Plan review, and `/resume` use boxed overlay pickers instead of appending temporary menu text. While a picker is open, it replaces the normal live status and composer, but an active Dangerous full access warning remains visible. Use `↑`/`↓` to move, Enter to confirm, or Esc to cancel. Canceling an approval is always treated as rejection. In the VS Code integrated terminal, the bundled extension routes only active-menu `↑`/`↓` navigation over an authenticated local bridge, so changing the selected action does not pull a scrolled viewport back to the approval card. Reload VS Code and create a new terminal after installing or updating the extension so that bridge is available.
-
-Thinking entries are disclosures. Folded entries show only their title and short preview. With the bundled VS Code extension installed, hold `Ctrl` and click a gray `Thinking #N` title on Windows/Linux, or hold `Cmd` and click it on macOS. EASY CODE opens a managed transcript view in which the complete retained body replaces that preview at the same logical document position. Activating the same title again closes it and restores the preview; activating another Thinking title switches the expanded entry. The control remains responsive while a model request is running and after the request has finished. It does not use or consume Esc.
-
-An adjustment is user input, not a disclosure. It appears immediately in chronological transcript order using the same `> ...` presentation as an ordinary user request; EASY CODE does not expose queue IDs or Runtime terminology in the conversation. The managed Thinking view is a lossless projection of the complete current turn: initial request, adjustments, status and tool rows, every Thinking marker, and the final answer retain their original order. Only the selected Thinking preview is replaced by its complete body. Earlier turns are excluded, and closing the view restores the unchanged primary scrollback.
-
-Expanded Thinking content is not shortened to a panel height, split into pages, silently hidden, or replaced by a `truncated` marker. A short current-turn document sits directly above Request; if the complete body is taller than the available viewport, the selected Thinking title starts at the top and `Page Up`/`Page Down` moves through the same continuous retained content. The view does not enable terminal mouse reporting, so normal drag selection and copy remain available while VS Code `Ctrl`/`Cmd`+click continues through the extension link. The same composer remains editable inside the managed view: ordinary typing, cursor keys, multiline text paste, native image paste, Backspace, and Enter continue through the existing Request/Adjustment input session. Closing the view changes only its presentation and returns to the normal interface with the exact remaining draft. Final model answers are appended once, in full, to ordinary terminal scrollback and are never presentation-truncated by the UI.
-
-In the composer, type or paste normally and press Enter to submit. A multiline text paste appears as a compact `[Pasted text #N · M lines]` block; its complete line breaks and indentation are restored only when you explicitly submit, so a newline inside the clipboard never acts as Enter. `/thinking N`, `/adjustment N`, and `Ctrl+T` still write complete retained content to stable scrollback without discarding the current draft; they do not toggle the managed disclosure view. `Ctrl+C` cancels the active input or operation. With the bundled VS Code extension, the native image-paste shortcut inserts a visible `[Image #N]` attachment at the cursor; see [Images](#images) for platform shortcuts and command-based alternatives.
-
-The composer remains available while the current request is running. Each submitted text/image adjustment is durably queued without an artificial message-count limit. At the next safe boundary—before another model request, between tool calls, or before finalizing—EASY CODE combines the currently pending adjustments in FIFO order into one short-term user message. Adjustments arriving after that snapshot remain queued for the following boundary. They can redirect the work, but cannot expand Runtime permissions or bypass command approval, sandbox, workspace, or task-ownership rules.
-
-When stdout/stdin is not an interactive TTY, or the terminal cannot safely support cursor-addressed redraws, EASY CODE falls back to plain append-only status snapshots and line-oriented input without ANSI color. Interactive overlay selection may be unavailable in that mode; use explicit CLI options or command arguments such as `/model <model-id>` and `/resume <thread-id>`.
+If a non-interactive Auto run produces a reviewable Plan, start EASY CODE interactively and Resume that Thread to approve, revise, or reject it.
 
 ## Supported models
+
+EASY CODE validates selections against its built-in provider catalog. Actual availability still depends on the provider account, region, and entitlement.
 
 | Provider | Model | Image input |
 | --- | --- | --- |
@@ -264,74 +188,168 @@ When stdout/stdin is not an interactive TTY, or the terminal cannot safely suppo
 | Zhipu GLM | `glm-5.3` (default) | No |
 | Zhipu GLM | `glm-5.2` | No |
 
-The table is EASY CODE's supported catalog. Actual access depends on the provider, account, region, and model entitlement.
-
-Switch models during a session:
+Switch the provider, model, and effort while a session is running:
 
 ```text
 /model
 /model <model-id>
 /model qwen <model-id>
-/model deepseek <model-id>
-/model glm <model-id>
+/provider deepseek
 ```
 
-`/model` opens the Provider → Model → Thinking effort selector. Use `/provider qwen|deepseek|glm` to switch providers directly.
+`/model` opens the Provider → Model → Thinking effort selector.
 
 ## Working modes
 
-| Mode | Use it when |
+| Mode | Behavior |
 | --- | --- |
-| `plan` | You want EASY CODE to inspect the project and propose a plan without changing files or running build/install commands. |
-| `auto` | You want the model to decide whether to answer directly, propose a reviewed plan, or implement the request. This is the default. |
-| `code` | You want EASY CODE to implement and verify the request immediately without presenting a plan first. |
+| `plan` | Investigates the project and produces a structured proposal without changing project files. |
+| `auto` | Lets the model answer directly, propose a plan, or enter Code mode. This is the default. |
+| `code` | Implements and verifies the request immediately within the active safety controls. |
 
-Switch modes at any time:
+Switch modes with `/mode plan`, `/mode auto`, or `/mode code`.
 
-```text
-/mode plan
-/mode auto
-/mode code
-```
+Auto routing uses a restricted model decision rather than keyword matching. If Auto selects Plan, EASY CODE presents the proposal with three choices:
 
-Auto routing is controlled by the selected model rather than keyword matching. If a request can be answered completely from the current conversation without workspace access, tools, side effects, or a reviewed plan, the routing request may return the final answer directly. Direct answers still follow the normal security and `EASYCODE.md` rules; when context has reached the mandatory compaction threshold, EASY CODE compacts it before routing or answering. Otherwise, the model routes the request to Plan or Code.
-
-When Auto chooses Plan, EASY CODE shows the proposal and opens a boxed review overlay with three choices:
-
-```text
-Yes, use Auto mode
-No, reject plan
-Adjust plan with feedback
-```
-
-Approving returns to Auto and executes the accepted plan. Rejecting stops it. Choosing the feedback row opens the normal paste-safe composer, including multiline input, then asks the model to revise the proposal.
+- Approve it and return to Auto for execution.
+- Reject it.
+- Enter feedback, including multiline pasted text, and ask the model to revise it.
 
 ## Thinking effort
 
-Thinking effort affects model reasoning when the selected model supports it. It also controls the default task budget and maximum number of concurrently active child agents.
+Thinking effort is saved for every model selection. It is translated only when the selected model exposes a compatible reasoning control; unsupported models simply ignore the provider-side setting.
 
-| Effort | Default maximum steps | Default context size | Child-agent limit |
-| --- | ---: | ---: | ---: |
-| `none` | 40 | 400,000 characters | 2 |
-| `low` | 40 | 400,000 characters | 2 |
-| `medium` | 80 | 800,000 characters | 4 |
-| `high` | 160 | 1,600,000 characters | 8 |
+It also scales EASY CODE's local work budget and child-Agent concurrency:
 
-`none` requests no model thinking where the provider supports disabling it. If a model does not support configurable thinking, the selected effort is still saved, but the thinking setting itself may not affect that model.
+| Effort | Relative work budget | Maximum active child Agents |
+| --- | ---: | ---: |
+| `none` | 1× | 2 |
+| `low` | 1× | 2 |
+| `medium` | 2× | 4 |
+| `high` | 4× | 8 |
 
-When a model returns Thinking content, EASY CODE writes a gray `Thinking #N` marker and short gray preview to stable scrollback. With the bundled VS Code extension installed, use `Ctrl+click` on Windows/Linux or `Cmd+click` on macOS to replace that preview in place with the complete retained body. The full body uses continuous terminal scrolling without pagination or presentation truncation. Activating the same title restores its preview; activating another Thinking title expands that block instead. Esc is not a disclosure shortcut.
+`none` requests disabled model thinking where the provider supports it. Provider-specific reasoning behavior may differ.
 
-To write complete retained Thinking directly to stable scrollback instead of opening the managed disclosure view, use:
+## Terminal interface
+
+The interactive terminal is divided into stable regions:
+
+| Region | Contents |
+| --- | --- |
+| Header | Mode, provider/model, effort, context estimate, workspace, and Thread ID. |
+| Conversation | User input, model output, Thinking, tool activity, command output, and diffs in their real order. |
+| Live activity | The current model request, command, or tool operation with elapsed time. |
+| Composer and status | Editable request box, task and child-Agent summaries, and the compact session status line. |
+
+Completed output remains normal terminal content, so it can be scrolled, selected, and copied. Temporary progress is updated in place instead of being printed repeatedly.
+
+When a model returns Thinking content, the folded row shows a short gray preview. With the bundled VS Code extension, use `Ctrl+click` on Windows/Linux or `Cmd+click` on macOS to replace the preview with the complete body at the same conversation position. Click again to fold it. The composer remains usable while the disclosure is open.
+
+You can also print retained reasoning with `/thinking [id|last]` or the latest block with `Ctrl+T`.
+
+While a request is running, the composer accepts additional text and images. EASY CODE records each adjustment and delivers the pending FIFO batch at the next safe boundary. Adjustments can redirect the task, but they cannot change permissions, command policy, sandbox state, or task ownership.
+
+## Files, commands, and approvals
+
+In normal protected operation, file tools remain inside the selected workspace. Updates and deletions require a matching prior read, so an editor or another process changing the file causes a conflict instead of a silent overwrite.
+
+Commands use a resolved executable, structured arguments, a bounded working directory, timeouts, and output limits. Use `/approval` to select the process-local command posture:
+
+| Posture | Behavior |
+| --- | --- |
+| Manual approval | Ask before every policy-eligible higher-risk command. |
+| Auto approval | Automatically approve eligible commands; permanent denials still apply. |
+| Dangerous full access | After a second confirmation, remove command policy, approvals, the OS sandbox, and workspace-only filesystem restrictions for this process. |
+
+Manual and Auto approval run accepted commands inside the operating-system workspace sandbox. Dangerous full access runs as the current OS user and can access the host filesystem, network, environment, and installed tools. EASY CODE displays a persistent red warning until you switch back or exit.
+
+Per-command approval offers three choices: allow once, allow the same resolved executable for the current Thread, or reject. A Thread grant is restored by Resume but does not leak to other Threads.
+
+## Images
+
+Image input requires a model marked as vision-capable in the supported catalog.
+
+| Platform | Native paste in the VS Code terminal |
+| --- | --- |
+| Windows | `Ctrl+V` |
+| macOS | `Command+V` |
+| Linux | `Ctrl+Shift+V` |
+
+The bundled extension distinguishes image data from ordinary clipboard text. An accepted image appears as `[Image #N]`; multiline text appears as one paste block and is submitted only when you press Enter.
+
+You can also attach images explicitly:
 
 ```text
-/thinking
-/thinking <id>
-/thinking last
+/image ./screenshot.png
+/image clipboard
+/image clear
 ```
 
-You can also press `Ctrl+T` in the interactive terminal to show the latest block. Both the command and shortcut preserve the current composer draft.
+Or at startup:
 
-Optional base limits can be configured in user configuration or `.easycode/config.toml`:
+```bash
+easy-code --image ./one.png --image ./two.png
+```
+
+Images are copied into private Thread storage and validated before they reach the provider. Labels are unique within a Thread up to `Image #99`; provider and total-payload limits may be stricter.
+
+## Tasks and child Agents
+
+For complex work, the model can create a persistent task DAG. Each task contains dependencies, expected artifacts, completion checks, status, and evidence. A dependent task cannot start until its prerequisites complete.
+
+The main Agent can complete tasks itself or create child Agents for DAG tasks or independent standalone work. Child Agents:
+
+- receive a bounded assignment and private context rather than the parent's full conversation;
+- start in Code mode with worker capabilities;
+- cannot create additional child Agents or control the task graph;
+- return a structured result and evidence to the parent;
+- can receive follow-up instructions or be stopped by the parent.
+
+Isolation can be shared or Worktree-based. In a Git project, `auto` prefers a managed Worktree; outside Git it uses the shared workspace. Explicit Worktree isolation fails rather than silently falling back when it cannot be created.
+
+Managed Worktrees capture a defined starting snapshot. Completed child changes become result artifacts that can feed later DAG tasks. The parent can hand a selected result to the local checkout or to a branch. Conflicts are reported rather than overwritten.
+
+Useful commands:
+
+```text
+/tasks
+/agents
+```
+
+## Threads, context, and memory
+
+Every conversation belongs to a durable Thread. Use:
+
+```text
+/sessions
+/resume
+/resume <thread-id>
+/new
+```
+
+Resume restores the last recoverable state, including conversation history, accepted plans, unfinished tasks, Thread command grants, child assignments, and managed execution environments. Interrupted work is repaired into an explicit recoverable state instead of being silently replayed.
+
+Short-term memory consists of the active messages plus a model-maintained working summary. As context pressure grows, EASY CODE first advises compression, then requires it, and finally inserts a forced compression request before the provider limit is reached.
+
+Long-term memory stores short project facts such as decisions, conventions, environment notes, and user preferences. Retrieval combines lexical and semantic relevance. The model proposes additions, revisions, and removals; writes are committed only after a successful turn and are filtered for secrets and workspace scope.
+
+Inspect memory and usage:
+
+```text
+/context
+/memory short
+/memory short 20
+/memory long
+/usage
+```
+
+## Project instructions and configuration
+
+Place `EASYCODE.md` files in the project to describe architecture, commands, coding conventions, and validation expectations. Guidance is loaded from the configured user level and from the workspace hierarchy. It can guide the agent but cannot grant more authority than the Runtime allows.
+
+User configuration is stored in the platform-specific EASY CODE config directory. A project may add `.easycode/config.toml` for safe workspace-level settings. Security-sensitive paths, credentials, and provider endpoints cannot be redirected by project configuration.
+
+Example project configuration:
 
 ```toml
 [limits]
@@ -344,372 +362,107 @@ isolation = "auto" # auto, shared, or worktree
 [worktrees]
 base_mode = "current-snapshot" # fresh, head, or current-snapshot
 max_managed = 15
-# root = "/absolute/path/outside-the-repository" # trusted user config only
 ```
 
-`medium` uses twice these base values and `high` uses four times these base values.
-`auto` uses a managed Git Worktree when the workspace is inside a Git repository
-and falls back to the shared workspace only when no repository is available. If
-Worktree provisioning is selected but fails validation, reaches its configured
-limit, or cannot create a checkout, the child fails closed instead of silently
-downgrading to shared writes.
+`medium` doubles the configured none/low base limits and `high` multiplies them by four. See the [technical design](./docs/TECHNICAL_DESIGN.md) for configuration precedence and storage boundaries.
 
-The canonical custom storage setting is `root` under `[worktrees]`. It is accepted
-only from trusted user configuration, must be outside the entire Git repository,
-and defaults to the `worktrees` subdirectory of EASY CODE's application data
-directory. A project
-`.easycode/config.toml` cannot redirect it. Equivalent environment variables are
-`EASY_CODE_SUBAGENT_ISOLATION`, `EASY_CODE_WORKTREE_BASE_MODE`,
-`EASY_CODE_WORKTREE_ROOT`, and `EASY_CODE_MAX_MANAGED_WORKTREES`.
-
-The Worktree baseline is a point-in-time input selected when a child starts:
-
-| `base_mode` | Child starting point |
-| --- | --- |
-| `fresh` | The already configured `origin/HEAD`, falling back to local `HEAD`; EASY CODE does not fetch. |
-| `head` | The current local `HEAD`, without uncommitted changes from the containing repository. |
-| `current-snapshot` | Local `HEAD` plus staged, unstaged, and non-ignored untracked state across the containing repository, captured when the child is created. |
-
-`current-snapshot` is the default, so a clean containing repository is not
-required. In a monorepo, the snapshot covers the repository, while the child's
-file tools normally remain confined to the selected logical workspace mapping.
-Dangerous full access removes that security boundary for the main Agent and
-children while it is active. It is not
-live synchronization: later edits in the parent checkout do not appear in an
-existing child and may cause a conflict when its result is handed off.
-
-## Coding and workspace features
-
-EASY CODE can:
-
-- Read text files in the selected workspace.
-- Create new files without silently replacing existing files.
-- Update previously inspected files.
-- Delete files after inspecting them.
-- Run project commands, tests, formatters, builds, and supported installers.
-- Display successful file changes as line-numbered diffs.
-- Track file changes and recent commands for the current thread.
-
-Useful commands:
-
-```text
-/workspace
-/workspace refresh
-/changes
-/commands
-/tools
-/permissions
-/approval
-```
-
-In Manual and Auto-approved modes, EASY CODE applies two independent command boundaries. Command policy and approval decide whether a resolved command may start; the Anthropic Sandbox Runtime then confines the approved command process tree at the operating-system level. Built-in file tools use EASY CODE's canonical workspace path guard.
-
-For those protected modes, the sandbox is `workspace-write`: commands may write the active physical workspace and a Runtime-owned temporary directory, while EASY CODE's private state, common credential locations, and protected control files are denied. If SRT is unsupported, uninitialized, missing a dependency, or cannot prepare the command, execution fails closed with `sandbox_unavailable`; EASY CODE never silently falls back to the host.
-
-When a command needs approval, use `↑`/`↓` and Enter to choose:
-
-1. `Yes, allow execute one time` — approve only this command request.
-2. `Yes, don't ask me again with prefix [executable]` — remember the exact Runtime-resolved executable path for the current thread.
-3. `Reject` — do not run it.
-
-The second choice applies to later argument vectors for that executable, survives `/resume`, and can be used by child Agents bound to the same parent thread. It does not carry into `/new` or another thread, and child Agents cannot create new grants. Treat grants for interpreters and shells such as Python, Node.js, `cmd`, or PowerShell as broad authority: later scripts or shell text can perform very different operations. The grant identifies a path, not immutable executable bytes, so replacing the file at that path does not revoke it. `/permissions` shows the active executable grants. Outside Dangerous full access, permanent policy denials, Plan mode boundaries, and `--approval never` always take precedence.
-
-Use `/approval` to change the command posture for the current EASY CODE process with an arrow-key selector:
-
-1. `Manual approval` asks before policy-eligible high-risk commands.
-2. `Auto approve` executes approval-eligible commands without prompting, while permanent denials and structural boundaries remain active.
-3. `Dangerous full access` disables command classification, permanent command denials, Plan command restrictions, approval prompts, and the OS sandbox. Before it is enabled, a separate danger confirmation explicitly warns that commands and file tools will receive current-user access to the full host filesystem, inherited environment, and internet. After it is enabled, a persistent red `! EASY CODE DANGER: FULL ACCESS` marker remains visible. The mode ends when EASY CODE exits or when another posture is selected; switching away immediately revokes the authority from the main Agent and every child, including waiting operations. The scrollback session title is not duplicated when the posture changes.
-
-Dangerous full access uses a separate host backend. Commands run directly as the current OS user, may use absolute executables and working directories, inherit the host environment, access the internet, and read or modify anything that account can access. The checked file tools also accept explicit absolute host paths; relative paths keep their normal workspace interpretation. Main and child Agents inherit this process-level authority while it is active. EASY CODE does not bypass OS ACLs, UAC, `sudo`, or another account's permissions.
-
-Structured program/argv execution, non-interactive shell shape, cancellation, timeouts, bounded/redacted output, process cleanup, and command audit remain active in Dangerous full access. These controls are not a sandbox or rollback mechanism. Host processes inherit environment variables and can expose credentials. Workspace snapshots and `/changes` cover the selected workspace, not arbitrary external modifications.
-
-In protected modes, network access is capability based through SRT: ordinary commands receive no network access, constrained exact-version npm installation receives the Registry allowlist, and an explicitly approved shell receives its classified network capability. `@anthropic-ai/sandbox-runtime` is pinned because its API is still a Beta Research Preview and its Windows backend is alpha. A Git Worktree isolates Git state rather than security; Dangerous full access can reach outside every Worktree.
-
-## Images
-
-With the bundled VS Code extension installed, paste screenshots into the integrated terminal with the platform's native shortcut:
-
-- Windows: `Ctrl+V`
-- Linux: `Ctrl+Shift+V`
-- macOS: `Command+V`
-
-Attached images appear as `[Image #1]`, `[Image #2]`, and so on. Ordinary clipboard text continues to paste as text.
-
-You can also attach images with commands:
-
-```text
-/image clipboard
-/image ./path/to/screenshot.png
-/image clear
-```
-
-Or attach one or more images at startup:
+Prompt text and tool descriptions live in the fixed per-user Prompt Bundle. Inspect or repair it with:
 
 ```bash
-easy-code --image ./screenshot.png --image ./diagram.jpg
+easy-code prompts doctor
+easy-code prompts list
+easy-code prompts repair
 ```
 
-EASY CODE accepts PNG, JPEG, WebP, and static GIF images, with up to 99 images in a thread or model request. The active model must be marked as image-capable in the supported-model table.
+## Command reference
 
-## Tasks and child agents
-
-For complex work, EASY CODE may create a task DAG containing named tasks and dependencies. This is optional: simple requests continue without a DAG.
-
-Use `/tasks` to view the current task list:
-
-- `✓` completed
-- `▶` in progress
-- `□` not started
-- `⊠` blocked
-
-The main agent may also delegate independent work to child agents. Child agents are optional and can be used with or without a task DAG. They inherit the selected provider, model, and thinking effort, work in Code mode, and cannot create more child agents.
-
-Isolation is selected for each child as `auto`, `shared`, or `worktree`. The original project remains the logical workspace for rules and memory, while a Worktree child executes in its own physical checkout. Each assignment binds the parent Thread, child Thread, task, and execution environment so Resume cannot silently attach the child to another checkout.
-
-Per-child isolation and Handoff are main-agent capabilities rather than slash commands. You can request them in ordinary language:
+### CLI
 
 ```text
-Use Worktree-isolated child agents for the independent tasks.
-Hand off the completed result to my local workspace.
-Preserve the result on branch easy-code/login-feature.
+easy-code [options]
+easy-code [options] run <prompt...>
+easy-code config set|get|unset|list ...
+easy-code sandbox doctor|setup|repair-workspace ...
+easy-code prompts doctor|list|repair
+easy-code uninstall [--data-only]
 ```
 
-Worktree results stay outside the current checkout until the parent explicitly hands them off:
+Common options:
 
-| Result path | Behavior |
+| Option | Purpose |
 | --- | --- |
-| Local Handoff | Preflight the complete child/DAG delta, then apply it to the current working tree without staging or committing. Unrelated user edits remain; overlapping edits produce a conflict instead of being overwritten. |
-| Branch Handoff | Create or reuse a local branch at the immutable result commit without checking it out or pushing it. An existing branch at another commit is a conflict. |
-| Shared child | Changes already occur in the current workspace; there is no isolated commit for Branch Handoff. |
+| `-w, --workspace <path>` | Select the workspace. |
+| `--provider <name>` | Select `qwen`, `deepseek`, or `glm`. |
+| `--model <id>` | Select a model from that provider. |
+| `--mode <mode>` | Select `plan`, `auto`, or `code`. |
+| `--thinking-effort <effort>` | Select `none`, `low`, `medium`, or `high`. |
+| `--approval <policy>` | Set the startup command approval policy. |
+| `-y, --yes` | Automatically accept policy-eligible command prompts. |
+| `--resume <thread-id>` | Resume a saved Thread. |
+| `-i, --image <path>` | Attach an image; repeat for more than one. |
 
-With `current-snapshot`, the parent's original dirty state is part of the child's
-baseline. Local Handoff applies only the child/DAG delta from that baseline, so it
-does not reapply the user's original changes.
+### Interactive slash commands
 
-DAG children pass immutable result references only to their direct successors.
-A join combines dependency commits in a newly provisioned managed Worktree;
-conflicts stop node completion for review. A completed DAG can hand off its final
-result only when it has one terminal leaf owned by the selected child. Multiple
-terminal branches must first converge through an explicit join task.
+| Area | Commands |
+| --- | --- |
+| Mode and model | `/mode`, `/provider`, `/model`, `/approval` |
+| Workspace | `/workspace`, `/workspace refresh`, `/changes`, `/tools`, `/permissions`, `/commands` |
+| Images and reasoning | `/image`, `/thinking`, `/adjustment` |
+| Tasks | `/tasks`, `/agents` |
+| Context and memory | `/context`, `/usage`, `/memory short [limit]`, `/memory long [id]` |
+| Threads | `/sessions`, `/resume [id]`, `/new` |
+| Interface | `/status`, `/clear`, `/help`, `/exit` |
 
-Use these commands to inspect them:
-
-```text
-/agents
-/subagents
-/status
-```
-
-`/agents` is read-only. It shows each child's task and agent ID, resumable child
-Thread ID, requested and effective isolation, environment state, and
-result/Handoff state.
-
-The active child-agent limit is 2 for `none`/`low`, 4 for `medium`, and 8 for `high`. A separate `max_managed` Worktree limit prevents unbounded retained checkouts and is not multiplied by thinking effort. Cleanup targets only manager-owned paths. A successfully delivered clean checkout is eligible for automatic removal; dirty, busy, retained, or conflicted environments remain and continue counting toward the limit. While child work is still running or waiting to be collected, Auto stays in Code mode so the parent can finish collecting the results.
-
-If an ignored runtime file is required inside a new managed checkout, the root of
-the containing Git repository may provide `.worktreeinclude` with safe patterns
-relative to that repository root. Matching ignored files are copied into newly
-provisioned Worktrees for every base policy. They are not guaranteed to be
-present after checkpoint reconstruction, so the project must be able to provide
-them again. Never include credentials, private keys, or other secrets.
-
-## Context and memory
-
-Context and memory are managed automatically. Users can inspect them but cannot manually add, edit, or delete memory entries.
-
-```text
-/context
-/memory short [limit]
-/memory long
-/memory long <id>
-```
-
-- Short-term memory belongs to the current thread and includes the active conversation, summaries, task state, and recent tool results. `/memory short [limit]` shows previews of the latest active messages rather than the entire memory; the limit defaults to 8 and may be set from 1 to 500.
-- Long-term memory stores useful project facts, decisions, conventions, and preferences for later sessions in the same workspace.
-- EASY CODE compresses older context when the conversation becomes large.
-- The session header and footer display an approximate context Token count such as `context:12.4k`.
-
-## Token efficiency and usage
-
-EASY CODE keeps model requests focused in two ways:
-
-- Auto can answer a bounded, tool-free request in its single routing request instead of making a second agent request.
-- Model requests include instructions only for the tools that are actually available in the current mode and step.
-
-Use the read-only `/usage` command to inspect cumulative provider-reported Token usage for the current thread:
-
-```text
-/usage
-```
-
-The report separates usage by provider/model, request purpose (`auto_route`, `agent_step`, and `context_compaction`), and actor (the main agent and subagents). When the provider supplies the details, it also reports cached and reasoning Tokens. Requests for which the provider does not return usage data are counted as unreported requests. Failed requests and provider responses without usage details cannot be assigned an exact Token count, so `/usage` may be lower than billing-console totals.
-
-`/context` remains an estimate of the active context size; `/usage` is the cumulative usage reported by providers for saved model requests in the current thread.
-
-## Threads and Resume
-
-Find the current thread ID with `/status`, or list saved threads with:
-
-```text
-/sessions
-```
-
-Resume from your shell:
-
-```bash
-easy-code --resume <thread-id>
-```
-
-Resume while EASY CODE is already running:
-
-```text
-/resume [thread-id]
-```
-
-Omit the ID to open the boxed Resume picker; provide it to resume that Thread directly.
-
-Resume restores as much saved state as possible, including the selected model and mode, conversation, unapplied mid-turn adjustments, accepted plan, task progress, file/command history, context summary, completed child results, and valid active child Thread/environment bindings. A missing managed checkout directory can be reconstructed only after key identity, repository, and path metadata validates and the saved snapshot commit remains resolvable. A missing environment record, or one whose identity, repository, or path metadata does not validate for the existing child, fails closed rather than provisioning a different checkout. Durably completed child work is not rerun; interrupted commands or model calls are not automatically repeated.
-
-Use `/new` to start a separate thread.
-
-## Project instructions
-
-Create an `EASYCODE.md` file to tell EASY CODE how to work in a project. Typical content includes:
-
-- Build, test, lint, and formatting commands.
-- Coding style and naming conventions.
-- Important directories and architectural rules.
-- Files or operations that should be avoided.
-
-EASY CODE can load user-level instructions and project instructions from the workspace path.
-
-## CLI options
-
-```text
--w, --workspace <path>                         Select the workspace
---provider qwen|deepseek|glm                   Select the provider
---model <id>                                   Select the model
---mode plan|auto|code                          Select the working mode
---thinking-effort none|low|medium|high         Select thinking effort
---approval safe|ask|never                      Select command approval policy
--y, --yes                                      Approve policy-allowed prompts
---resume <thread-id>                           Resume a saved thread
--i, --image <path>                             Attach an image; repeatable
-```
-
-Run `easy-code --help` for shell-level help. Run `/help` after entering EASY CODE for interactive commands.
-
-Sandbox maintenance commands run before entering the interactive Agent:
-
-```text
-easy-code sandbox doctor    Diagnose dependencies and run an enforcement probe
-easy-code sandbox setup     Run Windows UAC setup or install fixed missing Linux prerequisites
-easy-code sandbox repair-workspace --target <absolute-path>  Preview a Windows stale-owner repair
-```
-
-## Interactive commands
-
-```text
-/mode plan|auto|code       Switch working mode
-/provider <provider>       Switch provider
-/model                     Open model selection
-/model <model-id>          Switch model
-/status                    Show thread and agent status
-/workspace [refresh]       Show or refresh workspace information
-/image <path|clipboard>    Attach an image
-/image clear               Clear unsent images
-/changes                   Show file changes
-/tasks                     Show task DAG
-/agents                    Show child agents
-/tools                     Show available tools
-/permissions               Show command permissions
-/approval                  Select manual, auto-approved, or Dangerous full access
-/commands                  Show recent commands
-/context                   Show context usage
-/usage                     Show cumulative provider-reported Token usage
-/memory short [limit]      Show recent short-term memory previews (default 8, max 500)
-/memory long [id]          Show long-term memory
-/thinking [id|last]        Show model thinking
-/adjustment [id|last]      Show one retained queued adjustment
-/sessions                  List saved threads
-/resume [id]               Pick or resume a thread
-/new                       Start a new thread
-/clear                     Clear the terminal
-/help                      Show help
-/exit                      Save and exit
-```
-
-## Safety notes
-
-- Review or commit important work before letting an agent make broad changes.
-- Use `/permissions` to inspect the active command policy.
-- Use `easy-code sandbox doctor` to verify the OS filesystem and network boundary retained by Manual and automatic approval.
-- Prefer one-time approval unless you trust every later argument passed to the displayed executable in this thread.
-- `--yes` should be used only in trusted workspaces or isolated environments.
-- `--yes` does not bypass Plan mode restrictions or commands that are always denied.
-- Manual and automatic approval retain the OS-enforced `workspace-write` sandbox; a sandbox setup failure blocks those commands instead of silently falling back to a host process.
-- Dangerous full access intentionally has no EASY CODE sandbox or approval boundary. It can transmit host data, expose inherited credentials, install software, and modify or delete any data available to the current OS user.
-- A Git Worktree isolates Git working state rather than providing the security boundary. Manual and automatic approval apply the command sandbox separately to that physical checkout; Dangerous full access does not.
-- Never place API keys in source files, chat prompts, `EASYCODE.md`, or Git history.
+Run `/help` inside EASY CODE for the exact current syntax.
 
 ## Troubleshooting
 
-### `easy-code` is not found
+### API key missing or rejected
 
-Make sure npm's global binary directory is on `PATH`, then reinstall:
+Run `easy-code config list`, verify the selected provider, and confirm that the account can access the selected model. Environment variables override the operating-system credential store.
 
-```bash
-npm install --global .
-```
+### Command sandbox is unavailable
 
-### API key missing, 401, or 403
-
-Check the active provider and key status:
-
-```bash
-easy-code config list
-```
-
-Then confirm that the account and region can access the selected model.
-
-### Image paste does not work in VS Code
-
-From the EASY CODE repository, run:
-
-```bash
-npm run vscode:install
-```
-
-Then run `Developer: Reload Window` in VS Code. `/image clipboard` remains available as a fallback.
-
-### Memory resources are missing
-
-Reinstall without `--ignore-scripts`, or repair them from the repository:
-
-```bash
-npm run memory:install
-npm run memory:verify
-```
-
-### A command was refused
-
-Use `/permissions` to inspect the current mode and approval policy. Plan mode does not allow code changes, builds, tests, or dependency installation.
-
-If the result reports `sandbox_unavailable`, diagnose the platform boundary:
+Run:
 
 ```bash
 easy-code sandbox doctor
+easy-code sandbox setup
+easy-code sandbox doctor
 ```
 
-On Windows, run `easy-code sandbox setup` and approve the one-time UAC prompt. On Linux, the same command can install missing `bubblewrap`, `socat`, and `ripgrep` packages, but User Namespace/AppArmor policy remains an administrator decision. macOS uses its built-in Seatbelt sandbox. Manual and Auto-approved execution fail closed and do not retry outside the sandbox. Dangerous full access is a separate, explicit user choice under `/approval`, not an error fallback.
+The protected modes fail closed when sandbox initialization fails. They never fall back to unsandboxed execution. On Windows, workspace-specific ownership problems can be reviewed with `easy-code sandbox repair-workspace --target <path>` before applying any repair.
 
-### Node.js is too old
+### Image paste does not work in VS Code
 
-Check the version:
+Reinstall the extension with `npm run vscode:install`, reload VS Code, and create a new terminal. Confirm that the active model supports images. Ordinary text on the clipboard remains text and should never become an image attachment.
+
+### A command was refused
+
+Use `/permissions` to inspect the current posture. A command may be blocked by Plan mode, permanent policy, workspace confinement, missing approval, or an unavailable sandbox. Only an explicit Dangerous full access confirmation removes those protections.
+
+### Resume cannot find a Thread
+
+Use `/sessions` to list the Threads available for the current workspace and local data directory. Resume IDs are exact.
+
+## Uninstall
+
+Use EASY CODE's uninstaller so prompts and memory are erased before the global package is removed:
 
 ```bash
-node --version
+easy-code uninstall
 ```
 
-EASY CODE requires Node.js `>=20.11.0` because the pinned Anthropic Sandbox Runtime has the same minimum.
+Close other EASY CODE processes first. The command removes the current OS user's `~/.easy_code` Prompt Bundle and discoverable short- and long-term memory, then uninstalls the global npm package. It fails closed if the memory database is active or a custom data root cannot be proven to belong to EASY CODE.
+
+To erase prompts and memory while keeping the CLI installed:
+
+```bash
+easy-code uninstall --data-only
+```
+
+API keys, configuration, model caches, workspace files, Handoff branches, the VS Code extension, and managed Worktrees that may contain unmerged code are preserved. Modern npm does not invoke package uninstall hooks, so `npm uninstall --global easy-code-agent` alone cannot perform this data cleanup.
+
+## License
+
+EASY CODE's original source is released under the [MIT License](./LICENSE). Bundled and installed third-party software keeps its own license; see [Third-Party Notices](./THIRD_PARTY_NOTICES.md), including the Apache-2.0 notice for Anthropic Sandbox Runtime.

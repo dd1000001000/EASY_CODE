@@ -16,6 +16,8 @@ import {
   WorkspaceManager,
   captureWorkspaceSnapshot,
 } from "../src/workspace/index.js";
+import { getEasyCodeHome } from "../src/prompt-bundle/index.js";
+import { WorkspacePathGuard } from "../src/workspace/path-guard.js";
 import { describe, it } from "./harness.js";
 
 async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
@@ -47,6 +49,15 @@ function context(
 }
 
 describe("workspace file tools", () => {
+  it("keeps the fixed official Prompt Bundle outside ordinary workspace tools", () => {
+    const home = path.dirname(getEasyCodeHome());
+    const guard = new WorkspacePathGuard(home);
+    const relative = path.relative(home, path.join(getEasyCodeHome(), "active.json"));
+    assert.throws(
+      () => guard.normalizeRelative(relative),
+      /official EASY CODE Runtime resources/u,
+    );
+  });
   it("exports the workspace tools and runtime context tool", async () => {
     await withWorkspace(async (_root, manager) => {
       assert.deepEqual(

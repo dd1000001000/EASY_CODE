@@ -10,6 +10,10 @@ import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
+  registerPromptBundleCommands,
+} from "./prompt-bundle/index.js";
+import { registerUninstallCommand } from "./uninstall/index.js";
+import {
   THINKING_EFFORTS,
   type AgentMode,
   type ApprovalPolicyName,
@@ -159,7 +163,9 @@ export async function main(argv = process.argv): Promise<void> {
     });
 
   registerConfigCommands(program);
+  registerPromptBundleCommands(program);
   registerSandboxCommands(program);
+  registerUninstallCommand(program);
 
   await program.parseAsync(argv);
 }
@@ -179,7 +185,9 @@ export * from "./memory/index.js";
 export * from "./images/index.js";
 export * from "./models/index.js";
 export * from "./providers/index.js";
+export * from "./prompt-bundle/index.js";
 export * from "./subagents/index.js";
 export * from "./tasks/index.js";
 export * from "./tools/index.js";
+export * from "./uninstall/index.js";
 export * from "./workspace/index.js";

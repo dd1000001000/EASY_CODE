@@ -28,7 +28,6 @@ import {
 import {
   ReasoningRegistry,
   renderReasoningBody,
-  renderReasoningHistoryMarker,
   renderReasoningMarker,
   type ReasoningBlock,
 } from "./reasoning.js";
@@ -71,11 +70,14 @@ import { ScreenWriter } from "../ui/render/screen-writer.js";
 import {
   FullScreenWriter,
   applyDisclosureViewCommand,
+  clearDisclosureViewTarget,
   createDisclosureViewState,
   layoutVirtualDocument,
   renderDisclosureView,
   replaceDisclosureViewNodes,
   resizeDisclosureView,
+  scrollDisclosureViewToEnd,
+  toggleDisclosureView,
   updateDisclosureViewChrome,
   type DisclosureViewFrame,
   type DisclosureViewState,
@@ -94,6 +96,9 @@ import {
 } from "../ui/render/layout.js";
 import {
   renderComposerStatusRegion,
+  renderDangerStatusLabel,
+  renderFixedBottomRegions,
+  renderLiveActivityRegion,
   renderLiveRegion,
   renderSessionHeader,
 } from "../ui/render/view.js";
@@ -147,7 +152,7 @@ interface BusyInputOwner {
   readonly onError: () => void;
 }
 
-interface MutableTurnSegment {
+interface CurrentTurnDisclosure {
   readonly entry: Readonly<UITranscriptEntry>;
   readonly reasoning?: Readonly<ReasoningBlock>;
   readonly adjustment?: Readonly<AdjustmentBlock>;
@@ -160,9 +165,11 @@ interface ActiveDisclosureViewer {
   readonly input: TuiInputCore;
   state: DisclosureViewState;
   frame: DisclosureViewFrame;
-  kind: DisclosureKind;
-  registryId: number;
-  readonly suspendedSession?: PromptInputSession;
+  /** The disclosure currently selected inside the permanent conversation. */
+  kind?: DisclosureKind;
+  registryId?: number;
+  /** Canonical readline editor whose pixels are projected by this view. */
+  suspendedSession?: PromptInputSession;
   /** The readline lifecycle ended while its alternate-screen view was open. */
   sessionReleased: boolean;
   readonly wasRaw: boolean;
@@ -170,6 +177,8 @@ interface ActiveDisclosureViewer {
   readonly onData: (chunk: Buffer | string) => void;
   readonly onError: () => void;
   readonly deferredCommits: string[];
+  /** Primary prompt/composer changed while hidden by the alternate buffer. */
+  primaryDisplayDirty: boolean;
   idleTimer?: NodeJS.Timeout;
   closing: boolean;
 }
@@ -247,6 +256,8 @@ export class Terminal {
   private activePromptController?: AbortController;
   private readlineInputFilter?: PrivateOscInputFilter;
   private currentRequestOptions?: Readonly<CurrentRequestOptions>;
+  /** Coalesce a Ctrl+C key-repeat burst into one cancellation per request. */
+  private currentRequestInterruptSignaled = false;
   private busyInputOwner?: BusyInputOwner;
   private busyPromptController?: AbortController;
   private busyPromptSession?: PromptInputSession;
@@ -261,7 +272,7 @@ export class Terminal {
    * directly to scrollback so a long answer can never be clipped merely to
    * keep these controls interactive.
    */
-  private mutableTurnTail: MutableTurnSegment[] = [];
+  private currentTurnDisclosures: CurrentTurnDisclosure[] = [];
   /**
    * First transcript entry owned by the current model turn. The boundary is
    * intentionally retained after completion so its Thinking controls remain
@@ -306,7 +317,20 @@ export class Terminal {
   constructor(
     private readonly input: PromptInput = process.stdin,
     private readonly output: NodeJS.WritableStream = process.stdout
-  ) {}
+  ) {
+    // VS Code terminal links use the authenticated loopback bridge whenever
+    // both sides advertise support. Keeping this event out of the PTY avoids
+    // xterm scrolling the primary buffer to the input cursor before opening
+    // or closing the alternate-screen disclosure viewer.
+    this.vscodeMenuBridge?.onDisclosureToggle((kind, id) => {
+      // A modal owns both the pixels and the input decision until it closes.
+      // VS Code terminal links are delivered out of band, so they must obey
+      // the same ownership boundary as physical key/mouse input instead of
+      // replacing an approval or picker frame behind the selector.
+      if (this.uiState.overlay || this.guardedInputActive) return;
+      this.openDisclosureViewer(kind, id);
+    });
+  }
 
   isInteractive(): boolean {
     return Boolean(
@@ -348,6 +372,10 @@ export class Terminal {
 
   showSessionHeader(): void {
     if (!this.inlineShellActive || !this.screen) return;
+    if (this.disclosureViewer) {
+      this.refreshDisclosureViewer();
+      return;
+    }
     this.screen.commit(
       `\n${renderSessionHeader(this.uiState, this.viewOptions())}\n\n`,
     );
@@ -359,17 +387,17 @@ export class Terminal {
     images: readonly Readonly<ImageAttachment>[] = [],
     options: Readonly<CurrentRequestOptions> = {},
   ): void {
-    this.closeDisclosureViewer();
     this.stopBusyComposer();
     this.stopBusyInputOwner();
     this.steeringAdmissionPaused = false;
     this.currentRequestOptions = options;
+    this.currentRequestInterruptSignaled = false;
     if (!this.inlineShellActive) return;
     const pendingStart = this.pendingRequestTranscriptStart;
     // A completed turn remains interactive while its idle Request editor is
     // visible. Starting the next busy turn is the ownership boundary at which
     // that prior tail becomes immutable scrollback.
-    if (!this.uiState.composer.busy) this.flushMutableTurnTail();
+    if (!this.uiState.composer.busy) this.freezeCurrentTurnDisclosures();
     const pendingEntry = pendingStart === undefined
       ? undefined
       : this.uiState.transcript[pendingStart];
@@ -413,14 +441,25 @@ export class Terminal {
         images,
       },
     });
-    this.refresh();
+    this.startPersistentViewer();
+    if (this.disclosureViewer) {
+      // An explicit new request returns the conversation to its live edge.
+      // Manual inspection stays stable during streaming, but it must not hide
+      // the next user turn above the visible viewport.
+      this.disclosureViewer.state = scrollDisclosureViewToEnd(
+        this.disclosureViewer.state,
+      );
+      this.refreshDisclosureViewer(true);
+    } else {
+      this.refresh();
+    }
     if (options.onSteer) this.startBusyComposer();
     else this.startBusyInputOwner();
   }
 
   clearCurrentRequest(): void {
-    this.closeDisclosureViewer();
     this.currentRequestOptions = undefined;
+    this.currentRequestInterruptSignaled = false;
     this.steeringAdmissionPaused = false;
     this.stopBusyComposer();
     this.stopBusyInputOwner();
@@ -457,6 +496,11 @@ export class Terminal {
     const editorSuspended = session?.suspendInput() ?? false;
     if (editorSuspended) {
       if (this.activePromptSession === session) this.activePromptSession = undefined;
+      const viewer = this.disclosureViewer;
+      if (viewer && viewer.suspendedSession === session) {
+        delete viewer.suspendedSession;
+        viewer.sessionReleased = true;
+      }
       this.promptActive = false;
     }
     // Own and drain stdin during the barrier. Merely pausing the source lets a
@@ -468,10 +512,17 @@ export class Terminal {
       this.steeringAdmissionPaused = false;
       this.stopBusyInputOwner();
       if (editorSuspended && session && this.busyPromptSession === session) {
-        session.resumeInput();
-        this.activePromptSession = session;
-        this.promptActive = true;
-        this.refresh();
+        const viewer = this.disclosureViewer;
+        if (viewer) {
+          viewer.suspendedSession = session;
+          viewer.sessionReleased = false;
+          this.refreshDisclosureViewer();
+        } else {
+          session.resumeInput();
+          this.activePromptSession = session;
+          this.promptActive = true;
+          this.refresh();
+        }
         return;
       }
       this.startBusyComposer();
@@ -572,6 +623,16 @@ export class Terminal {
       if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001Bc");
       return;
     }
+    const viewer = this.disclosureViewer;
+    if (viewer && !viewer.closing) {
+      // RIS would leave DEC 1049 while FullScreenWriter still believed its
+      // alternate buffer and row cache were active. Invalidate and repaint
+      // through the owner instead, keeping one coherent fixed-height shell.
+      viewer.writer.clear();
+      viewer.primaryDisplayDirty = true;
+      this.refreshDisclosureViewer(true);
+      return;
+    }
     this.screen?.clearLive();
     this.output.write("\u001Bc");
     this.showSessionHeader();
@@ -589,7 +650,7 @@ export class Terminal {
     this.progressItems = [];
     this.progressSequence = 0;
     this.agentConcurrencyLimit = undefined;
-    this.clearMutableTurnTail();
+    this.clearCurrentTurnDisclosures();
     this.currentTurnTranscriptStart = undefined;
     this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
@@ -669,15 +730,28 @@ export class Terminal {
       return null;
     }
 
-    if (this.inlineShellActive) this.screen?.clearLive();
+    if (this.inlineShellActive) {
+      if (!this.disclosureViewer) this.screen?.clearLive();
+      this.uiState = applyEvent(this.uiState, {
+        type: "composer.patch",
+        patch: {
+          busy: false,
+          text: "",
+          cursor: 0,
+          placeholder: prompt.trim() || "Plan feedback…",
+          images: [],
+        },
+      });
+    }
     this.promptActive = true;
     const promptController = new AbortController();
     this.activePromptController = promptController;
+    let ownedSession: PromptInputSession | undefined;
     try {
       const result = await readPrompt({
         input: this.input,
         output: this.output as import("./prompt-input.js").PromptOutput,
-        prompt,
+        prompt: this.inlineShellActive ? this.composerPromptPrefix() : prompt,
         signal: promptController.signal,
         captureImage: async () => {
           throw new Error("Images are not supported in plan feedback.");
@@ -685,6 +759,43 @@ export class Terminal {
         captureText,
         textOnlyPaste: true,
         clearOnSubmit: this.inlineShellActive,
+        startSuspended: this.inlineShellActive,
+        onSessionReady: (session) => {
+          if (session) {
+            ownedSession = session;
+            this.activePromptSession = session;
+            if (
+              this.inlineShellActive &&
+              !this.startPersistentViewer(session) &&
+              this.disclosureViewer
+            ) {
+              throw new Error("The persistent Request editor could not claim terminal input.");
+            }
+            return;
+          }
+          this.releaseDisclosurePromptSession(ownedSession);
+          if (this.activePromptSession === ownedSession) {
+            this.activePromptSession = undefined;
+          }
+        },
+        onDraftChange: (draft) => {
+          if (!this.inlineShellActive) return;
+          this.uiState = applyEvent(this.uiState, {
+            type: "composer.patch",
+            patch: {
+              text: draft.text,
+              cursor: draft.cursor,
+              images: [],
+            },
+          });
+          this.refresh();
+        },
+        ...(this.inlineShellActive
+          ? {
+              renderPrompt: () => this.composerPromptPrefix(),
+              renderBelow: () => this.composerPromptSuffix(),
+            }
+          : {}),
       });
       if (result === null) {
         this.closed = true;
@@ -692,10 +803,12 @@ export class Terminal {
       }
       return { text: result.text, pasteErrors: result.pasteErrors };
     } finally {
+      this.activePromptSession = undefined;
       if (this.activePromptController === promptController) {
         this.activePromptController = undefined;
       }
       this.promptActive = false;
+      this.reclaimPersistentViewerInput();
       if (!this.closed) this.refresh();
     }
   }
@@ -717,7 +830,12 @@ export class Terminal {
 
   private recordAcceptedPlanFeedback(feedback: string): void {
     if (!this.inlineShellActive) return;
-    this.flushMutableTurnTail();
+    this.freezeCurrentTurnDisclosures();
+    // The next executePrompt receives an internal plan-revision instruction,
+    // but the user-authored feedback is the actual request row for the turn.
+    // Mark it as pending so setCurrentRequest neither excludes it nor exposes
+    // the internal control prompt in the disclosure transcript.
+    this.pendingRequestTranscriptStart = this.uiState.transcript.length;
     this.uiState = applyEvent(this.uiState, {
       type: "transcript.append",
       entry: {
@@ -726,7 +844,16 @@ export class Terminal {
         images: [],
       },
     });
-    this.screen?.commit(`${formatSubmittedRequest(feedback)}\n\n`);
+    const rendered = `${formatSubmittedRequest(feedback)}\n\n`;
+    if (this.disclosureViewer) {
+      this.disclosureViewer.state = scrollDisclosureViewToEnd(
+        this.disclosureViewer.state,
+      );
+      this.disclosureViewer.deferredCommits.push(rendered);
+      this.refreshDisclosureViewer(true);
+    } else {
+      this.screen?.commit(rendered);
+    }
   }
 
   async readPrompt(
@@ -741,7 +868,6 @@ export class Terminal {
     },
   ): Promise<PromptSubmission | null> {
     if (this.closed) return null;
-    this.closeDisclosureViewer();
     if (this.rl || this.promptActive || this.guardedInputActive) {
       throw new Error("A terminal prompt is already active.");
     }
@@ -755,7 +881,7 @@ export class Terminal {
     }
     this.promptActive = true;
     if (this.inlineShellActive) {
-      this.screen?.clearLive();
+      if (!this.disclosureViewer) this.screen?.clearLive();
       this.uiState = applyEvent(this.uiState, {
         type: "composer.patch",
         patch: {
@@ -779,18 +905,24 @@ export class Terminal {
         signal: promptController.signal,
         captureImage: options.captureImage,
         captureText: options.captureText,
+        startSuspended: this.inlineShellActive,
         onSessionReady: (session) => {
           if (session) {
             ownedSession = session;
             this.activePromptSession = session;
-            if (!this.disclosureViewer) this.setTerminalCursorVisible(true);
+            if (this.inlineShellActive) {
+              if (
+                !this.startPersistentViewer(session) &&
+                this.disclosureViewer
+              ) {
+                throw new Error("The persistent Request editor could not claim terminal input.");
+              }
+            } else {
+              this.setTerminalCursorVisible(true);
+            }
             return;
           }
-          const viewer = this.disclosureViewer;
-          if (viewer && viewer.suspendedSession === ownedSession) {
-            viewer.sessionReleased = true;
-            this.closeDisclosureViewer();
-          }
+          this.releaseDisclosurePromptSession(ownedSession);
           if (this.activePromptSession === ownedSession) {
             this.activePromptSession = undefined;
           }
@@ -839,7 +971,7 @@ export class Terminal {
         // readPrompt has erased its dynamic prefix at this point. Freeze the
         // previous completed turn before printing the newly submitted request,
         // so the old Thinking marker cannot move below the new user message.
-        this.flushMutableTurnTail();
+        this.freezeCurrentTurnDisclosures();
         this.pendingRequestTranscriptStart = this.uiState.transcript.length;
         this.uiState = applyEvent(this.uiState, {
           type: "transcript.append",
@@ -849,7 +981,19 @@ export class Terminal {
             images: result.images,
           },
         });
-        this.screen?.commit(`${formatSubmittedRequest(result.text)}\n\n`);
+        const rendered = `${this.formatUserTranscriptEntry({
+          text: result.text,
+          images: result.images,
+        })}\n\n`;
+        if (this.disclosureViewer) {
+          this.disclosureViewer.state = scrollDisclosureViewToEnd(
+            this.disclosureViewer.state,
+          );
+          this.disclosureViewer.deferredCommits.push(rendered);
+          this.refreshDisclosureViewer(true);
+        } else {
+          this.screen?.commit(rendered);
+        }
       }
       return result;
     } finally {
@@ -858,6 +1002,7 @@ export class Terminal {
         this.activePromptController = undefined;
       }
       this.promptActive = false;
+      this.reclaimPersistentViewerInput();
       if (!this.closed) this.refresh();
     }
   }
@@ -950,6 +1095,11 @@ export class Terminal {
         ),
       );
     } finally {
+      // readSecretInput necessarily writes masked input directly. When the
+      // permanent frame owns the alternate buffer, force a cache-invalidating
+      // repaint so those direct pixels cannot remain embedded in the UI.
+      const viewer = this.disclosureViewer;
+      if (viewer && !viewer.closing) viewer.writer.clear();
       this.refresh();
     }
   }
@@ -1366,8 +1516,7 @@ export class Terminal {
         reasoning: block.text,
       } as const;
       if (this.inlineShellActive) {
-        this.appendMutableTurnSegment(entry, block);
-        this.refresh();
+        this.retainCurrentTurnDisclosure(entry, block);
       } else {
         this.write(entry.text);
       }
@@ -1419,7 +1568,7 @@ export class Terminal {
   /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
   restoreReasoning(texts: readonly string[]): number {
     this.closeDisclosureViewer();
-    this.clearMutableTurnTail();
+    this.clearCurrentTurnDisclosures();
     const count = this.reasoning.rebuild(texts);
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     this.refresh();
@@ -1447,7 +1596,7 @@ export class Terminal {
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
     this.closeDisclosureViewer();
-    this.flushMutableTurnTail();
+    this.freezeCurrentTurnDisclosures();
     this.reasoning.clear();
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     this.refresh();
@@ -1543,7 +1692,7 @@ export class Terminal {
     const controller = new AbortController();
     this.busyPromptController = controller;
     this.promptActive = true;
-    this.screen?.clearLive();
+    if (!this.disclosureViewer) this.screen?.clearLive();
     let ownedSession: PromptInputSession | undefined;
 
     const pendingCount = (delta: number): void => {
@@ -1595,11 +1744,12 @@ export class Terminal {
       captureText: requestOptions.captureText,
       keepOpen: true,
       onSubmit: (submission) => deliver(submission),
-      onInterrupt: requestOptions.onInterrupt,
+      onInterrupt: () => this.signalCurrentRequestInterrupt(),
       onDiscardImages: requestOptions.onDiscardImages,
       renderPrompt: () => this.composerPromptPrefix(),
       renderBelow: () => this.composerPromptSuffix(),
       clearOnSubmit: true,
+      startSuspended: this.inlineShellActive,
       onDraftChange: (draft) => {
         if (
           this.busyPromptGeneration !== generation ||
@@ -1617,27 +1767,37 @@ export class Terminal {
         if (!this.disclosureViewer) this.setTerminalCursorVisible(true);
       },
       onSessionReady: (session) => {
-        if (
-          this.busyPromptGeneration !== generation ||
-          this.currentRequestOptions !== requestOptions
-        ) return;
-        if (session) {
-          ownedSession = session;
-          this.busyPromptSession = session;
-          this.activePromptSession = session;
-          if (!this.disclosureViewer) this.setTerminalCursorVisible(true);
-        } else {
-          const viewer = this.disclosureViewer;
-          if (viewer && viewer.suspendedSession === ownedSession) {
-            viewer.sessionReleased = true;
-            this.closeDisclosureViewer();
-          }
+        if (!session) {
+          // Abort/cleanup can complete after stopBusyComposer advances the
+          // generation. The old session must still release its viewer lease;
+          // otherwise the next Request editor cannot be claimed synchronously.
+          this.releaseDisclosurePromptSession(ownedSession);
           if (this.busyPromptSession === ownedSession) {
             this.busyPromptSession = undefined;
           }
           if (this.activePromptSession === ownedSession) {
             this.activePromptSession = undefined;
           }
+          return;
+        }
+        if (
+          this.busyPromptGeneration !== generation ||
+          this.currentRequestOptions !== requestOptions
+        ) {
+          throw new Error("The busy Request editor is no longer current.");
+        }
+        ownedSession = session;
+        this.busyPromptSession = session;
+        this.activePromptSession = session;
+        if (this.inlineShellActive) {
+          if (
+            !this.startPersistentViewer(session) &&
+            this.disclosureViewer
+          ) {
+            throw new Error("The persistent Request editor could not claim terminal input.");
+          }
+        } else {
+          this.setTerminalCursorVisible(true);
         }
       },
       onToggleThinking: (id) => {
@@ -1687,6 +1847,7 @@ export class Terminal {
   private startBusyInputOwner(): void {
     if (
       this.busyInputOwner ||
+      this.disclosureViewer ||
       !this.currentRequestOptions ||
       !this.inlineShellActive ||
       this.closed ||
@@ -1728,7 +1889,7 @@ export class Terminal {
         ) {
           return;
         }
-        this.currentRequestOptions.onInterrupt?.();
+        this.signalCurrentRequestInterrupt();
       },
       (id) => {
         if (
@@ -1777,10 +1938,74 @@ export class Terminal {
   private async withPrivateProtocolFilteredInput<T>(
     action: (input: PrivateOscInputFilter) => Promise<T>,
   ): Promise<T> {
-    this.closeDisclosureViewer();
     if (this.guardedInputActive) {
       throw new Error("A terminal input operation is already active.");
     }
+
+    // A modal selector is another projection inside the permanent shell, not
+    // a reason to leave its alternate buffer. Transfer stdin from the shell
+    // decoder to the selector while keeping the FullScreenWriter alive. This
+    // preserves the viewport and prevents VS Code from following a restored
+    // primary-buffer cursor to an unrelated scrollback position.
+    const persistentViewer = this.disclosureViewer;
+    if (persistentViewer && !persistentViewer.closing) {
+      this.guardedInputActive = true;
+      const wasRaw = Boolean(this.input.isRaw);
+      const wasFlowing = this.input.readableFlowing === true;
+      const inputFilter = new PrivateOscInputFilter(this.input);
+      let pending: Promise<T> | undefined;
+
+      if (persistentViewer.idleTimer) clearTimeout(persistentViewer.idleTimer);
+      persistentViewer.idleTimer = undefined;
+      persistentViewer.input.decoder.reset();
+
+      try {
+        this.input.pause();
+        this.input.removeListener("data", persistentViewer.onData);
+        this.input.removeListener("error", persistentViewer.onError);
+        // `action` installs its selector synchronously and reasserts Raw Mode
+        // before its first read. Do not toggle it once here and once there:
+        // duplicate Windows console transitions can themselves lose a key.
+        pending = action(inputFilter);
+        this.input.pipe(inputFilter);
+        this.input.resume();
+        return await pending;
+      } finally {
+        this.input.pause();
+        this.input.unpipe(inputFilter);
+        if (!inputFilter.destroyed) inputFilter.destroy();
+        this.guardedInputActive = false;
+
+        if (
+          this.disclosureViewer === persistentViewer &&
+          !persistentViewer.closing &&
+          !this.closed
+        ) {
+          // Modal escape/control fragments belong to the selector and must
+          // never become text in the Request editor after ownership returns.
+          persistentViewer.input.decoder.reset();
+          persistentViewer.suspendedSession?.discardLeadingModalControls();
+          this.input.setRawMode?.(true);
+          this.input.on("data", persistentViewer.onData);
+          this.input.on("error", persistentViewer.onError);
+          // A resize may have been deferred while the modal owned stdin.
+          // Reconcile physical dimensions only after its filter is detached;
+          // if the terminal is now too short, close without dual consumers.
+          this.resizeDisclosureViewer();
+          this.input.resume();
+        } else {
+          try {
+            this.input.setRawMode?.(wasRaw);
+          } catch {
+            // A disappearing terminal must not prevent ownership cleanup.
+          }
+          if (wasFlowing) this.input.resume();
+          else this.input.pause();
+          if (!this.closed) this.startBusyInputOwner();
+        }
+      }
+    }
+
     this.guardedInputActive = true;
 
     // A busy steering editor is the sole normal stdin owner. Freeze its
@@ -1883,6 +2108,7 @@ export class Terminal {
    * can restore the collapsed marker at exactly the same logical position.
    */
   private openDisclosureViewer(kind: DisclosureKind, id: number): boolean {
+    if (this.uiState.overlay || this.guardedInputActive) return false;
     if (!this.inlineShellActive || !this.isInteractive() || this.closed) {
       return false;
     }
@@ -1896,20 +2122,45 @@ export class Terminal {
     }
 
     const current = this.disclosureViewer;
-    if (current) {
-      if (current.kind === kind && current.registryId === id) {
-        this.closeDisclosureViewer();
-        return true;
-      }
-      return this.switchDisclosureViewer(current, kind, id);
+    if (current) return this.switchDisclosureViewer(current, kind, id);
+
+    return this.startPersistentViewer(undefined, { kind, id });
+  }
+
+  /**
+   * Start the single full-screen shell projection.
+   *
+   * The ordinary conversation and expanded disclosures share this writer;
+   * opening Thinking therefore changes only a virtual transcript node and
+   * never enters a second alternate screen.
+   */
+  private startPersistentViewer(
+    promptSession?: PromptInputSession,
+    initialDisclosure?: Readonly<{ kind: DisclosureKind; id: number }>,
+  ): boolean {
+    const existing = this.disclosureViewer;
+    if (existing) {
+      const attached = promptSession
+        ? this.attachDisclosurePromptSession(existing, promptSession)
+        : true;
+      if (!attached) return false;
+      return initialDisclosure
+        ? this.switchDisclosureViewer(
+          existing,
+          initialDisclosure.kind,
+          initialDisclosure.id,
+        )
+        : true;
     }
 
     const rows = this.physicalRows();
-    if (rows < 7) {
-      this.writeStableStatus(
-        "The terminal needs at least 7 rows to open a complete disclosure view.",
-        "warning",
-      );
+    if (rows < 9) {
+      if (initialDisclosure) {
+        this.writeStableStatus(
+          "The terminal needs at least 9 rows to open the managed conversation view.",
+          "warning",
+        );
+      }
       return false;
     }
 
@@ -1917,8 +2168,13 @@ export class Terminal {
     const wasRaw = priorBusyOwner?.wasRaw ?? Boolean(this.input.isRaw);
     const wasFlowing = priorBusyOwner?.wasFlowing ??
       this.input.readableFlowing === true;
-    const suspendedSession = this.activePromptSession;
-    const sessionSuspended = suspendedSession?.suspendInput() ?? false;
+    const suspendedSession = promptSession ?? this.activePromptSession;
+    const sessionSuspended = suspendedSession?.suspendInput({
+      // A completed idle prompt can remain byte-for-byte intact in the hidden
+      // primary buffer. Busy UI is expected to keep changing, so retain its
+      // existing erase/redraw lifecycle.
+      preserveDisplay: !this.uiState.composer.busy,
+    }) ?? false;
     if (suspendedSession && !sessionSuspended) return false;
     if (sessionSuspended) {
       if (this.activePromptSession === suspendedSession) {
@@ -1930,31 +2186,44 @@ export class Terminal {
     }
 
     const columns = this.physicalColumns();
-    const target = this.disclosureTarget(kind, id);
-    const nodes = this.disclosureDocumentNodes(kind, id);
+    const target = initialDisclosure
+      ? this.disclosureTarget(initialDisclosure.kind, initialDisclosure.id)
+      : undefined;
+    const nodes = this.disclosureDocumentNodes(
+      initialDisclosure?.kind,
+      initialDisclosure?.id,
+    );
     const headerLines = this.disclosureHeaderLines(columns);
     const composerLines = this.disclosureComposerLines(columns, rows);
-    const footerLines = this.disclosureFooterLines();
+    const footerLines = this.disclosureFooterLines(
+      columns,
+      rows,
+      composerLines,
+    );
     let state: DisclosureViewState;
     try {
       state = createDisclosureViewState({
         nodes,
-        target,
+        ...(target ? { target } : {}),
         columns,
         rows,
         headerLines,
         composerLines,
         footerLines,
-        anchorScreenRow: this.disclosureAnchorScreenRow({
-          nodes,
-          target,
-          columns,
-          rows,
-          headerLines,
-          composerLines,
-          footerLines,
-        }),
-        expanded: true,
+        ...(target
+          ? {
+              anchorScreenRow: this.disclosureAnchorScreenRow({
+                nodes,
+                target,
+                columns,
+                rows,
+                headerLines,
+                composerLines,
+                footerLines,
+              }),
+              expanded: true,
+            }
+          : {}),
         preserveAnsi: true,
       });
     } catch (error) {
@@ -1993,14 +2262,20 @@ export class Terminal {
       }
     };
     const onError = (): void => this.closeDisclosureViewer();
-    const frame = renderDisclosureView(state);
+    const rendered = this.renderDisclosureFrameWithPosition(state);
+    state = rendered.state;
+    const frame = rendered.frame;
     viewer = {
       writer,
       input: tuiInput,
       state,
       frame,
-      kind,
-      registryId: id,
+      ...(initialDisclosure
+        ? {
+            kind: initialDisclosure.kind,
+            registryId: initialDisclosure.id,
+          }
+        : {}),
       ...(sessionSuspended && suspendedSession
         ? { suspendedSession }
         : {}),
@@ -2010,18 +2285,19 @@ export class Terminal {
       onData,
       onError,
       deferredCommits: [],
+      primaryDisplayDirty: false,
       closing: false,
     };
     this.disclosureViewer = viewer;
-    if (kind === "thinking") {
-      const block = this.reasoning.get(id);
-      if (block && this.uiState.live.thinking?.id !== id) {
+    if (initialDisclosure?.kind === "thinking") {
+      const block = this.reasoning.get(initialDisclosure.id);
+      if (block && this.uiState.live.thinking?.id !== initialDisclosure.id) {
         this.uiState = applyEvent(this.uiState, {
           type: "thinking.toggle",
           panel: block,
         });
       }
-    } else {
+    } else if (initialDisclosure?.kind === "adjustment") {
       this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     }
 
@@ -2047,6 +2323,63 @@ export class Terminal {
     }
   }
 
+  /** Attach a newly-created readline editor to the already-running shell. */
+  private attachDisclosurePromptSession(
+    viewer: ActiveDisclosureViewer,
+    session: PromptInputSession,
+  ): boolean {
+    if (this.disclosureViewer !== viewer || viewer.closing) return false;
+    if (viewer.suspendedSession === session && !viewer.sessionReleased) {
+      return true;
+    }
+    if (viewer.suspendedSession && !viewer.sessionReleased) return false;
+    if (!session.suspendInput({ preserveDisplay: true })) return false;
+    viewer.suspendedSession = session;
+    viewer.sessionReleased = false;
+    if (this.activePromptSession === session) this.activePromptSession = undefined;
+    this.promptActive = false;
+    viewer.primaryDisplayDirty = true;
+    // suspendInput() pauses the shared readable after disconnecting readline.
+    // The persistent viewer is now the sole physical owner, so resume it here
+    // or the first paste/keypress after attachment would never be delivered.
+    this.input.resume();
+    this.refreshDisclosureViewer();
+    return true;
+  }
+
+  /** Detach a readline lifecycle that completed while the shell stays alive. */
+  private releaseDisclosurePromptSession(
+    session: PromptInputSession | undefined,
+  ): void {
+    if (!session) return;
+    const viewer = this.disclosureViewer;
+    if (!viewer || viewer.suspendedSession !== session) return;
+    viewer.sessionReleased = true;
+    viewer.suspendedSession = undefined;
+    // readPrompt restores the Raw Mode it observed before the session was
+    // created. The permanent shell outlives that readline lifecycle, so take
+    // physical ownership back immediately for the next click/paste/keypress.
+    try {
+      this.input.setRawMode?.(true);
+    } catch {
+      // A disappearing terminal will be handled by the viewer's error path.
+    }
+    this.input.resume();
+    this.refreshDisclosureViewer();
+  }
+
+  /** Reassert ownership after readline restores the Raw Mode it inherited. */
+  private reclaimPersistentViewerInput(): void {
+    const viewer = this.disclosureViewer;
+    if (!viewer || viewer.closing || this.closed) return;
+    try {
+      this.input.setRawMode?.(true);
+    } catch {
+      return;
+    }
+    this.input.resume();
+  }
+
   private closeDisclosureViewer(): void {
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
@@ -2055,6 +2388,19 @@ export class Terminal {
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     if (viewer.idleTimer) clearTimeout(viewer.idleTimer);
     viewer.idleTimer = undefined;
+
+    // A completed idle turn normally has no primary-buffer mutations while
+    // its disclosure is open. In that common path the prompt that was already
+    // present before DEC 1049 remains authoritative; repainting it after the
+    // buffer switch would make VS Code follow the cursor to scrollback bottom.
+    const preservePrimaryDisplay = Boolean(
+      viewer.suspendedSession &&
+        !viewer.sessionReleased &&
+        !this.closed &&
+        !this.uiState.composer.busy &&
+        !viewer.primaryDisplayDirty &&
+        viewer.deferredCommits.length === 0,
+    );
 
     try {
       this.input.pause();
@@ -2070,16 +2416,13 @@ export class Terminal {
         // A disappearing terminal must not prevent prompt restoration.
       }
 
-      // Stable output produced while the alternate buffer was visible must be
-      // committed once to the primary scrollback before readline redraws the
-      // preserved draft. UI state was already updated when it arrived.
-      for (const text of viewer.deferredCommits) this.screen?.commit(text);
-
       if (viewer.suspendedSession && !viewer.sessionReleased && !this.closed) {
         this.promptActive = true;
         this.activePromptSession = viewer.suspendedSession;
         viewer.suspendedSession.resumeInput({
           discardLeadingModalControls: true,
+          preserveDisplay: preservePrimaryDisplay,
+          reacquireTerminalModes: true,
         });
         this.setTerminalCursorVisible(true);
       } else {
@@ -2087,7 +2430,22 @@ export class Terminal {
         else this.input.pause();
         if (!this.closed) this.startBusyInputOwner();
       }
-      if (!this.closed) this.refresh();
+
+      // Stable output produced while the alternate buffer was visible must be
+      // committed exactly once. When an editor session survived, route it
+      // through that session after restoration so its preserved draft is
+      // erased/redrawn around the output instead of being overwritten.
+      for (const text of viewer.deferredCommits) {
+        if (this.activePromptSession) {
+          this.activePromptSession.writeAbove(text);
+        } else {
+          this.screen?.commit(text);
+        }
+      }
+      // With an untouched primary prompt there is nothing to redraw. Avoiding
+      // even a decorative footer refresh is what preserves the user's VS Code
+      // terminal scroll position on collapse.
+      if (!this.closed && !preservePrimaryDisplay) this.refresh();
     }
   }
 
@@ -2095,11 +2453,59 @@ export class Terminal {
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
     try {
+      // Keep the canonical document current even while a modal temporarily
+      // replaces its pixels. The overlay's close callback refreshes without a
+      // `nodesChanged` hint, so deferring this replacement would permanently
+      // lose any transcript rows committed during approval/model selection.
       if (nodesChanged) {
+        const nodes = this.disclosureDocumentNodes(
+          viewer.state.targetExpanded ? viewer.kind : undefined,
+          viewer.state.targetExpanded ? viewer.registryId : undefined,
+        );
+        const selected = viewer.state.target;
+        if (selected && !nodes.some((node) =>
+          node.id === selected.id && node.kind === selected.kind
+        )) {
+          viewer.state = clearDisclosureViewTarget(viewer.state);
+          delete viewer.kind;
+          delete viewer.registryId;
+        }
         viewer.state = replaceDisclosureViewNodes(
           viewer.state,
-          this.disclosureDocumentNodes(viewer.kind, viewer.registryId),
+          nodes,
         );
+      }
+      if (this.uiState.overlay) {
+        const columns = viewer.state.columns;
+        const rows = viewer.state.rows;
+        const headerLines = this.disclosureHeaderLines(columns);
+        const footerLines = renderFixedBottomRegions(
+          this.uiState,
+          { ...this.viewOptions(), columns, rows },
+          Date.now(),
+          { totalRows: 1, detailRows: 0 },
+        ).lines;
+        const overlayRows = Math.max(
+          1,
+          rows - headerLines.length - footerLines.length,
+        );
+        const overlayText = renderLiveRegion(
+          this.uiState,
+          Date.now(),
+          { ...this.viewOptions(), columns, rows: overlayRows },
+        );
+        const overlayState = createDisclosureViewState({
+          nodes: [{ id: "overlay", kind: "text", text: overlayText }],
+          columns,
+          rows,
+          headerLines,
+          composerLines: [],
+          footerLines,
+          preserveAnsi: true,
+        });
+        viewer.frame = renderDisclosureView(overlayState);
+        viewer.writer.render(viewer.frame.rows);
+        return;
       }
       viewer.state = updateDisclosureViewChrome(viewer.state, {
         headerLines: this.disclosureHeaderLines(viewer.state.columns),
@@ -2107,11 +2513,24 @@ export class Terminal {
           viewer.state.columns,
           viewer.state.rows,
         ),
-        footerLines: this.disclosureFooterLines(),
       });
-      viewer.frame = renderDisclosureView(viewer.state);
+      const rendered = this.renderDisclosureFrameWithPosition(viewer.state);
+      viewer.state = rendered.state;
+      viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
     } catch {
+      if (this.guardedInputActive || this.uiState.overlay) {
+        // A selector still owns stdin. Closing the viewer here would resume
+        // its suspended readline session before the modal filter is removed,
+        // delivering the same approval key to two consumers. Keep ownership
+        // intact and show a minimal recoverable frame until the modal ends.
+        viewer.writer.clear();
+        viewer.writer.render([
+          chalk.cyan("EASY CODE"),
+          chalk.yellow("Enlarge the terminal to continue this selection."),
+        ]);
+        return;
+      }
       this.closeDisclosureViewer();
     }
   }
@@ -2119,23 +2538,52 @@ export class Terminal {
   private resizeDisclosureViewer(): void {
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
+    viewer.primaryDisplayDirty = true;
     try {
       const columns = this.physicalColumns();
       const rows = this.physicalRows();
-      if (rows < 7) {
+      if (rows < 9) {
+        if (this.guardedInputActive || this.uiState.overlay) {
+          viewer.writer.resize(columns, rows);
+          viewer.writer.render([
+            chalk.cyan("EASY CODE"),
+            chalk.yellow("Enlarge the terminal to continue this selection."),
+          ]);
+          return;
+        }
         this.closeDisclosureViewer();
         return;
       }
       viewer.writer.resize(columns, rows);
-      viewer.state = resizeDisclosureView(viewer.state, columns, rows);
-      viewer.state = updateDisclosureViewChrome(viewer.state, {
-        headerLines: this.disclosureHeaderLines(columns),
-        composerLines: this.disclosureComposerLines(columns, rows),
-        footerLines: this.disclosureFooterLines(),
+      const headerLines = this.disclosureHeaderLines(columns);
+      const composerLines = this.disclosureComposerLines(columns, rows);
+      const footerLines = this.disclosureFooterLines(
+        columns,
+        rows,
+        composerLines,
+      );
+      viewer.state = resizeDisclosureView(viewer.state, columns, rows, {
+        headerLines,
+        composerLines,
+        footerLines,
       });
-      viewer.frame = renderDisclosureView(viewer.state);
+      if (this.uiState.overlay) {
+        this.refreshDisclosureViewer();
+        return;
+      }
+      const rendered = this.renderDisclosureFrameWithPosition(viewer.state);
+      viewer.state = rendered.state;
+      viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
     } catch {
+      if (this.guardedInputActive || this.uiState.overlay) {
+        viewer.writer.clear();
+        viewer.writer.render([
+          chalk.cyan("EASY CODE"),
+          chalk.yellow("Enlarge the terminal to continue this selection."),
+        ]);
+        return;
+      }
       this.closeDisclosureViewer();
     }
   }
@@ -2183,6 +2631,21 @@ export class Terminal {
       this.refreshDisclosureViewer();
       return;
     }
+    if (
+      event.type === "key" &&
+      (event.key === "up" || event.key === "down")
+    ) {
+      // DEC alternate-scroll mode translates wheel movement into cursor keys
+      // without capturing mouse buttons. Treat those keys as viewport motion
+      // while the disclosure owns the screen; native drag selection remains
+      // entirely controlled by the terminal.
+      viewer.state = applyDisclosureViewCommand(viewer.state, {
+        type: "scroll-lines",
+        lines: event.key === "up" ? -1 : 1,
+      });
+      this.refreshDisclosureViewer();
+      return;
+    }
     if (event.type === "key" && event.key === "page-down") {
       viewer.state = applyDisclosureViewCommand(viewer.state, {
         type: "page-down",
@@ -2191,26 +2654,24 @@ export class Terminal {
       return;
     }
     if (event.type === "key" && event.key === "interrupt") {
-      try {
-        if (this.currentRequestOptions?.onInterrupt) {
-          this.currentRequestOptions.onInterrupt();
-        } else {
-          this.activePromptController?.abort();
-        }
-      } finally {
-        this.closeDisclosureViewer();
+      if (this.currentRequestOptions?.onInterrupt) {
+        this.signalCurrentRequestInterrupt();
+      } else {
+        this.activePromptController?.abort();
       }
       return;
     }
 
     const raw = this.disclosureEditorInput(event);
     if (!raw) return;
-    if (!viewer.suspendedSession?.feedInput(raw)) {
-      // A session can finish synchronously when Enter is forwarded. Its
-      // lifecycle callback normally closes the viewer; this fallback covers
-      // a disappearing terminal without leaving a read-only screen behind.
+    if (viewer.suspendedSession?.feedInput(raw)) {
+      viewer.primaryDisplayDirty = true;
+    } else {
+      // A session can finish synchronously when Enter is forwarded. The
+      // permanent shell remains active while the next idle/busy editor is
+      // created and attached to the same viewport.
       if (this.disclosureViewer === viewer && viewer.sessionReleased) {
-        this.closeDisclosureViewer();
+        this.refreshDisclosureViewer();
       }
     }
   }
@@ -2258,11 +2719,16 @@ export class Terminal {
     kind: DisclosureKind,
     id: number,
   ): void {
-    if (viewer.kind === kind && viewer.registryId === id) {
-      this.closeDisclosureViewer();
-      return;
-    }
-    this.switchDisclosureViewer(viewer, kind, id);
+    if (this.disclosureViewer !== viewer) return;
+    this.openDisclosureViewer(kind, id);
+  }
+
+  private signalCurrentRequestInterrupt(): void {
+    if (this.currentRequestInterruptSignaled) return;
+    const interrupt = this.currentRequestOptions?.onInterrupt;
+    if (!interrupt) return;
+    this.currentRequestInterruptSignaled = true;
+    interrupt();
   }
 
   private switchDisclosureViewer(
@@ -2275,35 +2741,27 @@ export class Terminal {
     }
     try {
       const target = this.disclosureTarget(kind, id);
-      const nodes = this.disclosureDocumentNodes(kind, id);
-      const columns = viewer.state.columns;
-      const rows = viewer.state.rows;
-      const headerLines = this.disclosureHeaderLines(columns);
-      const composerLines = this.disclosureComposerLines(columns, rows);
-      const footerLines = this.disclosureFooterLines();
-      viewer.state = createDisclosureViewState({
-        nodes,
+      const sameTarget = viewer.kind === kind && viewer.registryId === id;
+      const nextExpanded = sameTarget ? !viewer.state.targetExpanded : true;
+      const nodes = this.disclosureDocumentNodes(
+        nextExpanded ? kind : undefined,
+        nextExpanded ? id : undefined,
+      );
+      const selected = viewer.state.target;
+      if (selected && !nodes.some((node) =>
+        node.id === selected.id && node.kind === selected.kind
+      )) {
+        viewer.state = clearDisclosureViewTarget(viewer.state);
+      }
+      viewer.state = replaceDisclosureViewNodes(viewer.state, nodes);
+      viewer.state = toggleDisclosureView(
+        viewer.state,
         target,
-        columns,
-        rows,
-        headerLines,
-        composerLines,
-        footerLines,
-        anchorScreenRow: this.disclosureAnchorScreenRow({
-          nodes,
-          target,
-          columns,
-          rows,
-          headerLines,
-          composerLines,
-          footerLines,
-        }),
-        expanded: true,
-        preserveAnsi: true,
-      });
+        nextExpanded,
+      );
       viewer.kind = kind;
       viewer.registryId = id;
-      if (kind === "thinking") {
+      if (kind === "thinking" && viewer.state.targetExpanded) {
         const block = this.reasoning.get(id);
         this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
         if (block) {
@@ -2315,7 +2773,9 @@ export class Terminal {
       } else {
         this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
       }
-      viewer.frame = renderDisclosureView(viewer.state);
+      const rendered = this.renderDisclosureFrameWithPosition(viewer.state);
+      viewer.state = rendered.state;
+      viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
       return true;
     } catch {
@@ -2346,7 +2806,7 @@ export class Terminal {
       ? this.reasoning.get(id)
       : this.adjustments.get(id);
     if (!retained) return false;
-    return this.mutableTurnTail.some((segment) => kind === "thinking"
+    return this.currentTurnDisclosures.some((segment) => kind === "thinking"
       ? segment.reasoning?.id === id
       : segment.adjustment?.id === id);
   }
@@ -2370,46 +2830,23 @@ export class Terminal {
   }
 
   private disclosureDocumentNodes(
-    activeKind: DisclosureKind,
-    activeId: number,
+    activeKind?: DisclosureKind,
+    activeId?: number,
   ): readonly VirtualDocumentNode[] {
     const nodes: VirtualDocumentNode[] = [];
-    // The alternate buffer is a lossless projection of exactly one turn. Its
-    // rows keep the same order as primary scrollback; only the selected
-    // Thinking entry changes shape from marker+preview to title+full body.
-    // Slicing at an explicit turn boundary prevents prior answers from being
-    // replayed while retaining the initial request, steering, statuses, tools,
-    // and the final assistant answer from this turn.
+    // The alternate buffer is a lossless projection of the complete session.
+    // Thinking markers are committed at event time, so walking the transcript
+    // preserves the exact order visible in primary scrollback. The mutable
+    // collection only supplies bodies for current-turn markers; it is not a
+    // second visual tail. Only the selected marker changes shape in place.
     const reasoningByEntryId = new Map<string, Readonly<ReasoningBlock>>();
-    for (const segment of this.mutableTurnTail) {
+    for (const segment of this.currentTurnDisclosures) {
       if (segment.entry.id && segment.reasoning) {
         reasoningByEntryId.set(segment.entry.id, segment.reasoning);
       }
     }
-    const fallbackStart = (() => {
-      const firstLiveEntryId = this.mutableTurnTail.find((segment) =>
-        segment.reasoning
-      )?.entry.id;
-      if (!firstLiveEntryId) return this.uiState.transcript.length;
-      const index = this.uiState.transcript.findIndex((entry) =>
-        entry.id === firstLiveEntryId
-      );
-      return index < 0 ? this.uiState.transcript.length : index;
-    })();
-    const end = Math.max(
-      0,
-      Math.min(
-        this.currentTurnTranscriptEnd ?? this.uiState.transcript.length,
-        this.uiState.transcript.length,
-      ),
-    );
-    const start = Math.max(
-      0,
-      Math.min(
-        this.currentTurnTranscriptStart ?? fallbackStart,
-        end,
-      ),
-    );
+    const start = 0;
+    const end = this.uiState.transcript.length;
     for (let index = start; index < end; index += 1) {
       const entry = this.uiState.transcript[index];
       if (!entry) continue;
@@ -2486,18 +2923,6 @@ export class Terminal {
     };
   }
 
-  private formatAdjustmentAsSubmittedRequest(
-    block: Readonly<AdjustmentBlock>,
-  ): string {
-    const attachmentLabels = block.imageLabels
-      .filter((label) => !block.text.includes(`[${label}]`))
-      .map((label) => `[${label}]`)
-      .join(" ");
-    return formatSubmittedRequest(
-      [block.text, attachmentLabels].filter(Boolean).join(" "),
-    );
-  }
-
   private formatUserTranscriptEntry(
     entry: Pick<UITranscriptEntry, "text" | "images">,
   ): string {
@@ -2511,19 +2936,14 @@ export class Terminal {
   }
 
   private disclosureHeaderLines(columns: number): readonly string[] {
-    const session = this.uiState.header.session;
-    const danger = session?.commandExecutionMode === "unrestricted";
-    const title = danger ? "! EASY CODE" : "EASY CODE";
-    const facts = session
-      ? `${session.mode} · ${session.provider}/${session.model} · thinking:${session.thinkingEffort}`
-      : "complete disclosure";
-    const label = ` ${title} · ${facts} `;
-    const fitted = truncateToWidth(label, Math.max(1, columns - 3), {
-      preserveAnsi: false,
-    });
-    const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(fitted)));
-    const border = danger ? chalk.red : chalk.cyan;
-    return [border(`╭─${fitted}${fill}╮`), border(`╰${"─".repeat(Math.max(0, columns - 2))}╯`)];
+    // The alternate-screen viewer is another projection of the same session,
+    // not a separate page with its own compact identity. Reuse the canonical
+    // header so title, provider label, context, workspace, Thread ID, and
+    // sanitization remain byte-for-byte consistent across the toggle.
+    return renderSessionHeader(this.uiState, {
+      ...this.viewOptions(),
+      columns,
+    }).split("\n");
   }
 
   private disclosureComposerLines(
@@ -2558,7 +2978,10 @@ export class Terminal {
     // A very large draft remains fully retained in readline. Limit only the
     // on-screen composer window so complete Thinking/Adjustment content keeps
     // at least one transcript row, and mark either omitted side explicitly.
-    const maximumDraftRows = Math.max(1, rows - 6);
+    // The full-screen shell always reserves useful vertical space for the
+    // conversation plus status/tasks/agents below this card. The complete
+    // draft remains in readline; only a small cursor-centred window is shown.
+    const maximumDraftRows = Math.max(1, Math.min(3, rows - 8));
     const cursorRow = Math.max(
       0,
       wrapToWidth(`> ${before}`, interiorWidth, { preserveAnsi: false }).length - 1,
@@ -2585,25 +3008,85 @@ export class Terminal {
       );
       return `${chalk.cyan("│")} ${clipped}${padding} ${chalk.cyan("│")}`;
     });
-    return [
+    const requestLines = [
       chalk.cyan(`╭─${fitted}${fill}╮`),
       ...framedRows,
       chalk.cyan(`╰${"─".repeat(Math.max(0, columns - 2))}╯`),
     ];
+    const progress = renderLiveActivityRegion(
+      this.uiState,
+      Date.now(),
+      { ...this.viewOptions(), columns, rows, maxProgressRows: 2 },
+    ).split("\n").filter(Boolean);
+    const progressBudget = Math.max(0, Math.min(3, rows - 10));
+    const progressLines = progressBudget === 0
+      ? []
+      : progress.length <= progressBudget
+        ? progress
+        : progressBudget >= 2
+          ? [progress[0] ?? "", ...progress.slice(-(progressBudget - 1))]
+          : progress.slice(-progressBudget);
+    return [...progressLines, ...requestLines];
   }
 
-  private disclosureFooterLines(): readonly string[] {
-    return [chalk.gray(
-      "Complete content · PgUp/PgDn scroll · drag to select/copy · type normally · " +
-      "Ctrl/Cmd+click the title to close",
-    )];
+  private disclosureFooterLines(
+    columns: number,
+    rows: number,
+    composerLines: readonly string[],
+  ): readonly string[] {
+    const wrappedRows = (lines: readonly string[]): number => lines.reduce(
+      (total, line) => total + wrapToWidth(line, columns, {
+        preserveAnsi: true,
+      }).length,
+      0,
+    );
+    const headerRows = wrappedRows(this.disclosureHeaderLines(columns));
+    const composerRows = wrappedRows(composerLines);
+    // Conversation history is the primary surface. Detail lists may use the
+    // remaining rows, but never squeeze the managed transcript below a useful
+    // viewport. The compact status row itself always remains visible.
+    const transcriptReserve = Math.max(
+      1,
+      Math.min(12, Math.floor(rows * 0.35)),
+    );
+    const bottomBudget = Math.max(
+      1,
+      rows - headerRows - composerRows - transcriptReserve,
+    );
+    return renderFixedBottomRegions(
+      this.uiState,
+      { ...this.viewOptions(), columns, rows },
+      Date.now(),
+      { totalRows: bottomBudget, detailRows: Math.max(0, bottomBudget - 1) },
+    ).lines;
+  }
+
+  /** Keep one fixed-height footer synchronized with the continuous viewport. */
+  private renderDisclosureFrameWithPosition(
+    initialState: Readonly<DisclosureViewState>,
+  ): { readonly state: DisclosureViewState; readonly frame: DisclosureViewFrame } {
+    let state = initialState as DisclosureViewState;
+    let frame = renderDisclosureView(state);
+    const footerLines = this.disclosureFooterLines(
+      state.columns,
+      state.rows,
+      state.composerLines,
+    );
+    const footerChanged =
+      footerLines.length !== state.footerLines.length ||
+      footerLines.some((line, index) => line !== state.footerLines[index]);
+    if (footerChanged) {
+      state = updateDisclosureViewChrome(state, { footerLines });
+      frame = renderDisclosureView(state);
+    }
+    return { state, frame };
   }
 
   /**
    * Place a complete disclosure without the arbitrary empty band produced by
    * a fixed percentage anchor. A short current-turn document stays attached
-   * to the Request card; a long document starts the selected Thinking block
-   * at the top of the transcript viewport so its body is immediately useful.
+   * to the Request card; a long document keeps up to three preceding context
+   * rows above the selected Thinking title and remains continuously scrollable.
    */
   private disclosureAnchorScreenRow(options: Readonly<{
     nodes: readonly VirtualDocumentNode[];
@@ -2633,7 +3116,25 @@ export class Terminal {
     });
     const titleRow = layout.titleRows.get(options.target.id) ?? 0;
 
-    if (layout.totalRows > viewportRows) return headerRows;
+    if (layout.totalRows > viewportRows) {
+      // Keep a small amount of stable-answer context above the selected
+      // Thinking title. Pinning it to the absolute top made expansion look
+      // like every preceding row had disappeared even though it was scrollable.
+      const contextRows = Math.min(
+        titleRow,
+        3,
+        Math.max(0, viewportRows - 1),
+      );
+      const maximumOffset = Math.max(0, layout.totalRows - viewportRows);
+      const desiredOffset = Math.max(
+        0,
+        Math.min(titleRow - contextRows, maximumOffset),
+      );
+      // Derive the physical anchor from the clamped ordinary viewport. A
+      // target near the document tail therefore moves downward instead of
+      // forcing overscroll and painting an artificial blank band below it.
+      return headerRows + titleRow - desiredOffset;
+    }
 
     // createDisclosureViewState derives scrollOffset as titleRow minus the
     // local anchor. This anchor therefore yields totalRows - viewportRows,
@@ -2682,11 +3183,7 @@ export class Terminal {
       this.syncTerminalCursorVisibility();
       return;
     }
-    const tail = this.renderMutableTurnTail(
-      false,
-      this.mutableTailRowBudget(live, 1),
-    );
-    this.screen.renderLive(this.joinLiveBlocks(tail, live));
+    this.screen.renderLive(live);
     this.syncTerminalCursorVisibility();
   }
 
@@ -2724,8 +3221,8 @@ export class Terminal {
       this.refreshDisclosureViewer(true);
       return;
     }
-    // Only explicit disclosure segments belong in mutableTurnTail. Stable
-    // transcript output must never inherit the disclosure tray's row budget.
+    // Disclosure metadata is retained separately, but every visible marker is
+    // an ordinary stable transcript commit in the same event-time sequence.
     if (this.activePromptSession) {
       this.activePromptSession.writeAbove(renderedText);
     } else {
@@ -2733,152 +3230,41 @@ export class Terminal {
     }
   }
 
-  private appendMutableTurnSegment(
+  private retainCurrentTurnDisclosure(
     entry: Readonly<UITranscriptEntry>,
     reasoning?: Readonly<ReasoningBlock>,
     adjustment?: Readonly<AdjustmentBlock>,
   ): void {
-    this.uiState = applyEvent(this.uiState, {
-      type: "transcript.append",
-      entry,
-    });
-    this.mutableTurnTail.push({
+    // Register the disclosure body before committing its marker. A viewer can
+    // be open while the model emits another Thinking block; commitTranscript
+    // refreshes that viewer immediately and must be able to resolve the body.
+    this.currentTurnDisclosures.push({
       entry: { ...entry },
       ...(reasoning ? { reasoning: { ...reasoning } } : {}),
       ...(adjustment ? { adjustment: { ...adjustment } } : {}),
     });
-    if (this.disclosureViewer) this.refreshDisclosureViewer(true);
-  }
-
-  private renderMutableTurnTail(
-    historical = false,
-    maximumRows?: number,
-  ): string {
-    if (this.mutableTurnTail.length === 0) return "";
-    const rendered = this.mutableTurnTail.map((segment) => {
-      const adjustment = segment.adjustment;
-      if (adjustment) {
-        return `${this.formatAdjustmentAsSubmittedRequest(adjustment)}\n`;
-      }
-      const block = segment.reasoning;
-      if (!block) return segment.entry.text;
-      if (historical) {
-        return renderReasoningHistoryMarker(block, {
-          color: this.colorEnabled(),
-        });
-      }
-      return renderReasoningMarker(block, { color: this.colorEnabled() });
-    }).join("");
-    if (historical || maximumRows === undefined) return rendered;
-    const focusedDisclosure = (() => {
-      const latest = [...this.mutableTurnTail].reverse().find((segment) =>
-        segment.reasoning
-      );
-      return latest?.reasoning
-          ? { kind: "thinking" as const, id: latest.reasoning.id }
-          : undefined;
-    })();
-    return this.fitMutableTailRows(
-      rendered,
-      maximumRows,
-      focusedDisclosure,
-    );
+    this.commitTranscript(entry);
   }
 
   /** Freeze the previous turn only when a new request takes ownership. */
-  private flushMutableTurnTail(): void {
-    if (this.mutableTurnTail.length === 0) return;
-    const historical = this.renderMutableTurnTail(true).replace(/\n*$/u, "\n\n");
-    this.screen?.clearLive();
-    this.screen?.commit(historical);
-    this.clearMutableTurnTail();
+  private freezeCurrentTurnDisclosures(): void {
+    if (this.currentTurnDisclosures.length === 0) return;
+    // Markers were already committed once at event time. The ownership
+    // boundary only revokes current-turn interactivity; replaying them here
+    // would duplicate Thinking in scrollback and change chronological order.
+    this.clearCurrentTurnDisclosures();
   }
 
-  private clearMutableTurnTail(): void {
-    this.mutableTurnTail = [];
+  private clearCurrentTurnDisclosures(): void {
+    this.currentTurnDisclosures = [];
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
-  }
-
-  private joinLiveBlocks(first: string, second: string): string {
-    if (!first) return second;
-    if (!second) return first;
-    return `${first.replace(/\n+$/u, "")}\n\n${second}`;
-  }
-
-  private mutableTailRowBudget(otherLiveText: string, reservedRows: number): number {
-    const rows = Number((this.output as NodeJS.WriteStream).rows);
-    if (!Number.isFinite(rows) || rows < 1) return Number.MAX_SAFE_INTEGER;
-    const otherRows = this.visualRowCount(otherLiveText);
-    return Math.max(0, Math.floor(rows) - otherRows - Math.max(0, reservedRows));
-  }
-
-  private visualRowCount(text: string): number {
-    if (!text) return 0;
-    const columns = Math.max(1, this.screen?.columns ?? 80);
-    return wrapToWidth(text, columns, { preserveAnsi: true }).length;
-  }
-
-  private fitMutableTailRows(
-    text: string,
-    maximumRows: number,
-    focusedDisclosure?: Readonly<{
-      kind: "thinking" | "adjustment";
-      id: number;
-    }>,
-  ): string {
-    const limit = Number.isFinite(maximumRows)
-      ? Math.max(0, Math.floor(maximumRows))
-      : Number.MAX_SAFE_INTEGER;
-    if (limit === 0 || !text) return "";
-    const columns = Math.max(1, this.screen?.columns ?? 80);
-    const lines = wrapToWidth(text, columns, { preserveAnsi: true });
-    if (lines.length <= limit) return lines.join("\n");
-    if (limit === 1) return lines[0] ?? "";
-
-    if (focusedDisclosure !== undefined) {
-      const noun = focusedDisclosure.kind === "thinking"
-        ? "Thinking"
-        : "Queued adjustment";
-      const command = focusedDisclosure.kind === "thinking"
-        ? "thinking"
-        : "adjustment";
-      const anchorText = `▶ ${noun} #${focusedDisclosure.id}`;
-      const anchorIndex = lines.findIndex((line) => stripAnsi(line).includes(anchorText));
-      if (anchorIndex >= 0) {
-        const contextBefore = Math.min(
-          anchorIndex,
-          Math.max(0, Math.floor((limit - 1) * 0.2)),
-        );
-        let start = Math.max(0, anchorIndex - contextBefore);
-        let end = Math.min(lines.length, start + limit);
-        if (end - start < limit) start = Math.max(0, end - limit);
-        const window = lines.slice(start, end);
-        if (start > 0 && window.length > 1) {
-          window[0] = chalk.gray(`… ${start} earlier live row(s) hidden …`);
-        }
-        if (end < lines.length && window.length > 1) {
-          window[window.length - 1] = chalk.gray(
-            `… ${lines.length - end} later live row(s) hidden to keep Request responsive …`,
-          );
-        }
-        return window.join("\n");
-      }
+    const viewer = this.disclosureViewer;
+    if (viewer && viewer.state.target) {
+      viewer.state = clearDisclosureViewTarget(viewer.state);
+      delete viewer.kind;
+      delete viewer.registryId;
+      this.refreshDisclosureViewer(true);
     }
-
-    // Keep the Thinking control at the beginning and the latest answer/tool
-    // rows at the end. The omitted middle remains available after the next
-    // request freezes the complete tail into scrollback.
-    const contentRows = Math.max(1, limit - 1);
-    const headRows = Math.max(1, Math.ceil(contentRows * 0.6));
-    const tailRows = Math.max(0, contentRows - headRows);
-    const omitted = chalk.gray(
-      `… ${lines.length - headRows - tailRows} live row(s) hidden to keep Request responsive …`,
-    );
-    return [
-      ...lines.slice(0, headRows),
-      omitted,
-      ...(tailRows > 0 ? lines.slice(lines.length - tailRows) : []),
-    ].join("\n");
   }
 
   private removeRunningProgress(kind: UIProgressItem["kind"]): void {
@@ -3001,14 +3387,7 @@ export class Terminal {
     });
     const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(title)));
     const top = chalk.cyan(`╭─${title}${fill}╮`);
-    const composer = `${top}\n${chalk.cyan("│")} > `;
-    const suffixRows = this.visualRowCount(this.composerPromptSuffix());
-    const rows = Number((this.output as NodeJS.WriteStream).rows);
-    const tailBudget = Number.isFinite(rows) && rows > 0
-      ? Math.max(0, Math.floor(rows) - suffixRows - 4)
-      : undefined;
-    const tail = this.renderMutableTurnTail(false, tailBudget);
-    return tail ? this.joinLiveBlocks(tail, composer) : composer;
+    return `${top}\n${chalk.cyan("│")} > `;
   }
 
   private composerBottomBorder(): string {

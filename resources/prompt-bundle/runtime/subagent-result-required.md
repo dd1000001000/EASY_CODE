@@ -1,0 +1,1 @@
+RUNTIME_SUBAGENT_RESULT_PROTOCOL: A child cannot finish with plain assistant text. Call submit_task_result by itself for the single bound task, using completed with exact evidence or blocked with a concrete external blocker.

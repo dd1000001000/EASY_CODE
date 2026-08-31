@@ -25,6 +25,7 @@ import {
   toolFailure,
   toolSuccess,
 } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 const memoryCategorySchema = z.enum([
   "preference",
@@ -103,55 +104,43 @@ export class ManageMemoryTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Search and maintain workspace-scoped long-term memory. Use search before writing. Store one short, self-contained sentence per memory, at most 120 characters. When several independent durable facts were established, issue several remember calls together in the same response so each gets its own category, vector, evidence, and lifecycle; a turn may stage at most eight changes. Never combine a paragraph or list into one memory, but keep conditions together when separating them would make a fact inaccurate. Remember only durable user preferences, project conventions, verified architecture, explicit decisions, or stable environment facts that will help future tasks. Never store secrets, guesses, transient task state, raw tool output, or facts useful only in the current turn. remember safely upserts exact content; revise keeps the old record as superseded; forget expires a record without deleting its audit history.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
           action: {
             type: "string",
             enum: ["search", "remember", "revise", "forget"],
-            description:
-              "search retrieves memories; remember creates one atomic fact; revise supersedes; forget expires.",
           },
           query: {
             type: "string",
             minLength: 1,
             maxLength: MAX_MEMORY_SEARCH_CHARS,
-            description: "Required only for search. Use a concise keyword query or a memory ID.",
           },
           limit: { type: "integer", minimum: 1, maximum: 20 },
-          includeInactive: {
-            type: "boolean",
-            description: "For search only. Include superseded and expired audit-history entries.",
-          },
+          includeInactive: { type: "boolean" },
           memoryId: {
             type: "string",
             pattern: MEMORY_ID_PATTERN.source,
-            description: "Required for revise and forget; it must come from memory search.",
           },
           content: {
             type: "string",
             minLength: MIN_MEMORY_CONTENT_CHARS,
             maxLength: MAX_MEMORY_CONTENT_CHARS,
-            description: "Required for remember and revise. One short, self-contained durable fact; no secrets, lists, or bundled claims.",
           },
           category: {
             type: "string",
             enum: ["preference", "convention", "architecture", "decision", "environment"],
-            description: "Required for remember and optional for revise.",
           },
           reason: {
             type: "string",
             minLength: 1,
             maxLength: MAX_MEMORY_REASON_CHARS,
-            description: "Required for writes. Briefly state the current-turn evidence or reason; omit secrets.",
           },
         },
         required: ["action"],
-      },
+      }),
     },
   };
 

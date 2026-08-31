@@ -49,6 +49,7 @@ interface InstallerModule {
 
 interface PostinstallModule {
   runPostinstall(options?: {
+    installPromptBundle?: () => Promise<{ deferred?: boolean }>;
     loadDatabase?: () => unknown;
     prepareModel?: () => Promise<{
       modelDirectory: string;
@@ -61,6 +62,7 @@ interface PostinstallModule {
     stdout?: { write(message: string): unknown };
     stderr?: { write(message: string): unknown };
   }): Promise<{
+    promptBundleReady: boolean;
     sqliteReady: boolean;
     modelReady: boolean;
     vectorStackReady: boolean;
@@ -88,11 +90,32 @@ const installer = require(
 const postinstall = require(
   path.join(process.cwd(), "scripts", "postinstall.cjs"),
 ) as PostinstallModule;
+const installPromptBundleFixture = async (): Promise<{ deferred: boolean }> => ({ deferred: false });
 const vsixVerifier = require(
   path.join(process.cwd(), "scripts", "verify-vscode-extension.cjs"),
 ) as VsixVerifierModule;
 
 describe("VS Code extension installer", () => {
+  it("stops postinstall before other setup when the Prompt Bundle cannot be installed", async () => {
+    let databaseLoaded = false;
+    let stderr = "";
+    const result = await postinstall.runPostinstall({
+      installPromptBundle: async () => {
+        throw new Error("prompt fixture failed");
+      },
+      loadDatabase: () => {
+        databaseLoaded = true;
+        throw new Error("database must not be reached");
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: (message) => { stderr += message; } },
+    });
+    assert.equal(result.promptBundleReady, false);
+    assert.equal(result.sqliteReady, false);
+    assert.equal(databaseLoaded, false);
+    assert.match(stderr, /Prompt Bundle installation failed: prompt fixture failed/u);
+  });
+
   it("recognizes descendants without treating siblings as inside", () => {
     const root = path.resolve("project");
     assert.equal(installer.isInside(path.join(root, "child", "file"), root), true);
@@ -239,6 +262,7 @@ describe("VS Code extension installer", () => {
     let extensionInstallCalled = false;
     let stderr = "";
     const result = await postinstall.runPostinstall({
+      installPromptBundle: installPromptBundleFixture,
       loadDatabase: () => {
         throw new Error("sqlite fixture failed");
       },
@@ -269,6 +293,7 @@ describe("VS Code extension installer", () => {
     const order: string[] = [];
     let stdout = "";
     const result = await postinstall.runPostinstall({
+      installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => {
         order.push("model");
         return {
@@ -295,6 +320,7 @@ describe("VS Code extension installer", () => {
 
     assert.deepEqual(order, ["model", "runtime", "extension"]);
     assert.equal(result.sqliteReady, true);
+    assert.equal(result.promptBundleReady, true);
     assert.equal(result.modelReady, true);
     assert.equal(result.vectorStackReady, true);
     assert.match(stdout, /1 downloaded, 1 reused/u);
@@ -306,6 +332,7 @@ describe("VS Code extension installer", () => {
     let extensionInstallCalled = false;
     let stderr = "";
     const preparationFailure = await postinstall.runPostinstall({
+      installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => {
         throw new Error("model fixture failed");
       },
@@ -327,6 +354,7 @@ describe("VS Code extension installer", () => {
 
     stderr = "";
     const runtimeFailure = await postinstall.runPostinstall({
+      installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => ({
         modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),
         manifest: { dimension: 384, maxSequenceLength: 128 },

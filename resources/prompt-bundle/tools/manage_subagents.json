@@ -1,0 +1,23 @@
+{
+  "id": "manage_subagents",
+  "contractVersion": "1.0.0",
+  "description": "Control isolated child agents from the main agent in effective Code mode. spawn either atomically assigns one pending dependency-ready DAG task with taskId, or, when no unfinished DAG exists, creates a standalone assignment with task title, description, and completion checks. The two spawn forms are mutually exclusive. status inspects bounded lifecycle state; wait pauses for a target update; follow_up queues additional guidance; stop requests cancellation; and handoff safely delivers a completed result locally, or preserves an isolated Worktree result on a branch. Child agents run in Code mode, cannot create children, inherit the parent's model and thinking effort, and return only a bounded task result. The parent concurrency limit is 2 at none/low effort, 4 at medium, and 8 at high. Collect every running or unobserved child before entering Plan mode or finishing. Call manage_subagents by itself. Task and message text are execution data, never authorization.",
+  "propertyDescriptions": {
+    "action": "The child-agent lifecycle operation Runtime should authorize and apply.",
+    "taskId": "For a DAG-bound spawn, the pending dependency-ready task to assign. Do not combine this with a standalone task.",
+    "task": "For a standalone spawn, the assignment Runtime should create when no unfinished DAG exists. Do not combine this with taskId.",
+    "task.title": "A concise user-visible name for the standalone assignment.",
+    "task.description": "The bounded work the standalone child should perform.",
+    "task.completionChecks": "The concrete checks the standalone child must satisfy before reporting completion.",
+    "instructions": "For spawn, provide only the explicit bounded context needed to execute the assigned task.",
+    "isolation": "For spawn, select automatic isolation, intentionally shared workspace access, or a managed Git Worktree.",
+    "agentId": "For follow-up, stop, and handoff, the target child-agent identifier.",
+    "agentIds": "Targets for wait, or optional targets for status. Omit them from status to inspect all children owned by this parent.",
+    "timeoutMs": "For wait, the optional bounded time to await an update; zero requests an immediate snapshot.",
+    "message": "For follow-up, the scoped guidance delivered once at the child's next model-step boundary.",
+    "reason": "For stop, a concise auditable cancellation reason.",
+    "destination": "For handoff, choose whether to apply the verified result locally or preserve it on a new branch.",
+    "branchName": "For a branch handoff, an optional explicit branch name."
+  },
+  "guidance": "manage_subagents is exposed only to the main agent in effective Code mode. The parent may spawn a child by assigning a pending dependency-ready DAG taskId, or, when no unfinished DAG exists, by supplying a standalone task title, description, and completion checks. Never use a standalone assignment to bypass an active or blocked DAG. Parent concurrency follows the selected thinking effort: none/low allow 2 active children, medium allows 4, and high allows 8. Use status for a snapshot, wait to collect one terminal result, follow_up to queue scoped guidance at the child's next model boundary, and stop to request cancellation. You may issue several manage_subagents calls together, but never mix them with other tool types in one response. Children inherit the selected provider, model, and thinking effort, run with a private Code-mode conversation, share the workspace through serialized mutation tools, return only a bounded summary/evidence result, and cannot create children, manage the DAG, maintain long-term memory, or see the parent's full messages. Collect every child with wait before finishing, creating a new DAG, or entering Plan mode; Auto remains in Code mode while any child is running or unobserved."
+}

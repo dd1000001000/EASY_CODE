@@ -3,18 +3,18 @@
   "extensionVersion": "0.1.9",
   "vsix": {
     "file": "easy-code-vscode.vsix",
-    "bytes": 18038,
-    "sha256": "7fc8f8bf181633a8394d80b90f12244641f2841fe10cb1808afd7a0ee54fa5cf"
+    "bytes": 18524,
+    "sha256": "862bc9392064d2b32006da49d05bb86f0b0f04b4f694cc8fd95857b10596ee04"
   },
   "sourceHashAlgorithm": "sha256-utf8-normalized-lf",
   "sources": {
     ".vscodeignore": "6e0bf1b536f157ecd380ccfc25231a1539abe96c978d82ef30839852c9f112b5",
     "LICENSE": "1a38a0a349b719ae552d87eb9d02e78a1a3e40e60049b9a24b6d4176633cded0",
     "README.md": "644c1c73440d632ac3dd942e6b3f3b8996cad91d81f444af0fb030987b5f738e",
-    "extension.js": "7a343a568008b48b03b48fd0044d464c10e2dd3d925deadb91293e333910d76e",
+    "extension.js": "f36de553add23c4fca49bb842a5f4c1681839e2da8ad72dac2dcae12c3b5d0ff",
     "lib/clipboard.js": "0386b6282982889433daa01fe93f8fef068d8c73e784d1d0da5d5184afbb59f5",
     "lib/command-detection.js": "2c4f71dd2d7a16532d7fa6dcfb4beb4621d8b6f788210a82cfe98ccf5ea65f38",
-    "lib/menu-navigation-bridge.js": "bab933597b07689ff0efc5ba1c3fba634cc7fd76f119f369cdb7b6335913eb3a",
+    "lib/menu-navigation-bridge.js": "a080bec7edf1c94259f77084a0203a66ba075bbd2c760e1a7f56f9d240bc17b2",
     "lib/paste-command-queue.js": "c8b4909f6702036a5c879e07c6ed7e1100188ba9a8cc7c1004828d334f6c015a",
     "package.json": "725c9ae3b7f30c4e316675a6ba6ea0cc55c80cead1bb6ff76414a7b079ff934c"
   }

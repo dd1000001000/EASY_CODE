@@ -1,0 +1,12 @@
+{
+  "id": "submit_task_result",
+  "contractVersion": "1.0.0",
+  "description": "Submit the terminal result for the single assignment bound to this child agent. Use completed only after satisfying every declared completion check with exactly one concise evidence item per check, in the same order. Use blocked only for a concrete external condition. This tool is child-only, must be called by itself, and does not accept a task or agent ID.",
+  "propertyDescriptions": {
+    "outcome": "Whether the bound task was completed with evidence or remains blocked by a concrete external condition.",
+    "summary": "A bounded, self-contained result for the parent. Do not include hidden reasoning or secrets.",
+    "evidence": "For a completed task, provide exactly one concrete item per bound completion check, in the same order.",
+    "blocker": "For a blocked task, describe the unresolved external condition."
+  },
+  "guidance": "submit_task_result is available only to an isolated child. Call it by itself to return the single bound task's bounded result, using completed only with concrete evidence for every completion check and blocked only for a real external condition."
+}

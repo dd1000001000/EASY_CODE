@@ -6,6 +6,7 @@ import {
   createVsCodeMenuBridge,
   VSCODE_BRIDGE_ENDPOINT_ENV,
   VSCODE_BRIDGE_TOKEN_ENV,
+  VSCODE_DISCLOSURE_TOGGLE_CAPABILITY,
 } from "../src/cli/vscode-menu-bridge.js";
 import { describe, it } from "./harness.js";
 
@@ -73,6 +74,7 @@ describe("VS Code out-of-band menu navigation", () => {
       ppid: 123,
       cwd: "C:\\workspace",
       protocol: 2,
+      capabilities: [VSCODE_DISCLOSURE_TOGGLE_CAPABILITY],
     });
 
     const received: string[] = [];
@@ -106,6 +108,47 @@ describe("VS Code out-of-band menu navigation", () => {
         .map((frame) => frame.active),
       [true, false],
     );
+    bridge.close();
+  });
+
+  it("routes strict disclosure toggles even when no selector is active", async () => {
+    const socket = new FakeSocket();
+    const bridge = createVsCodeMenuBridge({
+      environment: {
+        [VSCODE_BRIDGE_ENDPOINT_ENV]: "127.0.0.1:43123",
+        [VSCODE_BRIDGE_TOKEN_ENV]: TOKEN,
+      },
+      identity: { pid: 321, ppid: 123, cwd: "C:\\workspace" },
+      connect: () => socket as unknown as Socket,
+    });
+    assert.ok(bridge);
+
+    const received: Array<{ kind: string; id: number }> = [];
+    const release = bridge.onDisclosureToggle((kind, id) => {
+      received.push({ kind, id });
+    });
+    socket.connect();
+    socket.receive({ type: "bridge-ready", protocol: 2 });
+    socket.receive({ type: "toggle-disclosure", kind: "thinking", id: 7 });
+    socket.receive({ type: "toggle-disclosure", kind: "adjustment", id: 3 });
+    socket.receive({ type: "toggle-disclosure", kind: "thinking", id: "7" });
+    socket.receive({ type: "toggle-disclosure", kind: "thinking", id: 0 });
+    socket.receive({
+      type: "toggle-disclosure",
+      kind: "thinking",
+      id: 8,
+      extra: true,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(received, [
+      { kind: "thinking", id: 7 },
+      { kind: "adjustment", id: 3 },
+    ]);
+
+    release();
+    socket.receive({ type: "toggle-disclosure", kind: "thinking", id: 9 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 2);
     bridge.close();
   });
 

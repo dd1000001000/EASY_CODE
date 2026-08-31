@@ -24,6 +24,7 @@ import {
   resolveExistingFileToolTarget,
   type FileToolTarget,
 } from "./file-access.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const deleteFileInputSchema = z
   .object({
@@ -43,26 +44,19 @@ export class DeleteFileTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Delete a previously read regular file only if its current SHA-256 hash still matches expectedHash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: {
-            type: "string",
-            description:
-              "Workspace-relative file path, or an absolute host path only in unrestricted mode",
-          },
+          path: { type: "string" },
           expectedHash: {
             type: "string",
             pattern: "^[a-fA-F0-9]{64}$",
-            description: "Full-file SHA-256 hash returned by read_file",
           },
         },
         required: ["path", "expectedHash"],
-      },
+      }),
     },
   };
 

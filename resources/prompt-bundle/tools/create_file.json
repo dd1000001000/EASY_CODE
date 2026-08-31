@@ -1,0 +1,11 @@
+{
+  "id": "create_file",
+  "contractVersion": "1.0.0",
+  "description": "Create a new UTF-8 text file. The operation fails if the file already exists. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
+  "propertyDescriptions": {
+    "path": "Workspace-relative file path, or an absolute host path only in unrestricted mode.",
+    "content": "The complete UTF-8 text to write to the new file.",
+    "encoding": "The text encoding to use for the new file."
+  },
+  "guidance": "create_file creates a new file and must not overwrite an existing file. It accepts an absolute host path only during explicitly confirmed Dangerous full access."
+}

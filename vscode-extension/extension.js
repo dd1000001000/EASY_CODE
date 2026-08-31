@@ -9,6 +9,7 @@ const {
 const {
   chooseTerminalForClient,
   createMenuNavigationServer,
+  DISCLOSURE_TOGGLE_CAPABILITY,
 } = require("./lib/menu-navigation-bridge");
 const { createTerminalPasteQueue } = require("./lib/paste-command-queue");
 
@@ -136,9 +137,14 @@ function showThinkingSequence(id) {
 /**
  * @param {(terminal: import('vscode').Terminal | undefined) => boolean} isEnabled
  * @param {(terminal: import('vscode').Terminal) => boolean} [tryRecover]
+ * @param {(terminal: import('vscode').Terminal, kind: "thinking" | "adjustment", id: number) => boolean} [dispatchToggle]
  * @returns {import('vscode').TerminalLinkProvider}
  */
-function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
+function createThinkingLinkProvider(
+  isEnabled,
+  tryRecover = () => false,
+  dispatchToggle = () => false,
+) {
   // Metadata never comes from a command string and is retained only for link
   // objects created by this provider. A forged object passed to the handler is
   // therefore inert even if it copies visible link properties.
@@ -177,6 +183,18 @@ function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
       if (!metadata || !isEnabled(metadata.terminal)) return;
+      try {
+        if (dispatchToggle(
+          metadata.terminal,
+          metadata.kind,
+          Number(metadata.id),
+        )) {
+          return;
+        }
+      } catch {
+        // Mixed installations and a transient bridge failure retain the
+        // legacy PTY path. It can move scrollback, but never loses the toggle.
+      }
       metadata.terminal.sendText(
         metadata.kind === "adjustment"
           ? toggleAdjustmentSequence(metadata.id)
@@ -358,6 +376,28 @@ async function activate(context) {
     }
   };
 
+  const dispatchDisclosureToggle = (terminal, kind, id) => {
+    const bridge = navigationBridge;
+    if (!bridge || !terminal || !Number.isSafeInteger(id) || id <= 0) {
+      return false;
+    }
+    const clients = [...(clientsByTerminal.get(terminal) ?? [])]
+      .filter((client) =>
+        client.authenticated &&
+        client.capabilities?.has(DISCLOSURE_TOGGLE_CAPABILITY) &&
+        !client.socket.destroyed &&
+        client.socket.writable
+      )
+      .sort((left, right) => right.lastActivity - left.lastActivity);
+    const client = clients[0];
+    if (!client) return false;
+    return bridge.send(client, {
+      type: "toggle-disclosure",
+      kind,
+      id,
+    });
+  };
+
   const tryRecover = (terminal) => {
     if (
       !recoveryCandidates.has(terminal) ||
@@ -405,7 +445,11 @@ async function activate(context) {
 
   context.subscriptions.push(
     vscode.window.registerTerminalLinkProvider(
-      createThinkingLinkProvider(isEnabled, tryRecover),
+      createThinkingLinkProvider(
+        isEnabled,
+        tryRecover,
+        dispatchDisclosureToggle,
+      ),
     ),
     vscode.window.onDidStartTerminalShellExecution((event) => {
       recoveryCandidates.delete(event.terminal);

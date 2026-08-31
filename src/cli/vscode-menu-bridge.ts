@@ -14,6 +14,7 @@ const MAX_FRAME_CHARS = 16 * 1024;
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/u;
 const ENDPOINT_PATTERN = /^127\.0\.0\.1:([1-9]\d{0,4})$/u;
 const BRIDGE_PROTOCOL_VERSION = 2;
+export const VSCODE_DISCLOSURE_TOGGLE_CAPABILITY = "disclosure-toggle-v1";
 const DEFAULT_LEGACY_FALLBACK_MS = 300;
 const DEFAULT_READY_ACK_TIMEOUT_MS = 2_000;
 
@@ -43,6 +44,8 @@ interface PendingActivation {
   fallbackTimer?: ReturnType<typeof setTimeout>;
 }
 
+export type VsCodeDisclosureKind = "thinking" | "adjustment";
+
 /**
  * A local, authenticated side channel for menu navigation in VS Code.
  *
@@ -54,6 +57,9 @@ interface PendingActivation {
 export class VsCodeMenuBridge implements MenuSelectorNavigation {
   private readonly listeners = new Set<
     (direction: MenuNavigationDirection) => void
+  >();
+  private readonly disclosureListeners = new Set<
+    (kind: VsCodeDisclosureKind, id: number) => void
   >();
   private socket?: BridgeSocket;
   private inputBuffer = "";
@@ -118,6 +124,23 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     };
   }
 
+  /**
+   * Receive a terminal-link toggle without injecting bytes into the PTY.
+   * Unlike menu navigation this channel stays active outside modal selectors.
+   */
+  onDisclosureToggle(
+    listener: (kind: VsCodeDisclosureKind, id: number) => void,
+  ): () => void {
+    if (this.closed) return () => undefined;
+    this.disclosureListeners.add(listener);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.disclosureListeners.delete(listener);
+    };
+  }
+
   close(): void {
     if (this.closed) return;
     if (this.active) this.sendMenuState(false);
@@ -126,6 +149,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     this.settleActivation(false);
     this.activation = undefined;
     this.listeners.clear();
+    this.disclosureListeners.clear();
     const socket = this.socket;
     this.socket = undefined;
     if (!socket) return;
@@ -147,6 +171,7 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
       ppid: this.identity.ppid,
       cwd: this.identity.cwd,
       protocol: BRIDGE_PROTOCOL_VERSION,
+      capabilities: [VSCODE_DISCLOSURE_TOGGLE_CAPABILITY],
     });
     if (this.active) {
       this.sendMenuState(true);
@@ -202,6 +227,16 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     if (isMenuReadyMessage(message)) {
       if (message.requestId === this.activation?.id) {
         this.settleActivation(message.ready);
+      }
+      return;
+    }
+    if (isDisclosureToggleMessage(message) && this.protocolReady) {
+      for (const listener of [...this.disclosureListeners]) {
+        try {
+          listener(message.kind, message.id);
+        } catch {
+          // One UI listener must not make the authenticated channel fail.
+        }
       }
       return;
     }
@@ -356,6 +391,25 @@ function isMenuReadyMessage(
     typeof record.ready === "boolean" &&
     Object.keys(record).every((key) =>
       key === "type" || key === "requestId" || key === "ready"
+    );
+}
+
+function isDisclosureToggleMessage(
+  value: unknown,
+): value is {
+  readonly type: "toggle-disclosure";
+  readonly kind: VsCodeDisclosureKind;
+  readonly id: number;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.type === "toggle-disclosure" &&
+    (record.kind === "thinking" || record.kind === "adjustment") &&
+    Number.isSafeInteger(record.id) &&
+    Number(record.id) > 0 &&
+    Object.keys(record).length === 3 &&
+    Object.keys(record).every((key) =>
+      key === "type" || key === "kind" || key === "id"
     );
 }
 

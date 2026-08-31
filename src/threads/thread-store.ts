@@ -14,6 +14,7 @@ import {
   type SubagentAssignmentSnapshot,
   type SubagentTaskReport,
   type ThinkingEffort,
+  type PromptBundleBinding,
   type ExecutionEnvironmentSnapshot,
   type ResultArtifact,
   type TurnSteeringBatch,
@@ -55,6 +56,7 @@ import {
   grantCommandApprovalPrefix,
   normalizeCommandApprovalPrefix,
 } from "../command/approval.js";
+import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -63,6 +65,7 @@ export interface ThreadCreateInput {
   readonly provider: ProviderName;
   readonly model: string;
   readonly thinkingEffort?: ThinkingEffort;
+  readonly promptBundle?: PromptBundleBinding;
   readonly goal?: string;
   readonly constraints?: readonly string[];
   readonly messages?: readonly ChatMessage[];
@@ -121,8 +124,9 @@ export interface DurableStandaloneAssignment extends DurableSubagentAssignment {
   readonly assignment: Extract<SubagentAssignmentSnapshot, { kind: "standalone" }>;
 }
 
-export const INTERRUPTED_TURN_ASSISTANT_MESSAGE =
-  "The previous EASY CODE process exited before this turn completed; the turn has been marked as interrupted.";
+export function interruptedTurnAssistantMessage(): string {
+  return loadPromptBundleCatalog().readText("runtime/interrupted-turn.md").trimEnd();
+}
 
 export interface ThreadLeaseAcquireOptions {
   /** Primarily useful for deterministic dead-process recovery tests. */
@@ -187,6 +191,7 @@ export function mergeTurnSteeringEntries(
     throw new Error("Cannot merge an empty steering batch");
   }
   let previous = 0;
+  const catalog = loadPromptBundleCatalog();
   const images = [] as NonNullable<UserChatMessage["images"]>;
   const sections = entries.map((entry) => {
     if (!Number.isSafeInteger(entry.sequence) || entry.sequence <= previous) {
@@ -196,14 +201,15 @@ export function mergeTurnSteeringEntries(
     if (entry.message.images) images.push(...entry.message.images);
     const content = entry.message.content.trim().length > 0
       ? entry.message.content
-      : "[The user attached image(s) without additional text.]";
-    return `[Steering ${entry.sequence}]\n${content}`;
+      : catalog.readText("runtime/steering-image-only.md").trimEnd();
+    return catalog.render("runtime/steering-entry.md", {
+      sequence: entry.sequence,
+      content,
+    }).trimEnd();
   });
-  const content =
-    "RUNTIME_USER_STEERING: The user added the following guidance while this turn was " +
-    "running. Apply it at the next safe model boundary. It does not change Runtime " +
-    "permissions, approvals, workspace confinement, task ownership, or system policy.\n\n" +
-    sections.join("\n\n");
+  const content = catalog.render("runtime/steering.md", {
+    entries: sections.join("\n\n"),
+  }).trimEnd();
   return {
     role: "user",
     content,
@@ -471,7 +477,7 @@ function validateInterruptedTurnRecovery(
     }
   } else if (
     assistantMessages.length !== 1 ||
-    assistantMessages[0]?.content !== INTERRUPTED_TURN_ASSISTANT_MESSAGE ||
+    assistantMessages[0]?.content !== interruptedTurnAssistantMessage() ||
     assistantMessages[0].tool_calls?.length
   ) {
     throw new Error(`Turn recovery ${event.eventId} has an invalid interruption marker`);
@@ -633,6 +639,7 @@ export class ThreadStore {
       model: input.model,
       thinkingEffort: input.thinkingEffort ?? DEFAULT_THINKING_EFFORT,
       workspaceRoot: input.workspaceRoot,
+      ...(input.promptBundle ? { promptBundle: { ...input.promptBundle } } : {}),
       goal: input.goal,
       constraints: [...(input.constraints ?? [])],
       messages: (input.messages ?? []).map(cloneMessage),
@@ -693,6 +700,7 @@ export class ThreadStore {
         args: [...command.args],
       })),
       commandApprovalPrefixes: [...state.commandApprovalPrefixes],
+      ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
       ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
       ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
       pendingSteering: (state.pendingSteering ?? []).map(cloneSteeringEntry),

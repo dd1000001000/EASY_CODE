@@ -10,6 +10,7 @@ import type {
 } from "../core/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 export const readImageInputSchema = z
   .object({
@@ -24,20 +25,15 @@ export class ReadImageTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Load a validated static PNG, JPEG, WebP, or GIF file from the workspace so the current vision model can inspect it. Animated or damaged files are rejected. The image is returned in the next user message.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
-          path: {
-            type: "string",
-            description: "Workspace-relative image file path",
-          },
+          path: { type: "string" },
         },
         required: ["path"],
-      },
+      }),
     },
   };
 

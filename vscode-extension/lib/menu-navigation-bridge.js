@@ -7,6 +7,9 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024;
 const DEFAULT_MAX_CLIENTS = 32;
 const TOKEN_BYTES = 32;
 const BRIDGE_PROTOCOL_VERSION = 2;
+const DISCLOSURE_TOGGLE_CAPABILITY = "disclosure-toggle-v1";
+const MAX_CAPABILITIES = 16;
+const MAX_CAPABILITY_CHARS = 64;
 
 function isPositiveProcessId(value) {
   return Number.isSafeInteger(value) && value > 0;
@@ -24,7 +27,20 @@ function isHelloFrame(value) {
     typeof value.cwd === "string" &&
     Buffer.byteLength(value.cwd, "utf8") <= 4096 &&
     (value.protocol === undefined ||
-      (Number.isSafeInteger(value.protocol) && value.protocol >= 1)),
+      (Number.isSafeInteger(value.protocol) && value.protocol >= 1)) &&
+    isCapabilitiesValue(value.capabilities),
+  );
+}
+
+function isCapabilitiesValue(value) {
+  return value === undefined || Boolean(
+    Array.isArray(value) &&
+    value.length <= MAX_CAPABILITIES &&
+    value.every((capability) =>
+      typeof capability === "string" &&
+      capability.length > 0 &&
+      capability.length <= MAX_CAPABILITY_CHARS
+    ),
   );
 }
 
@@ -121,6 +137,7 @@ function createMenuNavigationServer(options = {}) {
       ppid: undefined,
       cwd: undefined,
       protocol: 1,
+      capabilities: new Set(),
       menuActive: false,
       menuRequestId: undefined,
       terminal: undefined,
@@ -150,6 +167,11 @@ function createMenuNavigationServer(options = {}) {
           client.ppid = frame.ppid;
           client.cwd = frame.cwd;
           client.protocol = frame.protocol ?? 1;
+          client.capabilities = new Set(
+            (frame.capabilities ?? []).filter((capability) =>
+              capability === DISCLOSURE_TOGGLE_CAPABILITY
+            ),
+          );
           client.lastActivity = Date.now();
           if (client.protocol >= BRIDGE_PROTOCOL_VERSION) {
             socket.write(encodeBridgeFrame({
@@ -255,6 +277,7 @@ async function chooseTerminalForClient(client, terminals, isTracked, activeTermi
 
 module.exports = {
   BRIDGE_PROTOCOL_VERSION,
+  DISCLOSURE_TOGGLE_CAPABILITY,
   chooseTerminalForClient,
   createMenuNavigationServer,
   DEFAULT_MAX_CLIENTS,

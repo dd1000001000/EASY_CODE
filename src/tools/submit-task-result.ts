@@ -14,6 +14,7 @@ import {
   type SubagentTaskReportExecutionResult,
 } from "../subagents/types.js";
 import { toolFailure } from "./base.js";
+import { documentToolSchema } from "./metadata.js";
 
 const MAX_SUBAGENT_COMPLETION_EVIDENCE = 16;
 
@@ -64,14 +65,8 @@ export class SubmitTaskResultTool implements AgentTool {
     type: "function",
     function: {
       name: this.name,
-      description:
-        "Submit the terminal result for the single assignment bound to this child agent. " +
-        "Use completed only after satisfying every declared completion check with exactly one " +
-        "concise evidence item per check, in the same order. Use blocked only for a concrete " +
-        "external condition. This tool is child-only, must be called by itself, and does not " +
-        "accept a task or agent ID.",
       strict: true,
-      parameters: {
+      ...documentToolSchema(this.name, {
         type: "object",
         additionalProperties: false,
         properties: {
@@ -83,8 +78,6 @@ export class SubmitTaskResultTool implements AgentTool {
             type: "string",
             minLength: 1,
             maxLength: MAX_SUBAGENT_SUMMARY_CHARS,
-            description:
-              "A bounded, self-contained result for the parent. Do not include hidden reasoning or secrets.",
           },
           evidence: {
             type: "array",
@@ -95,18 +88,15 @@ export class SubmitTaskResultTool implements AgentTool {
               minLength: 1,
               maxLength: MAX_SUBAGENT_EVIDENCE_CHARS,
             },
-            description:
-              "Required for completed. Exactly one concrete item per bound completion check, in order.",
           },
           blocker: {
             type: "string",
             minLength: 1,
             maxLength: MAX_SUBAGENT_EVIDENCE_CHARS,
-            description: "Required for blocked. The unresolved external condition.",
           },
         },
         required: ["outcome", "summary"],
-      },
+      }),
     },
   };
 

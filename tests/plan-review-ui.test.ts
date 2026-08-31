@@ -201,7 +201,9 @@ describe("plan review terminal UI", () => {
         action: "adjust",
         feedback: "First line\nSecond line",
       });
-      assert.equal(input.isRaw, false);
+      // The permanent conversation viewport remains the terminal input owner
+      // after the feedback editor completes.
+      assert.equal(input.isRaw, true);
       terminal.close();
     } finally {
       if (previousCI === undefined) delete process.env.CI;

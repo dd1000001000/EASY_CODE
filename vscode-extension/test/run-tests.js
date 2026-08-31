@@ -19,6 +19,7 @@ const {
 const {
   chooseTerminalForClient,
   createMenuNavigationServer,
+  DISCLOSURE_TOGGLE_CAPABILITY,
   encodeBridgeFrame,
   isHelloFrame,
   isMenuFrame,
@@ -248,6 +249,12 @@ test("validates authenticated bridge protocol messages", () => {
     protocol: 2,
   };
   assert.equal(isHelloFrame(hello), true);
+  assert.equal(isHelloFrame({
+    ...hello,
+    capabilities: [DISCLOSURE_TOGGLE_CAPABILITY],
+  }), true);
+  assert.equal(isHelloFrame({ ...hello, capabilities: "disclosure-toggle-v1" }), false);
+  assert.equal(isHelloFrame({ ...hello, capabilities: [42] }), false);
   assert.equal(isHelloFrame({ ...hello, ppid: 0 }), false);
   assert.equal(isHelloFrame({ ...hello, cwd: 42 }), false);
   assert.equal(isHelloFrame({ ...hello, protocol: "2" }), false);
@@ -328,6 +335,7 @@ test("uses an authenticated loopback socket for out-of-band navigation", async (
     ppid: process.ppid,
     cwd: process.cwd(),
     protocol: 2,
+    capabilities: [DISCLOSURE_TOGGLE_CAPABILITY],
   }));
   assert.equal(
     (await bridgeReady)[0].toString("utf8"),
@@ -339,6 +347,10 @@ test("uses an authenticated loopback socket for out-of-band navigation", async (
     requestId: 19,
   }));
   assert.deepEqual(await menuSeen, { active: true, requestId: 19 });
+  assert.equal(
+    observedClient.capabilities.has(DISCLOSURE_TOGGLE_CAPABILITY),
+    true,
+  );
   const menuReady = once(socket, "data");
   assert.equal(
     bridge.send(observedClient, {
@@ -564,6 +576,47 @@ test("queued-adjustment links toggle through the tracked EASY CODE terminal", ()
   provider.handleTerminalLink(links[0]);
   assert.deepEqual(sends, [{
     text: "\x1b]6973;easy-code;toggle-adjustment;9\x07",
+    addNewLine: false,
+  }]);
+});
+
+test("thinking links use the authenticated bridge without writing to the PTY", () => {
+  const sends = [];
+  const dispatched = [];
+  const terminal = {
+    sendText(text, addNewLine) {
+      sends.push({ text, addNewLine });
+    },
+  };
+  const provider = createThinkingLinkProvider(
+    (candidate) => candidate === terminal,
+    () => false,
+    (candidate, kind, id) => {
+      dispatched.push({ candidate, kind, id });
+      return true;
+    },
+  );
+  const line = "▶ Thinking #12 · 40 chars · /thinking 12";
+  const links = provider.provideTerminalLinks(
+    { line, terminal },
+    { isCancellationRequested: false },
+  );
+  provider.handleTerminalLink(links[0]);
+  assert.deepEqual(dispatched, [{ candidate: terminal, kind: "thinking", id: 12 }]);
+  assert.deepEqual(sends, [], "a successful bridge dispatch must never inject PTY input");
+
+  const fallbackProvider = createThinkingLinkProvider(
+    () => true,
+    () => false,
+    () => false,
+  );
+  const fallbackLinks = fallbackProvider.provideTerminalLinks(
+    { line, terminal },
+    { isCancellationRequested: false },
+  );
+  fallbackProvider.handleTerminalLink(fallbackLinks[0]);
+  assert.deepEqual(sends, [{
+    text: "\x1b]6973;easy-code;toggle-thinking;12\x07",
     addNewLine: false,
   }]);
 });

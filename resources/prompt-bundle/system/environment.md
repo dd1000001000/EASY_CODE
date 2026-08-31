@@ -1,0 +1,13 @@
+Runtime environment (facts, not permissions):
+- Current time: {{localTime}}{{timeZoneDisplay}}
+- UTC time: {{utcTime}}
+- IANA time zone: {{timeZone}}
+- System locale: {{locale}}
+- System language: {{language}}
+- OS/platform: {{platform}}
+- Architecture: {{arch}}
+- Shell: {{shell}}
+- Process cwd: {{cwd}}
+- Workspace root: {{workspaceRoot}}
+- Active mode: {{mode}}
+- Provider/model: {{provider}}/{{model}}

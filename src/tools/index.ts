@@ -5,6 +5,7 @@ export * from "./delete-file.js";
 export * from "./manage-memory.js";
 export * from "./manage-subagents.js";
 export * from "./manage-tasks.js";
+export * from "./metadata.js";
 export * from "./propose-plan.js";
 export * from "./read-file.js";
 export * from "./read-image.js";

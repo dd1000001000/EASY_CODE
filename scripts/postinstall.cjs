@@ -26,6 +26,7 @@ assertSupportedNodeVersion();
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const { prepareEmbeddingModel } = require("./embedding-model.cjs");
 const { installBundledVsCodeExtension } = require("./install-vscode-extension.cjs");
@@ -38,6 +39,18 @@ function importedDefault(value) {
   return value && typeof value === "object" && "default" in value
     ? value.default
     : value;
+}
+
+async function installBundledPromptResources(options = {}) {
+  const modulePath = path.join(__dirname, "..", "dist", "prompt-bundle", "index.js");
+  if (!fs.existsSync(modulePath)) {
+    return { deferred: true };
+  }
+  const promptBundle = await import(pathToFileURL(modulePath).href);
+  if (typeof promptBundle.ensurePromptBundle !== "function") {
+    throw new Error("compiled Prompt Bundle installer is unavailable");
+  }
+  return promptBundle.ensurePromptBundle(options);
 }
 
 /**
@@ -331,6 +344,25 @@ async function runPostinstall(options = {}) {
   const prepareModel = options.prepareModel || prepareEmbeddingModel;
   const validateStack = options.validateStack || validateEmbeddingStack;
   const installExtension = options.installExtension || installBundledVsCodeExtension;
+  const installPromptBundle = options.installPromptBundle || installBundledPromptResources;
+
+  try {
+    const promptResult = await installPromptBundle();
+    stdout.write(
+      promptResult && promptResult.deferred
+        ? "EASY CODE: Prompt Bundle installation is deferred until the first CLI launch.\n"
+        : "EASY CODE: versioned Prompt Bundle is installed and verified.\n",
+    );
+  } catch (error) {
+    stderr.write(`EASY CODE: Prompt Bundle installation failed: ${errorMessage(error)}\n`);
+    return {
+      promptBundleReady: false,
+      sqliteReady: false,
+      modelReady: false,
+      vectorStackReady: false,
+      extensionResult: undefined,
+    };
+  }
 
   let db;
   try {
@@ -351,6 +383,7 @@ async function runPostinstall(options = {}) {
     }
     stderr.write(`EASY CODE: SQLite installation check failed: ${errorMessage(error)}\n`);
     return {
+      promptBundleReady: true,
       sqliteReady: false,
       modelReady: false,
       vectorStackReady: false,
@@ -368,6 +401,7 @@ async function runPostinstall(options = {}) {
   } catch (error) {
     stderr.write(`EASY CODE: embedding model installation failed: ${errorMessage(error)}\n`);
     return {
+      promptBundleReady: true,
       sqliteReady: true,
       modelReady: false,
       vectorStackReady: false,
@@ -381,6 +415,7 @@ async function runPostinstall(options = {}) {
   } catch (error) {
     stderr.write(`EASY CODE: embedding runtime installation check failed: ${errorMessage(error)}\n`);
     return {
+      promptBundleReady: true,
       sqliteReady: true,
       modelReady: true,
       vectorStackReady: false,
@@ -410,6 +445,7 @@ async function runPostinstall(options = {}) {
       );
     }
     return {
+      promptBundleReady: true,
       sqliteReady: true,
       modelReady: true,
       vectorStackReady: true,
@@ -421,6 +457,7 @@ async function runPostinstall(options = {}) {
       `EASY CODE: VS Code extension installation check failed: ${errorMessage(error)}\n`,
     );
     return {
+      promptBundleReady: true,
       sqliteReady: true,
       modelReady: true,
       vectorStackReady: true,
@@ -432,6 +469,7 @@ async function runPostinstall(options = {}) {
 
 module.exports = {
   checkSandboxPrerequisites,
+  installBundledPromptResources,
   runPostinstall,
   validateEmbeddingStack,
   validateOrama,
@@ -443,7 +481,12 @@ if (require.main === module) {
     .then(() => checkSandboxPrerequisites())
     .then(() => runPostinstall())
     .then((result) => {
-      if (!result.sqliteReady || !result.modelReady || !result.vectorStackReady) {
+      if (
+        !result.promptBundleReady ||
+        !result.sqliteReady ||
+        !result.modelReady ||
+        !result.vectorStackReady
+      ) {
         process.exitCode = 1;
       }
     })

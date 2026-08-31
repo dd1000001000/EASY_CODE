@@ -1,0 +1,10 @@
+{
+  "id": "select_mode",
+  "contractVersion": "1.0.0",
+  "description": "Choose how EASY CODE should handle the current request. Select plan when a reviewable implementation plan should be proposed before changes. Select code when the request should be answered or implemented directly. Base the decision on the current request and supplied thread context, then briefly explain the choice.",
+  "propertyDescriptions": {
+    "mode": "The handling mode selected for the current request.",
+    "reason": "A concise explanation grounded in the request and supplied thread context."
+  },
+  "guidance": "select_mode is a Runtime-only routing control. Call it by itself with either plan or code and a concise reason; do not perform task work in the routing response."
+}
