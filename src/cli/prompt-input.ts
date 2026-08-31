@@ -313,8 +313,9 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
 
 /**
  * A TTY proxy that turns an image-paste hotkey into visible `[Image #N]`
- * input. Delaying the transform callback while the clipboard is read also
- * keeps a following Enter key behind the attachment operation.
+ * input. Clipboard reads run behind an in-buffer pending marker so a slow
+ * helper never blocks later paste packets or ordinary typing. Submission is
+ * held until every pending marker has settled.
  */
 class ImagePasteInputProxy extends Transform {
   readonly isTTY = true;
@@ -329,8 +330,13 @@ class ImagePasteInputProxy extends Transform {
   private bracketedPasteBuffer = Buffer.alloc(0);
   private bracketedPasteTimer?: ReturnType<typeof setTimeout>;
   private pastedTextSequence = 0;
+  private pendingPasteSequence = 0;
+  private pendingCaptureCount = 0;
+  private submitRequested = false;
+  private captureQueue: Promise<void> = Promise.resolve();
   private readonly pastedTextBlocks = new Map<string, string>();
   private readonly imageMarkers = new Map<string, string>();
+  private readonly pendingMarkers = new Set<string>();
 
   constructor(
     private readonly source: PromptInput,
@@ -350,6 +356,10 @@ class ImagePasteInputProxy extends Transform {
       id: number,
     ) => void | Promise<void>,
     private readonly onAtomicBackspace?: () => boolean,
+    private readonly onReplaceMarker?: (
+      marker: string,
+      replacement: string,
+    ) => boolean,
     private readonly signal?: AbortSignal,
     private readonly bracketedPasteIdleTimeoutMs =
       DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS,
@@ -441,6 +451,7 @@ class ImagePasteInputProxy extends Transform {
     const markers = [
       ...this.pastedTextBlocks.keys(),
       ...this.imageMarkers.values(),
+      ...this.pendingMarkers,
     ];
     const prefix = value.slice(0, cursor);
     let matched = "";
@@ -471,6 +482,12 @@ class ImagePasteInputProxy extends Transform {
     let offset = 0;
 
     while (offset < input.length) {
+      if (this.submitRequested) {
+        // Enter fixes the logical end of this submission. Ignore everything
+        // that follows while pending clipboard work settles; Ctrl+C is still
+        // observed directly on the source stream by readPrompt.
+        break;
+      }
       if (this.bracketedPasteActive) {
         const existingLength = this.bracketedPasteBuffer.length;
         const combined = existingLength > 0
@@ -530,7 +547,7 @@ class ImagePasteInputProxy extends Transform {
         continue;
       }
       if (byte === CTRL_V) {
-        output.push(...Buffer.from(await this.captureMarker(), "utf8"));
+        output.push(...Buffer.from(this.beginCaptureMarker(), "utf8"));
         offset += 1;
         continue;
       }
@@ -555,7 +572,7 @@ class ImagePasteInputProxy extends Transform {
         const privateOsc = parsePrivateOsc(input, offset);
         if (privateOsc.status === "complete") {
           if (privateOsc.action.type === "paste-image") {
-            output.push(...Buffer.from(await this.captureMarker(), "utf8"));
+            output.push(...Buffer.from(this.beginCaptureMarker(), "utf8"));
           } else if (privateOsc.action.type === "toggle-thinking") {
             await this.onToggleThinking?.(privateOsc.action.id);
           }
@@ -566,7 +583,7 @@ class ImagePasteInputProxy extends Transform {
           input.subarray(offset, offset + sequence.length).equals(sequence),
         );
         if (enhanced) {
-          output.push(...Buffer.from(await this.captureMarker(), "utf8"));
+          output.push(...Buffer.from(this.beginCaptureMarker(), "utf8"));
           offset += enhanced.length;
           continue;
         }
@@ -589,10 +606,57 @@ class ImagePasteInputProxy extends Transform {
           break;
         }
       }
+      if ((byte === 0x0d || byte === 0x0a) && this.pendingCaptureCount > 0) {
+        this.submitRequested = true;
+        offset += 1;
+        continue;
+      }
       if (byte !== undefined) output.push(byte);
       offset += 1;
     }
     return Buffer.from(output);
+  }
+
+  private beginCaptureMarker(): string {
+    this.pendingPasteSequence += 1;
+    const marker = ` [Pasting clipboard #${this.pendingPasteSequence}…]${invisiblePasteNonce()} `;
+    this.pendingMarkers.add(marker);
+    this.pendingCaptureCount += 1;
+
+    // Keep real clipboard reads serialized. Besides avoiding native clipboard
+    // contention, this preserves image numbering and the aggregate validation
+    // performed by the caller while the Transform itself remains responsive.
+    this.captureQueue = this.captureQueue
+      .catch(() => undefined)
+      .then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+      .then(async () => {
+        const replacement = await this.captureMarker();
+        if (!this.destroyed && !this.signal?.aborted) {
+          this.onReplaceMarker?.(marker, replacement);
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.pasteErrors.push(message);
+        if (!this.destroyed && !this.signal?.aborted) {
+          this.onReplaceMarker?.(marker, " [Image paste failed] ");
+        }
+      })
+      .finally(() => {
+        this.pendingMarkers.delete(marker);
+        this.pendingCaptureCount = Math.max(0, this.pendingCaptureCount - 1);
+        if (
+          this.pendingCaptureCount === 0 &&
+          this.submitRequested &&
+          !this.destroyed &&
+          !this.signal?.aborted
+        ) {
+          this.submitRequested = false;
+          this.push(Buffer.from("\r"));
+        }
+      });
+
+    return marker;
   }
 
   private async captureMarker(): Promise<string> {
@@ -1029,6 +1093,36 @@ export function readPrompt(
     resumePrompt();
     return true;
   };
+  const replaceAtomicMarker = (
+    marker: string,
+    replacement: string,
+  ): boolean => {
+    const markerStart = rl.line.indexOf(marker);
+    if (markerStart < 0 || !suspendPrompt()) return false;
+    try {
+      const markerEnd = markerStart + marker.length;
+      const previousLine = suspendedLine;
+      const previousCursor = suspendedCursor;
+      const nextLine = `${previousLine.slice(0, markerStart)}${replacement}${previousLine.slice(markerEnd)}`;
+      let nextCursor = previousCursor;
+      if (previousCursor > markerStart) {
+        nextCursor = previousCursor < markerEnd
+          ? markerStart + replacement.length
+          : previousCursor + replacement.length - marker.length;
+      }
+      const mutableReadline = rl as unknown as {
+        line: string;
+        cursor: number;
+      };
+      mutableReadline.line = nextLine;
+      mutableReadline.cursor = nextCursor;
+      suspendedLine = nextLine;
+      suspendedCursor = nextCursor;
+      return true;
+    } finally {
+      resumePrompt();
+    }
+  };
   proxy = new ImagePasteInputProxy(
     input,
     initialImageCount,
@@ -1038,6 +1132,7 @@ export function readPrompt(
     showThinking,
     toggleThinking,
     deleteAtomicMarker,
+    replaceAtomicMarker,
     captureController.signal,
     options.bracketedPasteIdleTimeoutMs,
     options.clipboardCaptureTimeoutMs,

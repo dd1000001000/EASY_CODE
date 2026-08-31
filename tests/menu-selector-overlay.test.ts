@@ -4,6 +4,7 @@ import { PassThrough } from "node:stream";
 import {
   renderMenu,
   selectMenuIndex,
+  type MenuNavigationDirection,
   type MenuSelectorOverlay,
 } from "../src/cli/menu-selector.js";
 import { describe, it } from "./harness.js";
@@ -118,5 +119,47 @@ describe("menu selector overlay renderer", () => {
     assert.equal(transcript(), "");
     assert.deepEqual(input.rawModeTransitions, [true, false]);
     assert.equal(input.readableFlowing, true);
+  });
+
+  it("accepts out-of-band navigation without writing a terminal key", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    const transcript = captureOutput(output);
+    const overlay = new RecordingOverlay();
+    let navigate: ((direction: MenuNavigationDirection) => void) | undefined;
+    let active = false;
+
+    const rows = ["First", "Second", "Third"];
+    const selection = selectMenuIndex(
+      rows.length,
+      0,
+      (selectedIndex) => renderMenu("Choose", rows, selectedIndex, false),
+      {
+        input,
+        output,
+        overlay,
+        color: false,
+        navigation: {
+          activate: (listener) => {
+            active = true;
+            navigate = listener;
+            return () => {
+              active = false;
+              navigate = undefined;
+            };
+          },
+        },
+      },
+      "No choices.",
+    );
+
+    assert.equal(active, true);
+    navigate?.("down");
+    assert.match(overlay.frames.at(-1)?.[2] ?? "", /› Second/u);
+    assert.equal(transcript(), "", "navigation must not be routed through stdout");
+    input.write("\r");
+    assert.equal(await selection, 1);
+    assert.equal(active, false);
+    assert.equal(navigate, undefined);
   });
 });

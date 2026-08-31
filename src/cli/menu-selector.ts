@@ -19,11 +19,24 @@ export interface MenuSelectorOverlay {
   clear(): void;
 }
 
+export type MenuNavigationDirection = "up" | "down";
+
+export interface MenuSelectorNavigation {
+  /**
+   * Activate an optional out-of-band navigation source for this selector.
+   * The returned cleanup must be safe to call on every selector exit path.
+   */
+  activate(
+    onNavigate: (direction: MenuNavigationDirection) => void,
+  ): () => void;
+}
+
 export interface MenuSelectorOptions {
   readonly input: MenuSelectorInput;
   readonly output: MenuSelectorOutput;
   readonly color?: boolean;
   readonly overlay?: MenuSelectorOverlay;
+  readonly navigation?: MenuSelectorNavigation;
   /** Resolve false to fail closed when a choice cannot be reviewed safely. */
   readonly canConfirm?: () => boolean;
 }
@@ -122,6 +135,7 @@ export function selectMenuIndex(
     let escapeIntroducer: "[" | "O" | undefined;
     let escapeBody = "";
     let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+    let releaseNavigation: (() => void) | undefined;
 
     const clearEscapeTimer = (): void => {
       if (escapeTimer) clearTimeout(escapeTimer);
@@ -129,6 +143,12 @@ export function selectMenuIndex(
     };
     const cleanup = (): void => {
       clearEscapeTimer();
+      try {
+        releaseNavigation?.();
+      } catch {
+        // Optional host integration cleanup is best effort.
+      }
+      releaseNavigation = undefined;
       input.removeListener("data", guardedOnData);
       input.removeListener("end", onEnd);
       input.removeListener("close", onClose);
@@ -365,6 +385,17 @@ export function selectMenuIndex(
       input.once("close", onClose);
       input.once("error", onError);
       input.resume();
+      releaseNavigation = options.navigation?.activate((direction) => {
+        if (settled) return;
+        try {
+          move(direction === "up" ? -1 : 1);
+        } catch {
+          finish(
+            undefined,
+            new Error("Unable to render the interactive selection."),
+          );
+        }
+      });
       render();
     } catch {
       finish(undefined, new Error("Unable to start the interactive selection."));

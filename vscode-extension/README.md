@@ -1,6 +1,12 @@
 # EASY CODE Terminal Integration
 
-This UI extension adds native image paste and click-to-toggle Thinking details to EASY CODE in the VS Code integrated terminal.
+This UI extension adds native image paste, click-to-toggle Thinking details, and scroll-safe menu navigation to EASY CODE in the VS Code integrated terminal.
+
+## Scroll-safe menus
+
+When EASY CODE opens a model, plan, or command-approval menu, the extension intercepts unmodified Up and Down only for that active EASY CODE terminal. It sends the navigation action over an authenticated loopback bridge instead of inserting an arrow sequence into the terminal. This keeps VS Code's scrollback viewport in place while the selected option changes.
+
+The bridge is available only to terminals created after extension activation. The extension injects a random launch-scoped token and a loopback endpoint into those terminals, requires a validated hello frame from the EASY CODE process, and enables the arrow keybindings only while that process reports an active menu. Invalid, oversized, unauthenticated, stale, or unrelated connections fail closed. The bridge is removed when the extension deactivates or its terminal closes.
 
 ## Image paste
 

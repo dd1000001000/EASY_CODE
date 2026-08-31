@@ -51,6 +51,7 @@ import {
   selectMenuIndex,
   type MenuSelectorOverlay,
 } from "./menu-selector.js";
+import { createVsCodeMenuBridge } from "./vscode-menu-bridge.js";
 import type {
   UIActivityKind,
   UIOverlayState,
@@ -210,6 +211,7 @@ export class Terminal {
   private agentConcurrencyLimit?: number;
   /** Track DEC cursor visibility while EASY CODE owns the inline shell. */
   private terminalCursorVisible = true;
+  private readonly vscodeMenuBridge = createVsCodeMenuBridge();
   private readonly onResize = (): void => this.refresh();
 
   constructor(
@@ -624,7 +626,12 @@ export class Terminal {
         initialProvider,
         color: this.colorEnabled(),
         ...(this.inlineShellActive
-          ? { overlay: this.menuOverlay("provider-picker", "picker") }
+          ? {
+              overlay: this.menuOverlay("provider-picker", "picker"),
+              ...(this.vscodeMenuBridge
+                ? { navigation: this.vscodeMenuBridge }
+                : {}),
+            }
           : {}),
       }),
     );
@@ -644,7 +651,12 @@ export class Terminal {
         initialModel,
         color: this.colorEnabled(),
         ...(this.inlineShellActive
-          ? { overlay: this.menuOverlay("model-picker", "picker") }
+          ? {
+              overlay: this.menuOverlay("model-picker", "picker"),
+              ...(this.vscodeMenuBridge
+                ? { navigation: this.vscodeMenuBridge }
+                : {}),
+            }
           : {}),
       }),
     );
@@ -665,7 +677,12 @@ export class Terminal {
         initialEffort,
         color: this.colorEnabled(),
         ...(this.inlineShellActive
-          ? { overlay: this.menuOverlay("thinking-picker", "picker") }
+          ? {
+              overlay: this.menuOverlay("thinking-picker", "picker"),
+              ...(this.vscodeMenuBridge
+                ? { navigation: this.vscodeMenuBridge }
+                : {}),
+            }
           : {}),
       }),
     );
@@ -727,6 +744,9 @@ export class Terminal {
                   "approval",
                   request,
                 ),
+                ...(this.vscodeMenuBridge
+                  ? { navigation: this.vscodeMenuBridge }
+                  : {}),
               }
             : {}),
         }),
@@ -770,6 +790,9 @@ export class Terminal {
               "plan-review",
               this.lastPlan,
             ),
+            ...(this.vscodeMenuBridge
+              ? { navigation: this.vscodeMenuBridge }
+              : {}),
           },
           "No plan review choices are available.",
         ),
@@ -853,7 +876,12 @@ export class Terminal {
           output: this.output as ModelSelectorOutput,
           color: this.colorEnabled(),
           ...(this.inlineShellActive
-            ? { overlay: this.menuOverlay(`choice-${Date.now()}`, "picker") }
+            ? {
+                overlay: this.menuOverlay(`choice-${Date.now()}`, "picker"),
+                ...(this.vscodeMenuBridge
+                  ? { navigation: this.vscodeMenuBridge }
+                  : {}),
+              }
             : {}),
         },
         `No choices are available for ${title}.`,
@@ -1158,6 +1186,7 @@ export class Terminal {
   }
 
   close(): void {
+    this.vscodeMenuBridge?.close();
     if (this.closed) return;
     this.currentRequestOptions = undefined;
     this.stopBusyInputOwner();

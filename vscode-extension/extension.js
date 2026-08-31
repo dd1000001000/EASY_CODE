@@ -6,8 +6,16 @@ const {
   isEasyCodePackageScript,
   packageScriptName,
 } = require("./lib/command-detection");
+const {
+  chooseTerminalForClient,
+  createMenuNavigationServer,
+} = require("./lib/menu-navigation-bridge");
+const { createTerminalPasteQueue } = require("./lib/paste-command-queue");
 
 const CONTEXT_KEY = "easyCode.imagePasteEnabled";
+const MENU_NAVIGATION_CONTEXT_KEY = "easyCode.menuNavigationEnabled";
+const BRIDGE_ENDPOINT_ENV = "EASY_CODE_VSCODE_BRIDGE_ENDPOINT";
+const BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 const PASTE_IMAGE_SEQUENCE = "\x1b]6973;easy-code;paste-image\x07";
 const TOGGLE_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-thinking;";
 // Deprecated compatibility export. New callers should use the toggle name;
@@ -15,6 +23,7 @@ const TOGGLE_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-thinking;";
 const SHOW_THINKING_SEQUENCE_PREFIX = TOGGLE_THINKING_SEQUENCE_PREFIX;
 const THINKING_LINK_PREFIX = "Thinking #";
 const THINKING_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
+let activeBridgeRuntime;
 
 function vscodeApi() {
   // Keep the VS Code host dependency lazy so the protocol parser and link
@@ -119,8 +128,13 @@ function createThinkingLinkProvider(isEnabled, tryRecover = () => false) {
 /**
  * @param {import('vscode').ExtensionContext} context
  */
-function activate(context) {
+async function activate(context) {
   const vscode = vscodeApi();
+  // A development-host reload can invoke activate again without waiting for
+  // the prior async teardown. Remove its endpoint before publishing a new one
+  // so the old runtime cannot delete the replacement environment variables.
+  activeBridgeRuntime?.dispose();
+  activeBridgeRuntime = undefined;
   /** @type {Map<import('vscode').Terminal, Set<import('vscode').TerminalShellExecution>>} */
   const automaticExecutions = new Map();
   /** @type {Map<import('vscode').Terminal, boolean>} */
@@ -134,6 +148,12 @@ function activate(context) {
   const recoveryCandidates = new Set(vscode.window.terminals);
   /** @type {Set<import('vscode').Terminal>} */
   const recoveredTerminals = new Set();
+  /** @type {Map<import('vscode').Terminal, Set<object>>} */
+  const clientsByTerminal = new Map();
+  let navigationBridge;
+  let reconcileQueue = Promise.resolve();
+  let contextUpdateQueue = Promise.resolve();
+  const pasteQueue = createTerminalPasteQueue();
 
   const isEnabled = (terminal) => {
     if (!terminal) return false;
@@ -142,12 +162,106 @@ function activate(context) {
       recoveredTerminals.has(terminal);
   };
 
-  const updateContext = () => {
-    void vscode.commands.executeCommand(
-      "setContext",
-      CONTEXT_KEY,
-      isEnabled(vscode.window.activeTerminal),
+  // The manual override is explicitly an image-paste preference. Disabling
+  // image paste must not reintroduce VS Code's approval-menu scroll jump while
+  // an EASY CODE execution is still tracked.
+  const isBridgeEligible = (terminal) => {
+    if (!terminal) return false;
+    return (automaticExecutions.get(terminal)?.size ?? 0) > 0 ||
+      recoveredTerminals.has(terminal) ||
+      manualOverrides.get(terminal) === true;
+  };
+
+  const hasActiveMenu = (terminal) => {
+    if (!terminal) return false;
+    return [...(clientsByTerminal.get(terminal) ?? [])].some((client) =>
+      client.authenticated && client.menuActive && !client.socket.destroyed
     );
+  };
+
+  const updateContext = () => {
+    const imagePasteEnabled = isEnabled(vscode.window.activeTerminal);
+    const menuNavigationEnabled = hasActiveMenu(vscode.window.activeTerminal);
+    // Preserve state-transition order. An older async setContext completion
+    // must never re-enable key interception after a menu has already closed.
+    contextUpdateQueue = contextUpdateQueue
+      .catch(() => {})
+      .then(() => Promise.all([
+        vscode.commands.executeCommand(
+          "setContext",
+          CONTEXT_KEY,
+          imagePasteEnabled,
+        ),
+        vscode.commands.executeCommand(
+          "setContext",
+          MENU_NAVIGATION_CONTEXT_KEY,
+          menuNavigationEnabled,
+        ),
+      ]))
+      .then(() => undefined);
+    return contextUpdateQueue;
+  };
+
+  const detachClient = (client) => {
+    const terminal = client.terminal;
+    if (!terminal) return;
+    const clients = clientsByTerminal.get(terminal);
+    clients?.delete(client);
+    if (clients?.size === 0) clientsByTerminal.delete(terminal);
+    client.terminal = undefined;
+  };
+
+  const attachClient = (client, terminal) => {
+    if (client.terminal === terminal) return;
+    detachClient(client);
+    if (!terminal) return;
+    let clients = clientsByTerminal.get(terminal);
+    if (!clients) {
+      clients = new Set();
+      clientsByTerminal.set(terminal, clients);
+    }
+    clients.add(client);
+    client.terminal = terminal;
+  };
+
+  const reconcileClients = () => {
+    reconcileQueue = reconcileQueue
+      .catch(() => {})
+      .then(async () => {
+        if (!navigationBridge) return;
+        for (const client of navigationBridge.clients) {
+          if (!client.authenticated) continue;
+          const terminal = await chooseTerminalForClient(
+            client,
+            vscode.window.terminals,
+            isBridgeEligible,
+            vscode.window.activeTerminal,
+          );
+          attachClient(client, terminal);
+        }
+        updateContext();
+      });
+    return reconcileQueue;
+  };
+
+  const closeTerminalClients = (terminal) => {
+    if (!navigationBridge) return;
+    for (const client of [...(clientsByTerminal.get(terminal) ?? [])]) {
+      navigationBridge.closeClient(client);
+    }
+    clientsByTerminal.delete(terminal);
+  };
+
+  const navigateActiveMenu = (direction) => {
+    const terminal = vscode.window.activeTerminal;
+    if (!terminal || !navigationBridge) return;
+    const clients = [...(clientsByTerminal.get(terminal) ?? [])]
+      .filter((client) => client.authenticated && client.menuActive)
+      .sort((left, right) => right.lastActivity - left.lastActivity);
+    const client = clients[0];
+    if (!client || !navigationBridge.send(client, { type: "navigate", direction })) {
+      updateContext();
+    }
   };
 
   const tryRecover = (terminal) => {
@@ -192,6 +306,7 @@ function activate(context) {
     }
     executions.add(execution);
     updateContext();
+    void reconcileClients();
   };
 
   context.subscriptions.push(
@@ -213,14 +328,25 @@ function activate(context) {
         automaticExecutions.delete(event.terminal);
       }
       updateContext();
+      void reconcileClients();
     }),
-    vscode.window.onDidChangeActiveTerminal(updateContext),
+    vscode.window.onDidChangeActiveTerminal(() => {
+      updateContext();
+      void reconcileClients();
+    }),
     vscode.window.onDidCloseTerminal((terminal) => {
+      closeTerminalClients(terminal);
       automaticExecutions.delete(terminal);
       manualOverrides.delete(terminal);
       recoveryCandidates.delete(terminal);
       recoveredTerminals.delete(terminal);
       updateContext();
+    }),
+    vscode.commands.registerCommand("easyCode.navigateMenuUp", () => {
+      navigateActiveMenu("up");
+    }),
+    vscode.commands.registerCommand("easyCode.navigateMenuDown", () => {
+      navigateActiveMenu("down");
     }),
     vscode.commands.registerCommand("easyCode.pasteImage", async () => {
       const terminal = vscode.window.activeTerminal;
@@ -229,47 +355,56 @@ function activate(context) {
         return;
       }
 
-      // Text wins when the clipboard advertises both rich text and an image
-      // representation. This avoids turning an ordinary copied selection into
-      // an EASY CODE image marker on Windows and in browsers/editors.
-      let clipboardText = "";
-      try {
-        clipboardText = await vscode.env.clipboard.readText();
-      } catch {
-        // Continue with the image probe when the clipboard API is unavailable.
-      }
-      if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
-        return;
-      }
-      if (clipboardContainsText(clipboardText)) {
-        await pasteNormally();
-        return;
-      }
+      await pasteQueue.enqueue(terminal, async () => {
+        // A queued command remains bound to the terminal that owned the key
+        // press. If focus changed while an earlier paste was running, discard
+        // this invocation instead of redirecting it into the new terminal.
+        if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
+          return;
+        }
 
-      let hasImage = false;
-      try {
-        hasImage = await clipboardHasImage({
-          rejectedRoots: (vscode.workspace.workspaceFolders ?? [])
-            .filter((folder) => folder.uri.scheme === "file")
-            .map((folder) => folder.uri.fsPath),
-        });
-      } catch {
-        // An unavailable clipboard helper must never break ordinary text paste.
-      }
+        // Text wins when the clipboard advertises both rich text and an image
+        // representation. This avoids turning an ordinary copied selection into
+        // an EASY CODE image marker on Windows and in browsers/editors.
+        let clipboardText = "";
+        try {
+          clipboardText = await vscode.env.clipboard.readText();
+        } catch {
+          // Continue with the image probe when the clipboard API is unavailable.
+        }
+        if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
+          return;
+        }
+        if (clipboardContainsText(clipboardText)) {
+          await pasteNormally();
+          return;
+        }
 
-      // Never redirect a paste to a different terminal while the asynchronous
-      // clipboard probe is running. The user can press paste again in the new
-      // terminal instead.
-      if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
-        return;
-      }
+        let hasImage = false;
+        try {
+          hasImage = await clipboardHasImage({
+            rejectedRoots: (vscode.workspace.workspaceFolders ?? [])
+              .filter((folder) => folder.uri.scheme === "file")
+              .map((folder) => folder.uri.fsPath),
+          });
+        } catch {
+          // An unavailable clipboard helper must never break ordinary text paste.
+        }
 
-      if (!hasImage) {
-        await pasteNormally();
-        return;
-      }
+        // Never redirect a paste to a different terminal while the asynchronous
+        // clipboard probe is running. The user can press paste again in the new
+        // terminal instead.
+        if (vscode.window.activeTerminal !== terminal || !isEnabled(terminal)) {
+          return;
+        }
 
-      terminal.sendText(PASTE_IMAGE_SEQUENCE, false);
+        if (!hasImage) {
+          await pasteNormally();
+          return;
+        }
+
+        terminal.sendText(PASTE_IMAGE_SEQUENCE, false);
+      });
     }),
     vscode.commands.registerCommand("easyCode.enableTerminalImagePaste", () => {
       const terminal = vscode.window.activeTerminal;
@@ -297,12 +432,75 @@ function activate(context) {
     }),
   );
 
+  navigationBridge = createMenuNavigationServer({
+    onHello: () => {
+      void reconcileClients();
+    },
+    onMenuState: (client) => {
+      if (!client.terminal) void reconcileClients();
+      updateContext();
+    },
+    onDisconnect: (client) => {
+      detachClient(client);
+      updateContext();
+    },
+    onServerError: () => {
+      // Fail closed: tear down the channel, revoke inherited credentials, and
+      // let VS Code handle arrows normally.
+      const failedBridge = navigationBridge;
+      navigationBridge = undefined;
+      failedBridge?.dispose();
+      clientsByTerminal.clear();
+      context.environmentVariableCollection.delete(BRIDGE_ENDPOINT_ENV);
+      context.environmentVariableCollection.delete(BRIDGE_TOKEN_ENV);
+      void vscode.commands.executeCommand(
+        "setContext",
+        MENU_NAVIGATION_CONTEXT_KEY,
+        false,
+      );
+    },
+  });
+  try {
+    const endpoint = await navigationBridge.listen();
+    context.environmentVariableCollection.description =
+      "Authenticated local menu navigation bridge for EASY CODE terminals.";
+    context.environmentVariableCollection.replace(BRIDGE_ENDPOINT_ENV, endpoint);
+    context.environmentVariableCollection.replace(BRIDGE_TOKEN_ENV, navigationBridge.token);
+  } catch {
+    navigationBridge?.dispose();
+    navigationBridge = undefined;
+    context.environmentVariableCollection.delete(BRIDGE_ENDPOINT_ENV);
+    context.environmentVariableCollection.delete(BRIDGE_TOKEN_ENV);
+  }
+
+  const bridgeRuntime = {
+    dispose() {
+      if (activeBridgeRuntime === bridgeRuntime) activeBridgeRuntime = undefined;
+      navigationBridge?.dispose();
+      navigationBridge = undefined;
+      clientsByTerminal.clear();
+      context.environmentVariableCollection.delete(BRIDGE_ENDPOINT_ENV);
+      context.environmentVariableCollection.delete(BRIDGE_TOKEN_ENV);
+      void vscode.commands.executeCommand(
+        "setContext",
+        MENU_NAVIGATION_CONTEXT_KEY,
+        false,
+      );
+    },
+  };
+  activeBridgeRuntime = bridgeRuntime;
+  context.subscriptions.push(bridgeRuntime);
   updateContext();
 }
 
-function deactivate() {
+async function deactivate() {
   const vscode = vscodeApi();
-  return vscode.commands.executeCommand("setContext", CONTEXT_KEY, false);
+  activeBridgeRuntime?.dispose();
+  activeBridgeRuntime = undefined;
+  await Promise.all([
+    vscode.commands.executeCommand("setContext", CONTEXT_KEY, false),
+    vscode.commands.executeCommand("setContext", MENU_NAVIGATION_CONTEXT_KEY, false),
+  ]);
 }
 
 function clipboardContainsText(value) {
@@ -320,4 +518,7 @@ module.exports = {
   SHOW_THINKING_SEQUENCE_PREFIX,
   toggleThinkingSequence,
   TOGGLE_THINKING_SEQUENCE_PREFIX,
+  BRIDGE_ENDPOINT_ENV,
+  BRIDGE_TOKEN_ENV,
+  MENU_NAVIGATION_CONTEXT_KEY,
 };

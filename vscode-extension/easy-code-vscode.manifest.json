@@ -1,19 +1,21 @@
 {
   "schemaVersion": 1,
-  "extensionVersion": "0.1.6",
+  "extensionVersion": "0.1.8",
   "vsix": {
     "file": "easy-code-vscode.vsix",
-    "bytes": 11701,
-    "sha256": "dbe79ee6adc781589e86c713b9f5dfd2bf36af3695b8fb26bcf21631d82d6337"
+    "bytes": 17156,
+    "sha256": "7005f8ec101fde7515f68ca335c864943f6d38affe23264942d7c16b0854a3a9"
   },
   "sourceHashAlgorithm": "sha256-utf8-normalized-lf",
   "sources": {
     ".vscodeignore": "6e0bf1b536f157ecd380ccfc25231a1539abe96c978d82ef30839852c9f112b5",
     "LICENSE": "1a38a0a349b719ae552d87eb9d02e78a1a3e40e60049b9a24b6d4176633cded0",
-    "README.md": "6516823668842068925910d0f333a98ba6cf0b0575d928e259244e2b39bd48b9",
-    "extension.js": "48758e602f9d57d5e752758458753110ba801ba906448fcab5f59aa4cc0adb09",
+    "README.md": "644c1c73440d632ac3dd942e6b3f3b8996cad91d81f444af0fb030987b5f738e",
+    "extension.js": "d87791fdcdc1f036bd76911c63bbeacfba8faddf4dee01a763895ab98ba0b1b9",
     "lib/clipboard.js": "0386b6282982889433daa01fe93f8fef068d8c73e784d1d0da5d5184afbb59f5",
     "lib/command-detection.js": "2c4f71dd2d7a16532d7fa6dcfb4beb4621d8b6f788210a82cfe98ccf5ea65f38",
-    "package.json": "000ce4be6a8442f5b224a1ba19c318011ac9b53233fe71612ea3c2794f6168df"
+    "lib/menu-navigation-bridge.js": "4b8d3dcc6d55e578b9e4bc2c5bfeaf06ff3a3edb66acb7627c598c6cdd7ba869",
+    "lib/paste-command-queue.js": "c8b4909f6702036a5c879e07c6ed7e1100188ba9a8cc7c1004828d334f6c015a",
+    "package.json": "0aadddd46b45d7d79416d1a5777569a4c0d776d7e93507a83e9a9f3231274861"
   }
 }
