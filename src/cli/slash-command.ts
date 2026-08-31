@@ -91,6 +91,7 @@ EASY CODE commands
   /memory long               Show automatic long-term memory
   /memory long <id>          Show one long-term memory entry
   /thinking [id|last]        Show the expanded model thinking
+  /adjustment [id|last]      Show one retained queued adjustment
   /sessions                  List previous threads
   /resume [id]               Pick or resume a thread
   /new                       Start a new thread

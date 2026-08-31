@@ -6,6 +6,7 @@ import {
   readPrompt,
   type PromptInputSession,
   VSCODE_IMAGE_PASTE_SEQUENCE,
+  vscodeToggleAdjustmentSequence,
   vscodeShowThinkingSequence,
   vscodeToggleThinkingSequence,
 } from "../src/cli/prompt-input.js";
@@ -238,6 +239,216 @@ describe("image-aware CLI prompt", () => {
 
     controller.abort();
     await prompt;
+  });
+
+  it("keeps the canonical busy editor editable while its physical prompt is suspended", async () => {
+    await withInteractiveTerm(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.setEncoding("utf8");
+      let transcript = "";
+      output.on("data", (chunk: string) => {
+        transcript += chunk;
+      });
+      output.resume();
+
+      const controller = new AbortController();
+      const submissions: Array<{ text: string; labels: string[] }> = [];
+      const drafts: string[] = [];
+      let activeSession: PromptInputSession | undefined;
+      let retainedSession: PromptInputSession | undefined;
+      const prompt = readPrompt({
+        input,
+        output,
+        prompt: "> ",
+        signal: controller.signal,
+        keepOpen: true,
+        clearOnSubmit: true,
+        captureImage: async (index) => attachment(index),
+        onSubmit: (submission) => {
+          submissions.push({
+            text: submission.text,
+            labels: submission.images.map((image) => image.label),
+          });
+        },
+        onDraftChange: (draft) => drafts.push(draft.text),
+        onSessionReady: (session) => {
+          activeSession = session;
+          if (session) retainedSession = session;
+        },
+      });
+
+      assert.ok(activeSession);
+      assert.equal(activeSession.feedInput("ignored while live"), false);
+      assert.equal(activeSession.suspendInput(), true);
+      const suspendedOutputOffset = transcript.length;
+
+      // Cursor editing still belongs to readline.
+      assert.equal(activeSession.feedInput("ac"), true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(activeSession.feedInput("\u001B[D"), true);
+      // Node's readline keeps a short ambiguity window for ESC-prefixed keys.
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      assert.equal(activeSession.feedInput("b"), true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(activeSession.feedInput("\r"), true);
+      await activeSession.flushSubmissions();
+      assert.deepEqual(submissions, [{ text: "abc", labels: [] }]);
+
+      // A collapsed multiline paste remains one atomic marker when Backspace
+      // is injected by the alternate-screen owner.
+      assert.equal(
+        activeSession.feedInput("\u001B[200~discard\nthis\u001B[201~"),
+        true,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(activeSession.feedInput(Buffer.from([0x7f])), true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(activeSession.feedInput("after deletion\r"), true);
+      await activeSession.flushSubmissions();
+      assert.deepEqual(submissions.at(-1), {
+        text: "after deletion",
+        labels: [],
+      });
+
+      assert.equal(activeSession.feedInput(VSCODE_IMAGE_PASTE_SEQUENCE), true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(
+        activeSession.feedInput("\u001B[200~first\nsecond\u001B[201~"),
+        true,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(activeSession.feedInput("\r"), true);
+      await activeSession.flushSubmissions();
+
+      assert.deepEqual(submissions.at(-1), {
+        text: " [Image #1] first\nsecond",
+        labels: ["Image #1"],
+      });
+      assert.ok(drafts.some((draft) => draft.includes("[Image #1]")));
+      assert.equal(drafts.at(-1), "");
+      // readline processed every byte, but its echo and prompt chrome stayed
+      // out of the alternate-screen renderer's physical output.
+      assert.equal(transcript.slice(suspendedOutputOffset), "");
+
+      assert.equal(activeSession.feedInput("second\r"), true);
+      await activeSession.flushSubmissions();
+      assert.deepEqual(submissions.at(-1), { text: "second", labels: [] });
+      assert.equal(transcript.slice(suspendedOutputOffset), "");
+
+      activeSession.resumeInput();
+      assert.equal(activeSession.feedInput("not suspended"), false);
+      assert.match(transcript.slice(suspendedOutputOffset), /> /u);
+      input.write("physical\r");
+      await activeSession.flushSubmissions();
+      assert.deepEqual(submissions.at(-1), { text: "physical", labels: [] });
+
+      controller.abort();
+      assert.equal(await prompt, null);
+      assert.equal(activeSession, undefined);
+      assert.equal(retainedSession?.feedInput("after cleanup"), false);
+    });
+  });
+
+  it("serializes suspended keep-open submissions without rendering normal prompt chrome", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+
+    const controller = new AbortController();
+    let activeSession: PromptInputSession | undefined;
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const lifecycle: string[] = [];
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      signal: controller.signal,
+      keepOpen: true,
+      clearOnSubmit: true,
+      captureImage: async (index) => attachment(index),
+      onSubmit: async (submission) => {
+        lifecycle.push(`start:${submission.text}`);
+        if (submission.text === "first") await firstReleased;
+        lifecycle.push(`end:${submission.text}`);
+      },
+      onSessionReady: (session) => {
+        activeSession = session;
+      },
+    });
+
+    assert.ok(activeSession);
+    assert.equal(activeSession.suspendInput(), true);
+    const suspendedOutputOffset = transcript.length;
+    assert.equal(activeSession.feedInput("first\rsecond\r"), true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(lifecycle, ["start:first"]);
+    assert.equal(transcript.slice(suspendedOutputOffset), "");
+
+    releaseFirst();
+    await activeSession.flushSubmissions();
+    assert.deepEqual(lifecycle, [
+      "start:first",
+      "end:first",
+      "start:second",
+      "end:second",
+    ]);
+    assert.equal(transcript.slice(suspendedOutputOffset), "");
+
+    controller.abort();
+    await prompt;
+  });
+
+  it("submits a suspended one-shot Request editor without restoring duplicate chrome", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.setEncoding("utf8");
+    let transcript = "";
+    output.on("data", (chunk: string) => {
+      transcript += chunk;
+    });
+    output.resume();
+
+    let activeSession: PromptInputSession | undefined;
+    let retainedSession: PromptInputSession | undefined;
+    const drafts: string[] = [];
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onDraftChange: (draft) => drafts.push(draft.text),
+      onSessionReady: (session) => {
+        activeSession = session;
+        if (session) retainedSession = session;
+      },
+    });
+
+    assert.ok(activeSession);
+    assert.equal(activeSession.suspendInput(), true);
+    const suspendedOutputOffset = transcript.length;
+    assert.equal(
+      activeSession.feedInput("\u001B[200~line one\nline two\u001B[201~"),
+      true,
+    );
+    assert.equal(activeSession.feedInput("\r"), true);
+
+    const result = await prompt;
+    assert.equal(result?.text, "line one\nline two");
+    assert.ok(drafts.some((draft) => draft.includes("Pasted text #1")));
+    assert.equal(activeSession, undefined);
+    assert.equal(retainedSession?.feedInput("after completion"), false);
+    const suspendedWrites = transcript.slice(suspendedOutputOffset);
+    assert.doesNotMatch(suspendedWrites, /line one|Pasted text|> /u);
   });
 
   it("recognizes Windows Ctrl+V and numbers after queued images", async () => {
@@ -623,6 +834,30 @@ describe("image-aware CLI prompt", () => {
     assert.deepEqual(toggled, [7, 8]);
   });
 
+  it("routes queued-adjustment mouse toggles without inserting protocol bytes", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const adjustments: number[] = [];
+    const promise = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      onToggleAdjustment: (id) => {
+        adjustments.push(id);
+      },
+    });
+
+    input.write("keep");
+    input.write(vscodeToggleAdjustmentSequence(27));
+    input.write(" me\r");
+    const result = await promise;
+
+    assert.equal(result?.text, "keep me");
+    assert.deepEqual(adjustments, [27]);
+  });
+
   it("redraws a wrapped input buffer after expansion", async () => {
     const input = new TtyInput();
     const output = new TtyOutput(10);
@@ -683,9 +918,12 @@ describe("image-aware CLI prompt", () => {
     input.write("draft");
     await new Promise<void>((resolve) => setImmediate(resolve));
     activeSession.writeAbove("stable update");
+    activeSession.writeAbove("\u001B]0;forged title\u0007safe notice\u202E");
 
     const afterUpdate = transcript.slice(transcript.indexOf("stable update"));
     assert.match(afterUpdate, /^stable update\n> draft/u);
+    assert.match(transcript, /safe notice/u);
+    assert.doesNotMatch(transcript, /forged title|\u202E/u);
     input.write("!\r");
     const result = await promise;
 
@@ -904,13 +1142,15 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript, /\u001B\[\?2004l/u);
   });
 
-  it("swallows private Thinking OSC during approval and secret input", async () => {
+  it("swallows private disclosure OSC during approval and secret input", async () => {
     const approvalInput = new TtyInput();
     const approvalOutput = new TtyOutput();
     approvalOutput.resume();
     const approvalTerminal = new Terminal(approvalInput, approvalOutput);
     const approval = approvalTerminal.question("Approve? ");
-    approvalInput.write(`${vscodeToggleThinkingSequence(7)}y\r`);
+    approvalInput.write(
+      `${vscodeToggleThinkingSequence(7)}${vscodeToggleAdjustmentSequence(9)}y\r`,
+    );
     assert.equal(await approval, "y");
     approvalTerminal.close();
 

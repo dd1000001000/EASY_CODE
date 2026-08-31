@@ -21,28 +21,35 @@ export type PlanExecutionReturnOutcome =
 const UNSAFE_PLAN_CONTROLS =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu;
 
-export function sanitizePlanText(value: string, maxChars: number): string {
+export function sanitizePlanText(value: string): string {
   return redactSensitiveInformation(value)
     .replace(/\r\n?/gu, "\n")
     .replace(UNSAFE_PLAN_CONTROLS, " ")
-    .trim()
-    .slice(0, maxChars);
+    .trim();
 }
 
 export function normalizePlanDraft(draft: Readonly<PlanDraft>): PlanDraft {
-  const title = sanitizePlanText(draft.title, MAX_PLAN_TITLE_CHARS);
-  const overview = sanitizePlanText(draft.overview, MAX_PLAN_OVERVIEW_CHARS);
-  const steps = draft.steps.slice(0, MAX_PLAN_STEPS).map((step) => ({
-    title: sanitizePlanText(step.title, MAX_PLAN_TITLE_CHARS),
-    description: sanitizePlanText(
-      step.description,
-      MAX_PLAN_STEP_DESCRIPTION_CHARS,
-    ),
-    verification: sanitizePlanText(
-      step.verification,
-      MAX_PLAN_STEP_VERIFICATION_CHARS,
-    ),
+  const title = sanitizePlanText(draft.title);
+  const overview = sanitizePlanText(draft.overview);
+  if (
+    title.length > MAX_PLAN_TITLE_CHARS ||
+    overview.length > MAX_PLAN_OVERVIEW_CHARS ||
+    draft.steps.length > MAX_PLAN_STEPS
+  ) {
+    throw new Error("The proposed plan exceeds its documented field limits");
+  }
+  const steps = draft.steps.map((step) => ({
+    title: sanitizePlanText(step.title),
+    description: sanitizePlanText(step.description),
+    verification: sanitizePlanText(step.verification),
   }));
+  if (steps.some((step) =>
+    step.title.length > MAX_PLAN_TITLE_CHARS ||
+    step.description.length > MAX_PLAN_STEP_DESCRIPTION_CHARS ||
+    step.verification.length > MAX_PLAN_STEP_VERIFICATION_CHARS
+  )) {
+    throw new Error("A proposed plan step exceeds its documented field limits");
+  }
   if (!title || !overview || steps.length === 0) {
     throw new Error("A plan requires a title, overview, and at least one step");
   }

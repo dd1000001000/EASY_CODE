@@ -19,13 +19,9 @@ import type {
 } from "./contracts.js";
 import { sanitizeTerminalText } from "./render/layout.js";
 
-export const MAX_TRANSCRIPT_ENTRIES = 1_000;
 export const MAX_LIVE_TASKS = 32;
 export const MAX_LIVE_SUBAGENTS = 64;
 export const MAX_LIVE_PROGRESS_ITEMS = 64;
-export const MAX_THINKING_PANEL_CHARS = 12_000;
-export const MAX_THINKING_PANEL_LINES = 120;
-export const MAX_THINKING_PANEL_LINE_CHARS = 1_000;
 export const MAX_OVERLAY_ROWS = 100;
 export const MAX_COMPOSER_IMAGES = 99;
 export const DEFAULT_COMPOSER_PLACEHOLDER = "Type your request…";
@@ -73,32 +69,6 @@ function boundedInteger(value: number, minimum: number, maximum: number): number
   return Math.min(maximum, Math.max(minimum, Math.trunc(value)));
 }
 
-function takeCodePoints(
-  value: string,
-  maximum: number,
-): { text: string; truncated: boolean } {
-  let count = 0;
-  let end = 0;
-  for (const character of value) {
-    if (count === maximum) {
-      return { text: value.slice(0, end), truncated: true };
-    }
-    count += 1;
-    end += character.length;
-  }
-  return { text: value, truncated: false };
-}
-
-function boundedText(value: string, maximum: number): {
-  text: string;
-  truncated: boolean;
-} {
-  const retained = takeCodePoints(value, maximum);
-  if (!retained.truncated) return retained;
-  const body = takeCodePoints(value, Math.max(0, maximum - 1)).text;
-  return { text: `${body}…`, truncated: true };
-}
-
 function optionalCount(value: number | undefined): number | undefined {
   if (value === undefined || !Number.isFinite(value) || value < 0) {
     return undefined;
@@ -126,24 +96,15 @@ function normalizeThinkingPanel(
     .replace(/ *\n */gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")
     .trim();
-  const lines = safe.split("\n", MAX_THINKING_PANEL_LINES + 1);
-  let truncated = Boolean(input.truncated) || lines.length > MAX_THINKING_PANEL_LINES;
-  const retainedLines = lines.slice(0, MAX_THINKING_PANEL_LINES).map((line) => {
-    const retained = boundedText(line, MAX_THINKING_PANEL_LINE_CHARS);
-    truncated ||= retained.truncated;
-    return retained.text;
-  });
-  const retainedBody = boundedText(
-    retainedLines.join("\n").trim(),
-    MAX_THINKING_PANEL_CHARS,
-  );
-  truncated ||= retainedBody.truncated;
   const sourceChars = optionalCount(input.sourceChars);
   const sourceLines = optionalCount(input.sourceLines);
   return {
     id,
-    body: retainedBody.text,
-    truncated,
+    // Presentation state must never destroy disclosure data. Resource limits
+    // belong at the provider/protocol boundary and are reported explicitly;
+    // the terminal viewer keeps every sanitized character it received.
+    body: safe,
+    truncated: Boolean(input.truncated),
     ...(sourceChars === undefined ? {} : { sourceChars }),
     ...(sourceLines === undefined ? {} : { sourceLines }),
   };
@@ -190,10 +151,11 @@ function appendTranscript(
   transcript: readonly UITranscriptEntry[],
   entry: Readonly<UITranscriptEntry>,
 ): readonly UITranscriptEntry[] {
-  const next = [...transcript, cloneTranscriptEntry(entry)];
-  return next.length <= MAX_TRANSCRIPT_ENTRIES
-    ? next
-    : next.slice(next.length - MAX_TRANSCRIPT_ENTRIES);
+  // This array is the source document for the managed terminal viewport.
+  // Evicting entries here would turn ordinary scrollback into silent data
+  // loss. Durable sessions may later page cold history from storage, but the
+  // in-memory renderer itself must not pretend an evicted entry still exists.
+  return [...transcript, cloneTranscriptEntry(entry)];
 }
 
 function cloneActivity(activity: Readonly<UIActivityState>): UIActivityState {

@@ -241,18 +241,29 @@ export function wrapToWidth(
   const lines: string[] = [];
   let current: LayoutToken[] = [];
   let currentWidth = 0;
-  let sawSgr = false;
+  // Each returned value is painted as an independent physical terminal row.
+  // Retain the effective SGR program so a style which begins before a wrap or
+  // explicit newline is replayed on every continuation row. Relying on the
+  // terminal's ambient SGR state is unsafe: row renderers reset styles at row
+  // boundaries and may repaint physical rows out of order.
+  let activeSgr: SgrToken[] = [];
+  let lineHasSgr = false;
 
   const pushLine = (): void => {
-    lines.push(tokensToString(current));
-    current = [];
+    const text = tokensToString(current);
+    lines.push(preserveAnsi && lineHasSgr ? `${text}\u001B[0m` : text);
+    current = preserveAnsi ? activeSgr.map((token) => ({ ...token })) : [];
+    lineHasSgr = current.length > 0;
     currentWidth = 0;
   };
 
   for (const token of tokens) {
     if (token.kind === "sgr") {
       current.push(token);
-      sawSgr = true;
+      lineHasSgr = true;
+      activeSgr = isPureSgrReset(token.value)
+        ? []
+        : [...activeSgr, token];
       continue;
     }
     if (token.value === "\n") {
@@ -277,10 +288,6 @@ export function wrapToWidth(
   }
 
   pushLine();
-  if (preserveAnsi && sawSgr) {
-    const finalIndex = lines.length - 1;
-    lines[finalIndex] = `${lines[finalIndex] ?? ""}\u001B[0m`;
-  }
   return lines;
 }
 
@@ -576,6 +583,17 @@ function finishSgr(
   return preserveAnsi && tokens.some((token) => token.kind === "sgr")
     ? `${text}\u001B[0m`
     : text;
+}
+
+/**
+ * True only for an SGR instruction made entirely from default/reset params.
+ *
+ * Composite SGR programs are deliberately retained verbatim. Replaying a
+ * sequence such as `0;90m` or `38;2;0;255;0m` is both simpler and more correct
+ * than attempting to interpret its colour sub-parameters here.
+ */
+function isPureSgrReset(value: string): boolean {
+  return /^(?:\u001B\[|\u009B)(?:0*(?:;0*)*)m$/u.test(value);
 }
 
 function normalizeColumns(value: number, minimum: number): number {

@@ -29,9 +29,11 @@ const { createTerminalPasteQueue } = require("../lib/paste-command-queue");
 const {
   clipboardContainsText,
   createThinkingLinkProvider,
+  findAdjustmentMarkers,
   findThinkingMarkers,
   showThinkingSequence,
   toggleThinkingSequence,
+  toggleAdjustmentSequence,
 } = require("../extension");
 
 const tests = [];
@@ -508,6 +510,62 @@ test("builds a fixed toggle-thinking OSC sequence from numeric IDs", () => {
   assert.throws(() => toggleThinkingSequence("0"), TypeError);
   assert.throws(() => toggleThinkingSequence("9999999999999999"), TypeError);
   assert.throws(() => toggleThinkingSequence("1".repeat(20)), TypeError);
+});
+
+test("parses paired queued-adjustment markers and builds a fixed toggle sequence", () => {
+  const collapsed =
+    "▶ Queued adjustment #27 · 12 chars · 1 image · /adjustment 27 · VS Code Ctrl/Cmd+click to toggle";
+  assert.deepEqual(findAdjustmentMarkers(collapsed), [{
+    startIndex: collapsed.indexOf("Queued adjustment #27"),
+    length: "Queued adjustment #27".length,
+    id: "27",
+    kind: "adjustment",
+  }]);
+
+  const expanded =
+    "↕ Queued adjustment #27 · /adjustment 27 · VS Code Ctrl/Cmd+click to toggle";
+  assert.deepEqual(findAdjustmentMarkers(expanded), [{
+    startIndex: expanded.indexOf("Queued adjustment #27"),
+    length: "Queued adjustment #27".length,
+    id: "27",
+    kind: "adjustment",
+  }]);
+  assert.deepEqual(
+    findAdjustmentMarkers("▶ Queued adjustment #27 · 12 chars · /adjustment 28"),
+    [],
+  );
+  assert.equal(
+    toggleAdjustmentSequence(27),
+    "\x1b]6973;easy-code;toggle-adjustment;27\x07",
+  );
+  assert.throws(() => toggleAdjustmentSequence("27;echo owned"), TypeError);
+});
+
+test("queued-adjustment links toggle through the tracked EASY CODE terminal", () => {
+  const sends = [];
+  const terminal = {
+    sendText(text, addNewLine) {
+      sends.push({ text, addNewLine });
+    },
+  };
+  const provider = createThinkingLinkProvider((candidate) => candidate === terminal);
+  const line =
+    "▶ Queued adjustment #9 · 5 chars · /adjustment 9 · VS Code Ctrl/Cmd+click to toggle";
+  const links = provider.provideTerminalLinks(
+    { line, terminal },
+    { isCancellationRequested: false },
+  );
+  assert.equal(links.length, 1);
+  assert.equal(
+    line.slice(links[0].startIndex, links[0].startIndex + links[0].length),
+    "Queued adjustment #9",
+  );
+  assert.match(links[0].tooltip, /queued adjustment #9/u);
+  provider.handleTerminalLink(links[0]);
+  assert.deepEqual(sends, [{
+    text: "\x1b]6973;easy-code;toggle-adjustment;9\x07",
+    addNewLine: false,
+  }]);
 });
 
 test("thinking links remain scoped to a tracked EASY CODE terminal", () => {

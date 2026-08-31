@@ -217,18 +217,20 @@ easy-code --workspace ./my-project --mode code run "修复登录错误并运行�
 | --- | --- |
 | 会话头部 | 当前模式、Provider/模型、思考强度、上下文估算、工作区和 Thread ID。 |
 | Scrollback | 已完成的用户/助手消息、工具结果、命令输出、Diff 和最终结果。内容按普通终端输出追加，因此仍然可以滚动、选择和复制。 |
-| 动态状态区 | 输入框上方只显示仍在运行的进度以及命令/模型活动。工具完成后会进入 scrollback，不会继续作为重复的 progress 行保留。EASY CODE 只会重绘这个输出区域。 |
+| 动态状态区 | 输入框上方只显示仍在运行的进度以及命令/模型活动。工具完成后会进入 scrollback，不会继续作为重复的 progress 行保留。在普通工作界面中，EASY CODE 只会重绘这个输出区域。 |
 | 输入框与状态栏 | 可跨终端行自动换行的盒式输入区；其下依次显示紧凑的 Tasks、Agents，模式、模型、思考强度、上下文、任务和活动 Agent 摘要始终位于最后一行。附加图片显示为 `[Image #N]`。 |
 
 工具活动完成后只会进入普通 scrollback 一次；已被后续状态替代的 Step/status 行会直接移除，不会累计。重绘只清除终端底部的动态行，不会重新绘制或擦除更早的对话、命令输出和 Diff。布局按终端显示单元格计算，因此窄窗口、中文等全角字符以及 Emoji 都能保持对齐。
 
 `/model`、命令审批、Plan 审核和 `/resume` 使用盒式覆盖选择器，不再向 scrollback 追加临时菜单文本。选择器打开时会替代普通动态状态和输入框，但已开启的 Dangerous full access（危险完全访问）警告会继续显示。使用 `↑`/`↓` 移动，按 Enter 确认，按 Esc 取消；取消命令审批始终等同于拒绝。在 VS Code 集成终端中，随项目提供的扩展只会把当前菜单的 `↑`/`↓` 导航通过经过认证的本地桥接发送给 EASY CODE，因此切换选项不会把已经滚动到历史位置的视口强制拉回审批卡。安装或更新扩展后需重新加载 VS Code 窗口并新建终端，桥接才会生效。
 
-安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上按住 `Ctrl` 点击已完成标记中灰色的 `Thinking #N`，或在 macOS 上按住 `Cmd` 点击，即可在可重绘动态状态区内打开对应灰色面板。用相同手势再次激活该标记，或激活面板底部 `↕` 控制行中的 `Thinking #N`，即可关闭；激活其他标记会切换到对应内容。模型请求进行期间该控件也会保持响应。Thinking 面板不支持也不占用 Esc；Esc 仍留给 overlay 和普通终端输入。
+Thinking 使用折叠条目。折叠时只显示标题和简短预览。安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上按住 `Ctrl` 点击灰色的 `Thinking #N` 标题，或在 macOS 上按住 `Cmd` 点击。EASY CODE 会打开托管 transcript 视图，并让完整保留内容在同一逻辑位置替换原预览。再次激活同一标题会收起并恢复预览；激活其他 Thinking 标题会切换展开目标。模型请求进行中以及请求结束后，该控件都保持响应；它不支持也不占用 Esc。
 
-临时面板采用有界高度，确保折叠时可以安全擦除而不破坏终端 scrollback。如果保留的 Thinking 超出面板可见范围，面板会明确显示省略的行数，并给出对应的 `/thinking N`；执行该命令可把全部已保留内容写入稳定 scrollback。
+Adjustment 是用户输入，不是折叠条目。它会按照实际发生顺序立即显示在 transcript 中，外观与普通用户请求相同，使用 `> ...`，不会再暴露队列编号或 Runtime 术语。托管 Thinking 视图是本轮完整 transcript 的无损投影：初始请求、Adjustment、状态与工具行、每条 Thinking 标记以及最终回答都会保持原始顺序；只有当前选中的 Thinking 预览会被完整正文替换。更早轮次不会混入，关闭视图后主 scrollback 保持不变。
 
-在输入框中可以正常输入或粘贴，按 Enter 提交。多行文字会先显示为紧凑的 `[Pasted text #N · M lines]` 块；只有用户明确提交时才会恢复完整换行和缩进，因此剪贴板中的换行不会再被误当作 Enter。`/thinking N` 与 `Ctrl+T` 仍会把完整保留的 Thinking 内容写入稳定 scrollback，并保留当前草稿；它们不会切换临时面板。`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
+展开后的 Thinking 不会因为面板高度而缩短，不会拆成分页，不会静默隐藏，也不会用 `truncated` 标记代替。本轮内容较短时会紧贴在 Request 上方；完整正文超过可用视窗时，所选 Thinking 标题会从视窗顶部开始，可以使用 `Page Up`/`Page Down` 浏览同一份连续保留内容。该视图不再开启终端鼠标上报，因此可以正常拖选和复制文字；VS Code 中的 `Ctrl`/`Cmd`+点击仍由扩展链接处理。托管视图打开时，同一个输入框仍可编辑：普通输入、方向键移动、多行文字粘贴、原生图片粘贴、退格和 Enter 都继续进入原来的 Request/Adjustment 输入会话。关闭视图只改变展示方式，并带着完全一致的剩余草稿返回普通界面。模型最终回答只会完整追加一次到普通终端 scrollback，UI 不会对它做展示层截断。
+
+在输入框中可以正常输入或粘贴，按 Enter 提交。多行文字会先显示为紧凑的 `[Pasted text #N · M lines]` 块；只有用户明确提交时才会恢复完整换行和缩进，因此剪贴板中的换行不会再被误当作 Enter。`/thinking N`、`/adjustment N` 与 `Ctrl+T` 仍会把对应的完整保留内容写入稳定 scrollback，并保留当前草稿；它们不会切换托管展开视图。`Ctrl+C` 用于取消当前输入或操作。安装随项目提供的 VS Code 扩展后，使用系统原生图片粘贴快捷键会在光标处插入可见的 `[Image #N]` 附件；各平台快捷键和命令备用方式见[图片](#图片)。
 
 当前请求执行期间，输入框仍可继续使用。每次提交的文字/图片调整都会独立持久化排队，消息条数不设人为上限。在下一次模型请求前、两个工具调用之间或准备输出最终结果之前，EASY CODE 会按提交顺序把当时所有待处理调整合并为一条短期用户消息；快照之后到达的调整留到再下一个安全边界。调整可以改变本次工作的方向，但不能扩大 Runtime 权限，也不能绕过命令审批、沙箱、工作区或任务归属规则。
 
@@ -309,9 +311,9 @@ Adjust plan with feedback
 
 对于允许关闭思考的模型，`none` 表示请求模型不进行思考。如果模型不支持可配置的思考强度，EASY CODE 仍会保存用户选择，但思考设置本身可能不会对该模型生效。
 
-当模型返回 Thinking 内容时，EASY CODE 会把灰色 `Thinking #N` 标记和简短灰色预览写入稳定 scrollback。安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上使用 `Ctrl+点击`、在 macOS 上使用 `Cmd+点击`，即可在动态状态区切换一个有界灰色面板。激活其他标记会切换内容；再次激活当前标记或面板底部控制行会关闭。Esc 不是 Thinking 面板快捷键。
+当模型返回 Thinking 内容时，EASY CODE 会把灰色 `Thinking #N` 标记和简短灰色预览写入稳定 scrollback。安装随项目提供的 VS Code 扩展后，在 Windows/Linux 上使用 `Ctrl+点击`、在 macOS 上使用 `Cmd+点击`，即可让完整保留内容在原预览位置展开。完整内容采用连续终端滚动，不分页，也不做展示层截断。再次激活同一标题会恢复预览；激活其他 Thinking 标题会改为展开对应内容。Esc 不是折叠条目的快捷键。
 
-如果要把完整保留的内容写入稳定 scrollback，而不是打开临时面板，请使用：
+如果要把完整保留的 Thinking 直接写入稳定 scrollback，而不是打开托管折叠视图，请使用：
 
 ```text
 /thinking
@@ -610,6 +612,7 @@ easy-code sandbox repair-workspace --target <绝对路径>  预览 Windows 残�
 /memory short [limit]      查看近期短期记忆预览（默认 8 条，最多 500 条）
 /memory long [id]          查看长期记忆
 /thinking [id|last]        查看模型 Thinking
+/adjustment [id|last]      查看一条已保留的排队调整
 /sessions                  列出保存的 Thread
 /resume [id]               选择或恢复 Thread
 /new                       新建 Thread

@@ -314,6 +314,48 @@ describe("Terminal runtime status routing", () => {
     }
   });
 
+  it("keeps complete stable notices and tool summaries/errors outside compact live previews", () => {
+    const fixture = createInlineFixture();
+    try {
+      const notice = `Fatal provider failure: ${"diagnostic ".repeat(40)}` +
+        "STABLE-NOTICE-TAIL";
+      fixture.terminal.status(notice);
+      assert.match(
+        stripAnsi(terminalState(fixture.terminal).transcript.at(-1)?.text ?? ""),
+        /STABLE-NOTICE-TAIL/u,
+      );
+
+      const error = `first failure line\n${"detail ".repeat(80)}` +
+        "TOOL-ERROR-TAIL";
+      fixture.terminal.toolCompleted(
+        "run_command",
+        false,
+        "Command failed",
+        error,
+      );
+      const entry = stripAnsi(
+        terminalState(fixture.terminal).transcript.at(-1)?.text ?? "",
+      );
+      assert.match(entry, /first failure line/u);
+      assert.match(entry, /TOOL-ERROR-TAIL/u);
+
+      const summary = `first summary line\n${"result ".repeat(80)}` +
+        "TOOL-SUMMARY-TAIL";
+      fixture.terminal.toolCompleted(
+        "read_file",
+        true,
+        summary,
+      );
+      const summaryEntry = stripAnsi(
+        terminalState(fixture.terminal).transcript.at(-1)?.text ?? "",
+      );
+      assert.match(summaryEntry, /first summary line/u);
+      assert.match(summaryEntry, /TOOL-SUMMARY-TAIL/u);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("keeps inline approvals modal while preserving fallback transcript output", async () => {
     const inline = createInlineFixture();
     try {
@@ -321,13 +363,18 @@ describe("Terminal runtime status routing", () => {
       const decision = inline.terminal.approve(approvalRequest());
       const during = terminalState(inline.terminal);
       assert.equal(during.overlay?.kind, "approval");
-      assert.equal(during.transcript.length, before);
-      assert.doesNotMatch(inline.outputText(), /Approval required: Run migration/u);
+      assert.equal(during.transcript.length, before + 1);
+      assert.match(inline.outputText(), /Approval required: Run migration/u);
+      assert.match(
+        inline.outputText(),
+        /This migration modifies the workspace database\./u,
+      );
+      assert.match(inline.outputText(), /Command: node scripts\/migrate\.js/u);
 
       inline.input.write("\r");
       assert.equal(await decision, "allow_once");
       assert.equal(terminalState(inline.terminal).overlay, null);
-      assert.equal(terminalState(inline.terminal).transcript.length, before);
+      assert.equal(terminalState(inline.terminal).transcript.length, before + 1);
     } finally {
       inline.close();
     }

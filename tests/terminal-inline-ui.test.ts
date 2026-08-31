@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
-import { vscodeToggleThinkingSequence } from "../src/cli/prompt-input.js";
+import {
+  VSCODE_IMAGE_PASTE_SEQUENCE,
+  vscodeToggleThinkingSequence,
+} from "../src/cli/prompt-input.js";
 import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
 import type { TaskGraphView } from "../src/tasks/task-graph.js";
@@ -41,6 +44,12 @@ function captureOutput(output: PassThrough): () => string {
     transcript += chunk;
   });
   return () => transcript;
+}
+
+function lastCursorVisibility(value: string): "shown" | "hidden" | undefined {
+  const matches = [...value.matchAll(/\u001B\[\?25([hl])/gu)];
+  const final = matches.at(-1)?.[1];
+  return final === "h" ? "shown" : final === "l" ? "hidden" : undefined;
 }
 
 function restoreEnvironment(name: string, value: string | undefined): void {
@@ -132,6 +141,56 @@ function agent(): SubagentView {
 
 function terminalState(terminal: Terminal): Readonly<UIState> {
   return (terminal as unknown as { readonly uiState: UIState }).uiState;
+}
+
+interface DisclosureFrameProbe {
+  viewport: Readonly<{
+    transcriptStartRow: number;
+    targetTitleScreenRow?: number;
+  }>;
+  visibleRows: readonly Readonly<{
+    screenRow: number;
+    region: "header" | "transcript" | "composer" | "footer";
+    part: string;
+  }>[];
+}
+
+interface DisclosureNodeProbe {
+  readonly id: string;
+  readonly kind: "text" | "thinking" | "adjustment";
+  readonly text?: string;
+  readonly title?: string;
+  readonly preview?: string;
+  readonly body?: string;
+  readonly expanded?: boolean;
+}
+
+function disclosureFrame(terminal: Terminal): Readonly<DisclosureFrameProbe> | undefined {
+  return (terminal as unknown as {
+    readonly disclosureViewer?: {
+      readonly frame: Readonly<DisclosureFrameProbe>;
+    };
+  }).disclosureViewer?.frame;
+}
+
+function disclosureNodes(
+  terminal: Terminal,
+): readonly Readonly<DisclosureNodeProbe>[] {
+  return (terminal as unknown as {
+    readonly disclosureViewer?: {
+      readonly state: {
+        readonly nodes: readonly Readonly<DisclosureNodeProbe>[];
+      };
+    };
+  }).disclosureViewer?.state.nodes ?? [];
+}
+
+function disclosureNodeText(node: Readonly<DisclosureNodeProbe>): string {
+  if (node.kind === "text") return stripAnsi(node.text ?? "");
+  return stripAnsi([
+    node.title ?? "",
+    node.expanded ? node.body ?? "" : node.preview ?? "",
+  ].join("\n"));
 }
 
 function steeringAttachment(index: number): ImageAttachment {
@@ -908,7 +967,7 @@ describe("Terminal retained inline shell", () => {
         const requestCard = openFrame.indexOf("╭─ Request");
         assert.ok(expandedBody >= 0);
         assert.ok(requestCard > expandedBody);
-        assert.match(openFrame, /╭─ Request[^\n]*\n│ > draft/u);
+        assert.match(openFrame, /╭─ Request[^\n]*[\s\S]*│ > draft/u);
 
         const closeOffset = captured().length;
         input.write(vscodeToggleThinkingSequence(firstId));
@@ -928,13 +987,19 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
 
+        // Leave the managed viewer before exercising the ordinary readline
+        // shortcuts and stale-ID fallback below.
+        input.write(vscodeToggleThinkingSequence(firstId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+
         input.write(vscodeToggleThinkingSequence(999));
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(terminalState(terminal).transcript.at(-1)?.kind, "info");
         assert.match(
           terminalState(terminal).transcript.at(-1)?.text ?? "",
-          /Thinking block #999 is not available in this thread\./u,
+          /Thinking block #999 is historical or unavailable; use \/thinking 999 to view retained content\./u,
         );
 
         const beforeCtrlT = terminalState(terminal).transcript.length;
@@ -958,6 +1023,138 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("keeps the idle Request editor usable while Thinking is expanded", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const id = terminal.addReasoning(
+          "Inspect the project and retain every line while the user edits.",
+        );
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+
+        input.write("before ");
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+        input.write("\u001B[200~A\nB\u001B[201~ after\r");
+
+        const submission = await prompt;
+        assert.ok(submission);
+        assert.match(submission.text, /^before /u);
+        assert.match(submission.text, /A\nB/u);
+        assert.match(submission.text, / after$/u);
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(lastCursorVisibility(captured()), "shown");
+        assert.equal(
+          (captured().match(/\u001B\[\?1049h/gu) ?? []).length,
+          (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
+        );
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("queues multiline and image adjustments without closing expanded Thinking", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      const submissions: Array<{ text: string; labels: string[] }> = [];
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect this project", [], {
+          captureImage: async (index) => steeringAttachment(index),
+          onSteer: async (submission) => {
+            submissions.push({
+              text: submission.text,
+              labels: submission.images.map((image) => image.label),
+            });
+            terminal.addQueuedAdjustment(
+              submissions.length,
+              submission.text,
+              submission.images,
+            );
+          },
+        });
+        await settlePromptInput();
+        const thinkingId = terminal.addReasoning("Keep this complete while steering.");
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+
+        input.write(
+          "\u001B[200~first\nsecond\u001B[201~" +
+            VSCODE_IMAGE_PASTE_SEQUENCE +
+            " tail\r",
+        );
+        await settlePromptInput();
+        await settlePromptInput();
+        assert.equal(submissions.length, 1);
+        assert.match(submissions[0]?.text ?? "", /first\nsecond/u);
+        assert.match(submissions[0]?.text ?? "", /\[Image #1\]\s+tail/u);
+        assert.deepEqual(submissions[0]?.labels, ["Image #1"]);
+        assert.equal(terminalState(terminal).live.thinking?.id, thinkingId);
+        assert.equal(terminalState(terminal).composer.text, "");
+
+        input.write("second adjustment\r");
+        await settlePromptInput();
+        await settlePromptInput();
+        assert.deepEqual(
+          submissions.map((submission) => submission.text).slice(1),
+          ["second adjustment"],
+        );
+
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.equal(lastCursorVisibility(captured()), "shown");
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("restores a real idle caret when a busy disclosure closes on completion", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Explain the project", [], {
+          onSteer: async () => undefined,
+        });
+        await settlePromptInput();
+        const id = terminal.addReasoning("Inspect the README before answering.");
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+        terminal.write("The complete answer remains stable.\n");
+        terminal.clearCurrentRequest();
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        input.write("next request\r");
+        assert.equal((await prompt)?.text, "next request");
+        assert.equal(lastCursorVisibility(captured()), "shown");
+        assert.equal(
+          (captured().match(/\u001B\[\?1049h/gu) ?? []).length,
+          (captured().match(/\u001B\[\?1049l/gu) ?? []).length,
+        );
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("keeps completed-turn Thinking foldable in place above an active draft", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
@@ -972,6 +1169,7 @@ describe("Terminal retained inline shell", () => {
           "FULL-ONLY-SENTINEL: compare the existing session and registration flows.",
         ].join("\n");
         const id = terminal.addReasoning(reasoning);
+        const completedTurnOffset = captured().length;
         terminal.write("ASSISTANT-OUTPUT-SENTINEL: authentication is ready.\n");
         terminal.clearCurrentRequest();
 
@@ -990,18 +1188,25 @@ describe("Terminal retained inline shell", () => {
         input.write("draft");
         await settlePromptInput();
 
+        const completedTurn = stripAnsi(captured().slice(completedTurnOffset));
+        const stableAnswerOffset = completedTurn.indexOf(
+          "ASSISTANT-OUTPUT-SENTINEL",
+        );
+        const liveDisclosureOffset = completedTurn.indexOf(`Thinking #${id}`);
+        const liveRequestOffset = completedTurn.indexOf("╭─ Request");
+        assert.ok(stableAnswerOffset >= 0);
+        assert.ok(liveDisclosureOffset > stableAnswerOffset);
+        assert.ok(liveRequestOffset > liveDisclosureOffset);
+
         const collapsedOffset = captured().length;
         output.emit("resize");
         await settlePromptInput();
         const collapsedFrame = stripAnsi(captured().slice(collapsedOffset));
         const collapsedThinkingOffset = collapsedFrame.indexOf(`▶ Thinking #${id}`);
-        const collapsedAssistantOffset = collapsedFrame.indexOf(
-          "ASSISTANT-OUTPUT-SENTINEL",
-        );
         const collapsedRequestOffset = collapsedFrame.indexOf("╭─ Request");
         assert.ok(collapsedThinkingOffset >= 0);
-        assert.ok(collapsedAssistantOffset > collapsedThinkingOffset);
-        assert.ok(collapsedRequestOffset > collapsedAssistantOffset);
+        assert.ok(collapsedRequestOffset > collapsedThinkingOffset);
+        assert.equal(collapsedFrame.includes("ASSISTANT-OUTPUT-SENTINEL"), false);
         assert.doesNotMatch(collapsedFrame, /FULL-ONLY-SENTINEL/u);
         assert.match(collapsedFrame, /╭─ Request[^\n]*\n│ > draft/u);
 
@@ -1011,21 +1216,32 @@ describe("Terminal retained inline shell", () => {
 
         const openFrame = stripAnsi(captured().slice(openOffset));
         const expandedOffset = openFrame.indexOf(`Thinking #${id}`);
-        const assistantOffset = openFrame.indexOf("ASSISTANT-OUTPUT-SENTINEL");
         const requestOffset = openFrame.indexOf("╭─ Request");
         assert.ok(expandedOffset >= 0);
         assert.match(openFrame, new RegExp(`(?:▼|↕) Thinking #${id}`, "u"));
         assert.match(openFrame, /FULL-ONLY-SENTINEL/u);
         assert.match(openFrame, new RegExp(`/thinking ${id}`, "u"));
-        assert.ok(assistantOffset > expandedOffset);
-        assert.ok(requestOffset > assistantOffset);
+        assert.ok(requestOffset > expandedOffset);
+        const completeTurn = disclosureNodes(terminal)
+          .map(disclosureNodeText)
+          .join("\n");
+        assert.match(completeTurn, /> Explain the authentication changes/u);
+        assert.match(completeTurn, /ASSISTANT-OUTPUT-SENTINEL/u);
+        assert.ok(
+          completeTurn.indexOf("> Explain the authentication changes") <
+            completeTurn.indexOf(`Thinking #${id}`),
+        );
+        assert.ok(
+          completeTurn.indexOf(`Thinking #${id}`) <
+            completeTurn.indexOf("ASSISTANT-OUTPUT-SENTINEL"),
+        );
         assert.equal(openFrame.includes(`▶ Thinking #${id}`), false);
         assert.equal(
           (openFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
           1,
           "the expanded body must replace, not duplicate, the collapsed marker",
         );
-        assert.match(openFrame, /╭─ Request[^\n]*\n│ > draft/u);
+        assert.match(openFrame, /╭─ Request[^\n]*[\s\S]*│ > draft/u);
 
         const closeOffset = captured().length;
         // This is the same OSC emitted when the user clicks the expanded title.
@@ -1034,13 +1250,10 @@ describe("Terminal retained inline shell", () => {
 
         const closeFrame = stripAnsi(captured().slice(closeOffset));
         const previewOffset = closeFrame.indexOf(`▶ Thinking #${id}`);
-        const restoredAssistantOffset = closeFrame.indexOf(
-          "ASSISTANT-OUTPUT-SENTINEL",
-        );
         const restoredRequestOffset = closeFrame.indexOf("╭─ Request");
         assert.ok(previewOffset >= 0);
-        assert.ok(restoredAssistantOffset > previewOffset);
-        assert.ok(restoredRequestOffset > restoredAssistantOffset);
+        assert.ok(restoredRequestOffset > previewOffset);
+        assert.equal(closeFrame.includes("ASSISTANT-OUTPUT-SENTINEL"), false);
         assert.equal(closeFrame.includes("FULL-ONLY-SENTINEL"), false);
         assert.equal(
           (closeFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
@@ -1056,7 +1269,232 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("bounds a long completed turn so paste and typing keep the Request editor responsive", async () => {
+  it("presents queued adjustments as ordinary user input while retaining read-only history", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect this project");
+        const thinkingId = terminal.addReasoning(
+          "THINKING-DETAIL: keep this distinct from the answer.",
+        );
+        const queuedOffset = captured().length;
+        terminal.addQueuedAdjustment(
+          7,
+          "deploy this project\nand verify it",
+          [steeringAttachment(3)],
+        );
+        await settlePromptInput();
+        const queued = stripAnsi(captured().slice(queuedOffset));
+        assert.match(queued, /> deploy this project\n  and verify it \[Image #3\]/u);
+        assert.doesNotMatch(queued, /Queued adjustment|\/adjustment 7/u);
+        terminal.addReasoning("SECOND-THINKING-DETAIL");
+        terminal.write("ASSISTANT-ROW-IN-CURRENT-TURN\n");
+
+        const openOffset = captured().length;
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+        const expanded = stripAnsi(captured().slice(openOffset));
+        assert.match(expanded, /> deploy this project\s+and verify it \[Image #3\]/u);
+        assert.match(expanded, /THINKING-DETAIL/u);
+        assert.match(expanded, /SECOND-THINKING-DETAIL/u);
+        assert.ok(
+          expanded.indexOf("THINKING-DETAIL") <
+            expanded.indexOf("> deploy this project"),
+        );
+        assert.ok(
+          expanded.indexOf("> deploy this project") <
+            expanded.indexOf("SECOND-THINKING-DETAIL"),
+        );
+        const completeTurn = disclosureNodes(terminal)
+          .map(disclosureNodeText)
+          .join("\n");
+        assert.match(completeTurn, /> Inspect this project/u);
+        assert.match(completeTurn, /ASSISTANT-ROW-IN-CURRENT-TURN/u);
+        assert.ok(
+          completeTurn.indexOf("> Inspect this project") <
+            completeTurn.indexOf("THINKING-DETAIL"),
+        );
+        assert.ok(
+          completeTurn.indexOf("SECOND-THINKING-DETAIL") <
+            completeTurn.indexOf("ASSISTANT-ROW-IN-CURRENT-TURN"),
+        );
+        assert.doesNotMatch(expanded, /Queued adjustment|\/adjustment 7/u);
+
+        input.write(vscodeToggleThinkingSequence(thinkingId));
+        await settlePromptInput();
+
+        terminal.clearCurrentRequest();
+        terminal.setCurrentRequest("Start the next task");
+        const nextThinkingId = terminal.addReasoning("NEXT-TURN-THINKING");
+        const nextTurnOffset = captured().length;
+        input.write(vscodeToggleThinkingSequence(nextThinkingId));
+        await settlePromptInput();
+        const nextTurnView = stripAnsi(captured().slice(nextTurnOffset));
+        assert.match(nextTurnView, /NEXT-TURN-THINKING/u);
+        assert.doesNotMatch(nextTurnView, /deploy this project/u);
+        input.write(vscodeToggleThinkingSequence(nextThinkingId));
+        await settlePromptInput();
+
+        const historyOffset = captured().length;
+        assert.equal(terminal.showAdjustment(7), true);
+        const history = stripAnsi(captured().slice(historyOffset));
+        assert.match(history, /deploy this project\nand verify it/u);
+        assert.match(history, /Attachments: \[Image #3\]/u);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("projects the complete current turn in order and expands only the selected Thinking row", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.columns = 110;
+      output.rows = 32;
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.write("PRIOR-TURN-MUST-STAY-OUTSIDE-VIEWER\n");
+
+        const submitted = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        input.write("这个项目是做什么的\r");
+        const request = await submitted;
+        assert.ok(request);
+        terminal.setCurrentRequest(request.text, request.images, {
+          onSteer: async () => undefined,
+        });
+        await settlePromptInput();
+
+        terminal.status("Auto mode selected code — inspect the workspace.");
+        const firstThinking = terminal.addReasoning(
+          "FIRST-THINKING-FULL-BODY: inspect README and package metadata.",
+        );
+        terminal.addQueuedAdjustment(1, "以及这个项目怎么使用");
+        terminal.toolCompleted("read_file", true, "Read README.md lines 1-63");
+        const secondThinking = terminal.addReasoning(
+          "SECOND-THINKING-FULL-BODY: summarize installation steps.",
+        );
+        terminal.write("MODEL-ANSWER: this is the complete project explanation.\n");
+        terminal.clearCurrentRequest();
+        terminal.info("POST-TURN-IDLE-STATUS-MUST-STAY-OUTSIDE-VIEWER");
+
+        const idlePrompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        await settlePromptInput();
+        input.write(vscodeToggleThinkingSequence(firstThinking));
+        await settlePromptInput();
+
+        const nodes = disclosureNodes(terminal);
+        const completeTurn = nodes.map(disclosureNodeText);
+        assert.deepEqual(
+          nodes.map((node) => node.kind),
+          ["text", "text", "thinking", "text", "text", "thinking", "text"],
+        );
+        assert.match(completeTurn[0] ?? "", /> 这个项目是做什么的/u);
+        assert.match(completeTurn[1] ?? "", /Auto mode selected code/u);
+        assert.match(completeTurn[2] ?? "", /FIRST-THINKING-FULL-BODY/u);
+        assert.match(completeTurn[3] ?? "", /> 以及这个项目怎么使用/u);
+        assert.match(completeTurn[4] ?? "", /✓ Tool: read_file/u);
+        assert.match(completeTurn[5] ?? "", /SECOND-THINKING-FULL-BODY/u);
+        assert.match(completeTurn[6] ?? "", /MODEL-ANSWER/u);
+        assert.equal(completeTurn.join("\n").includes("PRIOR-TURN"), false);
+        assert.equal(completeTurn.join("\n").includes("POST-TURN-IDLE"), false);
+        assert.equal(nodes[2]?.expanded, true);
+        assert.equal(nodes[5]?.expanded, false);
+        assert.equal(
+          (completeTurn.join("\n").match(/Thinking #1/gu) ?? []).length,
+          1,
+          "the selected Thinking marker must be replaced in place, not copied",
+        );
+        assert.equal(secondThinking, firstThinking + 1);
+
+        input.write(vscodeToggleThinkingSequence(firstThinking));
+        await settlePromptInput();
+        input.write("next\r");
+        assert.equal((await idlePrompt)?.text, "next");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps short disclosure documents attached to Request and starts long bodies at the top", async () => {
+    await withInteractiveEnvironment(async () => {
+      const shortInput = new TtyInput();
+      const shortOutput = new TtyOutput();
+      shortOutput.columns = 100;
+      shortOutput.rows = 28;
+      const shortTerminal = new Terminal(shortInput, shortOutput);
+      try {
+        assert.equal(shortTerminal.beginShell(session()), true);
+        shortTerminal.setCurrentRequest("Explain and deploy the project", [], {
+          onSteer: async () => undefined,
+        });
+        await settlePromptInput();
+        shortTerminal.addReasoning("Inspect the README first.");
+        shortTerminal.addQueuedAdjustment(1, "怎么部署");
+        const targetId = shortTerminal.addReasoning("Summarize the deployment steps.");
+        shortInput.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+
+        const frame = disclosureFrame(shortTerminal);
+        assert.ok(frame);
+        const transcriptRows = frame.visibleRows.filter((row) =>
+          row.region === "transcript" && row.part !== "blank"
+        );
+        const composerStart = frame.visibleRows.find((row) =>
+          row.region === "composer"
+        )?.screenRow;
+        assert.ok(transcriptRows.length > 0);
+        assert.equal(
+          transcriptRows.at(-1)?.screenRow,
+          (composerStart ?? 0) - 1,
+          "a short current-turn document must sit directly above Request",
+        );
+      } finally {
+        shortTerminal.close();
+      }
+
+      const longInput = new TtyInput();
+      const longOutput = new TtyOutput();
+      longOutput.columns = 100;
+      longOutput.rows = 18;
+      const longTerminal = new Terminal(longInput, longOutput);
+      try {
+        assert.equal(longTerminal.beginShell(session()), true);
+        longTerminal.setCurrentRequest("Inspect a large result", [], {
+          onSteer: async () => undefined,
+        });
+        await settlePromptInput();
+        const targetId = longTerminal.addReasoning(
+          Array.from({ length: 40 }, (_, index) => `complete detail ${index + 1}`)
+            .join("\n"),
+        );
+        longInput.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+
+        const frame = disclosureFrame(longTerminal);
+        assert.ok(frame);
+        assert.equal(
+          frame.viewport.targetTitleScreenRow,
+          frame.viewport.transcriptStartRow,
+          "an overflowing disclosure must start its selected title at the transcript top",
+        );
+      } finally {
+        longTerminal.close();
+      }
+    });
+  });
+
+  it("keeps a long transcript stable while disclosures and the Request editor remain responsive", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -1095,7 +1533,8 @@ describe("Terminal retained inline shell", () => {
         await settlePromptInput();
         const redraw = stripAnsi(captured().slice(redrawOffset));
         assert.match(redraw, new RegExp(`▶ Thinking #${targetId}`, "u"));
-        assert.match(redraw, /live row\(s\) hidden/u);
+        assert.equal(redraw.includes("assistant row 1"), false);
+        assert.equal(redraw.includes("answer tail 4"), false);
         assert.match(redraw, /╭─ Request/u);
 
         const expandedOffset = captured().length;
@@ -1105,12 +1544,70 @@ describe("Terminal retained inline shell", () => {
         assert.match(expanded, new RegExp(`↕ Thinking #${targetId}`, "u"));
         assert.match(expanded, /TARGET-THINKING-DETAIL-1/u);
         assert.match(expanded, /╭─ Request/u);
+        const completeTurn = disclosureNodes(terminal)
+          .map(disclosureNodeText)
+          .join("\n");
+        assert.match(completeTurn, /> Summarize a long verification run/u);
+        assert.match(completeTurn, /assistant row 1/u);
+        assert.match(completeTurn, /assistant row 25/u);
+        assert.match(completeTurn, /answer tail 1/u);
+        assert.match(completeTurn, /answer tail 4/u);
 
         input.write(vscodeToggleThinkingSequence(targetId));
         await settlePromptInput();
 
         input.write("still works\r");
         assert.equal((await prompt)?.text, "still works");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("commits a complete model answer to scrollback without live-row truncation", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.rows = 8;
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Return a long answer");
+        terminal.addReasoning("Inspect enough context to answer accurately.");
+        const answer = Array.from(
+          { length: 30 },
+          (_, index) => `COMPLETE-ANSWER-ROW-${index + 1}`,
+        ).join("\n");
+
+        const answerOffset = captured().length;
+        terminal.write(`\n${answer}\n\n`);
+        terminal.clearCurrentRequest();
+        const committed = stripAnsi(captured().slice(answerOffset));
+        for (let index = 1; index <= 30; index += 1) {
+          assert.equal(
+            (committed.match(new RegExp(
+              `COMPLETE-ANSWER-ROW-${index}(?![0-9])`,
+              "gu",
+            )) ?? []).length,
+            1,
+            `answer row ${index} must be committed exactly once`,
+          );
+        }
+        const answerStart = committed.indexOf("COMPLETE-ANSWER-ROW-1");
+        const answerEnd = committed.indexOf("COMPLETE-ANSWER-ROW-30") +
+          "COMPLETE-ANSWER-ROW-30".length;
+        assert.ok(answerStart >= 0 && answerEnd > answerStart);
+        assert.doesNotMatch(
+          committed.slice(answerStart, answerEnd),
+          /live row\(s\) hidden/u,
+        );
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => steeringAttachment(index),
+        });
+        input.write("composer remains responsive\r");
+        assert.equal((await prompt)?.text, "composer remains responsive");
       } finally {
         terminal.close();
       }
@@ -1135,7 +1632,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.match(
           terminalState(terminal).transcript.at(-1)?.text ?? "",
-          /Thinking block #1 is historical; use \/thinking 1 to view it\./u,
+          /Thinking block #1 is historical or unavailable; use \/thinking 1 to view retained content\./u,
         );
 
         terminal.clearReasoning();
