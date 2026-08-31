@@ -128,7 +128,7 @@ export function renderLiveRegion(
 
   const blocks: string[] = [];
   const activityRegion = renderLiveActivityRegion(state, nowMs, options);
-  const statusRegion = renderComposerStatusRegion(state, options);
+  const statusRegion = renderComposerStatusRegion(state, options, nowMs);
   if (activityRegion) blocks.push(activityRegion);
   if (state.composer.busy) blocks.push(renderComposerPrompt(state, options));
   if (statusRegion) blocks.push(statusRegion);
@@ -136,38 +136,38 @@ export function renderLiveRegion(
 }
 
 /**
- * Render transient work above the composer. Thinking stays first so its live
- * expansion remains adjacent to the stable marker that introduced it. During
- * active input, readline renders the same panel immediately above Request.
+ * Render transient detail above the composer. Thinking stays first so its live
+ * expansion remains adjacent to the stable marker that introduced it. The
+ * animated activity itself lives in the footer so it remains visible beside
+ * elapsed time without adding another redrawable block.
  */
 export function renderLiveActivityRegion(
   state: Readonly<UIState>,
-  nowMs: number,
+  _nowMs: number,
   options: RenderViewOptions = {},
 ): string {
   const blocks: string[] = [];
   const progress = renderProgress(state, options);
-  const activity = renderActivity(state, nowMs, options);
   const thinking = state.composer.busy && state.live.thinking
     ? renderThinkingPanel(state.live.thinking, options)
     : "";
   if (thinking) blocks.push(thinking);
   if (progress) blocks.push(progress);
-  if (activity) blocks.push(activity);
   return blocks.join("\n\n");
 }
 
-/** Render Tasks and Agents below the composer, followed by the final footer. */
+/** Render Tasks and Agents below the composer, followed by the activity footer. */
 export function renderComposerStatusRegion(
   state: Readonly<UIState>,
   options: RenderViewOptions = {},
+  nowMs = state.live.activity?.startedAt ?? 0,
 ): string {
   const blocks: string[] = [];
   const tasks = renderTasks(state.live.tasks, options);
   const agents = renderAgents(state, options);
   if (tasks) blocks.push(tasks);
   if (agents) blocks.push(agents);
-  blocks.push(renderComposerFooter(state, options));
+  blocks.push(renderComposerFooter(state, options, nowMs));
   return blocks.join("\n\n");
 }
 
@@ -205,10 +205,11 @@ export function renderComposerPrompt(
   return renderBox("", lines, columns, palette);
 }
 
-/** Render the compact one-line mode/model/context/task/agent status bar. */
+/** Render the compact activity plus mode/model/context/task/agent status bar. */
 export function renderComposerFooter(
   state: Readonly<UIState>,
   options: RenderViewOptions = {},
+  nowMs = state.live.activity?.startedAt ?? 0,
 ): string {
   const palette = viewPalette(options);
   const session = state.header.session;
@@ -217,25 +218,50 @@ export function renderComposerFooter(
   const activeAgents = state.live.subagents.filter((agent) =>
     isActiveAgent(agent.status)
   ).length;
-  const segments: string[] = [];
+  const metadata: string[] = [];
+  const danger = session?.commandExecutionMode === "unrestricted"
+    ? palette.red.bold("! EASY CODE DANGER: FULL ACCESS")
+    : "";
+  const activity = renderActivity(state, nowMs, options);
 
   if (session) {
-    if (session.commandExecutionMode === "unrestricted") {
-      segments.push(palette.red.bold("! EASY CODE DANGER: FULL ACCESS"));
-    }
-    segments.push(palette.cyan(safeInline(session.mode) || "auto"));
-    segments.push(palette.bold(formatProviderModel(session, false)));
-    segments.push(safeInline(session.thinkingEffort) || "none");
-    segments.push(palette.gray(`ctx ${formatContext(session)}`));
+    metadata.push(palette.cyan(safeInline(session.mode) || "auto"));
+    metadata.push(palette.bold(formatProviderModel(session, false)));
+    metadata.push(safeInline(session.thinkingEffort) || "none");
+    metadata.push(palette.gray(`ctx ${formatContext(session)}`));
   } else {
-    segments.push(palette.gray("starting"));
+    metadata.push(palette.gray("starting"));
   }
-  segments.push(palette.gray(
+  metadata.push(palette.gray(
     task ? `task ${task.current}/${task.total}` : "task –",
   ));
-  segments.push(palette.gray(`agents ${activeAgents}`));
+  metadata.push(palette.gray(`agents ${activeAgents}`));
 
-  return truncateToWidth(segments.join("  "), viewColumns(options), {
+  const columns = viewColumns(options);
+  const metadataLine = metadata.join("  ");
+  let priority = danger;
+  if (activity) {
+    const dangerAndActivity = danger ? `${danger}  ${activity}` : activity;
+    // The full-access warning is a safety boundary and therefore wins on a
+    // terminal too narrow to show it alongside activity. Otherwise activity
+    // owns the row so its right-aligned elapsed time is never truncated by
+    // lower-priority mode/context metadata.
+    if (!danger || displayWidth(dangerAndActivity) <= columns) {
+      priority = dangerAndActivity;
+    }
+  }
+  if (priority) {
+    const fittedPriority = truncateToWidth(priority, columns, {
+      preserveAnsi: viewColor(options),
+    });
+    const remaining = columns - displayWidth(fittedPriority);
+    if (remaining <= 2 || !metadataLine) return fittedPriority;
+    const fittedMetadata = truncateToWidth(metadataLine, remaining - 2, {
+      preserveAnsi: viewColor(options),
+    });
+    return fittedMetadata ? `${fittedPriority}  ${fittedMetadata}` : fittedPriority;
+  }
+  return truncateToWidth(metadataLine, columns, {
     preserveAnsi: viewColor(options),
   });
 }
@@ -612,11 +638,24 @@ function renderActivity(
   const elapsedMs = Math.max(0, finiteNumber(nowMs, startedAt) - startedAt);
   const frame = spinnerFrame(options.spinnerFrame, elapsedMs);
   const detail = activity.detail ? ` · ${safeInline(activity.detail)}` : "";
-  const line = `${frame} ${safeInline(activity.label) || "Working"}` +
-    `${detail} · ${formatElapsed(elapsedMs)}`;
-  return palette.gray(truncateToWidth(line, viewColumns(options), {
-    preserveAnsi: false,
-  }));
+  const columns = viewColumns(options);
+  const prefix = `${frame} `;
+  const suffix = ` · ${formatElapsed(elapsedMs)}`;
+  const payloadWidth = Math.max(
+    0,
+    columns - displayWidth(prefix) - displayWidth(suffix),
+  );
+  const payload = truncateToWidth(
+    `${safeInline(activity.label) || "Working"}${detail}`,
+    payloadWidth,
+    { preserveAnsi: false },
+  );
+  const line = payload
+    ? `${prefix}${payload}${suffix}`
+    : truncateToWidth(`${frame} ${formatElapsed(elapsedMs)}`, columns, {
+        preserveAnsi: false,
+      });
+  return palette.gray(line);
 }
 
 function renderBox(

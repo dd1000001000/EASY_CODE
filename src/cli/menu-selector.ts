@@ -349,13 +349,17 @@ export function selectMenuIndex(
 
     try {
       if (!options.overlay) options.output.write(HIDE_CURSOR);
-      render();
+      // Make the selector the active input owner before exposing its first
+      // frame. VS Code/ConPTY can deliver the first key immediately after the
+      // overlay becomes visible; rendering first left a small window where
+      // that key was still consumed by the previous prompt owner.
       if (mustEnableRawMode) input.setRawMode?.(true);
       input.on("data", guardedOnData);
       input.once("end", onEnd);
       input.once("close", onClose);
       input.once("error", onError);
       input.resume();
+      render();
     } catch {
       finish(undefined, new Error("Unable to start the interactive selection."));
     }

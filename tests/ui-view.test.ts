@@ -235,34 +235,64 @@ describe("pure terminal UI views", () => {
     assert.match(rendered, /Agents 2\/4/u);
     assert.match(rendered, /● agent-1  Implement authentication API/u);
     assert.equal(rendered.includes("agent-6"), false);
-    assert.match(rendered, /⠹ Waiting for deepseek-v4-pro · 14s/u);
     assert.match(rendered, /> Working…/u);
-    assert.match(
-      rendered,
-      /auto  deepseek\/v4-pro  medium  ctx 82\.4k  task 2\/7  agents 2/u,
-    );
+    assert.match(rendered, /⠹ Waiting for deepseek-v4-pro · 14s/u);
+    assert.match(rendered, /auto  deepseek\/v4-pro/u);
     const blocks = rendered.split("\n\n");
-    assert.equal(blocks.length, 6);
+    assert.equal(blocks.length, 5);
     assert.match(blocks[0] ?? "", /^Progress/u);
     assert.match(blocks[0] ?? "", /Read static\/index\.html/u);
-    assert.match(blocks[1] ?? "", /^⠹ Waiting/u);
-    assert.match(blocks[2] ?? "", /^╭─/u);
-    assert.match(blocks[2] ?? "", /> Working…/u);
-    assert.match(blocks[3] ?? "", /^Tasks 2\/7/u);
-    assert.match(blocks[4] ?? "", /^Agents 2\/4/u);
-    assert.match(blocks[5] ?? "", /^auto  deepseek/u);
+    assert.match(blocks[1] ?? "", /^╭─/u);
+    assert.match(blocks[1] ?? "", /> Working…/u);
+    assert.match(blocks[2] ?? "", /^Tasks 2\/7/u);
+    assert.match(blocks[3] ?? "", /^Agents 2\/4/u);
+    assert.match(blocks[4] ?? "", /^⠹ Waiting/u);
     assert.doesNotMatch(blocks[0] ?? "", /Tasks/u);
-    assert.doesNotMatch(blocks[3] ?? "", /Reading workspace/u);
+    assert.doesNotMatch(blocks[2] ?? "", /Reading workspace/u);
 
     assert.equal(
       renderLiveActivityRegion(state, 15_000, options),
-      blocks.slice(0, 2).join("\n\n"),
+      blocks[0],
     );
     assert.equal(
-      renderComposerStatusRegion(state, options),
-      blocks.slice(3).join("\n\n"),
+      renderComposerStatusRegion(state, options, 15_000),
+      blocks.slice(2).join("\n\n"),
     );
     assertBoundedLines(rendered, 72);
+  });
+
+  it("keeps tool activity animation and elapsed time in the footer", () => {
+    const state = applyEvent(populatedState(), {
+      type: "activity.start",
+      activity: {
+        id: "tool-run",
+        kind: "tool",
+        label: "Running Tool: run_command",
+        startedAt: 1_000,
+      },
+    });
+
+    const upper = renderLiveActivityRegion(state, 65_000, {
+      columns: 72,
+      color: false,
+      spinnerFrame: "⠴",
+    });
+    const footer = renderComposerFooter(state, {
+      columns: 72,
+      color: false,
+      spinnerFrame: "⠴",
+    }, 65_000);
+    const narrowFooter = renderComposerFooter(state, {
+      columns: 32,
+      color: false,
+      spinnerFrame: "⠴",
+    }, 65_000);
+
+    assert.doesNotMatch(upper, /Running Tool|1m 04s/u);
+    assert.match(footer, /^⠴ Running Tool: run_command · 1m 04s/u);
+    assert.match(narrowFooter, /^⠴ .* · 1m 04s$/u);
+    assertBoundedLines(footer, 72);
+    assertBoundedLines(narrowFooter, 32);
   });
 
   it("gives a safe boxed overlay exclusive priority over live status", () => {
@@ -400,11 +430,11 @@ describe("pure terminal UI views", () => {
     assert.match(rendered, /\/thinking 4 shows all retained content\./u);
     assert.match(rendered, /VS Code Ctrl\/Cmd\+click the Thinking label to close/u);
     assert.equal(rendered.includes("reasoning line 7"), false);
-    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("Waiting for deepseek-v4-pro"));
-    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.indexOf("> Working…"));
+    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("> Working…"));
     assert.ok(rendered.indexOf("> Working…") < rendered.indexOf("Tasks 2/7"));
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
-    assert.ok(rendered.indexOf("Agents 2/4") < rendered.lastIndexOf("auto  deepseek"));
+    assert.ok(rendered.indexOf("Agents 2/4") < rendered.indexOf("Waiting for deepseek-v4-pro"));
+    assert.ok(rendered.indexOf("Waiting for deepseek-v4-pro") < rendered.lastIndexOf("auto  deepseek"));
     assertBoundedLines(rendered, 72);
 
     const activeComposerState = applyEvents(state, [{
@@ -417,7 +447,7 @@ describe("pure terminal UI views", () => {
       spinnerFrame: "⠹",
     });
     assert.match(activeUpper, /^Progress/u);
-    assert.match(activeUpper, /Waiting for deepseek-v4-pro/u);
+    assert.doesNotMatch(activeUpper, /Waiting for deepseek-v4-pro/u);
     assert.equal(activeUpper.includes("Thinking #4"), false);
 
     const panel = state.live.thinking;
@@ -449,23 +479,26 @@ describe("pure terminal UI views", () => {
   });
 
   it("keeps composer and footer useful in a narrow terminal", () => {
-    const state = applyEvents(populatedState(), [{
-      type: "composer.patch",
-      patch: {
-        busy: false,
-        text: "添加登录\nsecond line\u001B[2J",
-        images: [{
-          id: "image",
-          label: "Image #1 token=ghp_abcdefghijklmnopqrstuvwxyz",
-          mediaType: "image/png",
-          storageKey: "image.png",
-          sha256: "0".repeat(64),
-          byteSize: 1,
-          width: 1,
-          height: 1,
-        }],
+    const state = applyEvents(populatedState(), [
+      { type: "activity.stop", id: "model" },
+      {
+        type: "composer.patch",
+        patch: {
+          busy: false,
+          text: "添加登录\nsecond line\u001B[2J",
+          images: [{
+            id: "image",
+            label: "Image #1 token=ghp_abcdefghijklmnopqrstuvwxyz",
+            mediaType: "image/png",
+            storageKey: "image.png",
+            sha256: "0".repeat(64),
+            byteSize: 1,
+            width: 1,
+            height: 1,
+          }],
+        },
       },
-    }]);
+    ]);
 
     const prompt = renderComposerPrompt(state, { columns: 24, color: false });
     const footer = renderComposerFooter(state, { columns: 24, color: false });

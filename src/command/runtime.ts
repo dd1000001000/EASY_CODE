@@ -194,6 +194,16 @@ export class CommandRuntime {
     try {
       prepared = await executionBackend.prepare(sandboxRequest);
     } catch (error) {
+      if (context.signal?.aborted) {
+        return this.canceledBeforeStart(
+          commandId,
+          startedAt,
+          resolved,
+          policyDecision,
+          context,
+          executionBackend.describe(sandboxRequest),
+        );
+      }
       return this.sandboxFailure(
         commandId,
         startedAt,
@@ -311,17 +321,31 @@ export class CommandRuntime {
     const sandboxUnavailableMessage = sandboxError?.type === "sandbox_error"
       ? sandboxError.message
       : !sandboxReady
-        ? "Sandbox worker exited without confirming that enforcement was active"
+        ? timedOut || result.timedOut
+          ? `OS sandbox initialization did not become ready within ${timeoutMs}ms; ` +
+            "the target process was not confirmed started"
+          : "Sandbox worker exited without confirming that enforcement was active"
         : undefined;
+    const reportedStderr = sandboxUnavailableMessage
+      ? (() => {
+          const collector = new OutputCollector(maxOutputChars);
+          if (stderrDigest.text) collector.push(stderrDigest.text);
+          collector.push(
+            `${stderrDigest.text ? "\n" : ""}EASY CODE sandbox unavailable: ` +
+            `${sandboxUnavailableMessage}\n`,
+          );
+          return collector.finish();
+        })()
+      : stderrDigest;
     const after = await this.workspace.captureSnapshot();
     const delta = this.workspace.applyCommandSnapshots(before, after);
 
     const status: RunCommandOutput["status"] = canceled
       ? "canceled"
-      : timedOut || result.timedOut
-        ? "timed_out"
-        : sandboxUnavailableMessage
+      : sandboxUnavailableMessage
           ? "sandbox_unavailable"
+          : timedOut || result.timedOut
+            ? "timed_out"
           : targetSpawnError
             ? "spawn_failed"
             : result.exitCode === undefined
@@ -334,7 +358,7 @@ export class CommandRuntime {
       signal: result.signal ?? null,
       durationMs: Date.now() - startedAt,
       stdout: stdoutDigest,
-      stderr: stderrDigest,
+      stderr: reportedStderr,
       workspaceDelta: summarizeWorkspaceDelta(delta),
       policyDecision,
       sandbox: prepared.metadata,

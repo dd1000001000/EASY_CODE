@@ -49,7 +49,7 @@ function captureOutput(output: PassThrough): () => string {
 function selectWithOverlay(
   input: TtyInput,
   output: TtyOutput,
-  overlay: RecordingOverlay,
+  overlay: MenuSelectorOverlay,
 ): Promise<number | undefined> {
   const rows = ["First", "Second", "Third"];
   return selectMenuIndex(
@@ -79,6 +79,27 @@ describe("menu selector overlay renderer", () => {
     assert.equal(transcript(), "");
     assert.deepEqual(input.rawModeTransitions, [true, false]);
     assert.equal(input.readableFlowing, false);
+  });
+
+  it("owns raw input before the first visible overlay frame", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    let firstRender = true;
+    const overlay: MenuSelectorOverlay = {
+      render: () => {
+        if (!firstRender) return;
+        firstRender = false;
+        // Model a terminal that delivers the user's first key as soon as the
+        // approval card is painted. Both bytes must reach this selector.
+        input.write("\u001B[B\r");
+      },
+      clear: () => undefined,
+    };
+
+    const selection = selectWithOverlay(input, output, overlay);
+
+    assert.equal(await selection, 2);
+    assert.deepEqual(input.rawModeTransitions, [true, false]);
   });
 
   it("clears the overlay and restores input state when cancelled", async () => {

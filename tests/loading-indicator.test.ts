@@ -3,7 +3,12 @@ import { PassThrough } from "node:stream";
 
 import { Terminal } from "../src/cli/terminal.js";
 import { ContextManager } from "../src/context/manager.js";
-import type { ModelProvider, SessionState } from "../src/core/types.js";
+import type {
+  AgentTool,
+  ModelProvider,
+  SessionState,
+  ToolExecutionResult,
+} from "../src/core/types.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { describe, it } from "./harness.js";
 
@@ -149,6 +154,116 @@ describe("model request loading indicator", () => {
       "start:Waiting for mock-model response",
       "end",
     ]);
+  });
+
+  it("times tool execution and disables run_command after sandbox initialization fails", async () => {
+    let requestCount = 0;
+    let executionCount = 0;
+    let directResponse = false;
+    const advertisedTools: string[][] = [];
+    const lifecycle: string[] = [];
+    const provider: ModelProvider = {
+      name: "deepseek",
+      model: "mock-model",
+      async complete(request) {
+        requestCount += 1;
+        advertisedTools.push((request.tools ?? []).map((tool) => tool.function.name));
+        if (directResponse) {
+          return {
+            message: { role: "assistant", content: "fresh turn", tool_calls: [] },
+          };
+        }
+        if (requestCount <= 2) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: `call_run_${requestCount}`,
+                type: "function",
+                function: {
+                  name: "run_command",
+                  arguments: '{"program":"node","intent":"inspect"}',
+                },
+              }],
+            },
+          };
+        }
+        return {
+          message: { role: "assistant", content: "verification blocked", tool_calls: [] },
+        };
+      },
+    };
+    const tool: AgentTool = {
+      name: "run_command",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: {
+          name: "run_command",
+          description: "run",
+          parameters: { type: "object" },
+        },
+      },
+      async execute(): Promise<ToolExecutionResult> {
+        executionCount += 1;
+        return {
+          ok: false,
+          summary: "OS sandbox initialization failed; do not retry",
+          error: "sandbox unavailable",
+          data: { status: "sandbox_unavailable" },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [tool],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      onToolExecutionStart: (name) => {
+        lifecycle.push(`tool-start:${name}`);
+        return "tool-token";
+      },
+      onToolExecutionEnd: (name, token) => {
+        lifecycle.push(`tool-end:${name}:${String(token)}`);
+      },
+    });
+
+    const result = await runtime.run(runtimeState("code"), "Verify the project", {
+      maxSteps: 3,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(executionCount, 1);
+    assert.equal(advertisedTools[0]?.includes("run_command"), true);
+    assert.equal(advertisedTools[1]?.includes("run_command"), false);
+    assert.equal(advertisedTools[2]?.includes("run_command"), false);
+    assert.deepEqual(lifecycle, [
+      "tool-start:run_command",
+      "tool-end:run_command:tool-token",
+    ]);
+
+    // The breaker belongs to one AgentRuntime.run call (one user turn), not to
+    // the reusable CommandRuntime or the next user request.
+    directResponse = true;
+    advertisedTools.length = 0;
+    const nextTurn = await runtime.run(runtimeState("code"), "Try again", {
+      maxSteps: 1,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+    assert.equal(nextTurn.reason, "success");
+    assert.equal(advertisedTools[0]?.includes("run_command"), true);
   });
 
   it("shows a TTY spinner and clears it without adding a blank line", async () => {

@@ -66,7 +66,7 @@ describe("ScreenWriter", () => {
   });
 
   it("restores a visual live cursor and clears correctly from that position", () => {
-    const output = new CapturedOutput(true, 4);
+    const output = new CapturedOutput(true, 5);
     const transcript = capture(output);
     const writer = new ScreenWriter(output);
 
@@ -110,16 +110,16 @@ describe("ScreenWriter", () => {
   it("uses a dynamic caller-provided width", () => {
     const output = new CapturedOutput(true, 80);
     const transcript = capture(output);
-    let columns = 3;
+    let columns = 4;
     const writer = new ScreenWriter({ output, columns: () => columns });
 
     writer.renderLive("A中国B");
-    columns = 6;
+    columns = 7;
     writer.renderLive("A中国B");
 
     assert.equal(
       transcript.read(),
-      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\u001B[0JA中国B",
+      "\r\n\u001B[1AA中\r\n国B\r\u001B[1A\r\u001B[0JA中国B",
     );
     writer.close();
   });
@@ -190,7 +190,7 @@ describe("ScreenWriter", () => {
         "\r\u001B[0J" +
         "\r\n\r\n\r\n\r\n\u001B[4A" +
         "approval\r\ncommand\r\nchoice 1\r\nchoice 2\r\nchoice 3" +
-        "\r\u001B[4A\u001B[0J",
+        "\r\u001B[4A\r\u001B[0J",
     );
     writer.close();
   });
@@ -204,10 +204,20 @@ describe("ScreenWriter", () => {
 
     assert.equal(
       transcript.read(),
-      "\r\n\r\n\u001B[2Aone\r\ntwo\r\nthree",
+      "\r\n\r\n\u001B[2Aone\r\ntwo\r\nthree\r\u001B[2A",
     );
     assert.equal(transcript.read().includes("four"), false);
     writer.close();
+  });
+
+  it("reserves the physical rightmost TTY cell to avoid pending autowrap", () => {
+    const tty = new ScreenWriter(new CapturedOutput(true, 80));
+    const plain = new ScreenWriter(new CapturedOutput(false, 80));
+
+    assert.equal(tty.columns, 79);
+    assert.equal(plain.columns, 80);
+    tty.close();
+    plain.close();
   });
 
 });

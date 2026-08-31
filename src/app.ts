@@ -497,8 +497,12 @@ export class EasyCodeApp {
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
       defaultIsolation: config.subagentIsolation,
-      onWaitStart: (text) => this.terminal.startActivity(text),
-      onWaitEnd: () => this.terminal.stopActivity(),
+      onWaitStart: (text) => this.terminal.startActivity(text, "waiting"),
+      onWaitEnd: (activityToken) => {
+        if (typeof activityToken === "string") {
+          this.terminal.stopActivity(activityToken);
+        }
+      },
       handoff: (artifact, destination) =>
         this.handoffSubagentResult(artifact, destination),
     });
@@ -1476,8 +1480,19 @@ export class EasyCodeApp {
         return this.requestToolApproval(request);
       },
       onStatus: (status) => this.terminal.status(status),
-      onModelRequestStart: (text) => this.terminal.startActivity(text),
-      onModelRequestEnd: () => this.terminal.stopActivity(),
+      onModelRequestStart: (text) => this.terminal.startActivity(text, "model"),
+      onModelRequestEnd: (activityToken) => {
+        if (typeof activityToken === "string") {
+          this.terminal.stopActivity(activityToken);
+        }
+      },
+      onToolExecutionStart: (_toolName, text) =>
+        this.terminal.startActivity(text, "tool"),
+      onToolExecutionEnd: (_toolName, activityToken) => {
+        if (typeof activityToken === "string") {
+          this.terminal.stopActivity(activityToken);
+        }
+      },
       onModelUsage: async (record) => {
         this.threadStore.appendEvent(this.state.threadId, {
           type: "model.usage",

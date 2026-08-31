@@ -83,7 +83,14 @@ export class ScreenWriter {
     const injected = typeof this.widthSource === "function"
       ? safelyReadWidth(this.widthSource)
       : this.widthSource;
-    return normalizeColumns(injected ?? this.output.columns);
+    const physicalColumns = normalizeColumns(injected ?? this.output.columns);
+    // Never paint the last physical cell of a TTY row. Windows ConPTY and
+    // several terminal emulators disagree about whether CR after an exact-width
+    // row cancels or commits pending autowrap; reserving one cell keeps live-row
+    // accounting deterministic and prevents stale Progress blocks in scrollback.
+    return this.tty && physicalColumns > 1
+      ? physicalColumns - 1
+      : physicalColumns;
   }
 
   get isTTY(): boolean {
@@ -192,7 +199,21 @@ export class ScreenWriter {
     this.renderedCursorRow = Math.max(0, lines.length - 1);
     this.atLineStart = displayWidth(lines.at(-1) ?? "") === 0;
 
-    if (!cursor || lines.length === 0) return;
+    if (lines.length === 0) return;
+    if (!cursor) {
+      // Leave the physical cursor at the live-region origin. When xterm or
+      // ConPTY shrinks the viewport, blank rows below the cursor can be
+      // discarded; leaving it on the last live row instead pushes the first
+      // Progress rows into permanent scrollback, where no later erase can
+      // remove them.
+      if (lines.length > 1) {
+        this.write("\r");
+        this.write(cursorUp(lines.length - 1));
+        this.renderedCursorRow = 0;
+        this.atLineStart = true;
+      }
+      return;
+    }
     const targetRow = Math.min(lines.length - 1, cursor.row);
     const targetColumn = clampVisualColumn(
       lines[targetRow] ?? "",

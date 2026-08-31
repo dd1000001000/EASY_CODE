@@ -74,7 +74,9 @@ export class RunCommandTool implements AgentTool {
       const summary = output.status === "policy_denied"
         ? `Command denied: ${output.policyDecision.reason}`
         : output.status === "sandbox_unavailable"
-          ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}`
+          ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
+            "Do not retry run_command in this turn; continue with file tools or report " +
+            "command-based verification as blocked. Run `easy-code sandbox doctor` outside the agent."
         : output.status === "exited"
           ? `Command exited with code ${output.exitCode}`
           : `Command ${output.status.replace(/_/gu, " ")}`;
