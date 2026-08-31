@@ -77,6 +77,10 @@ export interface RunCommandOutput {
   workspaceDelta: WorkspaceDeltaSummary;
   policyDecision: CommandPolicyDecision;
   sandbox: SandboxExecutionMetadata;
+  sandboxFailure?: {
+    phase: "prepare" | "initialization";
+    retryable: boolean;
+  };
   executed: {
     program: string;
     args: string[];

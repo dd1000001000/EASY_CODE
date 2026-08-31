@@ -398,7 +398,7 @@ describe("pure terminal UI views", () => {
     assert.doesNotMatch(threeRows, /Yes, allow execute/u);
   });
 
-  it("renders one gray Thinking panel with an exact toggle control and modal priority", () => {
+  it("renders a gray inline Thinking item while keeping generic live views separate", () => {
     const secret = "abcdefghijklmnopqrstuvwxyz";
     const state = applyEvents(populatedState(), [{
       type: "thinking.toggle",
@@ -418,19 +418,8 @@ describe("pure terminal UI views", () => {
       maxThinkingRows: 3,
     });
 
-    assert.match(rendered, /╭─ Thinking #4/u);
-    assert.match(rendered, /Inspect the repository before editing\./u);
-    assert.match(rendered, /api_key=\[REDACTED\]/u);
-    assert.doesNotMatch(rendered, new RegExp(secret, "u"));
-    assert.equal(rendered.includes("\u001B"), false);
-    assert.match(
-      rendered,
-      /↕ Thinking #4 · \/thinking 4/u,
-    );
-    assert.match(rendered, /\/thinking 4 shows all retained content\./u);
-    assert.match(rendered, /VS Code Ctrl\/Cmd\+click the Thinking label to close/u);
-    assert.equal(rendered.includes("reasoning line 7"), false);
-    assert.ok(rendered.indexOf("Thinking #4") < rendered.indexOf("> Working…"));
+    assert.equal(rendered.includes("Thinking #4"), false);
+    assert.ok(rendered.indexOf("Progress") < rendered.indexOf("> Working…"));
     assert.ok(rendered.indexOf("> Working…") < rendered.indexOf("Tasks 2/7"));
     assert.ok(rendered.indexOf("Tasks 2/7") < rendered.indexOf("Agents 2/4"));
     assert.ok(rendered.indexOf("Agents 2/4") < rendered.indexOf("Waiting for deepseek-v4-pro"));
@@ -452,8 +441,23 @@ describe("pure terminal UI views", () => {
 
     const panel = state.live.thinking;
     if (!panel) throw new Error("Expected an expanded Thinking panel");
-    const plainPanel = renderThinkingPanel(panel, { columns: 72, color: false });
-    const coloredPanel = renderThinkingPanel(panel, { columns: 72, color: true });
+    const plainPanel = renderThinkingPanel(panel, {
+      columns: 72,
+      color: false,
+      maxThinkingRows: 3,
+    });
+    const coloredPanel = renderThinkingPanel(panel, {
+      columns: 72,
+      color: true,
+      maxThinkingRows: 3,
+    });
+    assert.match(plainPanel, /^↕ Thinking #4 · \/thinking 4/u);
+    assert.match(plainPanel, /Inspect the repository before editing\./u);
+    assert.match(plainPanel, /api_key=\[REDACTED\]/u);
+    assert.doesNotMatch(plainPanel, new RegExp(secret, "u"));
+    assert.match(plainPanel, /\/thinking 4 shows all retained content\./u);
+    assert.match(plainPanel, /VS Code Ctrl\/Cmd\+click to toggle/u);
+    assert.equal(plainPanel.includes("reasoning line 7"), false);
     assert.match(coloredPanel, /\u001B\[90m/u);
     assert.doesNotMatch(coloredPanel, /\u001B\[36m/u);
     assert.equal(stripAnsi(coloredPanel), plainPanel);

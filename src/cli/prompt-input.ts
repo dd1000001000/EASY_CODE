@@ -70,6 +70,10 @@ export interface ReadPromptOptions {
   readonly renderBelow?: () => string;
   /** Erase the readline chrome after submission so callers can commit a plain transcript row. */
   readonly clearOnSubmit?: boolean;
+  /** Recover if a terminal starts but never closes a bracketed paste packet. */
+  readonly bracketedPasteIdleTimeoutMs?: number;
+  /** Bound each clipboard image/text read so stdin can never remain queued forever. */
+  readonly clipboardCaptureTimeoutMs?: number;
 }
 
 const ESCAPE = 0x1b;
@@ -80,6 +84,8 @@ const OSC_BEL = 0x07;
 const MAX_PRIVATE_OSC_BYTES = 160;
 const MAX_CLIPBOARD_TEXT_CHARS = 256 * 1024;
 const MAX_BRACKETED_PASTE_BYTES = (MAX_CLIPBOARD_TEXT_CHARS * 4) + 64;
+const DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS = 1_500;
+const DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS = 8_000;
 const BRACKETED_PASTE_START = Buffer.from("\u001B[200~");
 const BRACKETED_PASTE_END = Buffer.from("\u001B[201~");
 const ENABLE_BRACKETED_PASTE = "\u001B[?2004h";
@@ -321,6 +327,7 @@ class ImagePasteInputProxy extends Transform {
   private bracketedPasteActive = false;
   private bracketedPasteRejected = false;
   private bracketedPasteBuffer = Buffer.alloc(0);
+  private bracketedPasteTimer?: ReturnType<typeof setTimeout>;
   private pastedTextSequence = 0;
   private readonly pastedTextBlocks = new Map<string, string>();
   private readonly imageMarkers = new Map<string, string>();
@@ -344,6 +351,10 @@ class ImagePasteInputProxy extends Transform {
     ) => void | Promise<void>,
     private readonly onAtomicBackspace?: () => boolean,
     private readonly signal?: AbortSignal,
+    private readonly bracketedPasteIdleTimeoutMs =
+      DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS,
+    private readonly clipboardCaptureTimeoutMs =
+      DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS,
   ) {
     super();
   }
@@ -379,17 +390,13 @@ class ImagePasteInputProxy extends Transform {
       callback(undefined, discard ? undefined : pending);
       return;
     }
-    this.bracketedPasteActive = false;
-    this.bracketedPasteRejected = false;
-    this.bracketedPasteBuffer = Buffer.alloc(0);
+    this.resetBracketedPaste();
     callback();
   }
 
   override _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
     this.clearEscapeTimer();
-    this.bracketedPasteActive = false;
-    this.bracketedPasteRejected = false;
-    this.bracketedPasteBuffer = Buffer.alloc(0);
+    this.resetBracketedPaste();
     callback(error);
   }
 
@@ -485,6 +492,7 @@ class ImagePasteInputProxy extends Transform {
           } else {
             this.bracketedPasteBuffer = Buffer.from(combined);
           }
+          this.refreshBracketedPasteTimer();
           break;
         }
 
@@ -493,6 +501,7 @@ class ImagePasteInputProxy extends Transform {
           terminator + BRACKETED_PASTE_END.length - existingLength,
         );
         offset += consumedFromInput;
+        this.clearBracketedPasteTimer();
         this.bracketedPasteActive = false;
         this.bracketedPasteBuffer = Buffer.alloc(0);
         if (!this.bracketedPasteRejected && terminator > MAX_BRACKETED_PASTE_BYTES) {
@@ -539,6 +548,7 @@ class ImagePasteInputProxy extends Transform {
           this.bracketedPasteActive = true;
           this.bracketedPasteRejected = false;
           this.bracketedPasteBuffer = Buffer.alloc(0);
+          this.refreshBracketedPasteTimer();
           offset += BRACKETED_PASTE_START.length;
           continue;
         }
@@ -592,7 +602,10 @@ class ImagePasteInputProxy extends Transform {
         if (!this.captureText) {
           throw new Error("Clipboard text capture is unavailable.");
         }
-        const text = await this.captureText(this.signal);
+        const text = await this.captureWithTimeout(
+          (signal) => this.captureText?.(signal) ?? Promise.resolve(undefined),
+          "Clipboard text capture",
+        );
         if (this.signal?.aborted) throw new Error("Text paste was canceled.");
         if (!text) throw new Error("Clipboard does not contain text.");
         return this.pastedTextForPrompt(text);
@@ -607,7 +620,10 @@ class ImagePasteInputProxy extends Transform {
     const index = this.initialImageCount + this.images.length + 1;
     try {
       if (this.signal?.aborted) throw new Error("Image paste was canceled.");
-      const attachment = await this.captureImage(index, this.signal);
+      const attachment = await this.captureWithTimeout(
+        (signal) => this.captureImage(index, signal),
+        "Clipboard image capture",
+      );
       if (this.signal?.aborted) throw new Error("Image paste was canceled.");
       const expectedLabel = `Image #${index}`;
       if (attachment.label !== expectedLabel) {
@@ -621,7 +637,10 @@ class ImagePasteInputProxy extends Transform {
       let pasteError = error;
       if (!this.signal?.aborted && this.captureText) {
         try {
-          const text = await this.captureText(this.signal);
+          const text = await this.captureWithTimeout(
+            (signal) => this.captureText?.(signal) ?? Promise.resolve(undefined),
+            "Clipboard text capture",
+          );
           if (text) {
             try {
               return this.pastedTextForPrompt(text);
@@ -656,6 +675,32 @@ class ImagePasteInputProxy extends Transform {
     return marker;
   }
 
+  private async captureWithTimeout<T>(
+    start: (signal: AbortSignal) => Promise<T>,
+    label: string,
+  ): Promise<T> {
+    if (this.signal?.aborted) throw new Error(`${label} was canceled.`);
+    const controller = new AbortController();
+    const onAbort = (): void => controller.abort();
+    this.signal?.addEventListener("abort", onAbort, { once: true });
+    const delay = Number.isFinite(this.clipboardCaptureTimeoutMs)
+      ? Math.max(1, Math.floor(this.clipboardCaptureTimeoutMs))
+      : DEFAULT_CLIPBOARD_CAPTURE_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${delay}ms.`));
+        controller.abort();
+      }, delay);
+    });
+    try {
+      return await Promise.race([start(controller.signal), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      this.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
   private startEscapeTimer(delayMs: number): void {
     this.clearEscapeTimer();
     this.escapeTimer = setTimeout(() => {
@@ -672,6 +717,36 @@ class ImagePasteInputProxy extends Transform {
   private clearEscapeTimer(): void {
     if (this.escapeTimer) clearTimeout(this.escapeTimer);
     this.escapeTimer = undefined;
+  }
+
+  private refreshBracketedPasteTimer(): void {
+    this.clearBracketedPasteTimer();
+    const delay = Number.isFinite(this.bracketedPasteIdleTimeoutMs)
+      ? Math.max(1, Math.floor(this.bracketedPasteIdleTimeoutMs))
+      : DEFAULT_BRACKETED_PASTE_IDLE_TIMEOUT_MS;
+    this.bracketedPasteTimer = setTimeout(() => {
+      if (!this.bracketedPasteActive || this.destroyed) return;
+      this.resetBracketedPaste();
+      this.pasteErrors.push(
+        "Pasted text was incomplete because the terminal did not send its closing marker.",
+      );
+      // Fail closed for the incomplete payload, but release the Transform so
+      // subsequent ordinary keystrokes reach readline instead of being
+      // swallowed forever as paste bytes.
+      this.push(Buffer.from(" [Text paste failed] ", "utf8"));
+    }, delay);
+  }
+
+  private clearBracketedPasteTimer(): void {
+    if (this.bracketedPasteTimer) clearTimeout(this.bracketedPasteTimer);
+    this.bracketedPasteTimer = undefined;
+  }
+
+  private resetBracketedPaste(): void {
+    this.clearBracketedPasteTimer();
+    this.bracketedPasteActive = false;
+    this.bracketedPasteRejected = false;
+    this.bracketedPasteBuffer = Buffer.alloc(0);
   }
 }
 
@@ -964,6 +1039,8 @@ export function readPrompt(
     toggleThinking,
     deleteAtomicMarker,
     captureController.signal,
+    options.bracketedPasteIdleTimeoutMs,
+    options.clipboardCaptureTimeoutMs,
   );
   rl = readline.createInterface({
     input: proxy,

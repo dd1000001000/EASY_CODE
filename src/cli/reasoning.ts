@@ -187,6 +187,33 @@ export function renderReasoningMarker(
   );
 }
 
+/**
+ * Render a completed Thinking item after its turn leaves the redrawable tail.
+ * Historical terminal scrollback cannot be rewritten safely, so this variant
+ * deliberately avoids the clickable toggle prefix while keeping `/thinking` as
+ * an explicit way to inspect the retained body.
+ */
+export function renderReasoningHistoryMarker(
+  block: ReasoningBlock,
+  options: ReasoningRenderOptions = {},
+): string {
+  const palette = new Chalk({ level: options.color ? 1 : 0 });
+  const previewLimit = boundedInteger(
+    options.previewChars,
+    DEFAULT_REASONING_PREVIEW_CHARS,
+    2_000,
+  );
+  const compactText = block.text.replace(/\s+/gu, " ").trim();
+  const retainedPreview = takeCodePoints(compactText, previewLimit);
+  const preview = retainedPreview.text || "(No visible Thinking text.)";
+  const omitted = retainedPreview.truncated || block.truncated;
+  return palette.gray(
+    `• Thinking #${block.id} · ${block.sourceChars} chars · ` +
+      `use /thinking ${block.id} for retained content\n` +
+      `  ${preview}${omitted ? "..." : ""}\n`,
+  );
+}
+
 export function renderReasoningBody(
   block: ReasoningBlock,
   options: ReasoningRenderOptions = {},

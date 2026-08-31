@@ -366,7 +366,10 @@ describe("Terminal retained inline shell", () => {
         assert.equal(await selection, "third");
         assert.equal(terminalState(terminal).overlay, null);
         assert.deepEqual(terminalState(terminal).transcript, []);
-        assert.deepEqual(input.rawModeTransitions, [true, false]);
+        // The outer modal owner enters Raw Mode, then the selector reasserts
+        // it once to repair possible Windows ConPTY cooked-mode drift before
+        // accepting the first arrow key.
+        assert.deepEqual(input.rawModeTransitions, [true, true, false]);
       } finally {
         terminal.close();
       }
@@ -740,7 +743,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(
           stripAnsi(captured()),
           new RegExp(
-            `↕ Thinking #${firstId} · /thinking ${firstId}`,
+            `↕ Thinking #${firstId}[^\n]*· /thinking ${firstId}`,
             "u",
           ),
         );
@@ -757,7 +760,8 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
         const closeFrame = stripAnsi(captured().slice(closeOffset));
-        assert.equal(closeFrame.includes("Inspect the authentication routes."), false);
+        assert.match(closeFrame, new RegExp(`▶ Thinking #${firstId}`, "u"));
+        assert.equal(closeFrame.includes(`↕ Thinking #${firstId}`), false);
         assert.match(closeFrame, /╭─ Request[^\n]*\n│ > draft/u);
 
         input.write(vscodeToggleThinkingSequence(secondId));
@@ -798,6 +802,165 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("keeps completed-turn Thinking foldable in place above an active draft", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Explain the authentication changes");
+        const reasoning = [
+          `Inspect the authentication routes before changing any files. ${"context ".repeat(20)}`,
+          "FULL-ONLY-SENTINEL: compare the existing session and registration flows.",
+        ].join("\n");
+        const id = terminal.addReasoning(reasoning);
+        terminal.write("ASSISTANT-OUTPUT-SENTINEL: authentication is ready.\n");
+        terminal.clearCurrentRequest();
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => ({
+            id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            label: `Image #${index}`,
+            mediaType: "image/png",
+            storageKey: `attachments/test/image-${index}.png`,
+            sha256: String(index).repeat(64).slice(0, 64),
+            byteSize: 68,
+            width: 1,
+            height: 1,
+          }),
+        });
+        input.write("draft");
+        await settlePromptInput();
+
+        const collapsedOffset = captured().length;
+        output.emit("resize");
+        await settlePromptInput();
+        const collapsedFrame = stripAnsi(captured().slice(collapsedOffset));
+        const collapsedThinkingOffset = collapsedFrame.indexOf(`▶ Thinking #${id}`);
+        const collapsedAssistantOffset = collapsedFrame.indexOf(
+          "ASSISTANT-OUTPUT-SENTINEL",
+        );
+        const collapsedRequestOffset = collapsedFrame.indexOf("╭─ Request");
+        assert.ok(collapsedThinkingOffset >= 0);
+        assert.ok(collapsedAssistantOffset > collapsedThinkingOffset);
+        assert.ok(collapsedRequestOffset > collapsedAssistantOffset);
+        assert.doesNotMatch(collapsedFrame, /FULL-ONLY-SENTINEL/u);
+        assert.match(collapsedFrame, /╭─ Request[^\n]*\n│ > draft/u);
+
+        const openOffset = captured().length;
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+
+        const openFrame = stripAnsi(captured().slice(openOffset));
+        const expandedOffset = openFrame.indexOf(`Thinking #${id}`);
+        const assistantOffset = openFrame.indexOf("ASSISTANT-OUTPUT-SENTINEL");
+        const requestOffset = openFrame.indexOf("╭─ Request");
+        assert.ok(expandedOffset >= 0);
+        assert.match(openFrame, new RegExp(`(?:▼|↕) Thinking #${id}`, "u"));
+        assert.match(openFrame, /FULL-ONLY-SENTINEL/u);
+        assert.match(openFrame, new RegExp(`/thinking ${id}`, "u"));
+        assert.ok(assistantOffset > expandedOffset);
+        assert.ok(requestOffset > assistantOffset);
+        assert.equal(openFrame.includes(`▶ Thinking #${id}`), false);
+        assert.equal(
+          (openFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
+          1,
+          "the expanded body must replace, not duplicate, the collapsed marker",
+        );
+        assert.match(openFrame, /╭─ Request[^\n]*\n│ > draft/u);
+
+        const closeOffset = captured().length;
+        // This is the same OSC emitted when the user clicks the expanded title.
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+
+        const closeFrame = stripAnsi(captured().slice(closeOffset));
+        const previewOffset = closeFrame.indexOf(`▶ Thinking #${id}`);
+        const restoredAssistantOffset = closeFrame.indexOf(
+          "ASSISTANT-OUTPUT-SENTINEL",
+        );
+        const restoredRequestOffset = closeFrame.indexOf("╭─ Request");
+        assert.ok(previewOffset >= 0);
+        assert.ok(restoredAssistantOffset > previewOffset);
+        assert.ok(restoredRequestOffset > restoredAssistantOffset);
+        assert.equal(closeFrame.includes("FULL-ONLY-SENTINEL"), false);
+        assert.equal(
+          (closeFrame.match(new RegExp(`Thinking #${id}`, "gu")) ?? []).length,
+          1,
+        );
+        assert.match(closeFrame, /╭─ Request[^\n]*\n│ > draft/u);
+
+        input.write("!\r");
+        assert.equal((await prompt)?.text, "draft!");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("bounds a long completed turn so paste and typing keep the Request editor responsive", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Summarize a long verification run");
+        terminal.addReasoning("Earlier Thinking content.");
+        terminal.write(
+          `${Array.from({ length: 25 }, (_, index) => `assistant row ${index + 1}`).join("\n")}\n`,
+        );
+        const targetId = terminal.addReasoning(
+          Array.from(
+            { length: 10 },
+            (_, index) => `TARGET-THINKING-DETAIL-${index + 1}`,
+          ).join("\n"),
+        );
+        terminal.write("answer tail 1\nanswer tail 2\nanswer tail 3\nanswer tail 4\n");
+        terminal.clearCurrentRequest();
+
+        const prompt = terminal.readPrompt("> ", {
+          captureImage: async (index) => ({
+            id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+            label: `Image #${index}`,
+            mediaType: "image/png",
+            storageKey: `attachments/test/image-${index}.png`,
+            sha256: String(index).repeat(64).slice(0, 64),
+            byteSize: 68,
+            width: 1,
+            height: 1,
+          }),
+        });
+        const redrawOffset = captured().length;
+        output.emit("resize");
+        await settlePromptInput();
+        const redraw = stripAnsi(captured().slice(redrawOffset));
+        assert.match(redraw, new RegExp(`▶ Thinking #${targetId}`, "u"));
+        assert.match(redraw, /live row\(s\) hidden/u);
+        assert.match(redraw, /╭─ Request/u);
+
+        const expandedOffset = captured().length;
+        input.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+        const expanded = stripAnsi(captured().slice(expandedOffset));
+        assert.match(expanded, new RegExp(`↕ Thinking #${targetId}`, "u"));
+        assert.match(expanded, /TARGET-THINKING-DETAIL-1/u);
+        assert.match(expanded, /╭─ Request/u);
+
+        input.write(vscodeToggleThinkingSequence(targetId));
+        await settlePromptInput();
+
+        input.write("still works\r");
+        assert.equal((await prompt)?.text, "still works");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("hides a live Thinking panel when reasoning history is restored or cleared", async () => {
     await withInteractiveEnvironment(() => {
       const input = new TtyInput();
@@ -812,10 +975,11 @@ describe("Terminal retained inline shell", () => {
 
         assert.equal(terminal.restoreReasoning(["Restored thread reasoning."]), 1);
         assert.equal(terminalState(terminal).live.thinking, null);
-        assert.equal(terminal.toggleReasoning(1), true);
-        assert.equal(
-          terminalState(terminal).live.thinking?.body,
-          "Restored thread reasoning.",
+        assert.equal(terminal.toggleReasoning(1), false);
+        assert.equal(terminalState(terminal).live.thinking, null);
+        assert.match(
+          terminalState(terminal).transcript.at(-1)?.text ?? "",
+          /Thinking block #1 is historical; use \/thinking 1 to view it\./u,
         );
 
         terminal.clearReasoning();

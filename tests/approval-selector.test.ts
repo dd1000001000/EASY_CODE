@@ -288,7 +288,9 @@ describe("command approval selector", () => {
     rawInput.write("\r");
     assert.equal(await rawSelection, "allow_once");
     assert.equal(rawInput.isRaw, true);
-    assert.deepEqual(rawInput.rawModeTransitions, []);
+    // Even an already-raw stream is reasserted to repair Windows ConPTY's
+    // occasional OS-mode drift after a focus/input-owner transition.
+    assert.deepEqual(rawInput.rawModeTransitions, [true]);
 
     const failingInput = new TtyInput();
     let renders = 0;

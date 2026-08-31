@@ -105,6 +105,37 @@ function contextPressureInstruction(
   return "";
 }
 
+function sandboxUnavailableInstruction(role: AgentRole): string {
+  if (role === "subagent") {
+    return (
+      "RUNTIME_COMMAND_SANDBOX_PAUSED: The operating-system command sandbox failed before " +
+      "a command started. Do not call run_command again in this turn. Continue useful file " +
+      "work if possible; if command execution is the only remaining check, call " +
+      "submit_task_result with outcome blocked and identify the transient sandbox condition. " +
+      "The parent Runtime can requeue the DAG assignment; do not repeatedly retry the command."
+    );
+  }
+  return (
+    "RUNTIME_COMMAND_SANDBOX_PAUSED: The operating-system command sandbox failed before " +
+    "a command started. This is a transient, turn-scoped execution-infrastructure failure, " +
+    "not a durable task blocker. Do not call run_command again in this turn and do not use " +
+    "manage_tasks block solely because command verification is temporarily unavailable. " +
+    "Continue any useful file work that does not require a command. If command execution is " +
+    "the only remaining check, return a concise plain-text pause report; Runtime will keep the " +
+    "current DAG task in progress and expose run_command again on the next turn."
+  );
+}
+
+function sandboxPauseText(prefix = ""): string {
+  const detail = prefix.trim();
+  return (
+    (detail ? `${detail}\n\n` : "") +
+    "Runtime paused command-based verification for this turn because the OS sandbox " +
+    "failed before the command started. The current DAG task remains in progress; " +
+    "run_command will be available again on the next turn."
+  );
+}
+
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   tools: AgentTool[];
@@ -649,6 +680,8 @@ export class AgentRuntime {
     let subagentCollectionReminderIssued = false;
     let subagentCollectionAllowanceGranted = false;
     let runCommandUnavailable = false;
+    let retryableSandboxFailureCount = 0;
+    let retryableSandboxRecoveryPending = false;
     for (let step = 1; step <= stepLimit; step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
@@ -744,8 +777,12 @@ export class AgentRuntime {
           : {}),
         ...(state.planReview ? { planReview: state.planReview } : {}),
       });
-      const systemPrompt = pressureInstruction
-        ? `${baseSystemPrompt}\n\n${pressureInstruction}`
+      const runtimeInstructions = [
+        pressureInstruction,
+        runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
+      ].filter(Boolean);
+      const systemPrompt = runtimeInstructions.length
+        ? `${baseSystemPrompt}\n\n${runtimeInstructions.join("\n\n")}`
         : baseSystemPrompt;
       const messages = this.dependencies.contextManager.build({
         systemPrompt,
@@ -982,6 +1019,18 @@ export class AgentRuntime {
             memoryContext,
           );
         }
+        if (state.taskGraph?.status === "active" && runCommandUnavailable) {
+          const pausedText = sandboxPauseText(text);
+          this.dependencies.onText?.(pausedText);
+          return this.finish(
+            state,
+            turnId,
+            pausedText,
+            "blocked",
+            step,
+            memoryContext,
+          );
+        }
         if (state.taskGraph?.status === "active") {
           const reminder: Extract<ChatMessage, { role: "user" }> = {
             role: "user",
@@ -1063,6 +1112,7 @@ export class AgentRuntime {
       let successfulContextCompaction = false;
       let proposedPlan: PlanProposal | undefined;
       let submittedTaskReport: SubagentTaskReport | undefined;
+      let sandboxPauseRequested = false;
 
       for (const call of calls) {
         const toolName = call.function.name as ToolName;
@@ -1138,8 +1188,9 @@ export class AgentRuntime {
             ok: false,
             summary:
               "run_command is disabled for the rest of this turn because the OS sandbox " +
-              "failed before a previous command started. Do not retry it; continue with " +
-              "file tools or report command-based verification as blocked.",
+              "failed before a previous command started. Do not retry it or persistently " +
+              "block the current DAG task; continue with file tools or return a plain-text " +
+              "pause report. Runtime will re-enable commands next turn.",
             error: "sandbox_unavailable_for_turn",
           };
         } else {
@@ -1150,6 +1201,21 @@ export class AgentRuntime {
             let input: unknown = rawInput;
             if (toolName === "manage_tasks") {
               const parsedOperation = taskGraphOperationSchema.parse(rawInput);
+              if (
+                (runCommandUnavailable || retryableSandboxRecoveryPending) &&
+                parsedOperation.action === "block"
+              ) {
+                if (runCommandUnavailable) sandboxPauseRequested = true;
+                throw new Error(
+                  retryableSandboxRecoveryPending && !runCommandUnavailable
+                    ? "A first transient Windows SRT initialization failure cannot " +
+                      "persistently block a DAG task. Retry run_command once; Runtime keeps " +
+                      "the task in progress."
+                    : "A turn-scoped OS sandbox failure cannot persistently block a DAG task. " +
+                      "Return a plain-text pause report instead; Runtime keeps the task in " +
+                      "progress and re-enables run_command next turn.",
+                );
+              }
               if (
                 parsedOperation.action === "create" &&
                 (this.dependencies.getOutstandingSubagents?.() ?? []).some(
@@ -1250,15 +1316,37 @@ export class AgentRuntime {
           }
         }
 
-        if (
-          toolName === "run_command" &&
-          !result.ok &&
-          result.data &&
-          typeof result.data === "object" &&
-          "status" in result.data &&
-          result.data.status === "sandbox_unavailable"
-        ) {
-          runCommandUnavailable = true;
+        if (toolName === "run_command") {
+          const commandData = result.data && typeof result.data === "object"
+            ? result.data
+            : undefined;
+          const commandStatus = commandData && "status" in commandData
+            ? commandData.status
+            : undefined;
+          if (!result.ok && commandStatus === "sandbox_unavailable") {
+            const sandboxFailure = commandData &&
+                "sandboxFailure" in commandData &&
+                commandData.sandboxFailure &&
+                typeof commandData.sandboxFailure === "object"
+              ? commandData.sandboxFailure as { retryable?: unknown }
+              : undefined;
+            if (
+              sandboxFailure?.retryable === true &&
+              retryableSandboxFailureCount === 0
+            ) {
+              retryableSandboxFailureCount = 1;
+              retryableSandboxRecoveryPending = true;
+            } else {
+              runCommandUnavailable = true;
+            }
+          } else if (commandStatus !== undefined || result.ok) {
+            // The bounded retry reached a real command outcome (including
+            // non-zero exit, timeout, denial, or spawn failure). Sandbox
+            // recovery is no longer pending, so later task decisions must be
+            // based on that outcome rather than the earlier transient failure.
+            retryableSandboxFailureCount = 0;
+            retryableSandboxRecoveryPending = false;
+          }
         }
 
         if (
@@ -1516,6 +1604,19 @@ export class AgentRuntime {
           successfulMemoryToolCall = true;
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+      }
+
+      if (sandboxPauseRequested && state.taskGraph?.status === "active") {
+        const pausedText = sandboxPauseText();
+        this.dependencies.onText?.(pausedText);
+        return this.finish(
+          state,
+          turnId,
+          pausedText,
+          "blocked",
+          step,
+          memoryContext,
+        );
       }
 
       if (submittedTaskReport) {

@@ -34,6 +34,13 @@ interface ProcessResult {
   code?: string;
 }
 
+export interface CommandRuntimeOptions {
+  sandboxStartupTimeoutMs?: number;
+}
+
+const WINDOWS_SANDBOX_STARTUP_TIMEOUT_MS = 75_000;
+const POSIX_SANDBOX_STARTUP_TIMEOUT_MS = 30_000;
+
 function emptyDigest(): OutputDigest {
   return { head: "", tail: "", text: "", totalBytes: 0, truncated: false };
 }
@@ -66,6 +73,30 @@ function hardTimeoutFor(policy: CommandPolicyDecision): number {
   return 15 * 60_000;
 }
 
+function defaultSandboxStartupTimeout(metadata: SandboxExecutionMetadata): number {
+  return metadata.backend === "anthropic-srt-windows"
+    ? WINDOWS_SANDBOX_STARTUP_TIMEOUT_MS
+    : POSIX_SANDBOX_STARTUP_TIMEOUT_MS;
+}
+
+function retryableSandboxFailure(message: string): boolean {
+  return /(?:srt-win\s+acl\s+(?:grant|stamp|restore|revoke).*timed\s+out|OS\s+sandbox\s+initialization\s+did\s+not\s+become\s+ready|Windows\s+SRT\s+ACL\s+lease|database\s+is\s+locked|resource\s+(?:is\s+)?busy)/iu.test(message);
+}
+
+function containsReadyControl(commandId: string, value: string): boolean {
+  if (!value.includes("[[EASY_CODE_SRT:")) return false;
+  const digest: OutputDigest = {
+    head: value,
+    tail: "",
+    text: value,
+    totalBytes: Buffer.byteLength(value),
+    truncated: false,
+  };
+  return extractSandboxControls(commandId, digest).controls.some(
+    (control) => control.type === "ready",
+  );
+}
+
 export class CommandRuntime {
   readonly resolver: CommandResolver;
   readonly policy: CommandPolicy;
@@ -77,6 +108,7 @@ export class CommandRuntime {
     policy = new CommandPolicy(),
     executionBackend?: CommandExecutionBackend,
     unrestrictedExecutionBackend?: CommandExecutionBackend,
+    private readonly options: CommandRuntimeOptions = {},
   ) {
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
@@ -239,10 +271,15 @@ export class CommandRuntime {
       1,
       Math.min(requestedTimeout, context.commandTimeoutMs, hardTimeoutFor(policyDecision)),
     );
-    let timedOut = false;
+    let timeoutPhase: "initialization" | "command" | undefined;
     let canceled = false;
     let result: ProcessResult = {};
     let termination: Promise<void> | undefined;
+    const sandboxStartupTimeoutMs = Math.max(
+      1,
+      this.options.sandboxStartupTimeoutMs ??
+        defaultSandboxStartupTimeout(prepared.metadata),
+    );
 
     const subprocess = execa(prepared.executablePath, prepared.args, {
       cwd: prepared.cwdAbsolute,
@@ -260,12 +297,39 @@ export class CommandRuntime {
       stripFinalNewline: false,
     });
 
-    subprocess.stdout?.on("data", (chunk: Buffer | string) => stdout.push(chunk));
-    subprocess.stderr?.on("data", (chunk: Buffer | string) => stderr.push(chunk));
-
     const requestTermination = (): void => {
       termination ??= terminateProcessTree(subprocess);
     };
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    const armTimeout = (
+      phase: "initialization" | "command",
+      durationMs: number,
+    ): void => {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      timeoutTimer = setTimeout(() => {
+        timeoutPhase = phase;
+        requestTermination();
+      }, durationMs);
+      timeoutTimer.unref();
+    };
+    let readyProbe = "";
+    let readyObserved = !prepared.metadata.enforced;
+    const observeReady = (chunk: Buffer | string): void => {
+      if (readyObserved) return;
+      readyProbe = `${readyProbe}${chunk.toString()}`;
+      if (!containsReadyControl(commandId, readyProbe)) {
+        readyProbe = readyProbe.slice(-16_384);
+        return;
+      }
+      readyObserved = true;
+      armTimeout("command", timeoutMs);
+    };
+    subprocess.stdout?.on("data", (chunk: Buffer | string) => stdout.push(chunk));
+    subprocess.stderr?.on("data", (chunk: Buffer | string) => {
+      stderr.push(chunk);
+      observeReady(chunk);
+    });
+
     const onAbort = (): void => {
       canceled = true;
       requestTermination();
@@ -279,18 +343,17 @@ export class CommandRuntime {
       }, 250)
       : undefined;
     revocationTimer?.unref();
-    const timer = setTimeout(() => {
-      timedOut = true;
-      requestTermination();
-    }, timeoutMs);
-    timer.unref();
+    armTimeout(
+      prepared.metadata.enforced ? "initialization" : "command",
+      prepared.metadata.enforced ? sandboxStartupTimeoutMs : timeoutMs,
+    );
 
     try {
       result = (await subprocess) as ProcessResult;
     } catch (error) {
       result = error as ProcessResult;
     } finally {
-      clearTimeout(timer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       if (revocationTimer) clearInterval(revocationTimer);
       context.signal?.removeEventListener("abort", onAbort);
     }
@@ -321,8 +384,8 @@ export class CommandRuntime {
     const sandboxUnavailableMessage = sandboxError?.type === "sandbox_error"
       ? sandboxError.message
       : !sandboxReady
-        ? timedOut || result.timedOut
-          ? `OS sandbox initialization did not become ready within ${timeoutMs}ms; ` +
+        ? timeoutPhase === "initialization" || result.timedOut
+          ? `OS sandbox initialization did not become ready within ${sandboxStartupTimeoutMs}ms; ` +
             "the target process was not confirmed started"
           : "Sandbox worker exited without confirming that enforcement was active"
         : undefined;
@@ -344,7 +407,7 @@ export class CommandRuntime {
       ? "canceled"
       : sandboxUnavailableMessage
           ? "sandbox_unavailable"
-          : timedOut || result.timedOut
+          : timeoutPhase === "command" || result.timedOut
             ? "timed_out"
           : targetSpawnError
             ? "spawn_failed"
@@ -362,6 +425,14 @@ export class CommandRuntime {
       workspaceDelta: summarizeWorkspaceDelta(delta),
       policyDecision,
       sandbox: prepared.metadata,
+      ...(sandboxUnavailableMessage
+        ? {
+            sandboxFailure: {
+              phase: "initialization" as const,
+              retryable: retryableSandboxFailure(sandboxUnavailableMessage),
+            },
+          }
+        : {}),
       executed: this.executionSummary(resolved),
     };
 
@@ -516,6 +587,10 @@ export class CommandRuntime {
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
       sandbox: executionBackend.describe(request),
+      sandboxFailure: {
+        phase: "prepare",
+        retryable: retryableSandboxFailure(message),
+      },
       executed: this.executionSummary(resolved),
     };
     this.audit(output, resolved, context, text);

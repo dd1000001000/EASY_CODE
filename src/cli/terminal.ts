@@ -28,7 +28,9 @@ import {
 import {
   ReasoningRegistry,
   renderReasoningBody,
+  renderReasoningHistoryMarker,
   renderReasoningMarker,
+  type ReasoningBlock,
 } from "./reasoning.js";
 import {
   selectModel,
@@ -63,6 +65,7 @@ import {
   displayWidth,
   stripAnsi,
   truncateToWidth,
+  wrapToWidth,
 } from "../ui/render/layout.js";
 import {
   renderComposerStatusRegion,
@@ -101,6 +104,11 @@ interface BusyInputOwner {
   readonly wasRaw: boolean;
   readonly wasFlowing: boolean;
   readonly onError: () => void;
+}
+
+interface MutableTurnSegment {
+  readonly entry: Readonly<UITranscriptEntry>;
+  readonly reasoning?: Readonly<ReasoningBlock>;
 }
 
 type StableStatusKind = Extract<
@@ -178,6 +186,13 @@ export class Terminal {
   private currentRequestOptions?: Readonly<CurrentRequestOptions>;
   private busyInputOwner?: BusyInputOwner;
   private readonly reasoning = new ReasoningRegistry();
+  /**
+   * The most recent turn remains redrawable until the next request is
+   * submitted. This is the only terminal region where a Thinking preview can
+   * be replaced in place; committed scrollback is intentionally immutable.
+   */
+  private mutableTurnTail: MutableTurnSegment[] = [];
+  private expandedReasoningId?: number;
   private activityTimer?: NodeJS.Timeout;
   private activityStartedAt = 0;
   private activityFrameIndex = 0;
@@ -193,6 +208,8 @@ export class Terminal {
   private activeActivityId?: string;
   private activitySequence = 0;
   private agentConcurrencyLimit?: number;
+  /** Track DEC cursor visibility while EASY CODE owns the inline shell. */
+  private terminalCursorVisible = true;
   private readonly onResize = (): void => this.refresh();
 
   constructor(
@@ -254,6 +271,10 @@ export class Terminal {
     this.stopBusyInputOwner();
     this.currentRequestOptions = options;
     if (!this.inlineShellActive) return;
+    // A completed turn remains interactive while its idle Request editor is
+    // visible. Starting the next busy turn is the ownership boundary at which
+    // that prior tail becomes immutable scrollback.
+    if (!this.uiState.composer.busy) this.flushMutableTurnTail();
     this.progressItems = [];
     this.progressSequence = 0;
     this.uiState = applyEvent(this.uiState, { type: "progress.clear" });
@@ -354,6 +375,7 @@ export class Terminal {
     this.progressItems = [];
     this.progressSequence = 0;
     this.agentConcurrencyLimit = undefined;
+    this.clearMutableTurnTail();
     this.reasoning.clear();
     this.uiState = createUIState({
       header: {
@@ -476,6 +498,7 @@ export class Terminal {
 
   private recordAcceptedPlanFeedback(feedback: string): void {
     if (!this.inlineShellActive) return;
+    this.flushMutableTurnTail();
     this.uiState = applyEvent(this.uiState, {
       type: "transcript.append",
       entry: {
@@ -563,6 +586,10 @@ export class Terminal {
       });
       if (result === null) this.closed = true;
       if (this.inlineShellActive && result !== null) {
+        // readPrompt has erased its dynamic prefix at this point. Freeze the
+        // previous completed turn before printing the newly submitted request,
+        // so the old Thinking marker cannot move below the new user message.
+        this.flushMutableTurnTail();
         this.uiState = applyEvent(this.uiState, {
           type: "transcript.append",
           entry: {
@@ -838,15 +865,7 @@ export class Terminal {
 
   write(text: string): void {
     if (this.inlineShellActive) {
-      this.uiState = applyEvent(this.uiState, {
-        type: "transcript.append",
-        entry: { kind: "raw", text },
-      });
-      if (this.activePromptSession) {
-        this.activePromptSession.writeAbove(text);
-        return;
-      }
-      this.screen?.commit(text);
+      this.commitTranscript({ kind: "raw", text });
       this.refresh();
       return;
     }
@@ -1054,13 +1073,25 @@ export class Terminal {
   addReasoning(text: string): number {
     const block = this.reasoning.add(text);
     if (this.isInteractive()) {
-      this.write(renderReasoningMarker(block, { color: this.colorEnabled() }));
+      const entry = {
+        kind: "raw",
+        id: `thinking_${block.id}`,
+        text: renderReasoningMarker(block, { color: this.colorEnabled() }),
+        reasoning: block.text,
+      } as const;
+      if (this.inlineShellActive) {
+        this.appendMutableTurnSegment(entry, block);
+        this.refresh();
+      } else {
+        this.write(entry.text);
+      }
     }
     return block.id;
   }
 
   /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
   restoreReasoning(texts: readonly string[]): number {
+    this.clearMutableTurnTail();
     const count = this.reasoning.rebuild(texts);
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     this.refresh();
@@ -1087,6 +1118,7 @@ export class Terminal {
     if (!block) {
       // A stale marker must not leave an unrelated block looking selected.
       this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+      this.expandedReasoningId = undefined;
       this.writeStableStatus(
         `Thinking block #${id} is not available in this thread.`,
         "info",
@@ -1095,16 +1127,31 @@ export class Terminal {
       return false;
     }
     if (!this.inlineShellActive) return false;
+    if (!this.mutableTurnTail.some((segment) => segment.reasoning?.id === id)) {
+      // Scrollback is immutable in an ordinary terminal. Current-version
+      // historical markers are intentionally non-clickable; this fallback is
+      // only for stale markers printed by an older EASY CODE process.
+      this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+      this.expandedReasoningId = undefined;
+      this.writeStableStatus(
+        `Thinking block #${id} is historical; use /thinking ${id} to view it.`,
+        "info",
+      );
+      this.refresh();
+      return false;
+    }
     this.uiState = applyEvent(this.uiState, {
       type: "thinking.toggle",
       panel: block,
     });
+    this.expandedReasoningId = this.uiState.live.thinking?.id;
     this.refresh();
     return true;
   }
 
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
+    this.flushMutableTurnTail();
     this.reasoning.clear();
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     this.refresh();
@@ -1340,9 +1387,22 @@ export class Terminal {
       return;
     }
     if (this.promptActive) return;
-    this.screen.renderLive(
-      renderLiveRegion(this.uiState, Date.now(), this.viewOptions()),
+    const live = renderLiveRegion(
+      this.uiState,
+      Date.now(),
+      this.viewOptions(),
     );
+    if (this.uiState.overlay) {
+      this.screen.renderLive(live);
+      this.syncTerminalCursorVisibility();
+      return;
+    }
+    const tail = this.renderMutableTurnTail(
+      false,
+      this.mutableTailRowBudget(live, 1),
+    );
+    this.screen.renderLive(this.joinLiveBlocks(tail, live));
+    this.syncTerminalCursorVisibility();
   }
 
   private viewOptions(): {
@@ -1370,11 +1430,157 @@ export class Terminal {
       type: "transcript.append",
       entry,
     });
+    if (this.mutableTurnTail.length > 0) {
+      this.mutableTurnTail.push({ entry: { ...entry } });
+      this.refresh();
+      return;
+    }
     if (this.activePromptSession) {
       this.activePromptSession.writeAbove(entry.text);
     } else {
       this.screen?.commit(entry.text);
     }
+  }
+
+  private appendMutableTurnSegment(
+    entry: Readonly<UITranscriptEntry>,
+    reasoning?: Readonly<ReasoningBlock>,
+  ): void {
+    this.uiState = applyEvent(this.uiState, {
+      type: "transcript.append",
+      entry,
+    });
+    this.mutableTurnTail.push({
+      entry: { ...entry },
+      ...(reasoning ? { reasoning: { ...reasoning } } : {}),
+    });
+  }
+
+  private renderMutableTurnTail(
+    historical = false,
+    maximumRows?: number,
+  ): string {
+    if (this.mutableTurnTail.length === 0) return "";
+    const rendered = this.mutableTurnTail.map((segment) => {
+      const block = segment.reasoning;
+      if (!block) return segment.entry.text;
+      if (historical) {
+        return renderReasoningHistoryMarker(block, {
+          color: this.colorEnabled(),
+        });
+      }
+      if (this.expandedReasoningId === block.id) {
+        const expanded = renderThinkingPanel(block, {
+          ...this.viewOptions(),
+          maxThinkingRows: maximumRows === undefined
+            ? 40
+            : Math.max(1, Math.min(40, maximumRows)),
+        });
+        return expanded.endsWith("\n") ? expanded : `${expanded}\n`;
+      }
+      return renderReasoningMarker(block, { color: this.colorEnabled() });
+    }).join("");
+    if (historical || maximumRows === undefined) return rendered;
+    const focusedReasoningId = this.expandedReasoningId ??
+      [...this.mutableTurnTail].reverse().find((segment) => segment.reasoning)
+        ?.reasoning?.id;
+    return this.fitMutableTailRows(
+      rendered,
+      maximumRows,
+      focusedReasoningId,
+      this.expandedReasoningId !== undefined,
+    );
+  }
+
+  /** Freeze the previous turn only when a new request takes ownership. */
+  private flushMutableTurnTail(): void {
+    if (this.mutableTurnTail.length === 0) return;
+    const historical = this.renderMutableTurnTail(true).replace(/\n*$/u, "\n\n");
+    this.screen?.clearLive();
+    this.screen?.commit(historical);
+    this.clearMutableTurnTail();
+  }
+
+  private clearMutableTurnTail(): void {
+    this.mutableTurnTail = [];
+    this.expandedReasoningId = undefined;
+    this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
+  }
+
+  private joinLiveBlocks(first: string, second: string): string {
+    if (!first) return second;
+    if (!second) return first;
+    return `${first.replace(/\n+$/u, "")}\n\n${second}`;
+  }
+
+  private mutableTailRowBudget(otherLiveText: string, reservedRows: number): number {
+    const rows = Number((this.output as NodeJS.WriteStream).rows);
+    if (!Number.isFinite(rows) || rows < 1) return Number.MAX_SAFE_INTEGER;
+    const otherRows = this.visualRowCount(otherLiveText);
+    return Math.max(0, Math.floor(rows) - otherRows - Math.max(0, reservedRows));
+  }
+
+  private visualRowCount(text: string): number {
+    if (!text) return 0;
+    const columns = Math.max(1, this.screen?.columns ?? 80);
+    return wrapToWidth(text, columns, { preserveAnsi: true }).length;
+  }
+
+  private fitMutableTailRows(
+    text: string,
+    maximumRows: number,
+    focusedReasoningId?: number,
+    expanded = false,
+  ): string {
+    const limit = Number.isFinite(maximumRows)
+      ? Math.max(0, Math.floor(maximumRows))
+      : Number.MAX_SAFE_INTEGER;
+    if (limit === 0 || !text) return "";
+    const columns = Math.max(1, this.screen?.columns ?? 80);
+    const lines = wrapToWidth(text, columns, { preserveAnsi: true });
+    if (lines.length <= limit) return lines.join("\n");
+    if (limit === 1) return lines[0] ?? "";
+
+    if (focusedReasoningId !== undefined) {
+      const anchorText = expanded
+        ? `↕ Thinking #${focusedReasoningId} · /thinking ${focusedReasoningId}`
+        : `▶ Thinking #${focusedReasoningId}`;
+      const anchorIndex = lines.findIndex((line) => stripAnsi(line).includes(anchorText));
+      if (anchorIndex >= 0) {
+        const contextBefore = Math.min(
+          anchorIndex,
+          Math.max(0, Math.floor((limit - 1) * 0.2)),
+        );
+        let start = Math.max(0, anchorIndex - contextBefore);
+        let end = Math.min(lines.length, start + limit);
+        if (end - start < limit) start = Math.max(0, end - limit);
+        const window = lines.slice(start, end);
+        if (start > 0 && window.length > 1) {
+          window[0] = chalk.gray(`… ${start} earlier live row(s) hidden …`);
+        }
+        if (end < lines.length && window.length > 1) {
+          window[window.length - 1] = chalk.gray(
+            `… ${lines.length - end} later live row(s) hidden to keep Request responsive …`,
+          );
+        }
+        return window.join("\n");
+      }
+    }
+
+    // Keep the Thinking control at the beginning and the latest answer/tool
+    // rows at the end. The omitted middle remains available after the next
+    // request freezes the complete tail into scrollback.
+    const contentRows = Math.max(1, limit - 1);
+    const headRows = Math.max(1, Math.ceil(contentRows * 0.6));
+    const tailRows = Math.max(0, contentRows - headRows);
+    const omitted = chalk.gray(
+      `… ${lines.length - headRows - tailRows} live row(s) hidden to keep Request responsive …`,
+    );
+    return [
+      ...lines.slice(0, headRows),
+      omitted,
+      ...(tailRows > 0 ? lines.slice(lines.length - tailRows) : []),
+    ].join("\n");
   }
 
   private removeRunningProgress(kind: UIProgressItem["kind"]): void {
@@ -1413,6 +1619,10 @@ export class Terminal {
   ): MenuSelectorOverlay {
     return {
       render: (lines) => {
+        // A picker has no text caret. Hide the physical cursor before painting
+        // it so ScreenWriter's live-region anchor is not exposed as a white
+        // block/dot inside Progress when the VS Code terminal loses focus.
+        this.setTerminalCursorVisible(false);
         const plain = lines.map((line) => stripAnsi(line));
         const renderedRows = plain.slice(1, -1);
         const selectedIndex = Math.max(
@@ -1463,6 +1673,26 @@ export class Terminal {
     };
   }
 
+  private syncTerminalCursorVisibility(): void {
+    if (!this.inlineShellActive) return;
+    // readline owns a real edit caret. Busy/model state and modal overlays do
+    // not: their cursor is only ScreenWriter's redraw anchor and must stay
+    // hidden. Once an idle composer is about to open, make the caret visible
+    // again without repainting or changing stdin ownership.
+    const visible = this.promptActive || (
+      !this.uiState.overlay &&
+      !this.uiState.composer.busy &&
+      !this.currentRequestOptions
+    );
+    this.setTerminalCursorVisible(visible);
+  }
+
+  private setTerminalCursorVisible(visible: boolean): void {
+    if (!this.inlineShellActive || this.terminalCursorVisible === visible) return;
+    this.output.write(visible ? "\u001B[?25h" : "\u001B[?25l");
+    this.terminalCursorVisible = visible;
+  }
+
   private composerPromptPrefix(): string {
     const columns = Math.max(12, this.screen?.columns ?? 80);
     const title = truncateToWidth(" Request ", Math.max(1, columns - 3), {
@@ -1471,10 +1701,13 @@ export class Terminal {
     const fill = "─".repeat(Math.max(0, columns - 3 - displayWidth(title)));
     const top = chalk.cyan(`╭─${title}${fill}╮`);
     const composer = `${top}\n${chalk.cyan("│")} > `;
-    const thinking = this.uiState.live.thinking
-      ? renderThinkingPanel(this.uiState.live.thinking, this.viewOptions())
-      : "";
-    return thinking ? `${thinking}\n${composer}` : composer;
+    const suffixRows = this.visualRowCount(this.composerPromptSuffix());
+    const rows = Number((this.output as NodeJS.WriteStream).rows);
+    const tailBudget = Number.isFinite(rows) && rows > 0
+      ? Math.max(0, Math.floor(rows) - suffixRows - 4)
+      : undefined;
+    const tail = this.renderMutableTurnTail(false, tailBudget);
+    return tail ? this.joinLiveBlocks(tail, composer) : composer;
   }
 
   private composerBottomBorder(): string {

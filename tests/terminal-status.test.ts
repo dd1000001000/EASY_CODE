@@ -15,10 +15,32 @@ import { describe, it } from "./harness.js";
 class TtyInput extends PassThrough {
   readonly isTTY = true;
   isRaw = false;
+  readonly rawModeTransitions: boolean[] = [];
+  private effectiveRaw = false;
+  private cookedBuffer = "";
 
   setRawMode(mode: boolean): this {
     this.isRaw = mode;
+    this.effectiveRaw = mode;
+    this.rawModeTransitions.push(mode);
     return this;
+  }
+
+  /** Simulate ConPTY losing its OS raw flag while Node still caches isRaw. */
+  loseEffectiveRawMode(): void {
+    this.effectiveRaw = false;
+  }
+
+  sendFromTerminal(text: string): void {
+    if (this.effectiveRaw) {
+      super.write(text);
+      return;
+    }
+    this.cookedBuffer += text;
+    if (!/[\r\n]/u.test(text)) return;
+    const buffered = this.cookedBuffer;
+    this.cookedBuffer = "";
+    super.write(buffered);
   }
 }
 
@@ -365,6 +387,50 @@ describe("Terminal runtime status routing", () => {
 
       fixture.input.write("fresh request\r");
       assert.equal((await prompt)?.text, "fresh request");
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("reasserts ConPTY Raw Mode before an approval and hides the redraw-anchor cursor", async () => {
+    const fixture = createInlineFixture();
+    try {
+      fixture.terminal.setCurrentRequest("Run the collector verification");
+      assert.match(fixture.outputText(), /\u001B\[\?25l/u);
+
+      // Windows can occasionally drift back to cooked input across a focus or
+      // stdin-owner transition without updating ReadStream.isRaw. Without the
+      // selector's explicit reassertion, this Down key remains buffered until
+      // the first Enter and the visible choice never moves.
+      fixture.input.loseEffectiveRawMode();
+      const rawCallsBeforeApproval = fixture.input.rawModeTransitions.length;
+      const decision = fixture.terminal.approve(approvalRequest());
+      assert.equal(
+        fixture.input.rawModeTransitions.length,
+        rawCallsBeforeApproval + 1,
+      );
+      assert.equal(fixture.input.rawModeTransitions.at(-1), true);
+
+      fixture.input.sendFromTerminal("\u001B[B");
+      assert.equal(terminalState(fixture.terminal).overlay?.selectedIndex, 1);
+      fixture.input.sendFromTerminal("\r");
+      assert.equal(await decision, "allow_prefix");
+
+      // Approval cleanup returns to the still-busy model/tool UI, so the
+      // physical cursor must remain hidden rather than appearing beside
+      // Progress as an unfocused white block.
+      const afterApproval = fixture.outputText();
+      assert.ok(
+        afterApproval.lastIndexOf("\u001B[?25l") >
+          afterApproval.lastIndexOf("\u001B[?25h"),
+      );
+
+      fixture.terminal.clearCurrentRequest();
+      const afterClear = fixture.outputText();
+      assert.ok(
+        afterClear.lastIndexOf("\u001B[?25h") >
+          afterClear.lastIndexOf("\u001B[?25l"),
+      );
     } finally {
       fixture.close();
     }

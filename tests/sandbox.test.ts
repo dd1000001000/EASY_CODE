@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
@@ -22,6 +22,7 @@ import {
   type SandboxWorkerPayload,
 } from "../src/sandbox/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
+import { WindowsSandboxProcessLock } from "../src/sandbox/windows-process-lock.js";
 import { describe, it } from "./harness.js";
 
 async function withWorkspace(
@@ -118,6 +119,32 @@ class NeverReadySandboxBackend implements CommandExecutionBackend {
     return {
       executablePath: process.execPath,
       args: ["-e", "setInterval(() => {}, 1000)"],
+      cwdAbsolute: request.command.cwdAbsolute,
+      environment: { ...process.env },
+      metadata: this.describe(),
+      cleanup: async () => undefined,
+    };
+  }
+}
+
+class DelayedReadySandboxBackend extends NeverReadySandboxBackend {
+  constructor(private readonly readyDelayMs: number) {
+    super();
+  }
+
+  override async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
+    const ready = encodeSandboxControl(request.commandId, {
+      type: "ready",
+      backend: "anthropic-srt-windows",
+    });
+    return {
+      executablePath: process.execPath,
+      args: [
+        "-e",
+        `setTimeout(() => { process.stderr.write(${JSON.stringify(ready)}); ` +
+          "setInterval(() => {}, 1000); }, " +
+          `${String(this.readyDelayMs)});`,
+      ],
       cwdAbsolute: request.command.cwdAbsolute,
       environment: { ...process.env },
       metadata: this.describe(),
@@ -245,6 +272,53 @@ function runtimeFixture(options: {
 }
 
 describe("sandbox command execution boundary", () => {
+  it("serializes the Windows SRT ACL lease and recovers an abandoned owner", async () => {
+    await withWorkspace(async (root) => {
+      const livePath = path.join(root, "live-windows-acl.lock");
+      let token = 0;
+      const lock = new WindowsSandboxProcessLock(livePath, {
+        waitTimeoutMs: 1_000,
+        pollIntervalMs: 5,
+        createToken: () => `token-${String(++token)}`,
+      });
+      const releaseFirst = await lock.acquire();
+      let secondAcquired = false;
+      const second = lock.acquire().then((release) => {
+        secondAcquired = true;
+        return release;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      assert.equal(secondAcquired, false);
+      await releaseFirst();
+      const releaseSecond = await second;
+      assert.equal(secondAcquired, true);
+      await releaseSecond();
+
+      const abandonedPath = path.join(root, "abandoned-windows-acl.lock");
+      await mkdir(abandonedPath);
+      await writeFile(
+        path.join(abandonedPath, "owner.json"),
+        JSON.stringify({
+          pid: 999_999,
+          token: "abandoned",
+          acquiredAt: new Date(0).toISOString(),
+        }),
+        "utf8",
+      );
+      const recovery = new WindowsSandboxProcessLock(abandonedPath, {
+        waitTimeoutMs: 1_000,
+        pollIntervalMs: 5,
+        isProcessAlive: () => false,
+      });
+      const releaseRecovered = await recovery.acquire();
+      await releaseRecovered();
+      await assert.rejects(
+        access(abandonedPath),
+        (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+      );
+    });
+  });
+
   it("uses a dedicated host backend only for active dangerous full access", async () => {
     await withWorkspace(async (root, manager) => {
       const request = sandboxRequest(root);
@@ -446,6 +520,8 @@ describe("sandbox command execution boundary", () => {
         manager,
         new CommandPolicy(),
         new NeverReadySandboxBackend(),
+        undefined,
+        { sandboxStartupTimeoutMs: 50 },
       );
 
       const output = await runtime.run(
@@ -460,6 +536,37 @@ describe("sandbox command execution boundary", () => {
 
       assert.equal(output.status, "sandbox_unavailable");
       assert.match(output.stderr.text, /not confirmed started/iu);
+      assert.equal(output.sandboxFailure?.phase, "initialization");
+      assert.equal(output.sandboxFailure?.retryable, true);
+    });
+  });
+
+  it("starts the requested command timeout only after the sandbox ready marker", async () => {
+    await withWorkspace(async (root, manager) => {
+      const runtime = new CommandRuntime(
+        manager,
+        new CommandPolicy(),
+        new DelayedReadySandboxBackend(70),
+        undefined,
+        { sandboxStartupTimeoutMs: 500 },
+      );
+      const startedAt = Date.now();
+      const output = await runtime.run(
+        {
+          program: "node",
+          args: ["--version"],
+          intent: "inspect",
+          timeoutMs: 35,
+        },
+        toolContext(root),
+      );
+
+      assert.equal(output.status, "timed_out");
+      assert.equal(output.sandboxFailure, undefined);
+      assert.ok(
+        Date.now() - startedAt >= 80,
+        "the target timeout fired before delayed sandbox initialization completed",
+      );
     });
   });
 });
