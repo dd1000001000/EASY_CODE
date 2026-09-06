@@ -34,6 +34,22 @@ function documentProperties(
   metadata: PromptToolMetadata,
   consumed: Set<string>,
 ): void {
+  for (const keyword of ["oneOf", "anyOf", "allOf"] as const) {
+    const alternatives = schema[keyword];
+    if (alternatives === undefined) continue;
+    if (!Array.isArray(alternatives)) {
+      throw new Error(`Tool ${metadata.id} schema ${keyword} must be an array`);
+    }
+    for (const [index, alternative] of alternatives.entries()) {
+      if (!isObject(alternative)) {
+        throw new Error(
+          `Tool ${metadata.id} schema ${keyword}[${index}] must be an object`,
+        );
+      }
+      documentProperties(alternative, prefix, metadata, consumed);
+    }
+  }
+
   const properties = schema.properties;
   if (!isObject(properties)) return;
   for (const [propertyName, rawPropertySchema] of Object.entries(properties)) {

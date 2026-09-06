@@ -154,6 +154,10 @@
       "sha256": "sha256:cb4ed986404e970b2fd11e62daefc60c7f005b6da6a13e8d925e877e0af8f96a",
       "bytes": 448
     },
+    "runtime/background-command-finalization-required.md": {
+      "sha256": "sha256:ff5187b2dbf0c53a6d04bc8ff848d6db8f695f4f9a7f89f11e3a8fa62327de76",
+      "bytes": 556
+    },
     "runtime/context-compaction-correction.md": {
       "sha256": "sha256:7a6da81acd21c531b90579ddfb819e017f29f1445ae0b7660e8dc66df2360b64",
       "bytes": 243
@@ -343,8 +347,8 @@
       "bytes": 871
     },
     "tools/run_command.json": {
-      "sha256": "sha256:f697627006e2150e2ecd5a529a915b92d842785eb51ec3c8fa0f2a2c64e2bd76",
-      "bytes": 1763
+      "sha256": "sha256:df1bb40aa8c6e13ed42f77ab708fd0f9bef8eaa7eb3a840af8c962e170c78c7f",
+      "bytes": 3534
     },
     "tools/select_mode.json": {
       "sha256": "sha256:ed2ffd862d1217590c921b1922d68e241eb1b94528ebd58f0c4be71dfa9a7058",
@@ -412,8 +416,8 @@
     },
     "run_command": {
       "path": "tools/run_command.json",
-      "contractVersion": "1.0.0",
-      "contentHash": "sha256:f697627006e2150e2ecd5a529a915b92d842785eb51ec3c8fa0f2a2c64e2bd76"
+      "contractVersion": "1.1.0",
+      "contentHash": "sha256:df1bb40aa8c6e13ed42f77ab708fd0f9bef8eaa7eb3a840af8c962e170c78c7f"
     },
     "select_mode": {
       "path": "tools/select_mode.json",
@@ -431,5 +435,5 @@
       "contentHash": "sha256:fdb1df23d0ba7faa488c4c7bd51170e65be505875cc91ff2e8ab2a68c13ffebd"
     }
   },
-  "bundleHash": "sha256:e7516fa33f832c65f621f5af6d86f6f935d4d74b1463d8afc35afebc237aeb3f"
+  "bundleHash": "sha256:73fdc8e158d3192d39a6c088d2465c63252ba88dc7c3e9b26f3dc8752672f0b2"
 }

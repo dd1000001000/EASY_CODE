@@ -141,6 +141,7 @@ function runtime(input: {
   onToolCompleted?: AgentRuntimeDependencies["onToolCompleted"];
   onSubagentLifecycleRollback?: AgentRuntimeDependencies["onSubagentLifecycleRollback"];
   getOutstandingSubagents?: AgentRuntimeDependencies["getOutstandingSubagents"];
+  hasOpenCommandHandles?: AgentRuntimeDependencies["hasOpenCommandHandles"];
 }): AgentRuntime {
   return new AgentRuntime({
     provider: input.provider,
@@ -158,6 +159,9 @@ function runtime(input: {
       : {}),
     ...(input.getOutstandingSubagents
       ? { getOutstandingSubagents: input.getOutstandingSubagents }
+      : {}),
+    ...(input.hasOpenCommandHandles
+      ? { hasOpenCommandHandles: input.hasOpenCommandHandles }
       : {}),
   });
 }
@@ -596,6 +600,81 @@ describe("AgentRuntime subagent boundaries", () => {
           message.content.includes("RUNTIME_SUBAGENT_RESULT_PROTOCOL"),
       ),
       true,
+    );
+  });
+
+  it("rejects submit_task_result until the child's command is terminal", async () => {
+    const taskId = "child_running_command";
+    const currentState = state("high", "running_command");
+    let requests = 0;
+    let submitExecutions = 0;
+    let running = true;
+    let sawRuntimeRejection = false;
+    const submitTool = fakeTool(
+      "submit_task_result",
+      async (): Promise<ToolExecutionResult> => {
+        submitExecutions += 1;
+        return {
+          ok: true,
+          summary: "Submitted the bound result.",
+          subagentTaskReport: completionReport(taskId, "Verified after command completion."),
+        };
+      },
+    );
+    const commandTool = fakeTool(
+      "run_command",
+      async (): Promise<ToolExecutionResult> => {
+        running = false;
+        return { ok: true, summary: "Command exited.", data: { status: "exited" } };
+      },
+    );
+    const model = provider(async (request) => {
+      requests += 1;
+      if (requests === 2) {
+        sawRuntimeRejection = request.messages.some(
+          (message) => message.role === "tool" && message.content.includes(
+            "RUNTIME_BACKGROUND_COMMAND_FINALIZATION_REQUIRED",
+          ),
+        );
+        return {
+          message: {
+            role: "assistant",
+            content: null,
+            tool_calls: [{
+              id: "status_child_command",
+              type: "function",
+              function: {
+                name: "run_command",
+                arguments: JSON.stringify({
+                  action: "status",
+                  commandId: "command_00000000-0000-4000-8000-000000000000",
+                }),
+              },
+            }],
+          },
+        };
+      }
+      return submitCall(`submit_running_command_${requests}`, "Verified child result.");
+    });
+
+    const result = await runtime({
+      provider: model,
+      tools: [submitTool, commandTool],
+      agentIdentity: {
+        role: "subagent",
+        agentId: CHILD_AGENT_ID,
+        assignedTaskId: taskId,
+      },
+      hasOpenCommandHandles: () => running,
+    }).run(currentState, "Complete the assigned task", options(3));
+
+    assert.equal(requests, 3);
+    assert.equal(submitExecutions, 1);
+    assert.equal(sawRuntimeRejection, true);
+    assert.equal(result.reason, "success");
+    assert.deepEqual(
+      result.subagentTaskReport,
+      completionReport(taskId, "Verified after command completion."),
     );
   });
 

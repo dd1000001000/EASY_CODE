@@ -91,6 +91,37 @@ export class OutputCollector {
     };
   }
 
+  /**
+   * Return a safe point-in-time view without closing the UTF-8 decoder or
+   * preventing later chunks from being retained. Background-command status
+   * calls use this instead of consuming the final digest.
+   */
+  snapshot(): OutputDigest {
+    let head = this.head;
+    let tail = this.tail;
+    let retainedChars = this.retainedChars;
+    let pending = sanitizeCommandOutput(this.pending);
+
+    retainedChars += pending.length;
+    if (head.length < this.headLimit) {
+      const needed = this.headLimit - head.length;
+      head += pending.slice(0, needed);
+      pending = pending.slice(needed);
+    }
+    if (pending) tail = (tail + pending).slice(-this.tailLimit);
+
+    const truncated = retainedChars > this.maxChars;
+    return {
+      head,
+      tail,
+      text: truncated
+        ? `${head}\n... [output truncated] ...\n${tail}`
+        : head + tail,
+      totalBytes: this._totalBytes,
+      truncated,
+    };
+  }
+
   private retain(value: string): void {
     if (!value) return;
     this.retainedChars += value.length;

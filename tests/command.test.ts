@@ -145,6 +145,112 @@ describe("command runtime", () => {
     );
     assert.equal(inspectExplicitShellInvocation("bash", ["-lc", "pwd"])?.valid, false);
     assert.equal(inspectExplicitShellInvocation("sh", ["-c", "pwd"])?.valid, true);
+    assert.equal(
+      inspectExplicitShellInvocation("sh", ["-c", "node test.js > test.log 2>&1"])?.valid,
+      true,
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("sh", ["-c", "node test.js &> test.log"])?.valid,
+      true,
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("sh", [
+        "-c",
+        "printf '%s\\n' 'sleep 10 &' # sleep 30 &",
+      ])?.valid,
+      true,
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("powershell", [
+        "-Command",
+        "Write-Output 'Start-Process node &' # Start-Sleep 30",
+      ])?.valid,
+      true,
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("powershell", ["-Command", "node test.js 2>&1"])?.valid,
+      true,
+    );
+    assert.equal(
+      inspectExplicitShellInvocation("cmd", ["/c", "rem start /b node"])?.valid,
+      true,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "node test.js &"])?.reason ?? "",
+      /action=start/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "sleep 5; tail test.log"])?.reason ?? "",
+      /action=status/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("powershell", ["-Command", "Start-Sleep 5"])?.reason ?? "",
+      /action=status/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("cmd", ["/c", "timeout /t 5"])?.reason ?? "",
+      /action=status/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "echo ready\nsleep 5"])?.reason ?? "",
+      /action=status/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "e''val 'node test.js &'"])?.reason ?? "",
+      /eval/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "sh -c 'node test.js &'"])?.reason ?? "",
+      /nested shell/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("sh", ["-c", "node <<EOF\ninput\nEOF"])?.reason ?? "",
+      /heredoc/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("powershell", [
+        "-Command",
+        "Write-Output ready\r\nStart-Process node",
+      ])?.reason ?? "",
+      /action=start/u,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("powershell", ["-Command", "& 'node' test.js"])?.reason ?? "",
+      /call\/background/iu,
+    );
+    for (const command of [
+      "start node",
+      "saps node",
+      "sajb { Get-ChildItem }",
+      "Start-ThreadJob { Get-ChildItem }",
+    ]) {
+      assert.match(
+        inspectExplicitShellInvocation("powershell", ["-Command", command])?.reason ?? "",
+        /action=start/u,
+      );
+    }
+    assert.match(
+      inspectExplicitShellInvocation("powershell", ["-Command", "iex 'Start-Process node'"])?.reason ?? "",
+      /expression dispatch/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("powershell", [
+        "-Command",
+        "ForEach-Object -Parallel { Write-Output ok } -AsJob",
+      ])?.reason ?? "",
+      /-AsJob/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("powershell", [
+        "-Command",
+        "pwsh -Command 'Start-Process node'",
+      ])?.reason ?? "",
+      /nested shell/iu,
+    );
+    assert.match(
+      inspectExplicitShellInvocation("cmd", ["/c", "echo ready\r\nstart /b node"])?.reason ?? "",
+      /action=start/u,
+    );
     assert.equal(inspectExplicitShellInvocation("zsh", ["-c", "pwd"]), undefined);
     assert.equal(
       sanitizeCommandOutput("cmd /c set TOKEN=top-secret-token-value").includes("top-secret-token-value"),
@@ -284,7 +390,7 @@ describe("command runtime", () => {
       assert.equal(invalidResult.ok, false);
       assert.equal(
         (invalidResult.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
-        "deny.shell_protocol",
+        "input.shell_protocol",
       );
 
       const secret = "shell-preview-secret-value";
@@ -447,6 +553,199 @@ describe("command runtime", () => {
       assert.equal(result.ok, false);
       assert.equal(approvals.length, 0);
       assert.match(result.summary, /denied/iu);
+    });
+  });
+
+  it("starts, long-polls, and audits a structured background command", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(
+        path.join(root, "background.cjs"),
+        [
+          "process.stdout.write('started\\n');",
+          "setTimeout(() => {",
+          "  require('node:fs').writeFileSync('background.txt', 'complete');",
+          "  process.stdout.write('finished\\n');",
+          "}, 150);",
+        ].join("\n"),
+        "utf8",
+      );
+      await manager.refreshManifest();
+      const audit: CommandAuditEntry[] = [];
+      const tool = new RunCommandTool(manager);
+      const owner = context(root, { approve: true, audit, timeoutMs: 2_000 });
+      const started = await tool.execute(
+        {
+          action: "start",
+          program: "node",
+          args: ["background.cjs"],
+          intent: "test",
+          timeoutMs: 1_500,
+        },
+        owner,
+      );
+
+      assert.equal(started.ok, true);
+      const running = started.data as { commandId: string; status: string };
+      assert.equal(running.status, "running");
+      assert.match(running.commandId, /^command_[0-9a-f-]{36}$/u);
+      assert.equal(audit.length, 0, "a running command must not be audited as complete");
+
+      const inaccessible = await tool.execute(
+        { action: "status", commandId: running.commandId },
+        { ...owner, threadId: "thread-other" },
+      );
+      assert.equal(inaccessible.ok, false);
+      assert.match(inaccessible.error ?? "", /unknown or inaccessible/iu);
+
+      const completed = await tool.execute(
+        { action: "status", commandId: running.commandId, waitMs: 2_000 },
+        owner,
+      );
+      assert.equal(completed.ok, true);
+      const output = completed.data as {
+        status: string;
+        stdout: { text: string };
+        workspaceDelta: { created: string[] };
+      };
+      assert.equal(output.status, "exited");
+      assert.match(output.stdout.text, /started[\s\S]*finished/u);
+      assert.deepEqual(output.workspaceDelta.created, ["background.txt"]);
+      assert.equal(await readFile(path.join(root, "background.txt"), "utf8"), "complete");
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0]?.status, "exited");
+    });
+  });
+
+  it("keeps a naturally finished handle open until its owner observes the terminal result", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(
+        path.join(root, "finish-between-steps.cjs"),
+        "setTimeout(() => process.stdout.write('done\\n'), 40);\n",
+        "utf8",
+      );
+      const tool = new RunCommandTool(manager);
+      const owner = context(root, { approve: true, timeoutMs: 2_000 });
+      const started = await tool.execute(
+        {
+          action: "start",
+          program: "node",
+          args: ["finish-between-steps.cjs"],
+          intent: "test",
+        },
+        owner,
+      );
+      const commandId = (started.data as { commandId: string }).commandId;
+      assert.equal(tool.runtime.hasOpenCommandHandles(), true);
+      const settlement = tool.runtime.whenSettled(commandId);
+      assert.ok(settlement);
+      await settlement;
+
+      assert.equal(tool.runtime.hasRunningCommands(), false);
+      assert.equal(tool.runtime.hasOpenCommandHandles(), true);
+      const observed = await tool.execute({ action: "status", commandId }, owner);
+      assert.equal((observed.data as { status: string }).status, "exited");
+      assert.equal(tool.runtime.hasOpenCommandHandles(), false);
+    });
+  });
+
+  it("cancels a structured background command and its process tree", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "background-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const audit: CommandAuditEntry[] = [];
+      const tool = new RunCommandTool(manager);
+      const owner = context(root, { approve: true, audit, timeoutMs: 2_000 });
+      const started = await tool.execute(
+        {
+          action: "start",
+          program: "node",
+          args: ["background-hang.cjs"],
+          intent: "test",
+        },
+        owner,
+      );
+      const commandId = (started.data as { commandId: string }).commandId;
+
+      const canceled = await tool.execute({ action: "cancel", commandId }, owner);
+      assert.equal(canceled.ok, true);
+      assert.equal((canceled.data as { status: string }).status, "canceled");
+      assert.equal(tool.runtime.hasRunningCommands(), false);
+      assert.equal(audit.length, 1);
+      assert.equal(audit[0]?.status, "canceled");
+    });
+  });
+
+  it("aborts a status long-poll without canceling its background command", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "status-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const tool = new RunCommandTool(manager);
+      const owner = context(root, { approve: true, timeoutMs: 5_000 });
+      const started = await tool.execute(
+        {
+          action: "start",
+          program: "node",
+          args: ["status-hang.cjs"],
+          intent: "test",
+        },
+        owner,
+      );
+      const commandId = (started.data as { commandId: string }).commandId;
+      const controller = new AbortController();
+      const waiting = tool.runtime.status(
+        commandId,
+        { ...owner, signal: controller.signal },
+        30_000,
+      );
+      const abortStartedAt = Date.now();
+      controller.abort();
+
+      await assert.rejects(
+        waiting,
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.ok(Date.now() - abortStartedAt < 1_000, "status wait did not abort promptly");
+      assert.equal(tool.runtime.hasRunningCommands(), true);
+      await tool.execute({ action: "cancel", commandId }, owner);
+    });
+  });
+
+  it("binds command handles to every agent owner field but not to a turn", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "owned-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const tool = new RunCommandTool(manager);
+      const owner: ToolContext = {
+        ...context(root, { approve: true, timeoutMs: 5_000 }),
+        agentRole: "subagent",
+        agentId: "agent-owner",
+        assignedTaskId: "task-owner",
+      };
+      const started = await tool.execute(
+        {
+          action: "start",
+          program: "node",
+          args: ["owned-hang.cjs"],
+          intent: "test",
+        },
+        owner,
+      );
+      const commandId = (started.data as { commandId: string }).commandId;
+
+      for (const inaccessible of [
+        { ...owner, agentRole: "main_agent" as const },
+        { ...owner, agentId: "agent-other" },
+        { ...owner, assignedTaskId: "task-other" },
+      ]) {
+        await assert.rejects(
+          tool.runtime.status(commandId, inaccessible),
+          /unknown or inaccessible/iu,
+        );
+      }
+
+      const acrossTurn = await tool.runtime.status(commandId, {
+        ...owner,
+        turnId: "turn-next",
+      });
+      assert.equal(acrossTurn.status, "running");
+      await tool.execute({ action: "cancel", commandId }, owner);
     });
   });
 

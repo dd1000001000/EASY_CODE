@@ -5,6 +5,8 @@ export * from "./npm-installer.js";
 export * from "./output-stream.js";
 export * from "./policy.js";
 export * from "./resolver.js";
+export * from "./request-validation.js";
 export * from "./runtime.js";
 export * from "./shell.js";
+export * from "./timeout.js";
 export * from "./types.js";

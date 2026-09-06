@@ -483,6 +483,7 @@ export class EasyCodeApp {
   private threadLease: ThreadLease | undefined;
   private readonly imageStore: ImageStore;
   private readonly workspaceMutationLock = new WorkspaceMutationLock();
+  private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly executionEnvironments: ExecutionEnvironmentManager;
   private readonly subagentCoordinator: SubagentCoordinator;
   private pendingImages: ImageAttachment[] = [];
@@ -1037,6 +1038,7 @@ export class EasyCodeApp {
       }
       case "approval":
         if (command.args.length) throw new Error("Usage: /approval");
+        this.assertNoRunningCommands("change command execution mode");
         await this.selectCommandExecutionMode();
         return false;
       case "status":
@@ -1212,6 +1214,11 @@ export class EasyCodeApp {
   }
 
   close(): void {
+    if (!this.closed && this.hasRunningCommands()) {
+      throw new Error(
+        "Cannot close synchronously while background commands are running; use closeAsync() so they are canceled and audited first.",
+      );
+    }
     if (
       !this.closed &&
       this.subagentCoordinator.hasOutstanding(this.state.threadId)
@@ -1250,6 +1257,7 @@ export class EasyCodeApp {
     } catch (error) {
       cleanupErrors.push(error);
     }
+    this.commandRuntimes?.clear();
     if (cleanupErrors.length === 1) throw cleanupErrors[0];
     if (cleanupErrors.length > 1) {
       throw new AggregateError(cleanupErrors, "Failed to close EASY CODE cleanly");
@@ -1259,6 +1267,11 @@ export class EasyCodeApp {
   async closeAsync(): Promise<void> {
     if (this.closed) return;
     const cleanupErrors: unknown[] = [];
+    try {
+      await this.cancelRunningCommands();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
     try {
       await this.pauseSubagentsForResume();
     } catch (error) {
@@ -1585,10 +1598,15 @@ export class EasyCodeApp {
       { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
     );
     const workspaceId = workspaceIdFromRoot(this.workspace.root);
+    const commandRuntime = this.createCommandRuntime(this.workspace);
+    const commandOwner = {
+      threadId: this.state.threadId,
+      agentRole: "main_agent" as const,
+    };
     const tools = wrapAgentToolsWithWorkspaceMutationLock(
       createDefaultTools(this.workspace, this.memoryManager, {
         subagentControl: this.subagentCoordinator,
-        commandRuntime: this.createCommandRuntime(this.workspace),
+        commandRuntime,
       }).filter((tool) => tool.name !== "read_image" || visionCapable),
       this.workspaceMutationLock,
     );
@@ -1618,6 +1636,7 @@ export class EasyCodeApp {
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
       searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
+      hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
           workspaceRoot: input.workspaceRoot,
@@ -1997,8 +2016,9 @@ export class EasyCodeApp {
         request.record.provider,
         request.record.model,
       );
+      const childCommandRuntime = this.createCommandRuntime(childWorkspace);
       const childTools = createDefaultTools(childWorkspace, undefined, {
-        commandRuntime: this.createCommandRuntime(childWorkspace),
+        commandRuntime: childCommandRuntime,
       }).filter((tool) =>
         tool.name === "read_file" ||
         tool.name === "create_file" ||
@@ -2034,6 +2054,12 @@ export class EasyCodeApp {
         },
         parentInstructions: request.record.instructions,
       });
+      const childCommandOwner = {
+        threadId: request.record.childThreadId,
+        agentRole: "subagent" as const,
+        agentId: request.record.id,
+        assignedTaskId: request.task.id,
+      };
       const runtime = new AgentRuntime({
         provider,
         tools,
@@ -2043,6 +2069,8 @@ export class EasyCodeApp {
           assignedTaskId: request.task.id,
         },
         contextManager: new ContextManager(),
+        hasOpenCommandHandles: () =>
+          childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
         buildSystemPrompt: async ({
           mode,
           workspaceSummary,
@@ -2117,7 +2145,8 @@ export class EasyCodeApp {
           persistProgress();
           if (
             activeEnvironment?.descriptor.kind === "worktree" &&
-            childWorkspace
+            childWorkspace &&
+            !childCommandRuntime.hasRunningCommands()
           ) {
             const checkpoint = await this.executionEnvironments.checkpoint(
               activeEnvironment,
@@ -2131,30 +2160,40 @@ export class EasyCodeApp {
         },
       });
 
-      const result = await runtime.run(
-        childState,
-        existingChild
-          ? promptBundleText("agents/child-resume.md")
-          : promptBundleText("agents/child-start.md"),
-        {
-          maxSteps: thinkingEffortStepLimit(
-            request.record.thinkingEffort,
-            this.config.maxSteps,
-          ),
-          maxContextChars: thinkingEffortContextCharLimit(
-            request.record.thinkingEffort,
-            this.config.maxContextChars,
-          ),
-          maxOutputChars: this.config.maxOutputChars,
-          commandTimeoutMs: this.config.commandTimeoutMs,
-          approvalPolicy: this.config.approvalPolicy,
-          commandExecutionMode: this.commandExecutionMode,
-          isUnrestrictedHostAccessActive: () =>
-            this.commandExecutionMode === "unrestricted",
-          unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
-          signal: request.signal,
-        },
-      );
+      const result = await (async () => {
+        try {
+          return await runtime.run(
+            childState,
+            existingChild
+              ? promptBundleText("agents/child-resume.md")
+              : promptBundleText("agents/child-start.md"),
+            {
+              maxSteps: thinkingEffortStepLimit(
+                request.record.thinkingEffort,
+                this.config.maxSteps,
+              ),
+              maxContextChars: thinkingEffortContextCharLimit(
+                request.record.thinkingEffort,
+                this.config.maxContextChars,
+              ),
+              maxOutputChars: this.config.maxOutputChars,
+              commandTimeoutMs: this.config.commandTimeoutMs,
+              approvalPolicy: this.config.approvalPolicy,
+              commandExecutionMode: this.commandExecutionMode,
+              isUnrestrictedHostAccessActive: () =>
+                this.commandExecutionMode === "unrestricted",
+              unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
+              signal: request.signal,
+            },
+          );
+        } finally {
+          // Never checkpoint or finalize an isolated checkout while a command
+          // can still mutate it. Normally the child polls every handle to a
+          // terminal state; this closes the lifecycle if it answers early or
+          // the provider fails mid-turn.
+          await childCommandRuntime.cancelAll(childCommandOwner);
+        }
+      })();
       persistProgress();
       if (request.isPauseRequested()) {
         const pausedEnvironment = await this.executionEnvironments.checkpoint(
@@ -2278,6 +2317,14 @@ export class EasyCodeApp {
       }
       return outcome;
     } finally {
+      if (childWorkspace && childWorkspace !== this.workspace) {
+        // A recovery shell can exist before process-local command state has
+        // been hydrated; durable child cleanup must remain safe in that case.
+        const childCommandRuntime = this.commandRuntimes?.get(childWorkspace);
+        if (childCommandRuntime && !childCommandRuntime.hasRunningCommands()) {
+          this.commandRuntimes.delete(childWorkspace);
+        }
+      }
       if (childLease) {
         try {
           this.threadStore.releaseThreadLease(childLease);
@@ -3177,6 +3224,7 @@ export class EasyCodeApp {
   private async newThread(): Promise<void> {
     this.save();
     const previousThreadId = this.state.threadId;
+    const previousWorkspace = this.workspace;
     const previousLease = this.requireThreadLease();
     const nextWorkspace = await WorkspaceManager.create(this.config.workspaceRoot);
     const nextState = this.threadStore.create({
@@ -3194,6 +3242,7 @@ export class EasyCodeApp {
     try {
       currentChildrenPaused = true;
       await this.pauseSubagentsForResume();
+      await this.cancelRunningCommands();
       this.threadStore.releaseThreadLease(previousLease);
     } catch (error) {
       const recoveryErrors: unknown[] = [error];
@@ -3224,6 +3273,7 @@ export class EasyCodeApp {
     this.threadLease = nextLease;
     this.dirty = false;
     this.subagentCoordinator.discardPausedJobs(previousThreadId);
+    this.commandRuntimes?.delete(previousWorkspace);
   }
 
   private async resumeThread(threadId: string): Promise<void> {
@@ -3249,6 +3299,7 @@ export class EasyCodeApp {
     // a transactional no-op for the current session.
     this.save();
     const previousThreadId = this.state.threadId;
+    const previousWorkspace = this.workspace;
     const previousLease = this.requireThreadLease();
     let nextLease: ThreadLease | undefined;
     let recovered: SessionState;
@@ -3315,6 +3366,7 @@ export class EasyCodeApp {
     try {
       currentChildrenPaused = true;
       await this.pauseSubagentsForResume();
+      await this.cancelRunningCommands();
       this.save();
       releasedOrphanedSubagents = releaseOrphanedSubagentTasks(
         this.threadStore,
@@ -3354,6 +3406,7 @@ export class EasyCodeApp {
     this.config.provider = recovered.provider;
     this.config[recovered.provider].model = recovered.model;
     this.subagentCoordinator.discardPausedJobs(previousThreadId);
+    this.commandRuntimes?.delete(previousWorkspace);
     this.dirty =
       restoredWorkspace.staleReadVersions > 0 ||
       restoredChangesChanged ||
@@ -3605,7 +3658,9 @@ export class EasyCodeApp {
   }
 
   private createCommandRuntime(workspace: WorkspaceManager): CommandRuntime {
-    return new CommandRuntime(
+    const existing = this.commandRuntimes.get(workspace);
+    if (existing) return existing;
+    const runtime = new CommandRuntime(
       workspace,
       undefined,
       new AnthropicSandboxBackend(workspace, {
@@ -3615,6 +3670,26 @@ export class EasyCodeApp {
           this.config.cacheDir,
         ],
       }),
+    );
+    this.commandRuntimes.set(workspace, runtime);
+    return runtime;
+  }
+
+  private hasRunningCommands(): boolean {
+    return [...this.commandRuntimes.values()].some((runtime) => runtime.hasRunningCommands());
+  }
+
+  private async cancelRunningCommands(): Promise<void> {
+    await Promise.all(
+      [...this.commandRuntimes.values()].map((runtime) => runtime.cancelAll()),
+    );
+  }
+
+  private assertNoRunningCommands(action: string): void {
+    if (!this.hasRunningCommands()) return;
+    throw new Error(
+      `Cannot ${action} while a run_command background handle is active; ` +
+        "ask the agent to wait for or cancel the command first.",
     );
   }
 

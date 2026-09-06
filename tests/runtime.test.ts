@@ -777,6 +777,187 @@ describe("AgentRuntime", () => {
     );
   });
 
+  it("refuses a plain final answer until the supervised command is terminal", async () => {
+    let requests = 0;
+    let running = true;
+    let sawRuntimePrompt = false;
+    const runCommand: AgentTool = {
+      name: "run_command",
+      mutating: true,
+      definition: {
+        type: "function",
+        function: { name: "run_command", description: "command", parameters: {} },
+      },
+      async execute() {
+        running = false;
+        return {
+          ok: true,
+          summary: "terminal",
+          data: { status: "exited", exitCode: 0 },
+        };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider: {
+        name: "qwen",
+        model: "mock",
+        async complete(request) {
+          requests += 1;
+          if (requests === 2) {
+            sawRuntimePrompt = request.messages.some(
+              (message) => message.content?.includes(
+                "RUNTIME_BACKGROUND_COMMAND_FINALIZATION_REQUIRED",
+              ) === true,
+            );
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  id: "status_background",
+                  type: "function",
+                  function: {
+                    name: "run_command",
+                    arguments: JSON.stringify({
+                      action: "status",
+                      commandId: "command_00000000-0000-4000-8000-000000000000",
+                    }),
+                  },
+                }],
+              },
+            };
+          }
+          return {
+            message: {
+              role: "assistant",
+              content: requests === 1 ? "Finished too early." : "Finished after status.",
+              tool_calls: [],
+            },
+          };
+        },
+      },
+      tools: [runCommand],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      hasOpenCommandHandles: () => running,
+    });
+
+    const result = await runtime.run(state(), "Wait for verification", {
+      maxSteps: 3,
+      maxContextChars: 20_000,
+      maxOutputChars: 8_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(result.text, "Finished after status.");
+    assert.equal(requests, 3);
+    assert.equal(sawRuntimePrompt, true);
+  });
+
+  it("rejects task-DAG complete and block transitions while a command is running", async () => {
+    for (const terminalAction of ["complete", "block"] as const) {
+      let requests = 0;
+      let running = false;
+      let sawRejection = false;
+      const task = {
+        id: "verify",
+        title: "Verify the implementation",
+        description: "Run verification before declaring a terminal result",
+        dependencies: [],
+        inputs: ["Current workspace"],
+        expectedArtifacts: ["Verified result"],
+        completionChecks: ["Verification reached a terminal status"],
+        failureHandling: "Block only for a concrete external reason",
+      };
+      const terminalInput = terminalAction === "complete"
+        ? {
+            action: terminalAction,
+            taskId: task.id,
+            evidence: ["The supervised command reached a successful terminal status"],
+          }
+        : {
+            action: terminalAction,
+            taskId: task.id,
+            reason: "A concrete external dependency is unavailable",
+          };
+      const call = (id: string, name: "manage_tasks" | "run_command", input: unknown) => ({
+        id,
+        type: "function" as const,
+        function: { name, arguments: JSON.stringify(input) },
+      });
+      const responses: ProviderResponse[] = [
+        { message: { role: "assistant", content: null, tool_calls: [call("create", "manage_tasks", { action: "create", goal: "Verify safely", tasks: [task] })] } },
+        { message: { role: "assistant", content: null, tool_calls: [call("start", "manage_tasks", { action: "start", taskId: task.id })] } },
+        { message: { role: "assistant", content: null, tool_calls: [call("premature_terminal", "manage_tasks", terminalInput)] } },
+        { message: { role: "assistant", content: null, tool_calls: [call("status", "run_command", { action: "status", commandId: "command_00000000-0000-4000-8000-000000000000" })] } },
+        { message: { role: "assistant", content: null, tool_calls: [call("terminal", "manage_tasks", terminalInput)] } },
+        { message: { role: "assistant", content: "Terminal result is now safe.", tool_calls: [] } },
+      ];
+      const runtime = new AgentRuntime({
+        provider: {
+          name: "qwen",
+          model: "mock",
+          async complete(request) {
+            requests += 1;
+            if (requests === 3) running = true;
+            if (requests === 4) {
+              sawRejection = request.messages.some(
+                (message) => message.role === "tool" && message.content.includes(
+                  "RUNTIME_BACKGROUND_COMMAND_FINALIZATION_REQUIRED",
+                ),
+              );
+            }
+            const response = responses.shift();
+            if (!response) throw new Error("Unexpected model request");
+            return response;
+          },
+        },
+        tools: [
+          new ManageTasksTool(),
+          {
+            name: "run_command",
+            mutating: true,
+            definition: {
+              type: "function",
+              function: { name: "run_command", description: "command", parameters: {} },
+            },
+            async execute() {
+              running = false;
+              return { ok: true, summary: "terminal", data: { status: "exited" } };
+            },
+          },
+        ],
+        contextManager: new ContextManager(),
+        buildSystemPrompt: async () => "system",
+        getWorkspaceSummary: async () => "workspace",
+        searchMemories: async () => [],
+        appendEvent: async () => undefined,
+        requestApproval: async () => false,
+        hasOpenCommandHandles: () => running,
+      });
+
+      const currentState = state();
+      const result = await runtime.run(currentState, "Verify safely", {
+        maxSteps: 6,
+        maxContextChars: 30_000,
+        maxOutputChars: 8_000,
+        commandTimeoutMs: 1_000,
+        approvalPolicy: "never",
+      });
+
+      assert.equal(requests, 6);
+      assert.equal(sawRejection, true);
+      assert.equal(currentState.taskGraph?.status, terminalAction === "complete" ? "completed" : "blocked");
+      assert.equal(result.reason, terminalAction === "complete" ? "success" : "blocked");
+    }
+  });
+
   it("rejects every call when manage_tasks is batched with a work tool", async () => {
     let requests = 0;
     let reads = 0;
