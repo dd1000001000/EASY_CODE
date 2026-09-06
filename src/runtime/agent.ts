@@ -77,6 +77,7 @@ const TASK_DAG_FINAL_RESPONSE_STEP_ALLOWANCE = 1;
 const CONTEXT_COMPACTION_STEP_ALLOWANCE = 1;
 const SUBAGENT_RESULT_STEP_ALLOWANCE = 1;
 const SUBAGENT_COLLECTION_STEP_ALLOWANCE = 1;
+const BACKGROUND_COMMAND_FINALIZATION_STEP_ALLOWANCE = 1;
 
 function runtimePromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -136,6 +137,10 @@ function sandboxPauseText(prefix = ""): string {
   });
 }
 
+function backgroundCommandFinalizationInstruction(): string {
+  return runtimePromptText("runtime/background-command-finalization-required.md");
+}
+
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   tools: AgentTool[];
@@ -181,6 +186,8 @@ export interface AgentRuntimeDependencies {
     taskTitle: string;
     status: string;
   }[];
+  /** True until this actor has observed every supervised command's terminal result. */
+  hasOpenCommandHandles?: () => boolean;
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
   /** Transient presentation lifecycle around each provider API request. */
@@ -659,7 +666,14 @@ export class AgentRuntime {
           options,
         );
       }
-      const fixedSelection = unfinishedGraph
+      const backgroundCommandHandleOpenAtRoute =
+        this.dependencies.hasOpenCommandHandles?.() ?? false;
+      const fixedSelection = backgroundCommandHandleOpenAtRoute
+        ? {
+            mode: "code" as const,
+            reason: backgroundCommandFinalizationInstruction(),
+          }
+        : unfinishedGraph
         ? {
             mode: "code" as const,
             reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
@@ -892,6 +906,8 @@ export class AgentRuntime {
     let subagentResultAllowanceGranted = false;
     let subagentCollectionReminderIssued = false;
     let subagentCollectionAllowanceGranted = false;
+    let backgroundCommandFinalizationReminderIssued = false;
+    let backgroundCommandFinalizationAllowanceGranted = false;
     let runCommandUnavailable = false;
     let retryableSandboxFailureCount = 0;
     let retryableSandboxRecoveryPending = false;
@@ -1003,6 +1019,9 @@ export class AgentRuntime {
       const runtimeInstructions = [
         pressureInstruction,
         runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
+        this.dependencies.hasOpenCommandHandles?.()
+          ? backgroundCommandFinalizationInstruction()
+          : "",
       ].filter(Boolean);
       const systemPrompt = runtimeInstructions.length
         ? `${baseSystemPrompt}\n\n${runtimeInstructions.join("\n\n")}`
@@ -1193,6 +1212,44 @@ export class AgentRuntime {
             state,
             turnId,
             "The model did not complete the required context compaction.",
+            "failed",
+            step,
+            memoryContext,
+          );
+        }
+        if (this.dependencies.hasOpenCommandHandles?.()) {
+          const instruction = backgroundCommandFinalizationInstruction();
+          if (!backgroundCommandFinalizationReminderIssued) {
+            backgroundCommandFinalizationReminderIssued = true;
+            const reminder: Extract<ChatMessage, { role: "user" }> = {
+              role: "user",
+              content: instruction,
+            };
+            state.messages.push(reminder);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "message.user.synthetic",
+              phase: "completed",
+              payload: reminder,
+            });
+            if (
+              step === stepLimit &&
+              !backgroundCommandFinalizationAllowanceGranted
+            ) {
+              stepLimit += BACKGROUND_COMMAND_FINALIZATION_STEP_ALLOWANCE;
+              backgroundCommandFinalizationAllowanceGranted = true;
+            }
+            this.dependencies.onStatus?.(
+              "The model attempted to finish with a running command; requesting command finalization.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            instruction,
             "failed",
             step,
             memoryContext,
@@ -1399,6 +1456,7 @@ export class AgentRuntime {
       let submittedTaskReport: SubagentTaskReport | undefined;
       let sandboxPauseRequested = false;
       let steeringAppliedBetweenTools = false;
+      let backgroundCommandFinalizationRejected = false;
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
         const call = calls[callIndex]!;
@@ -1543,6 +1601,14 @@ export class AgentRuntime {
             if (toolName === "manage_tasks") {
               const parsedOperation = taskGraphOperationSchema.parse(rawInput);
               if (
+                (parsedOperation.action === "complete" ||
+                  parsedOperation.action === "block") &&
+                this.dependencies.hasOpenCommandHandles?.()
+              ) {
+                backgroundCommandFinalizationRejected = true;
+                throw new Error(backgroundCommandFinalizationInstruction());
+              }
+              if (
                 (runCommandUnavailable || retryableSandboxRecoveryPending) &&
                 parsedOperation.action === "block"
               ) {
@@ -1571,6 +1637,13 @@ export class AgentRuntime {
               if (parsedOperation.action !== "list") {
                 taskGraphOperation = parsedOperation;
               }
+            }
+            if (
+              toolName === "submit_task_result" &&
+              this.dependencies.hasOpenCommandHandles?.()
+            ) {
+              backgroundCommandFinalizationRejected = true;
+              throw new Error(backgroundCommandFinalizationInstruction());
             }
             this.dependencies.onStatus?.(`Tool: ${tool.name}`);
             const toolContext = {
@@ -1960,6 +2033,18 @@ export class AgentRuntime {
       if (steeringAppliedBetweenTools) {
         if (step === stepLimit) stepLimit += 1;
         continue;
+      }
+
+      if (
+        backgroundCommandFinalizationRejected &&
+        step === stepLimit &&
+        !backgroundCommandFinalizationAllowanceGranted
+      ) {
+        stepLimit += BACKGROUND_COMMAND_FINALIZATION_STEP_ALLOWANCE;
+        backgroundCommandFinalizationAllowanceGranted = true;
+        this.dependencies.onStatus?.(
+          "Reserved one correction step to finalize the running command.",
+        );
       }
 
       if (sandboxPauseRequested && state.taskGraph?.status === "active") {

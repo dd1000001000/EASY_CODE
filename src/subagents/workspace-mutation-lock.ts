@@ -50,7 +50,8 @@ export class WorkspaceMutationLock {
     }
   }
 
-  private acquire(signal?: AbortSignal): Promise<() => void> {
+  /** Acquire a lease that the caller may retain across an asynchronous operation. */
+  acquire(signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) {
       return Promise.reject(new WorkspaceMutationLockAbortError());
     }
@@ -145,6 +146,27 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
         return tool.mutating;
       },
       execute(input, context): Promise<ToolExecutionResult> {
+        if (
+          tool.name === "run_command" &&
+          input !== null &&
+          typeof input === "object" &&
+          "action" in input &&
+          ((input as { action?: unknown }).action === "status" ||
+            (input as { action?: unknown }).action === "cancel")
+        ) {
+          // Control-plane calls must remain available while the command owns
+          // the workspace lease; they cannot launch an independent process.
+          return tool.execute(input, context);
+        }
+        if (
+          tool.name === "run_command" &&
+          input !== null &&
+          typeof input === "object" &&
+          "action" in input &&
+          (input as { action?: unknown }).action === "start"
+        ) {
+          return runCommandStartWithLease(tool, input, context, lock);
+        }
         return lock.runExclusive(
           () => tool.execute(input, context),
           context.signal,
@@ -152,4 +174,47 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
       },
     };
   });
+}
+
+interface AsyncCommandLifecycleTool extends AgentTool {
+  whenCommandSettled(commandId: string): Promise<void> | undefined;
+}
+
+function hasAsyncCommandLifecycle(tool: AgentTool): tool is AsyncCommandLifecycleTool {
+  return "whenCommandSettled" in tool &&
+    typeof (tool as Partial<AsyncCommandLifecycleTool>).whenCommandSettled === "function";
+}
+
+async function runCommandStartWithLease(
+  tool: AgentTool,
+  input: unknown,
+  context: Parameters<AgentTool["execute"]>[1],
+  lock: WorkspaceMutationLock,
+): Promise<ToolExecutionResult> {
+  const release = await lock.acquire(context.signal);
+  let releaseOnCompletion = false;
+  try {
+    const result = await tool.execute(input, context);
+    const data = result.data && typeof result.data === "object"
+      ? result.data as { commandId?: unknown; status?: unknown }
+      : undefined;
+    if (
+      result.ok &&
+      data?.status === "running" &&
+      typeof data.commandId === "string"
+    ) {
+      if (!hasAsyncCommandLifecycle(tool)) {
+        throw new Error("run_command start returned no Runtime completion lifecycle");
+      }
+      const settlement = tool.whenCommandSettled(data.commandId);
+      if (!settlement) {
+        throw new Error("run_command start returned an unknown Runtime command handle");
+      }
+      releaseOnCompletion = true;
+      void settlement.then(release, release);
+    }
+    return result;
+  } finally {
+    if (!releaseOnCompletion) release();
+  }
 }

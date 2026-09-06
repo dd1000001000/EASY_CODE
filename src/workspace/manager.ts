@@ -17,7 +17,7 @@ export interface ManifestSummary {
   paths: string[];
 }
 
-export interface WorkspaceManagerOptions extends SnapshotOptions {
+export interface WorkspaceManagerOptions extends Omit<SnapshotOptions, "signal"> {
   manifestSummaryLimit?: number;
 }
 
@@ -159,8 +159,11 @@ export class WorkspaceManager {
     return this.changes.map((change) => ({ ...change }));
   }
 
-  async captureSnapshot(): Promise<WorkspaceSnapshot> {
-    return captureWorkspaceSnapshot(this.pathGuard, this.options);
+  async captureSnapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return captureWorkspaceSnapshot(this.pathGuard, {
+      ...this.options,
+      ...(signal ? { signal } : {}),
+    });
   }
 
   async refreshManifest(): Promise<ManifestSummary> {

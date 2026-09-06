@@ -1,6 +1,7 @@
 import type { AgentMode, ApprovalRequest } from "../core/types.js";
 import type { SandboxExecutionMetadata } from "../sandbox/types.js";
 import type { WorkspaceDelta } from "../workspace/snapshot.js";
+import type { CommandTimeoutBudget } from "./timeout.js";
 
 export type CommandIntent = "inspect" | "build" | "test" | "run" | "install";
 
@@ -12,6 +13,21 @@ export interface RunCommandInput {
   timeoutMs?: number;
   reason?: string;
 }
+
+/** Model-facing operation accepted by the mixed synchronous/asynchronous command tool. */
+export type RunCommandToolInput =
+  | (RunCommandInput & { action?: "run" })
+  | (RunCommandInput & { action: "start" })
+  | {
+      action: "status";
+      commandId: string;
+      /** Bounded long-poll duration. This replaces shell-level sleep/poll loops. */
+      waitMs?: number;
+    }
+  | {
+      action: "cancel";
+      commandId: string;
+    };
 
 export type CommandCapability =
   | "safe_inspect"
@@ -77,6 +93,8 @@ export interface RunCommandOutput {
   workspaceDelta: WorkspaceDeltaSummary;
   policyDecision: CommandPolicyDecision;
   sandbox: SandboxExecutionMetadata;
+  /** Present once Runtime can classify and apply the invocation's command-phase budget. */
+  timeout?: CommandTimeoutBudget;
   sandboxFailure?: {
     phase: "prepare" | "initialization";
     retryable: boolean;
@@ -88,6 +106,25 @@ export interface RunCommandOutput {
     environmentKeys: string[];
   };
 }
+
+/** A command whose policy/approval and sandbox startup have completed successfully. */
+export interface RunningCommandOutput {
+  commandId: string;
+  status: "running";
+  exitCode: null;
+  signal: null;
+  durationMs: number;
+  stdout: OutputDigest;
+  stderr: OutputDigest;
+  /** Workspace changes are authoritative only after the command reaches a terminal state. */
+  workspaceDelta: WorkspaceDeltaSummary;
+  policyDecision: CommandPolicyDecision;
+  sandbox: SandboxExecutionMetadata;
+  timeout: CommandTimeoutBudget;
+  executed: RunCommandOutput["executed"];
+}
+
+export type CommandExecutionOutput = RunCommandOutput | RunningCommandOutput;
 
 export interface CommandClassificationContext {
   mode: AgentMode;

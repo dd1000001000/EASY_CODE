@@ -76,6 +76,7 @@ const INTERPRETER_EVAL_FLAGS = new Set([
 ]);
 
 const INTERPRETERS = new Set(["node", "python", "python3", "perl", "ruby", "php"]);
+const ASYNC_WORKAROUND_PROGRAMS = new Set(["nohup", "sleep", "timeout"]);
 const GIT_EXTERNAL = new Set(["push", "send-email"]);
 const GIT_DESTRUCTIVE = new Set([
   "clean",
@@ -171,6 +172,17 @@ export class CommandPolicy {
 
     if (SCRIPT_HOSTS.has(name)) {
       return decision("deny", "destructive", "Windows Script Host execution is disabled", "deny.script_host");
+    }
+    if (ASYNC_WORKAROUND_PROGRAMS.has(name)) {
+      return decision(
+        "deny",
+        "destructive",
+        name === "nohup"
+          ? "Detached nohup processes are disabled; use run_command action=start"
+          : `${name} polling is disabled; use run_command action=status with waitMs`,
+        "deny.async_workaround",
+        "Start the real command with action=start, then long-poll its handle with action=status and waitMs.",
+      );
     }
     const shell = inspectExplicitShellInvocation(name, command.args);
     if (shell && !shell.valid) {

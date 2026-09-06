@@ -17,6 +17,7 @@ import {
   ReadFileTool,
   ReadImageTool,
   RunCommandTool,
+  runCommandInputSchema,
   SubmitTaskResultTool,
   UpdateFileTool,
   assertDocumentedToolSchema,
@@ -100,5 +101,129 @@ describe("Prompt Bundle tool metadata", () => {
       }),
       /unknown schema properties: endLine, startLine/u,
     );
+  });
+
+  it("documents properties nested in JSON Schema composition branches", () => {
+    const documented = documentToolSchema("read_file", {
+      allOf: [
+        {
+          oneOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: { path: { type: "string" } },
+              required: ["path"],
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: { startLine: { type: "integer" } },
+              required: ["startLine"],
+            },
+          ],
+        },
+        {
+          anyOf: [
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: { endLine: { type: "integer" } },
+              required: ["endLine"],
+            },
+          ],
+        },
+      ],
+    });
+    const parameters = documented.parameters as {
+      allOf: Array<{
+        oneOf?: Array<{ properties: Record<string, { description?: string }> }>;
+        anyOf?: Array<{ properties: Record<string, { description?: string }> }>;
+      }>;
+    };
+
+    assert.equal(
+      typeof parameters.allOf[0]?.oneOf?.[0]?.properties.path?.description,
+      "string",
+    );
+    assert.equal(
+      typeof parameters.allOf[0]?.oneOf?.[1]?.properties.startLine?.description,
+      "string",
+    );
+    assert.equal(
+      typeof parameters.allOf[1]?.anyOf?.[0]?.properties.endLine?.description,
+      "string",
+    );
+    assertDocumentedToolSchema("read_file", documented);
+  });
+
+  it("keeps every run_command model branch aligned with its discriminated input", () => {
+    const workspace = {} as WorkspaceManager;
+    const parameters = new RunCommandTool(
+      workspace,
+      {} as CommandRuntime,
+    ).definition.function.parameters as {
+      oneOf: Array<{
+        additionalProperties: boolean;
+        properties: Record<string, { enum?: string[]; description?: string }>;
+        required: string[];
+      }>;
+    };
+
+    assert.equal(parameters.oneOf.length, 5);
+    assert.deepEqual(
+      parameters.oneOf.map((branch) => branch.properties.action?.enum?.[0] ?? "legacy"),
+      ["legacy", "run", "start", "status", "cancel"],
+    );
+    assert.deepEqual(
+      parameters.oneOf.map((branch) => branch.required),
+      [
+        ["program", "intent"],
+        ["action", "program", "intent"],
+        ["action", "program", "intent"],
+        ["action", "commandId"],
+        ["action", "commandId"],
+      ],
+    );
+    for (const branch of parameters.oneOf) {
+      assert.equal(branch.additionalProperties, false);
+      for (const property of Object.values(branch.properties)) {
+        assert.equal(typeof property.description, "string");
+        assert.notEqual(property.description, "");
+      }
+    }
+
+    for (const input of [
+      { program: "node", args: ["--version"], intent: "inspect" },
+      { action: "run", program: "node", intent: "inspect" },
+      { action: "start", program: "node", intent: "test" },
+      {
+        action: "status",
+        commandId: "command_00000000-0000-4000-8000-000000000000",
+        waitMs: 30_000,
+      },
+      {
+        action: "cancel",
+        commandId: "command_00000000-0000-4000-8000-000000000000",
+      },
+    ]) {
+      assert.equal(runCommandInputSchema.safeParse(input).success, true, JSON.stringify(input));
+    }
+    for (const input of [
+      { action: "run" },
+      { action: "start", program: "node" },
+      { action: "status" },
+      {
+        action: "status",
+        commandId: "command_00000000-0000-4000-8000-000000000000",
+        program: "node",
+      },
+      {
+        action: "cancel",
+        commandId: "command_00000000-0000-4000-8000-000000000000",
+        waitMs: 1,
+      },
+    ]) {
+      assert.equal(runCommandInputSchema.safeParse(input).success, false, JSON.stringify(input));
+    }
   });
 });
