@@ -179,6 +179,22 @@ easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
   --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
+To spread the same pinned 50 tasks across five Coding Plan quota windows, use
+zero-based offsets with distinct job names:
+
+```powershell
+easy-code benchmark swe-bench run --offset 0  --limit 10 --concurrency 5 --run-id glm-cp-batch-1
+easy-code benchmark swe-bench run --offset 10 --limit 10 --concurrency 5 --run-id glm-cp-batch-2
+easy-code benchmark swe-bench run --offset 20 --limit 10 --concurrency 5 --run-id glm-cp-batch-3
+easy-code benchmark swe-bench run --offset 30 --limit 10 --concurrency 5 --run-id glm-cp-batch-4
+easy-code benchmark swe-bench run --offset 40 --limit 10 --concurrency 5 --run-id glm-cp-batch-5
+```
+
+These select manifest positions 1-10 through 41-50 without overlap. The
+runner rejects offsets outside `0..49` and rejects a slice when
+`offset + limit > 50`, so a typo cannot silently produce a partial final
+batch. Keep each batch directory when reporting the combined 50-task result.
+
 The default concurrency is one. Increase it only after confirming your GLM
 Coding Plan rate limit and Docker capacity, for example `--concurrency 4`.
 Keep `--n-attempts 1` for benchmark reporting; silently retrying whole tasks

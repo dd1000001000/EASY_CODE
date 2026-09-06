@@ -466,6 +466,21 @@ easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
   --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
+If one Coding Plan window cannot cover all 50 tasks, run five non-overlapping
+10-task batches. `--offset` is zero-based and preserves the pinned manifest
+order; each command below selects positions 1-10, 11-20, and so on:
+
+```powershell
+easy-code benchmark swe-bench run --offset 0  --limit 10 --concurrency 5 --run-id glm-cp-batch-1
+easy-code benchmark swe-bench run --offset 10 --limit 10 --concurrency 5 --run-id glm-cp-batch-2
+easy-code benchmark swe-bench run --offset 20 --limit 10 --concurrency 5 --run-id glm-cp-batch-3
+easy-code benchmark swe-bench run --offset 30 --limit 10 --concurrency 5 --run-id glm-cp-batch-4
+easy-code benchmark swe-bench run --offset 40 --limit 10 --concurrency 5 --run-id glm-cp-batch-5
+```
+
+Use a distinct run ID for every batch. The runner rejects negative offsets,
+empty slices, and any `offset + limit` range beyond the pinned 50 tasks.
+
 Docker Desktop with Linux containers is required. Its disk-image location must
 also be moved to F: if Docker images must stay off C:. The integrated runner
 uses only the separately saved GLM Coding Plan key and pins

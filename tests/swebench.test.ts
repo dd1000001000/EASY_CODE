@@ -340,6 +340,58 @@ describe("SWE-bench Verified integration", () => {
     );
   });
 
+  it("selects strict non-overlapping task slices with a zero-based offset", () => {
+    const root = path.resolve("F:\\easy-code-bench\\swe-bench-verified-50");
+
+    for (let batch = 0; batch < 5; batch += 1) {
+      const offset = batch * 10;
+      const args = buildHarborRunArgs({
+        root,
+        runId: `batch-${String(batch + 1)}`,
+        concurrency: 5,
+        offset,
+        limit: 10,
+      });
+      assert.deepEqual(
+        valuesAfter(args, "--include-task-name"),
+        EXPECTED_INSTANCE_IDS.slice(offset, offset + 10).map(
+          (instanceId) => `swe-bench/${instanceId}`,
+        ),
+      );
+    }
+
+    assert.throws(
+      () => buildHarborRunArgs({
+        root,
+        runId: "negative-offset",
+        concurrency: 1,
+        offset: -1,
+        limit: 10,
+      }),
+      /offset|non-negative/iu,
+    );
+    assert.throws(
+      () => buildHarborRunArgs({
+        root,
+        runId: "empty-offset",
+        concurrency: 1,
+        offset: 50,
+        limit: 1,
+      }),
+      /offset|49/iu,
+    );
+    assert.throws(
+      () => buildHarborRunArgs({
+        root,
+        runId: "overflowing-slice",
+        concurrency: 1,
+        offset: 45,
+        limit: 10,
+      }),
+      /offset.*limit|50/iu,
+    );
+  });
+
   it("keeps Windows benchmark artifacts on the F drive", () => {
     assert.equal(
       validateSweBenchRoot("F:\\benchmarks\\verified", "win32"),

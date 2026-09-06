@@ -256,17 +256,30 @@ export interface HarborRunOptions {
   readonly root: string;
   readonly runId: string;
   readonly concurrency: number;
+  readonly offset?: number;
   readonly limit?: number;
   readonly platform?: NodeJS.Platform;
 }
 
 export function buildHarborRunArgs(options: HarborRunOptions): string[] {
   const concurrency = requirePositiveInteger(options.concurrency, "concurrency");
+  const offset = requireNonNegativeInteger(options.offset ?? 0, "offset");
+  if (offset >= INSTANCE_IDS.length) {
+    throw new Error(
+      `offset must be between 0 and ${String(INSTANCE_IDS.length - 1)}.`,
+    );
+  }
   const limit = options.limit === undefined
-    ? INSTANCE_IDS.length
+    ? INSTANCE_IDS.length - offset
     : requirePositiveInteger(options.limit, "limit");
   if (limit > INSTANCE_IDS.length) {
     throw new Error(`limit must be between 1 and ${String(INSTANCE_IDS.length)}.`);
+  }
+  if (offset + limit > INSTANCE_IDS.length) {
+    throw new Error(
+      `offset + limit must not exceed ${String(INSTANCE_IDS.length)} ` +
+        `(received offset ${String(offset)} and limit ${String(limit)}).`,
+    );
   }
   const runId = options.runId.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(runId)) {
@@ -300,7 +313,7 @@ export function buildHarborRunArgs(options: HarborRunOptions): string[] {
     "--allow-agent-host",
     SWE_BENCH_MODEL_PROFILE.allowedHost,
   ];
-  for (const instanceId of INSTANCE_IDS.slice(0, limit)) {
+  for (const instanceId of INSTANCE_IDS.slice(offset, offset + limit)) {
     args.push("--include-task-name", `swe-bench/${instanceId}`);
   }
   return args;
@@ -702,7 +715,8 @@ export function registerSweBenchCommands(
     .option("--root <path>", "benchmark data root", defaultSweBenchRoot(platform, runtime.homeDirectory))
     .option("--run-id <id>", "stable Harbor job name", defaultRunId())
     .option("--concurrency <count>", "parallel task count", parsePositiveOption, 1)
-    .option("--limit <count>", "ordered prefix of the 50-task set", parsePositiveOption, 1)
+    .option("--offset <count>", "zero-based offset into the ordered 50-task set", parseNonNegativeOption, 0)
+    .option("--limit <count>", "number of tasks to run after the offset", parsePositiveOption, 1)
     .option("--confirm-full-run", "confirm the API cost of starting all 50 tasks")
     .option("--package <path>", "existing local EASY CODE npm .tgz")
     .option("--dry-run", "print the exact non-secret Harbor invocation without running it")
@@ -710,6 +724,7 @@ export function registerSweBenchCommands(
       root: string;
       runId: string;
       concurrency: number;
+      offset: number;
       limit: number;
       package?: string;
       dryRun?: boolean;
@@ -720,17 +735,28 @@ export function registerSweBenchCommands(
         root,
         runId: options.runId,
         concurrency: options.concurrency,
+        offset: options.offset,
         limit: options.limit,
         platform,
       });
       writeLine(`Benchmark root: ${root}`);
-      writeLine(`Tasks: ${String(options.limit)} / 50; concurrency: ${String(options.concurrency)}`);
+      const firstPosition = options.offset + 1;
+      const lastPosition = options.offset + options.limit;
+      writeLine(
+        `Tasks: ${String(options.limit)} / 50; offset: ${String(options.offset)} ` +
+          `(positions ${String(firstPosition)}-${String(lastPosition)}); ` +
+          `concurrency: ${String(options.concurrency)}`,
+      );
       writeLine(`Harbor argv: ${JSON.stringify(args)}`);
       if (options.dryRun) {
         writeLine("Dry run only; no package was built, no API key was read, and no task was started.");
         return;
       }
-      if (options.limit === INSTANCE_IDS.length && !options.confirmFullRun) {
+      if (
+        options.offset === 0 &&
+        options.limit === INSTANCE_IDS.length &&
+        !options.confirmFullRun
+      ) {
         throw new Error(
           "A 50-task run can consume substantial API credits. Re-run with --confirm-full-run.",
         );
@@ -795,9 +821,21 @@ function requirePositiveInteger(value: number, name: string): number {
   return value;
 }
 
+function requireNonNegativeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return value;
+}
+
 function parsePositiveOption(value: string): number {
   const parsed = Number(value);
   return requirePositiveInteger(parsed, "option value");
+}
+
+function parseNonNegativeOption(value: string): number {
+  const parsed = Number(value);
+  return requireNonNegativeInteger(parsed, "option value");
 }
 
 function benchmarkVenv(root: string): string {

@@ -460,6 +460,21 @@ easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
   --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
+如果一个 Coding Plan 额度窗口不足以完成 50 题，可以按固定清单顺序拆成五个
+互不重叠的 10 题批次。`--offset` 从 0 开始，下面五条命令依次选择第 1-10、
+11-20、21-30、31-40 和 41-50 题：
+
+```powershell
+easy-code benchmark swe-bench run --offset 0  --limit 10 --concurrency 5 --run-id glm-cp-batch-1
+easy-code benchmark swe-bench run --offset 10 --limit 10 --concurrency 5 --run-id glm-cp-batch-2
+easy-code benchmark swe-bench run --offset 20 --limit 10 --concurrency 5 --run-id glm-cp-batch-3
+easy-code benchmark swe-bench run --offset 30 --limit 10 --concurrency 5 --run-id glm-cp-batch-4
+easy-code benchmark swe-bench run --offset 40 --limit 10 --concurrency 5 --run-id glm-cp-batch-5
+```
+
+每批必须使用不同的 `run-id`。负数 offset、空切片以及超过 50 题边界的
+`offset + limit` 会被直接拒绝，避免重复或静默少跑。
+
 评测需要使用 Linux 容器的 Docker Desktop。如果 Docker 镜像也不能占用
 C 盘，还需要在 Docker Desktop 中把磁盘镜像位置迁移到 F 盘。集成命令会
 只读取单独保存的 GLM Coding Plan Key，并固定使用
