@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-[Technical design](./docs/TECHNICAL_DESIGN.md) | [中文技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [Third-party notices](./THIRD_PARTY_NOTICES.md)
+[Technical design](./docs/TECHNICAL_DESIGN.md) | [中文技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [SWE-bench Verified Mini guide](./benchmarks/swebench_verified/README.md) | [Third-party notices](./THIRD_PARTY_NOTICES.md)
 
 EASY CODE is a cross-platform CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Run it inside a project, describe the result you want, and let the agent inspect the workspace, edit files, run commands, verify changes, manage longer tasks, and resume previous work.
 
@@ -384,6 +384,7 @@ easy-code [options] run <prompt...>
 easy-code config set|get|unset|list ...
 easy-code sandbox doctor|setup|repair-workspace ...
 easy-code prompts doctor|list|repair
+easy-code benchmark swe-bench info|setup|doctor|prepare|run ...
 easy-code uninstall [--data-only]
 ```
 
@@ -414,6 +415,37 @@ Common options:
 | Interface | `/status`, `/clear`, `/help`, `/exit` |
 
 Run `/help` inside EASY CODE for the exact current syntax.
+
+## SWE-bench Verified Mini evaluation
+
+EASY CODE includes a reproducible Harbor adapter for the published 50-task
+Verified Mini set (25 Django and 25 Sphinx tasks). It pins the task IDs and
+Harbor dataset digest, runs one isolated GLM-5.3-Flash session with high
+thinking effort per task, and stores the Python environment, caches, packages,
+jobs, patches, and grader
+results under `F:\easy-code-bench\swe-bench-verified-50` by default.
+
+```powershell
+easy-code config set glm.api-key
+easy-code benchmark swe-bench setup
+easy-code benchmark swe-bench doctor
+easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
+easy-code benchmark swe-bench run --limit 1 --run-id glm-5.3-flash-smoke
+```
+
+After the smoke task is graded successfully, start the complete run explicitly:
+
+```powershell
+easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
+  --run-id glm-5.3-flash-verified-mini-50 --confirm-full-run
+```
+
+Docker Desktop with Linux containers is required. Its disk-image location must
+also be moved to F: if Docker images must stay off C:. The integrated runner
+uses the GLM key already saved in the operating-system credential store and
+never prints it. See the [benchmark guide](./benchmarks/swebench_verified/README.md)
+before spending credits. This 50-task community subset is not the official
+full 500-task SWE-bench Verified leaderboard track.
 
 ## Troubleshooting
 

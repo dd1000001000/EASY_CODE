@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-[技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [English Technical Design](./docs/TECHNICAL_DESIGN.md) | [第三方开源声明](./THIRD_PARTY_NOTICES.md)
+[技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [English Technical Design](./docs/TECHNICAL_DESIGN.md) | [SWE-bench Verified Mini 指南](./benchmarks/swebench_verified/README.md) | [第三方开源声明](./THIRD_PARTY_NOTICES.md)
 
 EASY CODE 是一个跨平台 CLI 编程 Agent，支持 Alibaba Qwen、DeepSeek 和智谱 GLM。你可以在项目目录中启动它，用自然语言描述目标，让 Agent 检查工作区、修改文件、执行命令、验证结果、管理复杂任务，并在之后恢复之前的工作。
 
@@ -384,6 +384,7 @@ easy-code [options] run <prompt...>
 easy-code config set|get|unset|list ...
 easy-code sandbox doctor|setup|repair-workspace ...
 easy-code prompts doctor|list|repair
+easy-code benchmark swe-bench info|setup|doctor|prepare|run ...
 easy-code uninstall [--data-only]
 ```
 
@@ -414,6 +415,35 @@ easy-code uninstall [--data-only]
 | 界面 | `/status`、`/clear`、`/help`、`/exit` |
 
 在 EASY CODE 中运行 `/help` 可查看当前版本的精确语法。
+
+## SWE-bench Verified Mini 评测
+
+EASY CODE 已包含一个可复现的 Harbor 适配器，用于公开发布的 50 题
+Verified Mini 子集（Django 25 题、Sphinx 25 题）。它固定题目 ID 与 Harbor
+数据集摘要，每题启动一个相互隔离的 GLM-5.3-Flash 会话，思考强度固定为
+`high`，并默认把 Python 环境、缓存、安装包、任务日志、补丁和评分结果全部放在
+`F:\easy-code-bench\swe-bench-verified-50`。
+
+```powershell
+easy-code config set glm.api-key
+easy-code benchmark swe-bench setup
+easy-code benchmark swe-bench doctor
+easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
+easy-code benchmark swe-bench run --limit 1 --run-id glm-5.3-flash-smoke
+```
+
+单题 Smoke Test 获得有效评分后，再显式启动完整 50 题：
+
+```powershell
+easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
+  --run-id glm-5.3-flash-verified-mini-50 --confirm-full-run
+```
+
+评测需要使用 Linux 容器的 Docker Desktop。如果 Docker 镜像也不能占用
+C 盘，还需要在 Docker Desktop 中把磁盘镜像位置迁移到 F 盘。集成命令会
+读取你已经保存到操作系统凭据存储中的 GLM Key，并且不会输出 Key。
+产生费用前请先阅读[评测指南](./benchmarks/swebench_verified/README.md)。这个
+50 题集合是社区发布的子集，不等同于官方完整 500 题排行榜成绩。
 
 ## 常见问题
 

@@ -10,6 +10,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "benchmarks",
     "resources/prompt-bundle",
     "scripts/embedding-model.cjs",
     "scripts/postinstall.cjs",
