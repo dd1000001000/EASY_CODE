@@ -70,7 +70,7 @@ function commandRun(
 }
 
 describe("config commands", () => {
-  it("accepts only the three exact provider API-key keys", () => {
+  it("accepts only the four exact provider API-key keys", () => {
     assert.deepEqual(parseApiKeyConfigKey("qwen.api-key"), {
       key: "qwen.api-key",
       provider: "qwen",
@@ -78,6 +78,10 @@ describe("config commands", () => {
     assert.deepEqual(parseApiKeyConfigKey("glm.api-key"), {
       key: "glm.api-key",
       provider: "glm",
+    });
+    assert.deepEqual(parseApiKeyConfigKey("glm-coding-plan.api-key"), {
+      key: "glm-coding-plan.api-key",
+      provider: "glm-coding-plan",
     });
     assert.throws(() => parseApiKeyConfigKey("qwen.api_key"), /Valid keys/u);
     assert.throws(() => parseApiKeyConfigKey("deepseek.apiKey"), /Valid keys/u);
@@ -158,6 +162,42 @@ describe("config commands", () => {
     );
   });
 
+  it("stores standard GLM and GLM Coding Plan in separate keyring entries", async () => {
+    const store = new MemoryCredentialStore();
+    const standardSecret = "standard-glm-super-secret";
+    const codingPlanSecret = "coding-plan-super-secret";
+
+    await commandRun(["config", "set", "glm.api-key"], {
+      credentialStore: store,
+      env: {},
+      input: Readable.from([`${standardSecret}\n`]),
+    }).run;
+    const codingPlanCommand = commandRun(
+      ["config", "set", "glm-coding-plan.api-key"],
+      {
+        credentialStore: store,
+        env: {},
+        input: Readable.from([`${codingPlanSecret}\n`]),
+      },
+    );
+    await codingPlanCommand.run;
+
+    assert.equal(store.values.get("glm"), standardSecret);
+    assert.equal(store.values.get("glm-coding-plan"), codingPlanSecret);
+    assert.notEqual(
+      store.values.get("glm"),
+      store.values.get("glm-coding-plan"),
+    );
+    assert.match(
+      codingPlanCommand.output.value,
+      /Stored glm-coding-plan\.api-key/u,
+    );
+    assert.doesNotMatch(
+      codingPlanCommand.output.value + codingPlanCommand.errorOutput.value,
+      new RegExp(codingPlanSecret, "u"),
+    );
+  });
+
   it("fails a set whose operating-system read-back cannot be verified", async () => {
     const store = new MemoryCredentialStore();
     store.failReads = true;
@@ -227,7 +267,12 @@ describe("config commands", () => {
     const configDir = path.join(temporary, "config");
     const userConfigPath = path.join(configDir, "config.toml");
     const store = new MemoryCredentialStore();
-    const secrets = ["environment-secret", "keyring-secret", "legacy-secret"];
+    const secrets = [
+      "environment-secret",
+      "keyring-secret",
+      "legacy-secret",
+      "coding-plan-environment-secret",
+    ];
     try {
       await mkdir(configDir, { recursive: true });
       await writeFile(
@@ -240,13 +285,21 @@ describe("config commands", () => {
 
       const listed = commandRun(["config", "list"], {
         credentialStore: store,
-        env: { QWEN_API_KEY: secrets[0], ZAI_API_KEY: "glm-environment-secret" },
+        env: {
+          QWEN_API_KEY: secrets[0],
+          ZAI_API_KEY: "glm-environment-secret",
+          GLM_CODING_PLAN_API_KEY: secrets[3],
+        },
         userConfigPath,
       });
       await listed.run;
       assert.match(listed.output.value, /qwen\.api-key=\[configured\] \(environment variable QWEN_API_KEY\)/u);
       assert.match(listed.output.value, /deepseek\.api-key=\[configured\] \(operating system credential store\)/u);
       assert.match(listed.output.value, /glm\.api-key=\[configured\] \(environment variable ZAI_API_KEY\)/u);
+      assert.match(
+        listed.output.value,
+        /glm-coding-plan\.api-key=\[configured\] \(environment variable GLM_CODING_PLAN_API_KEY\)/u,
+      );
 
       store.values.delete("qwen");
       const legacy = commandRun(["config", "get", "qwen.api-key"], {
@@ -317,12 +370,13 @@ describe("credential configuration loading", () => {
       await mkdir(configDir, { recursive: true });
       await writeFile(
         path.join(configDir, "config.toml"),
-        `[qwen]\napi_key = "legacy-qwen"\n[deepseek]\napi_key = "legacy-deepseek"\n[glm]\napi_key = "legacy-glm"\n`,
+        `[qwen]\napi_key = "legacy-qwen"\n[deepseek]\napi_key = "legacy-deepseek"\n[glm]\napi_key = "legacy-glm"\n[glm-coding-plan]\napi_key = "legacy-glm-coding-plan"\n`,
         "utf8",
       );
       store.values.set("qwen", "keyring-qwen");
       store.values.set("deepseek", "keyring-deepseek");
       store.values.set("glm", "keyring-glm");
+      store.values.set("glm-coding-plan", "keyring-glm-coding-plan");
 
       const withEnvironment = await loadEasyCodeConfig({
         workspaceRoot: temporary,
@@ -332,12 +386,21 @@ describe("credential configuration loading", () => {
         env: {
           QWEN_API_KEY: "environment-qwen",
           ZAI_API_KEY: "environment-glm",
+          GLM_CODING_PLAN_API_KEY: "environment-glm-coding-plan",
         },
         credentialStore: store,
       });
       assert.equal(withEnvironment.qwen.apiKey, "environment-qwen");
       assert.equal(withEnvironment.deepseek.apiKey, "keyring-deepseek");
       assert.equal(withEnvironment.glm.apiKey, "environment-glm");
+      assert.equal(
+        withEnvironment["glm-coding-plan"].apiKey,
+        "environment-glm-coding-plan",
+      );
+      assert.notEqual(
+        withEnvironment.glm.apiKey,
+        withEnvironment["glm-coding-plan"].apiKey,
+      );
 
       const withoutEnvironment = await loadEasyCodeConfig({
         workspaceRoot: temporary,
@@ -350,6 +413,10 @@ describe("credential configuration loading", () => {
       assert.equal(withoutEnvironment.qwen.apiKey, "keyring-qwen");
       assert.equal(withoutEnvironment.deepseek.apiKey, "keyring-deepseek");
       assert.equal(withoutEnvironment.glm.apiKey, "keyring-glm");
+      assert.equal(
+        withoutEnvironment["glm-coding-plan"].apiKey,
+        "keyring-glm-coding-plan",
+      );
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

@@ -37,15 +37,22 @@ const TEST_ENVIRONMENT = [
   "ZAI_API_KEY",
   "GLM_API_KEY",
   "ZHIPUAI_API_KEY",
+  "GLM_CODING_PLAN_API_KEY",
   "QWEN_MODEL",
   "DEEPSEEK_MODEL",
   "GLM_MODEL",
+  "GLM_CODING_PLAN_MODEL",
 ] as const;
 
 const PROVIDER_CHOICES: readonly ProviderSelectorChoice[] = [
   { provider: "deepseek", label: "DeepSeek", apiKeyConfigured: false },
   { provider: "qwen", label: "Alibaba Qwen", apiKeyConfigured: true },
   { provider: "glm", label: "Zhipu GLM", apiKeyConfigured: false },
+  {
+    provider: "glm-coding-plan",
+    label: "GLM Coding Plan",
+    apiKeyConfigured: false,
+  },
 ];
 
 const QWEN_CHOICES: readonly ModelSelectorChoice[] = [
@@ -227,12 +234,14 @@ async function withStartupApp(
   process.env.QWEN_MODEL = "qwen3.7-plus";
   process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
   delete process.env.GLM_MODEL;
+  delete process.env.GLM_CODING_PLAN_MODEL;
   delete process.env.QWEN_API_KEY;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.ZAI_API_KEY;
   delete process.env.GLM_API_KEY;
   delete process.env.ZHIPUAI_API_KEY;
+  delete process.env.GLM_CODING_PLAN_API_KEY;
 
   let app: EasyCodeApp | undefined;
   try {
@@ -429,6 +438,7 @@ describe("three-stage model selector", () => {
         { provider: "deepseek", label: "DeepSeek" },
         { provider: "qwen", label: "Alibaba Qwen" },
         { provider: "glm", label: "Zhipu GLM" },
+        { provider: "glm-coding-plan", label: "GLM Coding Plan" },
       ],
     );
     assert.equal(terminal.selectedProviderLabel, "DeepSeek");
@@ -557,6 +567,50 @@ describe("three-stage model selector", () => {
     assert.match(terminal.transcript, /"thinkingEffort": "none"/u);
     assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
+  });
+
+  it("stores a missing GLM Coding Plan key without touching standard GLM", async () => {
+    const standardSecret = "existing-standard-glm-secret";
+    const codingPlanSecret = "glm-coding-plan-startup-secret";
+    const terminal = new ScriptedStartupTerminal(
+      "glm-coding-plan",
+      "glm-5.3-flash",
+      codingPlanSecret,
+      "high",
+    );
+    const store = new MemoryCredentialStore();
+    store.values.set("glm", standardSecret);
+
+    await withStartupApp(terminal, store, async (app) => {
+      await app.runInteractive();
+    });
+
+    assert.equal(terminal.selectedProviderLabel, "GLM Coding Plan");
+    assert.equal(terminal.initialModel, "glm-5.3");
+    assert.deepEqual(
+      terminal.modelChoices.map(({ id, vision }) => ({ id, vision })),
+      [
+        { id: "glm-5.3-flash", vision: "unsupported" },
+        { id: "glm-5.3", vision: "unsupported" },
+        { id: "glm-5.2", vision: "unsupported" },
+      ],
+    );
+    assert.equal(store.values.get("glm"), standardSecret);
+    assert.equal(store.values.get("glm-coding-plan"), codingPlanSecret);
+    assert.deepEqual(store.writes, ["glm-coding-plan"]);
+    assert.match(
+      terminal.secretPrompts[0] ?? "",
+      /Enter the GLM Coding Plan API key/u,
+    );
+    assert.match(terminal.transcript, /Saved glm-coding-plan\.api-key/u);
+    assert.match(
+      terminal.transcript,
+      /Selected GLM Coding Plan \/ glm-5\.3-flash \/ thinking high/u,
+    );
+    assert.doesNotMatch(
+      terminal.transcript,
+      new RegExp(`${standardSecret}|${codingPlanSecret}`, "u"),
+    );
   });
 
   it("runs the sandbox startup gate before model selection without prompting when ready", async () => {

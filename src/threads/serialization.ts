@@ -14,6 +14,7 @@ import {
   type TurnSteeringEntry,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
+import { isProviderName } from "../models/catalog.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 import { validateCommandApprovalPrefixes } from "../command/approval.js";
@@ -380,7 +381,7 @@ export function deserializeSessionState(value: unknown): SessionState {
   if (
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
-    !["qwen", "deepseek", "glm"].includes(String(value.provider)) ||
+    !isProviderName(value.provider) ||
     typeof value.model !== "string" ||
     (value.thinkingEffort !== undefined &&
       !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort)) ||

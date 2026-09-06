@@ -4,7 +4,7 @@
 
 [技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [English Technical Design](./docs/TECHNICAL_DESIGN.md) | [SWE-bench Verified Mini 指南](./benchmarks/swebench_verified/README.md) | [第三方开源声明](./THIRD_PARTY_NOTICES.md)
 
-EASY CODE 是一个跨平台 CLI 编程 Agent，支持 Alibaba Qwen、DeepSeek 和智谱 GLM。你可以在项目目录中启动它，用自然语言描述目标，让 Agent 检查工作区、修改文件、执行命令、验证结果、管理复杂任务，并在之后恢复之前的工作。
+EASY CODE 是一个跨平台 CLI 编程 Agent，提供 Alibaba Qwen、DeepSeek、智谱 GLM 和 GLM Coding Plan 四个可选供应商通道。你可以在项目目录中启动它，用自然语言描述目标，让 Agent 检查工作区、修改文件、执行命令、验证结果、管理复杂任务，并在之后恢复之前的工作。
 
 整个界面运行在当前终端中。模型请求会发送给所选供应商；项目操作、会话状态、记忆和任务编排保存在本地。
 
@@ -104,6 +104,7 @@ npm install --global .
 easy-code config set qwen.api-key
 easy-code config set deepseek.api-key
 easy-code config set glm.api-key
+easy-code config set glm-coding-plan.api-key
 ```
 
 命令会通过隐藏输入读取 Key。不要把密钥直接追加在命令行后面。
@@ -123,8 +124,14 @@ easy-code config unset qwen.api-key
 | Alibaba Qwen | `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | 智谱 GLM | `ZAI_API_KEY`、`GLM_API_KEY` 或 `ZHIPUAI_API_KEY` |
+| GLM Coding Plan | `GLM_CODING_PLAN_API_KEY` |
 
 如果当前供应商没有配置 Key，交互式启动会在第一次请求前提示输入。
+
+智谱 GLM 与 GLM Coding Plan 是两个刻意隔离的供应商通道。标准 GLM 使用自己的
+Key，默认端点为 `https://open.bigmodel.cn/api/paas/v4`；GLM Coding Plan
+使用另一把 Key，默认端点为 `https://open.bigmodel.cn/api/coding/paas/v4`。
+两者不会互相回退或复用凭据。
 
 ## 快速开始
 
@@ -137,7 +144,7 @@ easy-code
 
 启动时依次：
 
-1. 选择 DeepSeek、Alibaba Qwen 或智谱 GLM。
+1. 选择 DeepSeek、Alibaba Qwen、智谱 GLM 或 GLM Coding Plan。
 2. 选择模型。
 3. 选择 `none`、`low`、`medium` 或 `high` 思考强度。
 4. 使用上下方向键移动，按 Enter 确认。
@@ -168,7 +175,10 @@ easy-code --workspace ./my-project --mode code run "修复登录报错并运行�
 
 ## 支持的模型
 
-EASY CODE 会根据内置供应商目录校验模型选择。模型是否实际可用仍取决于供应商账号、地区和授权范围。
+EASY CODE 使用一份版本化模型目录校验模型选择，源码位于
+[`resources/prompt-bundle/models/catalog.json`](./resources/prompt-bundle/models/catalog.json)。
+其中集中描述供应商及厂商、可信默认端点和默认模型、凭据身份、图片与 Thinking
+能力，以及具名 Benchmark Profile。模型是否实际可用仍取决于供应商账号、地区和授权范围。
 
 | 供应商 | 模型 | 图片输入 |
 | --- | --- | --- |
@@ -187,6 +197,11 @@ EASY CODE 会根据内置供应商目录校验模型选择。模型是否实际�
 | 智谱 GLM | `glm-5.3-flash` | 是 |
 | 智谱 GLM | `glm-5.3`（默认） | 否 |
 | 智谱 GLM | `glm-5.2` | 否 |
+| GLM Coding Plan | `glm-5.3-flash` | 否 |
+| GLM Coding Plan | `glm-5.3`（默认） | 否 |
+| GLM Coding Plan | `glm-5.2` | 否 |
+
+GLM Coding Plan 通道不会直接发送图片 Payload；请使用纯文本请求，或另行配置支持图片的工具。
 
 运行过程中可切换供应商、模型和思考强度：
 
@@ -374,6 +389,12 @@ easy-code prompts list
 easy-code prompts repair
 ```
 
+模型目录也属于这套可信 Bundle。安装后，其校验副本位于
+`~/.easy_code/bundles/prompt-<version>/models/catalog.json`。该副本不是普通用户配置：
+EASY CODE 会校验内容哈希，并用安装包修复本地改动。维护供应商、端点、模型能力、
+凭据元数据或 Benchmark Profile 时，应修改源码目录、重新构建，并发布或安装新的 Bundle
+版本。新版本采用原子安装，更新中断不会留下半激活的模型目录。
+
 ## 命令参考
 
 ### CLI
@@ -393,7 +414,7 @@ easy-code uninstall [--data-only]
 | 参数 | 用途 |
 | --- | --- |
 | `-w, --workspace <path>` | 选择工作区。 |
-| `--provider <name>` | 选择 `qwen`、`deepseek` 或 `glm`。 |
+| `--provider <name>` | 选择 `qwen`、`deepseek`、`glm` 或 `glm-coding-plan`。 |
 | `--model <id>` | 选择该供应商下的模型。 |
 | `--mode <mode>` | 选择 `plan`、`auto` 或 `code`。 |
 | `--thinking-effort <effort>` | 选择 `none`、`low`、`medium` 或 `high`。 |
@@ -420,28 +441,30 @@ easy-code uninstall [--data-only]
 
 EASY CODE 已包含一个可复现的 Harbor 适配器，用于公开发布的 50 题
 Verified Mini 子集（Django 25 题、Sphinx 25 题）。它固定题目 ID 与 Harbor
-数据集摘要，每题启动一个相互隔离的 GLM-5.3-Flash 会话，思考强度固定为
-`high`，并默认把 Python 环境、缓存、安装包、任务日志、补丁和评分结果全部放在
-`F:\easy-code-bench\swe-bench-verified-50`。
+数据集摘要，每题通过 GLM Coding Plan 端点启动一个相互隔离的 GLM-5.3-Flash
+会话，思考强度固定为 `high`，并默认把 Python 环境、缓存、安装包、任务日志、
+补丁和评分结果全部放在 `F:\easy-code-bench\swe-bench-verified-50`。
 
 ```powershell
-easy-code config set glm.api-key
+easy-code config set glm-coding-plan.api-key
 easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
 easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
-easy-code benchmark swe-bench run --limit 1 --run-id glm-5.3-flash-smoke
+easy-code benchmark swe-bench run --limit 1 --run-id glm-coding-plan-5.3-flash-smoke
 ```
 
 单题 Smoke Test 获得有效评分后，再显式启动完整 50 题：
 
 ```powershell
 easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
-  --run-id glm-5.3-flash-verified-mini-50 --confirm-full-run
+  --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
 评测需要使用 Linux 容器的 Docker Desktop。如果 Docker 镜像也不能占用
 C 盘，还需要在 Docker Desktop 中把磁盘镜像位置迁移到 F 盘。集成命令会
-读取你已经保存到操作系统凭据存储中的 GLM Key，并且不会输出 Key。
+只读取单独保存的 GLM Coding Plan Key，并固定使用
+`https://open.bigmodel.cn/api/coding/paas/v4`；它不会读取标准 GLM Key，也不会
+输出任何凭据。
 产生费用前请先阅读[评测指南](./benchmarks/swebench_verified/README.md)。这个
 50 题集合是社区发布的子集，不等同于官方完整 500 题排行榜成绩。
 

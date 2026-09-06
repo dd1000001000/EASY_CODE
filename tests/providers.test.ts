@@ -14,6 +14,8 @@ import {
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_GLM_BASE_URL,
+  DEFAULT_GLM_CODING_PLAN_BASE_URL,
+  DEFAULT_GLM_CODING_PLAN_MODEL,
   DEFAULT_GLM_MODEL,
   DEFAULT_PROVIDER_TIMEOUT_MS,
   DEFAULT_QWEN_BASE_URL,
@@ -68,6 +70,10 @@ model = "user-deepseek"
 [glm]
 model = "user-glm"
 base_url = "https://user-glm.example/v4/"
+
+[glm-coding-plan]
+model = "user-glm-coding-plan"
+base_url = "https://user-glm-coding-plan.example/v4/"
 `,
         "utf8",
       );
@@ -110,6 +116,7 @@ timeout_ms = 41000
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
           ZAI_API_KEY: "glm-env-key",
+          GLM_CODING_PLAN_API_KEY: "glm-coding-plan-env-key",
         },
         credentialStore: false,
       });
@@ -132,13 +139,23 @@ timeout_ms = 41000
       assert.equal(config.glm.model, "user-glm");
       assert.equal(config.glm.baseUrl, "https://user-glm.example/v4");
       assert.equal(config.glm.apiKey, "glm-env-key");
+      assert.equal(config["glm-coding-plan"].model, "user-glm-coding-plan");
+      assert.equal(
+        config["glm-coding-plan"].baseUrl,
+        "https://user-glm-coding-plan.example/v4",
+      );
+      assert.equal(
+        config["glm-coding-plan"].apiKey,
+        "glm-coding-plan-env-key",
+      );
+      assert.notEqual(config.glm.apiKey, config["glm-coding-plan"].apiKey);
       assert.equal(config.workspaceRoot, path.resolve(workspace));
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("provides the required Qwen, DeepSeek, and GLM defaults and key aliases", async () => {
+  it("provides all provider defaults while keeping GLM credentials separate", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-defaults-"));
     try {
       const config = await loadEasyCodeConfig({
@@ -149,6 +166,7 @@ timeout_ms = 41000
         env: {
           DASHSCOPE_API_KEY: "dashscope-key",
           GLM_API_KEY: "glm-alias-key",
+          GLM_CODING_PLAN_API_KEY: "glm-coding-plan-key",
         },
         credentialStore: false,
       });
@@ -169,6 +187,78 @@ timeout_ms = 41000
       assert.equal(config.glm.baseUrl, DEFAULT_GLM_BASE_URL);
       assert.equal(config.glm.model, DEFAULT_GLM_MODEL);
       assert.equal(config.glm.apiKey, "glm-alias-key");
+      assert.equal(
+        config["glm-coding-plan"].baseUrl,
+        DEFAULT_GLM_CODING_PLAN_BASE_URL,
+      );
+      assert.equal(config["glm-coding-plan"].model, DEFAULT_GLM_CODING_PLAN_MODEL);
+      assert.equal(
+        config["glm-coding-plan"].apiKey,
+        "glm-coding-plan-key",
+      );
+      assert.notEqual(config.glm.apiKey, config["glm-coding-plan"].apiKey);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("never falls back between standard GLM and GLM Coding Plan API keys", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-glm-key-isolation-"));
+    try {
+      const standardOnly = await loadEasyCodeConfig({
+        workspaceRoot: temporary,
+        configDir: path.join(temporary, "config-standard"),
+        dataDir: path.join(temporary, "data-standard"),
+        cacheDir: path.join(temporary, "cache-standard"),
+        env: { ZAI_API_KEY: "standard-only-key" },
+        credentialStore: false,
+      });
+      assert.equal(standardOnly.glm.apiKey, "standard-only-key");
+      assert.equal(standardOnly["glm-coding-plan"].apiKey, undefined);
+
+      const codingPlanOnly = await loadEasyCodeConfig({
+        workspaceRoot: temporary,
+        configDir: path.join(temporary, "config-plan"),
+        dataDir: path.join(temporary, "data-plan"),
+        cacheDir: path.join(temporary, "cache-plan"),
+        env: { GLM_CODING_PLAN_API_KEY: "coding-plan-only-key" },
+        credentialStore: false,
+      });
+      assert.equal(codingPlanOnly.glm.apiKey, undefined);
+      assert.equal(
+        codingPlanOnly["glm-coding-plan"].apiKey,
+        "coding-plan-only-key",
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("never inherits standard GLM model, endpoint, timeout, or retries into Coding Plan", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-glm-env-isolation-"));
+    try {
+      const config = await loadEasyCodeConfig({
+        workspaceRoot: temporary,
+        configDir: path.join(temporary, "config"),
+        dataDir: path.join(temporary, "data"),
+        cacheDir: path.join(temporary, "cache"),
+        env: {
+          GLM_BASE_URL: "https://standard.example/v4",
+          GLM_MODEL: "glm-5.2",
+          GLM_TIMEOUT_MS: "11111",
+          GLM_MAX_RETRIES: "9",
+          GLM_CODING_PLAN_API_KEY: "plan-key",
+        },
+        credentialStore: false,
+      });
+      assert.equal(config.glm.baseUrl, "https://standard.example/v4");
+      assert.equal(config.glm.model, "glm-5.2");
+      assert.equal(config.glm.timeoutMs, 11_111);
+      assert.equal(config.glm.maxRetries, 9);
+      assert.equal(config["glm-coding-plan"].baseUrl, DEFAULT_GLM_CODING_PLAN_BASE_URL);
+      assert.equal(config["glm-coding-plan"].model, DEFAULT_GLM_CODING_PLAN_MODEL);
+      assert.equal(config["glm-coding-plan"].timeoutMs, undefined);
+      assert.equal(config["glm-coding-plan"].maxRetries, 2);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -227,6 +317,40 @@ timeout_ms = 41000
           assert.ok(error instanceof Error);
           assert.match(error.message, /trust-root fields/);
           assert.doesNotMatch(error.message, /workspace-secret|attacker\.invalid/);
+          return true;
+        },
+      );
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace trust-root overrides for GLM Coding Plan", async () => {
+    const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-plan-trust-root-"));
+    const workspaceConfigDir = path.join(temporary, ".easycode");
+    try {
+      await mkdir(workspaceConfigDir, { recursive: true });
+      await writeFile(
+        path.join(workspaceConfigDir, "config.toml"),
+        `[glm-coding-plan]\napi_key = "workspace-plan-secret"\nbase_url = "https://attacker.invalid/coding"`,
+        "utf8",
+      );
+      await assert.rejects(
+        loadEasyCodeConfig({
+          workspaceRoot: temporary,
+          configDir: path.join(temporary, "user-config"),
+          dataDir: path.join(temporary, "data"),
+          cacheDir: path.join(temporary, "cache"),
+          env: {},
+          credentialStore: false,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /trust-root fields/u);
+          assert.doesNotMatch(
+            error.message,
+            /workspace-plan-secret|attacker\.invalid/u,
+          );
           return true;
         },
       );
@@ -633,6 +757,45 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(body.reasoning_effort, "high");
     assert.equal(response.message.tool_calls?.[0]?.function.name, "read_file");
     assert.equal(response.message.reasoning_content, "I will inspect the file.");
+  });
+
+  it("routes GLM Coding Plan through its dedicated endpoint and credential", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.glm.apiKey = "standard-glm-key";
+    config["glm-coding-plan"].apiKey = "coding-plan-key";
+    let captured: JsonPostRequest | undefined;
+    const provider = createProvider(
+      config,
+      "glm-coding-plan",
+      "glm-5.3-flash",
+      {
+        transport: async (request) => {
+          captured = request;
+          return {
+            statusCode: 200,
+            headers: {},
+            body: JSON.stringify({
+              choices: [{
+                finish_reason: "stop",
+                message: { role: "assistant", content: "ok" },
+              }],
+            }),
+          };
+        },
+      },
+    );
+
+    await provider.complete({
+      messages: [{ role: "user", content: "hello" }],
+    });
+
+    assert.equal(provider.name, "glm-coding-plan");
+    assert.equal(
+      captured?.url.href,
+      `${DEFAULT_GLM_CODING_PLAN_BASE_URL}/chat/completions`,
+    );
+    assert.equal(captured?.headers.authorization, "Bearer coding-plan-key");
+    assert.notEqual(captured?.headers.authorization, "Bearer standard-glm-key");
   });
 
   it("redacts credentials from API and transport errors", async () => {

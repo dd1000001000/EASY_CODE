@@ -34,7 +34,7 @@ Other goals follow from these invariants:
 | Runtime | TypeScript on Node.js 20+ | Cross-platform orchestration, state management, and tool execution. |
 | CLI and terminal UI | Commander, Chalk, Node terminal APIs | Command parsing, interactive selection, retained conversation UI, and non-TTY fallback. |
 | Contract validation | TypeScript types, JSON Schema, Zod | Validation of configuration, model tool calls, persisted state, and external data. |
-| Provider access | OpenAI-compatible Chat Completions adapters | Shared message, tool, reasoning, image, retry, timeout, and usage model for Qwen, DeepSeek, and GLM. |
+| Provider access | OpenAI-compatible Chat Completions adapters | Shared message, tool, reasoning, image, retry, timeout, and usage model across Qwen, DeepSeek, standard GLM, and GLM Coding Plan. |
 | Durable storage | Append-only JSONL and SQLite WASM | Authoritative Thread history, checkpoints, query projections, memory, and audit records. |
 | Retrieval | SQLite FTS5, Orama, ONNX Runtime, Hugging Face tokenization | Hybrid lexical and semantic retrieval for long-term memory. |
 | Command execution | Structured process execution and Anthropic Sandbox Runtime | Argument-safe process launch, approval enforcement, and operating-system containment. |
@@ -42,7 +42,7 @@ Other goals follow from these invariants:
 | Editor integration | Bundled VS Code extension | Native clipboard image routing, Thinking interaction, and scroll-safe menu navigation. |
 | Packaging | npm and a versioned Prompt Bundle | Cross-platform installation of executable code and verified model-facing resources. |
 
-The Runtime is local, but selected model requests are remote. API credentials remain in the operating-system credential store or user-selected environment variables rather than being copied into project configuration.
+The Runtime is local, but selected model requests are remote. API credentials remain in the operating-system credential store or user-selected environment variables rather than being copied into project configuration. Each provider channel has its own credential identity; in particular, standard GLM and GLM Coding Plan cannot consume or fall back to each other's key.
 
 ## 3. Architecture
 
@@ -58,7 +58,7 @@ flowchart TB
     Runtime --> Orchestration[Plan, DAG, and child orchestration]
     Runtime --> State[Durable state]
 
-    Provider --> APIs[Qwen, DeepSeek, GLM]
+    Provider --> APIs[Qwen, DeepSeek, standard GLM, GLM Coding Plan]
     Tools --> Files[Workspace file operations]
     Tools --> Commands[Command policy and approval]
     Commands --> Sandbox[OS command sandbox]
@@ -171,7 +171,7 @@ Dangerous full access is a separate, process-local posture selected by the user 
 
 ### Credentials and sensitive data
 
-Provider keys are stored in the operating-system credential store or supplied through environment variables. They are not accepted in workspace configuration. Terminal output, model-facing errors, memory writes, and persisted summaries pass through secret and control-character filtering.
+Provider keys are stored in the operating-system credential store or supplied through environment variables. They are not accepted in workspace configuration. Standard GLM and GLM Coding Plan have separate credential slots and environment-variable boundaries, with no cross-channel fallback. Terminal output, model-facing errors, memory writes, and persisted summaries pass through secret and control-character filtering.
 
 The command environment uses a constrained allowlist in protected modes. Provider keys are not forwarded to child processes by default.
 
@@ -179,7 +179,11 @@ The command environment uses a constrained allowlist in protected modes. Provide
 
 System guidance, runtime control text, and tool descriptions are installed in a fixed per-user Prompt Bundle. The package includes a manifest that binds resource versions and content identities to the compatible Runtime.
 
+The same bundle carries a single declarative model catalog. Its maintained source is `resources/prompt-bundle/models/catalog.json`; a release installation places the verified copy at `~/.easy_code/bundles/prompt-<version>/models/catalog.json`. The catalog is the authority for provider and vendor identity, trusted default endpoints and models, image and thinking capabilities, credential metadata, and named benchmark profiles. Runtime consumers therefore share one description instead of duplicating model facts across provider, UI, configuration, and benchmark code.
+
 At startup, EASY CODE verifies the bundle before model use and loads an immutable in-process view. Missing, modified, or unlisted resources are repaired from the installed package. Tool executable schemas and permission logic remain compiled into the Runtime; editable prose cannot redefine them.
+
+The installed catalog is managed runtime data rather than ordinary user configuration. Maintainers change the source catalog and build a new release; the build validates its contract and binds its content identity into the bundle. A new bundle version is staged and activated atomically, so an interrupted upgrade cannot expose a partially updated catalog. Direct edits to the installed copy are detected and repaired rather than treated as supported endpoint overrides.
 
 Threads record the compatible Prompt Bundle identity so Resume cannot silently continue with an incompatible tool contract.
 
@@ -316,6 +320,10 @@ Both paths preserve user changes, report conflicts, and are designed to be safel
 ## 12. Provider and multimodal boundary
 
 The provider gateway exposes one internal representation for chat messages, structured actions, reasoning content, images, cancellation, retry, timeout, and usage metadata. Provider-specific request fields are added only for exact catalog entries with known support.
+
+Standard GLM and GLM Coding Plan deliberately remain separate catalog entries even when they expose the same model identifiers. Their trusted defaults point to different service roots: standard GLM uses `https://open.bigmodel.cn/api/paas/v4`, while GLM Coding Plan uses `https://open.bigmodel.cn/api/coding/paas/v4`. Each entry also declares an independent credential identity. The separation covers endpoint selection, credentials, configuration, usage attribution, and session identity, preventing a Coding Plan entitlement from being accidentally sent to the standard billing API or vice versa.
+
+The SWE-bench profile is defined in the same catalog and pins the GLM Coding Plan channel, its model and thinking posture, its Coding Plan endpoint, and its dedicated credential. It never falls back to the standard GLM endpoint or key, so benchmark results and billing are tied to one explicit service boundary.
 
 The model catalog is conservative:
 

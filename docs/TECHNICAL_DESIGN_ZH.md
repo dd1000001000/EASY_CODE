@@ -34,7 +34,7 @@ EASY CODE 把大语言模型视为规划与代码生成组件，而不是安全�
 | Runtime | TypeScript、Node.js 20+ | 跨平台编排、状态管理和工具执行。 |
 | CLI 与终端 UI | Commander、Chalk、Node 终端 API | 命令解析、交互选择、常驻对话 UI 和非 TTY 降级。 |
 | 契约校验 | TypeScript 类型、JSON Schema、Zod | 校验配置、模型工具调用、持久状态和外部数据。 |
-| 模型供应商接入 | OpenAI-compatible Chat Completions 适配层 | 统一 Qwen、DeepSeek 和 GLM 的消息、工具、Thinking、图片、重试、超时与用量。 |
+| 模型供应商接入 | OpenAI-compatible Chat Completions 适配层 | 统一 Qwen、DeepSeek、标准 GLM 和 GLM Coding Plan 的消息、工具、Thinking、图片、重试、超时与用量。 |
 | 持久存储 | 追加式 JSONL、SQLite WASM | 保存权威 Thread 历史、Checkpoint、查询投影、记忆和审计记录。 |
 | 检索 | SQLite FTS5、Orama、ONNX Runtime、Hugging Face Tokenizer | 为长期记忆提供关键词与语义混合检索。 |
 | 命令执行 | 结构化进程执行、Anthropic Sandbox Runtime | 安全传参、审批执行与操作系统级进程约束。 |
@@ -42,7 +42,7 @@ EASY CODE 把大语言模型视为规划与代码生成组件，而不是安全�
 | 编辑器集成 | 随包 VS Code 扩展 | 原生剪贴板图片、Thinking 交互和不扰动滚动位置的菜单导航。 |
 | 打包 | npm、版本化 Prompt Bundle | 跨平台安装可执行代码和经过校验的模型侧资源。 |
 
-Runtime 在本地执行，但模型推理会请求所选供应商。API 凭据保存在操作系统凭据存储或用户设置的环境变量中，不会复制到项目配置。
+Runtime 在本地执行，但模型推理会请求所选供应商。API 凭据保存在操作系统凭据存储或用户设置的环境变量中，不会复制到项目配置。每个供应商通道都有独立凭据身份；标准 GLM 与 GLM Coding Plan 尤其不能读取或回退到对方的 Key。
 
 ## 3. 系统架构
 
@@ -58,7 +58,7 @@ flowchart TB
     Runtime --> Orchestration[Plan、DAG 与子 Agent 编排]
     Runtime --> State[持久状态]
 
-    Provider --> APIs[Qwen、DeepSeek、GLM]
+    Provider --> APIs[Qwen、DeepSeek、标准 GLM、GLM Coding Plan]
     Tools --> Files[工作区文件操作]
     Tools --> Commands[命令策略与审批]
     Commands --> Sandbox[操作系统命令沙箱]
@@ -171,7 +171,7 @@ Runtime 会为每次模型调用重新构建能力集合，考虑：
 
 ### 凭据与敏感数据
 
-供应商 Key 保存到操作系统凭据存储，或由环境变量提供。工作区配置不能保存这些 Key。终端输出、面向模型的错误、记忆写入和持久摘要都会过滤密钥和终端控制字符。
+供应商 Key 保存到操作系统凭据存储，或由环境变量提供。工作区配置不能保存这些 Key。标准 GLM 与 GLM Coding Plan 使用不同的凭据槽位和环境变量边界，不存在跨通道回退。终端输出、面向模型的错误、记忆写入和持久摘要都会过滤密钥和终端控制字符。
 
 受保护模式下，命令环境使用受限白名单，默认不会把供应商 Key 转发给子进程。
 
@@ -179,7 +179,11 @@ Runtime 会为每次模型调用重新构建能力集合，考虑：
 
 系统规则、Runtime 控制文本和工具说明安装在固定的用户级 Prompt Bundle 中。安装包提供 Manifest，把资源版本和内容身份绑定到兼容 Runtime。
 
+同一 Bundle 还携带一份声明式模型目录。其维护源码为 `resources/prompt-bundle/models/catalog.json`，发布安装后，校验副本位于 `~/.easy_code/bundles/prompt-<version>/models/catalog.json`。目录统一描述供应商及厂商身份、可信默认端点和默认模型、图片与 Thinking 能力、凭据元数据和具名 Benchmark Profile，使 Provider、UI、配置与评测不再各自重复维护模型事实。
+
 启动时，EASY CODE 会在模型使用前校验 Bundle，并加载为进程内不可变视图。缺失、被修改或额外出现的资源会从已安装包修复。工具可执行 Schema 和权限逻辑仍编译在 Runtime 中，可编辑文本无法重新定义它们。
+
+安装后的模型目录属于 Runtime 托管数据，不是普通用户配置。维护者应修改源码目录并构建新版本；构建过程校验其契约，并把内容身份绑定到 Bundle。新 Bundle 会先完整暂存再原子激活，因此中断的升级不会暴露半更新目录。直接修改安装副本会被检测并修复，不会成为受支持的端点覆盖方式。
 
 Thread 会记录兼容的 Prompt Bundle 身份，避免 Resume 在工具契约不兼容时静默继续。
 
@@ -316,6 +320,10 @@ Handoff 是显式交付步骤，不是自动合并：
 ## 12. Provider 与多模态边界
 
 Provider 网关使用统一内部表示处理消息、结构化动作、Thinking、图片、取消、重试、超时和用量。只有模型目录中明确支持的组合才会加入供应商特定参数。
+
+即使标准 GLM 与 GLM Coding Plan 暴露相同的模型标识，它们仍是模型目录中的两个独立条目。二者的可信默认服务根分别是标准 GLM 的 `https://open.bigmodel.cn/api/paas/v4` 与 GLM Coding Plan 的 `https://open.bigmodel.cn/api/coding/paas/v4`，并分别声明独立凭据身份。隔离范围覆盖端点选择、凭据、配置、用量归属和会话身份，避免把 Coding Plan 权益误发到标准计费接口，反之亦然。
+
+SWE-bench Profile 也定义在同一目录中，固定使用 GLM Coding Plan 通道及其模型、思考强度、Coding Plan 端点和专用凭据，不会回退到标准 GLM 端点或 Key，从而让评测结果与计费对应一个明确的服务边界。
 
 模型目录采取保守策略：
 

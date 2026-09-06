@@ -4,6 +4,11 @@ import type { Command } from "commander";
 
 import type { ProviderName } from "../core/types.js";
 import {
+  PROVIDER_CATALOG,
+  providerApiKeyEnvironmentVariables,
+  providerCredentialConfigKey,
+} from "../models/catalog.js";
+import {
   SystemKeyringCredentialStore,
   apiKeyConfigKey,
   parseApiKeyConfigKey,
@@ -43,14 +48,15 @@ export function registerConfigCommands(
     .description("inspect or update user API-key configuration")
     .addHelpText(
       "after",
-      "\nOnly qwen.api-key, deepseek.api-key, and glm.api-key are supported. " +
+      `\nSupported keys: ${PROVIDER_CATALOG.map(({ provider }) =>
+        providerCredentialConfigKey(provider)).join(", ")}. ` +
         "Keys are stored in the operating system credential store, never in workspace configuration.\n",
     );
 
   config
     .command("set")
     .description("store a provider API key in the operating system credential store")
-    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
+    .argument("<key>", "provider API-key name")
     .allowExcessArguments(false)
     .addHelpText(
       "after",
@@ -82,7 +88,7 @@ export function registerConfigCommands(
   config
     .command("get")
     .description("show whether one provider API key is configured (never prints the key)")
-    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
+    .argument("<key>", "provider API-key name")
     .allowExcessArguments(false)
     .action(async (rawKey: string) => {
       const { key, provider } = parseApiKeyConfigKey(rawKey);
@@ -94,7 +100,7 @@ export function registerConfigCommands(
   config
     .command("unset")
     .description("delete a provider API key from the operating system credential store")
-    .argument("<key>", "qwen.api-key, deepseek.api-key, or glm.api-key")
+    .argument("<key>", "provider API-key name")
     .allowExcessArguments(false)
     .action(async (rawKey: string) => {
       const { key, provider } = parseApiKeyConfigKey(rawKey);
@@ -125,7 +131,7 @@ export function registerConfigCommands(
     .allowExcessArguments(false)
     .action(async () => {
       const resources = resolveRuntime(runtime);
-      for (const provider of ["qwen", "deepseek", "glm"] as const) {
+      for (const { provider } of PROVIDER_CATALOG) {
         const status = await apiKeyStatus(provider, resources);
         writeLine(
           resources.output,
@@ -209,11 +215,7 @@ function environmentApiKeySource(
   provider: ProviderName,
   env: NodeJS.ProcessEnv,
 ): string | undefined {
-  const names = provider === "qwen"
-    ? (["QWEN_API_KEY", "DASHSCOPE_API_KEY"] as const)
-    : provider === "deepseek"
-      ? (["DEEPSEEK_API_KEY"] as const)
-      : (["ZAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY"] as const);
+  const names = providerApiKeyEnvironmentVariables(provider);
   return names.find((name) => Boolean(env[name]?.trim()));
 }
 

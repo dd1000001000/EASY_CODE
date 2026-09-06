@@ -10,7 +10,7 @@ param(
     [ValidateRange(1, 50)]
     [int]$Concurrency = 1,
 
-    [string]$RunId = "verified-50-glm-5.3-flash",
+    [string]$RunId = "",
 
     [switch]$ConfirmFullRun,
 
@@ -21,6 +21,45 @@ $ErrorActionPreference = "Stop"
 $DataRoot = [IO.Path]::GetFullPath($DataRoot)
 if ([IO.Path]::GetPathRoot($DataRoot) -ne "F:\") {
     throw "Benchmark data must remain on the F: drive."
+}
+$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
+$catalogPath = Join-Path $repositoryRoot "resources\prompt-bundle\models\catalog.json"
+$catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
+$benchmarkProfile = $catalog.profiles.sweBenchVerified50
+if ($null -eq $benchmarkProfile) {
+    throw "The model catalog does not define profiles.sweBenchVerified50."
+}
+$benchmarkProvider = @($catalog.providers) |
+    Where-Object { $_.id -eq $benchmarkProfile.provider } |
+    Select-Object -First 1
+if ($null -eq $benchmarkProvider) {
+    throw "The SWE-bench provider '$($benchmarkProfile.provider)' is absent from the model catalog."
+}
+if ($benchmarkProvider.id -ne "glm-coding-plan") {
+    throw "The SWE-bench profile must use the dedicated GLM Coding Plan provider."
+}
+if (-not (@($benchmarkProvider.models).id -contains $benchmarkProfile.model)) {
+    throw "The SWE-bench model '$($benchmarkProfile.model)' is absent from provider '$($benchmarkProvider.id)'."
+}
+$benchmarkApiKeyEnvironmentNames = @($benchmarkProvider.environment.apiKey)
+if ($benchmarkApiKeyEnvironmentNames.Count -ne 1) {
+    throw "The SWE-bench provider must define one dedicated API-key environment name."
+}
+$allProviderEnvironmentNames = @(
+    foreach ($provider in @($catalog.providers)) {
+        foreach ($category in @("apiKey", "baseUrl", "model", "timeoutMs", "maxRetries")) {
+            @($provider.environment.$category)
+        }
+    }
+) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+$harborModel = "$($benchmarkProfile.provider)/$($benchmarkProfile.model)"
+$providerUri = [Uri]$benchmarkProvider.defaultBaseUrl
+$allowAgentHost = $providerUri.Host
+if (-not $providerUri.IsAbsoluteUri -or $providerUri.Scheme -ne "https" -or [string]::IsNullOrWhiteSpace($allowAgentHost)) {
+    throw "The SWE-bench provider must define a valid HTTPS endpoint."
+}
+if ([string]::IsNullOrWhiteSpace($RunId)) {
+    $RunId = "verified-50-$($benchmarkProfile.provider)-$($benchmarkProfile.model)"
 }
 $manifestPath = Join-Path $PSScriptRoot "subset-50.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -50,19 +89,18 @@ $homeDir = Join-Path $DataRoot "home"
 $cacheDir = Join-Path $DataRoot "cache"
 $tempDir = Join-Path $DataRoot "tmp"
 
-$repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..\..")).Path
 $harborArgs = @(
     "run",
     "--dataset", "swe-bench/swe-bench-verified@sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
     "--agent", "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent",
-    "--model", "glm/glm-5.3-flash",
+    "--model", $harborModel,
     "--jobs-dir", $jobsDir,
     "--job-name", $RunId,
     "--n-concurrent", $Concurrency.ToString(),
     "--n-attempts", "1",
     "--agent-setup-timeout-multiplier", "4",
     "--yes",
-    "--allow-agent-host", "open.bigmodel.cn"
+    "--allow-agent-host", $allowAgentHost
 )
 foreach ($id in $selectedIds) {
     # Harbor task names are organization-prefixed. Exact names avoid an empty
@@ -90,11 +128,11 @@ if ([IO.Path]::GetExtension($packagePath) -ne ".tgz") {
 }
 $env:EASY_CODE_PACKAGE_PATH = $packagePath
 
-$apiKey = @($env:ZAI_API_KEY, $env:GLM_API_KEY, $env:ZHIPUAI_API_KEY) |
-    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-    Select-Object -First 1
+$apiKey = @($benchmarkApiKeyEnvironmentNames | ForEach-Object {
+    [Environment]::GetEnvironmentVariable($_, "Process")
+}) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($apiKey)) {
-    throw "ZAI_API_KEY, GLM_API_KEY, or ZHIPUAI_API_KEY is required in this PowerShell process."
+    throw "$($benchmarkApiKeyEnvironmentNames[0]) is required in this PowerShell process."
 }
 
 $pinnedHarbor = Join-Path $DataRoot "python\Scripts\harbor.exe"
@@ -131,19 +169,18 @@ if (-not [string]::IsNullOrWhiteSpace($hostDockerConfig)) {
     # directory. Preserve that lookup while Harbor and benchmark caches use F:.
     $benchmarkEnvironment.DOCKER_CONFIG = $hostDockerConfig
 }
-$providerEnvironmentNames = @(
-    "ZAI_API_KEY",
-    "GLM_API_KEY",
-    "ZHIPUAI_API_KEY",
-    "EASY_CODE_GLM_KEY_FILE"
-)
+$providerEnvironmentNames = @($allProviderEnvironmentNames) + @(
+    "EASY_CODE_GLM_API_KEY_FILE",
+    "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE",
+    "EASY_CODE_GLM_CODING_PLAN_KEY_FILE"
+) | Sort-Object -Unique
 foreach ($name in $providerEnvironmentNames) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")
 }
 
-$secretDirectory = Join-Path $tempDir ("glm-secret-" + [Guid]::NewGuid().ToString("N"))
+$secretDirectory = Join-Path $tempDir ("glm-coding-plan-secret-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -LiteralPath $secretDirectory | Out-Null
-$secretFile = Join-Path $secretDirectory "glm-api-key"
+$secretFile = Join-Path $secretDirectory "glm-coding-plan-api-key"
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $sid = $identity.User.Value
 $icacls = Join-Path $env:SystemRoot "System32\icacls.exe"
@@ -151,10 +188,10 @@ $commandExitCode = 1
 try {
     & $icacls $secretDirectory "/inheritance:r" "/grant:r" "*${sid}:(OI)(CI)F" "/grant:r" "*S-1-5-18:(OI)(CI)F" | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Unable to protect the temporary GLM credential directory with a Windows ACL."
+        throw "Unable to protect the temporary GLM Coding Plan credential directory with a Windows ACL."
     }
     [IO.File]::WriteAllText($secretFile, $apiKey, [Text.UTF8Encoding]::new($false))
-    $benchmarkEnvironment.EASY_CODE_GLM_KEY_FILE = $secretFile
+    $benchmarkEnvironment.EASY_CODE_GLM_CODING_PLAN_KEY_FILE = $secretFile
 
     foreach ($name in $benchmarkEnvironment.Keys) {
         if (-not $savedEnvironment.ContainsKey($name)) {
@@ -162,7 +199,10 @@ try {
         }
         [Environment]::SetEnvironmentVariable($name, $benchmarkEnvironment[$name], "Process")
     }
-    foreach ($name in @("ZAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY")) {
+    foreach ($name in (@($allProviderEnvironmentNames) + @(
+        "EASY_CODE_GLM_API_KEY_FILE",
+        "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE"
+    ) | Sort-Object -Unique)) {
         [Environment]::SetEnvironmentVariable($name, $null, "Process")
     }
 
@@ -197,7 +237,7 @@ finally {
         Remove-Item -LiteralPath $secretDirectory -Recurse -Force -ErrorAction Stop
     }
     if (Test-Path -LiteralPath $secretDirectory) {
-        throw "Unable to remove the temporary GLM credential directory."
+        throw "Unable to remove the temporary GLM Coding Plan credential directory."
     }
 }
 exit $commandExitCode

@@ -2,6 +2,7 @@ import { Chalk, type ChalkInstance } from "chalk";
 
 import { formatTokenCount } from "../../cli/token-count.js";
 import { redactSensitiveInformation } from "../../memory/sensitive.js";
+import { providerLabel as catalogProviderLabel } from "../../models/catalog.js";
 import type { SubagentStatus, SubagentView } from "../../subagents/types.js";
 import type { TaskGraphView } from "../../tasks/task-graph.js";
 import type {
@@ -902,16 +903,10 @@ function formatProviderModel(
     : model.toLowerCase().startsWith(`${provider}/`)
       ? model.slice(provider.length + 1)
       : model;
-  const providerLabel = titledProvider
-    ? provider === "deepseek"
-      ? "DeepSeek"
-      : provider === "glm"
-        ? "GLM"
-        : provider === "qwen"
-          ? "Qwen"
-          : provider
+  const label = titledProvider
+    ? catalogProviderLabel(session.provider)
     : provider;
-  return `${providerLabel}/${compactModel || "model"}`;
+  return `${label}/${compactModel || "model"}`;
 }
 
 function formatContext(session: Readonly<UISessionInfo>): string {

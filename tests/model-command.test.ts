@@ -36,9 +36,11 @@ const TEST_ENVIRONMENT = [
   "ZAI_API_KEY",
   "GLM_API_KEY",
   "ZHIPUAI_API_KEY",
+  "GLM_CODING_PLAN_API_KEY",
   "QWEN_MODEL",
   "DEEPSEEK_MODEL",
   "GLM_MODEL",
+  "GLM_CODING_PLAN_MODEL",
 ] as const;
 
 interface AppFixture {
@@ -102,7 +104,12 @@ class ScriptedModelTerminal extends Terminal {
 }
 
 async function createAppFixture(
-  keys: { qwen?: string; deepseek?: string; glm?: string },
+  keys: {
+    qwen?: string;
+    deepseek?: string;
+    glm?: string;
+    glmCodingPlan?: string;
+  },
   selection?: {
     provider?: ProviderName;
     model?: string;
@@ -128,12 +135,16 @@ async function createAppFixture(
   delete process.env.GLM_MODEL;
   delete process.env.GLM_API_KEY;
   delete process.env.ZHIPUAI_API_KEY;
+  delete process.env.GLM_CODING_PLAN_API_KEY;
   if (keys.qwen) process.env.QWEN_API_KEY = keys.qwen;
   else delete process.env.QWEN_API_KEY;
   if (keys.deepseek) process.env.DEEPSEEK_API_KEY = keys.deepseek;
   else delete process.env.DEEPSEEK_API_KEY;
   if (keys.glm) process.env.ZAI_API_KEY = keys.glm;
   else delete process.env.ZAI_API_KEY;
+  if (keys.glmCodingPlan) {
+    process.env.GLM_CODING_PLAN_API_KEY = keys.glmCodingPlan;
+  }
 
   const input = new PassThrough();
   const output = new PassThrough();
@@ -292,6 +303,12 @@ describe("/model", () => {
         assertMissingKey("glm"),
       );
       await assert.rejects(
+        fixture.app.handleSlashCommand(
+          "/model glm-coding-plan glm-5.3-flash",
+        ),
+        assertMissingKey("glm-coding-plan"),
+      );
+      await assert.rejects(
         fixture.app.handleSlashCommand("/model qwen deepseek-v4-pro"),
         /not in the Alibaba Qwen catalog/u,
       );
@@ -367,6 +384,51 @@ describe("/model", () => {
     }
   });
 
+  it("switches to GLM Coding Plan only with its separate API key", async () => {
+    const standardOnly = await createAppFixture({
+      qwen: "qwen-test-key",
+      glm: "standard-glm-test-key",
+    });
+    try {
+      await assert.rejects(
+        standardOnly.app.handleSlashCommand(
+          "/model glm-coding-plan glm-5.3-flash",
+        ),
+        assertMissingKey("glm-coding-plan"),
+      );
+    } finally {
+      standardOnly.close();
+    }
+
+    const codingPlanOnly = await createAppFixture({
+      qwen: "qwen-test-key",
+      glmCodingPlan: "coding-plan-test-key",
+    });
+    try {
+      await assert.rejects(
+        codingPlanOnly.app.handleSlashCommand("/model glm glm-5.3-flash"),
+        assertMissingKey("glm"),
+      );
+
+      await codingPlanOnly.app.handleSlashCommand(
+        "/model glm-coding-plan GLM-5.3-Flash",
+      );
+      await codingPlanOnly.app.handleSlashCommand("/status");
+      assert.match(
+        codingPlanOnly.output(),
+        /GLM Coding Plan \/ glm-5\.3-flash/u,
+      );
+      assert.match(
+        codingPlanOnly.output(),
+        /"provider": "glm-coding-plan"/u,
+      );
+      assert.match(codingPlanOnly.output(), /"vision": false/u);
+      assert.doesNotMatch(codingPlanOnly.output(), /coding-plan-test-key/u);
+    } finally {
+      codingPlanOnly.close();
+    }
+  });
+
   it("opens provider, model, and thinking menus and saves an unsupported effort choice", async () => {
     const fixture = await createAppFixture(
       { qwen: "qwen-test-key", deepseek: "deepseek-test-key" },
@@ -384,7 +446,7 @@ describe("/model", () => {
       const terminal = fixture.terminal as ScriptedModelTerminal;
       assert.deepEqual(
         terminal.providerChoices.map((choice) => choice.label),
-        ["DeepSeek", "Alibaba Qwen", "Zhipu GLM"],
+        ["DeepSeek", "Alibaba Qwen", "Zhipu GLM", "GLM Coding Plan"],
       );
       assert.deepEqual(
         terminal.modelChoices.map((choice) => choice.id),

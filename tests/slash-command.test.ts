@@ -39,6 +39,14 @@ describe("parseSlashCommand", () => {
       provider: "glm",
       model: "GLM-5.3-Flash",
     });
+    assert.deepEqual(
+      parseModelCommand(["glm-coding-plan", "GLM-5.3-Flash"]),
+      {
+        action: "switch",
+        provider: "glm-coding-plan",
+        model: "GLM-5.3-Flash",
+      },
+    );
     assert.throws(() => parseModelCommand(["glm"]), /Usage: \/model/u);
     assert.throws(
       () => parseModelCommand(["unknown-provider", "model"]),
@@ -52,7 +60,7 @@ describe("parseSlashCommand", () => {
 
   it("documents the model command", () => {
     assert.match(HELP_TEXT, /\/model/u);
-    assert.match(HELP_TEXT, /qwen\|deepseek\|glm/u);
+    assert.match(HELP_TEXT, /deepseek\|qwen\|glm\|glm-coding-plan/u);
     assert.match(HELP_TEXT, /\/thinking \[id\|last\]/u);
     assert.match(HELP_TEXT, /\/agents/u);
     assert.match(HELP_TEXT, /child sessions, tasks, isolation, and handoff/u);

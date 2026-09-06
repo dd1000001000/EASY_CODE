@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES } from "../models/catalog.js";
+
 function powershellQuote(value: string): string {
   return `'${value.replace(/'/gu, "''")}'`;
 }
@@ -92,14 +94,9 @@ async function main(): Promise<void> {
     const executablePath = wrapped.argv[0];
     if (!executablePath) throw new Error("Sandbox probe did not return an executable");
     const environment = { ...wrapped.env };
-    for (const name of [
-      "QWEN_API_KEY",
-      "DASHSCOPE_API_KEY",
-      "DEEPSEEK_API_KEY",
-      "ZAI_API_KEY",
-      "GLM_API_KEY",
-      "ZHIPUAI_API_KEY",
-    ]) delete environment[name];
+    for (const name of ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES) {
+      delete environment[name];
+    }
     const exitCode = await waitForExit(
       executablePath,
       wrapped.argv.slice(1),

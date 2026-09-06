@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +10,11 @@ import {
   PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
   EASY_CODE_RUNTIME_VERSION,
 } from "../src/prompt-bundle/generated.js";
+import {
+  PACKAGED_MODEL_CATALOG,
+  PACKAGED_MODEL_CATALOG_CANONICAL_HASH,
+  PACKAGED_MODEL_CATALOG_SOURCE_HASH,
+} from "../src/models/generated-catalog.js";
 import {
   activePromptBundleBinding,
   ensurePromptBundleForTesting,
@@ -26,6 +33,10 @@ import {
 import { describe, it } from "./harness.js";
 
 const packagedBundleDirectory = path.join(process.cwd(), "resources", "prompt-bundle");
+const require = createRequire(import.meta.url);
+const { validateModelCatalog } = require(
+  path.resolve("scripts", "build-prompt-bundle.cjs"),
+) as { validateModelCatalog(value: unknown): unknown };
 
 async function temporaryRoot(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), "easy-code-prompt-bundle-"));
@@ -41,6 +52,63 @@ function fixtureOptions(homeDirectory: string, source = packagedBundleDirectory)
 }
 
 describe("Prompt Bundle infrastructure", () => {
+  it("generates the compiled model catalog from the exact bundled JSON source", async () => {
+    const source = await readFile(path.join(packagedBundleDirectory, "models", "catalog.json"));
+    const parsed = JSON.parse(source.toString("utf8")) as typeof PACKAGED_MODEL_CATALOG;
+    assert.equal(
+      `sha256:${createHash("sha256").update(source).digest("hex")}`,
+      PACKAGED_MODEL_CATALOG_SOURCE_HASH,
+    );
+    assert.match(PACKAGED_MODEL_CATALOG_CANONICAL_HASH, /^sha256:[a-f0-9]{64}$/u);
+    assert.deepEqual(parsed, PACKAGED_MODEL_CATALOG);
+
+    const standardGlm = parsed.providers.find((provider) => provider.id === "glm");
+    const codingPlan = parsed.providers.find(
+      (provider) => provider.id === "glm-coding-plan",
+    );
+    assert.ok(standardGlm);
+    assert.ok(codingPlan);
+    assert.equal(codingPlan.credentialSlot, "glm-coding-plan");
+    assert.equal(codingPlan.configKey, "glm-coding-plan.api-key");
+    for (const kind of ["apiKey", "baseUrl", "model", "timeoutMs", "maxRetries"] as const) {
+      const standardNames: ReadonlySet<string> = new Set<string>(
+        standardGlm.environment[kind] as readonly string[],
+      );
+      assert.equal(
+        (codingPlan.environment[kind] as readonly string[]).some(
+          (name: string): boolean => standardNames.has(name),
+        ),
+        false,
+      );
+    }
+    assert.ok(codingPlan.models.every((model) => model.vision === "unsupported"));
+    assert.deepEqual(parsed.profiles.sweBenchVerified50, {
+      provider: "glm-coding-plan",
+      model: "glm-5.3-flash",
+      mode: "code",
+      thinkingEffort: "high",
+    });
+  });
+
+  it("strictly rejects unknown catalog fields, GLM fallback leakage, and Coding Plan vision", () => {
+    const withUnknownField = JSON.parse(JSON.stringify(PACKAGED_MODEL_CATALOG)) as any;
+    withUnknownField.providers[0].unexpected = true;
+    assert.throws(() => validateModelCatalog(withUnknownField), /unsupported fields/u);
+
+    const withSharedGlmFallback = JSON.parse(JSON.stringify(PACKAGED_MODEL_CATALOG)) as any;
+    const codingPlan = withSharedGlmFallback.providers.find(
+      (provider: { id: string }) => provider.id === "glm-coding-plan",
+    );
+    codingPlan.environment.model = ["GLM_MODEL"];
+    assert.throws(() => validateModelCatalog(withSharedGlmFallback), /must keep standard GLM/u);
+
+    const withDirectVision = JSON.parse(JSON.stringify(PACKAGED_MODEL_CATALOG)) as any;
+    withDirectVision.providers
+      .find((provider: { id: string }) => provider.id === "glm-coding-plan")
+      .models[0].vision = "supported";
+    assert.throws(() => validateModelCatalog(withDirectVision), /direct Coding Plan requests/u);
+  });
+
   it("uses only the fixed home directory and ignores path-like environment variables", () => {
     const previous = process.env.EASY_CODE_HOME;
     process.env.EASY_CODE_HOME = path.join(os.tmpdir(), "must-not-be-used");

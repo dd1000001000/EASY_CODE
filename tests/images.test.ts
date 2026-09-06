@@ -974,6 +974,41 @@ describe("image attachments", () => {
     }
   });
 
+  it("never sends direct image input through GLM Coding Plan", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config["glm-coding-plan"].apiKey = "coding-plan-test-key";
+    const attachment: ImageAttachment = {
+      id: "image_00000000-0000-4000-8000-000000000006",
+      label: "Image #1",
+      mediaType: "image/png",
+      storageKey:
+        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000006.png",
+      sha256: "6".repeat(64),
+      byteSize: PNG_1X1.length,
+      width: 1,
+      height: 1,
+    };
+
+    for (const model of ["glm-5.3-flash", "glm-5.3", "glm-5.2"] as const) {
+      let body = "";
+      const provider = createProvider(config, "glm-coding-plan", model, {
+        loadImage: async () => {
+          throw new Error(`${model} must not load direct image bytes`);
+        },
+        transport: async (request) => {
+          body = request.body;
+          return successResponse();
+        },
+      });
+      await provider.complete({
+        messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
+        currentTurnImageIds: [attachment.id],
+      });
+      assert.match(body, new RegExp(`${model} cannot receive images`, "u"));
+      assert.doesNotMatch(body, /"type":"image_url"|data:image/u);
+    }
+  });
+
   it("validates Qwen image constraints before loading bytes", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.qwen.apiKey = "test-key";

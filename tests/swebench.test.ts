@@ -15,11 +15,19 @@ import {
   SWE_BENCH_VERIFIED_50,
   benchmarkEnvironment,
   buildHarborRunArgs,
-  consumeHarborGlmApiKeyFile,
+  consumeHarborGlmCodingPlanApiKeyFile,
   resolveHarborOuterSandbox,
   validateSweBenchRoot,
 } from "../src/benchmarks/swebench.js";
+import { PACKAGED_MODEL_CATALOG } from "../src/models/generated-catalog.js";
 import { describe, it } from "./harness.js";
+
+const BENCHMARK_PROFILE = PACKAGED_MODEL_CATALOG.profiles.sweBenchVerified50;
+const BENCHMARK_PROVIDER = PACKAGED_MODEL_CATALOG.providers.find(
+  (provider) => provider.id === BENCHMARK_PROFILE.provider,
+);
+if (!BENCHMARK_PROVIDER) throw new Error("The benchmark provider is missing");
+const BENCHMARK_ENDPOINT_HOST = new URL(BENCHMARK_PROVIDER.defaultBaseUrl).hostname;
 
 const EXPECTED_INSTANCE_IDS = [
   "django__django-11790",
@@ -133,21 +141,21 @@ describe("SWE-bench Verified integration", () => {
     );
   });
 
-  it("consumes and removes Harbor's one-shot GLM credential", () => {
+  it("consumes and removes Harbor's one-shot GLM Coding Plan credential", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-harbor-key-"));
-    const secretPath = path.join(directory, "glm-api-key");
+    const secretPath = path.join(directory, "glm-coding-plan-api-key");
     try {
       writeFileSync(secretPath, "test-secret\n", { encoding: "utf8", mode: 0o600 });
       chmodSync(secretPath, 0o600);
       const env: NodeJS.ProcessEnv = {
-        EASY_CODE_GLM_API_KEY_FILE: secretPath,
+        EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE: secretPath,
       };
 
       assert.equal(
-        consumeHarborGlmApiKeyFile("harbor", env, secretPath),
+        consumeHarborGlmCodingPlanApiKeyFile("harbor", env, secretPath),
         "test-secret",
       );
-      assert.equal(env.EASY_CODE_GLM_API_KEY_FILE, undefined);
+      assert.equal(env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE, undefined);
       assert.equal(existsSync(secretPath), false);
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -208,7 +216,7 @@ describe("SWE-bench Verified integration", () => {
       "--agent",
       "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent",
       "--model",
-      "glm/glm-5.3-flash",
+      `${BENCHMARK_PROFILE.provider}/${BENCHMARK_PROFILE.model}`,
       "--jobs-dir",
       path.join(root, "jobs"),
       "--job-name",
@@ -221,7 +229,7 @@ describe("SWE-bench Verified integration", () => {
       "4",
       "--yes",
       "--allow-agent-host",
-      "open.bigmodel.cn",
+      BENCHMARK_ENDPOINT_HOST,
       "--include-task-name",
     ]);
     assert.deepEqual(
@@ -237,6 +245,14 @@ describe("SWE-bench Verified integration", () => {
   });
 
   it("keeps the benchmark agent on the reviewed EASY CODE execution profile", () => {
+    assert.ok(BENCHMARK_PROVIDER);
+    assert.equal(BENCHMARK_PROFILE.provider, "glm-coding-plan");
+    assert.deepEqual(BENCHMARK_PROVIDER.environment.apiKey, [
+      "GLM_CODING_PLAN_API_KEY",
+    ]);
+    assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, [
+      "GLM_CODING_PLAN_BASE_URL",
+    ]);
     const adapterPath = fileURLToPath(new URL(
       "../../benchmarks/swebench_verified/easy_code_agent.py",
       import.meta.url,
@@ -245,20 +261,58 @@ describe("SWE-bench Verified integration", () => {
 
     assert.match(
       source,
-      /"--provider",\s*"glm",\s*"--model",\s*"glm-5\.3-flash",\s*"--mode",\s*"code",\s*"--thinking-effort",\s*"high",\s*"--approval",\s*"safe",\s*"--yes",\s*"run"/u,
+      /"--provider",\s*shlex\.quote\(_BENCHMARK_PROVIDER\),\s*"--model",\s*shlex\.quote\(_BENCHMARK_MODEL\),\s*"--mode",\s*shlex\.quote\(_BENCHMARK_MODE\),\s*"--thinking-effort",\s*shlex\.quote\(_BENCHMARK_THINKING_EFFORT\),\s*"--approval",\s*"safe",\s*"--yes",\s*"run"/u,
     );
+    assert.match(
+      source,
+      /catalog\.get\("profiles", \{\}\)\.get\("sweBenchVerified50"\)/u,
+    );
+    assert.match(source, /provider\.get\("defaultBaseUrl"\)/u);
     assert.match(source, /"EASY_CODE_OUTER_SANDBOX":\s*"harbor"/u);
     assert.match(source, /environment\.upload_file\(\s*self\._host_api_key_file,\s*_REMOTE_API_KEY_FILE/u);
     assert.match(
       source,
       /ownership = \(\s*f"chown \{shlex\.quote\(str\(owner\)\)\} "\s*f"\{shlex\.quote\(_REMOTE_SECRETS_DIR\)\} && "/u,
     );
-    assert.match(source, /"EASY_CODE_GLM_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u);
+    assert.match(
+      source,
+      /"EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u,
+    );
+    assert.match(
+      source,
+      /os\.environ\.get\(\s*"EASY_CODE_GLM_CODING_PLAN_KEY_FILE"/u,
+    );
+    assert.match(
+      source,
+      /_BENCHMARK_BASE_URL_ENV:\s*_BENCHMARK_BASE_URL/u,
+    );
+    assert.doesNotMatch(source, /https:\/\/open\.bigmodel\.cn\/api\/coding\/paas\/v4/u);
+    assert.doesNotMatch(source, /_GLM_CODING_PLAN_BASE_URL/u);
     assert.match(source, /def _truncate_output\(/u);
     assert.doesNotMatch(source, /ensure_system_dependencies/u);
     assert.doesNotMatch(source, /installed\.node_install/u);
     assert.doesNotMatch(source, /"(?:ZAI|GLM|ZHIPUAI)_API_KEY":\s*self\._api_key/u);
     assert.doesNotMatch(source, /shlex\.quote\(self\._api_key\)/u);
+
+    const launcherPath = fileURLToPath(new URL(
+      "../../src/benchmarks/swebench.ts",
+      import.meta.url,
+    ));
+    const launcherSource = readFileSync(launcherPath, "utf8");
+    assert.doesNotMatch(
+      launcherSource,
+      /(?:ZAI|GLM|ZHIPUAI)_API_KEY\?\.trim\(\)\s*\|\|\s*\(await credentialStore\.get\("glm-coding-plan"\)\)/u,
+    );
+
+    const powershellPath = fileURLToPath(new URL(
+      "../../benchmarks/swebench_verified/run.ps1",
+      import.meta.url,
+    ));
+    const powershellSource = readFileSync(powershellPath, "utf8");
+    assert.match(powershellSource, /models\\catalog\.json/u);
+    assert.match(powershellSource, /profiles\.sweBenchVerified50/u);
+    assert.match(powershellSource, /"--model",\s*\$harborModel/u);
+    assert.doesNotMatch(powershellSource, /"--model",\s*"glm\//u);
   });
 
   it("supports a bounded smoke-test prefix without changing task order", () => {
@@ -300,10 +354,20 @@ describe("SWE-bench Verified integration", () => {
   it("preserves Docker Desktop CLI plugin discovery while relocating benchmark caches", () => {
     const root = path.resolve("F:\\easy-code-bench\\swe-bench-verified-50");
     const originalProfile = path.resolve("C:\\Users\\benchmark-user");
+    const providerConfiguration = Object.fromEntries(
+      PACKAGED_MODEL_CATALOG.providers.flatMap((provider) =>
+        Object.values(provider.environment).flatMap((names) =>
+          names.map((name: string) => [name, `untrusted-${name.toLowerCase()}`] as const)
+        )
+      ),
+    );
     const baseEnvironment: NodeJS.ProcessEnv = {
       HOME: originalProfile,
       USERPROFILE: originalProfile,
       PATH: "host-path",
+      ...providerConfiguration,
+      EASY_CODE_GLM_CODING_PLAN_KEY_FILE: "untrusted-secret-path",
+      BENCHMARK_NON_SECRET: "preserved",
     };
     const originalSnapshot = { ...baseEnvironment };
     const environment = benchmarkEnvironment(root, baseEnvironment);
@@ -312,7 +376,20 @@ describe("SWE-bench Verified integration", () => {
     assert.equal(environment.USERPROFILE, path.join(root, "home"));
     assert.equal(environment.XDG_CACHE_HOME, path.join(root, "cache"));
     assert.equal(environment.DOCKER_CONFIG, path.join(originalProfile, ".docker"));
+    for (const name of Object.keys(providerConfiguration)) {
+      assert.equal(environment[name], undefined);
+    }
+    assert.equal(environment.EASY_CODE_GLM_CODING_PLAN_KEY_FILE, undefined);
+    assert.equal(environment.BENCHMARK_NON_SECRET, "preserved");
     assert.deepEqual(baseEnvironment, originalSnapshot);
+
+    const stagedPath = path.join(root, "tmp", "glm-coding-plan-secret", "key");
+    assert.equal(
+      benchmarkEnvironment(root, baseEnvironment, {
+        EASY_CODE_GLM_CODING_PLAN_KEY_FILE: stagedPath,
+      }).EASY_CODE_GLM_CODING_PLAN_KEY_FILE,
+      stagedPath,
+    );
 
     const explicitDockerConfig = path.resolve("F:\\docker-cli-config");
     assert.equal(

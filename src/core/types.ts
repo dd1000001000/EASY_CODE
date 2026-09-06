@@ -3,7 +3,7 @@ export type { PromptBundleBinding } from "../prompt-bundle/types.js";
 
 export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
-export type ProviderName = "qwen" | "deepseek" | "glm";
+export type ProviderName = "qwen" | "deepseek" | "glm" | "glm-coding-plan";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
 /** Process-local command posture selected by the user from /approval. */
 export type CommandExecutionMode = "manual" | "auto_approve" | "unrestricted";
@@ -188,6 +188,7 @@ export interface EasyCodeConfig {
   qwen: ProviderConfig;
   deepseek: ProviderConfig;
   glm: ProviderConfig;
+  "glm-coding-plan": ProviderConfig;
 }
 
 export interface ToolExecutionResult {

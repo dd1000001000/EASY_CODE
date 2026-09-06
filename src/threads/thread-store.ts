@@ -21,6 +21,7 @@ import {
   type TurnSteeringEntry,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
+import { isProviderName } from "../models/catalog.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
 import {
@@ -260,7 +261,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
     !Array.isArray(input.completionChecks) ||
     input.completionChecks.length === 0 ||
     !input.completionChecks.every((check) => typeof check === "string" && check.length > 0) ||
-    (input.provider !== "qwen" && input.provider !== "deepseek" && input.provider !== "glm") ||
+    !isProviderName(input.provider) ||
     typeof input.model !== "string" ||
     !input.model ||
     (input.thinkingEffort !== "none" &&

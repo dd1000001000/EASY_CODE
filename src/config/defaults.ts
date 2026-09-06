@@ -7,20 +7,27 @@ import {
   type ProviderConfig,
   type ProviderName,
 } from "../core/types.js";
-import { DEFAULT_MODEL_IDS } from "../models/catalog.js";
+import {
+  DEFAULT_MODEL_IDS,
+  providerCatalogEntry,
+} from "../models/catalog.js";
 import {
   DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
   DEFAULT_BASE_STEP_LIMIT,
   THINKING_EFFORT_TIMEOUT_MS,
 } from "../models/thinking.js";
 
-export const DEFAULT_QWEN_BASE_URL =
-  "https://dashscope.aliyuncs.com/compatible-mode/v1";
+export const DEFAULT_QWEN_BASE_URL = providerCatalogEntry("qwen").defaultBaseUrl;
 export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen;
-export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+export const DEFAULT_DEEPSEEK_BASE_URL =
+  providerCatalogEntry("deepseek").defaultBaseUrl;
 export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek;
-export const DEFAULT_GLM_BASE_URL = "https://open.bigmodel.cn/api/paas/v4";
+export const DEFAULT_GLM_BASE_URL = providerCatalogEntry("glm").defaultBaseUrl;
+export const DEFAULT_GLM_CODING_PLAN_BASE_URL =
+  providerCatalogEntry("glm-coding-plan").defaultBaseUrl;
 export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm;
+export const DEFAULT_GLM_CODING_PLAN_MODEL =
+  DEFAULT_MODEL_IDS["glm-coding-plan"];
 
 /** Backward-compatible name for the default none/low request timeout. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = THINKING_EFFORT_TIMEOUT_MS.none;
@@ -48,13 +55,10 @@ export function resolveEasyCodePaths(appName = "easy-code"): EasyCodePaths {
 export function createDefaultProviderConfig(
   provider: ProviderName,
 ): ProviderConfig {
-  const defaults = provider === "qwen"
-    ? { baseUrl: DEFAULT_QWEN_BASE_URL, model: DEFAULT_QWEN_MODEL }
-    : provider === "deepseek"
-      ? { baseUrl: DEFAULT_DEEPSEEK_BASE_URL, model: DEFAULT_DEEPSEEK_MODEL }
-      : { baseUrl: DEFAULT_GLM_BASE_URL, model: DEFAULT_GLM_MODEL };
+  const entry = providerCatalogEntry(provider);
   return {
-    ...defaults,
+    baseUrl: entry.defaultBaseUrl,
+    model: entry.defaultModel,
     maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
   };
 }
@@ -85,5 +89,6 @@ export function createDefaultEasyCodeConfig(
     qwen: createDefaultProviderConfig("qwen"),
     deepseek: createDefaultProviderConfig("deepseek"),
     glm: createDefaultProviderConfig("glm"),
+    "glm-coding-plan": createDefaultProviderConfig("glm-coding-plan"),
   };
 }

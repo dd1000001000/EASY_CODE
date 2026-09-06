@@ -3,7 +3,7 @@ import path from "node:path";
 import chalk from "chalk";
 
 import {
-  consumeHarborGlmApiKeyFile,
+  consumeHarborGlmCodingPlanApiKeyFile,
   resolveHarborOuterSandbox,
 } from "./benchmarks/swebench.js";
 import { Terminal, printBanner } from "./cli/terminal.js";
@@ -74,6 +74,7 @@ import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
   modelsForProvider,
+  providerApiKeyEnvironmentVariables,
   providerLabel,
   requireCatalogModel,
   requireVisionModel,
@@ -560,11 +561,19 @@ export class EasyCodeApp {
     // Validate the benchmark-only outer boundary before creating a Thread or
     // touching workspace state. Invalid host claims fail without side effects.
     const trustedOuterSandbox = resolveHarborOuterSandbox();
-    const harborGlmApiKey = consumeHarborGlmApiKeyFile(
+    const harborGlmCodingPlanApiKey = consumeHarborGlmCodingPlanApiKeyFile(
       trustedOuterSandbox,
     );
-    const configEnvironment = harborGlmApiKey
-      ? { ...process.env, GLM_API_KEY: harborGlmApiKey }
+    const [codingPlanApiKeyEnvironment] =
+      providerApiKeyEnvironmentVariables("glm-coding-plan");
+    if (!codingPlanApiKeyEnvironment) {
+      throw new Error("GLM Coding Plan has no configured API-key environment variable");
+    }
+    const configEnvironment = harborGlmCodingPlanApiKey
+      ? {
+          ...process.env,
+          [codingPlanApiKeyEnvironment]: harborGlmCodingPlanApiKey,
+        }
       : process.env;
     // Library consumers do not pass through CLI main(), so activate the same
     // verified immutable Bundle here as well. This is idempotent.
@@ -986,12 +995,15 @@ export class EasyCodeApp {
       case "provider": {
         this.assertNoRunningSubagents("switch providers");
         const provider = command.args[0] as ProviderName | undefined;
+        const supportedProviders = PROVIDER_CATALOG.map((entry) => entry.provider);
         if (
           !provider ||
           command.args.length !== 1 ||
-          !["qwen", "deepseek", "glm"].includes(provider)
+          !supportedProviders.includes(provider)
         ) {
-          throw new Error("Usage: /provider qwen|deepseek|glm");
+          throw new Error(
+            `Usage: /provider ${supportedProviders.join("|")}`,
+          );
         }
         this.requireProviderApiKey(provider);
         const model = requireCatalogModel(provider, this.config[provider].model).id;
@@ -2825,7 +2837,7 @@ export class EasyCodeApp {
     if (!this.credentialStore) {
       throw new Error(
         `No ${provider} API key is configured, and the system credential store is unavailable. ` +
-          `Run easy-code config set ${provider}.api-key or set the corresponding environment variable.`,
+          `Run easy-code config set ${apiKeyConfigKey(provider)} or set the corresponding environment variable.`,
       );
     }
     this.terminal.info(`No API key is configured for ${providerLabel(provider)}.`);
@@ -2906,6 +2918,7 @@ export class EasyCodeApp {
       qwen: { ...this.config.qwen },
       deepseek: { ...this.config.deepseek },
       glm: { ...this.config.glm },
+      "glm-coding-plan": { ...this.config["glm-coding-plan"] },
     };
     config[this.state.provider].model = this.state.model;
     return config;
@@ -3558,14 +3571,10 @@ export class EasyCodeApp {
 
   private requireProviderApiKey(provider: ProviderName): void {
     if (this.config[provider].apiKey) return;
-    const environment = provider === "qwen"
-      ? "QWEN_API_KEY (DASHSCOPE_API_KEY is also supported)"
-      : provider === "deepseek"
-        ? "DEEPSEEK_API_KEY"
-        : "ZAI_API_KEY (GLM_API_KEY and ZHIPUAI_API_KEY are also supported)";
+    const environment = providerApiKeyEnvironmentVariables(provider).join(" or ");
     throw new Error(
       `No ${provider} API key is configured. Run ` +
-      `easy-code config set ${provider}.api-key (saved to the system credential store), ` +
+      `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), ` +
       `or set the ${environment} environment variable, then restart EASY CODE.`,
     );
   }
