@@ -2,6 +2,10 @@ import path from "node:path";
 
 import chalk from "chalk";
 
+import {
+  consumeHarborGlmApiKeyFile,
+  resolveHarborOuterSandbox,
+} from "./benchmarks/swebench.js";
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { PromptSubmission } from "./cli/prompt-input.js";
@@ -495,6 +499,7 @@ export class EasyCodeApp {
     threadLease: ThreadLease,
     private readonly terminal: Terminal,
     private readonly assumeYes: boolean,
+    trustedOuterSandbox: "harbor" | undefined,
     private readonly credentialStore: ApiKeyCredentialStore | undefined,
     private readonly startupInteraction: "none" | "select-model" | "ensure-api-key",
     private readonly sandboxStartupService: SandboxStartupService | undefined,
@@ -504,7 +509,11 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.state = state;
     this.threadLease = threadLease;
-    this.commandExecutionMode = assumeYes ? "auto_approve" : "manual";
+    this.commandExecutionMode = trustedOuterSandbox === "harbor"
+      ? "unrestricted"
+      : assumeYes
+        ? "auto_approve"
+        : "manual";
     // The postinstall hook and runtime intentionally share the same stable
     // per-user model cache, independent of workspace/user config layering.
     const embeddingModel = new LocalEmbeddingModel();
@@ -548,6 +557,15 @@ export class EasyCodeApp {
   }
 
   static async create(options: EasyCodeAppOptions = {}): Promise<EasyCodeApp> {
+    // Validate the benchmark-only outer boundary before creating a Thread or
+    // touching workspace state. Invalid host claims fail without side effects.
+    const trustedOuterSandbox = resolveHarborOuterSandbox();
+    const harborGlmApiKey = consumeHarborGlmApiKeyFile(
+      trustedOuterSandbox,
+    );
+    const configEnvironment = harborGlmApiKey
+      ? { ...process.env, GLM_API_KEY: harborGlmApiKey }
+      : process.env;
     // Library consumers do not pass through CLI main(), so activate the same
     // verified immutable Bundle here as well. This is idempotent.
     await ensurePromptBundle();
@@ -557,6 +575,7 @@ export class EasyCodeApp {
       : options.credentialStore ?? new SystemKeyringCredentialStore();
     let config = await loadEasyCodeConfig({
       workspaceRoot: options.workspaceRoot,
+      env: configEnvironment,
       credentialStore: credentialStore ?? false,
     });
     const terminal = options.terminal ?? new Terminal();
@@ -581,6 +600,7 @@ export class EasyCodeApp {
         );
         const discoveredConfig = await loadEasyCodeConfig({
           workspaceRoot: savedWorkspace,
+          env: configEnvironment,
           credentialStore: credentialStore ?? false,
         });
         if (!samePath(discoveredConfig.dataDir, config.dataDir)) {
@@ -709,6 +729,7 @@ export class EasyCodeApp {
         threadLease,
         terminal,
         options.assumeYes ?? false,
+        trustedOuterSandbox,
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup

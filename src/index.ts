@@ -10,6 +10,9 @@ import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
+  registerSweBenchCommands,
+} from "./benchmarks/swebench.js";
+import {
   registerPromptBundleCommands,
 } from "./prompt-bundle/index.js";
 import { registerUninstallCommand } from "./uninstall/index.js";
@@ -165,6 +168,7 @@ export async function main(argv = process.argv): Promise<void> {
   registerConfigCommands(program);
   registerPromptBundleCommands(program);
   registerSandboxCommands(program);
+  registerSweBenchCommands(program);
   registerUninstallCommand(program);
 
   await program.parseAsync(argv);
@@ -179,6 +183,7 @@ if (isDirectExecution()) {
 }
 
 export * from "./app.js";
+export * from "./benchmarks/index.js";
 export * from "./config/index.js";
 export * from "./core/types.js";
 export * from "./memory/index.js";
