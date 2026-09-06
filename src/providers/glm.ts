@@ -1,6 +1,7 @@
 import type {
   ModelRequest,
   ProviderConfig,
+  ProviderName,
   ProviderResponse,
   ToolDefinition,
 } from "../core/types.js";
@@ -11,8 +12,12 @@ import {
 
 /** Zhipu GLM's Chat Completions API is OpenAI-compatible. */
 export class GlmProvider extends OpenAICompatibleProvider {
-  constructor(config: ProviderConfig, runtime?: ProviderRuntimeOptions) {
-    super("glm", config, runtime);
+  constructor(
+    config: ProviderConfig,
+    runtime?: ProviderRuntimeOptions,
+    provider: Extract<ProviderName, "glm" | "glm-coding-plan"> = "glm",
+  ) {
+    super(provider, config, runtime);
   }
 
   override complete(request: ModelRequest): Promise<ProviderResponse> {

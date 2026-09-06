@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 
 import {
+  ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES,
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
+  activateInstalledModelCatalog,
   modelsForProvider,
   modelVisionSupport,
+  parseModelCatalog,
+  providerApiKeyEnvironmentVariables,
+  providerCatalogEntry,
+  providerCredentialConfigKey,
+  providerEnvironment,
   requireVisionModel,
   requireCatalogModel,
   resolveCatalogModel,
+  sweBenchVerified50Profile,
   validateProviderImageAttachments,
 } from "../src/models/catalog.js";
 import {
@@ -30,6 +40,7 @@ describe("model catalog", () => {
         { provider: "deepseek", label: "DeepSeek" },
         { provider: "qwen", label: "Alibaba Qwen" },
         { provider: "glm", label: "Zhipu GLM" },
+        { provider: "glm-coding-plan", label: "GLM Coding Plan" },
       ],
     );
     assert.deepEqual(
@@ -58,11 +69,86 @@ describe("model catalog", () => {
       modelsForProvider("glm").map((model) => model.id),
       ["glm-5.3-flash", "glm-5.3", "glm-5.2"],
     );
+    assert.deepEqual(
+      modelsForProvider("glm-coding-plan").map((model) => model.id),
+      ["glm-5.3-flash", "glm-5.3", "glm-5.2"],
+    );
     assert.deepEqual(DEFAULT_MODEL_IDS, {
       qwen: "qwen3.7-max",
       deepseek: "deepseek-v4-pro",
       glm: "glm-5.3",
+      "glm-coding-plan": "glm-5.3",
     });
+  });
+
+  it("derives provider ownership, endpoints, adapters, credentials, and profiles from one catalog", () => {
+    assert.deepEqual(
+      PROVIDER_CATALOG.map((entry) => ({
+        provider: entry.provider,
+        vendor: entry.vendor,
+        adapter: entry.adapter,
+        configKey: entry.configKey,
+      })),
+      [
+        { provider: "deepseek", vendor: "DeepSeek", adapter: "deepseek", configKey: "deepseek.api-key" },
+        { provider: "qwen", vendor: "Alibaba Cloud", adapter: "qwen", configKey: "qwen.api-key" },
+        { provider: "glm", vendor: "Zhipu AI", adapter: "glm", configKey: "glm.api-key" },
+        { provider: "glm-coding-plan", vendor: "Zhipu AI", adapter: "glm", configKey: "glm-coding-plan.api-key" },
+      ],
+    );
+    assert.equal(
+      providerCatalogEntry("glm-coding-plan").defaultBaseUrl,
+      "https://open.bigmodel.cn/api/coding/paas/v4",
+    );
+    assert.equal(providerCredentialConfigKey("glm"), "glm.api-key");
+    assert.deepEqual(providerApiKeyEnvironmentVariables("qwen"), [
+      "QWEN_API_KEY",
+      "DASHSCOPE_API_KEY",
+    ]);
+    assert.deepEqual(sweBenchVerified50Profile(), {
+      provider: "glm-coding-plan",
+      model: "glm-5.3-flash",
+      mode: "code",
+      thinkingEffort: "high",
+    });
+    assert.equal(new Set(ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES).size, 7);
+  });
+
+  it("keeps every standard GLM environment setting isolated from Coding Plan", () => {
+    const standard = providerEnvironment("glm");
+    const plan = providerEnvironment("glm-coding-plan");
+    for (const field of ["apiKey", "baseUrl", "model", "timeoutMs", "maxRetries"] as const) {
+      assert.deepEqual(
+        standard[field].filter((name) => plan[field].includes(name)),
+        [],
+      );
+    }
+  });
+
+  it("activates only the exact built catalog and rejects malformed or overlapping metadata", async () => {
+    const source = await readFile(
+      path.resolve("resources", "prompt-bundle", "models", "catalog.json"),
+      "utf8",
+    );
+    assert.doesNotThrow(() => activateInstalledModelCatalog(source));
+    assert.throws(
+      () => activateInstalledModelCatalog(`${source}\n`),
+      /hash mismatch/u,
+    );
+
+    const invalid = JSON.parse(source) as {
+      providers: Array<{
+        id: string;
+        environment: { model: string[] };
+      }>;
+    };
+    const plan = invalid.providers.find((entry) => entry.id === "glm-coding-plan");
+    assert.ok(plan);
+    plan.environment.model.push("GLM_MODEL");
+    assert.throws(
+      () => parseModelCatalog(invalid),
+      /overlaps Coding Plan/u,
+    );
   });
 
   it("uses an explicit conservative vision capability matrix", () => {
@@ -78,6 +164,18 @@ describe("model catalog", () => {
     assert.equal(modelVisionSupport("glm", "glm-5.3-flash"), "supported");
     assert.equal(modelVisionSupport("glm", "glm-5.3"), "unsupported");
     assert.equal(modelVisionSupport("glm", "glm-5.2"), "unsupported");
+    assert.equal(
+      modelVisionSupport("glm-coding-plan", "glm-5.3-flash"),
+      "unsupported",
+    );
+    assert.equal(
+      modelVisionSupport("glm-coding-plan", "glm-5.3"),
+      "unsupported",
+    );
+    assert.equal(
+      modelVisionSupport("glm-coding-plan", "glm-5.2"),
+      "unsupported",
+    );
     assert.throws(
       () => requireVisionModel("qwen", "qwen3.7-max"),
       /text-only/u,
@@ -85,6 +183,16 @@ describe("model catalog", () => {
     assert.doesNotThrow(() => requireVisionModel("qwen", "qwen3-vl-flash"));
     assert.doesNotThrow(() => requireVisionModel("glm", "GLM-5.3-Flash"));
     assert.throws(() => requireVisionModel("glm", "GLM-5.3"), /text-only/u);
+    assert.throws(
+      () => requireVisionModel("glm-coding-plan", "GLM-5.3-Flash"),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /text-only/u);
+        assert.match(error.message, /switch to a provider/iu);
+        assert.doesNotMatch(error.message, /\/model:\s*$/u);
+        return true;
+      },
+    );
   });
 
   it("maps the normalized thinking effort only for documented model profiles", () => {
@@ -124,6 +232,10 @@ describe("model catalog", () => {
     assert.deepEqual(
       thinkingRequestParameters("glm", "glm-5.2", "none"),
       { thinking: { type: "disabled" } },
+    );
+    assert.deepEqual(
+      thinkingRequestParameters("glm-coding-plan", "glm-5.3-flash", "high"),
+      { thinking: { type: "enabled" }, reasoning_effort: "high" },
     );
 
     assert.deepEqual(

@@ -47,6 +47,11 @@ describe("model usage accounting", () => {
       },
     });
     assert.deepEqual(parseModelUsageRecord(valid), valid);
+    const codingPlan = record({
+      provider: "glm-coding-plan",
+      model: "glm-5.3-flash",
+    });
+    assert.deepEqual(parseModelUsageRecord(codingPlan), codingPlan);
     assert.deepEqual(
       parseModelUsageRecord(record({
         usage: {
@@ -111,7 +116,7 @@ describe("model usage accounting", () => {
       record({
         actor: "subagent",
         purpose: "context_compaction",
-        provider: "glm",
+        provider: "glm-coding-plan",
         model: "glm-5.3-flash",
         sourceAgentId: "agent_compactor",
         usage: {
@@ -182,7 +187,10 @@ describe("model usage accounting", () => {
     assert.equal(summary.byModel["qwen/qwen3.7-plus"]?.requests, 2);
     assert.equal(summary.byModel["qwen/qwen3.7-plus"]?.totalTokens, 110);
     assert.equal(summary.byModel["deepseek/deepseek-v4-flash"]?.totalTokens, 250);
-    assert.equal(summary.byModel["glm/glm-5.3-flash"]?.totalTokens, 40);
+    assert.equal(
+      summary.byModel["glm-coding-plan/glm-5.3-flash"]?.totalTokens,
+      40,
+    );
   });
 
   it("persists completed usage events and rejects invalid journal payloads", () => {

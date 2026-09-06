@@ -4,6 +4,7 @@ import {
   THINKING_EFFORTS,
   type EasyCodeConfig,
 } from "../core/types.js";
+import { PROVIDER_NAMES } from "../models/catalog.js";
 
 const nonEmptyString = z.string().trim().min(1);
 const positiveInteger = z.number().int().positive();
@@ -25,7 +26,7 @@ export const providerConfigSchema = z.object({
 });
 
 export const easyCodeConfigSchema = z.object({
-  provider: z.enum(["qwen", "deepseek", "glm"]),
+  provider: z.enum(PROVIDER_NAMES),
   mode: z.enum(["plan", "auto", "code"]),
   thinkingEffort: z.enum(THINKING_EFFORTS),
   approvalPolicy: z.enum(["safe", "ask", "never"]),
@@ -45,6 +46,7 @@ export const easyCodeConfigSchema = z.object({
   qwen: providerConfigSchema,
   deepseek: providerConfigSchema,
   glm: providerConfigSchema,
+  "glm-coding-plan": providerConfigSchema,
 });
 
 export function validateEasyCodeConfig(value: unknown): EasyCodeConfig {

@@ -1,4 +1,5 @@
 import type { ProviderName } from "../core/types.js";
+import { PROVIDER_CATALOG } from "../models/catalog.js";
 
 export interface SlashCommand {
   name: string;
@@ -14,9 +15,12 @@ export type ModelCommandRequest =
       model: string;
     };
 
+const PROVIDERS: readonly ProviderName[] = PROVIDER_CATALOG.map(
+  ({ provider }) => provider,
+);
+const PROVIDER_USAGE = PROVIDERS.join("|");
 const MODEL_COMMAND_USAGE =
-  "Usage: /model | /model <model-id> | /model <qwen|deepseek|glm> <model-id>";
-const PROVIDERS: readonly ProviderName[] = ["qwen", "deepseek", "glm"];
+  `Usage: /model | /model <model-id> | /model <${PROVIDER_USAGE}> <model-id>`;
 
 export function parseSlashCommand(input: string): SlashCommand | null {
   const trimmed = input.trim();
@@ -66,11 +70,11 @@ export const HELP_TEXT = `
 EASY CODE commands
 
   /mode plan|auto|code       Switch working mode
-  /provider qwen|deepseek|glm
+  /provider ${PROVIDER_USAGE}
                               Switch provider
   /model                     Open the provider and model selector
   /model <model>             Switch the current provider's model
-  /model qwen|deepseek|glm <id>
+  /model ${PROVIDER_USAGE} <id>
                               Switch both provider and model
   /approval                 Select manual, auto-approved, or dangerous full-host access
   /status                    Show current status

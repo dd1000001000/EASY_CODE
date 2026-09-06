@@ -83,7 +83,7 @@ the package has not been installed globally.
 
 ```powershell
 npm run build
-easy-code config set glm.api-key
+easy-code config set glm-coding-plan.api-key
 easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
 ```
@@ -91,31 +91,34 @@ easy-code benchmark swe-bench doctor
 `setup` installs `harbor==0.16.1` and `swebench==5.0.2` under the benchmark
 root. `doctor` checks the Linux/x86-64 Docker engine, Docker Compose v2, pinned
 tool versions, the exact dataset digest and 50-task manifest, F-drive storage,
-and the GLM credential without printing it. Docker Desktop itself must be
-installed separately. The runner keeps Docker Desktop's original CLI
+and the GLM Coding Plan credential without printing it. Docker Desktop itself
+must be installed separately. The runner keeps Docker Desktop's original CLI
 configuration path so its Compose plugin remains discoverable while Harbor,
 Python, npm, and model caches stay on F:. Runs also apply a fixed `4x` Harbor
 Agent-setup timeout multiplier so a cold Node.js and EASY CODE installation is
 not cut off by the default setup deadline.
 
-## GLM credential handling
+## GLM Coding Plan credential handling
 
-The integrated runner accepts `ZAI_API_KEY`, `GLM_API_KEY`, or
-`ZHIPUAI_API_KEY`; otherwise it reads the key already saved by
-`easy-code config set glm.api-key` from the operating-system credential store.
+The integrated runner accepts only `GLM_CODING_PLAN_API_KEY`; otherwise it
+reads the separate key already saved by
+`easy-code config set glm-coding-plan.api-key` from the operating-system
+credential store. It never reads `ZAI_API_KEY`, `GLM_API_KEY`,
+`ZHIPUAI_API_KEY`, or the `glm.api-key` credential. Standard GLM and GLM Coding
+Plan keys are intentionally not interchangeable.
 Before Harbor starts, the launcher places the key in a random, ACL-protected
 file under the F-drive benchmark root. Harbor receives only that path, not the
 credential value. The temporary host file is removed when the run exits.
 
 The lower-level `run.ps1` helper is retained for people invoking Harbor
-directly. That helper accepts `GLM_API_KEY` in its process environment and
-applies the same file-staging boundary before starting Harbor:
+directly. That helper accepts `GLM_CODING_PLAN_API_KEY` in its process
+environment and applies the same file-staging boundary before starting Harbor:
 
 ```powershell
-$secureKey = Read-Host "GLM API key" -AsSecureString
+$secureKey = Read-Host "GLM Coding Plan API key" -AsSecureString
 $keyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
 try {
-  $env:GLM_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer)
+  $env:GLM_CODING_PLAN_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer)
 } finally {
   [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer)
 }
@@ -138,7 +141,7 @@ easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
 Then run one pinned task:
 
 ```powershell
-easy-code benchmark swe-bench run --limit 1 --run-id glm-5.3-flash-smoke
+easy-code benchmark swe-bench run --limit 1 --run-id glm-coding-plan-5.3-flash-smoke
 ```
 
 The runner packs the current EASY CODE build into `packages\`, uploads that
@@ -149,12 +152,16 @@ archive without starting a run.
 The adapter runs the following fixed EASY CODE profile in `/testbed`:
 
 ```text
-provider: glm
+provider: glm-coding-plan
 model: glm-5.3-flash
+endpoint: https://open.bigmodel.cn/api/coding/paas/v4
 mode: code
 thinking effort: high
 approval: safe, auto-approved
 ```
+
+The provider, endpoint, and credential source are fixed for this benchmark.
+There is no fallback to the standard GLM API or its key.
 
 EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `/testbed` and inside the Harbor job artifacts.
@@ -169,19 +176,19 @@ valid grader result:
 
 ```powershell
 easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
-  --run-id glm-5.3-flash-verified-mini-50 --confirm-full-run
+  --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
-The default concurrency is one. Increase it only after confirming your
-GLM rate limit and Docker capacity, for example `--concurrency 4`. Keep
-`--n-attempts 1` for benchmark reporting; silently retrying whole tasks changes
-the evaluation protocol.
+The default concurrency is one. Increase it only after confirming your GLM
+Coding Plan rate limit and Docker capacity, for example `--concurrency 4`.
+Keep `--n-attempts 1` for benchmark reporting; silently retrying whole tasks
+changes the evaluation protocol.
 
 If you exported a temporary credential for the lower-level runner, remove it
 from the shell afterward:
 
 ```powershell
-Remove-Item Env:GLM_API_KEY
+Remove-Item Env:GLM_CODING_PLAN_API_KEY
 ```
 
 The explicit confirmation prevents an accidental 50-task spend. Job logs,
@@ -201,8 +208,9 @@ Harbor's task names include an organization prefix. A valid exact filter is:
 Both runners create one exact filter for every selected ID. Do not use an empty
 filter or an unverified wildcard: some runner versions may interpret a filter
 that matches nothing as an unfiltered dataset run. Keep the manifest, dataset
-revisions, task commit, evaluator version, EASY CODE npm archive, model name,
-and Harbor job configuration with every reported result.
+revisions, task commit, evaluator version, EASY CODE npm archive, provider
+channel, endpoint, model name, and Harbor job configuration with every reported
+result.
 
 For each run, report at least resolved count/rate, per-instance status, total
 model cost or tokens, wall-clock time, and the hashes/versions pinned above.

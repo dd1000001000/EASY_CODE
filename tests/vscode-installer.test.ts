@@ -221,6 +221,7 @@ describe("VS Code extension installer", () => {
       DEEPSEEK_API_KEY: "deepseek-secret",
       ZAI_API_KEY: "glm-secret",
       GLM_API_KEY: "glm-alias-secret",
+      GLM_CODING_PLAN_API_KEY: "glm-coding-plan-secret",
     }, "linux");
     assert.equal(environment.HOME, "/home/tester");
     assert.equal(environment.VSCODE_IPC_HOOK_CLI, "/tmp/vscode.sock");
@@ -228,6 +229,7 @@ describe("VS Code extension installer", () => {
     assert.equal(environment.DEEPSEEK_API_KEY, undefined);
     assert.equal(environment.ZAI_API_KEY, undefined);
     assert.equal(environment.GLM_API_KEY, undefined);
+    assert.equal(environment.GLM_CODING_PLAN_API_KEY, undefined);
   });
 
   it("rejects an explicit VS Code shim from the consuming workspace", () => {

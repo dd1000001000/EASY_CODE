@@ -1,6 +1,10 @@
 import { createRequire } from "node:module";
 
 import type { ProviderName } from "../core/types.js";
+import {
+  PROVIDER_CATALOG,
+  providerCredentialConfigKey,
+} from "../models/catalog.js";
 
 export type ApiKeyConfigKey = `${ProviderName}.api-key`;
 
@@ -71,21 +75,25 @@ export class SystemKeyringCredentialStore implements ApiKeyCredentialStore {
 }
 
 export function apiKeyConfigKey(provider: ProviderName): ApiKeyConfigKey {
-  return `${provider}.api-key`;
+  return providerCredentialConfigKey(provider);
 }
 
 export function parseApiKeyConfigKey(value: string): {
   key: ApiKeyConfigKey;
   provider: ProviderName;
 } {
-  const match = /^(qwen|deepseek|glm)\.api-key$/u.exec(value.trim());
-  if (!match) {
+  const normalized = value.trim();
+  const entry = PROVIDER_CATALOG.find(
+    (candidate) => candidate.configKey === normalized,
+  );
+  if (!entry) {
     throw new Error(
-      "Unsupported configuration key. Valid keys: qwen.api-key, deepseek.api-key, glm.api-key.",
+      `Unsupported configuration key. Valid keys: ${PROVIDER_CATALOG.map(
+        ({ configKey }) => configKey,
+      ).join(", ")}.`,
     );
   }
-  const provider = match[1] as ProviderName;
-  return { key: apiKeyConfigKey(provider), provider };
+  return { key: entry.configKey, provider: entry.provider };
 }
 
 export function validateApiKey(value: string): string {

@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "bundleVersion": "1.0.0",
+  "bundleVersion": "1.1.0",
   "runtimeCompatibility": {
     "min": "0.1.0",
     "maxExclusive": "0.2.0"
@@ -125,6 +125,10 @@
     "controllers/thread-summary.md": {
       "sha256": "sha256:fd42c5692c7cca0edfca9b95c6771898246d8cc2588c1bf98dde21f74d92e6eb",
       "bytes": 28
+    },
+    "models/catalog.json": {
+      "sha256": "sha256:a6a1a1ff880af10cc0a22ccff5f4c480fb5050957057a4af4dc1f612513d96b1",
+      "bytes": 5956
     },
     "modes/auto-effective.md": {
       "sha256": "sha256:048f1f49696808e6831e57f8c7ba03fee5836d340840cfb97ccc4c797f7664e7",
@@ -427,5 +431,5 @@
       "contentHash": "sha256:fdb1df23d0ba7faa488c4c7bd51170e65be505875cc91ff2e8ab2a68c13ffebd"
     }
   },
-  "bundleHash": "sha256:43f51da10c79f7372e515a93e7c74580f64faa3394b6942c8b1c1dd92d67a96a"
+  "bundleHash": "sha256:e7516fa33f832c65f621f5af6d86f6f935d4d74b1463d8afc35afebc237aeb3f"
 }

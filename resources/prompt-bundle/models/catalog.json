@@ -1,0 +1,243 @@
+{
+  "catalogVersion": 1,
+  "providers": [
+    {
+      "id": "deepseek",
+      "label": "DeepSeek",
+      "vendor": "DeepSeek",
+      "adapter": "deepseek",
+      "credentialSlot": "deepseek",
+      "configKey": "deepseek.api-key",
+      "defaultBaseUrl": "https://api.deepseek.com",
+      "defaultModel": "deepseek-v4-pro",
+      "environment": {
+        "apiKey": [
+          "DEEPSEEK_API_KEY"
+        ],
+        "baseUrl": [
+          "DEEPSEEK_BASE_URL"
+        ],
+        "model": [
+          "DEEPSEEK_MODEL"
+        ],
+        "timeoutMs": [
+          "DEEPSEEK_TIMEOUT_MS"
+        ],
+        "maxRetries": [
+          "DEEPSEEK_MAX_RETRIES"
+        ]
+      },
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "label": "deepseek-v4-flash",
+          "vision": "unsupported",
+          "thinking": "deepseek_effort"
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "label": "deepseek-v4-pro",
+          "vision": "unsupported",
+          "thinking": "deepseek_effort"
+        },
+        {
+          "id": "deepseek-v4-flash-vision-exp",
+          "label": "deepseek-v4-flash-vision-exp",
+          "vision": "supported",
+          "thinking": "unsupported"
+        }
+      ]
+    },
+    {
+      "id": "qwen",
+      "label": "Alibaba Qwen",
+      "vendor": "Alibaba Cloud",
+      "adapter": "qwen",
+      "credentialSlot": "qwen",
+      "configKey": "qwen.api-key",
+      "defaultBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "defaultModel": "qwen3.7-max",
+      "environment": {
+        "apiKey": [
+          "QWEN_API_KEY",
+          "DASHSCOPE_API_KEY"
+        ],
+        "baseUrl": [
+          "QWEN_BASE_URL",
+          "DASHSCOPE_BASE_URL"
+        ],
+        "model": [
+          "QWEN_MODEL"
+        ],
+        "timeoutMs": [
+          "QWEN_TIMEOUT_MS"
+        ],
+        "maxRetries": [
+          "QWEN_MAX_RETRIES"
+        ]
+      },
+      "models": [
+        {
+          "id": "qwen3.7-max",
+          "label": "Qwen3.7-Max",
+          "vision": "unsupported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3.7-plus",
+          "label": "Qwen3.7-Plus",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3.6-max",
+          "label": "Qwen3.6-Max",
+          "vision": "unsupported",
+          "thinking": "unsupported"
+        },
+        {
+          "id": "qwen3.6-plus",
+          "label": "Qwen3.6-Plus",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3.5-plus",
+          "label": "Qwen3.5-Plus",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3.5-flash",
+          "label": "Qwen3.5-Flash",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3-max",
+          "label": "Qwen3-Max",
+          "vision": "unsupported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3-vl-plus",
+          "label": "Qwen3-VL-Plus",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        },
+        {
+          "id": "qwen3-vl-flash",
+          "label": "Qwen3-VL-Flash",
+          "vision": "supported",
+          "thinking": "qwen_budget"
+        }
+      ]
+    },
+    {
+      "id": "glm",
+      "label": "Zhipu GLM",
+      "vendor": "Zhipu AI",
+      "adapter": "glm",
+      "credentialSlot": "glm",
+      "configKey": "glm.api-key",
+      "defaultBaseUrl": "https://open.bigmodel.cn/api/paas/v4",
+      "defaultModel": "glm-5.3",
+      "environment": {
+        "apiKey": [
+          "ZAI_API_KEY",
+          "GLM_API_KEY",
+          "ZHIPUAI_API_KEY"
+        ],
+        "baseUrl": [
+          "GLM_BASE_URL",
+          "ZAI_BASE_URL",
+          "ZHIPUAI_BASE_URL"
+        ],
+        "model": [
+          "GLM_MODEL"
+        ],
+        "timeoutMs": [
+          "GLM_TIMEOUT_MS"
+        ],
+        "maxRetries": [
+          "GLM_MAX_RETRIES"
+        ]
+      },
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "label": "GLM-5.3-Flash",
+          "vision": "supported",
+          "thinking": "glm_forced_effort"
+        },
+        {
+          "id": "glm-5.3",
+          "label": "GLM-5.3",
+          "vision": "unsupported",
+          "thinking": "glm_forced_effort"
+        },
+        {
+          "id": "glm-5.2",
+          "label": "GLM-5.2",
+          "vision": "unsupported",
+          "thinking": "glm_optional_effort"
+        }
+      ]
+    },
+    {
+      "id": "glm-coding-plan",
+      "label": "GLM Coding Plan",
+      "vendor": "Zhipu AI",
+      "adapter": "glm",
+      "credentialSlot": "glm-coding-plan",
+      "configKey": "glm-coding-plan.api-key",
+      "defaultBaseUrl": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "defaultModel": "glm-5.3",
+      "environment": {
+        "apiKey": [
+          "GLM_CODING_PLAN_API_KEY"
+        ],
+        "baseUrl": [
+          "GLM_CODING_PLAN_BASE_URL"
+        ],
+        "model": [
+          "GLM_CODING_PLAN_MODEL"
+        ],
+        "timeoutMs": [
+          "GLM_CODING_PLAN_TIMEOUT_MS"
+        ],
+        "maxRetries": [
+          "GLM_CODING_PLAN_MAX_RETRIES"
+        ]
+      },
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "label": "GLM-5.3-Flash",
+          "vision": "unsupported",
+          "thinking": "glm_forced_effort"
+        },
+        {
+          "id": "glm-5.3",
+          "label": "GLM-5.3",
+          "vision": "unsupported",
+          "thinking": "glm_forced_effort"
+        },
+        {
+          "id": "glm-5.2",
+          "label": "GLM-5.2",
+          "vision": "unsupported",
+          "thinking": "glm_optional_effort"
+        }
+      ]
+    }
+  ],
+  "profiles": {
+    "sweBenchVerified50": {
+      "provider": "glm-coding-plan",
+      "model": "glm-5.3-flash",
+      "mode": "code",
+      "thinkingEffort": "high"
+    }
+  }
+}

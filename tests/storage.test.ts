@@ -779,7 +779,7 @@ describe("storage", () => {
         threadId: "thread_restore",
         workspaceRoot: path.join(dataDir, "workspace"),
         mode: "auto",
-        provider: "glm",
+        provider: "glm-coding-plan",
         model: "glm-5.3-flash",
         goal: "test recovery",
         messages: [{ role: "user", content: "hello" }, assistantMessage],
@@ -803,7 +803,7 @@ describe("storage", () => {
       );
 
       const recovered = threads.recover("thread_restore");
-      assert.equal(recovered.provider, "glm");
+      assert.equal(recovered.provider, "glm-coding-plan");
       assert.equal(recovered.model, "glm-5.3-flash");
       assert.equal(recovered.mode, "code");
       assert.equal(recovered.thinkingEffort, "high");

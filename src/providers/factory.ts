@@ -5,7 +5,10 @@ import type {
 } from "../core/types.js";
 import { DeepSeekProvider } from "./deepseek.js";
 import { GlmProvider } from "./glm.js";
-import { modelSupportsVision } from "../models/catalog.js";
+import {
+  modelSupportsVision,
+  providerCatalogEntry,
+} from "../models/catalog.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { QwenProvider } from "./qwen.js";
 
@@ -31,12 +34,20 @@ export function createProvider(
       modelSupportsVision(providerName, providerConfig.model),
   };
 
-  switch (providerName) {
+  switch (providerCatalogEntry(providerName).adapter) {
     case "qwen":
       return new QwenProvider(providerConfig, effectiveRuntime);
     case "deepseek":
       return new DeepSeekProvider(providerConfig, effectiveRuntime);
-    case "glm":
-      return new GlmProvider(providerConfig, effectiveRuntime);
+    case "glm": {
+      if (providerName !== "glm" && providerName !== "glm-coding-plan") {
+        throw new Error(`Provider ${providerName} cannot use the GLM adapter`);
+      }
+      return new GlmProvider(
+        providerConfig,
+        effectiveRuntime,
+        providerName,
+      );
+    }
   }
 }

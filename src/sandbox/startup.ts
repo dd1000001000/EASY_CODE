@@ -13,6 +13,8 @@ import { fileURLToPath } from "node:url";
 
 import { execa } from "execa";
 
+import { ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES } from "../models/catalog.js";
+
 export type SandboxReadinessStatus =
   | "ready"
   | "setup_required"
@@ -549,14 +551,9 @@ async function defaultProbe(runtime: SandboxRuntimeModule): Promise<void> {
     const executablePath = wrapped.argv[0];
     if (!executablePath) throw new Error("Sandbox probe did not return an executable");
     const probeEnvironment = { ...wrapped.env };
-    for (const name of [
-      "QWEN_API_KEY",
-      "DASHSCOPE_API_KEY",
-      "DEEPSEEK_API_KEY",
-      "ZAI_API_KEY",
-      "GLM_API_KEY",
-      "ZHIPUAI_API_KEY",
-    ]) delete probeEnvironment[name];
+    for (const name of ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES) {
+      delete probeEnvironment[name];
+    }
     const result = await defaultRunCommand({
       executablePath,
       args: wrapped.argv.slice(1),
@@ -580,14 +577,9 @@ async function defaultProbe(runtime: SandboxRuntimeModule): Promise<void> {
 
 function sandboxProbeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const environment = { ...source };
-  for (const name of [
-    "QWEN_API_KEY",
-    "DASHSCOPE_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "ZAI_API_KEY",
-    "GLM_API_KEY",
-    "ZHIPUAI_API_KEY",
-  ]) delete environment[name];
+  for (const name of ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES) {
+    delete environment[name];
+  }
   environment.EASY_CODE_SANDBOX_PROBE_WORKER = "1";
   return environment;
 }

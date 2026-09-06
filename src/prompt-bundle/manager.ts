@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { activateInstalledModelCatalog } from "../models/catalog.js";
 import {
   EASY_CODE_RUNTIME_VERSION,
   PACKAGED_PROMPT_BUNDLE_MANIFEST_HASH,
@@ -236,7 +237,13 @@ export async function ensurePromptBundleForTesting(
     await release();
   }
   const catalog = await createCatalog(installed);
-  if (options.activateProcessCatalog !== false) activeCatalog = catalog;
+  if (options.activateProcessCatalog !== false) {
+    // The model/provider directory is part of the same hash-verified Bundle as
+    // prompts and tool metadata. Activate only the installed, verified bytes;
+    // the generated snapshot remains the synchronous bootstrap for imports.
+    activateInstalledModelCatalog(catalog.readText("models/catalog.json"));
+    activeCatalog = catalog;
+  }
   return catalog;
 }
 

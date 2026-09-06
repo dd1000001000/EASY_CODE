@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES } from "../models/catalog.js";
 import { encodeSandboxControl } from "./control.js";
 import { resolveTrustedSystemExecutable } from "./startup.js";
 import type {
@@ -162,14 +163,10 @@ async function main(): Promise<void> {
     },
     filesystem: payload.filesystem,
     credentials: {
-      envVars: [
-        "QWEN_API_KEY",
-        "DASHSCOPE_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "ZAI_API_KEY",
-        "GLM_API_KEY",
-        "ZHIPUAI_API_KEY",
-      ].map((name) => ({ name, mode: "deny" as const })),
+      envVars: ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES.map((name) => ({
+        name,
+        mode: "deny" as const,
+      })),
     },
     enableWeakerNestedSandbox: false,
     enableWeakerNetworkIsolation: false,

@@ -2,15 +2,17 @@
 
 The adapter deliberately receives the npm package and provider credential from
 the host launcher. It never downloads EASY CODE from a registry and never
-places the GLM key in a shell command or log message.
+places the GLM Coding Plan key in a shell command or log message.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
@@ -20,8 +22,119 @@ from harbor.models.agent.context import AgentContext
 _REMOTE_PACKAGE = "/tmp/easy-code-agent.tgz"
 _REMOTE_DATA_DIR = "/logs/agent/easy-code-data"
 _REMOTE_SECRETS_DIR = "/tmp/easy-code-secrets"
-_REMOTE_API_KEY_FILE = f"{_REMOTE_SECRETS_DIR}/glm-api-key"
+_REMOTE_API_KEY_FILE = f"{_REMOTE_SECRETS_DIR}/glm-coding-plan-api-key"
 _TESTBED = "/testbed"
+_MODEL_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "resources"
+    / "prompt-bundle"
+    / "models"
+    / "catalog.json"
+)
+
+
+def _load_benchmark_profile() -> tuple[str, str, str, str, str, str]:
+    """Load the pinned benchmark profile from EASY CODE's model catalog."""
+
+    try:
+        catalog = json.loads(_MODEL_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Unable to load the EASY CODE model catalog at {_MODEL_CATALOG_PATH}."
+        ) from error
+
+    profile = catalog.get("profiles", {}).get("sweBenchVerified50")
+    if not isinstance(profile, dict):
+        raise RuntimeError(
+            "The EASY CODE model catalog does not define profiles.sweBenchVerified50."
+        )
+
+    required_profile_fields = ("provider", "model", "mode", "thinkingEffort")
+    if any(
+        not isinstance(profile.get(field), str) or not profile[field].strip()
+        for field in required_profile_fields
+    ):
+        raise RuntimeError("The SWE-bench model profile is incomplete.")
+
+    provider_id = profile["provider"].strip()
+    providers = catalog.get("providers")
+    if not isinstance(providers, list):
+        raise RuntimeError("The EASY CODE model catalog has no provider list.")
+    provider = next(
+        (
+            entry
+            for entry in providers
+            if isinstance(entry, dict) and entry.get("id") == provider_id
+        ),
+        None,
+    )
+    if provider is None:
+        raise RuntimeError(
+            f"The SWE-bench provider {provider_id!r} is absent from the model catalog."
+        )
+    # SWE-bench deliberately uses the separately billed Coding Plan account.
+    # Refuse catalog drift to the normal GLM platform rather than silently
+    # consuming a different credential or endpoint.
+    if provider_id != "glm-coding-plan":
+        raise RuntimeError(
+            "The SWE-bench profile must use the dedicated GLM Coding Plan provider."
+        )
+
+    models = provider.get("models")
+    model_id = profile["model"].strip()
+    if not isinstance(models, list) or not any(
+        isinstance(model, dict) and model.get("id") == model_id for model in models
+    ):
+        raise RuntimeError(
+            f"The SWE-bench model {model_id!r} is absent from provider {provider_id!r}."
+        )
+
+    endpoint = provider.get("defaultBaseUrl")
+    environment = provider.get("environment")
+    base_url_names = environment.get("baseUrl") if isinstance(environment, dict) else None
+    api_key_names = environment.get("apiKey") if isinstance(environment, dict) else None
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise RuntimeError("The SWE-bench provider has no default endpoint.")
+    endpoint_parts = urlsplit(endpoint.strip())
+    if endpoint_parts.scheme != "https" or not endpoint_parts.hostname:
+        raise RuntimeError("The SWE-bench provider must use a valid HTTPS endpoint.")
+    if (
+        not isinstance(base_url_names, list)
+        or len(base_url_names) != 1
+        or not isinstance(base_url_names[0], str)
+        or not base_url_names[0]
+    ):
+        raise RuntimeError(
+            "The SWE-bench provider must define one dedicated base-URL environment name."
+        )
+    if (
+        not isinstance(api_key_names, list)
+        or len(api_key_names) != 1
+        or not isinstance(api_key_names[0], str)
+        or not api_key_names[0]
+    ):
+        raise RuntimeError(
+            "The SWE-bench provider must define one dedicated API-key environment name."
+        )
+
+    return (
+        provider_id,
+        model_id,
+        profile["mode"].strip(),
+        profile["thinkingEffort"].strip(),
+        endpoint.strip(),
+        base_url_names[0],
+    )
+
+
+(
+    _BENCHMARK_PROVIDER,
+    _BENCHMARK_MODEL,
+    _BENCHMARK_MODE,
+    _BENCHMARK_THINKING_EFFORT,
+    _BENCHMARK_BASE_URL,
+    _BENCHMARK_BASE_URL_ENV,
+) = _load_benchmark_profile()
 
 
 class EasyCodeAgent(BaseInstalledAgent):
@@ -51,18 +164,22 @@ class EasyCodeAgent(BaseInstalledAgent):
             )
 
         api_key_file_value = os.environ.get(
-            "EASY_CODE_GLM_KEY_FILE", ""
+            "EASY_CODE_GLM_CODING_PLAN_KEY_FILE", ""
         ).strip()
         if not api_key_file_value:
             raise RuntimeError(
-                "EASY_CODE_GLM_KEY_FILE must identify the launcher's private key file."
+                "EASY_CODE_GLM_CODING_PLAN_KEY_FILE must identify the launcher's private key file."
             )
         api_key_file = Path(api_key_file_value).resolve()
         if not api_key_file.is_file():
-            raise RuntimeError("The staged GLM credential file is unavailable.")
+            raise RuntimeError(
+                "The staged GLM Coding Plan credential file is unavailable."
+            )
         api_key = api_key_file.read_text(encoding="utf-8").strip()
         if not api_key or len(api_key.encode("utf-8")) > 16_384:
-            raise RuntimeError("The staged GLM credential has an invalid size.")
+            raise RuntimeError(
+                "The staged GLM Coding Plan credential has an invalid size."
+            )
 
         self._package_path = package_path
         self._host_api_key_file = api_key_file
@@ -131,13 +248,13 @@ easy-code --version
                 "--workspace",
                 shlex.quote(_TESTBED),
                 "--provider",
-                "glm",
+                shlex.quote(_BENCHMARK_PROVIDER),
                 "--model",
-                "glm-5.3-flash",
+                shlex.quote(_BENCHMARK_MODEL),
                 "--mode",
-                "code",
+                shlex.quote(_BENCHMARK_MODE),
                 "--thinking-effort",
-                "high",
+                shlex.quote(_BENCHMARK_THINKING_EFFORT),
                 "--approval",
                 "safe",
                 "--yes",
@@ -166,7 +283,8 @@ easy-code --version
                 command=self._bash(run_script),
                 cwd=_TESTBED,
                 env={
-                    "EASY_CODE_GLM_API_KEY_FILE": _REMOTE_API_KEY_FILE,
+                    "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE": _REMOTE_API_KEY_FILE,
+                    _BENCHMARK_BASE_URL_ENV: _BENCHMARK_BASE_URL,
                     "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
                     "EASY_CODE_OUTER_SANDBOX": "harbor",
                     "CI": "1",

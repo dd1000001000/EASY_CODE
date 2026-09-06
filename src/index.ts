@@ -23,6 +23,7 @@ import {
   type ProviderName,
   type ThinkingEffort,
 } from "./core/types.js";
+import { PROVIDER_CATALOG } from "./models/catalog.js";
 
 interface CliOptions {
   workspace?: string;
@@ -111,7 +112,11 @@ async function withApp(
 function addCommonOptions(command: Command): Command {
   return command
     .option("-w, --workspace <path>", "workspace root (default: current directory)")
-    .addOption(new Option("--provider <name>", "model provider").choices(["qwen", "deepseek", "glm"]))
+    .addOption(
+      new Option("--provider <name>", "model provider").choices(
+        PROVIDER_CATALOG.map(({ provider }) => provider),
+      ),
+    )
     .option("--model <id>", "provider model id")
     .addOption(new Option("--mode <mode>", "working mode").choices(["plan", "auto", "code"]))
     .addOption(
@@ -137,7 +142,9 @@ export async function main(argv = process.argv): Promise<void> {
   const program = addCommonOptions(
     new Command()
       .name("easy-code")
-      .description("EASY CODE — local CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM")
+      .description(
+        "EASY CODE — local CLI coding agent for Alibaba Qwen, DeepSeek, Zhipu GLM, and GLM Coding Plan",
+      )
       .version("0.1.0")
       .showHelpAfterError(),
   );

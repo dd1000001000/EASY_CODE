@@ -4,7 +4,7 @@ English | [简体中文](./README_zh.md)
 
 [Technical design](./docs/TECHNICAL_DESIGN.md) | [中文技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [SWE-bench Verified Mini guide](./benchmarks/swebench_verified/README.md) | [Third-party notices](./THIRD_PARTY_NOTICES.md)
 
-EASY CODE is a cross-platform CLI coding agent for Alibaba Qwen, DeepSeek, and Zhipu GLM. Run it inside a project, describe the result you want, and let the agent inspect the workspace, edit files, run commands, verify changes, manage longer tasks, and resume previous work.
+EASY CODE is a cross-platform CLI coding agent with four selectable provider channels: Alibaba Qwen, DeepSeek, Zhipu GLM, and GLM Coding Plan. Run it inside a project, describe the result you want, and let the agent inspect the workspace, edit files, run commands, verify changes, manage longer tasks, and resume previous work.
 
 The interface stays inside the terminal. Model requests go to the selected provider; project operations, session state, memory, and orchestration remain local.
 
@@ -104,6 +104,7 @@ The recommended method stores keys in the operating-system credential store:
 easy-code config set qwen.api-key
 easy-code config set deepseek.api-key
 easy-code config set glm.api-key
+easy-code config set glm-coding-plan.api-key
 ```
 
 The command reads the key through hidden input. Do not append the secret to the command line.
@@ -123,8 +124,15 @@ Environment variables are also supported:
 | Alibaba Qwen | `QWEN_API_KEY` or `DASHSCOPE_API_KEY` |
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | Zhipu GLM | `ZAI_API_KEY`, `GLM_API_KEY`, or `ZHIPUAI_API_KEY` |
+| GLM Coding Plan | `GLM_CODING_PLAN_API_KEY` |
 
 If the selected provider has no key, interactive startup asks for one before the first request.
+
+Zhipu GLM and GLM Coding Plan are intentionally separate provider channels.
+Standard GLM uses its own key and defaults to
+`https://open.bigmodel.cn/api/paas/v4`; GLM Coding Plan uses a different key
+and defaults to `https://open.bigmodel.cn/api/coding/paas/v4`. Neither channel
+falls back to or reuses the other's credential.
 
 ## Quick start
 
@@ -137,7 +145,7 @@ easy-code
 
 At startup:
 
-1. Select DeepSeek, Alibaba Qwen, or Zhipu GLM.
+1. Select DeepSeek, Alibaba Qwen, Zhipu GLM, or GLM Coding Plan.
 2. Select a model.
 3. Select `none`, `low`, `medium`, or `high` thinking effort.
 4. Use `Up`/`Down` and Enter to confirm.
@@ -168,7 +176,11 @@ If a non-interactive Auto run produces a reviewable Plan, start EASY CODE intera
 
 ## Supported models
 
-EASY CODE validates selections against its built-in provider catalog. Actual availability still depends on the provider account, region, and entitlement.
+EASY CODE validates selections against one versioned model catalog at
+[`resources/prompt-bundle/models/catalog.json`](./resources/prompt-bundle/models/catalog.json).
+It records each provider's vendor, trusted default endpoint and model, credential
+identity, image and thinking capabilities, and named benchmark profiles. Actual
+availability still depends on the provider account, region, and entitlement.
 
 | Provider | Model | Image input |
 | --- | --- | --- |
@@ -187,6 +199,11 @@ EASY CODE validates selections against its built-in provider catalog. Actual ava
 | Zhipu GLM | `glm-5.3-flash` | Yes |
 | Zhipu GLM | `glm-5.3` (default) | No |
 | Zhipu GLM | `glm-5.2` | No |
+| GLM Coding Plan | `glm-5.3-flash` | No |
+| GLM Coding Plan | `glm-5.3` (default) | No |
+| GLM Coding Plan | `glm-5.2` | No |
+
+The GLM Coding Plan channel does not send direct image payloads; use a text-only request or a separately configured image-capable tool.
 
 Switch the provider, model, and effort while a session is running:
 
@@ -374,6 +391,15 @@ easy-code prompts list
 easy-code prompts repair
 ```
 
+The model catalog is part of that trusted bundle. Installation places its verified
+copy at `~/.easy_code/bundles/prompt-<version>/models/catalog.json`. That copy is
+not ordinary user configuration: EASY CODE verifies it by content hash and repairs
+local changes from the installed package. To maintain providers, endpoints, model
+capabilities, credential metadata, or a benchmark profile, edit the source catalog,
+build the project, and publish/install a new bundle version. New versions are
+installed atomically so an interrupted update cannot leave a partially active
+catalog.
+
 ## Command reference
 
 ### CLI
@@ -393,7 +419,7 @@ Common options:
 | Option | Purpose |
 | --- | --- |
 | `-w, --workspace <path>` | Select the workspace. |
-| `--provider <name>` | Select `qwen`, `deepseek`, or `glm`. |
+| `--provider <name>` | Select `qwen`, `deepseek`, `glm`, or `glm-coding-plan`. |
 | `--model <id>` | Select a model from that provider. |
 | `--mode <mode>` | Select `plan`, `auto`, or `code`. |
 | `--thinking-effort <effort>` | Select `none`, `low`, `medium`, or `high`. |
@@ -420,32 +446,34 @@ Run `/help` inside EASY CODE for the exact current syntax.
 
 EASY CODE includes a reproducible Harbor adapter for the published 50-task
 Verified Mini set (25 Django and 25 Sphinx tasks). It pins the task IDs and
-Harbor dataset digest, runs one isolated GLM-5.3-Flash session with high
-thinking effort per task, and stores the Python environment, caches, packages,
-jobs, patches, and grader
-results under `F:\easy-code-bench\swe-bench-verified-50` by default.
+Harbor dataset digest, runs one isolated GLM-5.3-Flash session through the GLM
+Coding Plan endpoint with high thinking effort per task, and stores the Python
+environment, caches, packages, jobs, patches, and grader results under
+`F:\easy-code-bench\swe-bench-verified-50` by default.
 
 ```powershell
-easy-code config set glm.api-key
+easy-code config set glm-coding-plan.api-key
 easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
 easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
-easy-code benchmark swe-bench run --limit 1 --run-id glm-5.3-flash-smoke
+easy-code benchmark swe-bench run --limit 1 --run-id glm-coding-plan-5.3-flash-smoke
 ```
 
 After the smoke task is graded successfully, start the complete run explicitly:
 
 ```powershell
 easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
-  --run-id glm-5.3-flash-verified-mini-50 --confirm-full-run
+  --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
 Docker Desktop with Linux containers is required. Its disk-image location must
 also be moved to F: if Docker images must stay off C:. The integrated runner
-uses the GLM key already saved in the operating-system credential store and
-never prints it. See the [benchmark guide](./benchmarks/swebench_verified/README.md)
-before spending credits. This 50-task community subset is not the official
-full 500-task SWE-bench Verified leaderboard track.
+uses only the separately saved GLM Coding Plan key and pins
+`https://open.bigmodel.cn/api/coding/paas/v4`; it does not read the standard
+GLM key and never prints either credential. See the
+[benchmark guide](./benchmarks/swebench_verified/README.md) before spending
+credits. This 50-task community subset is not the official full 500-task
+SWE-bench Verified leaderboard track.
 
 ## Troubleshooting
 

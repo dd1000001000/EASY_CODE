@@ -10,6 +10,10 @@ import type {
   ProviderName,
 } from "../core/types.js";
 import {
+  PROVIDER_CATALOG,
+  providerEnvironment,
+} from "../models/catalog.js";
+import {
   SystemKeyringCredentialStore,
   type ApiKeyCredentialStore,
 } from "./credentials.js";
@@ -52,6 +56,7 @@ interface EasyCodeConfigLayer {
   qwen?: ProviderConfigLayer;
   deepseek?: ProviderConfigLayer;
   glm?: ProviderConfigLayer;
+  "glm-coding-plan"?: ProviderConfigLayer;
 }
 
 export interface LoadEasyCodeConfigOptions {
@@ -122,6 +127,14 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
   const directDeepSeek = recordAt(value, "deepseek");
   const nestedGlm = recordAt(providers, "glm");
   const directGlm = recordAt(value, "glm");
+  const nestedGlmCodingPlan = {
+    ...recordAt(providers, "glmCodingPlan"),
+    ...recordAt(providers, "glm-coding-plan"),
+  };
+  const directGlmCodingPlan = {
+    ...recordAt(value, "glmCodingPlan"),
+    ...recordAt(value, "glm-coding-plan"),
+  };
 
   return compact({
     provider: value.provider,
@@ -175,6 +188,10 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
     qwen: providerLayer({ ...nestedQwen, ...directQwen }),
     deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
     glm: providerLayer({ ...nestedGlm, ...directGlm }),
+    "glm-coding-plan": providerLayer({
+      ...nestedGlmCodingPlan,
+      ...directGlmCodingPlan,
+    }),
   });
 }
 
@@ -220,6 +237,10 @@ function applyLayer(
     qwen: applyProviderLayer(base.qwen, layer.qwen),
     deepseek: applyProviderLayer(base.deepseek, layer.deepseek),
     glm: applyProviderLayer(base.glm, layer.glm),
+    "glm-coding-plan": applyProviderLayer(
+      base["glm-coding-plan"],
+      layer["glm-coding-plan"],
+    ),
   } as EasyCodeConfig;
 }
 
@@ -258,11 +279,17 @@ function assertSafeWorkspaceLayer(
     forbidden.push("deepseek.api_key");
   }
   if (layer.glm?.apiKey !== undefined) forbidden.push("glm.api_key");
+  if (layer["glm-coding-plan"]?.apiKey !== undefined) {
+    forbidden.push("glm-coding-plan.api_key");
+  }
   if (layer.qwen?.baseUrl !== undefined) forbidden.push("qwen.base_url");
   if (layer.deepseek?.baseUrl !== undefined) {
     forbidden.push("deepseek.base_url");
   }
   if (layer.glm?.baseUrl !== undefined) forbidden.push("glm.base_url");
+  if (layer["glm-coding-plan"]?.baseUrl !== undefined) {
+    forbidden.push("glm-coding-plan.base_url");
+  }
   if (layer.configDir !== undefined) forbidden.push("config_dir");
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
   if (layer.cacheDir !== undefined) forbidden.push("cache_dir");
@@ -302,6 +329,18 @@ function envInteger(
 }
 
 function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
+  const providers = Object.fromEntries(
+    PROVIDER_CATALOG.map(({ provider }) => {
+      const names = providerEnvironment(provider);
+      return [provider, compact({
+        apiKey: envValue(env, ...names.apiKey),
+        baseUrl: envValue(env, ...names.baseUrl),
+        model: envValue(env, ...names.model),
+        timeoutMs: envInteger(env, ...names.timeoutMs),
+        maxRetries: envInteger(env, ...names.maxRetries),
+      })];
+    }),
+  ) as Pick<EasyCodeConfigLayer, ProviderName>;
   return compact({
     provider: envValue(env, "EASY_CODE_PROVIDER"),
     mode: envValue(env, "EASY_CODE_MODE"),
@@ -318,27 +357,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     worktreeBaseMode: envValue(env, "EASY_CODE_WORKTREE_BASE_MODE"),
     worktreeRoot: envValue(env, "EASY_CODE_WORKTREE_ROOT"),
     maxManagedWorktrees: envInteger(env, "EASY_CODE_MAX_MANAGED_WORKTREES"),
-    qwen: compact({
-      apiKey: envValue(env, "QWEN_API_KEY", "DASHSCOPE_API_KEY"),
-      baseUrl: envValue(env, "QWEN_BASE_URL", "DASHSCOPE_BASE_URL"),
-      model: envValue(env, "QWEN_MODEL"),
-      timeoutMs: envInteger(env, "QWEN_TIMEOUT_MS"),
-      maxRetries: envInteger(env, "QWEN_MAX_RETRIES"),
-    }),
-    deepseek: compact({
-      apiKey: envValue(env, "DEEPSEEK_API_KEY"),
-      baseUrl: envValue(env, "DEEPSEEK_BASE_URL"),
-      model: envValue(env, "DEEPSEEK_MODEL"),
-      timeoutMs: envInteger(env, "DEEPSEEK_TIMEOUT_MS"),
-      maxRetries: envInteger(env, "DEEPSEEK_MAX_RETRIES"),
-    }),
-    glm: compact({
-      apiKey: envValue(env, "ZAI_API_KEY", "GLM_API_KEY", "ZHIPUAI_API_KEY"),
-      baseUrl: envValue(env, "GLM_BASE_URL", "ZAI_BASE_URL", "ZHIPUAI_BASE_URL"),
-      model: envValue(env, "GLM_MODEL"),
-      timeoutMs: envInteger(env, "GLM_TIMEOUT_MS"),
-      maxRetries: envInteger(env, "GLM_MAX_RETRIES"),
-    }),
+    ...providers,
   });
 }
 
@@ -364,16 +383,13 @@ async function credentialLayer(
     }
   };
 
-  const [qwenApiKey, deepseekApiKey, glmApiKey] = await Promise.all([
-    read("qwen", environment.qwen?.apiKey),
-    read("deepseek", environment.deepseek?.apiKey),
-    read("glm", environment.glm?.apiKey),
-  ]);
-  return {
-    qwen: compact({ apiKey: qwenApiKey }),
-    deepseek: compact({ apiKey: deepseekApiKey }),
-    glm: compact({ apiKey: glmApiKey }),
-  };
+  const entries = await Promise.all(
+    PROVIDER_CATALOG.map(async ({ provider }) => [
+      provider,
+      compact({ apiKey: await read(provider, environment[provider]?.apiKey) }),
+    ] as const),
+  );
+  return Object.fromEntries(entries) as Pick<EasyCodeConfigLayer, ProviderName>;
 }
 
 function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
@@ -395,6 +411,10 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
     glm: {
       ...config.glm,
       baseUrl: config.glm.baseUrl.replace(/\/+$/, ""),
+    },
+    "glm-coding-plan": {
+      ...config["glm-coding-plan"],
+      baseUrl: config["glm-coding-plan"].baseUrl.replace(/\/+$/, ""),
     },
   };
 }

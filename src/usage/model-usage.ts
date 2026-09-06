@@ -3,6 +3,7 @@ import type {
   ModelUsageRecord,
   ProviderUsage,
 } from "../core/types.js";
+import { isProviderName } from "../models/catalog.js";
 
 export interface ModelUsageTotals {
   requests: number;
@@ -32,8 +33,6 @@ const PURPOSES: readonly ModelUsagePurpose[] = [
   "agent_step",
   "context_compaction",
 ];
-const PROVIDERS = new Set(["qwen", "deepseek", "glm"]);
-
 function safeLabel(value: unknown, maximum = 256): value is string {
   return (
     typeof value === "string" &&
@@ -93,7 +92,7 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
     (input.actor !== "main_agent" && input.actor !== "subagent") ||
     !PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
-    !PROVIDERS.has(input.provider) ||
+    !isProviderName(input.provider) ||
     !safeLabel(input.model) ||
     !safeLabel(input.turnId) ||
     typeof input.retry !== "boolean"
