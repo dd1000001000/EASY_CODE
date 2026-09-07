@@ -1,3 +1,5 @@
+import type { VerificationKind } from "../command/types.js";
+
 /** Durable schema version for evidence extracted from one tool result. */
 export const PROGRESS_OBSERVATION_SCHEMA_VERSION = 1 as const;
 
@@ -42,6 +44,8 @@ export interface ProgressObservation {
   readonly kind: ProgressObservationKind;
   readonly confidence: "high" | "low";
   readonly outcomeClass: ProgressOutcomeClass;
+  /** Runtime-normalized category for terminal verification evidence. */
+  readonly verificationKind?: VerificationKind;
   /** Stable identity for a verification cycle; required for verified outcomes. */
   readonly verificationCycleId?: string;
   /** Runtime command handle. Running snapshots deliberately omit it. */
@@ -80,6 +84,7 @@ export interface ProgressFailureRun {
   targetKey: string;
   outcomeKey: string;
   outcomeClass: Extract<ProgressOutcomeClass, "failed" | "timed_out">;
+  verificationKind?: VerificationKind;
   /** At most PROGRESS_FAILURE_THRESHOLD distinct cycles are retained. */
   verificationCycleIds: string[];
   responseOrdinals: number[];
@@ -154,6 +159,7 @@ export interface ProgressIncident {
   targetKey: string;
   outcomeKey: string;
   outcomeClass: Extract<ProgressOutcomeClass, "failed" | "timed_out">;
+  verificationKind?: VerificationKind;
   triggerSourceEventId: string;
   triggerResponseOrdinal: number;
   verificationCycleIds: string[];
@@ -205,6 +211,7 @@ export interface ProgressGuardTrigger {
   readonly targetKey: string;
   readonly outcomeKey: string;
   readonly outcomeClass: Extract<ProgressOutcomeClass, "failed" | "timed_out">;
+  readonly verificationKind?: VerificationKind;
   readonly verificationCycleIds: readonly string[];
 }
 

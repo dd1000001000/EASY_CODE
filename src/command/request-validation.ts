@@ -8,7 +8,8 @@ export interface CommandRequestValidationFailure {
   readonly matchedRule:
     | "input.duplicate_program_argument"
     | "input.async_workaround"
-    | "input.shell_protocol";
+    | "input.shell_protocol"
+    | "input.verification_metadata";
   readonly reason: string;
   readonly recommendation: string;
 }
@@ -44,8 +45,34 @@ export function hasDuplicateProgramArgument(
 
 /** Validate mistakes that must be rejected before resolution, approval, or spawn. */
 export function validateCommandRequest(
-  input: Pick<RunCommandInput, "program" | "args">,
+  input: Pick<RunCommandInput, "program" | "args"> &
+    Partial<Pick<RunCommandInput, "intent" | "verificationKind">>,
 ): CommandRequestValidationFailure | undefined {
+  if (input.intent === "verify" && input.verificationKind === undefined) {
+    return {
+      matchedRule: "input.verification_metadata",
+      reason:
+        "Invalid verification command: verificationKind is required when intent is verify. " +
+        "The process was not started.",
+      recommendation:
+        "Choose the narrowest verificationKind: unit_test, integration_test, build, typecheck, " +
+        "lint, format_check, smoke_test, benchmark, or custom.",
+    };
+  }
+  if (
+    (input.intent === "inspect" || input.intent === "run" || input.intent === "install") &&
+    input.verificationKind !== undefined
+  ) {
+    return {
+      matchedRule: "input.verification_metadata",
+      reason:
+        `Invalid verification command: verificationKind is not allowed when intent is ${input.intent}. ` +
+        "The process was not started.",
+      recommendation:
+        "Remove verificationKind, or change intent to verify when this command is authoritative validation.",
+    };
+  }
+
   const programName = executableBasename(input.program);
   if (hasDuplicateProgramArgument(input)) {
     const asyncRecovery = ASYNC_WORKAROUND_PROGRAMS.has(programName)

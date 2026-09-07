@@ -3,13 +3,53 @@ import type { SandboxExecutionMetadata } from "../sandbox/types.js";
 import type { WorkspaceDelta } from "../workspace/snapshot.js";
 import type { CommandTimeoutBudget } from "./timeout.js";
 
-export type CommandIntent = "inspect" | "build" | "test" | "run" | "install";
+export const COMMAND_INTENTS = [
+  "inspect",
+  "build",
+  "test",
+  "verify",
+  "run",
+  "install",
+] as const;
+
+export type CommandIntent = typeof COMMAND_INTENTS[number];
+
+export const VERIFICATION_KINDS = [
+  "unit_test",
+  "integration_test",
+  "build",
+  "typecheck",
+  "lint",
+  "format_check",
+  "smoke_test",
+  "benchmark",
+  "custom",
+] as const;
+
+export type VerificationKind = typeof VERIFICATION_KINDS[number];
+
+/**
+ * Return the durable verification category for a validated command request.
+ * Legacy test/build calls remain verification commands without requiring the
+ * newer field; generic legacy tests use custom because Runtime cannot safely
+ * infer whether they are unit, integration, smoke, or benchmark checks.
+ */
+export function commandVerificationKind(
+  input: Pick<RunCommandInput, "intent" | "verificationKind">,
+): VerificationKind | undefined {
+  if (input.verificationKind) return input.verificationKind;
+  if (input.intent === "build") return "build";
+  if (input.intent === "test") return "custom";
+  return undefined;
+}
 
 export interface RunCommandInput {
   program: string;
   args?: string[];
   cwd?: string;
   intent: CommandIntent;
+  /** Required for verify; optional metadata for backward-compatible test/build calls. */
+  verificationKind?: VerificationKind;
   timeoutMs?: number;
   reason?: string;
 }

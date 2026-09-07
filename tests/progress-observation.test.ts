@@ -36,6 +36,7 @@ describe("progress observation", () => {
       responseOrdinal: 7,
       tool: "run_command",
       verificationIntent: true,
+      verificationKind: "integration_test",
       result: {
         ok: false,
         summary: "test failed",
@@ -47,11 +48,31 @@ describe("progress observation", () => {
     assert.equal(observation.kind, "verification_terminal");
     assert.equal(observation.confidence, "high");
     assert.equal(observation.outcomeClass, "failed");
+    assert.equal(observation.verificationKind, "integration_test");
     assert.equal(observation.commandId, COMMAND_ID);
     assert.equal(observation.verificationCycleId, COMMAND_ID);
     assert.match(observation.targetKey ?? "", /^sha256:[a-f0-9]{64}$/u);
     assert.match(observation.outcomeKey ?? "", /^sha256:[a-f0-9]{64}$/u);
     assert.ok(JSON.stringify(observation).length < 2_000);
+  });
+
+  it("defaults legacy test/build verification evidence to custom", () => {
+    const observation = observeToolResult({
+      sourceEventId: "event_legacy_verification",
+      sourceCallId: "call_legacy_verification",
+      scopeKey: "thread:test",
+      responseOrdinal: 8,
+      tool: "run_command",
+      verificationIntent: true,
+      result: {
+        ok: false,
+        summary: "legacy test failed",
+        data: commandOutput("exited", 1, "assertion failed"),
+      },
+    });
+
+    assert.equal(observation.kind, "verification_terminal");
+    assert.equal(observation.verificationKind, "custom");
   });
 
   it("does not let a running poll consume the terminal command de-duplication key", () => {

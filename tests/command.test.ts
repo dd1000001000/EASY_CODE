@@ -197,6 +197,10 @@ describe("command runtime", () => {
       inspectExplicitShellInvocation("cmd", ["/c", "rem start /b node"])?.valid,
       true,
     );
+    assert.equal(
+      inspectExplicitShellInvocation("cmd", ["/d", "/c", "findstr /n file", "uninspected-tail"])?.reason,
+      "cmd /c accepts exactly one structured command-string argument",
+    );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "node test.js &"])?.reason ?? "",
       /synchronous run_command/u,

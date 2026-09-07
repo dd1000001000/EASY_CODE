@@ -400,6 +400,13 @@ export function inspectExplicitShellInvocation(
     if (!(args[commandIndex + 1]?.trim())) {
       return { kind, valid: false, reason: "cmd /c requires a non-empty command string" };
     }
+    if (args.length !== commandIndex + 2) {
+      return {
+        kind,
+        valid: false,
+        reason: "cmd /c accepts exactly one structured command-string argument",
+      };
+    }
     const asynchronousReason = asynchronousShellProtocolReason(
       kind,
       args[commandIndex + 1] as string,

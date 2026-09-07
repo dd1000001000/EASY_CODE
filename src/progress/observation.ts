@@ -1,4 +1,8 @@
 import type { ToolExecutionResult } from "../core/types.js";
+import {
+  VERIFICATION_KINDS,
+  type VerificationKind,
+} from "../command/types.js";
 import { sha256 } from "../utils/hash.js";
 import {
   PROGRESS_OBSERVATION_SCHEMA_VERSION,
@@ -27,6 +31,7 @@ const OBSERVATION_KEYS = new Set([
   "kind",
   "confidence",
   "outcomeClass",
+  "verificationKind",
   "verificationCycleId",
   "commandId",
   "targetKey",
@@ -66,6 +71,8 @@ export interface ObserveToolResultInput {
   readonly result: Readonly<ToolExecutionResult>;
   /** Runtime-owned classification; ordinary inspect/install/run failures are not verification. */
   readonly verificationIntent?: boolean;
+  /** Runtime-normalized verification category; never inferred from command output text. */
+  readonly verificationKind?: VerificationKind;
   /** Optional Runtime-owned override when it has a stronger target identity. */
   readonly targetKey?: string;
   /** Optional Runtime-owned cycle identity; commandId is the default. */
@@ -269,6 +276,7 @@ function commandObservation(
     kind: "verification_terminal",
     confidence: "high",
     outcomeClass,
+    verificationKind: input.verificationKind ?? "custom",
     verificationCycleId: input.verificationCycleId ?? data.commandId,
     commandId: data.commandId,
     targetKey,
@@ -356,7 +364,9 @@ export function parseProgressObservation(
     (value.commandId !== undefined &&
       (typeof value.commandId !== "string" || !COMMAND_ID.test(value.commandId))) ||
     (value.evidenceDigest !== undefined &&
-      (typeof value.evidenceDigest !== "string" || !SHA256_DIGEST.test(value.evidenceDigest)))
+      (typeof value.evidenceDigest !== "string" || !SHA256_DIGEST.test(value.evidenceDigest))) ||
+    (value.verificationKind !== undefined &&
+      !VERIFICATION_KINDS.includes(value.verificationKind as VerificationKind))
   ) {
     throw new Error("Invalid ProgressObservation fields");
   }
@@ -391,6 +401,9 @@ export function parseProgressObservation(
   ) {
     throw new Error("Only verification observations may identify a verification cycle");
   }
+  if (kind !== "verification_terminal" && value.verificationKind !== undefined) {
+    throw new Error("Only verification observations may identify a verification kind");
+  }
   if (kind === "neutral" && value.commandId !== undefined) {
     throw new Error("Neutral observations must not consume a terminal command ID");
   }
@@ -405,6 +418,13 @@ export function parseProgressObservation(
     kind,
     confidence: value.confidence,
     outcomeClass,
+    ...(kind === "verification_terminal"
+      ? {
+          verificationKind: typeof value.verificationKind === "string"
+            ? value.verificationKind as VerificationKind
+            : "custom",
+        }
+      : {}),
     ...(typeof value.verificationCycleId === "string"
       ? { verificationCycleId: value.verificationCycleId }
       : {}),
