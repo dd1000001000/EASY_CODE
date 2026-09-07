@@ -15,4 +15,4 @@ __pycache__/
 *.db-shm
 *.db-wal
 test-api-key.txt
-PLAN.md
+/PLAN.md

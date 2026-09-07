@@ -228,6 +228,10 @@ async function resolveEmbeddingModelDirectory(options = {}) {
 
   let cacheDirectory = options.cacheDirectory;
   if (cacheDirectory === undefined) {
+    const configuredCache = process.env.EASY_CODE_CACHE_DIR?.trim();
+    if (configuredCache) cacheDirectory = configuredCache;
+  }
+  if (cacheDirectory === undefined) {
     const loadEnvPaths = options.loadEnvPaths || (() => import("env-paths"));
     const imported = await loadEnvPaths();
     const envPaths = imported && typeof imported === "object" && "default" in imported

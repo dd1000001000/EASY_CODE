@@ -18,7 +18,7 @@ The interface stays inside the terminal. Model requests go to the selected provi
 - **Mid-turn adjustments.** Send more text or images while a request is running; pending adjustments are delivered at the next safe model boundary.
 - **Image input.** Paste screenshots or attach files to supported vision models using stable `[Image #N]` labels.
 - **Durable Threads.** Resume conversations together with plans, task progress, approvals, child sessions, and execution environments.
-- **Short- and long-term memory.** Keep active conversational context while retrieving compact project facts across sessions.
+- **Layered context and memory.** Keep a bounded recent working set, recover relevant older Thread evidence with hybrid retrieval, and retain compact project facts across sessions.
 - **Task DAGs and child Agents.** Complex work can be divided into dependency-aware tasks and delegated to isolated child sessions.
 - **Git Worktree isolation and Handoff.** Run selected child tasks in managed Worktrees, preserve checkpoints, and deliver results locally or to a branch.
 - **Layered safety.** Structured tools, workspace confinement, command policy, approvals, an operating-system sandbox, and explicit Dangerous full access are separate controls.
@@ -346,7 +346,11 @@ Every conversation belongs to a durable Thread. Use:
 
 Resume restores the last recoverable state, including conversation history, accepted plans, unfinished tasks, Thread command grants, child assignments, and managed execution environments. Interrupted work is repaired into an explicit recoverable state instead of being silently replayed.
 
-Short-term memory consists of the active messages plus a model-maintained working summary. As context pressure grows, EASY CODE first advises compression, then requires it, and finally inserts a forced compression request before the provider limit is reached.
+Short-term context is assembled in layers: a deterministic execution checkpoint, the model-maintained working summary, a bounded recent-message working set, and relevant older Thread evidence. This keeps long tool logs and repeated file reads out of every request without discarding them. As context pressure grows, EASY CODE still advises model-authored compression, then requires it, and finally inserts a forced compression request before the configured limit is reached.
+
+Older user, assistant, and tool evidence is indexed incrementally inside its private Thread. Retrieval combines SQLite FTS5 keyword matches with local ONNX embeddings ranked through Orama. SQLite remains authoritative, so a missing or unavailable embedding model automatically falls back to lexical retrieval. Retrieved evidence is marked as untrusted and never replaces current messages, the task DAG, or a fresh workspace observation.
+
+Each completed turn also advances an incremental checkpoint. Resume restores the authoritative event history and then catches up only the unindexed suffix; child Agents use their own Thread-scoped context and cannot retrieve another child's private evidence.
 
 Long-term memory stores short project facts such as decisions, conventions, environment notes, and user preferences. Retrieval combines lexical and semantic relevance. The model proposes additions, revisions, and removals; writes are committed only after a successful turn and are filtered for secrets and workspace scope.
 
@@ -450,6 +454,10 @@ Harbor dataset digest, runs one isolated GLM-5.3-Flash session through the GLM
 Coding Plan endpoint with high thinking effort per task, and stores the Python
 environment, caches, packages, jobs, patches, and grader results under
 `F:\easy-code-bench\swe-bench-verified-50` by default.
+Setup also places the pinned multilingual ONNX model in that F-drive root, and
+each Trial receives a verified temporary copy so layered context uses real
+hybrid FTS5/vector retrieval without a container-side model download or a
+permanent copy in Harbor's logs.
 
 ```powershell
 easy-code config set glm-coding-plan.api-key

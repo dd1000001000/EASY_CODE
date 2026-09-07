@@ -26,6 +26,10 @@ export interface BuildSystemPromptOptions {
   mode: AgentMode;
   workspaceSummary?: string;
   memories?: string | readonly string[] | readonly LongTermMemory[];
+  /** Runtime-owned deterministic resume state; never supplied by the model. */
+  workingCheckpoint?: string;
+  /** Older Thread-private evidence selected by hybrid retrieval. */
+  retrievedThreadEvidence?: string;
   taskGraph?: Readonly<TaskGraph>;
   planReview?: Readonly<PlanReviewState>;
   now?: Date;
@@ -157,6 +161,29 @@ export async function buildSystemPrompt(
         bounded(catalog, memories, 16_000),
       ),
     );
+  }
+  const workingCheckpoint = options.workingCheckpoint?.trim();
+  const retrievedThreadEvidence = options.retrievedThreadEvidence?.trim();
+  if (workingCheckpoint || retrievedThreadEvidence) {
+    sections.push(promptText(catalog, "context/layered-evidence.md"));
+    if (workingCheckpoint) {
+      sections.push(
+        untrustedBlock(
+          catalog,
+          "WORKING_CHECKPOINT",
+          bounded(catalog, workingCheckpoint, 18_000),
+        ),
+      );
+    }
+    if (retrievedThreadEvidence) {
+      sections.push(
+        untrustedBlock(
+          catalog,
+          "RETRIEVED_THREAD_EVIDENCE",
+          bounded(catalog, retrievedThreadEvidence, 20_000),
+        ),
+      );
+    }
   }
   // Keep Runtime control state last so ContextManager's head/tail fallback
   // preserves it preferentially when the system prompt itself must be bounded.

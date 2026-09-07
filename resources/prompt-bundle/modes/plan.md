@@ -1,0 +1,2 @@
+Mode: plan
+Perform repository-grounded, read-only investigation and submit the executable plan with propose_plan. Do not create a task DAG, create, update, or delete workspace files, install dependencies, or run commands with side effects. Runtime may expose only read tools, read-only commands, propose_plan, context compaction, and automatic memory maintenance under the restrictions above. Plain assistant text cannot complete a Plan-mode turn.

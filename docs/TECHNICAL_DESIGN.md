@@ -35,8 +35,8 @@ Other goals follow from these invariants:
 | CLI and terminal UI | Commander, Chalk, Node terminal APIs | Command parsing, interactive selection, retained conversation UI, and non-TTY fallback. |
 | Contract validation | TypeScript types, JSON Schema, Zod | Validation of configuration, model tool calls, persisted state, and external data. |
 | Provider access | OpenAI-compatible Chat Completions adapters | Shared message, tool, reasoning, image, retry, timeout, and usage model across Qwen, DeepSeek, standard GLM, and GLM Coding Plan. |
-| Durable storage | Append-only JSONL and SQLite WASM | Authoritative Thread history, checkpoints, query projections, memory, and audit records. |
-| Retrieval | SQLite FTS5, Orama, ONNX Runtime, Hugging Face tokenization | Hybrid lexical and semantic retrieval for long-term memory. |
+| Durable storage | Append-only JSONL and SQLite WASM | Authoritative Thread history, incremental checkpoints, query projections, memory, and audit records. |
+| Retrieval | SQLite FTS5, Orama, ONNX Runtime, Hugging Face tokenization | Hybrid lexical and semantic retrieval for older Thread evidence and long-term memory. |
 | Command execution | Structured process execution and Anthropic Sandbox Runtime | Argument-safe process launch, approval enforcement, and operating-system containment. |
 | Source isolation | Git, Worktrees, snapshots, and result artifacts | Reproducible child environments, checkpoints, dependency lineage, and Handoff. |
 | Editor integration | Bundled VS Code extension | Native clipboard image routing, Thinking interaction, and scroll-safe menu navigation. |
@@ -91,7 +91,7 @@ A normal turn follows this high-level sequence:
 1. Load trusted user configuration, credentials, the Prompt Bundle, and lower-trust project guidance.
 2. Acquire ownership of the selected Thread and make the new user message and image references durable.
 3. In Auto mode, ask a restricted controller to choose direct response, Plan, or Code.
-4. Build the model context from current state, applicable instructions, a working summary, active messages, and retrieved memories.
+4. Build layered model context from a deterministic Working Checkpoint, a bounded recent working set, relevant older Thread evidence, applicable instructions, and retrieved memories.
 5. Send a provider request with only the capabilities allowed for this step.
 6. Validate each structured response before executing tools or changing state.
 7. Record tool results, model usage, task transitions, and other durable evidence.
@@ -215,7 +215,9 @@ Clipboard handling preserves submission ordering. Multiline text remains one pas
 
 Every Thread has an append-only event history that is the authoritative record of accepted actions and transitions. SQLite maintains query-friendly projections for sessions, memory, usage, and recovery, but a stale projection cannot override newer authoritative events.
 
-Checkpoints reduce replay time. They do not replace the event history. Resume replays newer events, validates persisted identities, and reconstructs the effective state.
+Checkpoints and projections reduce recovery work, while incremental checkpointing reduces write cost. They do not replace the event history. New saves append a bounded delta against the immediately preceding journal sequence: changed settings, newly appended messages, updated file observations, new change and command records, and a forward-only compaction update. Turn, task, plan, approval, and steering transitions remain event-authoritative and cannot be introduced or erased by a checkpoint delta. Each delta is schema- and size-validated and names its exact base sequence, so a concurrent or divergent append is rejected rather than merged by guesswork.
+
+Resume accepts both these incremental records and legacy full-state snapshots. It reconstructs state in journal order, replays newer events, validates persisted identities, and repairs stale SQLite projections from the journal when necessary. This compatibility keeps existing Threads resumable while avoiding repeated serialization of an ever-growing full state during long tasks.
 
 Durable state includes:
 
@@ -233,29 +235,35 @@ Interrupted provider calls and commands are not blindly replayed. A partially ap
 
 ## 9. Context and memory
 
-### Short-term context
+### Layered Thread context
 
-The authoritative conversation remains in the Thread event history. The model request contains a bounded view composed of:
+The authoritative conversation remains in the Thread event history. Each model request receives three complementary, bounded layers:
 
-- the active system contract and current environment;
-- the latest cumulative working summary;
-- messages after the monotonic compaction boundary;
-- current task, plan, child, and adjustment control state;
-- a small set of relevant long-term facts.
+1. **Working Checkpoint.** The Runtime deterministically projects current objective and constraints, execution identity, conversation and compaction counters, recent file observations, changes, command outcomes, and active plan or task state. It is a concise resume map, not a model-authored replacement for the journal.
+2. **Recent working set.** The latest cumulative working summary and a tail of recent messages are carried verbatim up to a hard local budget. System contract, current environment, and live control state are assembled alongside this layer.
+3. **Relevant history.** Only evidence older than the recent-set boundary is eligible for retrieval. Bounded chunks from prior user requests, visible assistant work, code excerpts returned by file tools, and other tool or command evidence are ranked against the current request, active task, and recent conversation. A small deduplicated result set returns to the prompt as untrusted evidence.
 
-The model creates the cumulative summary through a dedicated context action. The Runtime limits and redacts it, verifies that the boundary only moves forward, and persists both together. A last-resort request-size fallback may omit old active messages for one request, but it does not rewrite the official summary or compaction boundary.
+This split makes the immediate task state deterministic, preserves local continuity, and recalls older evidence without repeatedly sending the whole transcript. The Working Checkpoint and retrieval index are derived aids: failure to update or query either does not supersede the journal or block an otherwise valid request.
+
+The model creates the cumulative working summary through a dedicated context action. The Runtime limits and redacts it, verifies that the boundary only moves forward, and persists both together. A last-resort request-size fallback may omit old active messages for one request, but it does not rewrite the official summary or compaction boundary.
 
 Context pressure is progressive: normal operation, a suggestion to compact, a mandatory compaction step, and finally a forced compaction request before the configured boundary is exceeded. Character budgets are used for deterministic local enforcement, while Token values shown in the UI are estimates unless reported by the provider.
 
 Thinking effort scales the local step and context budgets. These are execution safeguards, not promises about the provider's own context window.
 
-### Long-term memory
+Thread evidence retrieval is isolated by both normalized workspace identity and exact Thread identity. A parent and each child therefore have separate candidate sets even when they operate on the same workspace. Hidden provider reasoning is never indexed; assistant evidence contains only visible answer text and explicit tool requests. Secret filtering runs before Working Checkpoint or evidence persistence, and retrieved material remains marked as untrusted data.
+
+### Hybrid retrieval and long-term memory
+
+Within the derived retrieval plane, SQLite FTS5 is the authoritative lexical index for Thread evidence and remains available without a model download. Semantic ranking is optional: a local multilingual ONNX model produces embeddings, durable vector rows are backfilled in bounded batches, and an in-memory Orama index caches compatible vectors for ranking. Lexical and semantic candidates are fused with importance and recency signals, then deduplicated into a small top set.
+
+The Orama cache is generation-checked and fully rebuildable. Missing, incompatible, corrupt, or unavailable embeddings disable the semantic path for the process and retrieval continues through SQLite FTS5. Vector failure can reduce relevance, but cannot lose authoritative conversation state or widen the Thread boundary.
 
 Long-term memory stores short atomic facts scoped to a normalized workspace. Supported fact types include preferences, conventions, architecture, decisions, and environment notes.
 
 The model searches before proposing a write. Additions, revisions, and removals are staged during the turn and committed atomically only when the turn reaches an allowed successful boundary. Superseded and forgotten facts retain enough audit history for consistency without remaining active retrieval candidates.
 
-Retrieval is hybrid:
+Long-term-memory retrieval uses the same authority pattern:
 
 - SQLite FTS5 supplies lexical matching;
 - a local multilingual ONNX embedding model supplies semantic vectors;
@@ -352,9 +360,11 @@ EASY CODE uses several complementary reliability techniques:
 - fail-closed handling for unknown sandbox, Worktree, approval, and recovery states;
 - durable command, file-change, task, child, and model-usage audit records.
 
+The SWE-bench harness applies the same recovery principles outside the task container. Automatic retry is limited to environment-start or Agent-setup timeouts that occur before `agent.run`; these retries consume no model request and create no checkpoint for the failed setup attempt. Agent timeouts and non-zero exits never receive a fresh solving budget. Separately, after an Agent execution begins, its cleanup path captures the EASY CODE data directory together with the workspace patch and regular untracked files into an integrity-checked launcher-managed generation. An explicitly resumed Harbor job can restore a matching generation within the same job scope. The binding includes the task instruction, Harbor trial scope, base commit, package content hash, embedding-model manifest hash, provider endpoint identity, model, mode, and thinking posture; any mismatch, ambiguous parent Thread, damaged manifest, changed base commit, symlink, or special file fails closed. No generation is eligible for a different SWE-bench task. The host prepares and verifies the pinned multilingual ONNX assets once on the benchmark drive, then the trusted adapter transfers them to a per-Trial temporary cache and re-verifies them. This makes hybrid retrieval part of the evaluated configuration rather than an optional network-dependent side effect. The launcher paths remain visible to Harbor and its Docker Compose subprocess while expanding the pinned task definition, but they are not explicitly injected into the Agent process environment; the pinned dataset and Compose definition are therefore part of the trusted host boundary.
+
 The terminal exposes useful state without making logs authoritative. `/changes`, `/commands`, `/permissions`, `/tasks`, `/agents`, `/context`, `/memory`, and `/usage` are read-only views over Runtime-owned state.
 
-Token efficiency comes from model-controlled compaction, bounded memory retrieval, small DAG/result references, private child contexts, direct Auto answers, and keeping raw child logs and image bytes out of the parent prompt.
+Token efficiency comes from the deterministic Working Checkpoint, a capped recent working set, selective older-evidence retrieval, model-controlled compaction, bounded memory retrieval, small DAG/result references, private child contexts, direct Auto answers, and keeping raw child logs and image bytes out of the parent prompt.
 
 ## 14. Local data and lifecycle
 
@@ -376,7 +386,7 @@ The one-step uninstaller clears Prompt Bundle resources plus discoverable short-
 
 - **Local-first is not offline.** Project state is local, but provider inference requires network access unless a future local provider is added.
 - **Character budgets are deterministic but approximate Tokens.** Provider usage is more accurate when reported, while local estimates remain suitable for early pressure control.
-- **Hybrid memory improves relevance but adds local resources.** Lexical search remains available when embeddings are missing or rebuilding.
+- **Hybrid retrieval improves relevance but adds local resources.** SQLite FTS5 remains available when embeddings are missing, incompatible, or rebuilding.
 - **Shared children support non-Git projects but need serialized mutation.** Worktrees provide better source isolation at the cost of Git and storage complexity.
 - **Worktrees isolate source state, not process authority.** They must remain paired with capability and OS-sandbox controls.
 - **Non-streaming provider requests simplify durable step boundaries.** The UI therefore emphasizes elapsed-time activity and mid-turn adjustment rather than token streaming.

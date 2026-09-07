@@ -62,6 +62,177 @@ function primeRuntimeContextChars(
 }
 
 describe("AgentRuntime", () => {
+  it("injects layered context before the model request and checkpoints the final state", async () => {
+    const currentState = state();
+    currentState.messages = Array.from({ length: 120 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `historical-${index}-${"x".repeat(1_000)}`,
+    }));
+    let observedBoundary = 0;
+    let observedQuery = "";
+    let finalCheckpointMessages = 0;
+    let promptLayers: { checkpoint?: string; evidence?: string } = {};
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        assert.match(request.messages[0]?.content ?? "", /checkpoint-sequence-7/u);
+        assert.match(request.messages[0]?.content ?? "", /older-retrieved-evidence/u);
+        return { message: { role: "assistant", content: "done" } };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async (input) => {
+        promptLayers = {
+          checkpoint: input.workingCheckpoint,
+          evidence: input.retrievedThreadEvidence,
+        };
+        return `system ${input.workingCheckpoint ?? ""} ${input.retrievedThreadEvidence ?? ""}`;
+      },
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      getLayeredContext: async (input) => {
+        observedBoundary = input.beforeMessageIndex;
+        observedQuery = input.query;
+        return {
+          workingCheckpoint: "checkpoint-sequence-7",
+          retrievedThreadEvidence: "older-retrieved-evidence",
+        };
+      },
+      checkpointContext: async (finalState) => {
+        finalCheckpointMessages = finalState.messages.length;
+      },
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, "continue the historical task", {
+      maxSteps: 1,
+      maxContextChars: 1_600_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.ok(observedBoundary > 0);
+    assert.match(observedQuery, /continue the historical task/u);
+    assert.deepEqual(promptLayers, {
+      checkpoint: "checkpoint-sequence-7",
+      evidence: "older-retrieved-evidence",
+    });
+    assert.equal(finalCheckpointMessages, currentState.messages.length);
+    assert.equal(currentState.messages.at(-1)?.role, "assistant");
+  });
+
+  it("uses the Auto Router projection boundary for layered retrieval", async () => {
+    const currentState = state("auto");
+    currentState.messages = Array.from({ length: 14 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `prior-${index}`,
+    }));
+    const observedBoundaries: number[] = [];
+    let requestCount = 0;
+    const runtime = new AgentRuntime({
+      provider: {
+        name: "qwen",
+        model: "mock",
+        async complete() {
+          requestCount += 1;
+          if (requestCount === 1) {
+            return {
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                  id: "call_auto_boundary",
+                  type: "function",
+                  function: {
+                    name: "respond_directly",
+                    arguments: '{"content":"done"}',
+                  },
+                }],
+              },
+            };
+          }
+          throw new Error("Auto direct response should finish in one request");
+        },
+      },
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      getLayeredContext: async (input) => {
+        observedBoundaries.push(input.beforeMessageIndex);
+        return {};
+      },
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, "answer now", {
+      maxSteps: 1,
+      maxContextChars: 1_600_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.deepEqual(observedBoundaries, [0, 4]);
+  });
+
+  it("keeps the current request when layered-system reservation exceeds a low context budget", async () => {
+    const currentState = state();
+    currentState.messages = Array.from({ length: 20 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `large-history-${index}-${"x".repeat(500)}`,
+    }));
+    // Keep the old history durable but already summarized so this case tests
+    // system-layer reservation rather than the independent 90% compaction gate.
+    currentState.compactedMessageCount = currentState.messages.length;
+    currentState.workingSummary = "Earlier work was compacted.";
+    const currentRequest = "CURRENT_LOW_BUDGET_REQUEST";
+    const runtime = new AgentRuntime({
+      provider: {
+        name: "qwen",
+        model: "mock",
+        async complete(request) {
+          const lastMessage = request.messages.at(-1);
+          assert.equal(lastMessage?.role, "user");
+          assert.match(lastMessage?.content ?? "", new RegExp(currentRequest, "u"));
+          return { message: { role: "assistant", content: "done" } };
+        },
+      },
+      tools: [],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async (input) =>
+        `system ${input.workingCheckpoint ?? ""} ${input.retrievedThreadEvidence ?? ""}`,
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      getLayeredContext: async () => ({
+        workingCheckpoint: "checkpoint",
+        retrievedThreadEvidence: "retrieved evidence",
+      }),
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, currentRequest, {
+      maxSteps: 1,
+      maxContextChars: 4_096,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+  });
+
   it("notifies the UI only for main-model thinking when thinking is enabled", async () => {
     let requestCount = 0;
     const notifications: string[] = [];

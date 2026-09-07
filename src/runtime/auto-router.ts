@@ -50,6 +50,12 @@ const AUTO_ROUTE_ATTEMPTS = 2;
 const SELECT_MODE_TOOL_NAME = "select_mode";
 const RESPOND_DIRECTLY_TOOL_NAME = "respond_directly";
 
+export interface AutoRouteContextProjection {
+  readonly content: string;
+  /** First original priorMessages index represented in the projected suffix. */
+  readonly priorMessageBoundary: number;
+}
+
 /**
  * `select_mode` is a Runtime-only control tool. It is deliberately defined
  * beside the routing protocol rather than registered as an executable tool.
@@ -161,10 +167,10 @@ function boundedRouteText(value: string, limit: number): string {
   return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
 }
 
-export function buildAutoRouteContext(
+export function projectAutoRouteContext(
   context: AutoRouteContext | undefined,
-): string {
-  if (!context) return "";
+): AutoRouteContextProjection {
+  if (!context) return { content: "", priorMessageBoundary: 0 };
   const sections: string[] = [];
   const summary = sanitizeRouteContextText(
     boundedRouteText(
@@ -178,13 +184,16 @@ export function buildAutoRouteContext(
     }).trimEnd());
   }
 
-  const eligible = (context.priorMessages ?? [])
-    .filter((message): message is Extract<ChatMessage, { role: "user" | "assistant" }> =>
-      message.role === "user" || message.role === "assistant",
-    )
-    .filter((message) => Boolean(message.content?.trim()))
+  const priorMessages = context.priorMessages ?? [];
+  const eligible = priorMessages
+    .map((message, originalIndex) => ({ message, originalIndex }))
+    .filter((entry): entry is {
+      message: Extract<ChatMessage, { role: "user" | "assistant" }>;
+      originalIndex: number;
+    } => entry.message.role === "user" || entry.message.role === "assistant")
+    .filter((entry) => Boolean(entry.message.content?.trim()))
     .slice(-MAX_AUTO_ROUTE_MESSAGES)
-    .map((message) => {
+    .map(({ message, originalIndex }) => {
       const content = boundedRouteText(
         sanitizeRouteContextText(
           boundedRouteText(
@@ -194,35 +203,50 @@ export function buildAutoRouteContext(
         ),
         MAX_AUTO_ROUTE_MESSAGE_CHARS,
       );
-      return loadPromptBundleCatalog().render(
-        message.role === "user"
-          ? "controllers/prior-user.md"
-          : "controllers/prior-assistant.md",
-        { content },
-      ).trimEnd();
+      return {
+        originalIndex,
+        content: loadPromptBundleCatalog().render(
+          message.role === "user"
+            ? "controllers/prior-user.md"
+            : "controllers/prior-assistant.md",
+          { content },
+        ).trimEnd(),
+      };
     });
 
-  let remaining = MAX_AUTO_ROUTE_CONTEXT_CHARS - sections.join("\n\n").length;
-  const selected: string[] = [];
-  for (let index = eligible.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const entry = eligible[index];
-    if (!entry) continue;
-    const bounded = boundedRouteText(entry, remaining);
-    selected.unshift(bounded);
-    remaining -= bounded.length + 2;
-  }
-  sections.push(...selected);
-  if (!sections.length) return "";
   const emptyWrapper = loadPromptBundleCatalog().render("controllers/prior-thread-context.md", {
     content: "",
   }).trimEnd();
   const contentBudget = Math.max(
     0,
-    MAX_AUTO_ROUTE_CONTEXT_CHARS - (emptyWrapper.length),
+    MAX_AUTO_ROUTE_CONTEXT_CHARS - emptyWrapper.length,
   );
-  return loadPromptBundleCatalog().render("controllers/prior-thread-context.md", {
-    content: boundedRouteText(sections.join("\n\n"), contentBudget),
-  }).trimEnd();
+  let remaining = contentBudget - sections.join("\n\n").length;
+  const selected: Array<{ content: string; originalIndex: number }> = [];
+  for (let index = eligible.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const entry = eligible[index];
+    if (!entry) continue;
+    const separatorChars = sections.length || selected.length ? 2 : 0;
+    const bounded = boundedRouteText(entry.content, remaining - separatorChars);
+    if (!bounded) break;
+    selected.unshift({ ...entry, content: bounded });
+    remaining -= bounded.length + 2;
+  }
+  sections.push(...selected.map((entry) => entry.content));
+  const priorMessageBoundary = selected[0]?.originalIndex ?? priorMessages.length;
+  if (!sections.length) return { content: "", priorMessageBoundary };
+  return {
+    content: loadPromptBundleCatalog().render("controllers/prior-thread-context.md", {
+      content: sections.join("\n\n"),
+    }).trimEnd(),
+    priorMessageBoundary,
+  };
+}
+
+export function buildAutoRouteContext(
+  context: AutoRouteContext | undefined,
+): string {
+  return projectAutoRouteContext(context).content;
 }
 
 function buildRouterMessages(
