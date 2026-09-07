@@ -27,6 +27,19 @@ export function contextPressureLevel(utilization: number): ContextPressureLevel 
   return "normal";
 }
 
+/**
+ * Effective capacity of the recent active conversation. Provider context may
+ * be larger, but raw recent messages are deliberately capped so older evidence
+ * can move to the Thread-private retrieval layer. Context pressure must use
+ * this same cap or raw messages can be omitted before compaction is requested.
+ */
+export function activeWorkingSetCharBudget(maxContextChars: number): number {
+  if (!Number.isSafeInteger(maxContextChars) || maxContextChars < 1) {
+    throw new RangeError("maxContextChars must be a positive safe integer");
+  }
+  return Math.min(maxContextChars, MAX_ACTIVE_WORKING_SET_CHARS);
+}
+
 export interface ContextBuildInput {
   systemPrompt: string;
   state: Readonly<SessionState>;
@@ -37,6 +50,13 @@ export interface ContextBuildInput {
    * being selected. The final build uses the same reservation, so retrieval
    * and raw-message selection cannot leave a gap or duplicate a boundary row.
    */
+  reservedSystemPromptChars?: number;
+}
+
+export interface ContextInspectionBuildBudget {
+  /** Exact system prompt that will be sent for this request. */
+  systemPrompt: string;
+  /** The same optional reservation passed to build(). */
   reservedSystemPromptChars?: number;
 }
 
@@ -288,7 +308,9 @@ function selectContextConversation(
   const persistentSummaryMessage = persistentSummary
     ? summaryMessage(persistentSummary)
     : undefined;
-  const workingSetBudget = Math.min(Math.max(0, budget), MAX_ACTIVE_WORKING_SET_CHARS);
+  const workingSetBudget = budget > 0
+    ? activeWorkingSetCharBudget(Math.trunc(budget))
+    : 0;
   const totalConversationChars = activeMessages.reduce(
     (total, message) => total + messageChars(message),
     persistentSummaryMessage ? messageChars(persistentSummaryMessage) : 0,
@@ -437,9 +459,14 @@ export class ContextManager {
     return [budget.system, ...conversation.messages];
   }
 
-  inspect(state: SessionState, maxContextChars: number): {
+  inspect(
+    state: SessionState,
+    maxContextChars: number,
+    buildBudget?: ContextInspectionBuildBudget,
+  ): {
     messageCount: number;
     estimatedChars: number;
+    configuredBudgetChars: number;
     budgetChars: number;
     summaryChars: number;
     compactedMessageCount: number;
@@ -456,13 +483,26 @@ export class ContextManager {
       message.role === "user" ? message.images ?? [] : [],
     );
     const estimatedShortTermChars = this.estimateShortTermChars(state);
-    const utilization = maxContextChars > 0
-      ? estimatedShortTermChars / maxContextChars
-      : 0;
+    const conversationBudget = buildBudget
+      ? contextSystemBudget({
+          systemPrompt: buildBudget.systemPrompt,
+          state,
+          maxContextChars,
+          ...(buildBudget.reservedSystemPromptChars === undefined
+            ? {}
+            : { reservedSystemPromptChars: buildBudget.reservedSystemPromptChars }),
+        }).conversationBudget
+      : maxContextChars;
+    // Use the same effective conversation capacity as build(). A large system
+    // prompt or explicit retrieval reservation must raise pressure before raw
+    // active messages would otherwise be omitted from the provider request.
+    const budgetChars = activeWorkingSetCharBudget(conversationBudget);
+    const utilization = estimatedShortTermChars / budgetChars;
     return {
       messageCount: state.messages.length,
       estimatedChars: state.messages.reduce((total, message) => total + messageChars(message), 0),
-      budgetChars: maxContextChars,
+      configuredBudgetChars: maxContextChars,
+      budgetChars,
       summaryChars: state.workingSummary.length,
       compactedMessageCount: state.compactedMessageCount,
       activeMessageCount: Math.max(0, state.messages.length - state.compactedMessageCount),

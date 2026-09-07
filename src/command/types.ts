@@ -14,20 +14,17 @@ export interface RunCommandInput {
   reason?: string;
 }
 
-/** Model-facing operation accepted by the mixed synchronous/asynchronous command tool. */
-export type RunCommandToolInput =
-  | (RunCommandInput & { action?: "run" })
-  | (RunCommandInput & { action: "start" })
-  | {
-      action: "status";
-      commandId: string;
-      /** Bounded long-poll duration. This replaces shell-level sleep/poll loops. */
-      waitMs?: number;
-    }
-  | {
-      action: "cancel";
-      commandId: string;
-    };
+/** Canonical flat input for a bounded background-command status poll. */
+export interface PollCommandInput {
+  commandId: string;
+  /** Bounded long-poll duration. This replaces shell-level sleep/poll loops. */
+  waitMs?: number;
+}
+
+/** Canonical flat input for background-command cancellation. */
+export interface CancelCommandInput {
+  commandId: string;
+}
 
 export type CommandCapability =
   | "safe_inspect"
@@ -76,6 +73,26 @@ export interface WorkspaceDeltaSummary {
   truncated: boolean;
 }
 
+/** Stable model-facing failure category independent of platform error wording. */
+export type CommandFailureKind =
+  | "parameter"
+  | "policy"
+  | "approval"
+  | "sandbox"
+  | "exit"
+  | "timeout"
+  | "runtime";
+
+export interface CommandFailure {
+  kind: CommandFailureKind;
+  /** Stable, concise reason suitable for recovery decisions and tests. */
+  code: string;
+  message: string;
+  /** Whether the requested target process crossed the confirmed start boundary. */
+  processStarted: boolean;
+  retryable: boolean;
+}
+
 export interface RunCommandOutput {
   commandId: string;
   status:
@@ -99,6 +116,8 @@ export interface RunCommandOutput {
     phase: "prepare" | "initialization";
     retryable: boolean;
   };
+  /** Present for every unsuccessful terminal execution result. */
+  failure?: CommandFailure;
   executed: {
     program: string;
     args: string[];

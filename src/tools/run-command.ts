@@ -8,12 +8,13 @@ import type {
 import { CommandRuntime } from "../command/runtime.js";
 import { formatCommandTimeoutBudget } from "../command/timeout.js";
 import type {
+  CancelCommandInput,
   CommandExecutionOutput,
-  RunCommandInput,
-  RunCommandToolInput,
+  CommandFailureKind,
+  PollCommandInput,
 } from "../command/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { assertMatchingWorkspace, toolFailure } from "./base.js";
+import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 
 const commandInvocationSchema = z
@@ -29,45 +30,160 @@ const commandInvocationSchema = z
 
 const commandHandleSchema = z.string().regex(/^command_[0-9a-f-]{36}$/u);
 
-function commandInvocationProperties(): Record<string, unknown> {
-  return {
-    program: { type: "string", minLength: 1, maxLength: 4_096 },
-    args: {
-      type: "array",
-      items: { type: "string", maxLength: 16_384 },
-      maxItems: 256,
-    },
-    cwd: { type: "string", minLength: 1, maxLength: 4_096 },
-    intent: { type: "string", enum: ["inspect", "build", "test", "run", "install"] },
-    timeoutMs: { type: "integer", minimum: 1 },
-    reason: { type: "string", maxLength: 2_000 },
-  };
-}
+export const runCommandInputSchema = commandInvocationSchema;
+export const startCommandInputSchema = commandInvocationSchema;
+export const pollCommandInputSchema = z.object({
+  commandId: commandHandleSchema,
+  waitMs: z.number().int().min(0).max(30_000).optional(),
+}).strict();
+export const cancelCommandInputSchema = z.object({
+  commandId: commandHandleSchema,
+}).strict();
 
 function commandInvocationDefinition(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
-    properties: commandInvocationProperties(),
+    properties: {
+      program: { type: "string", minLength: 1, maxLength: 4_096 },
+      args: {
+        type: "array",
+        items: { type: "string", maxLength: 16_384 },
+        maxItems: 256,
+      },
+      cwd: { type: "string", minLength: 1, maxLength: 4_096 },
+      intent: { type: "string", enum: ["inspect", "build", "test", "run", "install"] },
+      timeoutMs: { type: "integer", minimum: 1 },
+      reason: { type: "string", maxLength: 2_000 },
+    },
     required: ["program", "intent"],
   };
 }
 
-export const runCommandInputSchema = z.union([
-  commandInvocationSchema.extend({ action: z.literal("run") }).strict(),
-  commandInvocationSchema.extend({ action: z.literal("start") }).strict(),
-  z.object({
-    action: z.literal("status"),
-    commandId: commandHandleSchema,
-    waitMs: z.number().int().min(0).max(30_000).optional(),
-  }).strict(),
-  z.object({
-    action: z.literal("cancel"),
-    commandId: commandHandleSchema,
-  }).strict(),
-  // Compatibility for callers using the original 1.0 synchronous contract.
-  commandInvocationSchema,
-]);
+function commandHandleDefinition(includeWait: boolean): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      commandId: { type: "string", pattern: "^command_[0-9a-f-]{36}$" },
+      ...(includeWait
+        ? { waitMs: { type: "integer", minimum: 0, maximum: 30_000 } }
+        : {}),
+    },
+    required: ["commandId"],
+  };
+}
+
+type CommandOperation = "run" | "start" | "poll" | "cancel";
+
+function commandResult(
+  output: CommandExecutionOutput,
+  operation: CommandOperation,
+  context: ToolContext,
+): ToolExecutionResult {
+  const successful = operation === "cancel"
+    ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
+    : output.status === "running" || (output.status === "exited" && output.exitCode === 0);
+  const retryableSandboxFailure =
+    output.status === "sandbox_unavailable" &&
+    output.sandboxFailure?.retryable === true;
+  const sandboxRecovery = retryableSandboxFailure
+    ? (
+        "This appears to be a transient Windows SRT initialization/ACL failure. Retry " +
+        `this exact ${operation === "start" ? "start_command" : "run_command"} once now; ` +
+        "Runtime permits only that bounded recovery attempt. Do not mark the task permanently " +
+        "blocked after this first failure."
+      )
+    : context.agentRole === "subagent"
+    ? (
+        "Do not retry a command-starting tool in this turn. Continue file work if possible; " +
+        "otherwise submit a blocked child result naming the transient sandbox condition so " +
+        "the parent can requeue the assignment."
+      )
+    : (
+        "Do not retry a command-starting tool in this turn and do not persistently block a DAG " +
+        "task solely for this transient failure. Continue with file tools or return a plain-text " +
+        "pause report; Runtime re-enables commands next turn."
+      );
+  const timeoutSummary = output.timeout
+    ? `; ${formatCommandTimeoutBudget(output.timeout)}`
+    : "";
+  const policyRecovery = output.policyDecision.recommendation
+    ? ` Recovery: ${output.policyDecision.recommendation}`
+    : "";
+  const baseSummary = output.status === "running"
+    ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
+    : operation === "cancel" && output.status === "canceled"
+      ? `Command ${output.commandId} canceled and its process tree terminated`
+    : output.status === "policy_denied"
+      ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
+    : output.status === "sandbox_unavailable"
+      ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
+        `The target process did not start. ${sandboxRecovery} ` +
+        (retryableSandboxFailure
+          ? ""
+          : "Run `easy-code sandbox doctor` outside the agent.")
+    : output.status === "spawn_failed"
+      ? `Command target did not start: ${output.failure?.message ?? output.stderr.text}`
+    : output.status === "timed_out"
+      ? "Command timed out and its process tree was terminated"
+    : output.status === "canceled"
+      ? `Command ${output.commandId} canceled and its process tree terminated`
+    : `Command exited with code ${output.exitCode}`;
+  const summary = `${baseSummary}${timeoutSummary}`;
+  return {
+    ok: successful,
+    summary,
+    data: output,
+    ...(successful ? {} : { error: summary }),
+  };
+}
+
+function validationMessage(error: z.ZodError): string {
+  return error.issues
+    .map((issue) => `${issue.path.join(".") || "input"}: ${issue.message}`)
+    .join("; ");
+}
+
+function commandToolFailure(
+  error: unknown,
+  summary: string,
+  kind: CommandFailureKind,
+  code: string,
+): ToolExecutionResult {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    ok: false,
+    summary,
+    error: message,
+    data: {
+      failure: {
+        kind,
+        code,
+        message,
+        processStarted: false,
+        retryable: false,
+      },
+    },
+  };
+}
+
+async function validateWorkspace(
+  workspace: WorkspaceManager,
+  context: ToolContext,
+): Promise<ToolExecutionResult | undefined> {
+  try {
+    await assertMatchingWorkspace(workspace, context);
+    return undefined;
+  } catch (error) {
+    return commandToolFailure(
+      error,
+      "Command Runtime rejected the tool context",
+      "runtime",
+      "workspace_context_mismatch",
+    );
+  }
+}
 
 export class RunCommandTool implements AgentTool {
   readonly name = "run_command" as const;
@@ -78,11 +194,6 @@ export class RunCommandTool implements AgentTool {
     function: {
       name: this.name,
       strict: true,
-      // Keep the model-facing contract flat for every provider. Some
-      // OpenAI-compatible APIs accept a root-level oneOf but then treat the
-      // function as parameterless and emit arguments="{}". Runtime retains
-      // the richer lifecycle input union for compatibility, while models use
-      // the broadly supported synchronous invocation shape.
       ...documentToolSchema(this.name, commandInvocationDefinition()),
     },
   };
@@ -94,84 +205,150 @@ export class RunCommandTool implements AgentTool {
   }
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(input);
+    if (!parsed.success) {
+      return commandToolFailure(
+        new Error(validationMessage(parsed.error)),
+        "Invalid run_command parameters",
+        "parameter",
+        "invalid_parameters",
+      );
+    }
+    const workspaceFailure = await validateWorkspace(this.workspace, context);
+    if (workspaceFailure) return workspaceFailure;
     try {
-      await assertMatchingWorkspace(this.workspace, context);
-      const parsed = this.inputSchema.parse(input) as RunCommandToolInput;
-      const action = parsed.action ?? "run";
-      let output: CommandExecutionOutput;
-      if (parsed.action === "status") {
-        output = await this.runtime.status(parsed.commandId, context, parsed.waitMs);
-      } else if (parsed.action === "cancel") {
-        output = await this.runtime.cancel(parsed.commandId, context);
-      } else {
-        const { action: _action, ...invocation } = parsed as RunCommandInput & {
-          action?: "run" | "start";
-        };
-        output = action === "start"
-          ? await this.runtime.start(invocation, context)
-          : await this.runtime.run(invocation, context);
-      }
-      const successful = action === "cancel"
-        ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
-        : output.status === "running" ||
-          (output.status === "exited" &&
-            output.exitCode === 0 &&
-            output.workspaceDelta.deleted.length === 0);
-      const retryableSandboxFailure =
-        output.status === "sandbox_unavailable" &&
-        output.sandboxFailure?.retryable === true;
-      const sandboxRecovery = retryableSandboxFailure
-        ? (
-            "This appears to be a transient Windows SRT initialization/ACL failure. Retry " +
-            "this exact command once now; Runtime permits only that bounded recovery attempt. " +
-            "Do not mark the task permanently blocked after this first failure."
-          )
-        : context.agentRole === "subagent"
-        ? (
-            "Do not retry run_command in this turn. Continue file work if possible; otherwise " +
-            "submit a blocked child result naming the transient sandbox condition so the parent " +
-            "can requeue the assignment."
-          )
-        : (
-            "Do not retry run_command in this turn and do not persistently block a DAG task " +
-            "solely for this transient failure. Continue with file tools or return a plain-text " +
-            "pause report; Runtime re-enables commands next turn."
-          );
-      const timeoutSummary = output.timeout
-        ? `; ${formatCommandTimeoutBudget(output.timeout)}`
-        : "";
-      const policyRecovery = output.policyDecision.recommendation
-        ? ` Recovery: ${output.policyDecision.recommendation}`
-        : "";
-      const baseSummary = output.status === "running"
-        ? `Command ${output.commandId} is running; use action=status with commandId and optional waitMs`
-        : action === "cancel" && output.status === "canceled"
-          ? `Command ${output.commandId} canceled`
-        : output.status === "policy_denied"
-        ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
-        : output.status === "sandbox_unavailable"
-          ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
-            `The command did not start. ${sandboxRecovery} ` +
-            (retryableSandboxFailure
-              ? ""
-              : "Run `easy-code sandbox doctor` outside the agent.")
-        : output.status === "exited"
-          ? `Command exited with code ${output.exitCode}`
-          : `Command ${output.status.replace(/_/gu, " ")}`;
-      const summary = `${baseSummary}${timeoutSummary}`;
-      return {
-        ok: successful,
-        summary,
-        data: output,
-        ...(successful ? {} : { error: summary }),
-      };
+      return commandResult(await this.runtime.run(parsed.data, context), "run", context);
     } catch (error) {
-      return toolFailure(error, "Unable to run command");
+      return commandToolFailure(error, "Unable to run command", "runtime", "runtime_error");
+    }
+  }
+}
+
+export class StartCommandTool implements AgentTool {
+  readonly name = "start_command" as const;
+  readonly mutating = true;
+  readonly inputSchema = startCommandInputSchema;
+  readonly definition: ToolDefinition = {
+    type: "function",
+    function: {
+      name: this.name,
+      strict: true,
+      ...documentToolSchema(this.name, commandInvocationDefinition()),
+    },
+  };
+
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    readonly runtime: CommandRuntime,
+  ) {}
+
+  async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(input);
+    if (!parsed.success) {
+      return commandToolFailure(
+        new Error(validationMessage(parsed.error)),
+        "Invalid start_command parameters",
+        "parameter",
+        "invalid_parameters",
+      );
+    }
+    const workspaceFailure = await validateWorkspace(this.workspace, context);
+    if (workspaceFailure) return workspaceFailure;
+    try {
+      return commandResult(await this.runtime.start(parsed.data, context), "start", context);
+    } catch (error) {
+      return commandToolFailure(error, "Unable to start command", "runtime", "runtime_error");
     }
   }
 
   /** Used by the mutation-lock wrapper to release a start lease on completion. */
   whenCommandSettled(commandId: string): Promise<void> | undefined {
     return this.runtime.whenSettled(commandId);
+  }
+}
+
+export class PollCommandTool implements AgentTool {
+  readonly name = "poll_command" as const;
+  readonly mutating = false;
+  readonly inputSchema = pollCommandInputSchema;
+  readonly definition: ToolDefinition = {
+    type: "function",
+    function: {
+      name: this.name,
+      strict: true,
+      ...documentToolSchema(this.name, commandHandleDefinition(true)),
+    },
+  };
+
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    readonly runtime: CommandRuntime,
+  ) {}
+
+  async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(input);
+    if (!parsed.success) {
+      return commandToolFailure(
+        new Error(validationMessage(parsed.error)),
+        "Invalid poll_command parameters",
+        "parameter",
+        "invalid_parameters",
+      );
+    }
+    const workspaceFailure = await validateWorkspace(this.workspace, context);
+    if (workspaceFailure) return workspaceFailure;
+    const request: PollCommandInput = parsed.data;
+    try {
+      return commandResult(
+        await this.runtime.status(request.commandId, context, request.waitMs),
+        "poll",
+        context,
+      );
+    } catch (error) {
+      return commandToolFailure(error, "Unable to poll command", "runtime", "unknown_handle");
+    }
+  }
+}
+
+export class CancelCommandTool implements AgentTool {
+  readonly name = "cancel_command" as const;
+  readonly mutating = true;
+  readonly inputSchema = cancelCommandInputSchema;
+  readonly definition: ToolDefinition = {
+    type: "function",
+    function: {
+      name: this.name,
+      strict: true,
+      ...documentToolSchema(this.name, commandHandleDefinition(false)),
+    },
+  };
+
+  constructor(
+    private readonly workspace: WorkspaceManager,
+    readonly runtime: CommandRuntime,
+  ) {}
+
+  async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
+    const parsed = this.inputSchema.safeParse(input);
+    if (!parsed.success) {
+      return commandToolFailure(
+        new Error(validationMessage(parsed.error)),
+        "Invalid cancel_command parameters",
+        "parameter",
+        "invalid_parameters",
+      );
+    }
+    const workspaceFailure = await validateWorkspace(this.workspace, context);
+    if (workspaceFailure) return workspaceFailure;
+    const request: CancelCommandInput = parsed.data;
+    try {
+      return commandResult(
+        await this.runtime.cancel(request.commandId, context),
+        "cancel",
+        context,
+      );
+    } catch (error) {
+      return commandToolFailure(error, "Unable to cancel command", "runtime", "unknown_handle");
+    }
   }
 }

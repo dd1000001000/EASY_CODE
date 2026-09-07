@@ -2,7 +2,10 @@ import { lstat, mkdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { FileVersion, ToolContext } from "../core/types.js";
-import type { WorkspaceManager } from "../workspace/manager.js";
+import type {
+  VerifiedWorkspaceFileState,
+  WorkspaceManager,
+} from "../workspace/manager.js";
 import type { ExistingPathKind, ResolveExistingOptions } from "../workspace/path-guard.js";
 
 /**
@@ -233,8 +236,11 @@ export function invalidateFileToolReadVersion(
 export async function refreshWorkspaceForFileToolTarget(
   manager: WorkspaceManager,
   target: FileToolTarget,
+  state?: VerifiedWorkspaceFileState,
 ): Promise<void> {
-  if (target.workspaceRelative) await manager.refreshManifest();
+  if (target.workspaceRelative) {
+    manager.updateManifestForVerifiedFile(target.workspaceRelative, state);
+  }
 }
 
 let hostMutationTail: Promise<void> = Promise.resolve();

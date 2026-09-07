@@ -22,6 +22,7 @@ import {
 } from "../src/models/catalog.js";
 import {
   THINKING_EFFORT_BUDGET_MULTIPLIERS,
+  THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS,
   THINKING_EFFORT_STEP_LIMITS,
   thinkingEffortBudget,
   thinkingEffortContextCharLimit,
@@ -264,7 +265,7 @@ describe("model catalog", () => {
     );
   });
 
-  it("scales the default step and context budgets by thinking effort", () => {
+  it("scales step budgets while keeping one compaction limit for every effort", () => {
     assert.deepEqual(THINKING_EFFORT_BUDGET_MULTIPLIERS, {
       none: 1,
       low: 1,
@@ -277,14 +278,20 @@ describe("model catalog", () => {
       medium: 80,
       high: 160,
     });
+    assert.deepEqual(THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS, {
+      none: 1,
+      low: 1,
+      medium: 1,
+      high: 1,
+    });
     assert.equal(thinkingEffortStepLimit("none"), 40);
     assert.equal(thinkingEffortStepLimit("low"), 40);
     assert.equal(thinkingEffortStepLimit("medium"), 80);
     assert.equal(thinkingEffortStepLimit("high"), 160);
-    assert.equal(thinkingEffortContextCharLimit("none"), 400_000);
-    assert.equal(thinkingEffortContextCharLimit("low"), 400_000);
-    assert.equal(thinkingEffortContextCharLimit("medium"), 800_000);
-    assert.equal(thinkingEffortContextCharLimit("high"), 1_600_000);
+    assert.equal(thinkingEffortContextCharLimit("none"), 100_000);
+    assert.equal(thinkingEffortContextCharLimit("low"), 100_000);
+    assert.equal(thinkingEffortContextCharLimit("medium"), 100_000);
+    assert.equal(thinkingEffortContextCharLimit("high"), 100_000);
   });
 
   it("scales custom none/low bases and rejects invalid or overflowing budgets", () => {
@@ -292,8 +299,8 @@ describe("model catalog", () => {
     assert.equal(thinkingEffortStepLimit("low", 25), 25);
     assert.equal(thinkingEffortStepLimit("medium", 25), 50);
     assert.equal(thinkingEffortStepLimit("high", 25), 100);
-    assert.equal(thinkingEffortContextCharLimit("medium", 123_456), 246_912);
-    assert.equal(thinkingEffortContextCharLimit("high", 123_456), 493_824);
+    assert.equal(thinkingEffortContextCharLimit("medium", 123_456), 123_456);
+    assert.equal(thinkingEffortContextCharLimit("high", 123_456), 123_456);
 
     for (const invalid of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       assert.throws(
@@ -304,6 +311,10 @@ describe("model catalog", () => {
     assert.throws(
       () => thinkingEffortBudget("high", Number.MAX_SAFE_INTEGER),
       /exceeds the safe integer range/u,
+    );
+    assert.throws(
+      () => thinkingEffortContextCharLimit("high", 0),
+      /positive safe integer/u,
     );
   });
 

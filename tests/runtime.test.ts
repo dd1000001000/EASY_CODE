@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, it } from "./harness.js";
-import { ContextManager } from "../src/context/manager.js";
+import {
+  ContextManager,
+  MAX_ACTIVE_WORKING_SET_CHARS,
+} from "../src/context/manager.js";
 import type {
   AgentTool,
   EventRecord,
@@ -64,10 +67,34 @@ function primeRuntimeContextChars(
 describe("AgentRuntime", () => {
   it("injects layered context before the model request and checkpoints the final state", async () => {
     const currentState = state();
+    currentState.goal = "Keep the release migration safe";
+    currentState.constraints = ["Do not lose the rollback requirement"];
     currentState.messages = Array.from({ length: 120 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
       content: `historical-${index}-${"x".repeat(1_000)}`,
     }));
+    currentState.compactedMessageCount = 60;
+    currentState.workingSummary = "The first sixty messages were compacted.";
+    currentState.changes.push({
+      path: "src/release.ts",
+      operation: "update",
+      beforeHash: "a".repeat(64),
+      afterHash: "b".repeat(64),
+      source: "file_tool",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+    });
+    currentState.commands.push({
+      id: "command_release_test",
+      program: "npm",
+      args: ["test"],
+      cwd: process.cwd(),
+      status: "exited",
+      exitCode: 1,
+      durationMs: 12,
+      timestamp: new Date().toISOString(),
+      summary: "release migration test failed at rollback assertion",
+    });
     let observedBoundary = 0;
     let observedQuery = "";
     let finalCheckpointMessages = 0;
@@ -76,7 +103,9 @@ describe("AgentRuntime", () => {
       name: "qwen",
       model: "mock",
       async complete(request) {
-        assert.match(request.messages[0]?.content ?? "", /checkpoint-sequence-7/u);
+        assert.match(request.messages[0]?.content ?? "", /pinnedCurrentState/u);
+        assert.match(request.messages[0]?.content ?? "", /continue the historical task/u);
+        assert.match(request.messages[0]?.content ?? "", /src\/release\.ts/u);
         assert.match(request.messages[0]?.content ?? "", /older-retrieved-evidence/u);
         return { message: { role: "assistant", content: "done" } };
       },
@@ -117,13 +146,16 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
+    assert.equal(result.reason, "success", result.text);
     assert.ok(observedBoundary > 0);
     assert.match(observedQuery, /continue the historical task/u);
-    assert.deepEqual(promptLayers, {
-      checkpoint: "checkpoint-sequence-7",
-      evidence: "older-retrieved-evidence",
-    });
+    assert.match(promptLayers.checkpoint ?? "", /pinnedCurrentState/u);
+    assert.match(promptLayers.checkpoint ?? "", /rollback requirement/u);
+    assert.equal(promptLayers.evidence, "older-retrieved-evidence");
+    assert.match(observedQuery, /LATEST_FAILURE/u);
+    assert.match(observedQuery, /rollback assertion/u);
+    assert.match(observedQuery, /CURRENT_DIFF_AND_PATH_EVIDENCE/u);
+    assert.match(observedQuery, /src\/release\.ts/u);
     assert.equal(finalCheckpointMessages, currentState.messages.length);
     assert.equal(currentState.messages.at(-1)?.role, "assistant");
   });
@@ -732,6 +764,9 @@ describe("AgentRuntime", () => {
       "update_file",
       "delete_file",
       "run_command",
+      "start_command",
+      "poll_command",
+      "cancel_command",
       "manage_tasks",
       "propose_plan",
       "compact_context",
@@ -952,12 +987,12 @@ describe("AgentRuntime", () => {
     let requests = 0;
     let running = true;
     let sawRuntimePrompt = false;
-    const runCommand: AgentTool = {
-      name: "run_command",
-      mutating: true,
+    const pollCommand: AgentTool = {
+      name: "poll_command",
+      mutating: false,
       definition: {
         type: "function",
-        function: { name: "run_command", description: "command", parameters: {} },
+        function: { name: "poll_command", description: "poll command", parameters: {} },
       },
       async execute() {
         running = false;
@@ -988,10 +1023,10 @@ describe("AgentRuntime", () => {
                   id: "status_background",
                   type: "function",
                   function: {
-                    name: "run_command",
+                    name: "poll_command",
                     arguments: JSON.stringify({
-                      action: "status",
                       commandId: "command_00000000-0000-4000-8000-000000000000",
+                      waitMs: 1_000,
                     }),
                   },
                 }],
@@ -1007,7 +1042,7 @@ describe("AgentRuntime", () => {
           };
         },
       },
-      tools: [runCommand],
+      tools: [pollCommand],
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1057,7 +1092,7 @@ describe("AgentRuntime", () => {
             taskId: task.id,
             reason: "A concrete external dependency is unavailable",
           };
-      const call = (id: string, name: "manage_tasks" | "run_command", input: unknown) => ({
+      const call = (id: string, name: "manage_tasks" | "poll_command", input: unknown) => ({
         id,
         type: "function" as const,
         function: { name, arguments: JSON.stringify(input) },
@@ -1066,7 +1101,7 @@ describe("AgentRuntime", () => {
         { message: { role: "assistant", content: null, tool_calls: [call("create", "manage_tasks", { action: "create", goal: "Verify safely", tasks: [task] })] } },
         { message: { role: "assistant", content: null, tool_calls: [call("start", "manage_tasks", { action: "start", taskId: task.id })] } },
         { message: { role: "assistant", content: null, tool_calls: [call("premature_terminal", "manage_tasks", terminalInput)] } },
-        { message: { role: "assistant", content: null, tool_calls: [call("status", "run_command", { action: "status", commandId: "command_00000000-0000-4000-8000-000000000000" })] } },
+        { message: { role: "assistant", content: null, tool_calls: [call("status", "poll_command", { commandId: "command_00000000-0000-4000-8000-000000000000", waitMs: 1_000 })] } },
         { message: { role: "assistant", content: null, tool_calls: [call("terminal", "manage_tasks", terminalInput)] } },
         { message: { role: "assistant", content: "Terminal result is now safe.", tool_calls: [] } },
       ];
@@ -1092,11 +1127,11 @@ describe("AgentRuntime", () => {
         tools: [
           new ManageTasksTool(),
           {
-            name: "run_command",
-            mutating: true,
+            name: "poll_command",
+            mutating: false,
             definition: {
               type: "function",
-              function: { name: "run_command", description: "command", parameters: {} },
+              function: { name: "poll_command", description: "poll command", parameters: {} },
             },
             async execute() {
               running = false;
@@ -2169,8 +2204,76 @@ describe("AgentRuntime", () => {
     assert.equal(eventTypes.includes("message.user.synthetic"), false);
   });
 
-  it("requires compaction at exactly 80% and restores normal tools afterward", async () => {
+  it("requires compaction before a large system prompt can evict active messages", async () => {
     const maxContextChars = 20_000;
+    const input = "Continue with the current request.";
+    const currentState = state();
+    primeRuntimeContextChars(
+      currentState,
+      input,
+      7_000,
+      "SYSTEM_BUDGET_HISTORY_MARKER",
+    );
+    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_system_budget_compaction",
+                type: "function",
+                function: {
+                  name: "compact_context",
+                  arguments: JSON.stringify({
+                    summary: "Keep the current request and its verified working state.",
+                  }),
+                },
+              }],
+            },
+          };
+        }
+        return { message: { role: "assistant", content: "done", tool_calls: [] } };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      tools: [new CompactContextTool()],
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => `system-${"s".repeat(11_000)}`,
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+    });
+
+    const result = await runtime.run(currentState, input, {
+      maxSteps: 1,
+      maxContextChars,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+
+    assert.equal(result.reason, "success");
+    assert.equal(requests.length, 2);
+    assert.deepEqual(
+      requests[0]?.tools?.map((tool) => tool.function.name),
+      ["compact_context"],
+    );
+    assert.match(
+      requests[0]?.messages[0]?.content ?? "",
+      /RUNTIME_CONTEXT_COMPACTION_REQUIRED/u,
+    );
+  });
+
+  it("requires compaction at exactly 80% and restores normal tools afterward", async () => {
+    const maxContextChars = 400_000;
     const input = "Continue after reducing the active context.";
     const historyMarker = "REQUIRED_OLD_HISTORY_MARKER";
     const modelSummary = "Objective: continue safely. Next step: return the verified result.";
@@ -2221,7 +2324,7 @@ describe("AgentRuntime", () => {
     primeRuntimeContextChars(
       currentState,
       input,
-      maxContextChars * 0.8,
+      MAX_ACTIVE_WORKING_SET_CHARS * 0.8,
       historyMarker,
     );
     const runtime = new AgentRuntime({
@@ -2263,7 +2366,10 @@ describe("AgentRuntime", () => {
       requests[0]?.tools?.map((tool) => tool.function.name),
       ["compact_context"],
     );
-    assert.deepEqual(promptToolNames[0], ["compact_context"]);
+    // Runtime first budgets against the complete ordinary prompt, then emits
+    // the compact-only prompt selected by that pressure decision.
+    assert.deepEqual(promptToolNames[0], ["compact_context", "read_file"]);
+    assert.deepEqual(promptToolNames[1], ["compact_context"]);
     assert.match(
       requests[0]?.messages[0]?.content ?? "",
       /RUNTIME_CONTEXT_COMPACTION_REQUIRED/u,
@@ -2272,7 +2378,7 @@ describe("AgentRuntime", () => {
       requests[1]?.tools?.map((tool) => tool.function.name),
       ["compact_context", "read_file"],
     );
-    assert.deepEqual(promptToolNames[1], ["compact_context", "read_file"]);
+    assert.deepEqual(promptToolNames[2], ["compact_context", "read_file"]);
     assert.deepEqual(usagePurposes, ["context_compaction", "agent_step"]);
     assert.equal(
       requests[1]?.messages.some((message) => message.content?.includes(modelSummary)),

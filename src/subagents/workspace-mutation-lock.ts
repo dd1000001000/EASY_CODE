@@ -9,6 +9,7 @@ const SERIALIZED_WORKSPACE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
   "update_file",
   "delete_file",
   "run_command",
+  "start_command",
 ]);
 
 interface LockWaiter {
@@ -146,25 +147,7 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
         return tool.mutating;
       },
       execute(input, context): Promise<ToolExecutionResult> {
-        if (
-          tool.name === "run_command" &&
-          input !== null &&
-          typeof input === "object" &&
-          "action" in input &&
-          ((input as { action?: unknown }).action === "status" ||
-            (input as { action?: unknown }).action === "cancel")
-        ) {
-          // Control-plane calls must remain available while the command owns
-          // the workspace lease; they cannot launch an independent process.
-          return tool.execute(input, context);
-        }
-        if (
-          tool.name === "run_command" &&
-          input !== null &&
-          typeof input === "object" &&
-          "action" in input &&
-          (input as { action?: unknown }).action === "start"
-        ) {
+        if (tool.name === "start_command") {
           return runCommandStartWithLease(tool, input, context, lock);
         }
         return lock.runExclusive(
@@ -204,11 +187,11 @@ async function runCommandStartWithLease(
       typeof data.commandId === "string"
     ) {
       if (!hasAsyncCommandLifecycle(tool)) {
-        throw new Error("run_command start returned no Runtime completion lifecycle");
+        throw new Error("start_command returned no Runtime completion lifecycle");
       }
       const settlement = tool.whenCommandSettled(data.commandId);
       if (!settlement) {
-        throw new Error("run_command start returned an unknown Runtime command handle");
+        throw new Error("start_command returned an unknown Runtime command handle");
       }
       releaseOnCompletion = true;
       void settlement.then(release, release);

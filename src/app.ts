@@ -1678,6 +1678,8 @@ export class EasyCodeApp {
         };
       },
       checkpointContext: async (state) => {
+        await this.workspace.fullConsistencyCheck();
+        this.syncWorkspaceState();
         await this.contextArtifactIndex.checkpoint(workspaceId, state);
       },
       hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
@@ -2069,6 +2071,9 @@ export class EasyCodeApp {
         tool.name === "update_file" ||
         tool.name === "delete_file" ||
         tool.name === "run_command" ||
+        tool.name === "start_command" ||
+        tool.name === "poll_command" ||
+        tool.name === "cancel_command" ||
         tool.name === "compact_context"
       );
       childTools.push(new SubmitTaskResultTool(request.task));
@@ -2175,6 +2180,13 @@ export class EasyCodeApp {
           };
         },
         checkpointContext: async (state) => {
+          if (childWorkspace && childState) {
+            await childWorkspace.fullConsistencyCheck();
+            childState.filesRead = new Map(
+              childWorkspace.getReadVersions().map((version) => [version.path, version]),
+            );
+            childState.changes = childWorkspace.getChangeSet();
+          }
           await this.contextArtifactIndex.checkpoint(workspaceId, state);
         },
         appendEvent: async (event) => {

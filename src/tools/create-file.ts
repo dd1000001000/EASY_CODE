@@ -99,7 +99,10 @@ export class CreateFileTool implements AgentTool {
           timestamp,
         });
       }
-      await refreshWorkspaceForFileToolTarget(this.workspace, target);
+      await refreshWorkspaceForFileToolTarget(this.workspace, target, {
+        hash,
+        size: Buffer.byteLength(parsed.content, "utf8"),
+      });
 
       return toolSuccess(`Created ${target.displayPath}`, {
         path: target.displayPath,

@@ -69,6 +69,9 @@ describe("workspace file tools", () => {
           "update_file",
           "delete_file",
           "run_command",
+          "start_command",
+          "poll_command",
+          "cancel_command",
           "manage_tasks",
           "propose_plan",
           "compact_context",
@@ -177,6 +180,24 @@ describe("workspace file tools", () => {
       assert.equal(second.presentation, undefined);
       assert.equal(await readFile(path.join(root, "src", "new.ts"), "utf8"), "export {};\n");
       assert.equal(manager.getChangeSet().filter((change) => change.operation === "create").length, 1);
+    });
+  });
+
+  it("updates only the verified file-tool target in the live manifest", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "external-change.txt"), "outside the tool\n", "utf8");
+      const created = await new CreateFileTool(manager).execute(
+        { path: "created-by-tool.txt", content: "verified\n" },
+        context(root),
+      );
+
+      assert.equal(created.ok, true);
+      const manifest = manager.getManifestSnapshot();
+      assert.equal(manifest?.files.has("created-by-tool.txt"), true);
+      assert.equal(manifest?.files.has("external-change.txt"), false);
+
+      const reconciled = await manager.fullConsistencyCheck();
+      assert.deepEqual(reconciled.created.map((entry) => entry.path), ["external-change.txt"]);
     });
   });
 

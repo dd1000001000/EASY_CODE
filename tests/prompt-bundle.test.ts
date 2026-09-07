@@ -128,6 +128,9 @@ describe("Prompt Bundle infrastructure", () => {
       assert.equal(loadPromptBundleCatalog(), catalog);
       assert.match(catalog.readText("system/base.md"), /EASY CODE/u);
       assert.equal(catalog.getTool("run_command").contractVersion, "1.0.0");
+      assert.equal(catalog.getTool("start_command").contractVersion, "1.0.0");
+      assert.equal(catalog.getTool("poll_command").contractVersion, "1.0.0");
+      assert.equal(catalog.getTool("cancel_command").contractVersion, "1.0.0");
       assert.deepEqual(catalog.listTools().includes("read_file"), true);
       const binding = activePromptBundleBinding();
       assert.equal(binding.bundleVersion, catalog.manifest.bundleVersion);

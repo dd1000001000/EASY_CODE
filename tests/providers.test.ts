@@ -475,8 +475,8 @@ describe("OpenAI-compatible providers", () => {
                     id: "call_1",
                     type: "function",
                     function: {
-                      name: "read_file",
-                      arguments: '{"path":"src/index.ts"}',
+                      name: "start_command",
+                      arguments: '{"program":"node","args":["build.cjs"],"intent":"build"}',
                     },
                   },
                 ],
@@ -496,9 +496,18 @@ describe("OpenAI-compatible providers", () => {
     const tool: ToolDefinition = {
       type: "function",
       function: {
-        name: "read_file",
-        description: "Read a file",
-        parameters: { type: "object" },
+        name: "start_command",
+        description: "Start a command",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            program: { type: "string" },
+            args: { type: "array", items: { type: "string" } },
+            intent: { type: "string", enum: ["build"] },
+          },
+          required: ["program", "intent"],
+        },
       },
     };
     const provider = createProvider(config, "qwen", undefined, { transport });
@@ -514,17 +523,27 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(captured[0]?.headers.authorization, "Bearer test-qwen-key");
     const requestBody = JSON.parse(captured[0]?.body ?? "{}") as {
       model?: string;
-      tools?: unknown[];
+      tools?: Array<{ function?: ToolDefinition["function"] }>;
       max_tokens?: number;
       enable_thinking?: boolean;
       thinking_budget?: number;
     };
     assert.equal(requestBody.model, DEFAULT_QWEN_MODEL);
     assert.equal(requestBody.tools?.length, 1);
+    assert.deepEqual(requestBody.tools?.[0]?.function?.parameters, tool.function.parameters);
+    assert.equal(
+      "oneOf" in (requestBody.tools?.[0]?.function?.parameters ?? {}),
+      false,
+    );
     assert.equal(requestBody.max_tokens, 512);
     assert.equal(requestBody.enable_thinking, true);
     assert.equal(requestBody.thinking_budget, 16_384);
     assert.equal(response.message.tool_calls?.[0]?.id, "call_1");
+    assert.equal(response.message.tool_calls?.[0]?.function.name, "start_command");
+    assert.deepEqual(
+      JSON.parse(response.message.tool_calls?.[0]?.function.arguments ?? "{}"),
+      { program: "node", args: ["build.cjs"], intent: "build" },
+    );
     assert.equal(response.message.reasoning_content, "inspect first");
     assert.equal(response.finishReason, "tool_calls");
     assert.equal(response.usage?.totalTokens, 18);

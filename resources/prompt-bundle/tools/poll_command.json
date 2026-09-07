@@ -1,0 +1,10 @@
+{
+  "id": "poll_command",
+  "contractVersion": "1.0.0",
+  "description": "Read the current or terminal state of one Runtime-supervised background command owned by this agent. An optional bounded wait avoids shell-level sleep loops.",
+  "propertyDescriptions": {
+    "commandId": "The exact opaque command handle returned by start_command.",
+    "waitMs": "Optional bounded long-poll duration from 0 through 30000 milliseconds. The command's original total timeout continues independently."
+  },
+  "guidance": "Call poll_command with the unchanged commandId returned by start_command. A running result is a current bounded output snapshot, not a terminal success. Poll until Runtime reports exited, timed_out, canceled, spawn_failed, or sandbox_unavailable. Do not invent a handle or use shell sleep commands."
+}

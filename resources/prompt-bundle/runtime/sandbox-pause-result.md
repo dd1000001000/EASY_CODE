@@ -1,1 +1,1 @@
-{{prefix}}Runtime paused command-based verification for this turn because the OS sandbox failed before the command started. The current DAG task remains in progress; run_command will be available again on the next turn.
+{{prefix}}Runtime paused command-based verification for this turn because the OS sandbox failed before the command started. The current DAG task remains in progress; run_command and start_command will be available again on the next turn.

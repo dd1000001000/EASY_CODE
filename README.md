@@ -11,7 +11,7 @@ The interface stays inside the terminal. Model requests go to the selected provi
 ## Highlights
 
 - **Plan, Auto, and Code modes.** Auto lets the model choose whether to answer directly, propose a reviewable plan, or start implementation.
-- **Controlled coding tools.** Read, create, update, and delete files; run builds, tests, formatters, and supported installation commands.
+- **Controlled coding tools.** Read, create, update, and delete files; run synchronous commands or supervise long-running builds, tests, and installations through explicit start, poll, and cancel actions.
 - **Reviewable changes.** File edits are shown as line-numbered diffs with green additions and red removals.
 - **Retained terminal UI.** Conversation, live activity, tasks, child Agents, model information, and the composer stay in one structured shell interface.
 - **Thinking display.** Provider reasoning is shown in gray, collapsed by default, and can be expanded in place in the VS Code terminal.
@@ -346,7 +346,7 @@ Every conversation belongs to a durable Thread. Use:
 
 Resume restores the last recoverable state, including conversation history, accepted plans, unfinished tasks, Thread command grants, child assignments, and managed execution environments. Interrupted work is repaired into an explicit recoverable state instead of being silently replayed.
 
-Short-term context is assembled in layers: a deterministic execution checkpoint, the model-maintained working summary, a bounded recent-message working set, and relevant older Thread evidence. This keeps long tool logs and repeated file reads out of every request without discarding them. As context pressure grows, EASY CODE still advises model-authored compression, then requires it, and finally inserts a forced compression request before the configured limit is reached.
+Short-term context is assembled in layers: a deterministic execution checkpoint, the model-maintained working summary, a bounded recent-message working set, and relevant older Thread evidence. This keeps long tool logs and repeated file reads out of every request without discarding them. Pressure is measured against the smaller of the configured context limit and the recent-message working-set capacity; EASY CODE advises model-authored compression, then requires it, and finally inserts a forced request before that effective boundary is reached.
 
 Older user, assistant, and tool evidence is indexed incrementally inside its private Thread. Retrieval combines SQLite FTS5 keyword matches with local ONNX embeddings ranked through Orama. SQLite remains authoritative, so a missing or unavailable embedding model automatically falls back to lexical retrieval. Retrieved evidence is marked as untrusted and never replaces current messages, the task DAG, or a fresh workspace observation.
 
@@ -375,7 +375,7 @@ Example project configuration:
 ```toml
 [limits]
 max_steps = 40
-max_context_chars = 400000
+max_context_chars = 100000
 
 [subagents]
 isolation = "auto" # auto, shared, or worktree
@@ -385,7 +385,7 @@ base_mode = "current-snapshot" # fresh, head, or current-snapshot
 max_managed = 15
 ```
 
-`medium` doubles the configured none/low base limits and `high` multiplies them by four. See the [technical design](./docs/TECHNICAL_DESIGN.md) for configuration precedence and storage boundaries.
+`medium` doubles the configured none/low **step** limit and `high` multiplies it by four. All thinking efforts use the same configured context/compaction limit. See the [technical design](./docs/TECHNICAL_DESIGN.md) for configuration precedence and storage boundaries.
 
 Prompt text and tool descriptions live in the fixed per-user Prompt Bundle. Inspect or repair it with:
 

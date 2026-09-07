@@ -2,13 +2,18 @@ import type { AgentTool, ToolName } from "../core/types.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type { SubagentControl } from "../subagents/types.js";
-import type { CommandRuntime } from "../command/runtime.js";
+import { CommandRuntime } from "../command/runtime.js";
 import { CompactContextTool } from "./compact-context.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
 import { ReadFileTool } from "./read-file.js";
 import { ReadImageTool } from "./read-image.js";
-import { RunCommandTool } from "./run-command.js";
+import {
+  CancelCommandTool,
+  PollCommandTool,
+  RunCommandTool,
+  StartCommandTool,
+} from "./run-command.js";
 import { ManageMemoryTool } from "./manage-memory.js";
 import { ManageTasksTool } from "./manage-tasks.js";
 import { ManageSubagentsTool } from "./manage-subagents.js";
@@ -44,13 +49,17 @@ export function createDefaultTools(
     commandRuntime?: CommandRuntime;
   } = {},
 ): AgentTool[] {
+  const commandRuntime = options.commandRuntime ?? new CommandRuntime(workspaceManager);
   return [
     new ReadFileTool(workspaceManager),
     new ReadImageTool(workspaceManager),
     new CreateFileTool(workspaceManager),
     new UpdateFileTool(workspaceManager),
     new DeleteFileTool(workspaceManager),
-    new RunCommandTool(workspaceManager, options.commandRuntime),
+    new RunCommandTool(workspaceManager, commandRuntime),
+    new StartCommandTool(workspaceManager, commandRuntime),
+    new PollCommandTool(workspaceManager, commandRuntime),
+    new CancelCommandTool(workspaceManager, commandRuntime),
     new ManageTasksTool(),
     ...(options.subagentControl
       ? [new ManageSubagentsTool(options.subagentControl)]

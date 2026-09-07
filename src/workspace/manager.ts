@@ -1,4 +1,12 @@
 import type { FileChangeRecord, FileVersion } from "../core/types.js";
+import {
+  captureGitCommandBaseline,
+  captureGitWorkspaceSnapshot,
+  compareGitCommandBaseline,
+  discoverGitWorkspace,
+  type GitCommandChangeBaseline,
+  type GitWorkspaceDescriptor,
+} from "./git-change-tracker.js";
 import { WorkspacePathGuard } from "./path-guard.js";
 import {
   captureWorkspaceSnapshot,
@@ -6,6 +14,7 @@ import {
   type SnapshotOptions,
   type WorkspaceDelta,
   type WorkspaceSnapshot,
+  type WorkspaceSnapshotEntry,
 } from "./snapshot.js";
 
 export interface ManifestSummary {
@@ -32,12 +41,28 @@ export interface WorkspaceRestoreSummary {
   discardedChanges: number;
 }
 
+export interface FilesystemCommandChangeBaseline {
+  readonly kind: "filesystem";
+  readonly snapshot: WorkspaceSnapshot;
+}
+
+export type WorkspaceCommandChangeBaseline =
+  | FilesystemCommandChangeBaseline
+  | GitCommandChangeBaseline;
+
+export interface VerifiedWorkspaceFileState {
+  readonly hash: string;
+  readonly size: number;
+  readonly mtimeMs?: number;
+}
+
 /** Owns the workspace manifest, read versions and current ChangeSet. */
 export class WorkspaceManager {
   readonly pathGuard: WorkspacePathGuard;
   private readonly options: WorkspaceManagerOptions;
   private readonly readVersions = new Map<string, FileVersion>();
   private readonly changes: FileChangeRecord[] = [];
+  private gitWorkspace?: GitWorkspaceDescriptor;
   private manifest?: WorkspaceSnapshot;
 
   constructor(workspaceRoot: string, options: WorkspaceManagerOptions = {}) {
@@ -50,6 +75,7 @@ export class WorkspaceManager {
     options: WorkspaceManagerOptions = {},
   ): Promise<WorkspaceManager> {
     const manager = new WorkspaceManager(workspaceRoot, options);
+    manager.gitWorkspace = await discoverGitWorkspace(manager.pathGuard);
     await manager.refreshManifest();
     return manager;
   }
@@ -160,10 +186,133 @@ export class WorkspaceManager {
   }
 
   async captureSnapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return captureWorkspaceSnapshot(this.pathGuard, {
-      ...this.options,
-      ...(signal ? { signal } : {}),
-    });
+    if (this.gitWorkspace) {
+      try {
+        return await captureGitWorkspaceSnapshot(
+          this.gitWorkspace,
+          this.pathGuard,
+          this.options,
+          signal,
+          this.manifest?.files.keys(),
+        );
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
+        // A repository can be moved, detached or damaged while a Thread is
+        // alive. Preserve the original full-filesystem behavior as a safe
+        // fallback rather than returning a partial Git view.
+      }
+    }
+    return this.captureFilesystemSnapshot(signal);
+  }
+
+  /**
+   * Capture only the Git paths that may already differ before a command.
+   * Non-Git workspaces retain the original full-snapshot implementation.
+   */
+  async beginCommandChangeTracking(
+    signal?: AbortSignal,
+  ): Promise<WorkspaceCommandChangeBaseline> {
+    if (this.gitWorkspace) {
+      try {
+        return await captureGitCommandBaseline(
+          this.gitWorkspace,
+          this.pathGuard,
+          this.manifest?.files ?? new Map(),
+          this.options,
+          signal,
+        );
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
+      }
+    }
+    return {
+      kind: "filesystem",
+      snapshot: await this.captureFilesystemSnapshot(signal),
+    };
+  }
+
+  /** Complete one command audit and incrementally patch the verified manifest. */
+  async completeCommandChangeTracking(
+    baseline: WorkspaceCommandChangeBaseline,
+    signal?: AbortSignal,
+  ): Promise<WorkspaceDelta> {
+    if (baseline.kind === "filesystem") {
+      const after = await this.captureFilesystemSnapshot(signal);
+      return this.applyCommandSnapshots(baseline.snapshot, after);
+    }
+
+    if (this.gitWorkspace) {
+      try {
+        const comparison = await compareGitCommandBaseline(
+          this.gitWorkspace,
+          this.pathGuard,
+          baseline,
+          this.options,
+          signal,
+        );
+        const delta = diffWorkspaceSnapshots(comparison.before, comparison.after);
+        // A deletion inside the enforced workspace is an observed command
+        // result, not by itself a policy violation. Policy/approval and path
+        // boundaries are decided before process start.
+        this.recordDelta(delta, "verified");
+        this.patchManifest(delta);
+        return delta;
+      } catch (error) {
+        if (isAbortError(error, signal)) throw error;
+      }
+    }
+
+    // If Git became unavailable after the command started, compare a complete
+    // filesystem view with the last verified manifest. This can conservatively
+    // attribute an externally-created file to the command, but never loses an
+    // actual source change.
+    const before: WorkspaceSnapshot = {
+      capturedAt: baseline.capturedAt,
+      files: new Map(baseline.knownFiles),
+      truncated: baseline.truncated,
+    };
+    const after = await this.captureSnapshot(signal);
+    return this.applyCommandSnapshots(before, after);
+  }
+
+  /**
+   * Hash every relevant file and reconcile any change missed by incremental
+   * tracking. Intended for durable checkpoints and final delivery, not every
+   * command.
+   */
+  async fullConsistencyCheck(signal?: AbortSignal): Promise<WorkspaceDelta> {
+    const before = this.manifest ?? {
+      capturedAt: new Date(0).toISOString(),
+      files: new Map<string, WorkspaceSnapshotEntry>(),
+      truncated: false,
+    };
+    const after = await this.captureSnapshot(signal);
+    return this.applyRuntimeSnapshots(before, after);
+  }
+
+  /** Update the manifest from a file tool's already-verified target bytes. */
+  updateManifestForVerifiedFile(
+    filename: string,
+    state?: VerifiedWorkspaceFileState,
+  ): void {
+    const relative = this.pathGuard.normalizeRelative(filename);
+    const files = new Map(this.manifest?.files ?? []);
+    if (state) {
+      files.set(relative, {
+        path: relative,
+        kind: "file",
+        hash: state.hash,
+        size: state.size,
+        mtimeMs: state.mtimeMs ?? Date.now(),
+      });
+    } else {
+      files.delete(relative);
+    }
+    this.manifest = {
+      capturedAt: new Date().toISOString(),
+      files,
+      truncated: this.manifest?.truncated ?? false,
+    };
   }
 
   async refreshManifest(): Promise<ManifestSummary> {
@@ -201,43 +350,7 @@ export class WorkspaceManager {
 
   applyCommandSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDelta {
     const delta = diffWorkspaceSnapshots(before, after);
-    const timestamp = new Date().toISOString();
-
-    for (const entry of delta.created) {
-      this.readVersions.delete(entry.path);
-      this.recordChange({
-        path: entry.path,
-        operation: "generated",
-        afterHash: entry.hash,
-        source: "command",
-        status: "verified",
-        timestamp,
-      });
-    }
-    for (const entry of delta.updated) {
-      this.readVersions.delete(entry.after.path);
-      this.recordChange({
-        path: entry.after.path,
-        operation: "generated",
-        beforeHash: entry.before.hash,
-        afterHash: entry.after.hash,
-        source: "command",
-        status: "verified",
-        timestamp,
-      });
-    }
-    for (const entry of delta.deleted) {
-      this.readVersions.delete(entry.path);
-      this.recordChange({
-        path: entry.path,
-        operation: "deleted_by_command",
-        beforeHash: entry.hash,
-        source: "command",
-        status: "policy_violation",
-        timestamp,
-      });
-    }
-
+    this.recordDelta(delta, "verified");
     this.manifest = after;
     return delta;
   }
@@ -245,6 +358,22 @@ export class WorkspaceManager {
   /** Record a Runtime-verified handoff without treating deletions as command-policy violations. */
   applyRuntimeSnapshots(before: WorkspaceSnapshot, after: WorkspaceSnapshot): WorkspaceDelta {
     const delta = diffWorkspaceSnapshots(before, after);
+    this.recordDelta(delta, "verified");
+    this.manifest = after;
+    return delta;
+  }
+
+  private async captureFilesystemSnapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
+    return captureWorkspaceSnapshot(this.pathGuard, {
+      ...this.options,
+      ...(signal ? { signal } : {}),
+    });
+  }
+
+  private recordDelta(
+    delta: WorkspaceDelta,
+    deletionStatus: "verified" | "policy_violation",
+  ): void {
     const timestamp = new Date().toISOString();
     for (const entry of delta.created) {
       this.readVersions.delete(entry.path);
@@ -276,13 +405,28 @@ export class WorkspaceManager {
         operation: "deleted_by_command",
         beforeHash: entry.hash,
         source: "command",
-        status: "verified",
+        status: deletionStatus,
         timestamp,
       });
     }
-    this.manifest = after;
-    return delta;
   }
+
+  private patchManifest(delta: WorkspaceDelta): void {
+    const files = new Map(this.manifest?.files ?? []);
+    for (const entry of delta.created) files.set(entry.path, entry);
+    for (const entry of delta.updated) files.set(entry.after.path, entry.after);
+    for (const entry of delta.deleted) files.delete(entry.path);
+    this.manifest = {
+      capturedAt: new Date().toISOString(),
+      files,
+      truncated: (this.manifest?.truncated ?? false) || delta.truncated,
+    };
+  }
+}
+
+function isAbortError(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true ||
+    (error instanceof Error && error.name === "AbortError");
 }
 
 function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {

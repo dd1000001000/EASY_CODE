@@ -18,7 +18,7 @@ import {
   validateCommandRequest,
   type CommandRequestValidationFailure,
 } from "./request-validation.js";
-import { CommandResolver } from "./resolver.js";
+import { CommandPolicyBoundaryError, CommandResolver } from "./resolver.js";
 import { resolveCommandTimeoutBudget } from "./timeout.js";
 import {
   summarizeWorkspaceDelta,
@@ -366,9 +366,19 @@ export class CommandRuntime {
           effect: "deny",
           reason: `${policyDecision.reason}; approval prompts are disabled`,
         };
-        return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
+        return this.denied(
+          commandId,
+          startedAt,
+          resolved,
+          policyDecision,
+          context,
+          executionBackend,
+          "approval",
+          "approval_unavailable",
+        );
       }
       let approved = false;
+      let approvalUnavailable = false;
       try {
         approved = await context.requestApproval({
           id: fingerprint,
@@ -382,15 +392,25 @@ export class CommandRuntime {
           commandPreview: commandPreview(resolved),
         });
       } catch {
+        approvalUnavailable = true;
         approved = false;
       }
       if (!approved) {
         policyDecision = {
           ...policyDecision,
           effect: "deny",
-          reason: `${policyDecision.reason}; approval was not granted`,
+          reason: `${policyDecision.reason}; approval ${approvalUnavailable ? "could not be obtained" : "was not granted"}`,
         };
-        return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
+        return this.denied(
+          commandId,
+          startedAt,
+          resolved,
+          policyDecision,
+          context,
+          executionBackend,
+          "approval",
+          approvalUnavailable ? "approval_unavailable" : "approval_not_granted",
+        );
       }
     }
 
@@ -422,7 +442,7 @@ export class CommandRuntime {
       );
     }
 
-    const before = await this.workspace.captureSnapshot(context.signal);
+    const before = await this.workspace.beginCommandChangeTracking(context.signal);
     let prepared: PreparedCommand;
     try {
       prepared = await executionBackend.prepare(sandboxRequest);
@@ -637,13 +657,13 @@ export class CommandRuntime {
           return collector.finish();
         })()
       : stderrDigest;
-    // A normal turn cancellation aborts an in-progress verification scan. If
-    // the cancellation is what stopped the command, still take the final
-    // authoritative snapshot so command-side changes are never left unaudited.
-    const after = await this.workspace.captureSnapshot(
+    // A normal turn cancellation aborts an in-progress verification pass. If
+    // cancellation stopped the command, still complete the workspace audit so
+    // command-side changes are never left untracked.
+    const delta = await this.workspace.completeCommandChangeTracking(
+      before,
       context.signal?.aborted ? undefined : context.signal,
     );
-    const delta = this.workspace.applyCommandSnapshots(before, after);
 
     const status: RunCommandOutput["status"] = canceled
       ? "canceled"
@@ -656,6 +676,49 @@ export class CommandRuntime {
             : result.exitCode === undefined
               ? "spawn_failed"
               : "exited";
+    const failure: RunCommandOutput["failure"] = status === "exited" && result.exitCode !== 0
+      ? {
+          kind: "exit",
+          code: "nonzero_exit",
+          message: `Process exited with code ${String(result.exitCode)}`,
+          processStarted: true,
+          retryable: false,
+        }
+      : status === "timed_out"
+        ? {
+            kind: "timeout",
+            code: "command_timeout",
+            message: `Process exceeded the effective command timeout of ${timeoutMs}ms and was terminated`,
+            processStarted: true,
+            retryable: false,
+          }
+        : status === "canceled"
+          ? {
+              kind: "runtime",
+              code: "command_canceled",
+              message: "Process was canceled and terminated",
+              processStarted: readyObserved,
+              retryable: false,
+            }
+          : status === "spawn_failed"
+            ? {
+                kind: "runtime",
+                code: "target_spawn_failed",
+                message: targetSpawnError?.type === "target_spawn_error"
+                  ? targetSpawnError.message
+                  : "Runtime could not start the target process",
+                processStarted: false,
+                retryable: false,
+              }
+            : sandboxUnavailableMessage
+              ? {
+                  kind: "sandbox",
+                  code: "sandbox_unavailable",
+                  message: sandboxUnavailableMessage,
+                  processStarted: false,
+                  retryable: retryableSandboxFailure(sandboxUnavailableMessage),
+                }
+              : undefined;
     const output: RunCommandOutput = {
       commandId,
       status,
@@ -676,6 +739,7 @@ export class CommandRuntime {
             },
           }
         : {}),
+      ...(failure ? { failure } : {}),
       executed: this.executionSummary(resolved),
     };
 
@@ -782,6 +846,8 @@ export class CommandRuntime {
     policyDecision: CommandPolicyDecision,
     context: ToolContext,
     executionBackend: CommandExecutionBackend = this.executionBackend,
+    failureKind: "policy" | "approval" = "policy",
+    failureCode = policyDecision.matchedRule,
   ): RunCommandOutput {
     const output: RunCommandOutput = {
       commandId,
@@ -800,6 +866,13 @@ export class CommandRuntime {
         context,
         commandPreview: commandPreview(resolved),
       }),
+      failure: {
+        kind: failureKind,
+        code: failureCode,
+        message: policyDecision.reason,
+        processStarted: false,
+        retryable: false,
+      },
       executed: this.executionSummary(resolved),
     };
     this.audit(output, resolved, context, policyDecision.reason);
@@ -825,6 +898,13 @@ export class CommandRuntime {
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
       sandbox,
+      failure: {
+        kind: "runtime",
+        code: "command_canceled_before_start",
+        message: "Command was canceled before the target process started",
+        processStarted: false,
+        retryable: false,
+      },
       executed: this.executionSummary(resolved),
     };
     this.audit(output, resolved, context, "Canceled before process start");
@@ -841,6 +921,7 @@ export class CommandRuntime {
     validationFailure?: CommandRequestValidationFailure,
   ): RunCommandOutput {
     const message = sanitizeCommandOutput(error instanceof Error ? error.message : String(error));
+    const policyBoundary = error instanceof CommandPolicyBoundaryError;
     const notFound = !validationFailure && /Executable not found/iu.test(message);
     const policyDecision: CommandPolicyDecision = {
       id: createId("policy"),
@@ -849,7 +930,11 @@ export class CommandRuntime {
       risk: "destructive",
       reason: validationFailure?.reason ?? `Command resolution failed: ${message}`,
       matchedRule: validationFailure?.matchedRule ??
-        (notFound ? "resolver.not_found" : "resolver.boundary_or_schema"),
+        (policyBoundary
+          ? error.code
+          : notFound
+            ? "resolver.not_found"
+            : "resolver.boundary_or_schema"),
       ...(validationFailure?.recommendation
         ? { recommendation: validationFailure.recommendation }
         : {}),
@@ -867,6 +952,13 @@ export class CommandRuntime {
       workspaceDelta: { created: [], updated: [], deleted: [], truncated: false },
       policyDecision,
       sandbox: executionBackend.describe(),
+      failure: {
+        kind: policyBoundary ? "policy" : "parameter",
+        code: policyBoundary ? error.code : policyDecision.matchedRule,
+        message: policyDecision.reason,
+        processStarted: false,
+        retryable: false,
+      },
       executed: {
         program: sanitizeCommandOutput(input.program),
         args: redactedArgs,
@@ -924,6 +1016,13 @@ export class CommandRuntime {
       sandbox: executionBackend.describe(request),
       sandboxFailure: {
         phase: "prepare",
+        retryable: retryableSandboxFailure(message),
+      },
+      failure: {
+        kind: "sandbox",
+        code: "sandbox_prepare_failed",
+        message,
+        processStarted: false,
         retryable: retryableSandboxFailure(message),
       },
       executed: this.executionSummary(resolved),

@@ -153,6 +153,8 @@ Mutation follows an inspect-before-change protocol:
 
 Shared child Agents use serialized workspace mutation plus the same version checks. Worktree children have separate Git state, but user edits and later Handoff can still conflict.
 
+Workspace accounting is incremental on the hot path. A file tool updates the verified manifest only for the path it actually wrote. In Git repositories, command auditing asks Git for tracked, staged, unstaged, committed-during-command, untracked, and meaningful ignored candidates, then hashes only those paths. Ignored dependency, cache, and build trees remain pruned. A non-Git workspace keeps the complete filesystem-snapshot behavior as a compatibility fallback. A complete reconciliation is deferred to a durable checkpoint or final delivery boundary.
+
 ### Commands and approval
 
 Commands are represented as a resolved executable, an argument vector, and a working directory. Ordinary task text is not implicitly interpreted as a shell program.
@@ -168,6 +170,8 @@ An approval can apply once or to the same canonical executable identity for the 
 Manual and Auto approval use the OS sandbox. Sandbox preparation or launch failure blocks the command and never falls back to a direct host process.
 
 Dangerous full access is a separate, process-local posture selected by the user with a second confirmation. It bypasses command policy, approval prompts, the command sandbox, and workspace-only file restrictions. It still runs with the current OS account's permissions and ends when the user disables it or exits.
+
+Short commands use one synchronous action. Long-running work uses separate flat start, poll, and cancel actions bound to the originating Thread and Agent. Keeping these schemas independent avoids provider-sensitive union schemas while preserving one timeout budget, bounded output, process-tree cancellation, and a mandatory terminal observation before task completion.
 
 ### Credentials and sensitive data
 
@@ -249,7 +253,7 @@ The model creates the cumulative working summary through a dedicated context act
 
 Context pressure is progressive: normal operation, a suggestion to compact, a mandatory compaction step, and finally a forced compaction request before the configured boundary is exceeded. Character budgets are used for deterministic local enforcement, while Token values shown in the UI are estimates unless reported by the provider.
 
-Thinking effort scales the local step and context budgets. These are execution safeguards, not promises about the provider's own context window.
+Thinking effort scales the local step budget, while every effort uses the same configured context and compaction budget. Pressure is measured against the smaller effective recent-message capacity so compaction occurs before the rolling working set can silently omit history. These are execution safeguards, not promises about the provider's own context window.
 
 Thread evidence retrieval is isolated by both normalized workspace identity and exact Thread identity. A parent and each child therefore have separate candidate sets even when they operate on the same workspace. Hidden provider reasoning is never indexed; assistant evidence contains only visible answer text and explicit tool requests. Secret filtering runs before Working Checkpoint or evidence persistence, and retrieved material remains marked as untrusted data.
 
@@ -261,7 +265,7 @@ The Orama cache is generation-checked and fully rebuildable. Missing, incompatib
 
 Long-term memory stores short atomic facts scoped to a normalized workspace. Supported fact types include preferences, conventions, architecture, decisions, and environment notes.
 
-The model searches before proposing a write. Additions, revisions, and removals are staged during the turn and committed atomically only when the turn reaches an allowed successful boundary. Superseded and forgotten facts retain enough audit history for consistency without remaining active retrieval candidates.
+New atomic facts can be proposed together without a preliminary lookup; exact active duplicates become no-ops. Revisions and removals still require retrieval of the exact durable memory identity. All changes are staged during the turn and committed atomically only when the turn reaches an allowed successful boundary. Superseded and forgotten facts retain enough audit history for consistency without remaining active retrieval candidates.
 
 Long-term-memory retrieval uses the same authority pattern:
 

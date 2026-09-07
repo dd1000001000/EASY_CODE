@@ -6,7 +6,11 @@ import {
   type WhereCondition,
 } from "@orama/orama";
 
-import type { ChatMessage, SessionState } from "../core/types.js";
+import type {
+  ChatMessage,
+  PlanReviewState,
+  SessionState,
+} from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import type { EmbeddingProvider } from "../memory/vector-index.js";
 import type { EasyCodeStorage } from "../storage/database.js";
@@ -287,7 +291,13 @@ function artifactText(message: ChatMessage, messageIndex: number): {
 
   let title = `Tool ${message.name ?? "unknown"} result at message ${messageIndex}`;
   let content = message.content;
-  let importance = message.name === "read_file" || message.name === "run_command" ? 0.95 : 0.82;
+  let importance = message.name === "read_file" ||
+      message.name === "run_command" ||
+      message.name === "start_command" ||
+      message.name === "poll_command" ||
+      message.name === "cancel_command"
+    ? 0.95
+    : 0.82;
   try {
     const parsed = JSON.parse(message.content) as {
       summary?: unknown;
@@ -363,27 +373,140 @@ function artifactsForMessage(
   });
 }
 
-function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<string, unknown>> {
-  const graph = state.taskGraph
-    ? {
-        id: state.taskGraph.id,
-        goal: state.taskGraph.goal,
-        status: state.taskGraph.status,
-        tasks: state.taskGraph.tasks.map((task) => ({
-          id: task.id,
-          title: task.title,
-          status: task.status,
-          owner: task.owner,
-          dependencies: [...task.dependencies],
-          ...(task.blocker ? { blocker: task.blocker } : {}),
-          ...(task.completionEvidence?.length
-            ? { completionEvidence: task.completionEvidence.slice(-4) }
-            : {}),
-        })),
-      }
-    : undefined;
+function taskGraphCheckpoint(state: Readonly<SessionState>): object | undefined {
+  if (!state.taskGraph) return undefined;
   return {
-    version: 1,
+    id: state.taskGraph.id,
+    goal: state.taskGraph.goal,
+    status: state.taskGraph.status,
+    tasks: state.taskGraph.tasks.map((task) => ({
+      id: task.id,
+      title: task.title,
+      description: boundedText(task.description, 2_000),
+      status: task.status,
+      owner: task.owner,
+      dependencies: [...task.dependencies],
+      inputs: task.inputs.map((input) => boundedText(input, 1_000)),
+      expectedArtifacts: task.expectedArtifacts.map((artifact) => boundedText(artifact, 1_000)),
+      completionChecks: task.completionChecks.map((check) => boundedText(check, 1_000)),
+      failureHandling: boundedText(task.failureHandling, 1_000),
+      ...(task.blocker ? { blocker: boundedText(task.blocker, 2_000) } : {}),
+      ...(task.completionEvidence?.length
+        ? { completionEvidence: task.completionEvidence.slice(-4) }
+        : {}),
+    })),
+  };
+}
+
+function planCheckpoint(review: Readonly<PlanReviewState>): object {
+  return {
+    status: review.status,
+    proposal: {
+      id: review.proposal.id,
+      revision: review.proposal.revision,
+      title: review.proposal.title,
+      overview: boundedText(review.proposal.overview, 4_000),
+      steps: review.proposal.steps.map((step) => ({
+        title: boundedText(step.title, 1_000),
+        description: boundedText(step.description, 2_000),
+        verification: boundedText(step.verification, 2_000),
+      })),
+      proposedByTurnId: review.proposal.proposedByTurnId,
+      proposedAt: review.proposal.proposedAt,
+    },
+    ...(review.feedback ? { feedback: boundedText(review.feedback, 4_000) } : {}),
+    ...(review.approvedAt ? { approvedAt: review.approvedAt } : {}),
+  };
+}
+
+function latestFailureCheckpoint(
+  state: Readonly<SessionState>,
+): Readonly<Record<string, unknown>> | undefined {
+  let toolFailure: Readonly<Record<string, unknown>> | undefined;
+  const observedToolNames = new Set<string>();
+  const earliestMessageIndex = Math.max(0, state.messages.length - 64);
+  for (
+    let index = state.messages.length - 1;
+    index >= earliestMessageIndex;
+    index -= 1
+  ) {
+    const message = state.messages[index];
+    if (!message || message.role !== "tool") continue;
+    const toolName = message.name ?? "unknown";
+    if (observedToolNames.has(toolName)) continue;
+    // Only the latest result for each tool can be an unresolved failure. A
+    // later successful retry prevents an older failure from remaining pinned.
+    observedToolNames.add(toolName);
+    try {
+      const parsed = JSON.parse(message.content) as {
+        ok?: unknown;
+        summary?: unknown;
+        error?: unknown;
+        data?: unknown;
+      };
+      if (parsed.ok !== false && typeof parsed.error !== "string") continue;
+      const data = parsed.data && typeof parsed.data === "object"
+        ? parsed.data as Record<string, unknown>
+        : undefined;
+      toolFailure = {
+        messageIndex: index,
+        tool: toolName,
+        ...(typeof parsed.summary === "string"
+          ? { summary: boundedText(parsed.summary, 2_000) }
+          : {}),
+        ...(typeof parsed.error === "string"
+          ? { error: boundedText(parsed.error, 2_000) }
+          : {}),
+        ...(typeof data?.path === "string"
+          ? { path: boundedText(data.path, 1_000) }
+          : {}),
+      };
+      break;
+    } catch {
+      // Opaque tool output is not assumed to be a failure.
+    }
+  }
+
+  const latestCommand = state.commands.at(-1);
+  const command = latestCommand && (
+    latestCommand.status !== "exited" || latestCommand.exitCode !== 0
+  )
+    ? latestCommand
+    : undefined;
+  const blockedTask = state.taskGraph?.tasks.find((task) => task.status === "blocked");
+  if (!toolFailure && !command && !blockedTask) return undefined;
+  return {
+    ...(toolFailure ? { tool: toolFailure } : {}),
+    ...(command
+      ? {
+          command: {
+            id: command.id,
+            program: command.program,
+            cwd: command.cwd,
+            status: command.status,
+            exitCode: command.exitCode,
+            summary: boundedText(command.summary, 2_000),
+            timestamp: command.timestamp,
+          },
+        }
+      : {}),
+    ...(blockedTask
+      ? {
+          task: {
+            id: blockedTask.id,
+            title: blockedTask.title,
+            blocker: boundedText(blockedTask.blocker ?? "Task is blocked.", 2_000),
+          },
+        }
+      : {}),
+  };
+}
+
+function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<string, unknown>> {
+  const graph = taskGraphCheckpoint(state);
+  const latestFailure = latestFailureCheckpoint(state);
+  return {
+    version: 2,
     objective: state.goal ? boundedText(redactSensitiveInformation(state.goal), 12_000) : null,
     constraints: state.constraints.map((constraint) =>
       boundedText(redactSensitiveInformation(constraint), 2_000)),
@@ -399,11 +522,17 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
       compactedMessageCount: state.compactedMessageCount,
       workingSummaryHash: state.workingSummary ? sha256(state.workingSummary) : null,
     },
+    ...(latestFailure ? { latestFailure } : {}),
+    currentDiff: {
+      kind: "change_manifest",
+      order: "newest_first",
+      changes: state.changes.slice(-MAX_CHECKPOINT_CHANGES).reverse()
+        .map((change) => ({ ...change })),
+    },
     filesRead: [...state.filesRead.values()]
       .sort((left, right) => left.path.localeCompare(right.path))
       .slice(-MAX_CHECKPOINT_FILES)
       .map((file) => ({ path: file.path, hash: file.hash, readAt: file.readAt })),
-    changes: state.changes.slice(-MAX_CHECKPOINT_CHANGES).map((change) => ({ ...change })),
     commands: state.commands.slice(-MAX_CHECKPOINT_COMMANDS).map((command) => ({
       id: command.id,
       program: command.program,
@@ -417,16 +546,7 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
       ...(command.sourceTaskId ? { sourceTaskId: command.sourceTaskId } : {}),
     })),
     ...(graph ? { taskGraph: graph } : {}),
-    ...(state.planReview
-      ? {
-          planReview: {
-            status: state.planReview.status,
-            id: state.planReview.proposal.id,
-            revision: state.planReview.proposal.revision,
-            title: state.planReview.proposal.title,
-          },
-        }
-      : {}),
+    ...(state.planReview ? { planReview: planCheckpoint(state.planReview) } : {}),
   };
 }
 
@@ -1080,6 +1200,26 @@ export function renderContextCheckpoint(
     stateHash: checkpoint.stateHash,
     ...checkpoint.payload,
   }, null, 2);
+}
+
+/**
+ * Render the trusted, current execution layer independently of the derived
+ * retrieval index. This remains available when indexing fails and can also
+ * retain an approved plan after Runtime consumes the review gate for execution.
+ */
+export function renderPinnedCurrentState(
+  state: Readonly<SessionState>,
+  approvedPlanReview?: Readonly<PlanReviewState>,
+): string {
+  const payload = checkpointPayload(state);
+  const pinned = {
+    pinnedCurrentState: true,
+    ...payload,
+    ...(approvedPlanReview
+      ? { approvedPlan: planCheckpoint(approvedPlanReview) }
+      : {}),
+  };
+  return JSON.stringify(redactCheckpointValue(pinned), null, 2);
 }
 
 export function renderRetrievedContext(

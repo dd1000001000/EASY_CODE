@@ -24,8 +24,22 @@ export const THINKING_EFFORT_BUDGET_MULTIPLIERS: Readonly<Record<ThinkingEffort,
   high: 4,
 };
 
+/**
+ * Context pressure is independent of reasoning depth. A deeper reasoning
+ * setting may use more model steps, but it must not postpone compaction and
+ * allow the fixed recent-message working set to evict history first.
+ */
+export const THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS: Readonly<
+  Record<ThinkingEffort, number>
+> = {
+  none: 1,
+  low: 1,
+  medium: 1,
+  high: 1,
+};
+
 export const DEFAULT_BASE_STEP_LIMIT = 40;
-export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 400_000;
+export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 100_000;
 export const THINKING_EFFORT_TIMEOUT_MS: Readonly<Record<ThinkingEffort, number>> = {
   none: 300_000,
   low: 300_000,
@@ -63,12 +77,20 @@ export function thinkingEffortStepLimit(
   return thinkingEffortBudget(effort, baseStepLimit);
 }
 
-/** Return the context character limit derived from the configurable none/low base limit. */
+/** Return the common context character limit used by every thinking effort. */
 export function thinkingEffortContextCharLimit(
   effort: ThinkingEffort,
   baseContextCharLimit = DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
 ): number {
-  return thinkingEffortBudget(effort, baseContextCharLimit);
+  if (!Number.isSafeInteger(baseContextCharLimit) || baseContextCharLimit < 1) {
+    throw new RangeError("baseContextCharLimit must be a positive safe integer");
+  }
+  const budget =
+    baseContextCharLimit * THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS[effort];
+  if (!Number.isSafeInteger(budget)) {
+    throw new RangeError("context character limit exceeds the safe integer range");
+  }
+  return budget;
 }
 
 /** Return the default provider request timeout for the selected effort. */

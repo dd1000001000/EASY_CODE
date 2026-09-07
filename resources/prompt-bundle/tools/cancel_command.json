@@ -1,0 +1,9 @@
+{
+  "id": "cancel_command",
+  "contractVersion": "1.0.0",
+  "description": "Cancel one Runtime-supervised background command owned by this agent and wait for its process tree to terminate before returning the terminal result.",
+  "propertyDescriptions": {
+    "commandId": "The exact opaque command handle returned by start_command."
+  },
+  "guidance": "Use cancel_command only when a background command is no longer needed or should not continue. Cancellation preserves the command's terminal output and workspace delta. A handle owned by another Thread or agent is never accessible."
+}

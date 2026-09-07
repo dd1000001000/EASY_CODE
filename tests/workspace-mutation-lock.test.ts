@@ -122,36 +122,41 @@ describe("WorkspaceMutationLock", () => {
     ]);
   });
 
-  it("retains a background command lease while status and cancel bypass it", async () => {
+  it("retains a background command lease while poll and cancel bypass it", async () => {
     const settlement = deferred<void>();
     const mutationStarted = deferred<void>();
     const calls: string[] = [];
-    const command = {
-      ...fakeTool("run_command", async (input) => {
-        const action = (input as { action: string }).action;
-        calls.push(action);
-        return action === "start"
-          ? {
-              ok: true,
-              summary: "running",
-              data: { commandId: "command_00000000-0000-4000-8000-000000000000", status: "running" },
-            }
-          : result(action);
+    const start = {
+      ...fakeTool("start_command", async () => {
+        calls.push("start");
+        return {
+          ok: true,
+          summary: "running",
+          data: { commandId: "command_00000000-0000-4000-8000-000000000000", status: "running" },
+        };
       }),
       whenCommandSettled: () => settlement.promise,
     };
+    const poll = fakeTool("poll_command", async () => {
+      calls.push("poll");
+      return result("poll");
+    });
+    const cancel = fakeTool("cancel_command", async () => {
+      calls.push("cancel");
+      return result("cancel");
+    });
     const create = fakeTool("create_file", async () => {
       calls.push("create");
       mutationStarted.resolve();
       return result("created");
     });
     const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
-      [command, create],
+      [start, poll, cancel, create],
       new WorkspaceMutationLock(),
     );
 
-    await wrapped[0]!.execute({ action: "start" }, context());
-    const mutation = wrapped[1]!.execute({}, context());
+    await wrapped[0]!.execute({}, context());
+    const mutation = wrapped[3]!.execute({}, context());
     let mutationRan = false;
     void mutationStarted.promise.then(() => {
       mutationRan = true;
@@ -159,21 +164,15 @@ describe("WorkspaceMutationLock", () => {
     await Promise.resolve();
     assert.equal(mutationRan, false);
 
-    const status = await wrapped[0]!.execute(
-      { action: "status", commandId: "command_00000000-0000-4000-8000-000000000000" },
-      context(),
-    );
-    const cancel = await wrapped[0]!.execute(
-      { action: "cancel", commandId: "command_00000000-0000-4000-8000-000000000000" },
-      context(),
-    );
-    assert.equal(status.summary, "status");
-    assert.equal(cancel.summary, "cancel");
+    const statusResult = await wrapped[1]!.execute({}, context());
+    const cancelResult = await wrapped[2]!.execute({}, context());
+    assert.equal(statusResult.summary, "poll");
+    assert.equal(cancelResult.summary, "cancel");
     assert.equal(mutationRan, false);
 
     settlement.resolve();
     await mutation;
-    assert.deepEqual(calls, ["start", "status", "cancel", "create"]);
+    assert.deepEqual(calls, ["start", "poll", "cancel", "create"]);
   });
 
   it("leaves other tools unwrapped and preserves wrapped tool metadata and receiver", async () => {

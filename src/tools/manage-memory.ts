@@ -196,7 +196,6 @@ export class ManageMemoryTool implements AgentTool {
       }
 
       if (parsed.action === "remember") {
-        this.assertSearched();
         this.assertSafeWrite(parsed.content, parsed.reason);
         this.assertPlanCategory(context, parsed.category);
         return {

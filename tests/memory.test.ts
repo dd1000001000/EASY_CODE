@@ -21,7 +21,7 @@ function mutationContext(overrides: Record<string, unknown> = {}) {
 }
 
 describe("model-managed long-term memory", () => {
-  it("commits explicit memories, upserts exact content, and isolates workspaces", () => {
+  it("commits new memories, skips exact active duplicates, and isolates workspaces", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -51,7 +51,7 @@ describe("model-managed long-term memory", () => {
       assert.equal(manager.search("workspace_b", "TypeScript").length, 0);
       assert.equal(manager.search("workspace_a", "TypeScript")[0]?.confidence, 0.8);
 
-      const upserted = manager.applyModelMutations({
+      const duplicate = manager.applyModelMutations({
         ...mutationContext({ turnId: "turn_b" }),
         mutations: [{
           action: "remember",
@@ -60,10 +60,11 @@ describe("model-managed long-term memory", () => {
           reason: "The same convention was confirmed again by the user.",
         }],
       });
-      assert.equal(upserted.memoryIds[0], committed.memoryIds[0]);
+      assert.equal(duplicate.applied, 0);
+      assert.deepEqual(duplicate.memoryIds, []);
       assert.equal(manager.list("workspace_a").length, 2);
       const strictMemory = manager.get("workspace_a", committed.memoryIds[0]!);
-      assert.ok(Math.abs((strictMemory?.confidence ?? 0) - 0.83) < 1e-9);
+      assert.equal(strictMemory?.confidence, 0.8);
       const evidence = JSON.parse(strictMemory?.evidence ?? "{}") as {
         history?: Array<{ threadId: string; turnId: string; action: string }>;
       };
@@ -71,7 +72,6 @@ describe("model-managed long-term memory", () => {
         evidence.history?.map(({ threadId, turnId, action }) => ({ threadId, turnId, action })),
         [
           { threadId: "thread_a", turnId: "turn_a", action: "remember" },
-          { threadId: "thread_a", turnId: "turn_b", action: "upsert" },
         ],
       );
     } finally {
@@ -358,7 +358,8 @@ describe("model-managed long-term memory", () => {
             turnId: `turn_confirm_${index}`,
           }),
           mutations: [{
-            action: "remember",
+            action: "revise",
+            memoryId: auditSeed.memoryIds[0]!,
             category: "convention",
             content: "Repository documentation uses American English spelling.",
             reason: `The convention was reconfirmed during completed turn ${index}.`,
