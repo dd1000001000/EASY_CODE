@@ -277,8 +277,8 @@ function asynchronousShellProtocolReason(
     lexemes.some((lexeme) => lexeme.kind === "operator" && lexeme.value === "&")
   ) {
     return kind === "powershell"
-      ? "PowerShell call/background operators are disabled; run the executable directly or use run_command action=start"
-      : "Shell background operators are disabled; use run_command action=start";
+      ? "PowerShell call/background operators are disabled; run the executable directly with synchronous run_command"
+      : "Shell background operators are disabled; run the executable directly with synchronous run_command";
   }
 
   for (const segment of commandSegments(lexemes)) {
@@ -293,10 +293,10 @@ function asynchronousShellProtocolReason(
         return "Nested cmd CALL dispatch is disabled; run the executable directly";
       }
       if (name === "start") {
-        return "Detached cmd start processes are disabled; use run_command action=start";
+        return "Detached cmd start processes are disabled; run the executable directly with synchronous run_command";
       }
       if (name === "timeout" && words.slice(1).some((word) => word.toLowerCase() === "/t")) {
-        return "cmd timeout polling is disabled; use run_command action=status with waitMs";
+        return "cmd timeout polling is disabled; use timeoutMs on the real synchronous command";
       }
       if (hasNestedCommandString(first, words.slice(1))) {
         return "Nested shell command strings are disabled; use structured program and args";
@@ -312,10 +312,10 @@ function asynchronousShellProtocolReason(
 
     if (kind === "posix") {
       if (name === "nohup" || name === "disown") {
-        return "Detached nohup/disown processes are disabled; use run_command action=start";
+        return "Detached nohup/disown processes are disabled; run the executable directly with synchronous run_command";
       }
       if (name === "sleep") {
-        return "Shell sleep polling is disabled; use run_command action=status with waitMs";
+        return "Shell sleep polling is disabled; run the real command synchronously with timeoutMs when needed";
       }
       if (name === "eval") {
         return "POSIX eval command dispatch is disabled; use structured program and args";
@@ -327,16 +327,16 @@ function asynchronousShellProtocolReason(
     }
 
     if (["start-process", "start", "saps", "start-job", "sajb", "start-threadjob"].includes(name)) {
-      return "Detached PowerShell jobs/processes are disabled; use run_command action=start";
+      return "Detached PowerShell jobs/processes are disabled; run the executable directly with synchronous run_command";
     }
     if (name === "start-sleep" || name === "sleep") {
-      return "PowerShell sleep polling is disabled; use run_command action=status with waitMs";
+      return "PowerShell sleep polling is disabled; run the real command synchronously with timeoutMs when needed";
     }
     if (name === "invoke-expression" || name === "iex") {
       return "PowerShell expression dispatch is disabled; use structured program and args";
     }
     if (words.some((word) => word.toLowerCase() === "-asjob")) {
-      return "PowerShell -AsJob execution is disabled; use run_command action=start";
+      return "PowerShell -AsJob execution is disabled; run the executable directly with synchronous run_command";
     }
     if (hasNestedCommandString(commandWord, args)) {
       return "Nested shell command strings are disabled; use structured program and args";

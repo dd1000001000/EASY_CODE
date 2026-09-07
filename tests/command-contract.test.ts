@@ -113,8 +113,8 @@ describe("run_command model contract", () => {
         (result.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
         "input.async_workaround",
       );
-      assert.match(result.error ?? "", /action=start/iu);
-      assert.match(result.error ?? "", /action=status/iu);
+      assert.match(result.error ?? "", /real executable directly/iu);
+      assert.match(result.error ?? "", /timeoutMs/u);
     });
   });
 

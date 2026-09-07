@@ -50,8 +50,8 @@ export function validateCommandRequest(
   if (hasDuplicateProgramArgument(input)) {
     const asyncRecovery = ASYNC_WORKAROUND_PROGRAMS.has(programName)
       ? (
-          " Do not retry this wait/detach program; start the real command with run_command " +
-          "action=start, then use action=status with its commandId and optional waitMs."
+          " Do not retry this wait/detach program; run the real executable directly with " +
+          "structured program and args, using timeoutMs when a bounded synchronous timeout is needed."
         )
       : "";
     return {
@@ -72,8 +72,8 @@ export function validateCommandRequest(
         `Direct ${programName} wait/detach commands are disabled because they consume a tool ` +
         "call without managing the real command. The process was not started.",
       recommendation:
-        "Start the real command with run_command action=start, then use action=status with " +
-        "its commandId and optional waitMs.",
+        "Run the real executable directly with structured program and args, using timeoutMs " +
+        "when a bounded synchronous timeout is needed.",
     };
   }
 
@@ -83,8 +83,8 @@ export function validateCommandRequest(
       matchedRule: "input.shell_protocol",
       reason: `${shellInspection.reason ?? "Unsupported shell protocol"}. The process was not started.`,
       recommendation:
-        "Run the real executable directly with structured program and args. For background work, " +
-        "use action=start, observe it with action=status, and stop it with action=cancel.",
+        "Run the real executable directly with structured program and args as one synchronous " +
+        "run_command call; use timeoutMs to bound long-running work.",
     };
   }
 
