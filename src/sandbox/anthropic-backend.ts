@@ -32,7 +32,7 @@ import {
   type WindowsAclMutationProbe,
   type WindowsAclPreflight,
 } from "./windows-acl-preflight.js";
-import { WindowsSandboxProcessLock } from "./windows-process-lock.js";
+import { createDefaultWindowsSandboxProcessLock } from "./windows-process-lock.js";
 import {
   DefaultWindowsSandboxReadProbe,
   type WindowsSandboxReadProbe,
@@ -64,9 +64,7 @@ const WINDOWS_SANDBOX_SCRATCH_GRACE_MS = 60_000;
 const WINDOWS_SANDBOX_COMMAND_NAME = /^command-[0-9a-f-]{36}$/iu;
 const WINDOWS_SANDBOX_GC_NAME = /^gc-(command-[0-9a-f-]{36})-[0-9a-f-]{36}$/iu;
 const WINDOWS_SANDBOX_GATE = new AsyncGate();
-const WINDOWS_SANDBOX_PROCESS_LOCK = new WindowsSandboxProcessLock(
-  path.join(SANDBOX_BROKER_RUNTIME_PARENT, "windows-acl.lock"),
-);
+const WINDOWS_SANDBOX_PROCESS_LOCK = createDefaultWindowsSandboxProcessLock();
 
 export interface AnthropicSandboxBackendOptions {
   sensitiveReadPaths?: readonly string[];

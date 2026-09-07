@@ -14,6 +14,7 @@ import {
   extractSandboxControls,
   formatWindowsAclPreflightFailure,
   isWindowsSharedExecutablePath,
+  runWindowsProbeWorkerProcess,
   runSandboxStartupGuide,
   UnrestrictedHostBackend,
   type CommandExecutionBackend,
@@ -958,6 +959,33 @@ describe("sandbox first-interactive startup guide", () => {
 });
 
 describe("platform sandbox startup service", () => {
+  it("waits for the probe worker close event before reporting completion", async () => {
+    const grandchildDelayMs = 180;
+    const workerScript = [
+      "import('node:child_process').then(({ spawn }) => {",
+      `const child = spawn(${JSON.stringify(process.execPath)}, ` +
+        `["-e", "setTimeout(() => process.exit(0), ${String(grandchildDelayMs)})"], ` +
+        "{ detached: true, stdio: ['ignore', 1, 2] });",
+      "child.unref();",
+      "});",
+    ].join("");
+    const startedAt = Date.now();
+
+    const result = await runWindowsProbeWorkerProcess({
+      executablePath: process.execPath,
+      args: ["-e", workerScript],
+      environment: process.env,
+      timeoutMs: 2_000,
+    });
+
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.timedOut, false);
+    assert.ok(
+      Date.now() - startedAt >= 100,
+      "probe completion must wait for inherited worker stdio handles to close",
+    );
+  });
+
   it("recognizes a fully provisioned Windows sandbox", async () => {
     let verifyCalls = 0;
     let probeCommand: SandboxSystemCommand | undefined;
@@ -1008,6 +1036,27 @@ describe("platform sandbox startup service", () => {
     assert.equal(result.canSetup, false);
     assert.match(result.details.join(" "), /timed out after 37ms/iu);
     assert.match(result.details.join(" "), /process tree was terminated/iu);
+  });
+
+  it("preserves an ACL batch rollback diagnostic from a failed Windows probe worker", async () => {
+    const service = new DefaultSandboxStartupService({
+      platform: "win32",
+      environment: {},
+      loadRuntime: async () => runtimeFixture(),
+      runWindowsProbeWorker: async () => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: "srt-win acl grant exited 1: 1 of 2 paths could not be granted; batch rolled back",
+        timedOut: false,
+      }),
+    });
+
+    const result = await service.inspect();
+
+    assert.equal(result.status, "probe_failed");
+    assert.equal(result.canSetup, false);
+    assert.match(result.details.join(" "), /probe worker failed \(exit 1\)/iu);
+    assert.match(result.details.join(" "), /batch rolled back/iu);
   });
 
   it("requires Windows setup, installs once, and verifies the live result", async () => {

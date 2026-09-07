@@ -1,4 +1,5 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 interface WindowsProcessLockOwner {
@@ -18,6 +19,12 @@ export interface WindowsProcessLockOptions {
 const DEFAULT_WAIT_TIMEOUT_MS = 25 * 60_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_INCOMPLETE_OWNER_GRACE_MS = 5_000;
+
+export const WINDOWS_SANDBOX_PROCESS_LOCK_PATH = path.join(
+  os.tmpdir(),
+  "easy-code-srt-runtime",
+  "windows-acl.lock",
+);
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
@@ -103,6 +110,7 @@ export class WindowsSandboxProcessLock {
   }
 
   async acquire(signal?: AbortSignal): Promise<() => Promise<void>> {
+    await mkdir(path.dirname(this.lockPath), { recursive: true });
     const deadline = Date.now() + this.waitTimeoutMs;
     const token = this.createToken();
     while (true) {
@@ -185,4 +193,10 @@ export class WindowsSandboxProcessLock {
     }
     await rm(this.lockPath, { recursive: true, force: true });
   }
+}
+
+export function createDefaultWindowsSandboxProcessLock(
+  options: WindowsProcessLockOptions = {},
+): WindowsSandboxProcessLock {
+  return new WindowsSandboxProcessLock(WINDOWS_SANDBOX_PROCESS_LOCK_PATH, options);
 }
