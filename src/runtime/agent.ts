@@ -64,6 +64,12 @@ import {
 } from "../plans/plan.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import {
+  commandVerificationKind,
+  VERIFICATION_KINDS,
+  type CommandIntent,
+  type VerificationKind,
+} from "../command/types.js";
+import {
   activeTask,
   cloneTaskGraph,
   taskGraphOperationSchema,
@@ -377,6 +383,7 @@ function progressReviewPacket(
       targetKey: incident.targetKey,
       outcomeClass: incident.outcomeClass,
       outcomeKey: incident.outcomeKey,
+      verificationKind: incident.verificationKind ?? "custom",
       verificationCycleIds: incident.verificationCycleIds,
     }),
     "[CURRENT_RUNTIME_CONTEXT]",
@@ -452,28 +459,54 @@ function progressResponseOrdinal(
   return base + responseOffset;
 }
 
-function commandVerificationIntent(
+interface CommandVerificationClassification {
+  readonly intent: boolean;
+  readonly kind?: VerificationKind;
+}
+
+function commandVerificationClassification(
   toolName: ToolName,
   rawArguments: string,
   experimentRequired: boolean,
-  knownVerificationCommands: ReadonlySet<string>,
+  knownVerificationCommands: ReadonlyMap<string, VerificationKind>,
   result: Readonly<ToolExecutionResult>,
-): boolean {
-  if (experimentRequired) return true;
+): CommandVerificationClassification {
   if (toolName === "run_command" || toolName === "start_command") {
     try {
-      const parsed = safeJsonParse(rawArguments) as { intent?: unknown };
-      return parsed.intent === "test" || parsed.intent === "build";
+      const parsed = safeJsonParse(rawArguments) as {
+        intent?: unknown;
+        verificationKind?: unknown;
+      };
+      const declaredKind = typeof parsed.verificationKind === "string" &&
+          VERIFICATION_KINDS.includes(parsed.verificationKind as VerificationKind)
+        ? parsed.verificationKind as VerificationKind
+        : undefined;
+      const declaredIntent = parsed.intent === "test" ||
+          parsed.intent === "build" ||
+          parsed.intent === "verify"
+        ? parsed.intent as CommandIntent
+        : undefined;
+      const kind = declaredIntent
+        ? commandVerificationKind({ intent: declaredIntent, verificationKind: declaredKind })
+        : undefined;
+      if (experimentRequired) return { intent: true, kind: kind ?? "custom" };
+      return kind ? { intent: true, kind } : { intent: false };
     } catch {
-      return false;
+      return experimentRequired
+        ? { intent: true, kind: "custom" }
+        : { intent: false };
     }
   }
-  if (toolName !== "poll_command" && toolName !== "cancel_command") return false;
+  if (toolName !== "poll_command" && toolName !== "cancel_command") {
+    return { intent: false };
+  }
   const data = result.data && typeof result.data === "object"
     ? result.data as Record<string, unknown>
     : undefined;
-  return typeof data?.commandId === "string" &&
-    knownVerificationCommands.has(data.commandId);
+  const kind = typeof data?.commandId === "string"
+    ? knownVerificationCommands.get(data.commandId)
+    : undefined;
+  return kind ? { intent: true, kind } : { intent: false };
 }
 
 function requiredProgressExperiment(
@@ -2171,7 +2204,7 @@ export class AgentRuntime {
     }
     const progressResponseBase =
       state.progressGuard?.lastObservedResponseOrdinal ?? 0;
-    const progressVerificationCommands = new Set<string>();
+    const progressVerificationCommands = new Map<string, VerificationKind>();
 
     let stepLimit = options.maxSteps;
     let memoryFinalizationAllowanceGranted = false;
@@ -3509,7 +3542,7 @@ export class AgentRuntime {
           content: resultForModel(result, options.maxOutputChars)
         };
         const toolResultEventId = createId("event");
-        const verificationIntent = commandVerificationIntent(
+        const verification = commandVerificationClassification(
           toolName,
           call.function.arguments,
           progressExperimentAtCall !== undefined,
@@ -3520,11 +3553,14 @@ export class AgentRuntime {
           ? result.data as Record<string, unknown>
           : undefined;
         if (
-          verificationIntent &&
+          verification.intent &&
           (toolName === "run_command" || toolName === "start_command") &&
           typeof progressCommandData?.commandId === "string"
         ) {
-          progressVerificationCommands.add(progressCommandData.commandId);
+          progressVerificationCommands.set(
+            progressCommandData.commandId,
+            verification.kind ?? "custom",
+          );
         }
         const progressObservation = observeToolResult({
           sourceEventId: toolResultEventId,
@@ -3535,7 +3571,8 @@ export class AgentRuntime {
           responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
           tool: call.function.name,
           result,
-          verificationIntent,
+          verificationIntent: verification.intent,
+          ...(verification.kind ? { verificationKind: verification.kind } : {}),
         });
         const rollbackPreparedSubagent = (): void => {
           if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;

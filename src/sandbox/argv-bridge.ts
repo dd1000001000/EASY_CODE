@@ -45,12 +45,53 @@ function escapeWindowsShellArgument(value: string, doubleEscape: boolean): strin
   return doubleEscape ? escaped.replace(WINDOWS_SHELL_META, "^$1") : escaped;
 }
 
+function isWindowsCmdHost(executablePath: string): boolean {
+  const basename = path.win32.basename(executablePath).toLowerCase();
+  return basename === "cmd.exe" || basename === "cmd";
+}
+
+/**
+ * Node's default Windows argv serializer follows the C runtime quoting rules.
+ * cmd.exe has its own parser and does not treat the resulting backslashes as
+ * quote escapes, so a command such as `findstr /c:"two words" file` is split
+ * into unintended arguments. Pass the already-approved command string using
+ * cmd's canonical `/s /c "<command>"` transport shape instead.
+ */
+function directCmdSpawnDescriptor(
+  executablePath: string,
+  args: readonly string[],
+): SpawnDescriptor {
+  const commandIndexes = args
+    .map((argument, index) => argument.toLowerCase() === "/c" ? index : -1)
+    .filter((index) => index >= 0);
+  const commandIndex = commandIndexes[0] ?? -1;
+  if (commandIndexes.length !== 1 || commandIndex < 0 || args.length !== commandIndex + 2) {
+    throw new Error("cmd.exe requires exactly one command string after a single /c option");
+  }
+
+  const hostArgs = args.slice(0, commandIndex);
+  if (!hostArgs.some((argument) => argument.toLowerCase() === "/s")) hostArgs.push("/s");
+  const command = args[commandIndex + 1] as string;
+  return {
+    // Keep the exact executable which was resolved, audited, and approved.
+    executablePath,
+    args: [...hostArgs, args[commandIndex] as string, `"${command}"`],
+    windowsVerbatimArguments: true,
+  };
+}
+
 function spawnDescriptor(
   executablePath: string,
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
 ): SpawnDescriptor {
-  if (process.platform !== "win32" || !/\.(?:cmd|bat)$/iu.test(executablePath)) {
+  if (process.platform !== "win32") {
+    return { executablePath, args: [...args] };
+  }
+  if (isWindowsCmdHost(executablePath)) {
+    return directCmdSpawnDescriptor(executablePath, args);
+  }
+  if (!/\.(?:cmd|bat)$/iu.test(executablePath)) {
     return { executablePath, args: [...args] };
   }
   const isPackageShim = /node_modules[\\/]+\.bin[\\/]+[^\\/]+\.cmd$/iu.test(executablePath);

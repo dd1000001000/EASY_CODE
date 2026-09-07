@@ -231,6 +231,38 @@ describe("Prompt Bundle tool metadata", () => {
       program: "node",
       intent: "test",
     }).success, true);
+    assert.equal(runCommandInputSchema.safeParse({
+      program: "npm",
+      args: ["run", "lint"],
+      intent: "verify",
+      verificationKind: "lint",
+    }).success, true);
+    assert.equal(runCommandInputSchema.safeParse({
+      program: "npm",
+      args: ["test"],
+      intent: "verify",
+    }).success, false, "verify requires an explicit verificationKind");
+    assert.equal(runCommandInputSchema.safeParse({
+      program: "node",
+      args: ["--version"],
+      intent: "inspect",
+      verificationKind: "smoke_test",
+    }).success, false, "non-verification intents must not carry verificationKind");
+    const runParameters = functions[0]?.parameters as {
+      properties: Record<string, { enum?: string[] }>;
+    };
+    assert.ok(runParameters.properties.intent?.enum?.includes("verify"));
+    assert.deepEqual(runParameters.properties.verificationKind?.enum, [
+      "unit_test",
+      "integration_test",
+      "build",
+      "typecheck",
+      "lint",
+      "format_check",
+      "smoke_test",
+      "benchmark",
+      "custom",
+    ]);
     assert.equal(pollCommandInputSchema.safeParse({ commandId, waitMs: 30_000 }).success, true);
     assert.equal(cancelCommandInputSchema.safeParse({ commandId }).success, true);
     for (const input of [

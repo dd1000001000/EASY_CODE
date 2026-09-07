@@ -131,7 +131,11 @@ describe("AgentRuntime progress intervention", () => {
                 type: "function",
                 function: {
                   name: "run_command",
-                  arguments: JSON.stringify({ program: "node", intent: "test" }),
+                  arguments: JSON.stringify({
+                    program: "node",
+                    intent: "verify",
+                    verificationKind: "smoke_test",
+                  }),
                 },
               }],
             },

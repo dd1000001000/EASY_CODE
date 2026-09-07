@@ -13,6 +13,10 @@ import type {
   CommandFailureKind,
   PollCommandInput,
 } from "../command/types.js";
+import {
+  COMMAND_INTENTS,
+  VERIFICATION_KINDS,
+} from "../command/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -22,11 +26,31 @@ const commandInvocationSchema = z
     program: z.string().min(1).max(4_096),
     args: z.array(z.string().max(16_384)).max(256).optional(),
     cwd: z.string().min(1).max(4_096).optional(),
-    intent: z.enum(["inspect", "build", "test", "run", "install"]),
+    intent: z.enum(COMMAND_INTENTS),
+    verificationKind: z.enum(VERIFICATION_KINDS).optional(),
     timeoutMs: z.number().int().positive().optional(),
     reason: z.string().max(2_000).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (input.intent === "verify" && input.verificationKind === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["verificationKind"],
+        message: "verificationKind is required when intent is verify",
+      });
+    }
+    if (
+      (input.intent === "inspect" || input.intent === "run" || input.intent === "install") &&
+      input.verificationKind !== undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["verificationKind"],
+        message: `verificationKind is not allowed when intent is ${input.intent}`,
+      });
+    }
+  });
 
 const commandHandleSchema = z.string().regex(/^command_[0-9a-f-]{36}$/u);
 
@@ -52,7 +76,8 @@ function commandInvocationDefinition(): Record<string, unknown> {
         maxItems: 256,
       },
       cwd: { type: "string", minLength: 1, maxLength: 4_096 },
-      intent: { type: "string", enum: ["inspect", "build", "test", "run", "install"] },
+      intent: { type: "string", enum: [...COMMAND_INTENTS] },
+      verificationKind: { type: "string", enum: [...VERIFICATION_KINDS] },
       timeoutMs: { type: "integer", minimum: 1 },
       reason: { type: "string", maxLength: 2_000 },
     },

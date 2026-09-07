@@ -85,6 +85,41 @@ async function withTool(
 }
 
 describe("run_command model contract", () => {
+  it("enforces flat verification metadata before command preparation", async () => {
+    await withTool(async (root, tool, backend) => {
+      const valid = await tool.execute(
+        {
+          program: "node",
+          args: ["--version"],
+          intent: "verify",
+          verificationKind: "smoke_test",
+        },
+        context(root),
+      );
+      assert.equal(valid.ok, true);
+
+      const missingKind = await tool.execute(
+        { program: "node", args: ["--version"], intent: "verify" },
+        context(root),
+      );
+      assert.equal(missingKind.ok, false);
+      assert.match(missingKind.error ?? "", /verificationKind is required/u);
+
+      const misplacedKind = await tool.execute(
+        {
+          program: "node",
+          args: ["--version"],
+          intent: "inspect",
+          verificationKind: "smoke_test",
+        },
+        context(root),
+      );
+      assert.equal(misplacedKind.ok, false);
+      assert.match(misplacedKind.error ?? "", /verificationKind is not allowed/u);
+      assert.equal(backend.prepareCalls, 1);
+    });
+  });
+
   it("rejects a duplicated program before resolution, approval, or process preparation", async () => {
     await withTool(async (root, tool, backend) => {
       const result = await tool.execute(

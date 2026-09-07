@@ -49,4 +49,33 @@ describe("command request validation", () => {
     assert.match(failure?.recommendation ?? "", /real executable directly/iu);
     assert.match(failure?.recommendation ?? "", /timeoutMs/u);
   });
+
+  it("requires coherent verification intent metadata", () => {
+    assert.equal(
+      validateCommandRequest({
+        program: "npm",
+        args: ["run", "lint"],
+        intent: "verify",
+        verificationKind: "lint",
+      }),
+      undefined,
+    );
+    assert.equal(
+      validateCommandRequest({
+        program: "npm",
+        args: ["run", "lint"],
+        intent: "verify",
+      })?.matchedRule,
+      "input.verification_metadata",
+    );
+    assert.equal(
+      validateCommandRequest({
+        program: "npm",
+        args: ["--version"],
+        intent: "inspect",
+        verificationKind: "smoke_test",
+      })?.matchedRule,
+      "input.verification_metadata",
+    );
+  });
 });

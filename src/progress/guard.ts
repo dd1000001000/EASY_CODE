@@ -219,6 +219,7 @@ function failureSignature(observation: Readonly<ProgressObservation>): string {
   return `sha256:${sha256(JSON.stringify([
     observation.scopeKey,
     observation.targetKey,
+    observation.verificationKind ?? "custom",
     observation.outcomeClass,
     observation.outcomeKey,
   ]))}`;
@@ -305,6 +306,9 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
+      ...(observation.verificationKind
+        ? { verificationKind: observation.verificationKind }
+        : {}),
       verificationCycleIds: [],
       responseOrdinals: [],
       triggered: false,
@@ -350,6 +354,9 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
+      ...(observation.verificationKind
+        ? { verificationKind: observation.verificationKind }
+        : {}),
       triggerSourceEventId: observation.sourceEventId,
       triggerResponseOrdinal: observation.responseOrdinal,
       verificationCycleIds: [...next.verificationCycleIds],
@@ -378,6 +385,9 @@ function applyFailure(
       targetKey: observation.targetKey,
       outcomeKey: observation.outcomeKey,
       outcomeClass: observation.outcomeClass,
+      ...(observation.verificationKind
+        ? { verificationKind: observation.verificationKind }
+        : {}),
       verificationCycleIds: [...next.verificationCycleIds],
     },
   };

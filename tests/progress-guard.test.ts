@@ -13,6 +13,7 @@ function failure(
     cycleId?: string;
     outcomeKey?: string;
     targetKey?: string;
+    verificationKind?: ProgressObservation["verificationKind"];
   } = {},
 ): ProgressObservation {
   const suffix = String(ordinal).padStart(12, "0");
@@ -28,6 +29,7 @@ function failure(
     kind: "verification_terminal",
     confidence: "high",
     outcomeClass: "failed",
+    verificationKind: options.verificationKind ?? "custom",
     verificationCycleId: options.cycleId ?? commandId,
     commandId,
     targetKey: options.targetKey ?? "sha256:" + "a".repeat(64),
@@ -168,5 +170,23 @@ describe("progress guard", () => {
     };
     const resolved = foldProgressObservation(mixed.state, passed);
     assert.equal(resolved.state.failureRuns.length, 0);
+  });
+
+  it("does not combine identical command failures from different verification categories", () => {
+    let state = createProgressGuardState();
+    state = foldProgressObservation(state, failure(1, {
+      verificationKind: "lint",
+    })).state;
+    state = foldProgressObservation(state, failure(2, {
+      verificationKind: "typecheck",
+    })).state;
+    const third = foldProgressObservation(state, failure(3, {
+      verificationKind: "lint",
+    }));
+
+    assert.equal(third.trigger, undefined);
+    assert.equal(third.state.failureRuns.length, 2);
+    assert.equal(third.state.failureRuns.find((run) => run.verificationKind === "lint")
+      ?.verificationCycleIds.length, 2);
   });
 });

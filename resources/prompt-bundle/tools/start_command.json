@@ -1,14 +1,15 @@
 {
   "id": "start_command",
-  "contractVersion": "1.0.0",
+  "contractVersion": "1.1.0",
   "description": "Start one structured program/argv command under Runtime supervision and return a command handle after policy, approval, and sandbox initialization succeed. Use this for commands that may outlast one tool call.",
   "propertyDescriptions": {
     "program": "Executable name or workspace-relative executable; absolute host executables require dangerous mode.",
     "args": "The structured argument vector passed directly to the program. Never repeat program or its executable basename in args[0]; args starts with the first real argument.",
     "cwd": "Workspace-relative existing directory, or an absolute host directory only in dangerous mode.",
-    "intent": "The purpose of the command, used by Runtime when applying execution policy.",
+    "intent": "The purpose of the command, used by Runtime when applying execution policy. Use verify for a validation command that is not accurately described by the legacy test or build intents.",
+    "verificationKind": "Required when intent is verify and forbidden for inspect, run, or install. It may optionally classify legacy test/build calls as unit_test, integration_test, build, typecheck, lint, format_check, smoke_test, benchmark, or custom.",
     "timeoutMs": "An optional requested total command-phase timeout. It remains attached to the process across later polls; Runtime returns the effective capped budget.",
     "reason": "A concise explanation of why this command is needed for the current task."
   },
-  "guidance": "Use start_command for a legitimate long-running build, test, install, or program. It accepts the same flat program/args contract as run_command and never accepts an action object or nested invocation. After it returns status running, use poll_command for bounded status waits and cancel_command only when the process is no longer needed. Do not complete the task until a poll or cancel observes the terminal result. Its terminal failures use the same stable parameter, policy, approval, sandbox, exit, timeout, and runtime failure.kind values as run_command."
+  "guidance": "Use start_command for a legitimate long-running build, test, verification, install, or program. It accepts the same flat program/args contract as run_command and never accepts an action object or nested invocation. Classify validation commands accurately: keep existing test/build intents compatible, or use intent verify with verificationKind for type checks, lint, formatting checks, smoke tests, benchmarks, and custom validation. Do not attach verificationKind to inspect, run, or install. After it returns status running, use poll_command for bounded status waits and cancel_command only when the process is no longer needed. Do not complete the task until a poll or cancel observes the terminal result. Its terminal failures use the same stable parameter, policy, approval, sandbox, exit, timeout, and runtime failure.kind values as run_command."
 }

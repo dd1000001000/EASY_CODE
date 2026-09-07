@@ -691,6 +691,67 @@ describe("sandbox command execution boundary", () => {
           }), "utf8");
           await execFileAsync(process.execPath, [workerPayload.bridgePath, batchPayloadPath]);
           assert.deepEqual(JSON.parse(await readFile(batchOutputPath, "utf8")), expected);
+
+          const findstrFixturePath = path.join(
+            workerPayload.scratchRoot,
+            "findstr fixture with spaces.txt",
+          );
+          const findstrPayloadPath = path.join(
+            workerPayload.scratchRoot,
+            "bridge-cmd-findstr-target.json",
+          );
+          await writeFile(
+            findstrFixturePath,
+            [
+              "const RECEIVER_PORT = 27121;",
+              "function isCompanionExtensionRequest() {}",
+              "server = createServer();",
+              "function sendSocket() {}",
+              "function removeClient() {}",
+              "function reapClients() {}",
+              "startCompanionServer();",
+              "server.listen();",
+            ].join("\r\n"),
+            "utf8",
+          );
+          const findstrCommand = [
+            "findstr /n",
+            '/c:"27121"',
+            '/c:"isCompanionExtensionRequest"',
+            '/c:"createServer"',
+            '/c:"function sendSocket"',
+            '/c:"function removeClient"',
+            '/c:"function reapClients"',
+            '/c:"startCompanionServer"',
+            '/c:"listen("',
+            `"${findstrFixturePath}"`,
+          ].join(" ");
+          const cmdPath = path.win32.join(
+            process.env.SystemRoot ?? "C:\\Windows",
+            "System32",
+            "cmd.exe",
+          );
+          await writeFile(findstrPayloadPath, JSON.stringify({
+            executablePath: cmdPath,
+            args: ["/d", "/c", findstrCommand],
+            cwdAbsolute: root,
+            environment: {
+              PATH: process.env.PATH,
+              SystemRoot: process.env.SystemRoot,
+            },
+          }), "utf8");
+          const findstrResult = await execFileAsync(
+            process.execPath,
+            [workerPayload.bridgePath, findstrPayloadPath],
+            { encoding: "utf8" },
+          );
+          const findstrOutput = String(findstrResult.stdout);
+          assert.match(findstrOutput, /27121/u);
+          assert.match(findstrOutput, /function sendSocket/u);
+          assert.match(findstrOutput, /function removeClient/u);
+          assert.match(findstrOutput, /function reapClients/u);
+          assert.match(findstrOutput, /server\.listen/u);
+          assert.doesNotMatch(String(findstrResult.stderr), /Cannot open/iu);
         }
       } finally {
         await prepared.cleanup();
