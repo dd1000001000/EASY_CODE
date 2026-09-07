@@ -26,7 +26,10 @@ async function main() {
   const files = fs
     .readdirSync(testsDir)
     .filter((name) => name.endsWith(".test.js"))
+    .filter((name) => process.argv.length <= 2 || process.argv.slice(2).includes(name))
     .sort();
+
+  if (files.length === 0) throw new Error("No matching test files");
 
   for (const file of files) {
     await import(pathToFileURL(path.join(testsDir, file)).href);

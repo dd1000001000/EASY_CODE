@@ -7,7 +7,7 @@ import { resolveCatalogModel, type ThinkingProfile } from "./catalog.js";
 export interface ProviderThinkingParameters {
   enable_thinking?: boolean;
   thinking_budget?: number;
-  thinking?: { type: "enabled" | "disabled" };
+  thinking?: { type: "enabled" | "disabled"; clear_thinking?: false };
   reasoning_effort?: "low" | "medium" | "high";
 }
 
@@ -138,7 +138,7 @@ export function thinkingRequestParameters(
     case "glm_forced_effort":
       if (effort === "none") return {};
       return {
-        thinking: { type: "enabled" },
+        thinking: { type: "enabled", clear_thinking: false },
         // GLM 5.3 accepts low/high/max, so EASY CODE's medium maps to high.
         reasoning_effort: effort === "medium" ? "high" : effort,
       };
@@ -146,7 +146,7 @@ export function thinkingRequestParameters(
       return effort === "none"
         ? { thinking: { type: "disabled" } }
         : {
-            thinking: { type: "enabled" },
+            thinking: { type: "enabled", clear_thinking: false },
             reasoning_effort: effort,
           };
     case "unsupported":

@@ -190,7 +190,7 @@ export function truncateToWidth(
   const preserveAnsi = normalizedOptions.preserveAnsi ?? true;
   const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi })
     .replace(/\n/gu, " ");
-  const sourceTokens = layoutTokens(source, preserveAnsi);
+  const sourceTokens = layoutSanitizedTokens(source, preserveAnsi);
   const sourceWidth = tokensWidth(sourceTokens);
   if (sourceWidth <= limit) return finishSgr(sourceTokens, preserveAnsi);
 
@@ -237,7 +237,7 @@ export function wrapToWidth(
   const limit = normalizeColumns(columns, 1);
   const preserveAnsi = options.preserveAnsi ?? true;
   const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi });
-  const tokens = layoutTokens(source, preserveAnsi);
+  const tokens = layoutSanitizedTokens(source, preserveAnsi);
   const lines: string[] = [];
   let current: LayoutToken[] = [];
   let currentWidth = 0;
@@ -410,7 +410,11 @@ function readControlString(
 }
 
 function layoutTokens(value: string, preserveAnsi: boolean): LayoutToken[] {
-  const sanitized = sanitizeTerminalText(value, { allowSgr: preserveAnsi });
+  return layoutSanitizedTokens(sanitizeTerminalText(value, { allowSgr: preserveAnsi }), preserveAnsi);
+}
+
+/** Internal only: callers must sanitize terminal control sequences first. */
+function layoutSanitizedTokens(sanitized: string, preserveAnsi: boolean): LayoutToken[] {
   const tokens: LayoutToken[] = [];
   let text = "";
   let index = 0;
@@ -444,16 +448,22 @@ function layoutTokens(value: string, preserveAnsi: boolean): LayoutToken[] {
   return tokens;
 }
 
+type GraphemeSegmenter = { segment(input: string): Iterable<{ segment: string }> };
+type GraphemeSegmenterConstructor = new (
+  locale?: string,
+  options?: { granularity: "grapheme" },
+) => GraphemeSegmenter;
+let sharedSegmenter: GraphemeSegmenter | undefined;
+let segmenterConstructor: GraphemeSegmenterConstructor | undefined;
+
 function splitGraphemes(value: string): string[] {
-  const intl = Intl as unknown as {
-    Segmenter?: new (
-      locale?: string,
-      options?: { granularity: "grapheme" },
-    ) => { segment(input: string): Iterable<{ segment: string }> };
-  };
+  const intl = Intl as unknown as { Segmenter?: GraphemeSegmenterConstructor };
   if (intl.Segmenter) {
-    const segmenter = new intl.Segmenter(undefined, { granularity: "grapheme" });
-    return Array.from(segmenter.segment(value), (part) => part.segment);
+    if (!sharedSegmenter || segmenterConstructor !== intl.Segmenter) {
+      sharedSegmenter = new intl.Segmenter(undefined, { granularity: "grapheme" });
+      segmenterConstructor = intl.Segmenter;
+    }
+    return Array.from(sharedSegmenter.segment(value), (part) => part.segment);
   }
   return fallbackGraphemes(value);
 }

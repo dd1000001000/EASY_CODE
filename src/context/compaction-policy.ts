@@ -5,6 +5,7 @@ import {
   estimateMessagesChars,
 } from "./manager.js";
 import { projectModelInputMessages } from "./micro-compaction.js";
+import { runtimeContinuityMessage } from "./runtime-state.js";
 
 /** A voluntary compaction must represent more than a nearly empty tool round. */
 export const COMPACTION_MIN_NEW_PROJECTED_CHARS = 8_192;
@@ -69,7 +70,9 @@ export function evaluateCompactionBenefit(
     ...input.state,
     messages: input.state.messages.slice(0, historyEndExclusive),
   };
-  const beforeProjectedChars = manager.estimateShortTermChars(beforeState);
+  const continuityChars = runtimeContinuityMessage(input.state);
+  const protectedChars = continuityChars ? continuityChars.length + 32 : 0;
+  const beforeProjectedChars = manager.estimateShortTermChars(beforeState) + protectedChars;
   const newProjectedChars = estimateMessagesChars(projectModelInputMessages(
     beforeState.messages.slice(input.state.compactedMessageCount),
   ));
@@ -85,7 +88,7 @@ export function evaluateCompactionBenefit(
       ? input.compactedMessageCount
       : input.state.compactedMessageCount,
   };
-  const afterProjectedChars = manager.estimateShortTermChars(candidateState);
+  const afterProjectedChars = manager.estimateShortTermChars(candidateState) + protectedChars;
   const savedChars = beforeProjectedChars - afterProjectedChars;
   const savingsRatio = beforeProjectedChars > 0
     ? Math.max(0, savedChars / beforeProjectedChars)

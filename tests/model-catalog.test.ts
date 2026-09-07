@@ -224,11 +224,11 @@ describe("model catalog", () => {
     );
     assert.deepEqual(
       thinkingRequestParameters("glm", "glm-5.3-flash", "low"),
-      { thinking: { type: "enabled" }, reasoning_effort: "low" },
+      { thinking: { type: "enabled", clear_thinking: false }, reasoning_effort: "low" },
     );
     assert.deepEqual(
       thinkingRequestParameters("glm", "glm-5.3", "medium"),
-      { thinking: { type: "enabled" }, reasoning_effort: "high" },
+      { thinking: { type: "enabled", clear_thinking: false }, reasoning_effort: "high" },
     );
     assert.deepEqual(
       thinkingRequestParameters("glm", "glm-5.2", "none"),
@@ -236,7 +236,7 @@ describe("model catalog", () => {
     );
     assert.deepEqual(
       thinkingRequestParameters("glm-coding-plan", "glm-5.3-flash", "high"),
-      { thinking: { type: "enabled" }, reasoning_effort: "high" },
+      { thinking: { type: "enabled", clear_thinking: false }, reasoning_effort: "high" },
     );
 
     assert.deepEqual(

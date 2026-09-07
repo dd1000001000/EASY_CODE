@@ -7,7 +7,8 @@ import {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { sha256 } from "../utils/hash.js";
-import { projectModelInputMessages } from "./micro-compaction.js";
+import { microCompactToolResults, projectModelInputMessages } from "./micro-compaction.js";
+import { runtimeContinuityMessage } from "./runtime-state.js";
 
 export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
 /**
@@ -44,6 +45,8 @@ export function activeWorkingSetCharBudget(maxContextChars: number): number {
 
 export interface ContextBuildInput {
   systemPrompt: string;
+  /** Changing retrieval/checkpoint data belongs after the stable history. */
+  runtimeContext?: string;
   state: Readonly<SessionState>;
   maxContextChars: number;
   longTermMemories?: string[];
@@ -93,6 +96,10 @@ export interface ProviderRequestContextInspection extends ContextInspection {
   providerToolDefinitionChars: number;
   /** Exact character estimate used for request-pressure decisions. */
   providerInputChars: number;
+  /** Local prefix diagnostics, not a claim of provider cache hits. */
+  hasPrefixBaseline?: boolean;
+  unchangedPrefixChars?: number;
+  previousSerializedChars?: number;
 }
 
 export interface ProviderRequestInspectionInput {
@@ -161,82 +168,6 @@ function estimateVisionTokens(messages: readonly ChatMessage[]): number {
   }, 0);
 }
 
-function summarizeMessages(messages: ChatMessage[]): string {
-  const catalog = loadPromptBundleCatalog();
-  const lines: string[] = [];
-  for (const message of messages) {
-    if (message.role === "tool") {
-      const compact = message.content.replace(/\s+/g, " ").slice(0, 240);
-      lines.push(catalog.render("context/fallback-tool-result.md", {
-        content: compact,
-      }).trimEnd());
-      continue;
-    }
-
-    const compact = (message.content ?? "").replace(/\s+/g, " ").slice(0, 300);
-    const images = message.role === "user" && message.images?.length
-      ? ` [images: ${message.images.map((image) =>
-          `${image.label} ${image.width}x${image.height}`).join(", ")}]`
-      : "";
-    if (!compact && !images) continue;
-    lines.push(catalog.render("context/fallback-message.md", {
-      role: message.role === "user" ? "User" : "Assistant",
-      content: compact,
-      images,
-    }).trimEnd());
-  }
-  return lines.slice(-24).join("\n");
-}
-
-function boundedText(value: string, limit: number): string {
-  if (value.length <= limit) return value;
-  if (limit <= 32) return value.slice(0, Math.max(0, limit));
-  const marker = `\n${loadPromptBundleCatalog().readText("context/context-truncated.md").trim()}\n`;
-  const available = Math.max(0, limit - marker.length);
-  const head = Math.ceil(available * 0.6);
-  return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
-}
-
-function boundedMessage(message: ChatMessage, budget: number): ChatMessage | undefined {
-  const contentBudget = budget - 32;
-  if (contentBudget <= 0) return undefined;
-  if (message.role === "assistant") {
-    const toolCallChars = message.tool_calls ? JSON.stringify(message.tool_calls).length : 0;
-    if (toolCallChars >= contentBudget) {
-      return {
-        role: "assistant",
-        content: boundedText(
-          message.content ?? loadPromptBundleCatalog()
-            .readText("context/tool-request-omitted.md")
-            .trim(),
-          contentBudget,
-        ),
-      };
-    }
-    let remaining = contentBudget - toolCallChars;
-    const boundedReasoning = message.reasoning_content
-      ? boundedText(message.reasoning_content, remaining)
-      : message.reasoning_content;
-    remaining -= boundedReasoning?.length ?? 0;
-    const bounded: Extract<ChatMessage, { role: "assistant" }> = {
-      ...message,
-      content: message.content === null
-        ? null
-        : boundedText(message.content, remaining),
-    };
-    if (boundedReasoning === undefined) delete bounded.reasoning_content;
-    else bounded.reasoning_content = boundedReasoning;
-    return bounded;
-  }
-  if (message.role === "user" && message.images?.length) {
-    return {
-      role: "user",
-      content: boundedText(message.content, contentBudget),
-      images: message.images,
-    };
-  }
-  return { ...message, content: boundedText(message.content, contentBudget) };
-}
 
 function limitActiveImages(
   messages: readonly ChatMessage[],
@@ -338,15 +269,29 @@ function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
   const requestedBudget = input.maxContextChars;
   const conversationReserve = Math.min(4_096, Math.max(512, Math.floor(requestedBudget / 4)));
   const systemLimit = Math.max(256, requestedBudget - conversationReserve - 32);
+  const systemContent = `${input.systemPrompt}${memorySection}`;
+  if (systemContent.length > systemLimit) {
+    throw new Error("Context capacity exceeded: system instructions cannot be truncated. Increase max_context_chars or reduce loaded instructions.");
+  }
   const system: ChatMessage = {
     role: "system",
-    content: boundedText(`${input.systemPrompt}${memorySection}`, systemLimit),
+    content: systemContent,
   };
   const actualSystemChars = messageChars(system);
   const requestedSystemChars = input.reservedSystemPromptChars === undefined
     ? actualSystemChars
     : Math.max(actualSystemChars, Math.trunc(input.reservedSystemPromptChars));
-  const maximumSystemChars = requestedBudget - conversationReserve;
+  const latestUser = [...input.state.messages].reverse().find((message) => message.role === "user");
+  const protectedReserve = estimateMessagesChars([
+    ...(latestUser ? [latestUser] : []),
+    ...(input.state.workingSummary ? [summaryMessage(input.state.workingSummary)] : []),
+    ...[runtimeContinuityMessage(input.state), input.runtimeContext ?? ""].filter(Boolean)
+      .map((content): ChatMessage => ({ role: "user", content })),
+  ]) + 384;
+  // Artificial retrieval/tool headroom may shrink; actual instructions and
+  // protected evidence may not. Pressure enforcement still counts real tools.
+  const maximumSystemChars = Math.max(actualSystemChars,
+    requestedBudget - Math.max(conversationReserve, protectedReserve));
   const reservedSystemChars = Math.max(
     actualSystemChars,
     Math.min(maximumSystemChars, requestedSystemChars),
@@ -367,7 +312,7 @@ function selectContextConversation(
   );
   let activeStart = compactedMessageCount;
   while (state.messages[activeStart]?.role === "tool") activeStart += 1;
-  const activeMessages = limitActiveImages(projectModelInputMessages(
+  let activeMessages = limitActiveImages(projectModelInputMessages(
     state.messages.slice(activeStart),
   ));
   const persistentSummary = state.workingSummary.trim();
@@ -391,65 +336,59 @@ function selectContextConversation(
     };
   }
 
-  const summaryReserve = Math.min(8_000, Math.floor(workingSetBudget * 0.3));
-  const recentBudget = Math.max(0, workingSetBudget - summaryReserve);
+  // Pressure fallback only: clear reconstructable file/search material, never
+  // command evidence, task results, or thinking. Ordinary requests stay stable.
+  activeMessages = microCompactToolResults(activeMessages);
+  const summaryReserve = persistentSummaryMessage ? messageChars(persistentSummaryMessage) : 0;
+  let latestUserIndex = activeMessages.length - 1;
+  while (latestUserIndex >= 0 && activeMessages[latestUserIndex]?.role !== "user") latestUserIndex -= 1;
+  const latestUser = activeMessages[latestUserIndex];
+  const mandatory = [
+    ...(persistentSummaryMessage ? [persistentSummaryMessage] : []),
+    ...(latestUser ? [latestUser] : []),
+  ];
+  // The fallback is explicitly an incomplete view, not a fabricated summary.
+  const omissionNotice: ChatMessage = {
+    role: "user",
+    content: "RUNTIME_CONTEXT_PRESSURE: Earlier messages are omitted from this working view, not summarized or resolved. " +
+      "Use durable evidence references and Runtime continuity state. Complete structured compaction before continuing work.",
+  };
+  const recentBudget = workingSetBudget - summaryReserve -
+    (latestUser ? messageChars(latestUser) : 0) - messageChars(omissionNotice);
+  if (recentBudget < 0) {
+    throw new Error("Context capacity exceeded: the accepted summary and current request cannot fit intact. Increase max_context_chars; no state was discarded.");
+  }
   const selected: ChatMessage[] = [];
   let selectedStart = activeMessages.length;
   let used = 0;
   for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
     const message = activeMessages[index];
     if (!message) continue;
-    const size = messageChars(message);
+    // Select a complete assistant/tool exchange, never orphan tool results or
+    // truncate the thinking that generated the calls.
+    let start = index;
+    while (start > 0 && activeMessages[start]?.role === "tool") start -= 1;
+    const group = activeMessages.slice(start, index + 1);
+    const size = group.reduce((total, item) => total + (item === latestUser ? 0 : messageChars(item)), 0);
     if (used + size > recentBudget) {
-      if (selected.length === 0) {
-        const bounded = boundedMessage(message, recentBudget);
-        if (bounded) {
-          selected.unshift(bounded);
-          selectedStart = index;
-        }
+      if (selected.length === 0 && index > latestUserIndex) {
+        throw new Error("Context capacity exceeded: the latest reasoning/tool exchange cannot fit intact. Increase max_context_chars or reduce tool output; no thinking was truncated.");
       }
       break;
     }
-    selected.unshift(message);
-    selectedStart = index;
+    selected.unshift(...group);
+    selectedStart = start;
     used += size;
+    index = start;
   }
   while (selected[0]?.role === "tool") {
     selected.shift();
     selectedStart += 1;
   }
 
-  const omitted = activeMessages.slice(0, selectedStart);
-  const fallbackSummary = summarizeMessages(omitted);
-  const summaryParts: string[] = [];
-  if (persistentSummary) {
-    summaryParts.push(loadPromptBundleCatalog().render(
-      "context/fallback-persistent-summary.md",
-      { content: persistentSummary },
-    ).trimEnd());
-  }
-  if (fallbackSummary) {
-    summaryParts.push(loadPromptBundleCatalog().render(
-      "context/fallback-overflow-summary.md",
-      { content: fallbackSummary },
-    ).trimEnd());
-  }
-
   const cleanSelected = removeOrphanToolMessages(selected);
-  const combinedSummary = summaryParts.join("\n\n");
-  if (combinedSummary) {
-    const remainingForSummary = Math.max(0, workingSetBudget - cleanSelected.reduce(
-      (total, message) => total + messageChars(message),
-      0,
-    ));
-    const boundedSummary = boundedMessage(
-      summaryMessage(combinedSummary),
-      Math.min(remainingForSummary, summaryReserve),
-    );
-    if (boundedSummary) cleanSelected.unshift(boundedSummary);
-  }
   return {
-    messages: cleanSelected,
+    messages: [...mandatory.filter((item) => !cleanSelected.includes(item)), omissionNotice, ...cleanSelected],
     retrievalBoundary: activeStart + selectedStart,
   };
 }
@@ -482,9 +421,11 @@ export class ContextManager {
     maxContextChars: number,
     systemPrompt = "",
     reservedSystemPromptChars?: number,
+    runtimeContext = "",
   ): number {
     const input: ContextBuildInput = {
       systemPrompt,
+      runtimeContext,
       state,
       maxContextChars,
       ...(reservedSystemPromptChars === undefined
@@ -492,7 +433,9 @@ export class ContextManager {
         : { reservedSystemPromptChars }),
     };
     const system = contextSystemBudget(input);
-    return selectContextConversation(state, system.conversationBudget).retrievalBoundary;
+    const tailChars = [runtimeContinuityMessage(state), runtimeContext].filter(Boolean)
+      .reduce((total, content) => total + messageChars({ role: "user", content }), 0);
+    return selectContextConversation(state, system.conversationBudget - tailChars).retrievalBoundary;
   }
 
   applyModelCompaction(
@@ -566,8 +509,15 @@ export class ContextManager {
 
   build(input: ContextBuildInput): ChatMessage[] {
     const budget = contextSystemBudget(input);
-    const conversation = selectContextConversation(input.state, budget.conversationBudget);
-    return [budget.system, ...conversation.messages];
+    const continuity = runtimeContinuityMessage(input.state);
+    const tail: ChatMessage[] = [continuity, input.runtimeContext ?? ""].filter(Boolean)
+      .map((content) => ({ role: "user", content }));
+    const remaining = budget.conversationBudget - estimateMessagesChars(tail);
+    if (remaining < 256) {
+      throw new Error("Context capacity exceeded: protected Runtime state cannot fit intact. Increase max_context_chars; no constraints or evidence were discarded.");
+    }
+    const conversation = selectContextConversation(input.state, remaining);
+    return [budget.system, ...conversation.messages, ...tail];
   }
 
   inspect(
@@ -640,7 +590,13 @@ export class ContextManager {
     const providerToolDefinitionChars = estimateToolDefinitionsChars(input.tools);
     const providerInputChars = providerMessageChars + providerToolDefinitionChars;
     const budgetChars = activeWorkingSetCharBudget(input.maxContextChars);
-    const utilization = providerInputChars / budgetChars;
+    // A bounded fallback must not hide pressure by shrinking the measured
+    // request. Include the unselected active history and the actual overhead.
+    const projectedActiveChars = this.estimateShortTermChars(input.state);
+    const systemChars = projectedMessages.filter((message) => message.role === "system")
+      .reduce((total, message) => total + messageChars(message), 0);
+    const utilization = Math.max(providerInputChars,
+      projectedActiveChars + systemChars + providerToolDefinitionChars) / budgetChars;
     return {
       ...this.inspect(input.state, input.maxContextChars),
       configuredBudgetChars: input.maxContextChars,

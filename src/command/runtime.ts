@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import type { ToolContext } from "../core/types.js";
 import { createId } from "../utils/ids.js";
+import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import {
   AnthropicSandboxBackend,
@@ -1057,6 +1058,17 @@ export class CommandRuntime {
         durationMs: output.durationMs,
         timestamp: new Date().toISOString(),
         summary: sanitizeCommandOutput(summary),
+        outputEvidence: {
+          capturedOutputDigest: `sha256:${sha256(JSON.stringify([output.stdout, output.stderr]))}`,
+          stdoutTail: sanitizeCommandOutput(output.stdout.text).slice(-1_024),
+          stderrTail: sanitizeCommandOutput(output.stderr.text).slice(-1_024),
+          incomplete: output.stdout.truncated || output.stderr.truncated ||
+            output.stdout.text.length > 1_024 || output.stderr.text.length > 1_024,
+          ...(output.failure ? {
+            failureKind: output.failure.kind,
+            processStarted: output.failure.processStarted,
+          } : {}),
+        },
       });
     } catch {
       // Audit projection failures must be handled by the owning event journal;

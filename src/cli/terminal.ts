@@ -180,6 +180,7 @@ interface ActiveDisclosureViewer {
   /** Primary prompt/composer changed while hidden by the alternate buffer. */
   primaryDisplayDirty: boolean;
   idleTimer?: NodeJS.Timeout;
+  repaintTimer?: NodeJS.Timeout;
   closing: boolean;
 }
 
@@ -2388,6 +2389,8 @@ export class Terminal {
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
     if (viewer.idleTimer) clearTimeout(viewer.idleTimer);
     viewer.idleTimer = undefined;
+    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
+    viewer.repaintTimer = undefined;
 
     // A completed idle turn normally has no primary-buffer mutations while
     // its disclosure is open. In that common path the prompt that was already
@@ -2452,6 +2455,8 @@ export class Terminal {
   private refreshDisclosureViewer(nodesChanged = false): void {
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
+    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
+    viewer.repaintTimer = undefined;
     try {
       // Keep the canonical document current even while a modal temporarily
       // replaces its pixels. The overlay's close callback refreshes without a
@@ -2538,6 +2543,8 @@ export class Terminal {
   private resizeDisclosureViewer(): void {
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
+    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
+    viewer.repaintTimer = undefined;
     viewer.primaryDisplayDirty = true;
     try {
       const columns = this.physicalColumns();
@@ -2588,6 +2595,16 @@ export class Terminal {
     }
   }
 
+  /** Accumulate viewport movement immediately, but paint a burst only once. */
+  private scheduleDisclosureRepaint(viewer: ActiveDisclosureViewer): void {
+    if (viewer.repaintTimer || viewer.closing || this.disclosureViewer !== viewer) return;
+    viewer.repaintTimer = setTimeout(() => {
+      viewer.repaintTimer = undefined;
+      if (this.disclosureViewer === viewer && !viewer.closing) this.refreshDisclosureViewer();
+    }, 16);
+    viewer.repaintTimer.unref();
+  }
+
   private handleDisclosureInput(
     viewer: ActiveDisclosureViewer,
     event: Readonly<TuiInputEvent>,
@@ -2611,10 +2628,13 @@ export class Terminal {
           type: "scroll-lines",
           lines: mouse.action === "wheel-up" ? -3 : 3,
         });
-        this.refreshDisclosureViewer();
+        this.scheduleDisclosureRepaint(viewer);
         return;
       }
       if (mouse.action !== "press" || mouse.button !== "left") return;
+      // Hit testing must use the frame corresponding to the accumulated scroll.
+      if (viewer.repaintTimer) this.refreshDisclosureViewer();
+      if (this.disclosureViewer !== viewer) return;
       const row = viewer.frame.visibleRows[mouse.row - 1];
       if (!row || row.part !== "title" || !row.nodeId) return;
       if (row.nodeKind !== "thinking" && row.nodeKind !== "adjustment") return;
@@ -2628,7 +2648,7 @@ export class Terminal {
       viewer.state = applyDisclosureViewCommand(viewer.state, {
         type: "page-up",
       });
-      this.refreshDisclosureViewer();
+      this.scheduleDisclosureRepaint(viewer);
       return;
     }
     if (
@@ -2643,14 +2663,14 @@ export class Terminal {
         type: "scroll-lines",
         lines: event.key === "up" ? -1 : 1,
       });
-      this.refreshDisclosureViewer();
+      this.scheduleDisclosureRepaint(viewer);
       return;
     }
     if (event.type === "key" && event.key === "page-down") {
       viewer.state = applyDisclosureViewCommand(viewer.state, {
         type: "page-down",
       });
-      this.refreshDisclosureViewer();
+      this.scheduleDisclosureRepaint(viewer);
       return;
     }
     if (event.type === "key" && event.key === "interrupt") {
@@ -2739,6 +2759,8 @@ export class Terminal {
     if (this.disclosureViewer !== viewer || !this.disclosureAvailable(kind, id)) {
       return false;
     }
+    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
+    viewer.repaintTimer = undefined;
     try {
       const target = this.disclosureTarget(kind, id);
       const sameTarget = viewer.kind === kind && viewer.registryId === id;
