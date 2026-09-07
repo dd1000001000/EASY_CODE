@@ -188,7 +188,8 @@ class EasyCodeBenchmarkDockerEnvironment(DockerEnvironment):
     adapter can install runtime dependencies. Declaring the provider allowlist
     as a possible phase policy makes Harbor create its egress-control sidecar
     at startup. ``EasyCodeAgent.run`` activates it before model-controlled code
-    runs and disables networking completely when that code exits.
+    runs and restores Harbor's trusted baseline policy when that code exits so
+    the verifier can install its declared dependencies.
     """
 
     def __init__(
@@ -421,6 +422,7 @@ easy-code --version
         capture_succeeded = False
         try:
             try:
+                baseline_network_policy = environment.network_policy
                 await self._stage_api_key(environment)
                 await environment.set_network_policy(
                     _benchmark_agent_network_policy()
@@ -442,7 +444,7 @@ easy-code --version
                     )
                 finally:
                     await environment.set_network_policy(
-                        NetworkPolicy(network_mode=NetworkMode.NO_NETWORK)
+                        baseline_network_policy
                     )
                 self._record_output("easy-code.log", result)
                 if result is None:

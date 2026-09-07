@@ -173,12 +173,15 @@ approval: safe, auto-approved
 The provider, endpoint, and credential source are fixed for this benchmark.
 There is no fallback to the standard GLM API or its key.
 
-The Harbor environment keeps public networking only while the trusted adapter
-installs its runtime dependencies. During model-controlled EASY CODE execution,
-Harbor switches the container to an outbound allowlist containing only the
-pinned provider host (`open.bigmodel.cn`). Direct access to GitHub, package
-registries, and other public hosts is blocked for the evaluated agent. After the
-agent exits, outbound networking is disabled before verification begins.
+The Harbor environment keeps its trusted baseline network policy while the
+adapter installs runtime dependencies and while the verifier installs and runs
+its declared evaluation dependencies. During model-controlled EASY CODE
+execution, Harbor temporarily switches the container to an outbound allowlist
+containing only the pinned provider host (`open.bigmodel.cn`). Direct access to
+GitHub, package registries, and other public hosts is blocked for the evaluated
+agent. After the agent exits, Harbor restores the exact baseline policy that was
+active before the allowlist was applied; for the published SWE-bench tasks this
+is public networking required by the trusted verifier.
 
 EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `/testbed` and inside the Harbor job artifacts.
