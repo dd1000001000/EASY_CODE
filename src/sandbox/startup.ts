@@ -126,6 +126,7 @@ const POSIX_INSTALL_TIMEOUT_MS = 10 * 60 * 1_000;
 const PROBE_TIMEOUT_MS = 20_000;
 const WINDOWS_PROBE_TIMEOUT_MS = 30_000;
 const WINDOWS_PROBE_KILL_TIMEOUT_MS = 3_000;
+const WINDOWS_PROBE_CLOSE_TIMEOUT_MS = 3_000;
 const PROBE_OUTPUT_LIMIT = 16 * 1024;
 const SYSTEM_EXECUTABLE_ROOTS = [
   "/bin",
@@ -362,13 +363,26 @@ function tryKill(child: ChildProcess, signal: NodeJS.Signals): void {
 async function terminateProbeProcessTree(
   child: ChildProcess,
   environment: NodeJS.ProcessEnv,
-): Promise<void> {
+  childClosed: Promise<void>,
+): Promise<boolean> {
+  const waitForClose = async (): Promise<boolean> =>
+    await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (closed: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(closed);
+      };
+      const timer = setTimeout(() => finish(false), WINDOWS_PROBE_CLOSE_TIMEOUT_MS);
+      void childClosed.then(() => finish(true));
+    });
   const pid = child.pid;
-  if (pid === undefined) return;
+  if (pid === undefined) return await waitForClose();
 
   if (process.platform !== "win32") {
     tryKill(child, "SIGKILL");
-    return;
+    return await waitForClose();
   }
 
   await new Promise<void>((resolve) => {
@@ -411,6 +425,11 @@ async function terminateProbeProcessTree(
       finish();
     });
   });
+  // taskkill exiting only means the termination request finished. Wait for
+  // Node's `close` event as proof that the worker process and its stdio handles
+  // are actually gone before the caller reports the timed-out probe complete.
+  tryKill(child, "SIGKILL");
+  return await waitForClose();
 }
 
 /**
@@ -419,7 +438,7 @@ async function terminateProbeProcessTree(
  * CLI process is not sufficient. The parent owns the deadline and tears down
  * the whole worker process tree with taskkill when the deadline expires.
  */
-async function defaultRunWindowsProbeWorker(
+export async function runWindowsProbeWorkerProcess(
   command: SandboxSystemCommand,
 ): Promise<SandboxSystemCommandResult> {
   const environment = command.environment ?? process.env;
@@ -455,11 +474,22 @@ async function defaultRunWindowsProbeWorker(
       stderr = appendProbeOutput(stderr, chunk);
     });
 
+    let markChildClosed!: () => void;
+    const childClosed = new Promise<void>((resolveClosed) => {
+      markChildClosed = resolveClosed;
+    });
+
     const timer = setTimeout(() => {
       if (state !== "running") return;
       state = "timing_out";
-      void terminateProbeProcessTree(child, environment).finally(() => {
+      void terminateProbeProcessTree(child, environment, childClosed).then((closed) => {
         if (state === "finished") return;
+        if (!closed) {
+          stderr = appendProbeOutput(
+            stderr,
+            `Windows sandbox probe worker close was not observed within ${String(WINDOWS_PROBE_CLOSE_TIMEOUT_MS)}ms after termination`,
+          );
+        }
         state = "finished";
         resolve({ exitCode: null, stdout, stderr, timedOut: true });
       });
@@ -477,7 +507,8 @@ async function defaultRunWindowsProbeWorker(
         timedOut: false,
       });
     });
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
+      markChildClosed();
       if (state !== "running") return;
       state = "finished";
       clearTimeout(timer);
@@ -634,7 +665,7 @@ export class DefaultSandboxStartupService implements SandboxStartupService {
     this.resolveExecutable = options.resolveExecutable ?? resolveTrustedSystemExecutable;
     this.getUid = options.getUid ?? (() => process.getuid?.());
     this.environment = options.environment ?? process.env;
-    const windowsProbeRunner = options.runWindowsProbeWorker ?? defaultRunWindowsProbeWorker;
+    const windowsProbeRunner = options.runWindowsProbeWorker ?? runWindowsProbeWorkerProcess;
     const windowsProbeTimeoutMs = Math.max(
       1,
       options.windowsProbeTimeoutMs ?? WINDOWS_PROBE_TIMEOUT_MS,
