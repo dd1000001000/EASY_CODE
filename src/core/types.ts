@@ -226,6 +226,56 @@ export interface ToolExecutionResult {
 
 export interface ContextCompactionRequest {
   summary: string;
+  /** Present for structured V2 summaries; omitted only by legacy recovered results. */
+  formatVersion?: 2;
+  /** Structured user-intent lineage validated and persisted separately by Runtime. */
+  intentLedger?: ContextIntentLedger;
+  /**
+   * Runtime-only coverage attestation used before accepting a compaction.
+   * It is never written into workingSummary or exposed in a tool result.
+   */
+  coverageCheck?: ContextCompactionCoverageCheck;
+}
+
+export interface ContextSourceQuote {
+  sourceMessageIndex: number;
+  text: string;
+}
+
+export interface ContextIntentLedger {
+  latestRequest: ContextSourceQuote;
+  /** Active user constraints, kept outside semantic retrieval and summary prose. */
+  activeConstraints: ContextSourceQuote[];
+  userCorrections: ContextSourceQuote[];
+  supersededRequests: ContextSourceQuote[];
+}
+
+export interface ContextCompactionMetadata {
+  formatVersion: 2;
+  /** Inclusive beginning and exclusive end of the source history represented. */
+  sourceStartMessageIndex: number;
+  sourceEndMessageIndex: number;
+  compactedMessageCount: number;
+  sourceHistoryHash: string;
+  acceptedAt: string;
+  beforeProjectedChars: number;
+  afterProjectedChars: number;
+  savedChars: number;
+  savingsRatio: number;
+  postCompactionUtilization: number;
+  safeWaterlineReached: boolean;
+}
+
+export interface ContextCompactionCoverageCheck {
+  coveredMessageIndices: number[];
+  latestMessageIndex: number;
+  latestRequestPreserved: boolean;
+  activeConstraintsPreserved: boolean;
+  activePlanOrTaskPreserved: boolean;
+  unresolvedErrorsPreserved: boolean;
+  currentWorkPreserved: boolean;
+  nextStepPreserved: boolean;
+  note: string;
 }
 
 export type LongTermMemoryCategory =
@@ -643,6 +693,10 @@ export interface SessionState {
   workingSummary: string;
   /** Number of leading messages represented by workingSummary and omitted from future model requests. */
   compactedMessageCount: number;
+  /** Independently pinned user intent; never reconstructed only from vector retrieval. */
+  contextIntentLedger?: ContextIntentLedger;
+  /** Atomic provenance for the currently accepted structured compaction. */
+  contextCompactionMetadata?: ContextCompactionMetadata;
   createdAt: string;
   updatedAt: string;
 }

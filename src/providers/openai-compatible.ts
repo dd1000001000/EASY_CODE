@@ -9,6 +9,7 @@ import type {
   ProviderName,
   ProviderResponse,
 } from "../core/types.js";
+import { projectModelInputMessages } from "../context/micro-compaction.js";
 import {
   validateImageAttachmentCollection,
 } from "../images/image-store.js";
@@ -244,7 +245,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: readonly ChatMessage[],
     currentTurnImageIds?: readonly string[],
   ): Promise<CompletionMessage[]> {
-    let providerMessages = messages;
+    // ContextManager applies this projection before budgeting. Repeat it at
+    // the provider boundary as a fail-safe for callers that construct a
+    // ModelRequest directly. The projection is idempotent and never mutates
+    // durable Thread history.
+    let providerMessages = projectModelInputMessages(messages);
     if (this.visionSupported) {
       try {
         const originalImages = messages.flatMap((message) =>

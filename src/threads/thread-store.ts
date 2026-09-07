@@ -44,6 +44,7 @@ import {
   isChatMessage,
   isPlanReviewState,
   serializeChatMessage,
+  serializeChatMessages,
   serializeSessionState,
   serializeThreadCheckpointDelta,
   type SerializedThreadCheckpointDelta,
@@ -62,6 +63,8 @@ import {
   normalizeCommandApprovalPrefix,
 } from "../command/approval.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { sha256 } from "../utils/hash.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -388,10 +391,53 @@ function cloneMessage(message: ChatMessage): ChatMessage {
   return JSON.parse(serializeChatMessage(message)) as ChatMessage;
 }
 
-function appendMessageIfNew(state: SessionState, message: ChatMessage): void {
+function appendMessageIfNew(state: SessionState, message: ChatMessage): number {
   const previous = state.messages[state.messages.length - 1];
-  if (previous && serializeChatMessage(previous) === serializeChatMessage(message)) return;
+  if (previous && serializeChatMessage(previous) === serializeChatMessage(message)) {
+    return state.messages.length - 1;
+  }
   state.messages.push(cloneMessage(message));
+  return state.messages.length - 1;
+}
+
+function updateRecoveredLatestRequest(
+  state: SessionState,
+  sourceMessageIndex: number,
+  content: string,
+): void {
+  const previous = state.contextIntentLedger;
+  const text = redactSensitiveInformation(content).trim().slice(0, 400) ||
+    "[User message contains attachments only]";
+  state.contextIntentLedger = {
+    latestRequest: { sourceMessageIndex, text },
+    activeConstraints: previous?.activeConstraints.map((item) => ({ ...item })) ?? [],
+    userCorrections: previous?.userCorrections.map((item) => ({ ...item })) ?? [],
+    supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
+  };
+}
+
+function appendRecoveredCorrection(
+  state: SessionState,
+  sourceMessageIndex: number,
+  content: string,
+): void {
+  const previous = state.contextIntentLedger;
+  const quote = {
+    sourceMessageIndex,
+    text: redactSensitiveInformation(content).trim().slice(0, 400) ||
+      "[User message contains attachments only]",
+  };
+  state.contextIntentLedger = {
+    latestRequest: previous?.latestRequest
+      ? { ...previous.latestRequest }
+      : quote,
+    activeConstraints: previous?.activeConstraints.map((item) => ({ ...item })) ?? [],
+    userCorrections: [
+      ...(previous?.userCorrections.map((item) => ({ ...item })) ?? []),
+      quote,
+    ].slice(-32),
+    supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
+  };
 }
 
 function messagePrefix(
@@ -651,7 +697,14 @@ function createThreadCheckpointDelta(
       requested.compactedMessageCount > durable.compactedMessageCount ||
       (
         requested.compactedMessageCount === durable.compactedMessageCount &&
-        requested.workingSummary !== durable.workingSummary
+        (
+          requested.workingSummary !== durable.workingSummary ||
+          !sameJson(requested.contextIntentLedger, durable.contextIntentLedger) ||
+          !sameJson(
+            requested.contextCompactionMetadata,
+            durable.contextCompactionMetadata,
+          )
+        )
       )
     )
   ) {
@@ -714,7 +767,14 @@ function createThreadCheckpointDelta(
     requested.compactedMessageCount > durable.compactedMessageCount ||
     (
       requested.compactedMessageCount === durable.compactedMessageCount &&
-      requested.workingSummary !== durable.workingSummary
+      (
+        requested.workingSummary !== durable.workingSummary ||
+        !sameJson(requested.contextIntentLedger, durable.contextIntentLedger) ||
+        !sameJson(
+          requested.contextCompactionMetadata,
+          durable.contextCompactionMetadata,
+        )
+      )
     )
   ) {
     const resultingMessageCount = durable.messages.length + messagesAppended.length;
@@ -724,6 +784,25 @@ function createThreadCheckpointDelta(
     compaction = {
       workingSummary: requested.workingSummary,
       compactedMessageCount: requested.compactedMessageCount,
+      ...(requested.contextIntentLedger
+        ? {
+            contextIntentLedger: {
+              latestRequest: { ...requested.contextIntentLedger.latestRequest },
+              activeConstraints: requested.contextIntentLedger.activeConstraints.map(
+                (item) => ({ ...item }),
+              ),
+              userCorrections: requested.contextIntentLedger.userCorrections.map(
+                (item) => ({ ...item }),
+              ),
+              supersededRequests: requested.contextIntentLedger.supersededRequests.map(
+                (item) => ({ ...item }),
+              ),
+            },
+          }
+        : {}),
+      ...(requested.contextCompactionMetadata
+        ? { contextCompactionMetadata: { ...requested.contextCompactionMetadata } }
+        : {}),
     };
   }
 
@@ -821,8 +900,36 @@ function applyThreadCheckpointDelta(
     ) {
       throw new Error(`Thread checkpoint delta ${event.eventId} repeated its compaction`);
     }
+    const metadata = delta.compaction.contextCompactionMetadata;
+    if (metadata) {
+      const sourceHistoryHash = `sha256:${sha256(serializeChatMessages(
+        state.messages.slice(0, metadata.sourceEndMessageIndex),
+      ))}`;
+      if (sourceHistoryHash !== metadata.sourceHistoryHash) {
+        throw new Error(
+          `Thread checkpoint delta ${event.eventId} has a context source hash mismatch`,
+        );
+      }
+    }
     state.workingSummary = delta.compaction.workingSummary;
     state.compactedMessageCount = boundary;
+    state.contextIntentLedger = delta.compaction.contextIntentLedger
+      ? {
+          latestRequest: { ...delta.compaction.contextIntentLedger.latestRequest },
+          activeConstraints: delta.compaction.contextIntentLedger.activeConstraints.map(
+            (item) => ({ ...item }),
+          ),
+          userCorrections: delta.compaction.contextIntentLedger.userCorrections.map(
+            (item) => ({ ...item }),
+          ),
+          supersededRequests: delta.compaction.contextIntentLedger.supersededRequests.map(
+            (item) => ({ ...item }),
+          ),
+        }
+      : undefined;
+    state.contextCompactionMetadata = metadata
+      ? { ...metadata }
+      : undefined;
   }
 }
 
@@ -1872,6 +1979,23 @@ export class ThreadStore {
             }
             checkpoint.workingSummary = state.workingSummary;
             checkpoint.compactedMessageCount = state.compactedMessageCount;
+            checkpoint.contextIntentLedger = state.contextIntentLedger
+              ? {
+                  latestRequest: { ...state.contextIntentLedger.latestRequest },
+                  activeConstraints: state.contextIntentLedger.activeConstraints.map(
+                    (item) => ({ ...item }),
+                  ),
+                  userCorrections: state.contextIntentLedger.userCorrections.map(
+                    (item) => ({ ...item }),
+                  ),
+                  supersededRequests: state.contextIntentLedger.supersededRequests.map(
+                    (item) => ({ ...item }),
+                  ),
+                }
+              : undefined;
+            checkpoint.contextCompactionMetadata = state.contextCompactionMetadata
+              ? { ...state.contextCompactionMetadata }
+              : undefined;
           }
           // A background child can append artifacts between the caller taking
           // its checkpoint snapshot and the checkpoint append. Durable
@@ -1905,7 +2029,8 @@ export class ThreadStore {
         state.activeTurnId = event.turnId;
         state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
-          appendMessageIfNew(state, payload.message);
+          const messageIndex = appendMessageIfNew(state, payload.message);
+          updateRecoveredLatestRequest(state, messageIndex, payload.message.content);
           if (payload.message.content.trim()) state.goal = payload.message.content;
         }
       } else if (event.type === "turn_completed") {
@@ -1925,11 +2050,16 @@ export class ThreadStore {
         state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
           state.activeTurnId = event.turnId;
-          appendMessageIfNew(state, payload.message);
+          const messageIndex = appendMessageIfNew(state, payload.message);
+          updateRecoveredLatestRequest(state, messageIndex, payload.message.content);
           if (payload.message.content.trim()) state.goal = payload.message.content;
         } else if (typeof payload?.content === "string") {
           state.activeTurnId = event.turnId;
-          appendMessageIfNew(state, { role: "user", content: payload.content });
+          const messageIndex = appendMessageIfNew(
+            state,
+            { role: "user", content: payload.content },
+          );
+          updateRecoveredLatestRequest(state, messageIndex, payload.content);
           if (payload.content.trim()) state.goal = payload.content;
         }
       } else if (event.type.startsWith("turn.steering.")) {
@@ -2036,8 +2166,21 @@ export class ThreadStore {
           compactedMessageCount >= state.compactedMessageCount &&
           compactedMessageCount <= state.messages.length
         ) {
-          state.workingSummary = summary;
-          state.compactedMessageCount = compactedMessageCount;
+          const replayed = deserializeSessionState({
+            ...serializeSessionState(state),
+            workingSummary: summary,
+            compactedMessageCount,
+            ...(payload.contextIntentLedger === undefined
+              ? {}
+              : { contextIntentLedger: payload.contextIntentLedger }),
+            ...(payload.contextCompactionMetadata === undefined
+              ? {}
+              : { contextCompactionMetadata: payload.contextCompactionMetadata }),
+          });
+          state.workingSummary = replayed.workingSummary;
+          state.compactedMessageCount = replayed.compactedMessageCount;
+          state.contextIntentLedger = replayed.contextIntentLedger;
+          state.contextCompactionMetadata = replayed.contextCompactionMetadata;
         }
       } else if (event.type === "tool_audit" && payload) {
         const entry = payload.entry as CommandAuditEntry | undefined;
@@ -2136,7 +2279,8 @@ export class ThreadStore {
       }
       state.pendingSteering = pending.slice(prefix.length).map(cloneSteeringEntry);
       state.steeringWatermark = throughSequence as number;
-      appendMessageIfNew(state, expectedMessage);
+      const messageIndex = appendMessageIfNew(state, expectedMessage);
+      appendRecoveredCorrection(state, messageIndex, expectedMessage.content);
       return;
     }
 

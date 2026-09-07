@@ -48,6 +48,63 @@ function context(
   };
 }
 
+function compactContextV2Input() {
+  return {
+    formatVersion: 2,
+    primaryRequest: {
+      sourceMessageIndex: 8,
+      text: "Continue the authentication fix.",
+    },
+    activeConstraints: [{
+      sourceMessageIndex: 9,
+      text: "  Do not change the public API.  ",
+    }],
+    technicalDecisions: [{
+      decision: "Keep authorization at the Runtime boundary.",
+      evidenceRefIds: ["file-runtime"],
+    }],
+    filesAndChanges: [{
+      path: "src/runtime/agent.ts",
+      status: "read",
+      summary: "Runtime owns capability enforcement.",
+      evidenceRefIds: ["file-runtime"],
+    }],
+    verifiedResults: [{
+      result: "The focused authorization test passed.",
+      evidenceRefIds: ["test-auth"],
+    }],
+    errorsAndBlockers: [],
+    pendingWork: ["Implement the remaining validation."],
+    currentWork: "Designing Compaction Summary V2.",
+    nextStep: "Patch the compact_context tool schema.",
+    evidenceRefs: [
+      { id: "file-runtime", kind: "file", reference: "src/runtime/agent.ts" },
+      { id: "test-auth", kind: "test", reference: "authorization focused test" },
+    ],
+    intentLedger: {
+      userCorrections: [{
+        sourceMessageIndex: 9,
+        text: "Do not change the public API.",
+      }],
+      supersededRequests: [{
+        sourceMessageIndex: 3,
+        text: "Use the earlier draft schema.",
+      }],
+    },
+    coverageCheck: {
+      coveredMessageIndices: [3, 8, 9],
+      latestMessageIndex: 9,
+      latestRequestPreserved: true,
+      activeConstraintsPreserved: true,
+      activePlanOrTaskPreserved: true,
+      unresolvedErrorsPreserved: true,
+      currentWorkPreserved: true,
+      nextStepPreserved: true,
+      note: "Primary request, correction, and current work are covered.",
+    },
+  };
+}
+
 describe("workspace file tools", () => {
   it("keeps the fixed official Prompt Bundle outside ordinary workspace tools", () => {
     const home = path.dirname(getEasyCodeHome());
@@ -116,10 +173,11 @@ describe("workspace file tools", () => {
     });
   });
 
-  it("accepts a bounded context summary without exposing it in model-facing data", async () => {
+  it("accepts Compaction Summary V2 without exposing coverage or intent metadata", async () => {
     const tool = new CompactContextTool();
+    const input = compactContextV2Input();
     const accepted = await tool.execute(
-      { summary: "Objective: continue safely. Next step: run tests." },
+      input,
       context(process.cwd()),
     );
     const rejected = await tool.execute(
@@ -129,11 +187,76 @@ describe("workspace file tools", () => {
 
     assert.equal(tool.mutating, false);
     assert.equal(accepted.ok, true);
-    assert.equal(accepted.contextCompaction?.summary.includes("continue safely"), true);
-    assert.deepEqual(accepted.data, {
-      summaryChars: "Objective: continue safely. Next step: run tests.".length,
+    const persisted = JSON.parse(accepted.contextCompaction?.summary ?? "{}") as {
+      formatVersion?: number;
+      activeConstraints?: Array<{ sourceMessageIndex: number; text: string }>;
+      coverageCheck?: unknown;
+      intentLedger?: unknown;
+    };
+    assert.equal(persisted.formatVersion, 2);
+    assert.deepEqual(persisted.activeConstraints, input.activeConstraints);
+    assert.equal(persisted.coverageCheck, undefined);
+    assert.equal(persisted.intentLedger, undefined);
+    assert.deepEqual(accepted.contextCompaction?.intentLedger, {
+      latestRequest: input.primaryRequest,
+      activeConstraints: input.activeConstraints,
+      ...input.intentLedger,
     });
+    assert.deepEqual(
+      accepted.contextCompaction?.coverageCheck,
+      input.coverageCheck,
+    );
+    assert.deepEqual(accepted.data, {
+      formatVersion: 2,
+      summaryChars: accepted.contextCompaction?.summary.length,
+    });
+    const modelVisibleResult = JSON.stringify({
+      summary: accepted.summary,
+      data: accepted.data,
+    });
+    assert.doesNotMatch(modelVisibleResult, /coveredMessageIndices|userCorrections/u);
     assert.equal(rejected.ok, false);
+  });
+
+  it("publishes one strict provider-neutral V2 schema without analysis escape hatches", () => {
+    const parameters = new CompactContextTool().definition.function.parameters;
+    const serialized = JSON.stringify(parameters);
+    const root = parameters as {
+      additionalProperties?: boolean;
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+
+    assert.equal(root.additionalProperties, false);
+    assert.equal(root.required?.includes("coverageCheck"), true);
+    assert.equal(root.required?.includes("intentLedger"), true);
+    assert.equal(root.properties?.summary, undefined);
+    assert.equal(root.properties?.analysis, undefined);
+    assert.doesNotMatch(serialized, /"(?:oneOf|anyOf|allOf)"/u);
+    assert.doesNotMatch(serialized, /<\/?[A-Za-z]/u);
+  });
+
+  it("rejects malformed V2 coverage and exact-source fields", async () => {
+    const tool = new CompactContextTool();
+    const unsorted = compactContextV2Input();
+    unsorted.coverageCheck.coveredMessageIndices = [8, 3, 9];
+    const whitespaceConstraint = compactContextV2Input();
+    whitespaceConstraint.activeConstraints[0]!.text = "   ";
+    const extraField = {
+      ...compactContextV2Input(),
+      analysis: "unbounded private reasoning",
+    };
+
+    for (const invalid of [
+      { summary: "legacy model-facing input is no longer accepted" },
+      unsorted,
+      whitespaceConstraint,
+      extraField,
+    ]) {
+      const result = await tool.execute(invalid, context(process.cwd()));
+      assert.equal(result.ok, false);
+      assert.equal(result.contextCompaction, undefined);
+    }
   });
 
   it("reads a line range and tracks the full-file SHA-256 version", async () => {

@@ -521,6 +521,12 @@ function checkpointPayload(state: Readonly<SessionState>): Readonly<Record<strin
       messageCount: state.messages.length,
       compactedMessageCount: state.compactedMessageCount,
       workingSummaryHash: state.workingSummary ? sha256(state.workingSummary) : null,
+      intentLedger: state.contextIntentLedger
+        ? redactCheckpointValue(state.contextIntentLedger)
+        : null,
+      compaction: state.contextCompactionMetadata
+        ? { ...state.contextCompactionMetadata }
+        : null,
     },
     ...(latestFailure ? { latestFailure } : {}),
     currentDiff: {

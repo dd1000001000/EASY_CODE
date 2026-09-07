@@ -23,6 +23,7 @@ import {
   type SubagentAssignmentSnapshot,
   type SubagentTaskReport,
   type TaskGraph,
+  type ToolDefinition,
   type ToolExecutionResult,
   type ToolName,
   type TurnSteeringBatch,
@@ -30,8 +31,19 @@ import {
 } from "../core/types.js";
 import { renderPinnedCurrentState } from "../context/artifact-index.js";
 import {
+  createCompactionMetadata,
+  validateCompactionIntegrity,
+} from "../context/compaction-integrity.js";
+import {
+  compactionCooldownSatisfied,
+  evaluateCompactionBenefit,
+  type CompactionBenefitEvaluation,
+} from "../context/compaction-policy.js";
+import {
   ContextManager,
+  estimateToolDefinitionsChars,
   type ContextPressureLevel,
+  type ProviderRequestContextInspection,
 } from "../context/manager.js";
 import {
   MAX_IMAGES_PER_MODEL_REQUEST,
@@ -123,6 +135,30 @@ function contextPressureInstruction(
     );
   }
   return "";
+}
+
+function contextPressureRank(level: ContextPressureLevel): number {
+  if (level === "force") return 3;
+  if (level === "require") return 2;
+  if (level === "suggest") return 1;
+  return 0;
+}
+
+export interface ProviderContextSnapshot {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly actor: AgentRole;
+  readonly purpose: ModelUsagePurpose;
+  readonly provider: ModelProvider["name"];
+  readonly model: string;
+  readonly timestamp: string;
+  readonly step?: number;
+  readonly attempt: number;
+  /** Monotonic Runtime decision used to choose the exposed capability set. */
+  readonly enforcedPressure: ContextPressureLevel;
+  readonly enforcedUtilization: number;
+  /** Metrics for the exact messages and tool schemas passed to the provider. */
+  readonly actualRequest: ProviderRequestContextInspection;
 }
 
 function sandboxUnavailableInstruction(role: AgentRole): string {
@@ -369,6 +405,8 @@ export interface AgentRuntimeDependencies {
   onToolExecutionEnd?: (toolName: string, activityToken: unknown) => void;
   /** Durable accounting hook; failures are reported but never replace model output. */
   onModelUsage?: (record: ModelUsageRecord) => Promise<void>;
+  /** Ephemeral accounting for the exact provider-bound request projection. */
+  onProviderContext?: (snapshot: ProviderContextSnapshot) => void;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
   onReasoning?: (notification: AgentReasoningNotification) => void;
   /** Child-only FIFO parent guidance, drained at a model-step boundary. */
@@ -561,6 +599,179 @@ function resultForModel(result: ToolExecutionResult, maximumChars: number): stri
   return jsonForModel({ ok: result.ok, data: { truncated: true } });
 }
 
+type AssistantToolCall = NonNullable<
+  Extract<ChatMessage, { role: "assistant" }>["tool_calls"]
+>[number];
+
+/**
+ * coverageCheck and intentLedger are one-request validation inputs used only by
+ * Runtime's acceptance gate. The accepted ledger is persisted separately in
+ * canonical state; retaining either raw field in the assistant event would
+ * duplicate transient material on every resume and in retrieval.
+ */
+function durableToolCall(call: AssistantToolCall): AssistantToolCall {
+  if (call.function.name !== "compact_context") return call;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(call.function.arguments) as unknown;
+  } catch {
+    return {
+      ...call,
+      function: { ...call.function, arguments: "{}" },
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ...call,
+      function: { ...call.function, arguments: "{}" },
+    };
+  }
+  const durable = { ...(parsed as Record<string, unknown>) };
+  delete durable.coverageCheck;
+  delete durable.intentLedger;
+  return {
+    ...call,
+    function: {
+      ...call.function,
+      arguments: JSON.stringify(durable),
+    },
+  };
+}
+
+const MAX_PINNED_INTENT_QUOTE_CHARS = 400;
+const MAX_COMPACTION_INVENTORY_USER_MESSAGES = 96;
+
+function boundedIntentQuote(value: string): string {
+  const redacted = redactSensitiveInformation(value).trim();
+  return (redacted || "[User message contains attachments only]")
+    .slice(0, MAX_PINNED_INTENT_QUOTE_CHARS);
+}
+
+function updateLatestRequestLedger(
+  state: SessionState,
+  sourceMessageIndex: number,
+  content: string,
+): void {
+  const previous = state.contextIntentLedger;
+  state.contextIntentLedger = {
+    latestRequest: {
+      sourceMessageIndex,
+      text: boundedIntentQuote(content),
+    },
+    activeConstraints: previous?.activeConstraints.map((item) => ({ ...item })) ?? [],
+    userCorrections: previous?.userCorrections.map((item) => ({ ...item })) ?? [],
+    supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
+  };
+}
+
+function appendSteeringLedgerEntry(
+  state: SessionState,
+  sourceMessageIndex: number,
+  content: string,
+): void {
+  const quote = {
+    sourceMessageIndex,
+    text: boundedIntentQuote(content),
+  };
+  const previous = state.contextIntentLedger;
+  state.contextIntentLedger = {
+    latestRequest: previous?.latestRequest
+      ? { ...previous.latestRequest }
+      : quote,
+    activeConstraints: previous?.activeConstraints.map((item) => ({ ...item })) ?? [],
+    userCorrections: [
+      ...(previous?.userCorrections.map((item) => ({ ...item })) ?? []),
+      quote,
+    ].slice(-32),
+    supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
+  };
+}
+
+function isRuntimeCompactionMessage(content: string): boolean {
+  return /^RUNTIME_CONTEXT_(?:COMPACTION|PRESSURE)/u.test(content.trimStart());
+}
+
+/** Runtime-owned source map lets every provider cite durable message indices. */
+function compactionSourceInventory(state: Readonly<SessionState>): string {
+  const userMessages = state.messages
+    .map((message, sourceMessageIndex) => ({ message, sourceMessageIndex }))
+    .filter(({ message }) =>
+      message.role === "user" &&
+      message.content.trim() &&
+      !isRuntimeCompactionMessage(message.content)
+    )
+    .slice(-MAX_COMPACTION_INVENTORY_USER_MESSAGES)
+    .map(({ message, sourceMessageIndex }) => ({
+      sourceMessageIndex,
+      exactQuote: boundedIntentQuote(message.content ?? ""),
+      ...(message.role === "user" && message.images?.length
+        ? { images: message.images.map((image) => image.label) }
+        : {}),
+    }));
+  const latestMessageIndex = userMessages.at(-1)?.sourceMessageIndex ?? -1;
+  const blockedTask = state.taskGraph?.tasks.find((task) => task.status === "blocked");
+  const latestCommand = state.commands.at(-1);
+  const latestFailedCommand = latestCommand &&
+    (latestCommand.status !== "exited" || latestCommand.exitCode !== 0)
+    ? latestCommand
+    : undefined;
+  return [
+    "RUNTIME_COMPACTION_SOURCE_INVENTORY:",
+    "Use these zero-based durable message indices and exact bounded quotes in " +
+      "primaryRequest, activeConstraints, intentLedger, and coverageCheck. " +
+      "Preserve currentIntentLedger.latestRequest as the primary request and " +
+      "keep later steering in userCorrections. latestMessageIndex is the newest " +
+      "durable user message. coverageCheck is temporary and discarded after validation.",
+    JSON.stringify({
+      sourceEndExclusive: state.messages.length,
+      latestMessageIndex,
+      currentIntentLedger: state.contextIntentLedger ?? null,
+      runtimeConstraints: state.constraints.map((constraint) =>
+        redactSensitiveInformation(constraint)
+      ),
+      userMessages,
+      activePlan: state.planReview
+        ? {
+            id: state.planReview.proposal.id,
+            revision: state.planReview.proposal.revision,
+            status: state.planReview.status,
+          }
+        : null,
+      taskGraph: state.taskGraph
+        ? {
+            id: state.taskGraph.id,
+            goal: state.taskGraph.goal,
+            status: state.taskGraph.status,
+            currentTaskId: activeTask(state.taskGraph)?.id ?? null,
+            blockedTask: blockedTask
+              ? { id: blockedTask.id, blocker: blockedTask.blocker ?? null }
+              : null,
+          }
+        : null,
+      latestUnresolvedCommand: latestFailedCommand
+        ? {
+            id: latestFailedCommand.id,
+            status: latestFailedCommand.status,
+            summary: redactSensitiveInformation(
+              latestFailedCommand.summary,
+            ).slice(0, 800),
+          }
+        : null,
+    }),
+  ].join("\n");
+}
+
+interface AcceptedContextCompaction {
+  readonly benefit: CompactionBenefitEvaluation;
+  readonly intentLedger: NonNullable<SessionState["contextIntentLedger"]>;
+  readonly metadata: NonNullable<SessionState["contextCompactionMetadata"]>;
+}
+
+interface ContextCompactionAssessment {
+  readonly result: ToolExecutionResult;
+  readonly accepted?: AcceptedContextCompaction;
+}
+
 function isSubagentAssignmentSnapshot(
   value: unknown,
 ): value is SubagentAssignmentSnapshot {
@@ -612,6 +823,138 @@ export class AgentRuntime {
     }
   }
 
+  private assessContextCompaction(input: {
+    state: SessionState;
+    call: AssistantToolCall;
+    result: ToolExecutionResult;
+    sourceEndMessageIndex: number;
+    retainedTail?: readonly ChatMessage[];
+    required: boolean;
+    maxContextChars: number;
+    maxOutputChars: number;
+  }): ContextCompactionAssessment {
+    const request = input.result.contextCompaction;
+    if (!input.result.ok || !request) return { result: input.result };
+
+    const integrity = validateCompactionIntegrity({
+      state: input.state,
+      request,
+      sourceEndMessageIndex: input.sourceEndMessageIndex,
+    });
+    const previewToolMessage: Extract<ChatMessage, { role: "tool" }> = {
+      role: "tool",
+      tool_call_id: input.call.id,
+      name: input.call.function.name,
+      content: resultForModel(input.result, input.maxOutputChars),
+    };
+    const compactedMessageCount = input.state.messages.length + 1;
+    const candidateMessages = [
+      ...input.state.messages,
+      previewToolMessage,
+      ...(input.retainedTail ?? []),
+    ];
+    const benefit = evaluateCompactionBenefit(
+      this.dependencies.contextManager,
+      {
+        state: input.state,
+        candidateMessages,
+        summary: request.summary,
+        compactedMessageCount,
+        maxContextChars: input.maxContextChars,
+        historyEndExclusive: input.sourceEndMessageIndex,
+        required: input.required,
+      },
+    );
+    if (!integrity.ok) {
+      return {
+        result: {
+          ok: false,
+          summary: "Runtime rejected an incomplete or stale context summary.",
+          error: `context_compaction_integrity_failed:${integrity.errors.join(",")}`,
+          data: {
+            formatVersion: request.formatVersion ?? null,
+            validationErrors: integrity.errors,
+          },
+        },
+      };
+    }
+    if (!benefit.accepted) {
+      return {
+        result: {
+          ok: false,
+          summary: "Runtime rejected a low-benefit context compaction.",
+          error: benefit.rejectionReason ?? "context_compaction_benefit_failed",
+          data: {
+            beforeProjectedChars: benefit.beforeProjectedChars,
+            afterProjectedChars: benefit.afterProjectedChars,
+            newProjectedChars: benefit.newProjectedChars,
+            savedChars: benefit.savedChars,
+            savingsRatio: benefit.savingsRatio,
+            postCompactionUtilization: benefit.postCompactionUtilization,
+          },
+        },
+      };
+    }
+
+    const metadata = createCompactionMetadata({
+      state: input.state,
+      sourceStartMessageIndex: input.state.compactedMessageCount,
+      sourceEndMessageIndex: input.sourceEndMessageIndex,
+      compactedMessageCount,
+      benefit,
+    });
+    return {
+      result: input.result,
+      accepted: {
+        benefit,
+        intentLedger: integrity.intentLedger!,
+        metadata,
+      },
+    };
+  }
+
+  private observeProviderContext(input: {
+    state: SessionState;
+    turnId: string;
+    purpose: ModelUsagePurpose;
+    messages: readonly ChatMessage[];
+    tools?: readonly ToolDefinition[];
+    enforcedPressure: ContextPressureLevel;
+    enforcedUtilization: number;
+    attempt: number;
+    step?: number;
+    maxContextChars: number;
+    actualRequest?: ProviderRequestContextInspection;
+  }): ProviderRequestContextInspection {
+    const actualRequest = input.actualRequest ??
+      this.dependencies.contextManager.inspectProviderRequest({
+        state: input.state,
+        maxContextChars: input.maxContextChars,
+        messages: input.messages,
+        ...(input.tools ? { tools: input.tools } : {}),
+      });
+    const identity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
+    try {
+      this.dependencies.onProviderContext?.({
+        threadId: input.state.threadId,
+        turnId: input.turnId,
+        actor: identity.role,
+        purpose: input.purpose,
+        provider: this.dependencies.provider.name,
+        model: this.dependencies.provider.model,
+        timestamp: new Date().toISOString(),
+        ...(input.step === undefined ? {} : { step: input.step }),
+        attempt: input.attempt,
+        enforcedPressure: input.enforcedPressure,
+        enforcedUtilization: input.enforcedUtilization,
+        actualRequest,
+      });
+    } catch {
+      // Context telemetry is observational and must never block model work.
+    }
+    return actualRequest;
+  }
+
   private async takeAndApplySteering(
     state: SessionState,
     turnId: string,
@@ -647,6 +990,7 @@ export class AgentRuntime {
         }
       }
     }
+    const steeringMessageIndex = state.messages.length;
     state.messages.push({
       role: "user",
       content: batch.message.content,
@@ -654,6 +998,11 @@ export class AgentRuntime {
         ? { images: batchImages.map((image) => ({ ...image })) }
         : {}),
     });
+    appendSteeringLedgerEntry(
+      state,
+      steeringMessageIndex,
+      batch.message.content,
+    );
     state.pendingSteering = (state.pendingSteering ?? [])
       .filter((entry) => entry.sequence > batch.throughSequence);
     state.steeringSequence = Math.max(
@@ -746,6 +1095,7 @@ export class AgentRuntime {
     };
     const turnHistoryStart = state.messages.length;
     state.messages.push(userMessage);
+    updateLatestRequestLedger(state, turnHistoryStart, userMessage.content);
 
     try {
     await this.dependencies.appendEvent({
@@ -996,6 +1346,26 @@ export class AgentRuntime {
                   state.thinkingEffort,
                   autoRouteContext,
                   controllerPolicy,
+                  (request, attempt) => {
+                    const inspection = this.dependencies.contextManager.inspectProviderRequest({
+                      state,
+                      maxContextChars: options.maxContextChars,
+                      messages: request.messages,
+                      ...(request.tools ? { tools: request.tools } : {}),
+                    });
+                    this.observeProviderContext({
+                      state,
+                      turnId,
+                      attempt,
+                      purpose: "auto_route",
+                      messages: request.messages,
+                      ...(request.tools ? { tools: request.tools } : {}),
+                      enforcedPressure: inspection.pressure,
+                      enforcedUtilization: inspection.utilization,
+                      maxContextChars: options.maxContextChars,
+                      actualRequest: inspection,
+                    });
+                  },
                 ),
               ),
             );
@@ -1260,31 +1630,144 @@ export class AgentRuntime {
           : base;
       };
 
-      // Probe with the complete ordinary tool surface. The exact reservation
-      // is then reused for retrieval-boundary selection and the final build,
-      // so pressure cannot lag behind conversation truncation. If compaction
-      // becomes mandatory, retaining this conservative reservation also avoids
-      // an oscillation caused by the compact-only prompt being smaller.
-      const budgetProbeSystemPrompt = await buildStepSystemPrompt(
+      // Reserve room with the complete ordinary capability surface before
+      // selecting the retrieval boundary. The fixed evidence reserve affects
+      // selection only; pressure below is measured from a concrete provider
+      // request after retrieval, projection, and tool-schema serialization.
+      const selectionSystemPrompt = await buildStepSystemPrompt(
         layeredContext,
         ordinaryEnabledTools,
         fixedRuntimeInstructions,
       );
-      const reservedSystemPromptChars = budgetProbeSystemPrompt.length + 32 +
+      const ordinaryToolDefinitions = ordinaryEnabledTools.map((tool) => tool.definition);
+      const reservedSystemPromptChars = selectionSystemPrompt.length + 32 +
+        estimateToolDefinitionsChars(ordinaryToolDefinitions) +
         (this.dependencies.getLayeredContext
           ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS
           : 0) +
         CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
-      const contextInspection = this.dependencies.contextManager.inspect(
+      let retrievalContextChanged = false;
+      if (this.dependencies.getLayeredContext) {
+        try {
+          const derived = await this.dependencies.getLayeredContext({
+            state,
+            query: contextRetrievalQuery(state, memoryContext.userInput),
+            beforeMessageIndex: this.dependencies.contextManager.retrievalBoundary(
+              state,
+              options.maxContextChars,
+              selectionSystemPrompt,
+              reservedSystemPromptChars,
+            ),
+          });
+          layeredContext = pinCurrentState(
+            state,
+            memoryContext.approvedPlanReview,
+            derived,
+          );
+          retrievalContextChanged = true;
+        } catch (error) {
+          if (!contextLayerFailureReported) {
+            contextLayerFailureReported = true;
+            const detail = error instanceof Error ? error.message : String(error);
+            this.dependencies.onStatus?.(
+              `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
+            );
+          }
+        }
+      }
+
+      let systemPrompt = retrievalContextChanged
+        ? await buildStepSystemPrompt(
+            layeredContext,
+            ordinaryEnabledTools,
+            fixedRuntimeInstructions,
+          )
+        : selectionSystemPrompt;
+      let enabledTools = ordinaryEnabledTools;
+      let messages = this.dependencies.contextManager.build({
+        systemPrompt,
         state,
-        options.maxContextChars,
-        {
-          systemPrompt: budgetProbeSystemPrompt,
+        maxContextChars: options.maxContextChars,
+        reservedSystemPromptChars,
+      });
+      let requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+        state,
+        maxContextChars: options.maxContextChars,
+        messages,
+        tools: ordinaryToolDefinitions,
+      });
+      let contextPressure = requestInspection.pressure;
+      let contextUtilization = requestInspection.utilization;
+
+      const rebuildForPressure = async (): Promise<void> => {
+        const contextCompactionRequiredNow =
+          contextPressure === "require" || contextPressure === "force";
+        enabledTools = contextCompactionRequiredNow
+          ? compactContextTool
+            ? [compactContextTool]
+            : []
+          : ordinaryEnabledTools;
+        const pressureInstruction = contextPressureInstruction(
+          contextPressure,
+          contextUtilization,
+        );
+        const compactionInventory = contextPressure === "normal"
+          ? ""
+          : compactionSourceInventory(state);
+        systemPrompt = await buildStepSystemPrompt(
+          layeredContext,
+          enabledTools,
+          [
+            pressureInstruction,
+            compactionInventory,
+            ...fixedRuntimeInstructions,
+          ].filter(Boolean),
+        );
+        messages = this.dependencies.contextManager.build({
+          systemPrompt,
+          state,
+          maxContextChars: options.maxContextChars,
           reservedSystemPromptChars,
-        },
-      );
-      const contextUtilization = contextInspection.utilization;
-      const contextPressure = contextInspection.pressure;
+        });
+        requestInspection = this.dependencies.contextManager.inspectProviderRequest({
+          state,
+          maxContextChars: options.maxContextChars,
+          messages,
+          tools: enabledTools.map((tool) => tool.definition),
+        });
+      };
+
+      if (contextPressure === "force" && !forcedContextCompactionRequestActive) {
+        await this.appendContextCompactionRequest({
+          state,
+          turnId,
+          step,
+          utilization: contextUtilization,
+          correction: false,
+        });
+        forcedContextCompactionRequestActive = true;
+      }
+      if (contextPressure !== "normal") await rebuildForPressure();
+
+      // A pressure instruction can make the concrete request cross the next
+      // boundary. Escalate at most once and never downgrade within a step,
+      // preventing compact-only capability changes from oscillating.
+      if (contextPressureRank(requestInspection.pressure) > contextPressureRank(contextPressure)) {
+        contextPressure = requestInspection.pressure;
+        contextUtilization = requestInspection.utilization;
+        if (contextPressure === "force" && !forcedContextCompactionRequestActive) {
+          await this.appendContextCompactionRequest({
+            state,
+            turnId,
+            step,
+            utilization: contextUtilization,
+            correction: false,
+          });
+          forcedContextCompactionRequestActive = true;
+        }
+        await rebuildForPressure();
+      }
+
       const contextCompactionRequired =
         contextPressure === "require" || contextPressure === "force";
       if (contextPressure !== lastContextPressureLevel) {
@@ -1308,77 +1791,18 @@ export class AgentRuntime {
         }
         lastContextPressureLevel = contextPressure;
       }
-      if (contextPressure === "force" && !forcedContextCompactionRequestActive) {
-        await this.appendContextCompactionRequest({
-          state,
-          turnId,
-          step,
-          utilization: contextUtilization,
-          correction: false,
-        });
-        forcedContextCompactionRequestActive = true;
-      }
-      const pressureInstruction = contextPressureInstruction(
-        contextPressure,
-        contextUtilization,
-      );
-      const enabledTools = contextCompactionRequired
-        ? compactContextTool
-          ? [compactContextTool]
-          : []
-        : ordinaryEnabledTools;
-      const runtimeInstructions = [
-        pressureInstruction,
-        ...fixedRuntimeInstructions,
-      ].filter(Boolean);
-      // In the common (normal-pressure) path the probe already is the exact
-      // prompt we need. Reuse it so prompt construction stays one-to-one with
-      // the provider request; only rebuild when pressure changes either the
-      // exposed tool surface or the Runtime instructions.
-      let systemPrompt = !contextCompactionRequired && !pressureInstruction
-        ? budgetProbeSystemPrompt
-        : await buildStepSystemPrompt(
-            layeredContext,
-            enabledTools,
-            runtimeInstructions,
-          );
-      if (this.dependencies.getLayeredContext) {
-        try {
-          const derived = await this.dependencies.getLayeredContext({
-            state,
-            query: contextRetrievalQuery(state, memoryContext.userInput),
-            beforeMessageIndex: this.dependencies.contextManager.retrievalBoundary(
-              state,
-              options.maxContextChars,
-              systemPrompt,
-              reservedSystemPromptChars,
-            ),
-          });
-          layeredContext = pinCurrentState(
-            state,
-            memoryContext.approvedPlanReview,
-            derived,
-          );
-          systemPrompt = await buildStepSystemPrompt(
-            layeredContext,
-            enabledTools,
-            runtimeInstructions,
-          );
-        } catch (error) {
-          if (!contextLayerFailureReported) {
-            contextLayerFailureReported = true;
-            const detail = error instanceof Error ? error.message : String(error);
-            this.dependencies.onStatus?.(
-              `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
-            );
-          }
-        }
-      }
-      const messages = this.dependencies.contextManager.build({
-        systemPrompt,
+      this.observeProviderContext({
         state,
+        turnId,
+        step,
+        attempt: 1,
+        purpose: contextCompactionRequired ? "context_compaction" : "agent_step",
+        messages,
+        tools: enabledTools.map((tool) => tool.definition),
+        enforcedPressure: contextPressure,
+        enforcedUtilization: contextUtilization,
         maxContextChars: options.maxContextChars,
-        reservedSystemPromptChars,
+        actualRequest: requestInspection,
       });
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
@@ -1481,6 +1905,9 @@ export class AgentRuntime {
             (call) => call.function.name === "manage_memory",
           )
         );
+      const executionToolCalls = suppressFinalizationToolCalls
+        ? undefined
+        : response.message.tool_calls;
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: suppressFinalizationToolCalls
@@ -1488,7 +1915,7 @@ export class AgentRuntime {
           : response.message.content,
         tool_calls: suppressFinalizationToolCalls
           ? undefined
-          : response.message.tool_calls,
+          : executionToolCalls?.map(durableToolCall),
         reasoning_content: response.message.reasoning_content
       };
       if (suppressFinalizationToolCalls) {
@@ -1530,7 +1957,9 @@ export class AgentRuntime {
         }
       }
 
-      const calls = assistantMessage.tool_calls ?? [];
+      // Execute the original arguments so the ephemeral coverageCheck reaches
+      // Runtime, while only the sanitized call above enters durable history.
+      const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
         if (contextCompactionRequired) {
           if (!contextCompactionCorrectionIssued) {
@@ -1797,7 +2226,11 @@ export class AgentRuntime {
         calls.length > 1 &&
         calls.some((call) => call.function.name === "submit_task_result");
       const compactContextHasNewHistory =
-        state.messages.length - 1 > state.compactedMessageCount;
+        contextPressure !== "normal" &&
+        (
+          contextCompactionRequired ||
+          compactionCooldownSatisfied(state, state.messages.length - 1)
+        );
       const stepImageAttachments: ImageAttachment[] = [];
       let successfulMemoryToolCall = false;
       let successfulContextCompaction = false;
@@ -1806,6 +2239,7 @@ export class AgentRuntime {
       let sandboxPauseRequested = false;
       let steeringAppliedBetweenTools = false;
       let backgroundCommandFinalizationRejected = false;
+      let acceptedContextCompaction: AcceptedContextCompaction | undefined;
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
         const call = calls[callIndex]!;
@@ -1825,7 +2259,7 @@ export class AgentRuntime {
               stepId: `step_${step}`,
               type: "tool.call",
               phase: "requested",
-              payload: skipped,
+              payload: durableToolCall(skipped),
             });
             const skippedResult: ToolExecutionResult = {
               ok: false,
@@ -1878,7 +2312,7 @@ export class AgentRuntime {
           stepId: `step_${step}`,
           type: "tool.call",
           phase: "requested",
-          payload: call
+          payload: durableToolCall(call)
         });
 
         if (contextCompactionProtocolViolated) {
@@ -1922,8 +2356,9 @@ export class AgentRuntime {
         } else if (toolName === "compact_context" && !compactContextHasNewHistory) {
           result = {
             ok: false,
-            summary: "There are no new messages to compact since the previous summary.",
-            error: "no_new_context_to_compact",
+            summary:
+              "Context compaction is below the pressure/cooldown threshold or has no meaningful new history.",
+            error: "context_compaction_cooldown_active",
           };
         } else if (!tool) {
           result = {
@@ -2278,6 +2713,20 @@ export class AgentRuntime {
           submittedTaskReport = undefined;
         }
 
+        if (toolName === "compact_context" && result.ok && result.contextCompaction) {
+          const assessment = this.assessContextCompaction({
+            state,
+            call,
+            result,
+            sourceEndMessageIndex: state.messages.length - 1,
+            required: contextCompactionRequired,
+            maxContextChars: options.maxContextChars,
+            maxOutputChars: options.maxOutputChars,
+          });
+          result = assessment.result;
+          acceptedContextCompaction = assessment.accepted;
+        }
+
         const toolMessage: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
@@ -2338,11 +2787,20 @@ export class AgentRuntime {
         if (result.ok && result.imageAttachments?.length) {
           stepImageAttachments.push(...result.imageAttachments);
         }
-        if (toolName === "compact_context" && result.ok && result.contextCompaction) {
+        if (
+          toolName === "compact_context" &&
+          result.ok &&
+          result.contextCompaction &&
+          acceptedContextCompaction
+        ) {
           const compaction = this.dependencies.contextManager.applyModelCompaction(
             state,
             result.contextCompaction.summary,
             state.messages.length,
+            {
+              intentLedger: acceptedContextCompaction.intentLedger,
+              metadata: acceptedContextCompaction.metadata,
+            },
           );
           await this.dependencies.appendEvent({
             threadId: state.threadId,
@@ -2354,12 +2812,22 @@ export class AgentRuntime {
               summary: state.workingSummary,
               compactedMessageCount: compaction.compactedMessageCount,
               summaryChars: compaction.summaryChars,
+              contextIntentLedger: state.contextIntentLedger,
+              contextCompactionMetadata: state.contextCompactionMetadata,
             },
           });
           this.dependencies.onStatus?.(
             `Context compacted through ${compaction.compactedMessageCount} messages ` +
               `into ${compaction.summaryChars} characters.`,
           );
+          if (!acceptedContextCompaction.benefit.safeWaterlineReached) {
+            this.dependencies.onStatus?.(
+              `Compaction succeeded but remains above the 55% headroom target ` +
+                `(${contextUtilizationPercent(
+                  acceptedContextCompaction.benefit.postCompactionUtilization,
+                )}%).`,
+            );
+          }
           successfulContextCompaction = true;
           contextCompactionCorrectionIssued = false;
           forcedContextCompactionRequestActive = false;
@@ -2685,8 +3153,23 @@ export class AgentRuntime {
         utilization,
       );
       const messages = this.dependencies.contextManager.build({
-        systemPrompt: `${baseSystemPrompt}\n\n${pressureInstruction}`,
+        systemPrompt:
+          `${baseSystemPrompt}\n\n${pressureInstruction}\n\n` +
+          compactionSourceInventory(state),
         state,
+        maxContextChars: options.maxContextChars,
+      });
+      this.observeProviderContext({
+        state,
+        turnId,
+        step: 0,
+        attempt,
+        purpose: "context_compaction",
+        messages,
+        tools: [compactTool.definition],
+        enforcedPressure:
+          pressure === "normal" || pressure === "suggest" ? "require" : pressure,
+        enforcedUtilization: utilization,
         maxContextChars: options.maxContextChars,
       });
       this.dependencies.onStatus?.(
@@ -2755,7 +3238,7 @@ export class AgentRuntime {
       const assistantMessage: Extract<ChatMessage, { role: "assistant" }> = {
         role: "assistant",
         content: response.message.content,
-        tool_calls: response.message.tool_calls,
+        tool_calls: response.message.tool_calls?.map(durableToolCall),
         reasoning_content: response.message.reasoning_content,
       };
       state.messages.push(assistantMessage);
@@ -2787,10 +3270,21 @@ export class AgentRuntime {
         }
       }
 
-      const calls = assistantMessage.tool_calls ?? [];
+      // The raw calls remain local to this attempt. coverageCheck and the
+      // proposed intentLedger are validated below but never become part of the
+      // assistant/tool.call event or recovered message.
+      const calls = response.message.tool_calls ?? [];
       const validExclusiveCall =
         calls.length === 1 && calls[0]?.function.name === "compact_context";
       let compactionResult: ToolExecutionResult | undefined;
+      let acceptedCompaction: AcceptedContextCompaction | undefined;
+      const replayMessage: Extract<ChatMessage, { role: "user" }> = {
+        role: "user",
+        content: currentUserMessage.content,
+        ...(currentUserMessage.images?.length
+          ? { images: [...currentUserMessage.images] }
+          : {}),
+      };
       if (validExclusiveCall) {
         const call = calls[0];
         if (!call) throw new Error("The context compaction call disappeared");
@@ -2800,7 +3294,7 @@ export class AgentRuntime {
           stepId: `auto_compaction_${attempt}`,
           type: "tool.call",
           phase: "requested",
-          payload: call,
+          payload: durableToolCall(call),
         });
         try {
           compactionResult = await compactTool.execute(
@@ -2832,6 +3326,18 @@ export class AgentRuntime {
             error: error instanceof Error ? error.message : String(error),
           };
         }
+        const assessment = this.assessContextCompaction({
+          state,
+          call,
+          result: compactionResult,
+          sourceEndMessageIndex: state.messages.length - 1,
+          retainedTail: [replayMessage],
+          required: true,
+          maxContextChars: options.maxContextChars,
+          maxOutputChars: options.maxOutputChars,
+        });
+        compactionResult = assessment.result;
+        acceptedCompaction = assessment.accepted;
         await appendToolResult(call, compactionResult, attempt);
       } else {
         for (const call of calls) {
@@ -2841,7 +3347,7 @@ export class AgentRuntime {
             stepId: `auto_compaction_${attempt}`,
             type: "tool.call",
             phase: "requested",
-            payload: call,
+            payload: durableToolCall(call),
           });
           await appendToolResult(
             call,
@@ -2858,16 +3364,10 @@ export class AgentRuntime {
 
       if (
         compactionResult?.ok &&
-        compactionResult.contextCompaction
+        compactionResult.contextCompaction &&
+        acceptedCompaction
       ) {
         const compactedMessageCount = state.messages.length;
-        const replayMessage: Extract<ChatMessage, { role: "user" }> = {
-          role: "user",
-          content: currentUserMessage.content,
-          ...(currentUserMessage.images?.length
-            ? { images: [...currentUserMessage.images] }
-            : {}),
-        };
         // Persist the replay before advancing the compaction boundary so a
         // crash can never durably compact away the active request without
         // also retaining its text and image references.
@@ -2884,6 +3384,10 @@ export class AgentRuntime {
           state,
           compactionResult.contextCompaction.summary,
           compactedMessageCount,
+          {
+            intentLedger: acceptedCompaction.intentLedger,
+            metadata: acceptedCompaction.metadata,
+          },
         );
         await this.dependencies.appendEvent({
           threadId: state.threadId,
@@ -2895,6 +3399,8 @@ export class AgentRuntime {
             summary: state.workingSummary,
             compactedMessageCount: compaction.compactedMessageCount,
             summaryChars: compaction.summaryChars,
+            contextIntentLedger: state.contextIntentLedger,
+            contextCompactionMetadata: state.contextCompactionMetadata,
           },
         });
         await this.dependencies.onToolCompleted?.(
@@ -2906,6 +3412,14 @@ export class AgentRuntime {
           `Context compacted before Auto routing through ${compaction.compactedMessageCount} messages ` +
             `into ${compaction.summaryChars} characters.`,
         );
+        if (!acceptedCompaction.benefit.safeWaterlineReached) {
+          this.dependencies.onStatus?.(
+            `Pre-route compaction remains above the 55% headroom target ` +
+              `(${contextUtilizationPercent(
+                acceptedCompaction.benefit.postCompactionUtilization,
+              )}%).`,
+          );
+        }
         const remainingPressure = this.dependencies.contextManager
           .inspect(state, options.maxContextChars).pressure;
         if (remainingPressure === "require" || remainingPressure === "force") {

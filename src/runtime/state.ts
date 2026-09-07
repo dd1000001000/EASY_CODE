@@ -58,5 +58,24 @@ export function cloneSessionState(state: SessionState): SessionState {
     })),
     steeringSequence: state.steeringSequence ?? 0,
     steeringWatermark: state.steeringWatermark ?? 0,
+    ...(state.contextIntentLedger
+      ? {
+          contextIntentLedger: {
+            latestRequest: { ...state.contextIntentLedger.latestRequest },
+            activeConstraints: state.contextIntentLedger.activeConstraints.map((item) => ({
+              ...item,
+            })),
+            userCorrections: state.contextIntentLedger.userCorrections.map((item) => ({
+              ...item,
+            })),
+            supersededRequests: state.contextIntentLedger.supersededRequests.map((item) => ({
+              ...item,
+            })),
+          },
+        }
+      : {}),
+    ...(state.contextCompactionMetadata
+      ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } }
+      : {}),
   };
 }

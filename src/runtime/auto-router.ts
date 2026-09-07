@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ImageAttachment,
   ModelProvider,
+  ModelRequest,
   ProviderUsage,
   ThinkingEffort,
   ToolDefinition,
@@ -55,6 +56,12 @@ export interface AutoRouteContextProjection {
   /** First original priorMessages index represented in the projected suffix. */
   readonly priorMessageBoundary: number;
 }
+
+/** Ephemeral observability hook for the exact controller request on the wire. */
+export type AutoRouteRequestObserver = (
+  request: Readonly<ModelRequest>,
+  attempt: number,
+) => void;
 
 /**
  * `select_mode` is a Runtime-only control tool. It is deliberately defined
@@ -376,12 +383,13 @@ export async function determineAutoRoute(
   thinkingEffort?: ThinkingEffort,
   context?: AutoRouteContext,
   controllerPolicy?: string,
+  onRequest?: AutoRouteRequestObserver,
 ): Promise<AutoRouteDecision> {
   const attempts: AutoRouteAttempt[] = [];
   for (let attempt = 0; attempt < AUTO_ROUTE_ATTEMPTS; attempt += 1) {
     let response: Awaited<ReturnType<ModelProvider["complete"]>>;
     try {
-      response = await provider.complete({
+      const request: ModelRequest = {
         messages: buildRouterMessages(
           userInput,
           images,
@@ -393,7 +401,13 @@ export async function determineAutoRoute(
         signal,
         temperature: 0,
         thinkingEffort,
-      });
+      };
+      try {
+        onRequest?.(request, attempt + 1);
+      } catch {
+        // Request accounting is observational and must never break routing.
+      }
+      response = await provider.complete(request);
     } catch (error) {
       if (attempts.length > 0) {
         throw new AutoRouteRequestError(error, attempts);

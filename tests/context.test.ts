@@ -5,17 +5,14 @@ import {
   MAX_ACTIVE_WORKING_SET_CHARS,
   activeWorkingSetCharBudget,
   contextPressureLevel,
+  estimateMessagesChars,
   estimateTextTokens,
+  estimateToolDefinitionsChars,
 } from "../src/context/manager.js";
-import type { SessionState } from "../src/core/types.js";
+import type { SessionState, ToolDefinition } from "../src/core/types.js";
 
 function contextChars(messages: ReturnType<ContextManager["build"]>): number {
-  return messages.reduce((total, message) => {
-    const toolCalls = message.role === "assistant" && message.tool_calls
-      ? JSON.stringify(message.tool_calls).length
-      : 0;
-    return total + (message.content?.length ?? 0) + toolCalls + 32;
-  }, 0);
+  return estimateMessagesChars(messages);
 }
 
 function makeState(): SessionState {
@@ -46,7 +43,7 @@ function makeState(): SessionState {
 describe("ContextManager", () => {
   it("keeps a bounded recent working set even when the provider budget is much larger", () => {
     const state = makeState();
-    state.messages = Array.from({ length: 180 }, (_, index) => ({
+    state.messages = Array.from({ length: 360 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
       content: `rolling-message-${index}-${"x".repeat(1_000)}`,
     }));
@@ -60,7 +57,7 @@ describe("ContextManager", () => {
 
     assert.ok(boundary > 0);
     assert.equal(context.some((message) => message.content?.includes("rolling-message-0-")), false);
-    assert.equal(context.some((message) => message.content?.includes("rolling-message-179-")), true);
+    assert.equal(context.some((message) => message.content?.includes("rolling-message-359-")), true);
     assert.ok(contextChars(context) <= MAX_ACTIVE_WORKING_SET_CHARS + 64);
   });
 
@@ -170,6 +167,90 @@ describe("ContextManager", () => {
     assert.ok(contextChars(built) <= 10_000);
   });
 
+  it("inspects the exact provider request while keeping durable and projected sizes distinct", () => {
+    const current = makeState();
+    current.messages = [
+      {
+        role: "assistant",
+        content: null,
+        reasoning_content: `consumed-reasoning-${"r".repeat(4_000)}`,
+        tool_calls: [{
+          id: "call_consumed_read",
+          type: "function",
+          function: { name: "read_file", arguments: '{"path":"src/old.ts"}' },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_consumed_read",
+        name: "read_file",
+        content: `consumed-result-${"o".repeat(6_000)}`,
+      },
+      {
+        role: "assistant",
+        content: "The earlier read has been consumed.",
+        reasoning_content: `completed-reasoning-${"c".repeat(3_000)}`,
+      },
+      { role: "user", content: "Inspect the current file." },
+      {
+        role: "assistant",
+        content: null,
+        reasoning_content: `active-tool-reasoning-${"a".repeat(500)}`,
+        tool_calls: [{
+          id: "call_active_read",
+          type: "function",
+          function: { name: "read_file", arguments: '{"path":"src/current.ts"}' },
+        }],
+      },
+      {
+        role: "tool",
+        tool_call_id: "call_active_read",
+        name: "read_file",
+        content: `active-result-${"n".repeat(3_000)}`,
+      },
+    ];
+    const tools: ToolDefinition[] = [{
+      type: "function",
+      function: {
+        name: "read_file",
+        description: "Read a workspace file.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
+    }];
+    const manager = new ContextManager();
+    const messages = manager.build({
+      systemPrompt: "Exact provider system prompt",
+      state: current,
+      maxContextChars: 250_000,
+    });
+    const inspection = manager.inspectProviderRequest({
+      state: current,
+      maxContextChars: 250_000,
+      messages,
+      tools,
+    });
+    const expectedMessageChars = estimateMessagesChars(messages);
+    const expectedToolChars = estimateToolDefinitionsChars(tools);
+
+    assert.equal(inspection.providerMessageCount, messages.length);
+    assert.equal(inspection.providerMessageChars, expectedMessageChars);
+    assert.equal(inspection.providerToolDefinitionChars, expectedToolChars);
+    assert.equal(inspection.providerInputChars, expectedMessageChars + expectedToolChars);
+    assert.equal(
+      inspection.pressure,
+      contextPressureLevel(inspection.providerInputChars / inspection.budgetChars),
+    );
+    assert.equal(inspection.durableHistoryChars, estimateMessagesChars(current.messages));
+    assert.equal(inspection.durableActiveChars, inspection.durableHistoryChars);
+    assert.ok(inspection.projectedActiveChars < inspection.durableActiveChars);
+    assert.ok(inspection.providerInputChars < inspection.durableHistoryChars);
+  });
+
   it("estimates mixed-language short-term tokens and excludes compacted raw history", () => {
     assert.equal(estimateTextTokens("abcd"), 1);
     assert.equal(estimateTextTokens("中文"), 2);
@@ -179,6 +260,11 @@ describe("ContextManager", () => {
       role: "assistant",
       content: null,
       reasoning_content: "推理".repeat(200),
+      tool_calls: [{
+        id: "call_pending",
+        type: "function",
+        function: { name: "read_file", arguments: "{}" },
+      }],
     });
     const manager = new ContextManager();
     const before = manager.estimateShortTermTokens(state);
