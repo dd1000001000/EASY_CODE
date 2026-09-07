@@ -94,7 +94,7 @@ import {
 } from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
-import { AgentRuntime } from "./runtime/agent.js";
+import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { AnthropicSandboxBackend } from "./sandbox/anthropic-backend.js";
 import {
@@ -498,6 +498,7 @@ export class EasyCodeApp {
   private dirty = false;
   private commandExecutionMode: CommandExecutionMode;
   private hostAccessEpoch = 0;
+  private lastProviderContext: ProviderContextSnapshot | undefined;
 
   private constructor(
     private readonly config: EasyCodeConfig,
@@ -1128,7 +1129,15 @@ export class EasyCodeApp {
         return false;
       }
       case "context":
-        this.terminal.write(`${json(this.contextManager.inspect(this.state, this.activeContextCharLimit()))}\n`);
+        this.terminal.write(`${json({
+          ...this.contextManager.inspect(this.state, this.activeContextCharLimit()),
+          lastProviderRequest:
+            this.lastProviderContext?.threadId === this.state.threadId
+              ? this.lastProviderContext
+              : null,
+          note:
+            "Durable history remains complete locally. projectedActiveChars and lastProviderRequest reflect the lightweight provider projection; null means this process has not sent a request for the current Thread yet.",
+        })}\n`);
         return false;
       case "usage": {
         if (command.args.length) throw new Error("Usage: /usage");
@@ -1637,7 +1646,7 @@ export class EasyCodeApp {
       provider,
       tools,
       agentIdentity: { role: "main_agent" },
-      contextManager: new ContextManager(),
+      contextManager: this.contextManager,
       buildSystemPrompt: async ({
         mode,
         workspaceSummary,
@@ -1816,6 +1825,11 @@ export class EasyCodeApp {
           payload: record,
         });
         this.dirty = true;
+      },
+      onProviderContext: (snapshot) => {
+        if (snapshot.threadId === this.state.threadId) {
+          this.lastProviderContext = snapshot;
+        }
       },
       ...(presentReasoning
         ? {

@@ -39,6 +39,8 @@ const HARBOR_DATASET_REF =
   "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341";
 const HARBOR_AGENT =
   "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent";
+const HARBOR_ENVIRONMENT =
+  "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment";
 const HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER = "4";
 const HARBOR_MAX_RESUME_RETRIES = "1";
 export const HARBOR_GLM_CODING_PLAN_API_KEY_FILE =
@@ -81,7 +83,6 @@ const SWE_BENCH_MODEL_PROFILE = (() => {
     thinkingEffort: profile.thinkingEffort,
     baseUrl: provider.defaultBaseUrl,
     apiKeyEnvironment: provider.environment.apiKey,
-    allowedHost: endpoint.hostname,
     harborModel: `${profile.provider}/${profile.model}`,
   });
 })();
@@ -304,6 +305,8 @@ export function buildHarborRunArgs(options: HarborRunOptions): string[] {
     `${SWE_BENCH_VERIFIED_50.harborDataset}@${SWE_BENCH_VERIFIED_50.harborDatasetRef}`,
     "--agent",
     HARBOR_AGENT,
+    "--env",
+    HARBOR_ENVIRONMENT,
     "--model",
     SWE_BENCH_MODEL_PROFILE.harborModel,
     "--jobs-dir",
@@ -323,8 +326,6 @@ export function buildHarborRunArgs(options: HarborRunOptions): string[] {
     "--agent-setup-timeout-multiplier",
     HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER,
     "--yes",
-    "--allow-agent-host",
-    SWE_BENCH_MODEL_PROFILE.allowedHost,
   ];
   for (const instanceId of INSTANCE_IDS.slice(offset, offset + limit)) {
     args.push("--include-task-name", `swe-bench/${instanceId}`);

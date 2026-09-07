@@ -4,45 +4,33 @@
 
 [技术设计](./docs/TECHNICAL_DESIGN_ZH.md) | [English Technical Design](./docs/TECHNICAL_DESIGN.md) | [SWE-bench Verified Mini 指南](./benchmarks/swebench_verified/README.md) | [第三方开源声明](./THIRD_PARTY_NOTICES.md)
 
-EASY CODE 是一个跨平台 CLI 编程 Agent，提供 Alibaba Qwen、DeepSeek、智谱 GLM 和 GLM Coding Plan 四个可选供应商通道。你可以在项目目录中启动它，用自然语言描述目标，让 Agent 检查工作区、修改文件、执行命令、验证结果、管理复杂任务，并在之后恢复之前的工作。
+EASY CODE 是一个跨平台 CLI 编程 Agent。进入项目目录后，用自然语言描述目标，它可以检查代码、修改文件、执行命令、运行测试，并在之后继续未完成的工作。
 
-整个界面运行在当前终端中。模型请求会发送给所选供应商；项目操作、会话状态、记忆和任务编排保存在本地。
+本文只介绍功能和使用方法。架构、安全边界、上下文压缩、检索与记忆、子 Agent 隔离等实现细节，请参阅[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
 
-## 功能概览
+## 功能
 
-- **Plan、Auto 和 Code 三种模式。** Auto 由模型决定直接回答、提出可审核方案，还是开始实现。
-- **受控编程工具。** 支持读取、创建、更新和删除文件；短命令同步执行，长时间构建、测试和安装通过独立的启动、轮询与取消动作监督。
-- **可审核变更。** 文件修改以带行号的 Diff 展示，新增为绿色，删除为红色。
-- **常驻终端 UI。** 对话、实时进度、任务、子 Agent、模型信息和输入框位于同一个结构化 Shell 界面中。
-- **Thinking 展示。** 供应商返回的思考内容以灰色显示，默认折叠，并可在 VS Code 终端原地展开。
-- **执行中调整。** 模型工作期间仍可继续输入文字或图片，调整会在下一个安全边界发送给模型。
-- **图片输入。** 支持给视觉模型粘贴截图或附加图片，并使用稳定的 `[Image #N]` 编号。
-- **持久 Thread。** 对话、方案、任务进度、审批、子 Agent 和执行环境都可以 Resume。
-- **分层上下文与记忆。** 保留有界的近期工作集，用混合检索找回相关的较早 Thread 证据，并跨会话保存精简项目事实。
-- **任务 DAG 与子 Agent。** 复杂任务可拆成带依赖的节点，并委派给上下文隔离的子 Agent。
-- **Git Worktree 隔离与 Handoff。** 可让特定子任务在托管 Worktree 中执行，保存 Checkpoint，并把结果交付到本地或分支。
-- **分层安全控制。** 结构化工具、工作区边界、命令策略、用户审批、操作系统沙箱和显式危险模式相互独立。
-- **可信 Prompt Bundle。** 系统提示词和工具说明作为带版本与完整性校验的用户级资源安装，不与业务源码混写。
+- 支持 Alibaba Qwen、DeepSeek、智谱 GLM 和 GLM Coding Plan。
+- 提供 `plan`、`auto`、`code` 三种工作模式。
+- 可读取和修改文件、执行命令、运行构建与测试，并显示 Diff。
+- 支持在任务执行中继续发送文字或图片来调整方向。
+- 支持图片输入、Thinking 展示，以及 VS Code 终端增强。
+- 自动保存 Thread，可恢复对话、Plan、任务和子 Agent 工作。
+- 可把复杂目标拆成任务，并交给共享工作区或 Git Worktree 中的子 Agent。
+- 提供命令审批、工作区边界和操作系统沙箱；也可在明确确认后临时启用危险的完全访问。
+- 保存项目上下文与记忆，并提供用量查看命令。
 
 ## 环境要求
 
 - Node.js `>=20.11.0` 和 npm。
 - Windows、macOS 或 Linux。
 - 至少一个受支持供应商的 API Key。
-- Worktree 隔离和分支 Handoff 需要 Git；普通使用和共享工作区子 Agent 不强制要求 Git。
-- 可选：VS Code `>=1.93`，用于原生图片粘贴、可点击 Thinking 和不会扰动滚动位置的交互菜单。
+- 使用 Worktree 子 Agent 或分支 Handoff 时需要 Git。
+- 可选：VS Code `>=1.93`，用于原生图片粘贴和可点击的 Thinking 内容。
 
-受保护的命令执行还依赖平台沙箱：
-
-| 平台 | 沙箱支持 |
-| --- | --- |
-| Windows | 使用随包提供的 Anthropic Sandbox Runtime 后端；目前为 alpha，可能需要一次管理员权限初始化。 |
-| macOS | 使用系统内置 Seatbelt 沙箱。 |
-| Linux | 使用 bubblewrap，需要 `bubblewrap`、`socat` 和 `ripgrep`，并要求主机允许 bubblewrap 所需的非特权用户命名空间。 |
+受保护的命令执行需要平台沙箱。Windows 可能需要一次管理员权限初始化；Linux 需要 `bubblewrap`、`socat` 和 `ripgrep`。安装后可用 `easy-code sandbox doctor` 检查。
 
 ## 安装
-
-克隆并安装项目：
 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -53,24 +41,22 @@ npm install --global .
 easy-code --version
 ```
 
-安装过程会准备本地记忆资源，在 `~/.easy_code` 安装经过校验的 Prompt Bundle，检查沙箱前置条件，并尝试安装随包提供的 VS Code 终端扩展。正常安装不要使用 `--ignore-scripts`。
-
-安装后检查沙箱：
+正常安装请不要使用 `--ignore-scripts`。安装完成后检查沙箱：
 
 ```bash
 easy-code sandbox doctor
 ```
 
-如果提示需要初始化：
+如果检查结果提示需要初始化：
 
 ```bash
 easy-code sandbox setup
 easy-code sandbox doctor
 ```
 
-Windows 初始化可能弹出 UAC。Linux 只会通过受识别的包管理器安装固定的前置依赖；如果当前没有可非交互使用的管理员权限，EASY CODE 会打印命令供你手动执行。macOS 通常不需要额外安装沙箱依赖。
+Windows 初始化可能弹出 UAC。Linux 如果无法自动安装依赖，会输出需要手动执行的命令。
 
-不进行全局安装，直接从仓库运行：
+不进行全局安装时，可直接从仓库运行：
 
 ```bash
 npm install
@@ -78,15 +64,13 @@ npm run build
 npm start -- --workspace /path/to/project
 ```
 
-如果 VS Code 扩展未自动安装：
+如果 VS Code 扩展没有自动安装：
 
 ```bash
 npm run vscode:install
 ```
 
-在 CI 或受管环境中，可以在安装前设置 `EASY_CODE_SKIP_VSCODE_EXTENSION=1` 跳过扩展安装。
-
-### 更新
+更新现有安装：
 
 ```bash
 cd EASY_CODE
@@ -96,9 +80,9 @@ npm run build
 npm install --global .
 ```
 
-## 配置 API Key
+## 首次配置
 
-推荐把 Key 保存到操作系统凭据存储中：
+推荐把 API Key 保存到操作系统凭据存储：
 
 ```bash
 easy-code config set qwen.api-key
@@ -107,9 +91,9 @@ easy-code config set glm.api-key
 easy-code config set glm-coding-plan.api-key
 ```
 
-命令会通过隐藏输入读取 Key。不要把密钥直接追加在命令行后面。
+命令会隐藏输入内容，不要把 Key 直接写在命令后面。只需配置准备使用的供应商。
 
-查看或删除已经保存的凭据：
+查看或删除已保存的凭据：
 
 ```bash
 easy-code config list
@@ -117,7 +101,7 @@ easy-code config get qwen.api-key
 easy-code config unset qwen.api-key
 ```
 
-也支持环境变量：
+也可以使用环境变量：
 
 | 供应商 | 环境变量 |
 | --- | --- |
@@ -126,31 +110,24 @@ easy-code config unset qwen.api-key
 | 智谱 GLM | `ZAI_API_KEY`、`GLM_API_KEY` 或 `ZHIPUAI_API_KEY` |
 | GLM Coding Plan | `GLM_CODING_PLAN_API_KEY` |
 
-如果当前供应商没有配置 Key，交互式启动会在第一次请求前提示输入。
-
-智谱 GLM 与 GLM Coding Plan 是两个刻意隔离的供应商通道。标准 GLM 使用自己的
-Key，默认端点为 `https://open.bigmodel.cn/api/paas/v4`；GLM Coding Plan
-使用另一把 Key，默认端点为 `https://open.bigmodel.cn/api/coding/paas/v4`。
-两者不会互相回退或复用凭据。
+智谱 GLM 与 GLM Coding Plan 使用不同的 Key，二者不会互相复用。没有提前配置 Key 时，交互式启动会在第一次请求前提示输入。
 
 ## 快速开始
 
-进入需要处理的项目并启动 EASY CODE：
+进入需要处理的项目并启动：
 
 ```bash
 cd /path/to/project
 easy-code
 ```
 
-启动时依次：
+首次启动时：
 
-1. 选择 DeepSeek、Alibaba Qwen、智谱 GLM 或 GLM Coding Plan。
-2. 选择模型。
-3. 选择 `none`、`low`、`medium` 或 `high` 思考强度。
-4. 使用上下方向键移动，按 Enter 确认。
-5. 在底部输入框中输入请求并按 Enter。
+1. 选择供应商和模型。
+2. 选择 `none`、`low`、`medium` 或 `high` 思考强度。
+3. 输入任务并按 Enter。
 
-示例请求：
+例如：
 
 ```text
 解释这个项目，并找出主要入口。
@@ -165,45 +142,15 @@ easy-code
 easy-code --workspace ./my-project --provider qwen --model qwen3.7-plus --thinking-effort high --mode code
 ```
 
-非交互执行一次任务后退出：
+运行一次非交互任务后退出：
 
 ```bash
 easy-code --workspace ./my-project --mode code run "修复登录报错并运行测试"
 ```
 
-如果非交互 Auto 运行生成了待审核 Plan，请交互式启动 EASY CODE 并 Resume 对应 Thread，再同意、调整或拒绝方案。
+如果非交互 `auto` 运行生成了待审核 Plan，请交互式启动并恢复对应 Thread 后处理。
 
-## 支持的模型
-
-EASY CODE 使用一份版本化模型目录校验模型选择，源码位于
-[`resources/prompt-bundle/models/catalog.json`](./resources/prompt-bundle/models/catalog.json)。
-其中集中描述供应商及厂商、可信默认端点和默认模型、凭据身份、图片与 Thinking
-能力，以及具名 Benchmark Profile。模型是否实际可用仍取决于供应商账号、地区和授权范围。
-
-| 供应商 | 模型 | 图片输入 |
-| --- | --- | --- |
-| DeepSeek | `deepseek-v4-flash` | 否 |
-| DeepSeek | `deepseek-v4-pro`（默认） | 否 |
-| DeepSeek | `deepseek-v4-flash-vision-exp` | 是 |
-| Alibaba Qwen | `qwen3.7-max`（默认） | 否 |
-| Alibaba Qwen | `qwen3.7-plus` | 是 |
-| Alibaba Qwen | `qwen3.6-max` | 否 |
-| Alibaba Qwen | `qwen3.6-plus` | 是 |
-| Alibaba Qwen | `qwen3.5-plus` | 是 |
-| Alibaba Qwen | `qwen3.5-flash` | 是 |
-| Alibaba Qwen | `qwen3-max` | 否 |
-| Alibaba Qwen | `qwen3-vl-plus` | 是 |
-| Alibaba Qwen | `qwen3-vl-flash` | 是 |
-| 智谱 GLM | `glm-5.3-flash` | 是 |
-| 智谱 GLM | `glm-5.3`（默认） | 否 |
-| 智谱 GLM | `glm-5.2` | 否 |
-| GLM Coding Plan | `glm-5.3-flash` | 否 |
-| GLM Coding Plan | `glm-5.3`（默认） | 否 |
-| GLM Coding Plan | `glm-5.2` | 否 |
-
-GLM Coding Plan 通道不会直接发送图片 Payload；请使用纯文本请求，或另行配置支持图片的工具。
-
-运行过程中可切换供应商、模型和思考强度：
+可用模型以启动选择器和 `/model` 为准；模型实际可用性取决于供应商账号。切换供应商或模型：
 
 ```text
 /model
@@ -212,128 +159,50 @@ GLM Coding Plan 通道不会直接发送图片 Payload；请使用纯文本请�
 /provider deepseek
 ```
 
-`/model` 会打开“供应商 → 模型 → 思考强度”三级选择器。
+## 模式与审批
 
-## 工作模式
+### 工作模式
 
-| 模式 | 行为 |
+| 模式 | 用途 |
 | --- | --- |
-| `plan` | 调查项目并生成结构化方案，不修改项目文件。 |
-| `auto` | 由模型决定直接回答、提出方案或进入 Code；这是默认模式。 |
-| `code` | 在当前安全控制下直接实现并验证请求。 |
+| `plan` | 调查项目并给出可审核方案，不修改项目文件。 |
+| `auto` | 由 Agent 决定直接回答、提出方案或开始实现；这是默认模式。 |
+| `code` | 直接实现并验证请求。 |
 
-使用 `/mode plan`、`/mode auto` 或 `/mode code` 切换模式。
-
-Auto 使用受限制的模型决策，而不是关键词匹配。如果 Auto 选择 Plan，EASY CODE 会展示方案并提供三个选项：
-
-- 同意方案，返回 Auto 执行。
-- 拒绝方案。
-- 输入反馈，包括粘贴多行文本，让模型调整方案。
-
-## 思考强度
-
-每次模型选择都会保存思考强度。只有模型公开了兼容的推理控制时，EASY CODE 才会把它映射到供应商请求；不支持的模型会忽略供应商侧设置。
-
-思考强度同时控制 EASY CODE 的本地任务预算和子 Agent 并发：
-
-| 强度 | 相对任务预算 | 最大活跃子 Agent 数 |
-| --- | ---: | ---: |
-| `none` | 1× | 2 |
-| `low` | 1× | 2 |
-| `medium` | 2× | 4 |
-| `high` | 4× | 8 |
-
-在供应商允许关闭思考时，`none` 会请求关闭模型思考。不同供应商的实际推理行为可能不同。
-
-## 终端界面
-
-交互式终端由几个稳定区域组成：
-
-| 区域 | 内容 |
-| --- | --- |
-| 顶部信息 | 模式、供应商/模型、思考强度、上下文估算、工作区和 Thread ID。 |
-| 对话区 | 按真实顺序显示用户输入、模型回答、Thinking、工具活动、命令输出和 Diff。 |
-| 实时活动 | 当前模型请求、命令或工具操作及其耗时。 |
-| 输入与状态 | 可编辑输入框、任务和子 Agent 摘要，以及精简会话状态行。 |
-
-已完成内容会保留为普通终端文本，可以滚动、选择和复制。临时进度原地更新，不会重复打印。
-
-模型返回 Thinking 时，折叠行只显示灰色短预览。安装随包 VS Code 扩展后，Windows/Linux 使用 `Ctrl+click`，macOS 使用 `Cmd+click`，即可在同一对话位置用完整内容替换预览；再次点击会收起。展开时输入框仍然可以使用。
-
-也可以用 `/thinking [id|last]` 输出保存的思考内容，或按 `Ctrl+T` 查看最新一条。
-
-请求执行期间仍可在输入框提交文字和图片。EASY CODE 会记录每条调整，并在下一个安全边界按 FIFO 顺序发送。调整可以改变任务方向，但不能修改权限、命令策略、沙箱状态或任务所有权。
-
-## 文件、命令与审批
-
-在正常受保护模式下，文件工具只能操作所选工作区。更新和删除必须匹配之前读取到的版本；如果编辑器或其他进程已经修改文件，本次操作会报告冲突，而不是静默覆盖。
-
-命令使用解析后的可执行程序、结构化参数、受限工作目录、超时和输出上限。使用 `/approval` 选择当前进程的命令状态：
-
-| 状态 | 行为 |
-| --- | --- |
-| 手动审批 | 每个符合策略的高风险命令都询问用户。 |
-| 自动审批 | 自动批准策略允许审批的命令；永久禁止规则仍生效。 |
-| 危险的完全访问 | 二次确认后，在当前进程中移除命令策略、审批、操作系统沙箱和仅工作区文件边界。 |
-
-手动审批和自动审批会让获准命令运行在操作系统工作区沙箱内。危险的完全访问以当前 OS 用户身份运行，可访问主机文件系统、网络、环境和已安装工具；开启后 EASY CODE 会持续显示红色警告，直到切回安全状态或退出。
-
-每次命令审批有三个选择：仅允许一次、允许当前 Thread 后续使用同一个已解析可执行程序，或者拒绝。Thread 级授权可随 Resume 恢复，但不会泄漏到其他 Thread。
-
-## 图片
-
-图片输入需要选择支持视觉能力的模型。
-
-| 平台 | VS Code 终端原生粘贴键 |
-| --- | --- |
-| Windows | `Ctrl+V` |
-| macOS | `Command+V` |
-| Linux | `Ctrl+Shift+V` |
-
-随包扩展会区分剪贴板图片和普通文本。图片会显示为 `[Image #N]`；多行文本会显示为一个粘贴块，并且只有在你按 Enter 后才提交。
-
-也可以显式添加图片：
+在运行中切换：
 
 ```text
-/image ./screenshot.png
-/image clipboard
-/image clear
+/mode plan
+/mode auto
+/mode code
 ```
 
-或者在启动时添加：
+也可以在启动时使用 `--mode plan|auto|code`。如果 `auto` 生成 Plan，可以同意、拒绝或输入反馈要求修改。
 
-```bash
-easy-code --image ./one.png --image ./two.png
-```
+思考强度使用 `--thinking-effort none|low|medium|high` 设置，也可通过 `/model` 选择器调整。不同模型对思考强度的支持可能不同。
 
-图片会复制到私有 Thread 存储并在发送给供应商前校验。单个 Thread 的编号最多到 `Image #99`；供应商和总负载限制可能更严格。
+### 命令审批
 
-## 任务与子 Agent
+运行 `/approval` 可选择：
 
-复杂工作可以由模型创建持久任务 DAG。每个任务都包含依赖、预期产物、完成检查、状态和证据；前置任务未完成时，后继任务不能开始。
+- 手动审批：只在需要时询问。
+- 自动审批：自动允许策略许可的命令，永久禁止规则仍然有效。
+- 危险的完全访问：关闭工作区限制、命令审批和沙箱，以当前 OS 用户权限运行。
 
-主 Agent 可以自己完成任务，也可以为 DAG 任务或独立工作创建子 Agent。子 Agent：
+危险的完全访问需要二次确认，只对当前 EASY CODE 进程有效。除非确实需要访问工作区外的主机资源，否则不要启用。
 
-- 接收边界明确的任务和私有上下文，而不是父 Agent 的完整对话；
-- 默认以 Code 模式和 Worker 能力启动；
-- 不能继续创建子 Agent，也不能控制任务图；
-- 向父 Agent 返回结构化结果和证据；
-- 可以接收父 Agent 的追加指令，或被父 Agent 停止。
+启动参数：
 
-隔离方式可以是共享工作区或 Worktree。在 Git 项目中，`auto` 优先使用托管 Worktree；非 Git 项目会使用共享工作区。显式要求 Worktree 但无法创建时会直接失败，不会悄悄退回共享写入。
+| 参数 | 行为 |
+| --- | --- |
+| `--approval safe` | 按内置策略审批，这是默认值。 |
+| `--approval ask` | 对所有策略允许的命令请求审批。 |
+| `--approval never` | 不显示审批提示；需要审批的命令会被拒绝。 |
+| `-y, --yes` | 自动同意策略允许的命令。 |
 
-托管 Worktree 从明确的起始快照创建。子 Agent 完成后的修改会形成结果 Artifact，可作为后续 DAG 任务的输入。父 Agent 可以把选定结果 Handoff 到本地工作区或分支；冲突会报告给用户，而不是覆盖现有改动。
+## Thread 与 Resume
 
-常用命令：
-
-```text
-/tasks
-/agents
-```
-
-## Thread、上下文与记忆
-
-每次对话都属于一个持久 Thread：
+每次对话都保存在一个 Thread 中。常用命令：
 
 ```text
 /sessions
@@ -342,64 +211,76 @@ easy-code --image ./one.png --image ./two.png
 /new
 ```
 
-Resume 会尽可能恢复对话、已接受方案、未完成任务、Thread 命令授权、子 Agent 分配和托管执行环境。中断中的操作会被修复为明确可恢复状态，不会直接静默重放。
-
-短期上下文按层组装：确定性的执行 Checkpoint、模型维护的工作摘要、有界的近期消息工作集，以及与当前请求相关的较早 Thread 证据。这样无需在每次请求中重复发送很长的工具日志和文件读取结果，同时也不会丢弃它们。压力按“配置上下文限制”和“近期消息工作集容量”中的较小值计算；随后依次提示模型主动压缩、要求压缩，并在接近该有效边界时自动插入强制压缩请求。
-
-较早的用户消息、模型回答和工具证据会增量写入当前 Thread 的私有索引。检索结合 SQLite FTS5 关键词匹配与本地 ONNX Embedding，并由 Orama 完成向量排序；Embedding 不可用时会自动退回关键词检索。检索结果始终按不可信数据处理，不能覆盖当前消息、任务 DAG 或最新工作区观察。
-
-每个完成的回合还会推进增量 Checkpoint。Resume 以权威事件历史恢复状态，再只追平尚未索引的消息后缀；每个子 Agent 使用独立的 Thread 级上下文，不能检索其他子 Agent 的私有证据。
-
-长期记忆保存较短的项目事实，例如决策、约定、环境信息和用户偏好。检索同时考虑关键词和语义相似度。模型可以提出新增、修订和删除；只有回合成功后才提交，并会过滤密钥和跨工作区内容。
-
-查看记忆与用量：
-
-```text
-/context
-/memory short
-/memory short 20
-/memory long
-/usage
-```
-
-## 项目规则与配置
-
-可以在项目中放置 `EASYCODE.md`，说明架构、命令、代码规范和验证要求。规则会从用户级配置和工作区目录层级加载；它们可以指导 Agent，但不能扩大 Runtime 权限。
-
-用户配置位于平台对应的 EASY CODE 配置目录。项目可通过 `.easycode/config.toml` 设置安全的工作区级选项。项目配置不能重定向凭据、安全敏感路径或供应商地址。
-
-项目配置示例：
-
-```toml
-[limits]
-max_steps = 40
-max_context_chars = 100000
-
-[subagents]
-isolation = "auto" # auto、shared 或 worktree
-
-[worktrees]
-base_mode = "current-snapshot" # fresh、head 或 current-snapshot
-max_managed = 15
-```
-
-`medium` 使用 `none/low` 基础**步骤数**的两倍，`high` 使用四倍；所有思考强度共用同一个上下文与压缩限制。配置优先级和存储边界见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
-
-提示词和工具说明位于固定的用户级 Prompt Bundle 中。可以检查或修复：
+也可以从命令行恢复：
 
 ```bash
-easy-code prompts doctor
-easy-code prompts list
-easy-code prompts repair
+easy-code --workspace ./my-project --resume <thread-id>
 ```
 
-模型目录也属于这套可信 Bundle。安装后，其校验副本位于
-`~/.easy_code/bundles/prompt-<version>/models/catalog.json`。该副本不是普通用户配置：
-EASY CODE 会校验内容哈希，并用安装包修复本地改动。维护供应商、端点、模型能力、
-凭据元数据或 Benchmark Profile 时，应修改源码目录、重新构建，并发布或安装新的 Bundle
-版本。新版本采用原子安装，更新中断不会留下半激活的模型目录。
+恢复时应使用该 Thread 原来的工作区。Resume 会恢复可继续使用的对话、Plan、任务、授权和子 Agent 状态。
 
-## 命令参考
+## 任务与子 Agent
+
+对于复杂目标，可以直接要求 EASY CODE 拆分任务并并行处理，例如：
+
+```text
+把这次重构拆成独立任务，能并行的交给子 Agent，完成后运行完整测试。
+```
+
+查看状态：
+
+```text
+/tasks
+/agents
+```
+
+子 Agent 可以共享当前工作区，也可以在 Git Worktree 中隔离执行。Worktree 和分支 Handoff 需要 Git；可以在请求中说明希望使用的隔离方式和交付目标。更详细的任务、隔离和 Handoff 行为见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
+
+## 图片输入
+
+图片需要使用支持视觉输入的模型。可以在 VS Code 终端直接粘贴，也可以使用：
+
+```text
+/image ./screenshot.png
+/image clipboard
+/image clear
+```
+
+启动时附加图片：
+
+```bash
+easy-code --image ./one.png --image ./two.png
+```
+
+VS Code 终端粘贴快捷键：Windows 使用 `Ctrl+V`，macOS 使用 `Command+V`，Linux 使用 `Ctrl+Shift+V`。GLM Coding Plan 通道不支持直接发送图片。
+
+## 沙箱
+
+检查或初始化操作系统沙箱：
+
+```bash
+easy-code sandbox doctor
+easy-code sandbox setup
+easy-code sandbox doctor
+```
+
+受保护模式在沙箱不可用时会拒绝命令执行。Windows 如果出现工作区所有权问题，先做只读检查：
+
+```powershell
+easy-code sandbox repair-workspace --target "C:\path\to\project"
+```
+
+确认输出无误后，再使用输出中的规范路径应用修复：
+
+```powershell
+easy-code sandbox repair-workspace --target "C:\path\to\project" --apply --confirm "C:\path\to\project"
+```
+
+## 项目规则
+
+在项目中添加 `EASYCODE.md`，可以告诉 Agent 项目架构、常用命令、代码规范和验证要求。项目级高级配置可写入 `.easycode/config.toml`；可配置项和优先级见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
+
+## 常用命令
 
 ### CLI
 
@@ -408,7 +289,6 @@ easy-code [options]
 easy-code [options] run <prompt...>
 easy-code config set|get|unset|list ...
 easy-code sandbox doctor|setup|repair-workspace ...
-easy-code prompts doctor|list|repair
 easy-code benchmark swe-bench info|setup|doctor|prepare|run ...
 easy-code uninstall [--data-only]
 ```
@@ -419,125 +299,82 @@ easy-code uninstall [--data-only]
 | --- | --- |
 | `-w, --workspace <path>` | 选择工作区。 |
 | `--provider <name>` | 选择 `qwen`、`deepseek`、`glm` 或 `glm-coding-plan`。 |
-| `--model <id>` | 选择该供应商下的模型。 |
+| `--model <id>` | 选择模型。 |
 | `--mode <mode>` | 选择 `plan`、`auto` 或 `code`。 |
 | `--thinking-effort <effort>` | 选择 `none`、`low`、`medium` 或 `high`。 |
-| `--approval <policy>` | 设置启动时命令审批策略。 |
-| `-y, --yes` | 自动同意策略允许审批的命令。 |
-| `--resume <thread-id>` | 恢复保存的 Thread。 |
-| `-i, --image <path>` | 添加图片，可重复传入。 |
+| `--approval <policy>` | 选择 `safe`、`ask` 或 `never`。 |
+| `-y, --yes` | 自动同意策略允许的命令。 |
+| `--resume <thread-id>` | 恢复 Thread。 |
+| `-i, --image <path>` | 添加图片，可重复使用。 |
 
-### 交互式斜杠命令
+### 交互式命令
 
 | 分类 | 命令 |
 | --- | --- |
 | 模式与模型 | `/mode`、`/provider`、`/model`、`/approval` |
 | 工作区 | `/workspace`、`/workspace refresh`、`/changes`、`/tools`、`/permissions`、`/commands` |
-| 图片与思考 | `/image`、`/thinking`、`/adjustment` |
+| 图片与 Thinking | `/image`、`/thinking`、`/adjustment` |
 | 任务 | `/tasks`、`/agents` |
 | 上下文与记忆 | `/context`、`/usage`、`/memory short [limit]`、`/memory long [id]` |
 | Thread | `/sessions`、`/resume [id]`、`/new` |
 | 界面 | `/status`、`/clear`、`/help`、`/exit` |
 
-在 EASY CODE 中运行 `/help` 可查看当前版本的精确语法。
+运行 `easy-code --help` 或在 EASY CODE 中运行 `/help`，可查看当前版本的精确语法。
 
-## SWE-bench Verified Mini 评测
+## SWE-bench Verified Mini
 
-EASY CODE 已包含一个可复现的 Harbor 适配器，用于公开发布的 50 题
-Verified Mini 子集（Django 25 题、Sphinx 25 题）。它固定题目 ID 与 Harbor
-数据集摘要，每题通过 GLM Coding Plan 端点启动一个相互隔离的 GLM-5.3-Flash
-会话，思考强度固定为 `high`，并默认把 Python 环境、缓存、安装包、任务日志、
-补丁和评分结果全部放在 `F:\easy-code-bench\swe-bench-verified-50`。
-Setup 还会把固定版本的多语言 ONNX 模型放入该 F 盘目录；每个 Trial 使用经过
-校验的临时副本，因此分层上下文会实际运行 FTS5/向量混合检索，容器内无需再
-从公网下载模型，也不会在 Harbor 日志中永久保留一份模型副本。
+仓库包含公开 50 题 SWE-bench Verified Mini（HAL）子集的评测入口。它不是官方完整 500 题排行榜成绩。评测会消耗 API 额度，开始前请先阅读[完整评测指南](./benchmarks/swebench_verified/README.md)。
+
+评测需要 Windows x86-64、Docker Desktop 的 WSL 2 Linux 容器、Python `>=3.12` 和 Node.js `>=20.11`。建议至少 16 GB 内存、8 核 CPU 和 120 GB 可用空间。默认数据目录是 `F:\easy-code-bench\swe-bench-verified-50`。
+
+准备环境：
 
 ```powershell
+npm run build
 easy-code config set glm-coding-plan.api-key
 easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
+```
+
+先检查参数，再运行单题 Smoke Test：
+
+```powershell
 easy-code benchmark swe-bench run --dry-run --limit 1 --run-id smoke
 easy-code benchmark swe-bench run --limit 1 --run-id glm-coding-plan-5.3-flash-smoke
 ```
 
-单题 Smoke Test 获得有效评分后，再显式启动完整 50 题：
+单题成功生成补丁并获得有效评分后，才启动完整 50 题：
 
 ```powershell
 easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
   --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
 ```
 
-如果一个 Coding Plan 额度窗口不足以完成 50 题，可以按固定清单顺序拆成五个
-互不重叠的 10 题批次。`--offset` 从 0 开始，下面五条命令依次选择第 1-10、
-11-20、21-30、31-40 和 41-50 题：
-
-```powershell
-easy-code benchmark swe-bench run --offset 0  --limit 10 --concurrency 5 --run-id glm-cp-batch-1
-easy-code benchmark swe-bench run --offset 10 --limit 10 --concurrency 5 --run-id glm-cp-batch-2
-easy-code benchmark swe-bench run --offset 20 --limit 10 --concurrency 5 --run-id glm-cp-batch-3
-easy-code benchmark swe-bench run --offset 30 --limit 10 --concurrency 5 --run-id glm-cp-batch-4
-easy-code benchmark swe-bench run --offset 40 --limit 10 --concurrency 5 --run-id glm-cp-batch-5
-```
-
-每批必须使用不同的 `run-id`。负数 offset、空切片以及超过 50 题边界的
-`offset + limit` 会被直接拒绝，避免重复或静默少跑。
-
-评测需要使用 Linux 容器的 Docker Desktop。如果 Docker 镜像也不能占用
-C 盘，还需要在 Docker Desktop 中把磁盘镜像位置迁移到 F 盘。集成命令会
-只读取单独保存的 GLM Coding Plan Key，并固定使用
-`https://open.bigmodel.cn/api/coding/paas/v4`；它不会读取标准 GLM Key，也不会
-输出任何凭据。
-产生费用前请先阅读[评测指南](./benchmarks/swebench_verified/README.md)。这个
-50 题集合是社区发布的子集，不等同于官方完整 500 题排行榜成绩。
+需要分批运行、指定 `--offset`、调整并发或更改 F 盘目录时，请按[评测指南](./benchmarks/swebench_verified/README.md)操作。每次运行都应使用不同的 `run-id`。
 
 ## 常见问题
 
-### API Key 缺失或被拒绝
-
-运行 `easy-code config list`，检查当前供应商，并确认账号有权访问所选模型。环境变量优先级高于操作系统凭据存储。
-
-### 命令沙箱不可用
-
-运行：
-
-```bash
-easy-code sandbox doctor
-easy-code sandbox setup
-easy-code sandbox doctor
-```
-
-受保护模式在沙箱初始化失败时会关闭命令执行，不会退回无沙箱运行。Windows 工作区特定的所有权问题可先通过 `easy-code sandbox repair-workspace --target <path>` 只读检查，再决定是否应用修复。
-
-### VS Code 中无法粘贴图片
-
-运行 `npm run vscode:install` 重新安装扩展，重载 VS Code，并创建一个新终端。确认当前模型支持图片。剪贴板中的普通文字应继续按文字处理，不会转成图片附件。
-
-### 命令被拒绝
-
-使用 `/permissions` 查看当前状态。命令可能因为 Plan 模式、永久策略、工作区边界、缺少审批或沙箱不可用而被拒绝。只有用户明确二次确认的危险完全访问会移除这些保护。
-
-### Resume 找不到 Thread
-
-使用 `/sessions` 查看当前工作区和本地数据目录中可用的 Thread。Resume ID 必须完全匹配。
+- API Key 缺失或被拒绝：运行 `easy-code config list`，确认供应商、模型和账号权限。
+- 命令被拒绝：运行 `/permissions`，检查当前模式、审批状态和沙箱。
+- VS Code 无法粘贴图片：运行 `npm run vscode:install`，重载 VS Code 并新建终端，同时确认模型支持图片。
+- 找不到 Thread：运行 `/sessions`，并确认使用了原工作区和完整 Thread ID。
 
 ## 卸载
 
-使用 EASY CODE 自带卸载命令，先清除提示词和记忆，再删除全局包：
+关闭其他 EASY CODE 进程后运行：
 
 ```bash
 easy-code uninstall
 ```
 
-请先关闭其他 EASY CODE 进程。该命令会删除当前 OS 用户的 `~/.easy_code` Prompt Bundle，以及可识别的长期和短期记忆，然后卸载全局 npm 包。如果记忆数据库仍被占用，或自定义数据根目录无法证明属于 EASY CODE，清理会安全失败。
-
-只清理提示词和记忆、保留 CLI：
+只清理 EASY CODE 的提示词和记忆、保留 CLI：
 
 ```bash
 easy-code uninstall --data-only
 ```
 
-API Key、配置、模型缓存、工作区文件、Handoff 分支、VS Code 扩展，以及可能包含未合并代码的托管 Worktree 会保留。现代 npm 不会调用包的卸载生命周期，因此只运行 `npm uninstall --global easy-code-agent` 无法完成这些数据清理。
+卸载命令会保留 API Key、配置、缓存、工作区文件、Handoff 分支、VS Code 扩展和可能包含未合并代码的托管 Worktree。
 
 ## 许可证
 
-EASY CODE 原始源码采用 [MIT License](./LICENSE)。随包提供或安装的第三方软件保留各自许可证，详见[第三方开源声明](./THIRD_PARTY_NOTICES.md)，其中包含 Anthropic Sandbox Runtime 的 Apache-2.0 声明。
+EASY CODE 原始源码采用 [MIT License](./LICENSE)。第三方软件许可证见[第三方开源声明](./THIRD_PARTY_NOTICES.md)。

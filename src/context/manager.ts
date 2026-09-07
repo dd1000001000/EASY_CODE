@@ -1,4 +1,4 @@
-import type { ChatMessage, SessionState } from "../core/types.js";
+import type { ChatMessage, SessionState, ToolDefinition } from "../core/types.js";
 import {
   MAX_IMAGES_PER_MODEL_REQUEST,
   MAX_TOTAL_IMAGE_BYTES_PER_MODEL_REQUEST,
@@ -6,13 +6,16 @@ import {
 } from "../images/image-store.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
+import { sha256 } from "../utils/hash.js";
+import { projectModelInputMessages } from "./micro-compaction.js";
 
 export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
 /**
- * Maximum raw recent conversation carried on every provider request. Older
- * evidence remains durable and is recovered through the Thread-private index.
+ * Maximum projected recent conversation considered for a provider request.
+ * Older evidence remains durable and is recovered through the Thread-private
+ * index.
  */
-export const MAX_ACTIVE_WORKING_SET_CHARS = 96_000;
+export const MAX_ACTIVE_WORKING_SET_CHARS = 250_000;
 export const CONTEXT_COMPACTION_SUGGEST_RATIO = 0.6;
 export const CONTEXT_COMPACTION_REQUIRE_RATIO = 0.8;
 export const CONTEXT_COMPACTION_FORCE_RATIO = 0.9;
@@ -28,10 +31,9 @@ export function contextPressureLevel(utilization: number): ContextPressureLevel 
 }
 
 /**
- * Effective capacity of the recent active conversation. Provider context may
- * be larger, but raw recent messages are deliberately capped so older evidence
- * can move to the Thread-private retrieval layer. Context pressure must use
- * this same cap or raw messages can be omitted before compaction is requested.
+ * Effective capacity of the projected active conversation. Provider context
+ * may be larger, but the local working set is deliberately capped so older
+ * evidence can move to the Thread-private retrieval layer.
  */
 export function activeWorkingSetCharBudget(maxContextChars: number): number {
   if (!Number.isSafeInteger(maxContextChars) || maxContextChars < 1) {
@@ -60,6 +62,48 @@ export interface ContextInspectionBuildBudget {
   reservedSystemPromptChars?: number;
 }
 
+export interface ContextInspection {
+  messageCount: number;
+  /** Full canonical Thread history, including content omitted from model input. */
+  durableHistoryChars: number;
+  /** Canonical, uncompacted messages after the durable compaction boundary. */
+  durableActiveChars: number;
+  /** Provider projection before the rolling working-set selector is applied. */
+  projectedActiveChars: number;
+  /** Backwards-compatible alias for durableHistoryChars. */
+  estimatedChars: number;
+  configuredBudgetChars: number;
+  budgetChars: number;
+  summaryChars: number;
+  compactedMessageCount: number;
+  activeMessageCount: number;
+  imageCount: number;
+  imageBytes: number;
+  estimatedVisionTokens: number;
+  /** Backwards-compatible alias for projectedActiveChars. */
+  estimatedShortTermChars: number;
+  estimatedShortTermTokens: number;
+  utilization: number;
+  pressure: ContextPressureLevel;
+}
+
+export interface ProviderRequestContextInspection extends ContextInspection {
+  providerMessageCount: number;
+  providerMessageChars: number;
+  providerToolDefinitionChars: number;
+  /** Exact character estimate used for request-pressure decisions. */
+  providerInputChars: number;
+}
+
+export interface ProviderRequestInspectionInput {
+  state: SessionState;
+  maxContextChars: number;
+  /** Final messages prepared for the provider, including the system message. */
+  messages: readonly ChatMessage[];
+  /** Final tool definitions exposed on the same provider request. */
+  tools?: readonly ToolDefinition[];
+}
+
 function messageChars(message: ChatMessage): number {
   let size = message.content?.length ?? 0;
   if (message.role === "assistant" && message.tool_calls) {
@@ -69,6 +113,18 @@ function messageChars(message: ChatMessage): number {
     size += message.reasoning_content.length;
   }
   return size + 32;
+}
+
+/** Shared request estimator used by ContextManager, Runtime telemetry, and tests. */
+export function estimateMessagesChars(messages: readonly ChatMessage[]): number {
+  return messages.reduce((total, message) => total + messageChars(message), 0);
+}
+
+/** Account for the provider-visible JSON schema surface beside chat messages. */
+export function estimateToolDefinitionsChars(
+  tools: readonly ToolDefinition[] | undefined,
+): number {
+  return tools?.length ? JSON.stringify(tools).length + 16 : 0;
 }
 
 /** Tokenizer-independent estimate suitable for a mixed English/CJK CLI counter. */
@@ -157,12 +213,20 @@ function boundedMessage(message: ChatMessage, budget: number): ChatMessage | und
         ),
       };
     }
-    return {
+    let remaining = contentBudget - toolCallChars;
+    const boundedReasoning = message.reasoning_content
+      ? boundedText(message.reasoning_content, remaining)
+      : message.reasoning_content;
+    remaining -= boundedReasoning?.length ?? 0;
+    const bounded: Extract<ChatMessage, { role: "assistant" }> = {
       ...message,
       content: message.content === null
         ? null
-        : boundedText(message.content, contentBudget - toolCallChars),
+        : boundedText(message.content, remaining),
     };
+    if (boundedReasoning === undefined) delete bounded.reasoning_content;
+    else bounded.reasoning_content = boundedReasoning;
+    return bounded;
   }
   if (message.role === "user" && message.images?.length) {
     return {
@@ -242,7 +306,7 @@ function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
     state.messages.length,
   );
   const activeMessages = limitActiveImages(removeOrphanToolMessages(
-    state.messages.slice(compactedMessageCount),
+    projectModelInputMessages(state.messages.slice(compactedMessageCount)),
   ));
   const persistentSummary = state.workingSummary.trim();
   return [
@@ -303,7 +367,9 @@ function selectContextConversation(
   );
   let activeStart = compactedMessageCount;
   while (state.messages[activeStart]?.role === "tool") activeStart += 1;
-  const activeMessages = limitActiveImages(state.messages.slice(activeStart));
+  const activeMessages = limitActiveImages(projectModelInputMessages(
+    state.messages.slice(activeStart),
+  ));
   const persistentSummary = state.workingSummary.trim();
   const persistentSummaryMessage = persistentSummary
     ? summaryMessage(persistentSummary)
@@ -409,7 +475,7 @@ export class ContextManager {
   /**
    * Returns the first durable message index omitted from the rolling working
    * set. Retrieval must use this exact boundary so it never duplicates recent
-   * messages that are already sent verbatim.
+   * messages that are already represented in the provider projection.
    */
   retrievalBoundary(
     state: Readonly<SessionState>,
@@ -433,6 +499,10 @@ export class ContextManager {
     state: SessionState,
     summary: string,
     compactedMessageCount: number,
+    contextState?: {
+      intentLedger: NonNullable<SessionState["contextIntentLedger"]>;
+      metadata: NonNullable<SessionState["contextCompactionMetadata"]>;
+    },
   ): { compactedMessageCount: number; summaryChars: number } {
     const normalized = redactSensitiveInformation(summary.trim());
     if (!normalized) throw new Error("Context summary must not be empty");
@@ -446,9 +516,50 @@ export class ContextManager {
     ) {
       throw new Error("Context compaction boundary is invalid");
     }
+    if (
+      contextState &&
+      (
+        contextState.metadata.formatVersion !== 2 ||
+        contextState.metadata.sourceStartMessageIndex !==
+          state.compactedMessageCount ||
+        contextState.metadata.compactedMessageCount !== compactedMessageCount ||
+        contextState.metadata.sourceEndMessageIndex > compactedMessageCount ||
+        contextState.metadata.sourceStartMessageIndex >
+          contextState.metadata.sourceEndMessageIndex ||
+        !/^sha256:[a-f0-9]{64}$/u.test(contextState.metadata.sourceHistoryHash)
+      )
+    ) {
+      throw new Error("Context compaction provenance is invalid");
+    }
+    if (contextState) {
+      const sourceHistoryHash = `sha256:${sha256(JSON.stringify(
+        state.messages.slice(0, contextState.metadata.sourceEndMessageIndex),
+      ))}`;
+      if (sourceHistoryHash !== contextState.metadata.sourceHistoryHash) {
+        throw new Error("Context compaction source history changed before commit");
+      }
+    }
 
     state.workingSummary = normalized;
     state.compactedMessageCount = compactedMessageCount;
+    if (contextState) {
+      state.contextIntentLedger = {
+        latestRequest: { ...contextState.intentLedger.latestRequest },
+        activeConstraints: contextState.intentLedger.activeConstraints.map((item) => ({
+          ...item,
+        })),
+        userCorrections: contextState.intentLedger.userCorrections.map((item) => ({
+          ...item,
+        })),
+        supersededRequests: contextState.intentLedger.supersededRequests.map((item) => ({
+          ...item,
+        })),
+      };
+      state.contextCompactionMetadata = { ...contextState.metadata };
+    } else {
+      delete state.contextIntentLedger;
+      delete state.contextCompactionMetadata;
+    }
     state.updatedAt = new Date().toISOString();
     return { compactedMessageCount, summaryChars: normalized.length };
   }
@@ -463,26 +574,19 @@ export class ContextManager {
     state: SessionState,
     maxContextChars: number,
     buildBudget?: ContextInspectionBuildBudget,
-  ): {
-    messageCount: number;
-    estimatedChars: number;
-    configuredBudgetChars: number;
-    budgetChars: number;
-    summaryChars: number;
-    compactedMessageCount: number;
-    activeMessageCount: number;
-    imageCount: number;
-    imageBytes: number;
-    estimatedVisionTokens: number;
-    estimatedShortTermChars: number;
-    estimatedShortTermTokens: number;
-    utilization: number;
-    pressure: ContextPressureLevel;
-  } {
+  ): ContextInspection {
     const images = state.messages.flatMap((message) =>
       message.role === "user" ? message.images ?? [] : [],
     );
     const estimatedShortTermChars = this.estimateShortTermChars(state);
+    const compactedMessageCount = Math.min(
+      Math.max(0, state.compactedMessageCount),
+      state.messages.length,
+    );
+    const durableHistoryChars = estimateMessagesChars(state.messages);
+    const durableActiveChars = estimateMessagesChars(
+      state.messages.slice(compactedMessageCount),
+    );
     const conversationBudget = buildBudget
       ? contextSystemBudget({
           systemPrompt: buildBudget.systemPrompt,
@@ -493,19 +597,22 @@ export class ContextManager {
             : { reservedSystemPromptChars: buildBudget.reservedSystemPromptChars }),
         }).conversationBudget
       : maxContextChars;
-    // Use the same effective conversation capacity as build(). A large system
-    // prompt or explicit retrieval reservation must raise pressure before raw
-    // active messages would otherwise be omitted from the provider request.
+    // This is the projection-level diagnostic used outside a concrete request.
+    // Runtime enforcement uses inspectProviderRequest() after final messages
+    // and tool schemas have been assembled.
     const budgetChars = activeWorkingSetCharBudget(conversationBudget);
     const utilization = estimatedShortTermChars / budgetChars;
     return {
       messageCount: state.messages.length,
-      estimatedChars: state.messages.reduce((total, message) => total + messageChars(message), 0),
+      durableHistoryChars,
+      durableActiveChars,
+      projectedActiveChars: estimatedShortTermChars,
+      estimatedChars: durableHistoryChars,
       configuredBudgetChars: maxContextChars,
       budgetChars,
       summaryChars: state.workingSummary.length,
-      compactedMessageCount: state.compactedMessageCount,
-      activeMessageCount: Math.max(0, state.messages.length - state.compactedMessageCount),
+      compactedMessageCount,
+      activeMessageCount: Math.max(0, state.messages.length - compactedMessageCount),
       imageCount: images.length,
       imageBytes: images.reduce((total, image) => total + image.byteSize, 0),
       estimatedVisionTokens: images.reduce(
@@ -515,6 +622,33 @@ export class ContextManager {
       ),
       estimatedShortTermChars,
       estimatedShortTermTokens: this.estimateShortTermTokens(state),
+      utilization,
+      pressure: contextPressureLevel(utilization),
+    };
+  }
+
+  /**
+   * Inspect the same projected messages and tool schemas that are about to be
+   * sent to a provider. The fixed retrieval reserve is intentionally absent:
+   * it controls selection headroom, not bytes in this concrete request.
+   */
+  inspectProviderRequest(
+    input: ProviderRequestInspectionInput,
+  ): ProviderRequestContextInspection {
+    const projectedMessages = projectModelInputMessages(input.messages);
+    const providerMessageChars = estimateMessagesChars(projectedMessages);
+    const providerToolDefinitionChars = estimateToolDefinitionsChars(input.tools);
+    const providerInputChars = providerMessageChars + providerToolDefinitionChars;
+    const budgetChars = activeWorkingSetCharBudget(input.maxContextChars);
+    const utilization = providerInputChars / budgetChars;
+    return {
+      ...this.inspect(input.state, input.maxContextChars),
+      configuredBudgetChars: input.maxContextChars,
+      budgetChars,
+      providerMessageCount: projectedMessages.length,
+      providerMessageChars,
+      providerToolDefinitionChars,
+      providerInputChars,
       utilization,
       pressure: contextPressureLevel(utilization),
     };

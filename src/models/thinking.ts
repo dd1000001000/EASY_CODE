@@ -39,7 +39,7 @@ export const THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS: Readonly<
 };
 
 export const DEFAULT_BASE_STEP_LIMIT = 40;
-export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 100_000;
+export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 250_000;
 export const THINKING_EFFORT_TIMEOUT_MS: Readonly<Record<ThinkingEffort, number>> = {
   none: 300_000,
   low: 300_000,

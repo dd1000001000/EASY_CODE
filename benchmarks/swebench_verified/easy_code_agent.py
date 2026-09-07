@@ -15,6 +15,7 @@ import shlex
 import shutil
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -24,7 +25,9 @@ from harbor.agents.installed.base import (
     with_prompt_template,
 )
 from harbor.environments.base import BaseEnvironment
+from harbor.environments.docker.docker import DockerEnvironment
 from harbor.models.agent.context import AgentContext
+from harbor.models.task.config import NetworkMode, NetworkPolicy
 
 
 _REMOTE_PACKAGE = "/tmp/easy-code-agent.tgz"
@@ -164,6 +167,45 @@ def _load_benchmark_profile() -> tuple[str, str, str, str, str, str]:
     _BENCHMARK_BASE_URL,
     _BENCHMARK_BASE_URL_ENV,
 ) = _load_benchmark_profile()
+_BENCHMARK_ALLOWED_HOST = urlsplit(_BENCHMARK_BASE_URL).hostname
+if not _BENCHMARK_ALLOWED_HOST:
+    raise RuntimeError("The SWE-bench provider endpoint has no hostname.")
+
+
+def _benchmark_agent_network_policy() -> NetworkPolicy:
+    """Allow the evaluated agent to reach only its pinned model endpoint."""
+
+    return NetworkPolicy(
+        network_mode=NetworkMode.ALLOWLIST,
+        allowed_hosts=[_BENCHMARK_ALLOWED_HOST],
+    )
+
+
+class EasyCodeBenchmarkDockerEnvironment(DockerEnvironment):
+    """Prepare Harbor's egress controller for restricted agent execution.
+
+    Published SWE-bench tasks start with public networking so the trusted
+    adapter can install runtime dependencies. Declaring the provider allowlist
+    as a possible phase policy makes Harbor create its egress-control sidecar
+    at startup. ``EasyCodeAgent.run`` activates it before model-controlled code
+    runs and disables networking completely when that code exits.
+    """
+
+    def __init__(
+        self,
+        *args: Any,
+        phase_network_policies: Sequence[NetworkPolicy] = (),
+        **kwargs: Any,
+    ) -> None:
+        restricted_policy = _benchmark_agent_network_policy()
+        policies = [*phase_network_policies]
+        if restricted_policy not in policies:
+            policies.append(restricted_policy)
+        super().__init__(
+            *args,
+            phase_network_policies=policies,
+            **kwargs,
+        )
 
 
 class EasyCodeAgent(BaseInstalledAgent):
@@ -380,20 +422,28 @@ easy-code --version
         try:
             try:
                 await self._stage_api_key(environment)
-                result = await environment.exec(
-                    command=self._bash(run_script),
-                    cwd=_TESTBED,
-                    env={
-                        "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE": _REMOTE_API_KEY_FILE,
-                        _BENCHMARK_BASE_URL_ENV: _BENCHMARK_BASE_URL,
-                        "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
-                        "EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR,
-                        "EASY_CODE_OUTER_SANDBOX": "harbor",
-                        "CI": "1",
-                        "NO_COLOR": "1",
-                    },
-                    timeout_sec=3600,
+                await environment.set_network_policy(
+                    _benchmark_agent_network_policy()
                 )
+                try:
+                    result = await environment.exec(
+                        command=self._bash(run_script),
+                        cwd=_TESTBED,
+                        env={
+                            "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE": _REMOTE_API_KEY_FILE,
+                            _BENCHMARK_BASE_URL_ENV: _BENCHMARK_BASE_URL,
+                            "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
+                            "EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR,
+                            "EASY_CODE_OUTER_SANDBOX": "harbor",
+                            "CI": "1",
+                            "NO_COLOR": "1",
+                        },
+                        timeout_sec=3600,
+                    )
+                finally:
+                    await environment.set_network_policy(
+                        NetworkPolicy(network_mode=NetworkMode.NO_NETWORK)
+                    )
                 self._record_output("easy-code.log", result)
                 if result is None:
                     raise RuntimeError(

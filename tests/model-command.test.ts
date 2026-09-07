@@ -477,10 +477,14 @@ describe("/model", () => {
       assert.match(fixture.output(), /"thinkingApplied": false/u);
       assert.match(fixture.output(), /"baseStepLimit": 40/u);
       assert.match(fixture.output(), /"stepLimit": 160/u);
-      assert.match(fixture.output(), /"baseContextCharLimit": 100000/u);
-      assert.match(fixture.output(), /"contextCharLimit": 100000/u);
-      assert.match(fixture.output(), /"configuredBudgetChars": 100000/u);
-      assert.match(fixture.output(), /"budgetChars": 96000/u);
+      assert.match(fixture.output(), /"baseContextCharLimit": 250000/u);
+      assert.match(fixture.output(), /"contextCharLimit": 250000/u);
+      assert.match(fixture.output(), /"configuredBudgetChars": 250000/u);
+      assert.match(fixture.output(), /"budgetChars": 250000/u);
+      assert.match(fixture.output(), /"durableHistoryChars": \d+/u);
+      assert.match(fixture.output(), /"durableActiveChars": \d+/u);
+      assert.match(fixture.output(), /"projectedActiveChars": \d+/u);
+      assert.match(fixture.output(), /"lastProviderRequest": null/u);
     } finally {
       fixture.close();
     }

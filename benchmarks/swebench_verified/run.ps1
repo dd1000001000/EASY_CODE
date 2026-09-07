@@ -54,8 +54,8 @@ $allProviderEnvironmentNames = @(
 ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
 $harborModel = "$($benchmarkProfile.provider)/$($benchmarkProfile.model)"
 $providerUri = [Uri]$benchmarkProvider.defaultBaseUrl
-$allowAgentHost = $providerUri.Host
-if (-not $providerUri.IsAbsoluteUri -or $providerUri.Scheme -ne "https" -or [string]::IsNullOrWhiteSpace($allowAgentHost)) {
+$providerHost = $providerUri.Host
+if (-not $providerUri.IsAbsoluteUri -or $providerUri.Scheme -ne "https" -or [string]::IsNullOrWhiteSpace($providerHost)) {
     throw "The SWE-bench provider must define a valid HTTPS endpoint."
 }
 if ([string]::IsNullOrWhiteSpace($RunId)) {
@@ -99,6 +99,7 @@ $harborArgs = @(
     "run",
     "--dataset", "swe-bench/swe-bench-verified@sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
     "--agent", "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent",
+    "--env", "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment",
     "--model", $harborModel,
     "--jobs-dir", $jobsDir,
     "--job-name", $RunId,
@@ -108,8 +109,7 @@ $harborArgs = @(
     "--retry-include", "AgentSetupTimeoutError",
     "--retry-include", "EnvironmentStartTimeoutError",
     "--agent-setup-timeout-multiplier", "4",
-    "--yes",
-    "--allow-agent-host", $allowAgentHost
+    "--yes"
 )
 foreach ($id in $selectedIds) {
     # Harbor task names are organization-prefixed. Exact names avoid an empty

@@ -288,10 +288,10 @@ describe("model catalog", () => {
     assert.equal(thinkingEffortStepLimit("low"), 40);
     assert.equal(thinkingEffortStepLimit("medium"), 80);
     assert.equal(thinkingEffortStepLimit("high"), 160);
-    assert.equal(thinkingEffortContextCharLimit("none"), 100_000);
-    assert.equal(thinkingEffortContextCharLimit("low"), 100_000);
-    assert.equal(thinkingEffortContextCharLimit("medium"), 100_000);
-    assert.equal(thinkingEffortContextCharLimit("high"), 100_000);
+    assert.equal(thinkingEffortContextCharLimit("none"), 250_000);
+    assert.equal(thinkingEffortContextCharLimit("low"), 250_000);
+    assert.equal(thinkingEffortContextCharLimit("medium"), 250_000);
+    assert.equal(thinkingEffortContextCharLimit("high"), 250_000);
   });
 
   it("scales custom none/low bases and rejects invalid or overflowing budgets", () => {

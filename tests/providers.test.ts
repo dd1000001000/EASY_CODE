@@ -551,6 +551,63 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.usage?.reasoningTokens, 3);
   });
 
+  it("defensively removes consumed reasoning before provider serialization", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "test-deepseek-key";
+    let captured: JsonPostRequest | undefined;
+    const provider = createProvider(config, "deepseek", undefined, {
+      transport: async (request) => {
+        captured = request;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: { role: "assistant", content: "done" },
+            }],
+          }),
+        };
+      },
+    });
+    const messages = [
+      { role: "user" as const, content: "inspect" },
+      {
+        role: "assistant" as const,
+        content: "old answer",
+        reasoning_content: "consumed reasoning",
+      },
+      { role: "user" as const, content: "run tests" },
+      {
+        role: "assistant" as const,
+        content: null,
+        reasoning_content: "active tool reasoning",
+        tool_calls: [{
+          id: "call_test",
+          type: "function" as const,
+          function: { name: "run_command", arguments: "{}" },
+        }],
+      },
+      {
+        role: "tool" as const,
+        tool_call_id: "call_test",
+        name: "run_command",
+        content: "tests passed",
+      },
+    ];
+    const durableSnapshot = structuredClone(messages);
+
+    await provider.complete({ messages });
+
+    const body = JSON.parse(captured?.body ?? "{}") as {
+      messages?: Array<Record<string, unknown>>;
+    };
+    const assistants = body.messages?.filter((message) => message.role === "assistant") ?? [];
+    assert.equal("reasoning_content" in (assistants[0] ?? {}), false);
+    assert.equal(assistants[1]?.reasoning_content, "active tool reasoning");
+    assert.deepEqual(messages, durableSnapshot);
+  });
+
   it("rejects malformed negative provider token usage", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.qwen.apiKey = "test-qwen-key";

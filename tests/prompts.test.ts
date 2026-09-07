@@ -138,9 +138,11 @@ describe("system prompt builder", () => {
       assert.match(prompt, /memory_id=memory_00000000-0000-4000-8000-000000000001/);
       assert.match(prompt, /category=convention/);
       assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);
-      assert.match(prompt, /fixed 96,000-character recent-message working-set capacity/u);
-      assert.match(prompt, /default configured limit is 100,000 characters for none, low, medium, and high/u);
-      assert.match(prompt, /Pressure is calculated against that effective active capacity/u);
+      assert.match(prompt, /replaces consumed long tool results with recovery references/u);
+      assert.match(prompt, /one provider-independent policy/u);
+      assert.match(prompt, /default configured limit is 250,000 characters for none, low, medium, and high/u);
+      assert.match(prompt, /Pressure is calculated from the final provider-bound messages plus tool schemas/u);
+      assert.match(prompt, /fixed retrieval reserve affects evidence selection only/u);
       assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
       assert.match(prompt, /current objective, user constraints, key decisions/);
       assert.match(prompt, /It must be cumulative/);

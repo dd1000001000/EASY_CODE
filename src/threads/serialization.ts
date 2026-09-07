@@ -4,6 +4,7 @@ import {
   type ThinkingEffort,
   type ChatMessage,
   type CommandAuditEntry,
+  type ContextCompactionMetadata,
   type FileChangeRecord,
   type FileVersion,
   type ImageAttachment,
@@ -18,6 +19,7 @@ import { isProviderName } from "../models/catalog.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 import { validateCommandApprovalPrefixes } from "../command/approval.js";
+import { sha256 } from "../utils/hash.js";
 
 export interface SerializedSessionState {
   readonly threadId: string;
@@ -45,6 +47,8 @@ export interface SerializedSessionState {
   readonly steeringSealedTurnId?: string;
   readonly workingSummary: string;
   readonly compactedMessageCount: number;
+  readonly contextIntentLedger?: SessionState["contextIntentLedger"];
+  readonly contextCompactionMetadata?: SessionState["contextCompactionMetadata"];
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -74,6 +78,8 @@ export interface SerializedThreadCheckpointDelta {
   readonly compaction?: {
     readonly workingSummary: string;
     readonly compactedMessageCount: number;
+    readonly contextIntentLedger?: SessionState["contextIntentLedger"];
+    readonly contextCompactionMetadata?: SessionState["contextCompactionMetadata"];
   };
 }
 
@@ -82,6 +88,97 @@ export const MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES = 4 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isContextSourceQuote(value: unknown): boolean {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ["sourceMessageIndex", "text"]) &&
+    Number.isSafeInteger(value.sourceMessageIndex) &&
+    Number(value.sourceMessageIndex) >= 0 &&
+    typeof value.text === "string" &&
+    value.text.length > 0 &&
+    value.text.length <= 2_400;
+}
+
+function isContextIntentLedger(value: unknown): boolean {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      "latestRequest",
+      "activeConstraints",
+      "userCorrections",
+      "supersededRequests",
+    ]) &&
+    isContextSourceQuote(value.latestRequest) &&
+    Array.isArray(value.activeConstraints) &&
+    value.activeConstraints.length <= 24 &&
+    value.activeConstraints.every(isContextSourceQuote) &&
+    Array.isArray(value.userCorrections) &&
+    value.userCorrections.length <= 32 &&
+    value.userCorrections.every(isContextSourceQuote) &&
+    Array.isArray(value.supersededRequests) &&
+    value.supersededRequests.length <= 32 &&
+    value.supersededRequests.every(isContextSourceQuote);
+}
+
+function isContextCompactionMetadata(
+  value: unknown,
+): value is ContextCompactionMetadata {
+  if (!isRecord(value) || !hasOnlyKeys(value, [
+    "formatVersion",
+    "sourceStartMessageIndex",
+    "sourceEndMessageIndex",
+    "compactedMessageCount",
+    "sourceHistoryHash",
+    "acceptedAt",
+    "beforeProjectedChars",
+    "afterProjectedChars",
+    "savedChars",
+    "savingsRatio",
+    "postCompactionUtilization",
+    "safeWaterlineReached",
+  ])) return false;
+  const beforeProjectedChars = Number(value.beforeProjectedChars);
+  const afterProjectedChars = Number(value.afterProjectedChars);
+  const savedChars = Number(value.savedChars);
+  const savingsRatio = Number(value.savingsRatio);
+  const postCompactionUtilization = Number(value.postCompactionUtilization);
+  return value.formatVersion === 2 &&
+    Number.isSafeInteger(value.sourceStartMessageIndex) &&
+    Number(value.sourceStartMessageIndex) >= 0 &&
+    Number.isSafeInteger(value.sourceEndMessageIndex) &&
+    Number(value.sourceEndMessageIndex) >= Number(value.sourceStartMessageIndex) &&
+    Number.isSafeInteger(value.compactedMessageCount) &&
+    Number(value.compactedMessageCount) >= Number(value.sourceEndMessageIndex) &&
+    typeof value.sourceHistoryHash === "string" &&
+    /^sha256:[a-f0-9]{64}$/u.test(value.sourceHistoryHash) &&
+    typeof value.acceptedAt === "string" &&
+    Number.isFinite(Date.parse(value.acceptedAt)) &&
+    [
+      value.beforeProjectedChars,
+      value.afterProjectedChars,
+      value.savedChars,
+      value.savingsRatio,
+      value.postCompactionUtilization,
+    ].every((item) => typeof item === "number" && Number.isFinite(item)) &&
+    beforeProjectedChars >= 0 &&
+    afterProjectedChars >= 0 &&
+    savedChars > 0 &&
+    Math.abs((beforeProjectedChars - afterProjectedChars) - savedChars) < 1e-6 &&
+    savingsRatio > 0 && savingsRatio <= 1 &&
+    postCompactionUtilization >= 0 && postCompactionUtilization < 0.8 &&
+    typeof value.safeWaterlineReached === "boolean" &&
+    value.safeWaterlineReached === (postCompactionUtilization <= 0.55);
+}
+
+function cloneContextIntentLedger(
+  value: NonNullable<SessionState["contextIntentLedger"]>,
+): NonNullable<SessionState["contextIntentLedger"]> {
+  return {
+    latestRequest: { ...value.latestRequest },
+    activeConstraints: value.activeConstraints.map((item) => ({ ...item })),
+    userCorrections: value.userCorrections.map((item) => ({ ...item })),
+    supersededRequests: value.supersededRequests.map((item) => ({ ...item })),
+  };
 }
 
 function isPromptBundleBinding(value: unknown): value is PromptBundleBinding {
@@ -573,10 +670,22 @@ function validateThreadCheckpointDelta(
     const compaction = value.compaction;
     if (
       !isRecord(compaction) ||
-      !hasOnlyKeys(compaction, ["workingSummary", "compactedMessageCount"]) ||
+      !hasOnlyKeys(compaction, [
+        "workingSummary",
+        "compactedMessageCount",
+        "contextIntentLedger",
+        "contextCompactionMetadata",
+      ]) ||
       typeof compaction.workingSummary !== "string" ||
       !Number.isSafeInteger(compaction.compactedMessageCount) ||
-      Number(compaction.compactedMessageCount) < 0
+      Number(compaction.compactedMessageCount) < 0 ||
+      (compaction.contextIntentLedger !== undefined &&
+        !isContextIntentLedger(compaction.contextIntentLedger)) ||
+      (compaction.contextCompactionMetadata !== undefined &&
+        (!isContextCompactionMetadata(compaction.contextCompactionMetadata) ||
+          compaction.contextIntentLedger === undefined ||
+          Number(compaction.contextCompactionMetadata.compactedMessageCount) !==
+            Number(compaction.compactedMessageCount)))
     ) {
       throw new Error("Invalid compaction in serialized thread checkpoint delta");
     }
@@ -654,7 +763,27 @@ export function deserializeThreadCheckpointDelta(
           })),
         }
       : {}),
-    ...(value.compaction ? { compaction: { ...value.compaction } } : {}),
+    ...(value.compaction
+      ? {
+          compaction: {
+            ...value.compaction,
+            ...(value.compaction.contextIntentLedger
+              ? {
+                  contextIntentLedger: cloneContextIntentLedger(
+                    value.compaction.contextIntentLedger,
+                  ),
+                }
+              : {}),
+            ...(value.compaction.contextCompactionMetadata
+              ? {
+                  contextCompactionMetadata: {
+                    ...value.compaction.contextCompactionMetadata,
+                  },
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -694,6 +823,12 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
       : {}),
     workingSummary: state.workingSummary,
     compactedMessageCount: state.compactedMessageCount,
+    ...(state.contextIntentLedger
+      ? { contextIntentLedger: cloneContextIntentLedger(state.contextIntentLedger) }
+      : {}),
+    ...(state.contextCompactionMetadata
+      ? { contextCompactionMetadata: { ...state.contextCompactionMetadata } }
+      : {}),
     createdAt: state.createdAt,
     updatedAt: state.updatedAt,
   };
@@ -736,6 +871,13 @@ export function deserializeSessionState(value: unknown): SessionState {
       (!Number.isInteger(value.compactedMessageCount) ||
         Number(value.compactedMessageCount) < 0 ||
         Number(value.compactedMessageCount) > value.messages.length)) ||
+    (value.contextIntentLedger !== undefined &&
+      !isContextIntentLedger(value.contextIntentLedger)) ||
+    (value.contextCompactionMetadata !== undefined &&
+      (!isContextCompactionMetadata(value.contextCompactionMetadata) ||
+        value.contextIntentLedger === undefined ||
+        Number(value.contextCompactionMetadata.compactedMessageCount) !==
+          Number(value.compactedMessageCount))) ||
     typeof value.createdAt !== "string" ||
     typeof value.updatedAt !== "string"
   ) {
@@ -797,6 +939,21 @@ export function deserializeSessionState(value: unknown): SessionState {
     previousSteeringSequence = entry.sequence;
   }
 
+  const messages = deserializeChatMessages(JSON.stringify(value.messages));
+  const compactionMetadata = isContextCompactionMetadata(
+    value.contextCompactionMetadata,
+  )
+    ? value.contextCompactionMetadata
+    : undefined;
+  if (compactionMetadata) {
+    const sourceHistoryHash = `sha256:${sha256(serializeChatMessages(
+      messages.slice(0, compactionMetadata.sourceEndMessageIndex),
+    ))}`;
+    if (sourceHistoryHash !== compactionMetadata.sourceHistoryHash) {
+      throw new Error("Context compaction source history hash mismatch");
+    }
+  }
+
   return {
     threadId: value.threadId,
     activeTurnId:
@@ -816,7 +973,7 @@ export function deserializeSessionState(value: unknown): SessionState {
       : {}),
     goal: typeof value.goal === "string" ? value.goal : undefined,
     constraints: [...value.constraints] as string[],
-    messages: deserializeChatMessages(JSON.stringify(value.messages)),
+    messages,
     filesRead,
     changes: (value.changes as unknown as FileChangeRecord[]).map((item) => ({
       ...item,
@@ -845,6 +1002,20 @@ export function deserializeSessionState(value: unknown): SessionState {
       typeof value.compactedMessageCount === "number" ? value.workingSummary : "",
     compactedMessageCount:
       typeof value.compactedMessageCount === "number" ? value.compactedMessageCount : 0,
+    ...(isContextIntentLedger(value.contextIntentLedger)
+      ? {
+          contextIntentLedger: cloneContextIntentLedger(
+            value.contextIntentLedger as NonNullable<SessionState["contextIntentLedger"]>,
+          ),
+        }
+      : {}),
+    ...(compactionMetadata
+      ? {
+          contextCompactionMetadata: {
+            ...compactionMetadata,
+          },
+        }
+      : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };

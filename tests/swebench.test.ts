@@ -32,7 +32,6 @@ const BENCHMARK_PROVIDER = PACKAGED_MODEL_CATALOG.providers.find(
   (provider) => provider.id === BENCHMARK_PROFILE.provider,
 );
 if (!BENCHMARK_PROVIDER) throw new Error("The benchmark provider is missing");
-const BENCHMARK_ENDPOINT_HOST = new URL(BENCHMARK_PROVIDER.defaultBaseUrl).hostname;
 
 const EXPECTED_INSTANCE_IDS = [
   "django__django-11790",
@@ -220,6 +219,8 @@ describe("SWE-bench Verified integration", () => {
       "swe-bench/swe-bench-verified@sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
       "--agent",
       "benchmarks.swebench_verified.easy_code_agent:EasyCodeAgent",
+      "--env",
+      "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment",
       "--model",
       `${BENCHMARK_PROFILE.provider}/${BENCHMARK_PROFILE.model}`,
       "--jobs-dir",
@@ -239,8 +240,6 @@ describe("SWE-bench Verified integration", () => {
       "--agent-setup-timeout-multiplier",
       "4",
       "--yes",
-      "--allow-agent-host",
-      BENCHMARK_ENDPOINT_HOST,
       "--include-task-name",
     ]);
     assert.deepEqual(
@@ -249,6 +248,10 @@ describe("SWE-bench Verified integration", () => {
     );
     assert.equal(valuesAfter(args, "--dataset").length, 1);
     assert.equal(valuesAfter(args, "--agent").length, 1);
+    assert.deepEqual(valuesAfter(args, "--env"), [
+      "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment",
+    ]);
+    assert.equal(args.includes("--allow-agent-host"), false);
     assert.equal(valuesAfter(args, "--model").length, 1);
     assert.equal(args.includes("--provider"), false);
     assert.equal(args.includes("--thinking-effort"), false);
@@ -280,6 +283,19 @@ describe("SWE-bench Verified integration", () => {
     );
     assert.match(source, /provider\.get\("defaultBaseUrl"\)/u);
     assert.match(source, /"EASY_CODE_OUTER_SANDBOX":\s*"harbor"/u);
+    assert.match(source, /class EasyCodeBenchmarkDockerEnvironment\(DockerEnvironment\):/u);
+    assert.match(
+      source,
+      /network_mode=NetworkMode\.ALLOWLIST,\s*allowed_hosts=\[_BENCHMARK_ALLOWED_HOST\]/u,
+    );
+    assert.match(
+      source,
+      /await environment\.set_network_policy\(\s*_benchmark_agent_network_policy\(\)\s*\)/u,
+    );
+    assert.match(
+      source,
+      /NetworkPolicy\(network_mode=NetworkMode\.NO_NETWORK\)/u,
+    );
     assert.match(source, /environment\.upload_file\(\s*self\._host_api_key_file,\s*_REMOTE_API_KEY_FILE/u);
     assert.match(
       source,
