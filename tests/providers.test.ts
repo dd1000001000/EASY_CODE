@@ -771,6 +771,35 @@ describe("OpenAI-compatible providers", () => {
     assert.deepEqual(delays, [400, 800]);
   });
 
+  it("lets an isolated Runtime request suppress hidden Provider retries", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.deepseek.apiKey = "deepseek-key";
+    config.deepseek.maxRetries = 3;
+    let attempts = 0;
+    const provider = createProvider(config, "deepseek", "deepseek-test-model", {
+      transport: async () => {
+        attempts += 1;
+        return {
+          statusCode: 503,
+          headers: {},
+          body: JSON.stringify({ error: { message: "temporarily unavailable" } }),
+        };
+      },
+      sleep: async () => {
+        throw new Error("retry delay must not run");
+      },
+    });
+
+    await assert.rejects(
+      provider.complete({
+        messages: [{ role: "user", content: "hello" }],
+        maxRetries: 0,
+      }),
+      /temporarily unavailable/u,
+    );
+    assert.equal(attempts, 1);
+  });
+
   it("routes GLM through the official OpenAI-compatible endpoint", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.glm.apiKey = "glm-test-key";

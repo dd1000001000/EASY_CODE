@@ -75,7 +75,29 @@ import {
   type TaskGraphTransitionOperation,
 } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
+import { sha256 } from "../utils/hash.js";
 import { jsonForModel, safeJsonParse } from "../utils/json.js";
+import {
+  createProgressGuardState,
+  foldProgressObservation,
+} from "../progress/guard.js";
+import { observeToolResult } from "../progress/observation.js";
+import {
+  foldProgressReviewEvent,
+  interruptedProgressIncident,
+  nextPendingProgressIncident,
+  requestedProgressIncident,
+  reviewAttemptUsedForScope,
+  type ProgressReviewEventType,
+} from "../progress/lifecycle.js";
+import {
+  progressReviewPacketDigest,
+  runProgressReviewer,
+  type ProgressReviewAccounting,
+  type ProgressReviewBinding,
+  type ProgressReviewModelRequestRecord,
+} from "../progress/reviewer.js";
+import type { ProgressIncident } from "../progress/types.js";
 import {
   AutoRouteRequestError,
   AutoRouteSelectionError,
@@ -93,6 +115,15 @@ const CONTEXT_COMPACTION_STEP_ALLOWANCE = 1;
 const SUBAGENT_RESULT_STEP_ALLOWANCE = 1;
 const SUBAGENT_COLLECTION_STEP_ALLOWANCE = 1;
 const BACKGROUND_COMMAND_FINALIZATION_STEP_ALLOWANCE = 1;
+const PROGRESS_EXPERIMENT_TOOLS = new Set<ToolName>([
+  "read_file",
+  "read_image",
+  "run_command",
+  "start_command",
+  "poll_command",
+  "cancel_command",
+  "compact_context",
+]);
 
 function runtimePromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -305,6 +336,179 @@ function contextRetrievalQuery(
     .slice(0, 12_000);
 }
 
+function progressScopeKey(state: Readonly<SessionState>, turnId: string): string {
+  const task = state.taskGraph ? activeTask(state.taskGraph) : undefined;
+  return task
+    ? `thread:${state.threadId}/task:${task.id}`
+    : `thread:${state.threadId}/turn:${turnId}`;
+}
+
+function progressIntentRevision(state: Readonly<SessionState>): number {
+  let latestUserIndex = -1;
+  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
+    if (state.messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+  return Math.max(
+    latestUserIndex + 1,
+    (state.steeringWatermark ?? 0) + 1,
+    (state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? -1) + 1,
+  );
+}
+
+function progressReviewPacket(
+  state: Readonly<SessionState>,
+  incident: Readonly<ProgressIncident>,
+  currentUserInput: string,
+): string {
+  const recentToolEvidence = state.messages
+    .slice(-24)
+    .filter((message) => message.role === "tool")
+    .map((message) => `${message.name ?? "tool"}: ${message.content}`)
+    .join("\n\n")
+    .slice(0, 24_000);
+  return redactSensitiveInformation([
+    "[PROGRESS_INCIDENT]",
+    JSON.stringify({
+      incidentId: incident.incidentId,
+      scopeKey: incident.scopeKey,
+      targetKey: incident.targetKey,
+      outcomeClass: incident.outcomeClass,
+      outcomeKey: incident.outcomeKey,
+      verificationCycleIds: incident.verificationCycleIds,
+    }),
+    "[CURRENT_RUNTIME_CONTEXT]",
+    contextRetrievalQuery(state, currentUserInput),
+    recentToolEvidence ? "[RECENT_TOOL_EVIDENCE]" : "",
+    recentToolEvidence,
+  ].filter(Boolean).join("\n\n")).slice(0, 64_000);
+}
+
+function progressRuntimeInstruction(
+  state: Readonly<SessionState>,
+  scopeKey: string,
+): string {
+  const guard = state.progressGuard;
+  if (!guard) return "";
+  const incident = [...guard.incidents]
+    .reverse()
+    .find((candidate) =>
+      candidate.scopeKey === scopeKey &&
+      (
+        candidate.phase === "experiment_required" ||
+        candidate.phase === "strategy_adjustment" ||
+        candidate.phase === "review_exhausted"
+      )
+    );
+  if (incident?.phase === "experiment_required" && incident.reviewReport) {
+    return renderRuntimePrompt("runtime/progress-experiment-required.md", {
+      incidentId: incident.incidentId,
+      diagnosis: incident.reviewReport.diagnosis,
+      evidence: incident.reviewReport.evidence,
+      experiment: incident.reviewReport.experiment,
+      expectedSignal: incident.reviewReport.expectedSignal,
+      falsifyingSignal: incident.reviewReport.falsifyingSignal,
+    });
+  }
+  if (
+    (incident?.phase === "strategy_adjustment" ||
+      incident?.phase === "review_exhausted") &&
+    incident.reviewReport
+  ) {
+    return renderRuntimePrompt("runtime/progress-strategy-adjustment.md", {
+      incidentId: incident.incidentId,
+      diagnosis: incident.reviewReport.diagnosis,
+      experiment: incident.reviewReport.experiment,
+      experimentResult: incident.experiment
+        ? JSON.stringify({
+            outcomeClass: incident.experiment.outcomeClass,
+            outcomeKey: incident.experiment.outcomeKey ?? "unknown",
+            newEvidence: incident.experiment.newEvidence,
+            verifiedImprovement: incident.experiment.verifiedImprovement,
+          })
+        : "No reviewer experiment was requested; gather stronger evidence.",
+      budgetState: incident.phase === "review_exhausted"
+        ? "The automatic review attempt is exhausted for this task."
+        : "Use the new evidence to choose a materially different strategy.",
+    });
+  }
+  if (guard.readWarning?.scopeKey === scopeKey) {
+    return renderRuntimePrompt("runtime/progress-read-warning.md", {
+      warningId: guard.readWarning.id,
+      totalReads: guard.readWarning.totalReads,
+      repeatedReads: guard.readWarning.repeatedReads,
+      repeatedPercent: Math.floor(guard.readWarning.repeatedRatio * 100),
+    });
+  }
+  return "";
+}
+
+function progressResponseOrdinal(
+  base: number,
+  responseOffset: number,
+): number {
+  return base + responseOffset;
+}
+
+function commandVerificationIntent(
+  toolName: ToolName,
+  rawArguments: string,
+  experimentRequired: boolean,
+  knownVerificationCommands: ReadonlySet<string>,
+  result: Readonly<ToolExecutionResult>,
+): boolean {
+  if (experimentRequired) return true;
+  if (toolName === "run_command" || toolName === "start_command") {
+    try {
+      const parsed = safeJsonParse(rawArguments) as { intent?: unknown };
+      return parsed.intent === "test" || parsed.intent === "build";
+    } catch {
+      return false;
+    }
+  }
+  if (toolName !== "poll_command" && toolName !== "cancel_command") return false;
+  const data = result.data && typeof result.data === "object"
+    ? result.data as Record<string, unknown>
+    : undefined;
+  return typeof data?.commandId === "string" &&
+    knownVerificationCommands.has(data.commandId);
+}
+
+function requiredProgressExperiment(
+  state: Readonly<SessionState>,
+  scopeKey: string,
+): Readonly<ProgressIncident> | undefined {
+  return state.progressGuard?.incidents.find(
+    (incident) =>
+      incident.scopeKey === scopeKey &&
+      incident.phase === "experiment_required",
+  );
+}
+
+function persistedProgressReviewAccounting(
+  incident: Readonly<ProgressIncident>,
+): ProgressReviewAccounting {
+  return {
+    reviewAttempts: incident.reviewAttempts > 0 ? 1 : 0,
+    validReviews: incident.validReviews > 0 ? 1 : 0,
+    reviewModelRequests: incident.reviewModelRequests,
+    reportedModelRequests: incident.reviewFinishedRequestOrdinals.length,
+    unreportedModelRequests: Math.max(
+      0,
+      incident.reviewModelRequests - incident.reviewFinishedRequestOrdinals.length,
+    ),
+    reviewInputTokens: incident.reviewInputTokens,
+    reviewOutputTokens: incident.reviewOutputTokens,
+    reviewTotalTokens: incident.reviewTotalTokens,
+    reviewCachedInputTokens: incident.reviewCachedInputTokens,
+    reviewReasoningTokens: incident.reviewReasoningTokens,
+    reviewDurationMs: incident.reviewDurationMs,
+    requests: [],
+  };
+}
+
 interface RuntimeLayeredContext {
   workingCheckpoint?: string;
   retrievedThreadEvidence?: string;
@@ -375,7 +579,13 @@ export interface AgentRuntimeDependencies {
     userInput: string;
     mutations: readonly MemoryMutationRequest[];
   }) => Promise<{ applied: number; memoryIds: string[] }>;
-  appendEvent: (event: Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">) => Promise<void>;
+  appendEvent: (
+    event: Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp"> & {
+      eventId?: string;
+    },
+  ) => Promise<void>;
+  /** Fresh workspace identity used to reject stale reviewer advice. */
+  getProgressWorkspaceFingerprint?: () => Promise<string>;
   requestApproval: ApprovalHandler;
   recordCommand?: (turnId: string, entry: CommandAuditEntry) => void;
   onToolCompleted?: (
@@ -821,6 +1031,466 @@ export class AgentRuntime {
         "Turn steering requires both boundary consumption and finalization sealing",
       );
     }
+  }
+
+  private async progressWorkspaceFingerprint(): Promise<
+    { ok: true; fingerprint: string } | { ok: false; error: string }
+  > {
+    if (!this.dependencies.getProgressWorkspaceFingerprint) {
+      return {
+        ok: false,
+        error: "A fresh complete workspace fingerprint provider is unavailable.",
+      };
+    }
+    try {
+      const fingerprint = await this.dependencies.getProgressWorkspaceFingerprint();
+      if (!/^sha256:[0-9a-f]{64}$/u.test(fingerprint)) {
+        throw new Error("workspace fingerprint has an invalid format");
+      }
+      return { ok: true, fingerprint };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async appendProgressReviewEvent(
+    state: SessionState,
+    turnId: string,
+    type: ProgressReviewEventType,
+    phase: EventRecord["phase"],
+    payload: unknown,
+  ): Promise<void> {
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type,
+      phase,
+      payload,
+    });
+    state.progressGuard = foldProgressReviewEvent(
+      state.progressGuard ?? createProgressGuardState(),
+      type,
+      payload,
+    );
+  }
+
+  private async reportProgressReviewRequestUsage(
+    state: Readonly<SessionState>,
+    turnId: string,
+    request: Readonly<ProgressReviewModelRequestRecord>,
+  ): Promise<void> {
+    if (!this.dependencies.onModelUsage) return;
+    const record: ModelUsageRecord = {
+      actor: "reviewer",
+      purpose: "progress_review",
+      provider: this.dependencies.provider.name,
+      model: this.dependencies.provider.model,
+      turnId,
+      attempt: request.ordinal,
+      retry: request.ordinal > 1,
+      ...(request.usage ? { usage: { ...request.usage } } : {}),
+    };
+    try {
+      await this.dependencies.onModelUsage(record);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.dependencies.onStatus?.(
+        `Progress reviewer usage accounting could not be saved: ${detail}`,
+      );
+    }
+  }
+
+  /**
+   * Resolve one durable intervention before the next main-model request. The
+   * return value is the number of reviewer Provider requests charged against
+   * the same step budget as the parent task.
+   */
+  private async processProgressIntervention(input: {
+    state: SessionState;
+    turnId: string;
+    userInput: string;
+    remainingModelRequests: number;
+    signal?: AbortSignal;
+  }): Promise<number> {
+    const { state, turnId } = input;
+    state.progressGuard ??= createProgressGuardState();
+    const currentScopeKey = progressScopeKey(state, turnId);
+
+    // Crash recovery is global, not current-turn scoped. Otherwise a standalone
+    // review started in the interrupted turn becomes permanently unreachable
+    // when resume creates a new turn ID.
+    for (let interrupted = interruptedProgressIncident(state.progressGuard);
+      interrupted?.reviewBinding;
+      interrupted = interruptedProgressIncident(state.progressGuard)) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.unavailable",
+        "interrupted",
+        {
+          incidentId: interrupted.incidentId,
+          reviewId: interrupted.reviewBinding.reviewId,
+          reason:
+            "A prior reviewer was started but has no durable terminal event; its attempt remains charged and is not retried.",
+          accounting: persistedProgressReviewAccounting(interrupted),
+        },
+      );
+    }
+
+    // Requested/pending reviews belong to immutable task material. If resume
+    // moved to a different logical scope, close them instead of silently
+    // orphaning them or reviewing a new request with stale evidence.
+    for (let requested = requestedProgressIncident(state.progressGuard);
+      requested && requested.scopeKey !== currentScopeKey;
+      requested = requestedProgressIncident(state.progressGuard)) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.stale",
+        "interrupted",
+        {
+          incidentId: requested.incidentId,
+          reviewId: requested.reviewBinding!.reviewId,
+          reason: "The logical task scope changed before the reviewer started.",
+        },
+      );
+    }
+    for (let pending = nextPendingProgressIncident(state.progressGuard);
+      pending && pending.scopeKey !== currentScopeKey;
+      pending = nextPendingProgressIncident(state.progressGuard)) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.unavailable",
+        "interrupted",
+        {
+          incidentId: pending.incidentId,
+          reason: "The logical task scope ended before a review attempt started.",
+        },
+      );
+    }
+
+    // A completed review remains usable only while its intent and complete
+    // workspace snapshot are still the ones it audited. Evidence gathered by
+    // the requested experiment may advance the watermark, so watermark is not
+    // rechecked after completion.
+    const activeReport = [...state.progressGuard.incidents]
+      .reverse()
+      .find((candidate) =>
+        candidate.scopeKey === currentScopeKey &&
+        (
+          candidate.phase === "experiment_required" ||
+          candidate.phase === "strategy_adjustment" ||
+          candidate.phase === "review_exhausted"
+        ) &&
+        candidate.reviewBinding !== undefined
+      );
+    if (activeReport?.reviewBinding) {
+      const steeringPending = await this.dependencies.hasPendingSteering?.({
+        threadId: state.threadId,
+        turnId,
+      }) ?? false;
+      const snapshot = await this.progressWorkspaceFingerprint();
+      if (!snapshot.ok) {
+        await this.appendProgressReviewEvent(
+          state,
+          turnId,
+          "progress.review.unavailable",
+          "failed",
+          {
+            incidentId: activeReport.incidentId,
+            reviewId: activeReport.reviewBinding.reviewId,
+            reason: `The completed review cannot be freshness-checked: ${snapshot.error}`,
+            accounting: persistedProgressReviewAccounting(activeReport),
+          },
+        );
+        return 0;
+      }
+      if (
+        steeringPending ||
+        activeReport.reviewBinding.intentRevision !== progressIntentRevision(state) ||
+        activeReport.reviewBinding.workspaceFingerprint !== snapshot.fingerprint
+      ) {
+        await this.appendProgressReviewEvent(
+          state,
+          turnId,
+          "progress.review.stale",
+          "interrupted",
+          {
+            incidentId: activeReport.incidentId,
+            reviewId: activeReport.reviewBinding.reviewId,
+            reason: "Intent or workspace changed after the review completed.",
+            accounting: persistedProgressReviewAccounting(activeReport),
+          },
+        );
+        return 0;
+      }
+      return 0;
+    }
+
+    let incident = requestedProgressIncident(state.progressGuard, currentScopeKey);
+    let requestedNow = false;
+    if (!incident) {
+      incident = nextPendingProgressIncident(state.progressGuard, currentScopeKey);
+      if (!incident) return 0;
+      if (
+        reviewAttemptUsedForScope(
+          state.progressGuard,
+          incident.scopeKey,
+          incident.incidentId,
+        )
+      ) {
+        await this.appendProgressReviewEvent(
+          state,
+          turnId,
+          "progress.review.unavailable",
+          "failed",
+          {
+            incidentId: incident.incidentId,
+            reason: "The one-review-attempt budget for this task scope is exhausted.",
+          },
+        );
+        return 0;
+      }
+      if (input.remainingModelRequests < 2) {
+        await this.appendProgressReviewEvent(
+          state,
+          turnId,
+          "progress.review.unavailable",
+          "failed",
+          {
+            incidentId: incident.incidentId,
+            reason:
+              "The shared model-request budget has no room for both a reviewer and a parent verification step.",
+          },
+        );
+        return 0;
+      }
+      const snapshot = await this.progressWorkspaceFingerprint();
+      if (!snapshot.ok) {
+        await this.appendProgressReviewEvent(
+          state,
+          turnId,
+          "progress.review.unavailable",
+          "failed",
+          {
+            incidentId: incident.incidentId,
+            reason: `A fresh complete workspace snapshot is required: ${snapshot.error}`,
+          },
+        );
+        return 0;
+      }
+      const packet = progressReviewPacket(state, incident, input.userInput);
+      const reviewId = createId("review");
+      const binding: ProgressReviewBinding = {
+        reviewId,
+        incidentId: incident.incidentId,
+        intentRevision: progressIntentRevision(state),
+        workspaceFingerprint: snapshot.fingerprint,
+        progressWatermark: state.progressGuard.acceptedObservations,
+        packetDigest: progressReviewPacketDigest(packet),
+      };
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.requested",
+        "requested",
+        { incidentId: incident.incidentId, binding, packet },
+      );
+      requestedNow = true;
+      incident = requestedProgressIncident(state.progressGuard, currentScopeKey);
+      if (!incident) throw new Error("Progress review request did not enter durable state");
+    }
+
+    const binding = incident.reviewBinding;
+    const packet = incident.reviewPacket;
+    if (!binding || !packet) {
+      throw new Error("A requested progress review is missing its immutable material");
+    }
+    const currentSnapshot = requestedNow
+      ? { ok: true as const, fingerprint: binding.workspaceFingerprint }
+      : await this.progressWorkspaceFingerprint();
+    if (!currentSnapshot.ok) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.unavailable",
+        "failed",
+        {
+          incidentId: incident.incidentId,
+          reviewId: binding.reviewId,
+          reason: `The requested review cannot be freshness-checked: ${currentSnapshot.error}`,
+        },
+      );
+      return 0;
+    }
+    const steeringPendingBeforeStart =
+      await this.dependencies.hasPendingSteering?.({
+        threadId: state.threadId,
+        turnId,
+      }) ?? false;
+    if (
+      steeringPendingBeforeStart ||
+      binding.intentRevision !== progressIntentRevision(state) ||
+      binding.workspaceFingerprint !== currentSnapshot.fingerprint ||
+      binding.progressWatermark !== state.progressGuard.acceptedObservations
+    ) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.stale",
+        "interrupted",
+        {
+          incidentId: incident.incidentId,
+          reviewId: binding.reviewId,
+          reason: "Intent, workspace, or progress evidence changed before reviewer start.",
+        },
+      );
+      return 0;
+    }
+
+    await this.appendProgressReviewEvent(
+      state,
+      turnId,
+      "progress.review.started",
+      "started",
+      {
+        incidentId: incident.incidentId,
+        reviewId: binding.reviewId,
+      },
+    );
+    this.dependencies.onStatus?.(
+      `Progress stalled; running one isolated read-only reviewer for ${incident.incidentId}.`,
+    );
+    const execution = await this.withModelRequestActivity(
+      `Reviewing stalled progress with ${this.dependencies.provider.model}`,
+      () => runProgressReviewer(
+        {
+          binding,
+          packet,
+          thinkingEffort: state.thinkingEffort,
+          maxModelRequests: input.remainingModelRequests >= 3 ? 2 : 1,
+          signal: input.signal,
+        },
+        {
+          provider: this.dependencies.provider,
+          onRequestStarted: async (request) => {
+            await this.appendProgressReviewEvent(
+              state,
+              turnId,
+              "progress.review.model_request.started",
+              "started",
+              {
+                incidentId: incident.incidentId,
+                reviewId: binding.reviewId,
+                ordinal: request.ordinal,
+                kind: request.kind,
+              },
+            );
+          },
+          onRequestFinished: async (request) => {
+            await this.appendProgressReviewEvent(
+              state,
+              turnId,
+              "progress.review.model_request.finished",
+              request.status === "completed" ? "completed" : "failed",
+              {
+                incidentId: incident.incidentId,
+                reviewId: binding.reviewId,
+                ordinal: request.ordinal,
+                kind: request.kind,
+                status: request.status,
+                durationMs: request.durationMs,
+                ...(request.usage ? { usage: request.usage } : {}),
+                ...(request.error ? { error: request.error } : {}),
+              },
+            );
+            await this.reportProgressReviewRequestUsage(state, turnId, request);
+          },
+        },
+      ),
+    );
+
+    const finalSnapshot = await this.progressWorkspaceFingerprint();
+    if (!finalSnapshot.ok) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.unavailable",
+        "failed",
+        {
+          incidentId: incident.incidentId,
+          reviewId: binding.reviewId,
+          reason: `The reviewer result cannot be freshness-checked: ${finalSnapshot.error}`,
+          accounting: execution.accounting,
+        },
+      );
+      return execution.accounting.reviewModelRequests;
+    }
+    const steeringPendingAfterReview =
+      await this.dependencies.hasPendingSteering?.({
+        threadId: state.threadId,
+        turnId,
+      }) ?? false;
+    const stale =
+      steeringPendingAfterReview ||
+      binding.intentRevision !== progressIntentRevision(state) ||
+      binding.workspaceFingerprint !== finalSnapshot.fingerprint ||
+      binding.progressWatermark !== state.progressGuard.acceptedObservations;
+    if (stale) {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.stale",
+        "interrupted",
+        {
+          incidentId: incident.incidentId,
+          reviewId: binding.reviewId,
+          reason: "Intent, workspace, or progress evidence changed while reviewer was running.",
+          accounting: execution.accounting,
+        },
+      );
+      return execution.accounting.reviewModelRequests;
+    }
+    if (execution.status === "completed") {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.completed",
+        "completed",
+        {
+          incidentId: incident.incidentId,
+          binding,
+          report: execution.report,
+          accounting: execution.accounting,
+        },
+      );
+      this.dependencies.onStatus?.(
+        execution.report.recommendation === "run_experiment"
+          ? "Reviewer proposed a falsifiable experiment; the parent must verify it before further edits."
+          : "Reviewer found insufficient evidence; the parent must gather a materially different signal.",
+      );
+    } else {
+      await this.appendProgressReviewEvent(
+        state,
+        turnId,
+        "progress.review.unavailable",
+        execution.reason === "interrupted" ? "interrupted" : "failed",
+        {
+          incidentId: incident.incidentId,
+          reviewId: binding.reviewId,
+          reason: `${execution.reason}: ${execution.error}`,
+          accounting: execution.accounting,
+        },
+      );
+      this.dependencies.onStatus?.(
+        `Progress reviewer is unavailable (${execution.reason}); this is not code-failure evidence.`,
+      );
+    }
+    return execution.accounting.reviewModelRequests;
   }
 
   private assessContextCompaction(input: {
@@ -1499,6 +2169,9 @@ export class AgentRuntime {
     )) {
       toolMap.set(tool.name, tool);
     }
+    const progressResponseBase =
+      state.progressGuard?.lastObservedResponseOrdinal ?? 0;
+    const progressVerificationCommands = new Set<string>();
 
     let stepLimit = options.maxSteps;
     let memoryFinalizationAllowanceGranted = false;
@@ -1520,7 +2193,13 @@ export class AgentRuntime {
     let unavailableCommandTool: "run_command" | "start_command" = "run_command";
     let retryableSandboxFailureCount = 0;
     let retryableSandboxRecoveryPending = false;
-    for (let step = 1; step <= stepLimit; step += 1) {
+    let progressReviewModelRequestsUsed = 0;
+    let progressExperimentReminderIssued = false;
+    for (
+      let step = 1;
+      step + progressReviewModelRequestsUsed <= stepLimit;
+      step += 1
+    ) {
       if (options.signal?.aborted) {
         return this.finish(
           state,
@@ -1558,6 +2237,25 @@ export class AgentRuntime {
           false,
           memoryContext,
         );
+        const remainingModelRequests = stepLimit -
+          ((step - 1) + progressReviewModelRequestsUsed);
+        progressReviewModelRequestsUsed += await this.processProgressIntervention({
+          state,
+          turnId,
+          userInput: memoryContext.userInput,
+          remainingModelRequests,
+          signal: options.signal,
+        });
+        if (step + progressReviewModelRequestsUsed > stepLimit) {
+          return this.finish(
+            state,
+            turnId,
+            "The shared model-request budget was exhausted while reviewing stalled progress.",
+            "limit_reached",
+            step - 1,
+            memoryContext,
+          );
+        }
       }
       let layeredContext = pinCurrentState(
         state,
@@ -1599,6 +2297,9 @@ export class AgentRuntime {
         runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
         this.dependencies.hasOpenCommandHandles?.()
           ? backgroundCommandFinalizationInstruction()
+          : "",
+        agentIdentity.role === "main_agent"
+          ? progressRuntimeInstruction(state, progressScopeKey(state, turnId))
           : "",
       ].filter(Boolean);
       const buildStepSystemPrompt = async (
@@ -2033,6 +2734,46 @@ export class AgentRuntime {
             memoryContext,
           );
         }
+        const pendingExperiment = agentIdentity.role === "main_agent"
+          ? requiredProgressExperiment(
+              state,
+              progressScopeKey(state, turnId),
+            )
+          : undefined;
+        if (pendingExperiment) {
+          const instruction = progressRuntimeInstruction(
+            state,
+            pendingExperiment.scopeKey,
+          );
+          if (!progressExperimentReminderIssued) {
+            progressExperimentReminderIssued = true;
+            const reminder: Extract<ChatMessage, { role: "user" }> = {
+              role: "user",
+              content: instruction,
+            };
+            state.messages.push(reminder);
+            await this.dependencies.appendEvent({
+              threadId: state.threadId,
+              turnId,
+              stepId: `step_${step}`,
+              type: "message.user.synthetic",
+              phase: "completed",
+              payload: reminder,
+            });
+            this.dependencies.onStatus?.(
+              "The model attempted to finish before running the required progress experiment; requesting one correction.",
+            );
+            continue;
+          }
+          return this.finish(
+            state,
+            turnId,
+            "The required progress experiment was not executed with a real terminal verification result.",
+            "blocked",
+            step,
+            memoryContext,
+          );
+        }
         const text =
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
@@ -2272,8 +3013,18 @@ export class AgentRuntime {
               name: skipped.function.name,
               content: resultForModel(skippedResult, options.maxOutputChars),
             };
-            state.messages.push(skippedMessage);
+            const skippedEventId = createId("event");
+            const skippedObservation = observeToolResult({
+              sourceEventId: skippedEventId,
+              sourceCallId: skipped.id,
+              scopeKey: progressScopeKey(state, turnId),
+              responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+              tool: skipped.function.name,
+              result: skippedResult,
+              verificationIntent: false,
+            });
             await this.dependencies.appendEvent({
+              eventId: skippedEventId,
               threadId: state.threadId,
               turnId,
               stepId: `step_${step}`,
@@ -2283,8 +3034,14 @@ export class AgentRuntime {
                 callId: skipped.id,
                 tool: skipped.function.name,
                 message: skippedMessage,
+                progressObservation: skippedObservation,
               },
             });
+            state.progressGuard = foldProgressObservation(
+              state.progressGuard ?? createProgressGuardState(),
+              skippedObservation,
+            ).state;
+            state.messages.push(skippedMessage);
           }
           await this.takeAndApplySteering(
             state,
@@ -2300,6 +3057,14 @@ export class AgentRuntime {
         const toolName = call.function.name as ToolName;
         const tool = toolMap.get(toolName);
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
+        const progressExperimentAtCall = agentIdentity.role === "main_agent"
+          ? requiredProgressExperiment(
+              state,
+              taskIdAtCall
+                ? `thread:${state.threadId}/task:${taskIdAtCall}`
+                : progressScopeKey(state, turnId),
+            )
+          : undefined;
         let taskGraphOperation: TaskGraphTransitionOperation | undefined;
         let subagentTaskOperation: SubagentTaskTransitionOperation | undefined;
         let result: ToolExecutionResult;
@@ -2321,6 +3086,16 @@ export class AgentRuntime {
             summary:
               "Context compaction is required; compact_context must be the only tool call.",
             error: "context_compaction_required",
+          };
+        } else if (
+          progressExperimentAtCall &&
+          !PROGRESS_EXPERIMENT_TOOLS.has(toolName)
+        ) {
+          result = {
+            ok: false,
+            summary:
+              "Runtime requires a read-only or command-based falsifiable experiment before ordinary mutations or task transitions.",
+            error: "progress_experiment_required",
           };
         } else if (manageTasksBatched) {
           result = {
@@ -2733,6 +3508,35 @@ export class AgentRuntime {
           name: call.function.name,
           content: resultForModel(result, options.maxOutputChars)
         };
+        const toolResultEventId = createId("event");
+        const verificationIntent = commandVerificationIntent(
+          toolName,
+          call.function.arguments,
+          progressExperimentAtCall !== undefined,
+          progressVerificationCommands,
+          result,
+        );
+        const progressCommandData = result.data && typeof result.data === "object"
+          ? result.data as Record<string, unknown>
+          : undefined;
+        if (
+          verificationIntent &&
+          (toolName === "run_command" || toolName === "start_command") &&
+          typeof progressCommandData?.commandId === "string"
+        ) {
+          progressVerificationCommands.add(progressCommandData.commandId);
+        }
+        const progressObservation = observeToolResult({
+          sourceEventId: toolResultEventId,
+          sourceCallId: call.id,
+          scopeKey: taskIdAtCall
+            ? `thread:${state.threadId}/task:${taskIdAtCall}`
+            : progressScopeKey(state, turnId),
+          responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+          tool: call.function.name,
+          result,
+          verificationIntent,
+        });
         const rollbackPreparedSubagent = (): void => {
           if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
           preparedSubagentLifecycleRolledBack = true;
@@ -2745,6 +3549,7 @@ export class AgentRuntime {
         if (!result.ok) rollbackPreparedSubagent();
         try {
           await this.dependencies.appendEvent({
+            eventId: toolResultEventId,
             threadId: state.threadId,
             turnId,
             stepId: `step_${step}`,
@@ -2754,6 +3559,7 @@ export class AgentRuntime {
               callId: call.id,
               tool: call.function.name,
               message: toolMessage,
+              progressObservation,
               ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
               ...(taskGraphUpdate && taskGraphOperation
                 ? { taskGraph: taskGraphUpdate, taskGraphOperation }
@@ -2774,6 +3580,10 @@ export class AgentRuntime {
           rollbackPreparedSubagent();
           throw error;
         }
+        state.progressGuard = foldProgressObservation(
+          state.progressGuard ?? createProgressGuardState(),
+          progressObservation,
+        ).state;
         state.messages.push(toolMessage);
         if (taskGraphUpdate) {
           state.taskGraph = taskGraphUpdate;
@@ -3090,6 +3900,8 @@ export class AgentRuntime {
         "Context compaction is required before Auto routing, but compact_context is unavailable.",
       );
     }
+    const progressResponseBase =
+      state.progressGuard?.lastObservedResponseOrdinal ?? 0;
 
     const appendToolResult = async (
       call: NonNullable<Extract<ChatMessage, { role: "assistant" }>["tool_calls"]>[number],
@@ -3102,7 +3914,18 @@ export class AgentRuntime {
         name: call.function.name,
         content: resultForModel(result, options.maxOutputChars),
       };
+      const eventId = createId("event");
+      const progressObservation = observeToolResult({
+        sourceEventId: eventId,
+        sourceCallId: call.id,
+        scopeKey: progressScopeKey(state, turnId),
+        responseOrdinal: progressResponseOrdinal(progressResponseBase, attempt),
+        tool: call.function.name,
+        result,
+        verificationIntent: false,
+      });
       await this.dependencies.appendEvent({
+        eventId,
         threadId: state.threadId,
         turnId,
         stepId: `auto_compaction_${attempt}`,
@@ -3112,8 +3935,13 @@ export class AgentRuntime {
           callId: call.id,
           tool: call.function.name,
           message: toolMessage,
+          progressObservation,
         },
       });
+      state.progressGuard = foldProgressObservation(
+        state.progressGuard ?? createProgressGuardState(),
+        progressObservation,
+      ).state;
       state.messages.push(toolMessage);
     };
 

@@ -65,6 +65,15 @@ import {
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sha256 } from "../utils/hash.js";
+import {
+  createProgressGuardState,
+  foldProgressObservation,
+} from "../progress/guard.js";
+import { parseProgressObservation } from "../progress/observation.js";
+import {
+  foldProgressReviewEvent,
+  isProgressReviewEventType,
+} from "../progress/lifecycle.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -1030,6 +1039,7 @@ export class ThreadStore {
       steeringWatermark: 0,
       workingSummary: "",
       compactedMessageCount: 0,
+      progressGuard: createProgressGuardState(),
       createdAt: now,
       updatedAt: now,
     };
@@ -1046,7 +1056,9 @@ export class ThreadStore {
       this.projectState(state, "active");
       this.projectEvent(event, journal.filePath);
     })();
-    return deserializeSessionState(serializeSessionState(state));
+    const detached = deserializeSessionState(serializeSessionState(state));
+    detached.progressGuard = createProgressGuardState();
+    return detached;
   }
 
   get(threadId: string): SessionState | undefined {
@@ -1315,6 +1327,39 @@ export class ThreadStore {
           (input.phase !== "completed" || !parseModelUsageRecord(input.payload))
         ) {
           throw new Error("Model usage events require a valid completed usage record");
+        }
+        if (payload && "progressObservation" in payload) {
+          if (
+            input.type !== "tool.result" ||
+            typeof input.eventId !== "string" ||
+            typeof payload.callId !== "string" ||
+            typeof payload.tool !== "string"
+          ) {
+            throw new Error(
+              "ProgressObservation requires an explicitly identified tool.result event",
+            );
+          }
+          const observation = parseProgressObservation(payload.progressObservation, {
+            sourceEventId: input.eventId,
+            sourceCallId: payload.callId,
+            tool: payload.tool,
+          });
+          const expectedScope = typeof payload.taskId === "string"
+            ? `thread:${threadId}/task:${payload.taskId}`
+            : typeof input.turnId === "string"
+              ? `thread:${threadId}/turn:${input.turnId}`
+              : undefined;
+          if (!expectedScope || observation.scopeKey !== expectedScope) {
+            throw new Error("ProgressObservation scope does not match its tool.result event");
+          }
+        }
+        if (isProgressReviewEventType(input.type)) {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          foldProgressReviewEvent(
+            priorState.progressGuard ?? createProgressGuardState(),
+            input.type,
+            input.payload,
+          );
         }
         if (input.type.startsWith("turn.steering.")) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
@@ -1941,6 +1986,7 @@ export class ThreadStore {
           throw new Error(`Missing state in ${event.type} event`);
         }
         const checkpoint = deserializeSessionState(payload.state);
+        const durableProgress = state?.progressGuard;
         if (event.type === "thread_checkpoint" && state) {
           // Messages and the active-turn pointer advance through journal events.
           // A derived checkpoint may add a legacy tail, but it must never erase
@@ -2013,6 +2059,11 @@ export class ThreadStore {
           checkpoint.steeringWatermark = state.steeringWatermark ?? 0;
           checkpoint.steeringSealedTurnId = state.steeringSealedTurnId;
         }
+        // Progress evidence and reviewer budgets are event-authoritative. A
+        // derived checkpoint can neither erase nor manufacture them.
+        checkpoint.progressGuard = durableProgress
+          ? structuredClone(durableProgress)
+          : createProgressGuardState();
         state = checkpoint;
         continue;
       }
@@ -2076,6 +2127,31 @@ export class ThreadStore {
       ) {
         appendMessageIfNew(state, event.payload);
       } else if (event.type === "tool.result" && payload) {
+        if ("progressObservation" in payload) {
+          if (
+            typeof payload.callId !== "string" ||
+            typeof payload.tool !== "string"
+          ) {
+            throw new Error(`Missing progress call binding in event ${event.eventId}`);
+          }
+          const observation = parseProgressObservation(payload.progressObservation, {
+            sourceEventId: event.eventId,
+            sourceCallId: payload.callId,
+            tool: payload.tool,
+          });
+          const expectedScope = typeof payload.taskId === "string"
+            ? `thread:${event.threadId}/task:${payload.taskId}`
+            : typeof event.turnId === "string"
+              ? `thread:${event.threadId}/turn:${event.turnId}`
+              : undefined;
+          if (!expectedScope || observation.scopeKey !== expectedScope) {
+            throw new Error(`Invalid progress scope in event ${event.eventId}`);
+          }
+          state.progressGuard = foldProgressObservation(
+            state.progressGuard ?? createProgressGuardState(),
+            observation,
+          ).state;
+        }
         if ("taskGraph" in payload) {
           state.taskGraph = this.replayTaskGraphResult(state, event, payload);
         }
@@ -2203,6 +2279,12 @@ export class ThreadStore {
           state.commandApprovalPrefixes,
           payload.commandPrefix,
         );
+      } else if (isProgressReviewEventType(event.type)) {
+        state.progressGuard = foldProgressReviewEvent(
+          state.progressGuard ?? createProgressGuardState(),
+          event.type,
+          event.payload,
+        );
       }
       state.updatedAt = event.timestamp;
     }
@@ -2211,6 +2293,7 @@ export class ThreadStore {
     if (state.threadId !== threadId) {
       throw new Error(`Recovered thread id ${state.threadId} does not match ${threadId}`);
     }
+    state.progressGuard ??= createProgressGuardState();
     return state;
   }
 

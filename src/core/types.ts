@@ -1,8 +1,10 @@
 import type { PromptBundleBinding } from "../prompt-bundle/types.js";
+import type { ProgressGuardState } from "../progress/types.js";
 export type { PromptBundleBinding } from "../prompt-bundle/types.js";
 
 export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
+export type ModelUsageActor = AgentRole | "reviewer";
 export type ProviderName = "qwen" | "deepseek" | "glm" | "glm-coding-plan";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
 /** Process-local command posture selected by the user from /approval. */
@@ -95,11 +97,12 @@ export interface ProviderUsage {
 export type ModelUsagePurpose =
   | "auto_route"
   | "agent_step"
-  | "context_compaction";
+  | "context_compaction"
+  | "progress_review";
 
 /** Durable accounting metadata for one completed provider response. */
 export interface ModelUsageRecord {
-  actor: AgentRole;
+  actor: ModelUsageActor;
   purpose: ModelUsagePurpose;
   provider: ProviderName;
   model: string;
@@ -146,6 +149,8 @@ export interface ModelRequest {
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
+  /** Optional Runtime-owned retry cap for isolated control-plane requests. */
+  maxRetries?: number;
   /** User-selected normalized effort; unsupported provider/model combinations ignore it. */
   thinkingEffort?: ThinkingEffort;
 }
@@ -697,6 +702,8 @@ export interface SessionState {
   contextIntentLedger?: ContextIntentLedger;
   /** Atomic provenance for the currently accepted structured compaction. */
   contextCompactionMetadata?: ContextCompactionMetadata;
+  /** Event-authoritative projection of bounded progress evidence and interventions. */
+  progressGuard?: ProgressGuardState;
   createdAt: string;
   updatedAt: string;
 }
