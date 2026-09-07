@@ -131,6 +131,7 @@ import {
   taskGraphView,
 } from "./tasks/task-graph.js";
 import { createId } from "./utils/ids.js";
+import { sha256 } from "./utils/hash.js";
 import {
   WorkspaceManager,
   type WorkspaceRestoreSummary,
@@ -1670,6 +1671,18 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
+      getProgressWorkspaceFingerprint: async () => {
+        const snapshot = await this.workspace.captureSnapshot();
+        if (snapshot.truncated) {
+          throw new Error(
+            "Workspace snapshot exceeded its complete-file limit; progress review is disabled fail-closed.",
+          );
+        }
+        const files = [...snapshot.files.values()]
+          .map((entry) => [entry.path, entry.kind, entry.hash, entry.size] as const)
+          .sort(([left], [right]) => left.localeCompare(right));
+        return `sha256:${sha256(JSON.stringify({ files }))}`;
+      },
       searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
       getLayeredContext: async ({ state, query, beforeMessageIndex }) => {
         const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);

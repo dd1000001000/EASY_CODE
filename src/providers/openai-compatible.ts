@@ -184,6 +184,17 @@ export class OpenAICompatibleProvider implements ModelProvider {
     );
     const timeoutMs = this.config.timeoutMs ??
       thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
+    if (
+      request.maxRetries !== undefined &&
+      (!Number.isSafeInteger(request.maxRetries) ||
+        request.maxRetries < 0 ||
+        request.maxRetries > 10)
+    ) {
+      throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
+    }
+    const maxRetries = request.maxRetries === undefined
+      ? this.config.maxRetries
+      : Math.min(this.config.maxRetries, request.maxRetries);
 
     let serialized: string;
     try {
@@ -196,7 +207,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     let lastError: ProviderError | undefined;
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt += 1) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       if (request.signal?.aborted) {
         throw this.error("Request was canceled", "aborted");
       }
@@ -223,7 +234,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           timeoutMs,
         );
         lastError = providerError;
-        if (!providerError.retryable || attempt >= this.config.maxRetries) {
+        if (!providerError.retryable || attempt >= maxRetries) {
           throw providerError;
         }
         const delay =

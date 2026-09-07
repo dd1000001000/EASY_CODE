@@ -171,6 +171,12 @@ Older Thread artifacts index user text, visible assistant content/tool requests,
 
 Long-term memory stores short atomic workspace-scoped preferences, conventions, architecture, decisions, and environment notes. Writes are staged until a successful boundary; revision/removal requires an exact ID returned by same-turn search. Secret or tentative facts are rejected, and Plan mode cannot persist unverified project claims. Memory uses the same FTS5/optional-vector authority pattern.
 
+### Evidence-driven progress control
+
+The Runtime derives bounded progress evidence from authoritative tool results before model-facing output is shortened. Versioned reads provide only a weak repetition hint; only repeated, high-confidence build or test failures across distinct verification cycles can open a stagnation incident. Infrastructure, policy, network, cancellation, and sandbox failures remain separate and never become evidence that the code strategy is wrong.
+
+An incident may spend at most one isolated review attempt. The reviewer receives an immutable, redacted packet and exposes only one strict report capability—no workspace mutation, shell, DAG ownership, memory, or child-agent control. A valid report must propose one command-verifiable falsification experiment; the parent must obtain a real terminal result before ordinary mutation resumes. Running the experiment removes the execution gate, but only a matching verified improvement resolves the incident. Observations, request starts/outcomes, usage, review state, and experiment evidence are journal-authoritative and survive Resume; stale or incomplete workspace snapshots fail closed.
+
 ## 7. Plan, DAG, child Agents, Worktrees, and Handoff
 
 Plan review is a durable direction gate: proposal, approval, rejection, revision, and return-to-review are explicit transitions. Approval enters Code; it does not itself mutate the project.

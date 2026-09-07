@@ -23,6 +23,7 @@ export interface ModelUsageSummary extends ModelUsageTotals {
   byActor: {
     mainAgent: ModelUsageTotals;
     subagents: ModelUsageTotals;
+    reviewers: ModelUsageTotals;
   };
   /** Provider/model totals remain separate across in-session model switches. */
   byModel: Record<string, ModelUsageTotals>;
@@ -32,6 +33,7 @@ const PURPOSES: readonly ModelUsagePurpose[] = [
   "auto_route",
   "agent_step",
   "context_compaction",
+  "progress_review",
 ];
 function safeLabel(value: unknown, maximum = 256): value is string {
   return (
@@ -89,7 +91,9 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const input = value as Record<string, unknown>;
   if (
-    (input.actor !== "main_agent" && input.actor !== "subagent") ||
+    (input.actor !== "main_agent" &&
+      input.actor !== "subagent" &&
+      input.actor !== "reviewer") ||
     !PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
     !isProviderName(input.provider) ||
@@ -164,17 +168,26 @@ export function aggregateModelUsage(
     auto_route: emptyTotals(),
     agent_step: emptyTotals(),
     context_compaction: emptyTotals(),
+    progress_review: emptyTotals(),
   };
   const byActor = {
     mainAgent: emptyTotals(),
     subagents: emptyTotals(),
+    reviewers: emptyTotals(),
   };
   const byModel: Record<string, ModelUsageTotals> = {};
   let retryRequests = 0;
   for (const record of records) {
     addUsage(totals, record);
     addUsage(byPurpose[record.purpose], record);
-    addUsage(record.actor === "main_agent" ? byActor.mainAgent : byActor.subagents, record);
+    addUsage(
+      record.actor === "main_agent"
+        ? byActor.mainAgent
+        : record.actor === "subagent"
+          ? byActor.subagents
+          : byActor.reviewers,
+      record,
+    );
     const modelKey = `${record.provider}/${record.model}`;
     const modelTotals = byModel[modelKey] ?? (byModel[modelKey] = emptyTotals());
     addUsage(modelTotals, record);
