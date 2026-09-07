@@ -54,6 +54,9 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "update_file",
   "delete_file",
   "run_command",
+  "start_command",
+  "poll_command",
+  "cancel_command",
   "manage_tasks",
   "manage_subagents",
   "submit_task_result",
@@ -166,15 +169,6 @@ export async function buildSystemPrompt(
   const retrievedThreadEvidence = options.retrievedThreadEvidence?.trim();
   if (workingCheckpoint || retrievedThreadEvidence) {
     sections.push(promptText(catalog, "context/layered-evidence.md"));
-    if (workingCheckpoint) {
-      sections.push(
-        untrustedBlock(
-          catalog,
-          "WORKING_CHECKPOINT",
-          bounded(catalog, workingCheckpoint, 18_000),
-        ),
-      );
-    }
     if (retrievedThreadEvidence) {
       sections.push(
         untrustedBlock(
@@ -192,6 +186,19 @@ export async function buildSystemPrompt(
   }
   if (options.planReview) {
     sections.push(formatPlanReview(catalog, options.planReview));
+  }
+  // The deterministic current-state layer is deliberately last. ContextManager
+  // preserves the tail when a very large system prompt must be bounded, so the
+  // current goal, constraints, approved plan, task state, diff manifest, and
+  // latest failure remain preferable to older retrieved evidence.
+  if (workingCheckpoint) {
+    sections.push(
+      untrustedBlock(
+        catalog,
+        "WORKING_CHECKPOINT",
+        boundedHeadTail(catalog, workingCheckpoint, 18_000),
+      ),
+    );
   }
   return sections.join("\n\n");
 }
@@ -336,6 +343,18 @@ function bounded(
   return value.length > limit
     ? `${value.slice(0, limit)}\n${promptText(catalog, "runtime/truncation-marker.md")}`
     : value;
+}
+
+function boundedHeadTail(
+  catalog: PromptBundleCatalog,
+  value: string,
+  limit: number,
+): string {
+  if (value.length <= limit) return value;
+  const marker = `\n${promptText(catalog, "runtime/truncation-marker.md")}\n`;
+  const available = Math.max(0, limit - marker.length);
+  const head = Math.ceil(available * 0.6);
+  return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
 }
 
 function promptText(catalog: PromptBundleCatalog, relativePath: string): string {

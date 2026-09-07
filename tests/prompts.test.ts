@@ -138,9 +138,9 @@ describe("system prompt builder", () => {
       assert.match(prompt, /memory_id=memory_00000000-0000-4000-8000-000000000001/);
       assert.match(prompt, /category=convention/);
       assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);
-      assert.match(prompt, /default none\/low base is 400,000 characters/u);
-      assert.match(prompt, /medium uses 2× that base, and high uses 4× it/u);
-      assert.match(prompt, /Pressure is calculated against that active limit/u);
+      assert.match(prompt, /fixed 96,000-character recent-message working-set capacity/u);
+      assert.match(prompt, /default configured limit is 100,000 characters for none, low, medium, and high/u);
+      assert.match(prompt, /Pressure is calculated against that effective active capacity/u);
       assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
       assert.match(prompt, /current objective, user constraints, key decisions/);
       assert.match(prompt, /It must be cumulative/);
@@ -201,7 +201,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Treat tool failures, conflicts, timeouts/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /update_file applies a checked update/u);
-      assert.doesNotMatch(prompt, /run_command executes a structured program\/argument-vector command/u);
+      assert.doesNotMatch(prompt, /run_command executes one synchronous structured program\/argument-vector command/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
       assert.doesNotMatch(prompt, /compact_context replaces the earlier/u);
@@ -233,6 +233,9 @@ describe("system prompt builder", () => {
           "read_file",
           "update_file",
           "run_command",
+          "start_command",
+          "poll_command",
+          "cancel_command",
           "compact_context",
           "manage_memory",
         ],
@@ -248,7 +251,10 @@ describe("system prompt builder", () => {
 
       assert.match(prompt, /read_file reads bounded text/u);
       assert.match(prompt, /update_file applies a checked update/u);
-      assert.match(prompt, /run_command executes a structured program\/argument-vector command/u);
+      assert.match(prompt, /run_command executes one synchronous structured program\/argument-vector command/u);
+      assert.match(prompt, /Use start_command for a legitimate long-running build/u);
+      assert.match(prompt, /Call poll_command with the unchanged commandId/u);
+      assert.match(prompt, /Use cancel_command only when a background command/u);
       assert.match(prompt, /compact_context replaces the earlier/u);
       assert.match(prompt, /manage_memory is the only way/u);
       assert.match(prompt, /Long-term-memory maintenance is your automatic responsibility/u);

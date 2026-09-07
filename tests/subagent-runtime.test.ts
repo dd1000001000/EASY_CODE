@@ -32,6 +32,9 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "update_file",
   "delete_file",
   "run_command",
+  "start_command",
+  "poll_command",
+  "cancel_command",
   "manage_tasks",
   "manage_subagents",
   "submit_task_result",
@@ -45,6 +48,9 @@ const CHILD_TOOL_NAMES: ToolName[] = [
   "delete_file",
   "read_file",
   "run_command",
+  "start_command",
+  "poll_command",
+  "cancel_command",
   "submit_task_result",
   "update_file",
 ];
@@ -102,6 +108,8 @@ function fakeTool(
       name === "update_file" ||
       name === "delete_file" ||
       name === "run_command" ||
+      name === "start_command" ||
+      name === "cancel_command" ||
       name === "manage_tasks" ||
       name === "manage_subagents" ||
       name === "submit_task_result" ||
@@ -622,7 +630,7 @@ describe("AgentRuntime subagent boundaries", () => {
       },
     );
     const commandTool = fakeTool(
-      "run_command",
+      "poll_command",
       async (): Promise<ToolExecutionResult> => {
         running = false;
         return { ok: true, summary: "Command exited.", data: { status: "exited" } };
@@ -644,10 +652,10 @@ describe("AgentRuntime subagent boundaries", () => {
               id: "status_child_command",
               type: "function",
               function: {
-                name: "run_command",
+                name: "poll_command",
                 arguments: JSON.stringify({
-                  action: "status",
                   commandId: "command_00000000-0000-4000-8000-000000000000",
+                  waitMs: 1_000,
                 }),
               },
             }],

@@ -11,7 +11,7 @@ EASY CODE 是一个跨平台 CLI 编程 Agent，提供 Alibaba Qwen、DeepSeek�
 ## 功能概览
 
 - **Plan、Auto 和 Code 三种模式。** Auto 由模型决定直接回答、提出可审核方案，还是开始实现。
-- **受控编程工具。** 支持读取、创建、更新和删除文件，以及运行构建、测试、格式化和受支持的安装命令。
+- **受控编程工具。** 支持读取、创建、更新和删除文件；短命令同步执行，长时间构建、测试和安装通过独立的启动、轮询与取消动作监督。
 - **可审核变更。** 文件修改以带行号的 Diff 展示，新增为绿色，删除为红色。
 - **常驻终端 UI。** 对话、实时进度、任务、子 Agent、模型信息和输入框位于同一个结构化 Shell 界面中。
 - **Thinking 展示。** 供应商返回的思考内容以灰色显示，默认折叠，并可在 VS Code 终端原地展开。
@@ -344,7 +344,7 @@ easy-code --image ./one.png --image ./two.png
 
 Resume 会尽可能恢复对话、已接受方案、未完成任务、Thread 命令授权、子 Agent 分配和托管执行环境。中断中的操作会被修复为明确可恢复状态，不会直接静默重放。
 
-短期上下文按层组装：确定性的执行 Checkpoint、模型维护的工作摘要、有界的近期消息工作集，以及与当前请求相关的较早 Thread 证据。这样无需在每次请求中重复发送很长的工具日志和文件读取结果，同时也不会丢弃它们。随着上下文压力增大，EASY CODE 仍会依次提示模型主动压缩、要求压缩，并在接近配置限制时自动插入强制压缩请求。
+短期上下文按层组装：确定性的执行 Checkpoint、模型维护的工作摘要、有界的近期消息工作集，以及与当前请求相关的较早 Thread 证据。这样无需在每次请求中重复发送很长的工具日志和文件读取结果，同时也不会丢弃它们。压力按“配置上下文限制”和“近期消息工作集容量”中的较小值计算；随后依次提示模型主动压缩、要求压缩，并在接近该有效边界时自动插入强制压缩请求。
 
 较早的用户消息、模型回答和工具证据会增量写入当前 Thread 的私有索引。检索结合 SQLite FTS5 关键词匹配与本地 ONNX Embedding，并由 Orama 完成向量排序；Embedding 不可用时会自动退回关键词检索。检索结果始终按不可信数据处理，不能覆盖当前消息、任务 DAG 或最新工作区观察。
 
@@ -373,7 +373,7 @@ Resume 会尽可能恢复对话、已接受方案、未完成任务、Thread 命
 ```toml
 [limits]
 max_steps = 40
-max_context_chars = 400000
+max_context_chars = 100000
 
 [subagents]
 isolation = "auto" # auto、shared 或 worktree
@@ -383,7 +383,7 @@ base_mode = "current-snapshot" # fresh、head 或 current-snapshot
 max_managed = 15
 ```
 
-`medium` 使用 `none/low` 基础值的两倍，`high` 使用四倍。配置优先级和存储边界见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
+`medium` 使用 `none/low` 基础**步骤数**的两倍，`high` 使用四倍；所有思考强度共用同一个上下文与压缩限制。配置优先级和存储边界见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
 
 提示词和工具说明位于固定的用户级 Prompt Bundle 中。可以检查或修复：
 

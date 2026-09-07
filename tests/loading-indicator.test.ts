@@ -215,9 +215,21 @@ describe("model request loading indicator", () => {
         };
       },
     };
+    const startTool: AgentTool = {
+      ...tool,
+      name: "start_command",
+      definition: {
+        type: "function",
+        function: {
+          name: "start_command",
+          description: "start",
+          parameters: { type: "object" },
+        },
+      },
+    };
     const runtime = new AgentRuntime({
       provider,
-      tools: [tool],
+      tools: [tool, startTool],
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -244,8 +256,11 @@ describe("model request loading indicator", () => {
     assert.equal(result.reason, "success");
     assert.equal(executionCount, 1);
     assert.equal(advertisedTools[0]?.includes("run_command"), true);
+    assert.equal(advertisedTools[0]?.includes("start_command"), true);
     assert.equal(advertisedTools[1]?.includes("run_command"), false);
+    assert.equal(advertisedTools[1]?.includes("start_command"), false);
     assert.equal(advertisedTools[2]?.includes("run_command"), false);
+    assert.equal(advertisedTools[2]?.includes("start_command"), false);
     assert.deepEqual(lifecycle, [
       "tool-start:run_command",
       "tool-end:run_command:tool-token",
@@ -264,6 +279,7 @@ describe("model request loading indicator", () => {
     });
     assert.equal(nextTurn.reason, "success");
     assert.equal(advertisedTools[0]?.includes("run_command"), true);
+    assert.equal(advertisedTools[0]?.includes("start_command"), true);
   });
 
   it("allows one bounded retry after a transient Windows SRT ACL failure", async () => {

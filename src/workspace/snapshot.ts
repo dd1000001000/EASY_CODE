@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, open, readdir, readlink } from "node:fs/promises";
+import { lstat, open, readdir, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { sha256 } from "../utils/hash.js";
 import { WorkspacePathGuard } from "./path-guard.js";
@@ -123,6 +123,55 @@ async function hashStableRegularFile(
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * Capture one workspace path with the same stable SHA-256 and symlink
+ * semantics as a full snapshot.
+ *
+ * Git-aware command tracking uses this helper only for paths Git identifies as
+ * possible changes. Missing paths are represented by `undefined`; other
+ * filesystem failures remain visible to the caller instead of silently
+ * turning an unreadable file into a deletion.
+ */
+export async function captureWorkspaceSnapshotEntry(
+  guard: WorkspacePathGuard,
+  filename: string,
+  signal?: AbortSignal,
+): Promise<WorkspaceSnapshotEntry | undefined> {
+  throwIfAborted(signal);
+  const relative = guard.normalizeRelative(filename);
+  const absolute = guard.resolveLexical(relative);
+  let info: Stats;
+  try {
+    info = await lstat(absolute);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+
+  if (info.isSymbolicLink()) {
+    const target = await readlink(absolute);
+    return {
+      path: relative,
+      kind: "symlink",
+      hash: sha256(`symlink:${target}`),
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+    };
+  }
+  if (!info.isFile()) return undefined;
+
+  // Validate the resolved target before opening it so a Git-reported path
+  // cannot use an ancestor symlink/junction to escape the workspace.
+  guard.assertInside(path.normalize(await realpath(absolute)));
+  return {
+    path: relative,
+    kind: "file",
+    hash: await hashStableRegularFile(absolute, info, signal),
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+  };
 }
 
 export async function captureWorkspaceSnapshot(

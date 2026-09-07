@@ -795,6 +795,16 @@ export class MemoryManager {
               `Memory ${existing.id} is superseded; revise its active replacement instead`,
             );
           }
+          if (
+            existing?.status === "active" &&
+            existing.category === category
+          ) {
+            // Exact normalized content that is already active is not a durable
+            // state change. Do not rewrite its timestamps/audit trail, inflate
+            // confidence, or refresh its embedding merely because a later turn
+            // proposed the same fact again.
+            continue;
+          }
           if (existing) {
             const confidence = Math.min(
               0.95,
@@ -971,7 +981,9 @@ export class MemoryManager {
       }
     })();
 
-    if (preparedByContent?.size) this.vectorIndex?.invalidate?.(workspaceId);
+    if (preparedByContent?.size && applied > 0) {
+      this.vectorIndex?.invalidate?.(workspaceId);
+    }
 
     return Object.freeze({ applied, memoryIds: [...memoryIds] });
   }

@@ -1,1 +1,1 @@
-RUNTIME_CONTEXT_COMPACTION_FORCED: Short-term context is approximately {{percent}}% of its configured limit. Runtime has inserted an explicit compaction request. Call compact_context by itself now with a cumulative summary; every other action is rejected until it succeeds.
+RUNTIME_CONTEXT_COMPACTION_FORCED: Short-term context is approximately {{percent}}% of its effective active working-set capacity. Runtime has inserted an explicit compaction request. Call compact_context by itself now with a cumulative summary; every other action is rejected until it succeeds.

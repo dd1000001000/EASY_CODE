@@ -8,7 +8,12 @@ import type {
   CommandExecutionBackend,
   PreparedCommand,
 } from "../src/sandbox/index.js";
-import { RunCommandTool } from "../src/tools/index.js";
+import {
+  CancelCommandTool,
+  PollCommandTool,
+  RunCommandTool,
+  StartCommandTool,
+} from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 
@@ -57,6 +62,11 @@ async function withTool(
     root: string,
     tool: RunCommandTool,
     backend: TrackingHostBackend,
+    lifecycle: {
+      start: StartCommandTool;
+      poll: PollCommandTool;
+      cancel: CancelCommandTool;
+    },
   ) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(path.join(process.cwd(), ".easy-code-command-contract-"));
@@ -64,7 +74,11 @@ async function withTool(
     const manager = await WorkspaceManager.create(root);
     const backend = new TrackingHostBackend();
     const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, backend);
-    await run(root, new RunCommandTool(manager, runtime), backend);
+    await run(root, new RunCommandTool(manager, runtime), backend, {
+      start: new StartCommandTool(manager, runtime),
+      poll: new PollCommandTool(manager, runtime),
+      cancel: new CancelCommandTool(manager, runtime),
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -87,8 +101,11 @@ describe("run_command model contract", () => {
       const output = result.data as {
         status: string;
         policyDecision: { matchedRule: string; recommendation?: string };
+        failure: { kind: string; processStarted: boolean };
       };
       assert.equal(output.status, "policy_denied");
+      assert.equal(output.failure.kind, "parameter");
+      assert.equal(output.failure.processStarted, false);
       assert.equal(output.policyDecision.matchedRule, "input.duplicate_program_argument");
       assert.match(output.policyDecision.recommendation ?? "", /remove.*args/iu);
       assert.match(result.error ?? "", /process was not started/iu);
@@ -184,16 +201,15 @@ describe("run_command model contract", () => {
   });
 
   it("keeps one timeout budget across start, status, and terminal cancellation", async () => {
-    await withTool(async (root, tool) => {
+    await withTool(async (root, _tool, _backend, lifecycle) => {
       await writeFile(
         path.join(root, "linger.cjs"),
         "setInterval(() => process.stdout.write('tick\\n'), 100);\n",
         "utf8",
       );
       const toolContext = context(root, 2_000);
-      const started = await tool.execute(
+      const started = await lifecycle.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["linger.cjs"],
           intent: "test",
@@ -215,8 +231,8 @@ describe("run_command model contract", () => {
         capabilityLimitMs: 15 * 60_000,
       });
 
-      const polled = await tool.execute(
-        { action: "status", commandId: running.commandId, waitMs: 0 },
+      const polled = await lifecycle.poll.execute(
+        { commandId: running.commandId, waitMs: 0 },
         toolContext,
       );
       assert.equal((polled.data as { status: string }).status, "running");
@@ -225,8 +241,8 @@ describe("run_command model contract", () => {
         running.timeout,
       );
 
-      const canceled = await tool.execute(
-        { action: "cancel", commandId: running.commandId },
+      const canceled = await lifecycle.cancel.execute(
+        { commandId: running.commandId },
         toolContext,
       );
       assert.equal(canceled.ok, true);

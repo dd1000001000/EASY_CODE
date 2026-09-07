@@ -3,6 +3,7 @@ import { describe, it } from "./harness.js";
 import {
   ContextManager,
   MAX_ACTIVE_WORKING_SET_CHARS,
+  activeWorkingSetCharBudget,
   contextPressureLevel,
   estimateTextTokens,
 } from "../src/context/manager.js";
@@ -124,6 +125,49 @@ describe("ContextManager", () => {
     assert.equal(contextPressureLevel(0.9), "force");
     assert.equal(contextPressureLevel(Number.POSITIVE_INFINITY), "force");
     assert.equal(contextPressureLevel(Number.NaN), "normal");
+  });
+
+  it("uses the actual rolling working-set capacity for pressure", () => {
+    assert.equal(activeWorkingSetCharBudget(1_600_000), MAX_ACTIVE_WORKING_SET_CHARS);
+    assert.equal(activeWorkingSetCharBudget(50_000), 50_000);
+    assert.throws(() => activeWorkingSetCharBudget(0), /positive safe integer/u);
+
+    const current = makeState();
+    current.messages = [{
+      role: "user",
+      content: "x".repeat(Math.floor(MAX_ACTIVE_WORKING_SET_CHARS * 0.8) - 32),
+    }];
+    const inspection = new ContextManager().inspect(current, 1_600_000);
+    assert.equal(inspection.configuredBudgetChars, 1_600_000);
+    assert.equal(inspection.budgetChars, MAX_ACTIVE_WORKING_SET_CHARS);
+    assert.equal(inspection.pressure, "require");
+  });
+
+  it("charges the real request system reservation before active messages are omitted", () => {
+    const current = makeState();
+    current.messages = [{
+      role: "user",
+      content: "x".repeat(2_100 - 32),
+    }];
+    const manager = new ContextManager();
+
+    const generic = manager.inspect(current, 10_000);
+    const request = manager.inspect(current, 10_000, {
+      systemPrompt: "system",
+      reservedSystemPromptChars: 7_500,
+    });
+    const built = manager.build({
+      systemPrompt: "system",
+      state: current,
+      maxContextChars: 10_000,
+      reservedSystemPromptChars: 7_500,
+    });
+
+    assert.equal(generic.pressure, "normal");
+    assert.equal(request.budgetChars, 2_500);
+    assert.equal(request.utilization, 0.84);
+    assert.equal(request.pressure, "require");
+    assert.ok(contextChars(built) <= 10_000);
   });
 
   it("estimates mixed-language short-term tokens and excludes compacted raw history", () => {

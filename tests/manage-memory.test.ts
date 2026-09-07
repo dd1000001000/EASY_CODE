@@ -23,7 +23,7 @@ function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext 
 }
 
 describe("manage_memory model tool", () => {
-  it("searches immediately but stages writes until a successful commit", async () => {
+  it("stages new facts without a search but still requires searched IDs for edits", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-workspace-"));
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-data-"));
     const storage = createStorage(dataDir);
@@ -31,24 +31,6 @@ describe("manage_memory model tool", () => {
       const workspace = await WorkspaceManager.create(workspaceRoot);
       const manager = new MemoryManager(storage);
       const tool = new ManageMemoryTool(manager, workspace);
-      const beforeSearch = await tool.execute(
-        {
-          action: "remember",
-          category: "preference",
-          content: "The user prefers concise progress messages.",
-          reason: "The user explicitly stated this preference.",
-        },
-        context(workspaceRoot),
-      );
-      assert.equal(beforeSearch.ok, false);
-      assert.match(beforeSearch.error ?? "", /Search long-term memory (?:first|before)/iu);
-
-      const searched = await tool.execute(
-        { action: "search", query: "progress messages" },
-        context(workspaceRoot),
-      );
-      assert.equal(searched.ok, true);
-
       const staged = await tool.execute(
         {
           action: "remember",
@@ -66,6 +48,12 @@ describe("manage_memory model tool", () => {
         content: "The user prefers concise progress messages.",
         reason: "The user explicitly stated this preference.",
       });
+
+      const searched = await tool.execute(
+        { action: "search", query: "progress messages" },
+        context(workspaceRoot),
+      );
+      assert.equal(searched.ok, true);
 
       const workspaceId = workspaceIdFromRoot(workspace.root);
       assert.equal(manager.list(workspaceId).length, 0);
@@ -99,7 +87,7 @@ describe("manage_memory model tool", () => {
     }
   });
 
-  it("stages several short facts independently after one search", async () => {
+  it("stages several short facts together without preliminary search churn", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-batch-workspace-"));
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-batch-data-"));
     const storage = createStorage(dataDir);
@@ -108,11 +96,6 @@ describe("manage_memory model tool", () => {
       const manager = new MemoryManager(storage);
       const tool = new ManageMemoryTool(manager, workspace);
       const toolContext = context(workspaceRoot);
-      const searched = await tool.execute(
-        { action: "search", query: "TypeScript SQLite Windows" },
-        toolContext,
-      );
-      assert.equal(searched.ok, true);
 
       const facts = [
         {

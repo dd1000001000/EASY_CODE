@@ -193,7 +193,10 @@ export class UpdateFileTool implements AgentTool {
           timestamp,
         });
       }
-      await refreshWorkspaceForFileToolTarget(this.workspace, target);
+      await refreshWorkspaceForFileToolTarget(this.workspace, target, {
+        hash: afterHash,
+        size: updatedBuffer.length,
+      });
 
       return toolSuccess(`Updated ${target.displayPath}`, {
         path: target.displayPath,

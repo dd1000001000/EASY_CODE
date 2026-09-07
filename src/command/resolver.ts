@@ -15,6 +15,19 @@ const MAX_ARGUMENTS = 256;
 const MAX_ARGUMENT_CHARS = 64 * 1024;
 const FORBIDDEN_PROGRAM_CHARACTERS = /[\u0000\r\n;&|<>`]/u;
 
+/** A structurally valid request rejected by a Runtime security boundary. */
+export class CommandPolicyBoundaryError extends Error {
+  constructor(message: string, readonly code: string) {
+    super(message);
+    this.name = "CommandPolicyBoundaryError";
+  }
+}
+
+function policyBoundaryMessage(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:escapes the workspace boundary|Runtime resources cannot be accessed)/iu.test(message);
+}
+
 function isInsideWorkspace(workspace: WorkspaceManager, filename: string): boolean {
   try {
     workspace.pathGuard.assertInside(filename);
@@ -106,7 +119,10 @@ export class CommandResolver {
       throw new Error("program must be one executable name or path without shell control characters");
     }
     if (!unrestricted && (path.isAbsolute(input.program) || /^[a-zA-Z]:[\\/]/u.test(input.program))) {
-      throw new Error("Absolute executable paths are not accepted from the model");
+      throw new CommandPolicyBoundaryError(
+        "Absolute executable paths are not accepted from the model",
+        "policy.absolute_executable",
+      );
     }
     this.validateArguments(input.args ?? []);
   }
@@ -140,10 +156,29 @@ export class CommandResolver {
       }
       return canonical;
     }
-    return this.workspace.pathGuard.resolveExisting(requested, {
-      kind: "directory",
-      allowFinalSymlink: true,
-    });
+    let relative: string;
+    try {
+      relative = this.workspace.pathGuard.normalizeRelative(requested);
+    } catch (error) {
+      throw new CommandPolicyBoundaryError(
+        error instanceof Error ? error.message : String(error),
+        "policy.cwd_boundary",
+      );
+    }
+    try {
+      return await this.workspace.pathGuard.resolveExisting(relative, {
+        kind: "directory",
+        allowFinalSymlink: true,
+      });
+    } catch (error) {
+      if (policyBoundaryMessage(error)) {
+        throw new CommandPolicyBoundaryError(
+          error instanceof Error ? error.message : String(error),
+          "policy.cwd_boundary",
+        );
+      }
+      throw error;
+    }
   }
 
   private async resolveExecutable(
@@ -161,10 +196,30 @@ export class CommandResolver {
         if (!(await isExecutable(target))) throw new Error("Host program is not executable");
         return target;
       }
-      const target = await this.workspace.pathGuard.resolveExisting(requested, {
-        kind: "file",
-        allowFinalSymlink: true,
-      });
+      let relative: string;
+      try {
+        relative = this.workspace.pathGuard.normalizeRelative(requested);
+      } catch (error) {
+        throw new CommandPolicyBoundaryError(
+          error instanceof Error ? error.message : String(error),
+          "policy.executable_boundary",
+        );
+      }
+      let target: string;
+      try {
+        target = await this.workspace.pathGuard.resolveExisting(relative, {
+          kind: "file",
+          allowFinalSymlink: true,
+        });
+      } catch (error) {
+        if (policyBoundaryMessage(error)) {
+          throw new CommandPolicyBoundaryError(
+            error instanceof Error ? error.message : String(error),
+            "policy.executable_boundary",
+          );
+        }
+        throw error;
+      }
       if (!(await isExecutable(target))) throw new Error("Workspace program is not executable");
       return target;
     }
@@ -291,7 +346,10 @@ export class CommandResolver {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith(";")) continue;
       if (forbiddenKey.test(trimmed)) {
-        throw new Error("Project .npmrc overrides affecting registry, shell, proxy, or install location are not allowed for automatic install");
+        throw new CommandPolicyBoundaryError(
+          "Project .npmrc overrides affecting registry, shell, proxy, or install location are not allowed for automatic install",
+          "policy.npmrc_override",
+        );
       }
     }
   }
@@ -314,7 +372,10 @@ export class CommandResolver {
           /^(?:git\+|git:|github:|gitlab:|bitbucket:|file:|link:|https?:|ssh:|npm:)/iu.test(spec) ||
           spec.endsWith(".tgz")
         ) {
-          throw new Error(`Dependency ${name} uses a URL, Git, file, tarball, or alias source that automatic install forbids`);
+          throw new CommandPolicyBoundaryError(
+            `Dependency ${name} uses a URL, Git, file, tarball, or alias source that automatic install forbids`,
+            "policy.dependency_source",
+          );
         }
       }
     }

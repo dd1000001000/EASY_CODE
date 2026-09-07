@@ -773,6 +773,8 @@ describe("sandbox command execution boundary", () => {
       assert.equal(backend.lastRequest?.command.args[0], "would-start.cjs");
       assert.equal(output.status, "sandbox_unavailable");
       assert.equal(output.exitCode, null);
+      assert.equal(output.failure?.kind, "sandbox");
+      assert.equal(output.failure?.processStarted, false);
       assert.match(output.stderr.text, /sandbox unavailable/iu);
       assert.match(output.stderr.text, /focused backend preparation failure/u);
       assert.deepEqual(output.workspaceDelta, {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ApprovalRequest, CommandAuditEntry, ToolContext } from "../src/core/types.js";
@@ -19,7 +19,12 @@ import type {
   CommandExecutionBackend,
   PreparedCommand,
 } from "../src/sandbox/index.js";
-import { RunCommandTool as ProductionRunCommandTool } from "../src/tools/index.js";
+import {
+  CancelCommandTool,
+  PollCommandTool,
+  RunCommandTool as ProductionRunCommandTool,
+  StartCommandTool,
+} from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 
@@ -54,6 +59,23 @@ class RunCommandTool extends ProductionRunCommandTool {
       new CommandRuntime(manager, new CommandPolicy(), new HostCommandBackend()),
     );
   }
+}
+
+function commandTools(manager: WorkspaceManager): {
+  run: RunCommandTool;
+  start: StartCommandTool;
+  poll: PollCommandTool;
+  cancel: CancelCommandTool;
+  runtime: CommandRuntime;
+} {
+  const run = new RunCommandTool(manager);
+  return {
+    run,
+    start: new StartCommandTool(manager, run.runtime),
+    poll: new PollCommandTool(manager, run.runtime),
+    cancel: new CancelCommandTool(manager, run.runtime),
+    runtime: run.runtime,
+  };
 }
 
 async function withWorkspace(run: (root: string, manager: WorkspaceManager) => Promise<void>): Promise<void> {
@@ -360,6 +382,14 @@ describe("command runtime", () => {
         (plan.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
         "mode.plan",
       );
+      assert.equal(
+        (plan.data as { failure: { kind: string; code: string } }).failure.kind,
+        "policy",
+      );
+      assert.equal(
+        (plan.data as { failure: { code: string } }).failure.code,
+        "mode.plan",
+      );
 
       const neverApprovals: ApprovalRequest[] = [];
       const never = await tool.execute(
@@ -376,6 +406,14 @@ describe("command runtime", () => {
       assert.match(
         (never.data as { policyDecision: { reason: string } }).policyDecision.reason,
         /approval prompts are disabled/u,
+      );
+      assert.equal(
+        (never.data as { failure: { kind: string; code: string } }).failure.kind,
+        "approval",
+      );
+      assert.equal(
+        (never.data as { failure: { code: string } }).failure.code,
+        "approval_unavailable",
       );
     });
   });
@@ -440,8 +478,54 @@ describe("command runtime", () => {
       );
       assert.equal(inline.ok, false);
       assert.match(inline.summary, /denied/iu);
+      assert.deepEqual(
+        (inline.data as { failure: { kind: string; code: string } }).failure,
+        {
+          kind: "policy",
+          code: "deny.interpreter_eval",
+          message: "Interpreter inline-code flags are disabled",
+          processStarted: false,
+          retryable: false,
+        },
+      );
       assert.equal(escaped.ok, false);
       assert.match(escaped.error ?? "", /traversal|workspace/iu);
+      assert.equal(
+        (escaped.data as { failure: { kind: string; code: string } }).failure.kind,
+        "policy",
+      );
+      assert.equal(
+        (escaped.data as { failure: { code: string } }).failure.code,
+        "policy.cwd_boundary",
+      );
+      assert.equal(
+        (escaped.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
+        "policy.cwd_boundary",
+      );
+    });
+  });
+
+  it("classifies direct network policy denials separately from approval", async () => {
+    await withWorkspace(async (root, manager) => {
+      const executable = path.join(root, "curl");
+      await writeFile(executable, "fixture\n", "utf8");
+      await chmod(executable, 0o755);
+      const approvals: ApprovalRequest[] = [];
+      const result = await new RunCommandTool(manager).execute(
+        { program: "./curl", args: ["https://example.invalid"], intent: "run" },
+        context(root, { approve: true, approvals }),
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(approvals.length, 0);
+      const output = result.data as {
+        policyDecision: { matchedRule: string };
+        failure: { kind: string; code: string; processStarted: boolean };
+      };
+      assert.equal(output.policyDecision.matchedRule, "deny.external");
+      assert.equal(output.failure.kind, "policy");
+      assert.equal(output.failure.code, "deny.external");
+      assert.equal(output.failure.processStarted, false);
     });
   });
 
@@ -541,6 +625,39 @@ describe("command runtime", () => {
     });
   });
 
+  it("treats a successful command deletion as a successful command result", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "temporary.txt"), "temporary", "utf8");
+      await writeFile(
+        path.join(root, "remove-temporary.cjs"),
+        "require('node:fs').unlinkSync('temporary.txt');\n",
+        "utf8",
+      );
+      await manager.refreshManifest();
+      const tool = new RunCommandTool(manager);
+      const result = await tool.execute(
+        { program: "node", args: ["remove-temporary.cjs"], intent: "test" },
+        context(root, { approve: true }),
+      );
+
+      assert.equal(result.ok, true);
+      const output = result.data as {
+        status: string;
+        exitCode: number | null;
+        workspaceDelta: { deleted: string[] };
+        failure?: unknown;
+      };
+      assert.equal(output.status, "exited");
+      assert.equal(output.exitCode, 0);
+      assert.deepEqual(output.workspaceDelta.deleted, ["temporary.txt"]);
+      assert.equal(output.failure, undefined);
+      const deletion = manager.getChangeSet().find(
+        (change) => change.path === "temporary.txt" && change.operation === "deleted_by_command",
+      );
+      assert.equal(deletion?.status, "verified");
+    });
+  });
+
   it("denies an approval-requiring command when prompts are disabled", async () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(path.join(root, "script.cjs"), "process.stdout.write('no');", "utf8");
@@ -553,6 +670,95 @@ describe("command runtime", () => {
       assert.equal(result.ok, false);
       assert.equal(approvals.length, 0);
       assert.match(result.summary, /denied/iu);
+      assert.equal(
+        (result.data as { failure: { kind: string; code: string } }).failure.kind,
+        "approval",
+      );
+      assert.equal(
+        (result.data as { failure: { code: string } }).failure.code,
+        "approval_unavailable",
+      );
+    });
+  });
+
+  it("distinguishes rejected and unavailable approval from policy denial", async () => {
+    await withWorkspace(async (root, manager) => {
+      await writeFile(path.join(root, "approval.cjs"), "process.stdout.write('no');\n", "utf8");
+      const tool = new RunCommandTool(manager);
+      const rejected = await tool.execute(
+        { program: "node", args: ["approval.cjs"], intent: "run" },
+        context(root, { approve: false }),
+      );
+      assert.equal(
+        (rejected.data as { failure: { kind: string; code: string } }).failure.kind,
+        "approval",
+      );
+      assert.equal(
+        (rejected.data as { failure: { code: string } }).failure.code,
+        "approval_not_granted",
+      );
+
+      const unavailable = await tool.execute(
+        { program: "node", args: ["approval.cjs"], intent: "run" },
+        {
+          ...context(root, { approve: true }),
+          requestApproval: async () => {
+            throw new Error("approval UI unavailable");
+          },
+        },
+      );
+      assert.equal(
+        (unavailable.data as { failure: { kind: string; code: string } }).failure.kind,
+        "approval",
+      );
+      assert.equal(
+        (unavailable.data as { failure: { code: string } }).failure.code,
+        "approval_unavailable",
+      );
+    });
+  });
+
+  it("distinguishes parameter, exit, and command-tool Runtime failures", async () => {
+    await withWorkspace(async (root, manager) => {
+      const tools = commandTools(manager);
+      const owner = context(root, { approve: true });
+      const invalid = await tools.run.execute(
+        { action: "run", program: "node", intent: "inspect" },
+        owner,
+      );
+      assert.equal(
+        (invalid.data as { failure: { kind: string } }).failure.kind,
+        "parameter",
+      );
+
+      await writeFile(path.join(root, "exit-seven.cjs"), "process.exit(7);\n", "utf8");
+      const exited = await tools.run.execute(
+        { program: "node", args: ["exit-seven.cjs"], intent: "test" },
+        owner,
+      );
+      assert.equal(exited.ok, false);
+      assert.equal(
+        (exited.data as { failure: { kind: string; processStarted: boolean } }).failure.kind,
+        "exit",
+      );
+      assert.equal(
+        (exited.data as { failure: { processStarted: boolean } }).failure.processStarted,
+        true,
+      );
+
+      const unknown = await tools.poll.execute(
+        { commandId: "command_00000000-0000-4000-8000-000000000000" },
+        owner,
+      );
+      assert.equal(unknown.ok, false);
+      assert.equal(
+        (unknown.data as { failure: { kind: string; code: string } }).failure.kind,
+        "runtime",
+      );
+      assert.equal(
+        (unknown.data as { failure: { code: string } }).failure.code,
+        "unknown_handle",
+      );
     });
   });
 
@@ -571,11 +777,10 @@ describe("command runtime", () => {
       );
       await manager.refreshManifest();
       const audit: CommandAuditEntry[] = [];
-      const tool = new RunCommandTool(manager);
+      const tools = commandTools(manager);
       const owner = context(root, { approve: true, audit, timeoutMs: 2_000 });
-      const started = await tool.execute(
+      const started = await tools.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["background.cjs"],
           intent: "test",
@@ -590,15 +795,15 @@ describe("command runtime", () => {
       assert.match(running.commandId, /^command_[0-9a-f-]{36}$/u);
       assert.equal(audit.length, 0, "a running command must not be audited as complete");
 
-      const inaccessible = await tool.execute(
-        { action: "status", commandId: running.commandId },
+      const inaccessible = await tools.poll.execute(
+        { commandId: running.commandId },
         { ...owner, threadId: "thread-other" },
       );
       assert.equal(inaccessible.ok, false);
       assert.match(inaccessible.error ?? "", /unknown or inaccessible/iu);
 
-      const completed = await tool.execute(
-        { action: "status", commandId: running.commandId, waitMs: 2_000 },
+      const completed = await tools.poll.execute(
+        { commandId: running.commandId, waitMs: 2_000 },
         owner,
       );
       assert.equal(completed.ok, true);
@@ -623,11 +828,10 @@ describe("command runtime", () => {
         "setTimeout(() => process.stdout.write('done\\n'), 40);\n",
         "utf8",
       );
-      const tool = new RunCommandTool(manager);
+      const tools = commandTools(manager);
       const owner = context(root, { approve: true, timeoutMs: 2_000 });
-      const started = await tool.execute(
+      const started = await tools.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["finish-between-steps.cjs"],
           intent: "test",
@@ -635,16 +839,16 @@ describe("command runtime", () => {
         owner,
       );
       const commandId = (started.data as { commandId: string }).commandId;
-      assert.equal(tool.runtime.hasOpenCommandHandles(), true);
-      const settlement = tool.runtime.whenSettled(commandId);
+      assert.equal(tools.runtime.hasOpenCommandHandles(), true);
+      const settlement = tools.runtime.whenSettled(commandId);
       assert.ok(settlement);
       await settlement;
 
-      assert.equal(tool.runtime.hasRunningCommands(), false);
-      assert.equal(tool.runtime.hasOpenCommandHandles(), true);
-      const observed = await tool.execute({ action: "status", commandId }, owner);
+      assert.equal(tools.runtime.hasRunningCommands(), false);
+      assert.equal(tools.runtime.hasOpenCommandHandles(), true);
+      const observed = await tools.poll.execute({ commandId }, owner);
       assert.equal((observed.data as { status: string }).status, "exited");
-      assert.equal(tool.runtime.hasOpenCommandHandles(), false);
+      assert.equal(tools.runtime.hasOpenCommandHandles(), false);
     });
   });
 
@@ -652,11 +856,10 @@ describe("command runtime", () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(path.join(root, "background-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
       const audit: CommandAuditEntry[] = [];
-      const tool = new RunCommandTool(manager);
+      const tools = commandTools(manager);
       const owner = context(root, { approve: true, audit, timeoutMs: 2_000 });
-      const started = await tool.execute(
+      const started = await tools.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["background-hang.cjs"],
           intent: "test",
@@ -665,10 +868,10 @@ describe("command runtime", () => {
       );
       const commandId = (started.data as { commandId: string }).commandId;
 
-      const canceled = await tool.execute({ action: "cancel", commandId }, owner);
+      const canceled = await tools.cancel.execute({ commandId }, owner);
       assert.equal(canceled.ok, true);
       assert.equal((canceled.data as { status: string }).status, "canceled");
-      assert.equal(tool.runtime.hasRunningCommands(), false);
+      assert.equal(tools.runtime.hasRunningCommands(), false);
       assert.equal(audit.length, 1);
       assert.equal(audit[0]?.status, "canceled");
     });
@@ -677,11 +880,10 @@ describe("command runtime", () => {
   it("aborts a status long-poll without canceling its background command", async () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(path.join(root, "status-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
-      const tool = new RunCommandTool(manager);
+      const tools = commandTools(manager);
       const owner = context(root, { approve: true, timeoutMs: 5_000 });
-      const started = await tool.execute(
+      const started = await tools.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["status-hang.cjs"],
           intent: "test",
@@ -690,7 +892,7 @@ describe("command runtime", () => {
       );
       const commandId = (started.data as { commandId: string }).commandId;
       const controller = new AbortController();
-      const waiting = tool.runtime.status(
+      const waiting = tools.runtime.status(
         commandId,
         { ...owner, signal: controller.signal },
         30_000,
@@ -703,24 +905,23 @@ describe("command runtime", () => {
         (error: unknown) => error instanceof Error && error.name === "AbortError",
       );
       assert.ok(Date.now() - abortStartedAt < 1_000, "status wait did not abort promptly");
-      assert.equal(tool.runtime.hasRunningCommands(), true);
-      await tool.execute({ action: "cancel", commandId }, owner);
+      assert.equal(tools.runtime.hasRunningCommands(), true);
+      await tools.cancel.execute({ commandId }, owner);
     });
   });
 
   it("binds command handles to every agent owner field but not to a turn", async () => {
     await withWorkspace(async (root, manager) => {
       await writeFile(path.join(root, "owned-hang.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
-      const tool = new RunCommandTool(manager);
+      const tools = commandTools(manager);
       const owner: ToolContext = {
         ...context(root, { approve: true, timeoutMs: 5_000 }),
         agentRole: "subagent",
         agentId: "agent-owner",
         assignedTaskId: "task-owner",
       };
-      const started = await tool.execute(
+      const started = await tools.start.execute(
         {
-          action: "start",
           program: "node",
           args: ["owned-hang.cjs"],
           intent: "test",
@@ -735,17 +936,17 @@ describe("command runtime", () => {
         { ...owner, assignedTaskId: "task-other" },
       ]) {
         await assert.rejects(
-          tool.runtime.status(commandId, inaccessible),
+          tools.runtime.status(commandId, inaccessible),
           /unknown or inaccessible/iu,
         );
       }
 
-      const acrossTurn = await tool.runtime.status(commandId, {
+      const acrossTurn = await tools.runtime.status(commandId, {
         ...owner,
         turnId: "turn-next",
       });
       assert.equal(acrossTurn.status, "running");
-      await tool.execute({ action: "cancel", commandId }, owner);
+      await tools.cancel.execute({ commandId }, owner);
     });
   });
 
@@ -770,6 +971,14 @@ describe("command runtime", () => {
       );
       assert.equal(result.ok, false);
       assert.equal((result.data as { status: string }).status, "timed_out");
+      assert.equal(
+        (result.data as { failure: { kind: string; processStarted: boolean } }).failure.kind,
+        "timeout",
+      );
+      assert.equal(
+        (result.data as { failure: { processStarted: boolean } }).failure.processStarted,
+        true,
+      );
       const childPid = Number.parseInt(await readFile(path.join(root, "child.pid"), "utf8"), 10);
       assert.equal(Number.isInteger(childPid), true);
       assert.equal(processIsAlive(childPid), false, "timed-out descendant is still running");

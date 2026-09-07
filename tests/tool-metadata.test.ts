@@ -8,16 +8,22 @@ import type { MemoryManager } from "../src/memory/memory-manager.js";
 import type { SubagentControl } from "../src/subagents/types.js";
 import {
   CompactContextTool,
+  CancelCommandTool,
   CreateFileTool,
   DeleteFileTool,
   ManageMemoryTool,
   ManageSubagentsTool,
   ManageTasksTool,
   ProposePlanTool,
+  PollCommandTool,
   ReadFileTool,
   ReadImageTool,
   RunCommandTool,
+  StartCommandTool,
+  cancelCommandInputSchema,
+  pollCommandInputSchema,
   runCommandInputSchema,
+  startCommandInputSchema,
   SubmitTaskResultTool,
   UpdateFileTool,
   assertDocumentedToolSchema,
@@ -45,6 +51,9 @@ function actualDefinitions() {
     new ReadFileTool(workspace).definition,
     new ReadImageTool(workspace).definition,
     new RunCommandTool(workspace, {} as CommandRuntime).definition,
+    new StartCommandTool(workspace, {} as CommandRuntime).definition,
+    new PollCommandTool(workspace, {} as CommandRuntime).definition,
+    new CancelCommandTool(workspace, {} as CommandRuntime).definition,
     new SubmitTaskResultTool(task).definition,
     new UpdateFileTool(workspace).definition,
     ...autoRouteToolDefinitions(),
@@ -52,22 +61,25 @@ function actualDefinitions() {
 }
 
 describe("Prompt Bundle tool metadata", () => {
-  it("strictly covers every property in all 14 actual tool schemas", () => {
+  it("strictly covers every property in every actual tool schema", () => {
     const definitions = actualDefinitions();
     const names = definitions.map((definition) => definition.function.name).sort();
     assert.deepEqual(names, [
+      "cancel_command",
       "compact_context",
       "create_file",
       "delete_file",
       "manage_memory",
       "manage_subagents",
       "manage_tasks",
+      "poll_command",
       "propose_plan",
       "read_file",
       "read_image",
       "respond_directly",
       "run_command",
       "select_mode",
+      "start_command",
       "submit_task_result",
       "update_file",
     ]);
@@ -156,75 +168,76 @@ describe("Prompt Bundle tool metadata", () => {
     assertDocumentedToolSchema("read_file", documented);
   });
 
-  it("publishes a flat provider-compatible run_command schema", () => {
+  it("publishes flat provider-compatible command lifecycle schemas", () => {
     const workspace = {} as WorkspaceManager;
-    const functionDefinition = new RunCommandTool(
-      workspace,
-      {} as CommandRuntime,
-    ).definition.function;
-    const parameters = functionDefinition.parameters as {
-      type: string;
-      additionalProperties: boolean;
-      properties: Record<string, { enum?: string[]; description?: string }>;
-      required: string[];
-      oneOf?: unknown;
-      anyOf?: unknown;
-      allOf?: unknown;
-    };
-
-    assert.equal(parameters.type, "object");
-    assert.equal(parameters.additionalProperties, false);
-    assert.deepEqual(parameters.required, ["program", "intent"]);
-    assert.equal(parameters.oneOf, undefined);
-    assert.equal(parameters.anyOf, undefined);
-    assert.equal(parameters.allOf, undefined);
-    assert.deepEqual(Object.keys(parameters.properties).sort(), [
-      "args",
-      "cwd",
-      "intent",
-      "program",
-      "reason",
-      "timeoutMs",
-    ]);
-    for (const property of Object.values(parameters.properties)) {
-      assert.equal(typeof property.description, "string");
-      assert.notEqual(property.description, "");
+    const runtime = {} as CommandRuntime;
+    const functions = [
+      new RunCommandTool(workspace, runtime).definition.function,
+      new StartCommandTool(workspace, runtime).definition.function,
+      new PollCommandTool(workspace, runtime).definition.function,
+      new CancelCommandTool(workspace, runtime).definition.function,
+    ];
+    for (const functionDefinition of functions) {
+      const parameters = functionDefinition.parameters as {
+        type: string;
+        additionalProperties: boolean;
+        properties: Record<string, { enum?: string[]; description?: string }>;
+        required: string[];
+        oneOf?: unknown;
+        anyOf?: unknown;
+        allOf?: unknown;
+      };
+      assert.equal(parameters.type, "object");
+      assert.equal(parameters.additionalProperties, false);
+      assert.equal(parameters.oneOf, undefined);
+      assert.equal(parameters.anyOf, undefined);
+      assert.equal(parameters.allOf, undefined);
+      for (const property of Object.values(parameters.properties)) {
+        assert.equal(typeof property.description, "string");
+        assert.notEqual(property.description, "");
+      }
+      assertDocumentedToolSchema(functionDefinition.name, functionDefinition);
     }
+    assert.deepEqual(functions.map((item) => item.name), [
+      "run_command",
+      "start_command",
+      "poll_command",
+      "cancel_command",
+    ]);
+    assert.deepEqual(
+      Object.keys((functions[0]?.parameters as { properties: object }).properties),
+      Object.keys((functions[1]?.parameters as { properties: object }).properties),
+    );
+    assert.deepEqual(
+      (functions[0]?.parameters as { required: string[] }).required,
+      (functions[1]?.parameters as { required: string[] }).required,
+    );
+    assert.deepEqual(
+      Object.keys((functions[2]?.parameters as { properties: object }).properties).sort(),
+      ["commandId", "waitMs"],
+    );
+    assert.deepEqual(
+      Object.keys((functions[3]?.parameters as { properties: object }).properties),
+      ["commandId"],
+    );
 
-    assertDocumentedToolSchema("run_command", functionDefinition);
-
-    // Runtime still accepts existing lifecycle calls even though providers
-    // only receive the portable synchronous schema above.
+    const commandId = "command_00000000-0000-4000-8000-000000000000";
+    assert.equal(runCommandInputSchema.safeParse({
+      program: "node",
+      args: ["--version"],
+      intent: "inspect",
+    }).success, true);
+    assert.equal(startCommandInputSchema.safeParse({
+      program: "node",
+      intent: "test",
+    }).success, true);
+    assert.equal(pollCommandInputSchema.safeParse({ commandId, waitMs: 30_000 }).success, true);
+    assert.equal(cancelCommandInputSchema.safeParse({ commandId }).success, true);
     for (const input of [
-      { program: "node", args: ["--version"], intent: "inspect" },
       { action: "run", program: "node", intent: "inspect" },
       { action: "start", program: "node", intent: "test" },
-      {
-        action: "status",
-        commandId: "command_00000000-0000-4000-8000-000000000000",
-        waitMs: 30_000,
-      },
-      {
-        action: "cancel",
-        commandId: "command_00000000-0000-4000-8000-000000000000",
-      },
-    ]) {
-      assert.equal(runCommandInputSchema.safeParse(input).success, true, JSON.stringify(input));
-    }
-    for (const input of [
-      { action: "run" },
-      { action: "start", program: "node" },
-      { action: "status" },
-      {
-        action: "status",
-        commandId: "command_00000000-0000-4000-8000-000000000000",
-        program: "node",
-      },
-      {
-        action: "cancel",
-        commandId: "command_00000000-0000-4000-8000-000000000000",
-        waitMs: 1,
-      },
+      { action: "status", commandId },
+      { action: "cancel", commandId },
     ]) {
       assert.equal(runCommandInputSchema.safeParse(input).success, false, JSON.stringify(input));
     }

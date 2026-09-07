@@ -28,9 +28,9 @@ import {
   type TurnSteeringBatch,
   type TurnSteeringBoundary,
 } from "../core/types.js";
+import { renderPinnedCurrentState } from "../context/artifact-index.js";
 import {
   ContextManager,
-  contextPressureLevel,
   type ContextPressureLevel,
 } from "../context/manager.js";
 import {
@@ -41,6 +41,7 @@ import {
   assertThreadImageNumberAvailable,
   nextThreadImageNumber,
 } from "../images/labels.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { validateProviderImageAttachments } from "../models/catalog.js";
 import {
   clonePlanReviewState,
@@ -148,6 +149,94 @@ function contextRetrievalQuery(
   currentUserInput: string,
 ): string {
   const task = state.taskGraph ? activeTask(state.taskGraph) : undefined;
+  const blockedTask = state.taskGraph?.tasks.find(
+    (candidate) => candidate.status === "blocked",
+  );
+  const latestCommand = state.commands.at(-1);
+  const latestFailedCommand = latestCommand && (
+    latestCommand.status !== "exited" || latestCommand.exitCode !== 0
+  )
+    ? latestCommand
+    : undefined;
+  let latestToolFailure = "";
+  const recentToolPathEvidence: string[] = [];
+  const observedToolNames = new Set<string>();
+  const earliestToolMessageIndex = Math.max(0, state.messages.length - 64);
+  for (
+    let index = state.messages.length - 1;
+    index >= earliestToolMessageIndex;
+    index -= 1
+  ) {
+    const message = state.messages[index];
+    if (!message || message.role !== "tool") continue;
+    const toolName = message.name ?? "unknown";
+    const isLatestForTool = !observedToolNames.has(toolName);
+    observedToolNames.add(toolName);
+    try {
+      const parsed = JSON.parse(message.content) as {
+        ok?: unknown;
+        summary?: unknown;
+        error?: unknown;
+        data?: unknown;
+      };
+      const data = parsed.data && typeof parsed.data === "object"
+        ? parsed.data as Record<string, unknown>
+        : undefined;
+      const path = typeof data?.path === "string" ? data.path : "";
+      const beforeHash = typeof data?.beforeHash === "string" ? data.beforeHash : "";
+      const contentHash = typeof data?.contentHash === "string" ? data.contentHash : "";
+      if (path && recentToolPathEvidence.length < 6) {
+        recentToolPathEvidence.push([
+          toolName,
+          path,
+          beforeHash ? `before=${beforeHash}` : "",
+          contentHash ? `after=${contentHash}` : "",
+        ].filter(Boolean).join(" "));
+      }
+      if (
+        !latestToolFailure &&
+        isLatestForTool &&
+        (parsed.ok === false || typeof parsed.error === "string")
+      ) {
+        latestToolFailure = [
+          `tool=${toolName}`,
+          typeof parsed.summary === "string" ? parsed.summary : "",
+          typeof parsed.error === "string" ? parsed.error : "",
+          path ? `path=${path}` : "",
+        ].filter(Boolean).join("\n").slice(0, 2_500);
+      }
+    } catch {
+      // Opaque tool output remains available in recent conversation/RAG; only
+      // structured evidence is promoted into the high-priority query fields.
+    }
+  }
+  const latestFailure = [
+    latestToolFailure,
+    latestFailedCommand
+      ? [
+          `command=${latestFailedCommand.program}`,
+          `status=${latestFailedCommand.status}`,
+          `exitCode=${String(latestFailedCommand.exitCode)}`,
+          latestFailedCommand.summary,
+          `cwd=${latestFailedCommand.cwd}`,
+        ].join("\n")
+      : "",
+    blockedTask?.blocker
+      ? `blockedTask=${blockedTask.id}\n${blockedTask.blocker}`
+      : "",
+  ].filter(Boolean).join("\n\n").slice(0, 4_000);
+  const diffAndPathEvidence = [
+    ...state.changes.slice(-12).map((change) => [
+      `${change.operation}:${change.path}`,
+      `status=${change.status}`,
+      change.beforeHash ? `before=${change.beforeHash}` : "",
+      change.afterHash ? `after=${change.afterHash}` : "",
+    ].filter(Boolean).join(" ")),
+    ...recentToolPathEvidence,
+    ...[...state.filesRead.values()].slice(-8).map(
+      (file) => `read:${file.path} hash=${file.hash}`,
+    ),
+  ].join("\n").slice(0, 4_000);
   const recentConversation = state.messages
     .slice(-8)
     .filter((message) => message.role === "user" || message.role === "assistant")
@@ -155,16 +244,57 @@ function contextRetrievalQuery(
     .filter(Boolean)
     .join("\n");
   return [
-    currentUserInput.trim(),
-    task ? `${task.title}\n${task.description}` : "",
-    recentConversation,
-  ].filter(Boolean).join("\n\n").slice(0, 12_000);
+    currentUserInput.trim()
+      ? `[CURRENT_REQUEST]\n${currentUserInput.trim().slice(0, 4_000)}`
+      : "",
+    state.goal?.trim()
+      ? `[CURRENT_GOAL]\n${state.goal.trim().slice(0, 2_500)}`
+      : "",
+    state.constraints.length
+      ? `[CURRENT_CONSTRAINTS]\n${state.constraints.join("\n").slice(0, 2_500)}`
+      : "",
+    task
+      ? `[ACTIVE_TASK]\n${task.title}\n${task.description}\n` +
+        `${task.completionChecks.join("\n")}\n${task.blocker ?? ""}`
+      : "",
+    latestFailure ? `[LATEST_FAILURE]\n${latestFailure}` : "",
+    diffAndPathEvidence
+      ? `[CURRENT_DIFF_AND_PATH_EVIDENCE]\n${diffAndPathEvidence}`
+      : "",
+    recentConversation ? `[RECENT_CONVERSATION]\n${recentConversation}` : "",
+  ]
+    .filter(Boolean)
+    .map((section) => redactSensitiveInformation(section))
+    .join("\n\n")
+    .slice(0, 12_000);
+}
+
+interface RuntimeLayeredContext {
+  workingCheckpoint?: string;
+  retrievedThreadEvidence?: string;
+}
+
+function pinCurrentState(
+  state: Readonly<SessionState>,
+  approvedPlanReview: Readonly<PlanReviewState> | undefined,
+  derived: RuntimeLayeredContext = {},
+): RuntimeLayeredContext {
+  return {
+    workingCheckpoint: renderPinnedCurrentState(state, approvedPlanReview),
+    ...(derived.retrievedThreadEvidence
+      ? { retrievedThreadEvidence: derived.retrievedThreadEvidence }
+      : {}),
+  };
 }
 
 // PromptBuilder bounds retrieved Thread evidence to 20,000 characters. Keep a
 // small allowance for the untrusted-data envelope so ContextManager can use the
 // same raw-message boundary before and after retrieval.
 const LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS = 21_000;
+// Keep the conversation boundary stable while the pressure instruction itself
+// is selected. This is deliberately small and is charged through the same
+// reservation passed to ContextManager.build().
+const CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS = 1_024;
 
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
@@ -319,6 +449,9 @@ function availableTools(
       tool.name === "update_file" ||
       tool.name === "delete_file" ||
       tool.name === "run_command" ||
+      tool.name === "start_command" ||
+      tool.name === "poll_command" ||
+      tool.name === "cancel_command" ||
       tool.name === "compact_context" ||
       tool.name === "submit_task_result"
     );
@@ -349,6 +482,9 @@ const TASK_WORK_TOOLS = new Set<ToolName>([
   "update_file",
   "delete_file",
   "run_command",
+  "start_command",
+  "poll_command",
+  "cancel_command",
 ]);
 
 function taskGraphToolError(
@@ -690,10 +826,8 @@ export class AgentRuntime {
       );
     } else if (state.mode === "auto") {
       const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
-      const routeContextPressure = contextPressureLevel(
-        this.dependencies.contextManager.estimateShortTermChars(state) /
-          options.maxContextChars,
-      );
+      const routeContextPressure = this.dependencies.contextManager
+        .inspect(state, options.maxContextChars).pressure;
       if (
         !unfinishedGraph &&
         outstandingSubagentsAtRoute.length === 0 &&
@@ -782,17 +916,22 @@ export class AgentRuntime {
             };
             const autoRouteBoundary = priorMessagesStart +
               projectAutoRouteContext(autoRouteContext).priorMessageBoundary;
-            let routeLayeredContext: {
-              workingCheckpoint?: string;
-              retrievedThreadEvidence?: string;
-            } = {};
+            let routeLayeredContext = pinCurrentState(
+              state,
+              memoryContext.approvedPlanReview,
+            );
             if (this.dependencies.getLayeredContext) {
               try {
-                routeLayeredContext = await this.dependencies.getLayeredContext({
+                const derived = await this.dependencies.getLayeredContext({
                   state,
                   query: contextRetrievalQuery(state, memoryContext.userInput),
                   beforeMessageIndex: 0,
                 });
+                routeLayeredContext = pinCurrentState(
+                  state,
+                  memoryContext.approvedPlanReview,
+                  derived,
+                );
               } catch (error) {
                 if (!contextLayerFailureReported) {
                   contextLayerFailureReported = true;
@@ -824,11 +963,16 @@ export class AgentRuntime {
             let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
             if (this.dependencies.getLayeredContext) {
               try {
-                routeLayeredContext = await this.dependencies.getLayeredContext({
+                const derived = await this.dependencies.getLayeredContext({
                   state,
                   query: contextRetrievalQuery(state, memoryContext.userInput),
                   beforeMessageIndex: autoRouteBoundary,
                 });
+                routeLayeredContext = pinCurrentState(
+                  state,
+                  memoryContext.approvedPlanReview,
+                  derived,
+                );
                 controllerPolicy = await buildControllerPolicy(routeLayeredContext);
               } catch (error) {
                 if (!contextLayerFailureReported) {
@@ -1003,6 +1147,7 @@ export class AgentRuntime {
     let backgroundCommandFinalizationReminderIssued = false;
     let backgroundCommandFinalizationAllowanceGranted = false;
     let runCommandUnavailable = false;
+    let unavailableCommandTool: "run_command" | "start_command" = "run_command";
     let retryableSandboxFailureCount = 0;
     let retryableSandboxRecoveryPending = false;
     for (let step = 1; step <= stepLimit; step += 1) {
@@ -1044,17 +1189,22 @@ export class AgentRuntime {
           memoryContext,
         );
       }
-      let layeredContext: {
-        workingCheckpoint?: string;
-        retrievedThreadEvidence?: string;
-      } = {};
+      let layeredContext = pinCurrentState(
+        state,
+        memoryContext.approvedPlanReview,
+      );
       if (this.dependencies.getLayeredContext) {
         try {
-          layeredContext = await this.dependencies.getLayeredContext({
+          const derived = await this.dependencies.getLayeredContext({
             state,
             query: contextRetrievalQuery(state, memoryContext.userInput),
             beforeMessageIndex: 0,
           });
+          layeredContext = pinCurrentState(
+            state,
+            memoryContext.approvedPlanReview,
+            derived,
+          );
         } catch (error) {
           if (!contextLayerFailureReported) {
             contextLayerFailureReported = true;
@@ -1066,9 +1216,75 @@ export class AgentRuntime {
         }
       }
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const shortTermChars = this.dependencies.contextManager.estimateShortTermChars(state);
-      const contextUtilization = shortTermChars / options.maxContextChars;
-      const contextPressure = contextPressureLevel(contextUtilization);
+      const compactContextTool = toolMap.get("compact_context");
+      const ordinaryEnabledTools = taskDagFinalizationOnly
+        ? state.taskGraph?.status === "completed"
+          ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
+          : []
+        : [...toolMap.values()].filter((tool) =>
+            !runCommandUnavailable ||
+            (tool.name !== "run_command" && tool.name !== "start_command")
+          );
+      const fixedRuntimeInstructions = [
+        runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
+        this.dependencies.hasOpenCommandHandles?.()
+          ? backgroundCommandFinalizationInstruction()
+          : "",
+      ].filter(Boolean);
+      const buildStepSystemPrompt = async (
+        context: typeof layeredContext,
+        exposedTools: readonly AgentTool[],
+        runtimeInstructions: readonly string[],
+      ): Promise<string> => {
+        const base = await this.dependencies.buildSystemPrompt({
+          mode: effectiveMode,
+          workspaceSummary,
+          memories,
+          ...(context.workingCheckpoint
+            ? { workingCheckpoint: context.workingCheckpoint }
+            : {}),
+          ...(context.retrievedThreadEvidence
+            ? { retrievedThreadEvidence: context.retrievedThreadEvidence }
+            : {}),
+          toolNames: exposedTools.map((tool) => tool.name),
+          ...(state.taskGraph && (
+            state.taskGraph.status !== "completed" ||
+            state.taskGraph.updatedByTurnId === turnId
+          )
+            ? { taskGraph: state.taskGraph }
+            : {}),
+          ...(state.planReview ? { planReview: state.planReview } : {}),
+        });
+        return runtimeInstructions.length
+          ? `${base}\n\n${runtimeInstructions.join("\n\n")}`
+          : base;
+      };
+
+      // Probe with the complete ordinary tool surface. The exact reservation
+      // is then reused for retrieval-boundary selection and the final build,
+      // so pressure cannot lag behind conversation truncation. If compaction
+      // becomes mandatory, retaining this conservative reservation also avoids
+      // an oscillation caused by the compact-only prompt being smaller.
+      const budgetProbeSystemPrompt = await buildStepSystemPrompt(
+        layeredContext,
+        ordinaryEnabledTools,
+        fixedRuntimeInstructions,
+      );
+      const reservedSystemPromptChars = budgetProbeSystemPrompt.length + 32 +
+        (this.dependencies.getLayeredContext
+          ? LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS
+          : 0) +
+        CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
+      const contextInspection = this.dependencies.contextManager.inspect(
+        state,
+        options.maxContextChars,
+        {
+          systemPrompt: budgetProbeSystemPrompt,
+          reservedSystemPromptChars,
+        },
+      );
+      const contextUtilization = contextInspection.utilization;
+      const contextPressure = contextInspection.pressure;
       const contextCompactionRequired =
         contextPressure === "require" || contextPressure === "force";
       if (contextPressure !== lastContextPressureLevel) {
@@ -1106,58 +1322,29 @@ export class AgentRuntime {
         contextPressure,
         contextUtilization,
       );
-      const compactContextTool = toolMap.get("compact_context");
       const enabledTools = contextCompactionRequired
         ? compactContextTool
           ? [compactContextTool]
           : []
-        : taskDagFinalizationOnly
-          ? state.taskGraph?.status === "completed"
-            ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
-            : []
-          : [...toolMap.values()].filter((tool) =>
-              !runCommandUnavailable || tool.name !== "run_command"
-            );
+        : ordinaryEnabledTools;
       const runtimeInstructions = [
         pressureInstruction,
-        runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
-        this.dependencies.hasOpenCommandHandles?.()
-          ? backgroundCommandFinalizationInstruction()
-          : "",
+        ...fixedRuntimeInstructions,
       ].filter(Boolean);
-      const buildStepSystemPrompt = async (
-        context: typeof layeredContext,
-      ): Promise<string> => {
-        const base = await this.dependencies.buildSystemPrompt({
-          mode: effectiveMode,
-          workspaceSummary,
-          memories,
-          ...(context.workingCheckpoint
-            ? { workingCheckpoint: context.workingCheckpoint }
-            : {}),
-          ...(context.retrievedThreadEvidence
-            ? { retrievedThreadEvidence: context.retrievedThreadEvidence }
-            : {}),
-          toolNames: enabledTools.map((tool) => tool.name),
-          ...(state.taskGraph && (
-            state.taskGraph.status !== "completed" ||
-            state.taskGraph.updatedByTurnId === turnId
-          )
-            ? { taskGraph: state.taskGraph }
-            : {}),
-          ...(state.planReview ? { planReview: state.planReview } : {}),
-        });
-        return runtimeInstructions.length
-          ? `${base}\n\n${runtimeInstructions.join("\n\n")}`
-          : base;
-      };
-      let systemPrompt = await buildStepSystemPrompt(layeredContext);
-      let reservedSystemPromptChars: number | undefined;
+      // In the common (normal-pressure) path the probe already is the exact
+      // prompt we need. Reuse it so prompt construction stays one-to-one with
+      // the provider request; only rebuild when pressure changes either the
+      // exposed tool surface or the Runtime instructions.
+      let systemPrompt = !contextCompactionRequired && !pressureInstruction
+        ? budgetProbeSystemPrompt
+        : await buildStepSystemPrompt(
+            layeredContext,
+            enabledTools,
+            runtimeInstructions,
+          );
       if (this.dependencies.getLayeredContext) {
         try {
-          reservedSystemPromptChars = systemPrompt.length + 32 +
-            LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS;
-          layeredContext = await this.dependencies.getLayeredContext({
+          const derived = await this.dependencies.getLayeredContext({
             state,
             query: contextRetrievalQuery(state, memoryContext.userInput),
             beforeMessageIndex: this.dependencies.contextManager.retrievalBoundary(
@@ -1167,7 +1354,16 @@ export class AgentRuntime {
               reservedSystemPromptChars,
             ),
           });
-          systemPrompt = await buildStepSystemPrompt(layeredContext);
+          layeredContext = pinCurrentState(
+            state,
+            memoryContext.approvedPlanReview,
+            derived,
+          );
+          systemPrompt = await buildStepSystemPrompt(
+            layeredContext,
+            enabledTools,
+            runtimeInstructions,
+          );
         } catch (error) {
           if (!contextLayerFailureReported) {
             contextLayerFailureReported = true;
@@ -1182,9 +1378,7 @@ export class AgentRuntime {
         systemPrompt,
         state,
         maxContextChars: options.maxContextChars,
-        ...(reservedSystemPromptChars === undefined
-          ? {}
-          : { reservedSystemPromptChars }),
+        reservedSystemPromptChars,
       });
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
@@ -1737,11 +1931,14 @@ export class AgentRuntime {
             summary: `Tool ${call.function.name} is not available in the current mode.`,
             error: "tool_not_available"
           };
-        } else if (toolName === "run_command" && runCommandUnavailable) {
+        } else if (
+          (toolName === "run_command" || toolName === "start_command") &&
+          runCommandUnavailable
+        ) {
           result = {
             ok: false,
             summary:
-              "run_command is disabled for the rest of this turn because the OS sandbox " +
+              `${toolName} is disabled for the rest of this turn because the OS sandbox ` +
               "failed before a previous command started. Do not retry it or persistently " +
               "block the current DAG task; continue with file tools or return a plain-text " +
               "pause report. Runtime will re-enable commands next turn.",
@@ -1771,11 +1968,11 @@ export class AgentRuntime {
                 throw new Error(
                   retryableSandboxRecoveryPending && !runCommandUnavailable
                     ? "A first transient Windows SRT initialization failure cannot " +
-                      "persistently block a DAG task. Retry run_command once; Runtime keeps " +
+                      `persistently block a DAG task. Retry ${unavailableCommandTool} once; Runtime keeps ` +
                       "the task in progress."
                     : "A turn-scoped OS sandbox failure cannot persistently block a DAG task. " +
                       "Return a plain-text pause report instead; Runtime keeps the task in " +
-                      "progress and re-enables run_command next turn.",
+                      "progress and re-enables command execution next turn.",
                 );
               }
               if (
@@ -1885,7 +2082,7 @@ export class AgentRuntime {
           }
         }
 
-        if (toolName === "run_command") {
+        if (toolName === "run_command" || toolName === "start_command") {
           const commandData = result.data && typeof result.data === "object"
             ? result.data
             : undefined;
@@ -1893,6 +2090,7 @@ export class AgentRuntime {
             ? commandData.status
             : undefined;
           if (!result.ok && commandStatus === "sandbox_unavailable") {
+            unavailableCommandTool = toolName;
             const sandboxFailure = commandData &&
                 "sandboxFailure" in commandData &&
                 commandData.sandboxFailure &&
@@ -2460,10 +2658,12 @@ export class AgentRuntime {
         false,
         memoryContext,
       );
-      const utilization =
-        this.dependencies.contextManager.estimateShortTermChars(state) /
-        options.maxContextChars;
-      const pressure = contextPressureLevel(utilization);
+      const inspection = this.dependencies.contextManager.inspect(
+        state,
+        options.maxContextChars,
+      );
+      const utilization = inspection.utilization;
+      const pressure = inspection.pressure;
       if (attempt === 1 && pressure === "force") {
         await this.appendContextCompactionRequest({
           state,
@@ -2477,6 +2677,7 @@ export class AgentRuntime {
         mode: "auto",
         workspaceSummary: "",
         memories: [],
+        workingCheckpoint: renderPinnedCurrentState(state),
         toolNames: ["compact_context"],
       });
       const pressureInstruction = contextPressureInstruction(
@@ -2705,10 +2906,8 @@ export class AgentRuntime {
           `Context compacted before Auto routing through ${compaction.compactedMessageCount} messages ` +
             `into ${compaction.summaryChars} characters.`,
         );
-        const remainingPressure = contextPressureLevel(
-          this.dependencies.contextManager.estimateShortTermChars(state) /
-            options.maxContextChars,
-        );
+        const remainingPressure = this.dependencies.contextManager
+          .inspect(state, options.maxContextChars).pressure;
         if (remainingPressure === "require" || remainingPressure === "force") {
           throw new Error(
             "The active request still exceeds the mandatory context limit after compaction. Increase max_context_chars or shorten the request.",

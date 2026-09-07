@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   ContextArtifactIndex,
   renderContextCheckpoint,
+  renderPinnedCurrentState,
   renderRetrievedContext,
 } from "../src/context/artifact-index.js";
 import type { SessionState } from "../src/core/types.js";
@@ -265,6 +266,98 @@ describe("layered Thread context index", () => {
       assert.doesNotMatch(indexedAssistant, /secret-tool-call-argument/u);
       assert.doesNotMatch(rendered, /hidden reasoning/u);
       assert.match(rendered, /Completed without exposing credentials/u);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("pins current control, diff, plan, and only unresolved latest failure state", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const state = createState(new ThreadStore(storage), "thread_context_pinned");
+      state.goal = "Ship the migration without losing rollback support.";
+      state.constraints = ["Keep the public schema compatible."];
+      state.changes.push({
+        path: "src/migration.ts",
+        operation: "update",
+        beforeHash: "a".repeat(64),
+        afterHash: "b".repeat(64),
+        source: "file_tool",
+        status: "verified",
+        timestamp: new Date().toISOString(),
+      });
+      state.messages.push({
+        role: "tool",
+        name: "run_command",
+        tool_call_id: "call_failed_test",
+        content: JSON.stringify({
+          ok: false,
+          summary: "Rollback assertion failed.",
+          error: "expected schema version 5",
+          data: { path: "tests/migration.test.ts" },
+        }),
+      });
+      state.commands.push({
+        id: "command_failed_test",
+        program: "npm",
+        args: ["test"],
+        cwd: process.cwd(),
+        status: "exited",
+        exitCode: 1,
+        durationMs: 20,
+        timestamp: new Date().toISOString(),
+        summary: "Migration rollback test failed.",
+      });
+      const approvedPlan = {
+        status: "approved_pending_execution" as const,
+        proposal: {
+          id: "plan_00000000-0000-4000-8000-000000000001",
+          revision: 1,
+          title: "Migration plan",
+          overview: "Preserve rollback compatibility while updating the schema.",
+          steps: [{
+            title: "Update migration",
+            description: "Change the migration implementation.",
+            verification: "Run the rollback tests.",
+          }],
+          proposedByTurnId: "turn_plan",
+          proposedAt: new Date().toISOString(),
+        },
+        approvedAt: new Date().toISOString(),
+      };
+
+      const pinned = renderPinnedCurrentState(state, approvedPlan);
+      assert.match(pinned, /Ship the migration/u);
+      assert.match(pinned, /Keep the public schema compatible/u);
+      assert.match(pinned, /"currentDiff"/u);
+      assert.match(pinned, /src\/migration\.ts/u);
+      assert.match(pinned, /"approvedPlan"/u);
+      assert.match(pinned, /Preserve rollback compatibility/u);
+      assert.match(pinned, /"latestFailure"/u);
+      assert.match(pinned, /Rollback assertion failed/u);
+
+      state.messages.push({
+        role: "tool",
+        name: "run_command",
+        tool_call_id: "call_passing_test",
+        content: JSON.stringify({ ok: true, summary: "Rollback assertions passed." }),
+      });
+      state.commands.push({
+        id: "command_passing_test",
+        program: "npm",
+        args: ["test"],
+        cwd: process.cwd(),
+        status: "exited",
+        exitCode: 0,
+        durationMs: 18,
+        timestamp: new Date().toISOString(),
+        summary: "Migration rollback tests passed.",
+      });
+      const resolved = renderPinnedCurrentState(state, approvedPlan);
+      assert.doesNotMatch(resolved, /"latestFailure"/u);
+      assert.doesNotMatch(resolved, /Rollback assertion failed/u);
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
