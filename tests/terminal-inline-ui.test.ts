@@ -1939,6 +1939,60 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("coalesces scroll bursts without dropping movement and cancels paints on resize/close", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Inspect scrolling", [], { onSteer: async () => undefined });
+        await settlePromptInput();
+        terminal.write(Array.from({ length: 150 }, (_, index) => `history ${index}`).join("\n"));
+        await settlePromptInput();
+        const viewer = (terminal as unknown as {
+          disclosureViewer: {
+            writer: { render: (...args: unknown[]) => unknown };
+            repaintTimer?: NodeJS.Timeout;
+            state: { scrollOffset: number };
+          };
+        }).disclosureViewer;
+        const render = viewer.writer.render.bind(viewer.writer);
+        let paints = 0;
+        viewer.writer.render = (...args) => { paints += 1; return render(...args); };
+        const initialOffset = viewer.state.scrollOffset;
+        input.write("\u001B[A".repeat(12));
+        input.write("\u001B[A".repeat(12));
+        assert.equal(viewer.state.scrollOffset, initialOffset - 24);
+        assert.equal(paints, 0, "Scroll input updates state without synchronous repainting");
+        assert.ok(viewer.repaintTimer);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(paints, 1);
+        assert.equal(disclosureFrame(terminal)?.viewport.scrollOffset, initialOffset - 24);
+
+        input.write("\u001B[A");
+        assert.ok(viewer.repaintTimer);
+        output.columns = 100;
+        output.emit("resize");
+        assert.equal(viewer.repaintTimer, undefined);
+        const afterResize = paints;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(paints, afterResize, "Old frame must not paint after resize");
+        assert.equal(disclosureFrame(terminal)?.columns, 99);
+
+        input.write("\u001B[A");
+        assert.ok(viewer.repaintTimer);
+        terminal.close();
+        assert.equal(viewer.repaintTimer, undefined);
+        const afterClose = paints;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(paints, afterClose, "Closed viewers must not repaint");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("keeps short disclosures attached to Request and makes long bodies visibly scrollable", async () => {
     await withInteractiveEnvironment(async () => {
       const shortInput = new TtyInput();
@@ -2017,6 +2071,7 @@ describe("Terminal retained inline shell", () => {
         // buttons uncaptured. Feed that portable sequence directly here.
         longInput.write("\u001B[B");
         await settlePromptInput();
+        await new Promise((resolve) => setTimeout(resolve, 30));
         const scrolled = disclosureFrame(longTerminal);
         assert.ok(scrolled);
         assert.equal(scrolled.viewport.scrollOffset, initialOffset + 1);
@@ -2062,6 +2117,7 @@ describe("Terminal retained inline shell", () => {
 
         input.write("\u001B[5~".repeat(10));
         await settlePromptInput();
+        await new Promise((resolve) => setTimeout(resolve, 30));
         const atStart = disclosureFrame(terminal);
         assert.ok(atStart);
         assert.equal(atStart.viewport.atStart, true);
@@ -2072,6 +2128,7 @@ describe("Terminal retained inline shell", () => {
 
         input.write("\u001B[6~".repeat(10));
         await settlePromptInput();
+        await new Promise((resolve) => setTimeout(resolve, 30));
         const atEnd = disclosureFrame(terminal);
         assert.ok(atEnd);
         assert.equal(atEnd.viewport.atEnd, true);
@@ -2154,6 +2211,7 @@ describe("Terminal retained inline shell", () => {
 
         input.write("\u001B[5~");
         await settlePromptInput();
+        await new Promise((resolve) => setTimeout(resolve, 30));
         assert.equal(disclosureFrame(terminal)?.viewport.atEnd, false);
         input.write("still works\r");
         assert.equal((await prompt)?.text, "still works");

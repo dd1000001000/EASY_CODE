@@ -507,6 +507,8 @@ function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
       "durationMs",
       "timestamp",
       "summary",
+      "outputEvidence",
+      "sourceScopeKey",
       "sourceAgentRole",
       "sourceAgentId",
       "sourceTaskId",
@@ -530,6 +532,18 @@ function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
     value.durationMs >= 0 &&
     typeof value.timestamp === "string" &&
     typeof value.summary === "string" &&
+    (value.sourceScopeKey === undefined || typeof value.sourceScopeKey === "string") &&
+    (value.outputEvidence === undefined || (
+      isRecord(value.outputEvidence) &&
+      hasOnlyKeys(value.outputEvidence, ["capturedOutputDigest", "stdoutTail", "stderrTail", "incomplete", "failureKind", "processStarted"]) &&
+      typeof value.outputEvidence.capturedOutputDigest === "string" &&
+      /^sha256:[a-f0-9]{64}$/u.test(value.outputEvidence.capturedOutputDigest) &&
+      typeof value.outputEvidence.stdoutTail === "string" && value.outputEvidence.stdoutTail.length <= 1_024 &&
+      typeof value.outputEvidence.stderrTail === "string" && value.outputEvidence.stderrTail.length <= 1_024 &&
+      typeof value.outputEvidence.incomplete === "boolean" &&
+      (value.outputEvidence.failureKind === undefined || typeof value.outputEvidence.failureKind === "string") &&
+      (value.outputEvidence.processStarted === undefined || typeof value.outputEvidence.processStarted === "boolean")
+    )) &&
     (value.sourceAgentRole === undefined ||
       value.sourceAgentRole === "main_agent" ||
       value.sourceAgentRole === "subagent") &&

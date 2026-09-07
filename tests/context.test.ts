@@ -85,7 +85,7 @@ describe("ContextManager", () => {
     assert.ok(contextChars(context) <= 5_000);
   });
 
-  it("preserves the current user message when system reservation exceeds a low budget", () => {
+  it("reduces artificial reservation to preserve the current request intact", () => {
     const state = makeState();
     state.messages.push({
       role: "user",
@@ -100,6 +100,7 @@ describe("ContextManager", () => {
       "system",
       reservedSystemPromptChars,
     );
+    assert.equal(boundary, state.messages.length - 1);
     const context = manager.build({
       systemPrompt: "system",
       state,
@@ -107,7 +108,6 @@ describe("ContextManager", () => {
       reservedSystemPromptChars,
     });
 
-    assert.equal(boundary, state.messages.length - 1);
     assert.equal(context.at(-1)?.role, "user");
     assert.match(context.at(-1)?.content ?? "", /CURRENT_USER_REQUEST_/u);
     assert.ok(contextChars(context) <= maxContextChars);
@@ -247,8 +247,8 @@ describe("ContextManager", () => {
     );
     assert.equal(inspection.durableHistoryChars, estimateMessagesChars(current.messages));
     assert.equal(inspection.durableActiveChars, inspection.durableHistoryChars);
-    assert.ok(inspection.projectedActiveChars < inspection.durableActiveChars);
-    assert.ok(inspection.providerInputChars < inspection.durableHistoryChars);
+    assert.equal(inspection.projectedActiveChars, inspection.durableActiveChars);
+    assert.ok(inspection.providerInputChars > inspection.durableHistoryChars);
   });
 
   it("estimates mixed-language short-term tokens and excludes compacted raw history", () => {
@@ -288,7 +288,7 @@ describe("ContextManager", () => {
     assert.equal(context.some((message) => message.content?.includes("message-29")), true);
     assert.equal(
       context.some((message) =>
-        message.content?.includes("Automatic overflow fallback for later messages"),
+        message.content?.includes("Earlier messages are omitted"),
       ),
       true,
     );
@@ -352,17 +352,15 @@ describe("ContextManager", () => {
     assert.equal(state.compactedMessageCount, 24);
   });
 
-  it("bounds an oversized latest message and system prompt", () => {
+  it("rejects oversized instructions instead of silently truncating them", () => {
     const state = makeState();
     state.messages.push({ role: "user", content: "latest-" + "y".repeat(20_000) });
-    const context = new ContextManager().build({
+    assert.throws(() => new ContextManager().build({
       systemPrompt: "rules-" + "z".repeat(20_000),
       state,
       maxContextChars: 4_096
-    });
-
-    assert.ok(contextChars(context) <= 4_096);
-    assert.equal(context.some((message) => message.content?.includes("latest-")), true);
+    }), /system instructions cannot be truncated/u);
+    assert.equal(state.messages.at(-1)?.content?.length, 20_007);
   });
 
   it("keeps image references beyond the former five-image context limit", () => {
@@ -410,7 +408,7 @@ describe("ContextManager", () => {
     );
   });
 
-  it("preserves the latest image when the text budget is very small", () => {
+  it("preserves image and request intact or reports insufficient capacity", () => {
     const state = makeState();
     const id = "image_00000000-0000-4000-8000-000000000099";
     state.messages = [{
@@ -428,15 +426,16 @@ describe("ContextManager", () => {
       }],
     }];
 
-    const context = new ContextManager().build({
+    assert.throws(() => new ContextManager().build({
       systemPrompt: "system",
       state,
       maxContextChars: 1_024,
-    });
+    }), /cannot fit intact/u);
+    const context = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 30_000 });
     const latest = context.find((message) => message.role === "user" && message.images?.length);
     assert.equal(latest?.role, "user");
     if (latest?.role === "user") assert.equal(latest.images?.[0]?.id, id);
-    assert.ok(contextChars(context) <= 1_024);
+    assert.ok(contextChars(context) <= 30_000);
   });
 
   it("caps historical image context by combined bytes and reports image estimates", () => {

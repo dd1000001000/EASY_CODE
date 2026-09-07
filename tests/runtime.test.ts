@@ -109,10 +109,12 @@ describe("AgentRuntime", () => {
       name: "qwen",
       model: "mock",
       async complete(request) {
-        assert.match(request.messages[0]?.content ?? "", /pinnedCurrentState/u);
-        assert.match(request.messages[0]?.content ?? "", /continue the historical task/u);
-        assert.match(request.messages[0]?.content ?? "", /src\/release\.ts/u);
-        assert.match(request.messages[0]?.content ?? "", /older-retrieved-evidence/u);
+        const context = request.messages.map((message) => message.content ?? "").join("\n");
+        assert.doesNotMatch(request.messages[0]?.content ?? "", /older-retrieved-evidence/u);
+        assert.match(context, /pinnedCurrentState/u);
+        assert.match(context, /continue the historical task/u);
+        assert.match(context, /src\/release\.ts/u);
+        assert.match(context, /older-retrieved-evidence/u);
         return { message: { role: "assistant", content: "done" } };
       },
     };
@@ -155,9 +157,8 @@ describe("AgentRuntime", () => {
     assert.equal(result.reason, "success", result.text);
     assert.ok(observedBoundary > 0);
     assert.match(observedQuery, /continue the historical task/u);
-    assert.match(promptLayers.checkpoint ?? "", /pinnedCurrentState/u);
-    assert.match(promptLayers.checkpoint ?? "", /rollback requirement/u);
-    assert.equal(promptLayers.evidence, "older-retrieved-evidence");
+    assert.equal(promptLayers.checkpoint, undefined);
+    assert.equal(promptLayers.evidence, undefined);
     assert.match(observedQuery, /LATEST_FAILURE/u);
     assert.match(observedQuery, /rollback assertion/u);
     assert.match(observedQuery, /CURRENT_DIFF_AND_PATH_EVIDENCE/u);
@@ -240,9 +241,7 @@ describe("AgentRuntime", () => {
         name: "qwen",
         model: "mock",
         async complete(request) {
-          const lastMessage = request.messages.at(-1);
-          assert.equal(lastMessage?.role, "user");
-          assert.match(lastMessage?.content ?? "", new RegExp(currentRequest, "u"));
+          assert.ok(request.messages.some((message) => message.role === "user" && message.content === currentRequest));
           return { message: { role: "assistant", content: "done" } };
         },
       },
@@ -268,7 +267,7 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
+    assert.equal(result.reason, "success", result.text);
   });
 
   it("notifies the UI only for main-model thinking when thinking is enabled", async () => {
@@ -905,6 +904,11 @@ describe("AgentRuntime", () => {
       name: "qwen",
       model: "mock",
       async complete(request) {
+        const continuity = request.messages.find((message) => message.content?.startsWith("RUNTIME_CONTINUITY_STATE"));
+        if (continuity?.content?.includes('"taskGraph"')) {
+          const payload = JSON.parse(continuity.content.split("\n").at(-1)!);
+          promptGraphStatuses.push(payload.taskGraph.status);
+        }
         requestCount += 1;
         if (requestCount === 4) {
           sawRuntimeReminder = request.messages.some(
@@ -937,10 +941,7 @@ describe("AgentRuntime", () => {
       provider,
       tools: [new ManageTasksTool(), readTool],
       contextManager: new ContextManager(),
-      buildSystemPrompt: async ({ taskGraph }) => {
-        promptGraphStatuses.push(taskGraph?.status ?? "none");
-        return "system";
-      },
+      buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [],
       appendEvent: async (event) => {
@@ -2226,7 +2227,7 @@ describe("AgentRuntime", () => {
     assert.equal(eventTypes.includes("message.user.synthetic"), false);
   });
 
-  it("does not require compaction for durable history omitted from the final request", async () => {
+  it("requires compaction when overflow selection would hide active history pressure", async () => {
     const maxContextChars = 100_000;
     const input = "Continue with the current request.";
     const currentState = state();
@@ -2264,17 +2265,17 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
-    assert.equal(requests.length, 1);
-    assert.equal(snapshots.length, 1);
+    assert.equal(result.reason, "failed");
+    assert.ok(requests.length >= 1);
+    assert.ok(snapshots.length >= 1);
+    assert.equal(currentState.compactedMessageCount, 0);
     assert.ok(snapshots[0]!.actualRequest.durableHistoryChars > maxContextChars);
     assert.ok(
       snapshots[0]!.actualRequest.providerInputChars <
         snapshots[0]!.actualRequest.durableHistoryChars,
     );
-    assert.notEqual(snapshots[0]!.enforcedPressure, "require");
-    assert.notEqual(snapshots[0]!.enforcedPressure, "force");
-    assert.doesNotMatch(
+    assert.equal(snapshots[0]!.enforcedPressure, "force");
+    assert.match(
       requests[0]?.messages[0]?.content ?? "",
       /RUNTIME_CONTEXT_COMPACTION_(?:REQUIRED|FORCED)/u,
     );

@@ -1,6 +1,9 @@
 import { wrapToWidth } from "../render/layout.js";
 import {
   layoutVirtualDocument,
+  isVirtualDocumentSnapshot,
+  snapshotVirtualDocumentNodes,
+  validateVirtualDocumentNodes,
   type VirtualDisclosureNode,
   type VirtualDocumentLine,
   type VirtualDocumentLinePart,
@@ -335,6 +338,11 @@ export function updateDisclosureViewChrome(
   state: Readonly<DisclosureViewState>,
   updates: Readonly<UpdateDisclosureViewChromeOptions>,
 ): DisclosureViewState {
+  if ((updates.headerLines === undefined || linesEqual(updates.headerLines, state.headerLines)) &&
+      (updates.composerLines === undefined || linesEqual(updates.composerLines, state.composerLines)) &&
+      (updates.footerLines === undefined || linesEqual(updates.footerLines, state.footerLines))) {
+    return state;
+  }
   const before = renderDisclosureView(state);
   const provisional: DisclosureViewState = {
     ...state,
@@ -378,7 +386,7 @@ export function replaceDisclosureViewNodes(
   nodes: readonly VirtualDocumentNode[],
 ): DisclosureViewState {
   const before = renderDisclosureView(state);
-  const nextNodes = cloneNodes(nodes);
+  const nextNodes = snapshotVirtualDocumentNodes(nodes, state.nodes);
   validateNodesAndTarget(nextNodes, state.target);
   const visibleTitleRow = before.viewport.targetTitleScreenRow;
   const provisional = {
@@ -542,19 +550,38 @@ export function applyDisclosureViewCommand(
   }
 }
 
+const materializedDocuments = new WeakMap<readonly VirtualDocumentNode[], {
+  targetId: string | undefined;
+  targetKind: DisclosureViewTargetKind | undefined;
+  expanded: boolean;
+  nodes: readonly VirtualDocumentNode[];
+}>();
+
 function materializeNodes(
   state: Readonly<DisclosureViewState>,
 ): readonly VirtualDocumentNode[] {
-  return state.nodes.map((node) => {
-    if (node.kind === "text") return { ...node };
+  const cached = materializedDocuments.get(state.nodes);
+  if (cached && cached.targetId === state.target?.id &&
+      cached.targetKind === state.target?.kind && cached.expanded === state.targetExpanded) {
+    return cached.nodes;
+  }
+  const nodes = snapshotVirtualDocumentNodes(state.nodes.map((node) => {
+    if (node.kind === "text") return node;
+    const expanded = state.target !== undefined && state.targetExpanded &&
+      node.id === state.target.id && node.kind === state.target.kind;
+    if (node.expanded === expanded) return node;
     return {
       ...node,
-      expanded: state.target !== undefined &&
-        state.targetExpanded &&
-        node.id === state.target.id &&
-        node.kind === state.target.kind,
+      expanded,
     };
-  });
+  }), cached?.nodes ?? state.nodes);
+  if (isVirtualDocumentSnapshot(state.nodes)) {
+    materializedDocuments.set(state.nodes, {
+      targetId: state.target?.id, targetKind: state.target?.kind,
+      expanded: state.targetExpanded, nodes,
+    });
+  }
+  return nodes;
 }
 
 function stateDocumentLayout(state: Readonly<DisclosureViewState>) {
@@ -641,10 +668,18 @@ function wrapChrome(
   columns: number,
   preserveAnsi: boolean,
 ): readonly string[] {
-  return lines.flatMap((line) =>
+  const cached = chromeLines.get(lines);
+  if (cached?.columns === columns && cached.preserveAnsi === preserveAnsi) return cached.wrapped;
+  const wrapped = lines.flatMap((line) =>
     wrapToWidth(line, columns, { preserveAnsi })
   );
+  if (Object.isFrozen(lines)) chromeLines.set(lines, { columns, preserveAnsi, wrapped });
+  return wrapped;
 }
+
+const chromeLines = new WeakMap<readonly string[], {
+  columns: number; preserveAnsi: boolean; wrapped: readonly string[];
+}>();
 
 function appendChromeRows(
   rows: DisclosureViewFrameRow[],
@@ -674,9 +709,7 @@ function validateNodesAndTarget(
   nodes: readonly VirtualDocumentNode[],
   target: DisclosureViewTarget | undefined,
 ): void {
-  // Laying out validates empty/duplicate IDs even when no disclosure is
-  // selected by the ordinary conversation viewport.
-  layoutVirtualDocument(nodes, 1, { preserveAnsi: false });
+  validateVirtualDocumentNodes(nodes);
   if (target !== undefined) assertTarget(nodes, target, false);
 }
 
@@ -685,9 +718,8 @@ function assertTarget(
   target: DisclosureViewTarget,
   validateNodes = true,
 ): void {
-  // Laying out also validates duplicate IDs.
   if (validateNodes) {
-    layoutVirtualDocument(nodes, 1, { preserveAnsi: false });
+    validateVirtualDocumentNodes(nodes);
   }
   const node = nodes.find((candidate) => candidate.id === target.id);
   if (!node || node.kind === "text" || node.kind !== target.kind) {
@@ -700,11 +732,15 @@ function assertTarget(
 function cloneNodes(
   nodes: readonly VirtualDocumentNode[],
 ): readonly VirtualDocumentNode[] {
-  return nodes.map((node) => ({ ...node }));
+  return snapshotVirtualDocumentNodes(nodes);
 }
 
 function cloneLines(lines: readonly string[] | undefined): readonly string[] {
-  return Array.from(lines ?? []);
+  return Object.freeze(Array.from(lines ?? []));
+}
+
+function linesEqual(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((line, index) => line === right[index]);
 }
 
 function cloneTarget(target: DisclosureViewTarget): DisclosureViewTarget {

@@ -9,6 +9,7 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { activeTask } from "../tasks/task-graph.js";
 import { sha256 } from "../utils/hash.js";
 import type { CompactionBenefitEvaluation } from "./compaction-policy.js";
+import { unresolvedCommands } from "./runtime-state.js";
 
 const RUNTIME_COMPACTION_MESSAGE = /^RUNTIME_CONTEXT_(?:COMPACTION|PRESSURE)/u;
 
@@ -258,20 +259,32 @@ export function validateCompactionIntegrity(input: {
     ) {
       errors.push("blocked_task_missing_from_summary");
     }
-    const latestCommand = input.state.commands.at(-1);
-    const latestFailedCommand = latestCommand &&
-      (latestCommand.status !== "exited" || latestCommand.exitCode !== 0)
-      ? latestCommand
-      : undefined;
-    if (
-      latestFailedCommand &&
-      (
+    for (const command of unresolvedCommands(input.state)) {
+      if (
         !Array.isArray(summary.errorsAndBlockers) ||
         summary.errorsAndBlockers.length === 0 ||
-        !input.request.summary.includes(latestFailedCommand.id)
-      )
-    ) {
-      errors.push("unresolved_command_missing_from_summary");
+        !input.request.summary.includes(command.id)
+      ) errors.push("unresolved_command_missing_from_summary");
+    }
+    // Free-text prose cannot prove a test passed. Require a resolvable durable
+    // locator for any claimed verified result; Runtime continuity remains the
+    // authority for command outcomes and pending experiments.
+    const refs = Array.isArray(summary.evidenceRefs) ? summary.evidenceRefs.filter(isRecord) : [];
+    if (Array.isArray(summary.verifiedResults)) for (const item of summary.verifiedResults) {
+      if (!isRecord(item) || !Array.isArray(item.evidenceRefIds) || !item.evidenceRefIds.length) {
+        errors.push("verified_result_without_evidence");
+        continue;
+      }
+      for (const id of item.evidenceRefIds) {
+        const ref = refs.find((candidate) => candidate.id === id);
+        const locator = typeof ref?.reference === "string" ? ref.reference : "";
+        const message = /^message:(\d+)$/u.exec(locator);
+        const command = /^command:(.+)$/u.exec(locator);
+        const source = message ? input.state.messages[Number(message[1])] : undefined;
+        const validMessage = source?.role === "tool" && Number(message?.[1]) < input.sourceEndMessageIndex;
+        const validCommand = command && input.state.commands.some((entry) => entry.id === command[1]);
+        if (!validMessage && !validCommand) errors.push("unresolvable_verified_evidence");
+      }
     }
   }
 

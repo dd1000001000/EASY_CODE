@@ -161,7 +161,7 @@ describe("MicroCompaction", () => {
     assert.doesNotMatch(first, /sk-[a-z0-9]/iu);
   });
 
-  it("summarizes commands from structured metadata without retaining argv or output", () => {
+  it("never micro-compacts command evidence, including timeouts", () => {
     const payload = JSON.stringify({
       ok: false,
       summary: "Command failed with password=super-secret-value",
@@ -185,15 +185,7 @@ describe("MicroCompaction", () => {
     ]);
     const reference = projected[1]?.content ?? "";
 
-    assert.match(reference, /kind=command/u);
-    assert.match(reference, /command_id=command_123/u);
-    assert.match(reference, /status=timed_out/u);
-    assert.match(reference, /exit_code=null/u);
-    assert.match(reference, /stdout_bytes=52000/u);
-    assert.match(reference, /workspace_delta=1\/2\/0/u);
-    assert.match(reference, /failure_kind=timeout/u);
-    assert.match(reference, /retryable=true/u);
-    assert.doesNotMatch(reference, /secret-program|sensitive stdout|super-secret-value/u);
+    assert.equal(reference, payload);
   });
 
   it("summarizes search, file mutation, task, and child results by stable metadata", () => {
@@ -266,8 +258,12 @@ describe("MicroCompaction", () => {
         { role: "tool", tool_call_id: `call_${index}`, name: testCase.name, content: payload },
         { role: "assistant", content: "consumed" },
       ])[1]?.content ?? "";
-      for (const expected of testCase.expected) assert.match(reference, expected);
-      assert.doesNotMatch(reference, /private task body|private child result|secret body/u);
+      if (["manage_tasks", "manage_subagents", "submit_task_result"].includes(testCase.name)) {
+        assert.equal(reference, payload);
+      } else {
+        for (const expected of testCase.expected) assert.match(reference, expected);
+        assert.doesNotMatch(reference, /private task body|private child result|secret body/u);
+      }
     }
   });
 
@@ -301,7 +297,7 @@ describe("MicroCompaction", () => {
     assert.match(reference, /\[REDACTED\]/u);
   });
 
-  it("uses the lightweight projection for provider builds and pressure estimates", () => {
+  it("preserves the stable history below pressure and counts its full cost", () => {
     const oldContent = longResult("source").repeat(8);
     const messages: ChatMessage[] = [
       { role: "user", content: "read this" },
@@ -322,13 +318,14 @@ describe("MicroCompaction", () => {
     assert.equal(projectedResult?.role, "tool");
     assert.equal(
       projectedResult?.content.startsWith(MICRO_COMPACTION_PLACEHOLDER_PREFIX),
-      true,
+      false,
     );
-    assert.ok(manager.estimateShortTermChars(state) < oldContent.length / 4);
+    assert.equal(projectedResult?.content, oldContent);
+    assert.ok(manager.estimateShortTermChars(state) >= oldContent.length);
     assert.deepEqual(state.messages, before);
   });
 
-  it("keeps only the latest unresolved tool-call reasoning in model input", () => {
+  it("keeps every reasoning block unchanged and ordered in model input", () => {
     const oldCall = call("call_old", "read_file");
     if (oldCall.role !== "assistant") throw new Error("expected assistant call");
     oldCall.reasoning_content = "old private reasoning";
@@ -350,11 +347,11 @@ describe("MicroCompaction", () => {
 
     assert.equal(
       projected[1]?.role === "assistant" ? projected[1].reasoning_content : undefined,
-      undefined,
+      "old private reasoning",
     );
     assert.equal(
       projected[3]?.role === "assistant" ? projected[3].reasoning_content : undefined,
-      undefined,
+      "answer reasoning",
     );
     assert.equal(
       projected[5]?.role === "assistant" ? projected[5].reasoning_content : undefined,
@@ -364,7 +361,7 @@ describe("MicroCompaction", () => {
     assert.deepEqual(messages, durableSnapshot);
   });
 
-  it("removes all reasoning when the latest assistant message is not a tool request", () => {
+  it("preserves reasoning across answers and new user messages", () => {
     const oldCall = call("call_old", "read_file");
     if (oldCall.role !== "assistant") throw new Error("expected assistant call");
     oldCall.reasoning_content = "old tool reasoning";
@@ -380,11 +377,11 @@ describe("MicroCompaction", () => {
       projected.some((message) =>
         message.role === "assistant" && message.reasoning_content !== undefined
       ),
-      false,
+      true,
     );
   });
 
-  it("excludes consumed reasoning from both pressure estimates and provider builds", () => {
+  it("includes historical reasoning in pressure estimates and provider builds", () => {
     const consumedReasoning = "private".repeat(10_000);
     const messages: ChatMessage[] = [
       { role: "user", content: "first request" },
@@ -394,19 +391,19 @@ describe("MicroCompaction", () => {
     const state = stateWith(messages);
     const manager = new ContextManager();
 
-    assert.ok(manager.estimateShortTermChars(state) < consumedReasoning.length / 10);
-    const built = manager.build({ systemPrompt: "system", state, maxContextChars: 20_000 });
+    assert.ok(manager.estimateShortTermChars(state) >= consumedReasoning.length);
+    const built = manager.build({ systemPrompt: "system", state, maxContextChars: 100_000 });
     const assistant = built.find((message) => message.role === "assistant");
     assert.equal(assistant?.role, "assistant");
     assert.equal(
       assistant?.role === "assistant" ? assistant.reasoning_content : undefined,
-      undefined,
+      consumedReasoning,
     );
     assert.equal(messages[1]?.role === "assistant" ? messages[1].reasoning_content : undefined,
       consumedReasoning);
   });
 
-  it("bounds the retained active tool reasoning within the provider budget", () => {
+  it("rejects insufficient capacity rather than truncating active thinking", () => {
     const activeCall = call("call_active", "run_command");
     if (activeCall.role !== "assistant") throw new Error("expected assistant call");
     activeCall.reasoning_content = "reasoning".repeat(2_000);
@@ -414,11 +411,12 @@ describe("MicroCompaction", () => {
       { role: "user", content: "run the verification" },
       activeCall,
     ]);
-    const built = new ContextManager().build({
+    assert.throws(() => new ContextManager().build({
       systemPrompt: "system",
       state,
       maxContextChars: 4_096,
-    });
+    }), /latest reasoning\/tool exchange cannot fit intact/u);
+    const built = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 30_000 });
     const projectedCall = built.find((message) =>
       message.role === "assistant" && message.tool_calls?.[0]?.id === "call_active"
     );
@@ -439,8 +437,8 @@ describe("MicroCompaction", () => {
     );
     assert.ok(
       projectedCall?.role === "assistant" &&
-      (projectedCall.reasoning_content?.length ?? 0) < activeCall.reasoning_content.length,
+      projectedCall.reasoning_content === activeCall.reasoning_content,
     );
-    assert.ok(requestChars <= 4_096);
+    assert.ok(requestChars <= 30_000);
   });
 });

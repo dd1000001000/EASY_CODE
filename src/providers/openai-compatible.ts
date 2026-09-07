@@ -272,7 +272,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         for (const image of originalImages) validateImageAttachmentCollection([image]);
         if (currentTurnImageIds !== undefined) {
           const currentImageIds = new Set(currentTurnImageIds);
-          providerMessages = messages.map((message) => {
+          providerMessages = providerMessages.map((message) => {
             if (message.role !== "user" || !message.images?.length) return message;
             const compatible: ImageAttachment[] = [];
             const omitted: Array<{ image: ImageAttachment; issue: string }> = [];

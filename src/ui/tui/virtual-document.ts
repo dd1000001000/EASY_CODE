@@ -33,6 +33,57 @@ export type VirtualDisclosureNode =
 
 export type VirtualDocumentNode = VirtualTextNode | VirtualDisclosureNode;
 
+// Only snapshots owned by this module are memoized. Callers may still pass
+// mutable arrays/objects to the public layout API without getting stale rows.
+const snapshots = new WeakSet<readonly VirtualDocumentNode[]>();
+const ownedNodes = new WeakSet<VirtualDocumentNode>();
+// Keep only the latest width/style variant; resizing must not grow a global
+// text cache. Weak keys release layouts when their transcript is discarded.
+const documentLayouts = new WeakMap<readonly VirtualDocumentNode[], {
+  columns: number;
+  preserveAnsi: boolean;
+  layout: VirtualDocumentLayout;
+}>();
+const nodeLayouts = new WeakMap<VirtualDocumentNode, {
+  columns: number;
+  preserveAnsi: boolean;
+  parts: Map<VirtualDocumentLinePart, readonly string[]>;
+}>();
+
+export function isVirtualDocumentSnapshot(nodes: readonly VirtualDocumentNode[]): boolean {
+  return snapshots.has(nodes);
+}
+
+/** Copy external input, retaining unchanged immutable nodes across appends. */
+export function snapshotVirtualDocumentNodes(
+  nodes: readonly VirtualDocumentNode[],
+  previous: readonly VirtualDocumentNode[] = [],
+): readonly VirtualDocumentNode[] {
+  if (snapshots.has(nodes)) return nodes;
+  validateVirtualDocumentNodes(nodes);
+  const byId = new Map(previous.map((node) => [node.id, node]));
+  const result = nodes.map((node) => {
+    const old = byId.get(node.id);
+    if (old && ownedNodes.has(old) && sameNode(old, node)) return old;
+    if (ownedNodes.has(node)) return node;
+    const copy = Object.freeze({ ...node });
+    ownedNodes.add(copy);
+    return copy;
+  });
+  if (snapshots.has(previous) && result.length === previous.length &&
+      result.every((node, index) => node === previous[index])) return previous;
+  Object.freeze(result);
+  snapshots.add(result);
+  return result;
+}
+
+function sameNode(left: VirtualDocumentNode, right: VirtualDocumentNode): boolean {
+  if (left.id !== right.id || left.kind !== right.kind) return false;
+  if (left.kind === "text") return right.kind === "text" && left.text === right.text;
+  return right.kind !== "text" && left.title === right.title &&
+    left.preview === right.preview && left.body === right.body && left.expanded === right.expanded;
+}
+
 export type VirtualDocumentLinePart =
   | "text"
   | "title"
@@ -114,13 +165,22 @@ export function layoutVirtualDocument(
   options: { readonly preserveAnsi?: boolean } = {},
 ): VirtualDocumentLayout {
   const normalizedColumns = positiveInteger(columns, 1);
-  validateNodes(nodes);
   const preserveAnsi = options.preserveAnsi ?? true;
+  const cached = documentLayouts.get(nodes);
+  if (cached?.columns === normalizedColumns && cached.preserveAnsi === preserveAnsi) {
+    return cached.layout;
+  }
+  validateVirtualDocumentNodes(nodes);
   const lines: VirtualDocumentLine[] = [];
   const nodeRows = new Map<string, number>();
   const titleRows = new Map<string, number>();
 
   for (const node of nodes) {
+    let nodeCache = nodeLayouts.get(node);
+    if (!nodeCache || nodeCache.columns !== normalizedColumns || nodeCache.preserveAnsi !== preserveAnsi) {
+      nodeCache = { columns: normalizedColumns, preserveAnsi, parts: new Map() };
+      if (ownedNodes.has(node)) nodeLayouts.set(node, nodeCache);
+    }
     nodeRows.set(node.id, lines.length);
     let nodeRow = 0;
 
@@ -128,7 +188,11 @@ export function layoutVirtualDocument(
       part: VirtualDocumentLinePart,
       value: string,
     ): void => {
-      const wrapped = wrapToWidth(value, normalizedColumns, { preserveAnsi });
+      let wrapped = nodeCache.parts.get(part);
+      if (!wrapped) {
+        wrapped = wrapToWidth(value, normalizedColumns, { preserveAnsi });
+        nodeCache.parts.set(part, wrapped);
+      }
       for (let partRow = 0; partRow < wrapped.length; partRow += 1) {
         lines.push({
           documentRow: lines.length,
@@ -155,13 +219,17 @@ export function layoutVirtualDocument(
       : node.preview);
   }
 
-  return {
+  const layout: VirtualDocumentLayout = {
     columns: normalizedColumns,
     lines,
     totalRows: lines.length,
     nodeRows,
     titleRows,
   };
+  if (snapshots.has(nodes)) {
+    documentLayouts.set(nodes, { columns: normalizedColumns, preserveAnsi, layout });
+  }
+  return layout;
 }
 
 export function createVirtualViewportState(
@@ -217,7 +285,7 @@ export function replaceVirtualDocumentNodes(
   state: Readonly<VirtualViewportState>,
   nodes: readonly VirtualDocumentNode[],
 ): VirtualViewportState {
-  const nextNodes = cloneNodes(nodes);
+  const nextNodes = snapshotVirtualDocumentNodes(nodes, state.nodes);
   const layout = layoutVirtualDocument(nextNodes, state.columns, {
     preserveAnsi: state.preserveAnsi,
   });
@@ -306,9 +374,9 @@ export function toggleVirtualDisclosure(
     titleScreenRow < state.viewportRows;
 
   const replacement: VirtualDisclosureNode = { ...current, expanded: nextExpanded };
-  const nodes = state.nodes.map((node, nodeIndex) =>
+  const nodes = snapshotVirtualDocumentNodes(state.nodes.map((node, nodeIndex) =>
     nodeIndex === index ? replacement : node
-  );
+  ), state.nodes);
   const after = layoutVirtualDocument(nodes, state.columns, {
     preserveAnsi: state.preserveAnsi,
   });
@@ -418,11 +486,11 @@ function stateLayout(state: Readonly<VirtualViewportState>): VirtualDocumentLayo
 function cloneNodes(
   nodes: readonly VirtualDocumentNode[],
 ): readonly VirtualDocumentNode[] {
-  validateNodes(nodes);
-  return nodes.map((node) => ({ ...node }));
+  return snapshotVirtualDocumentNodes(nodes);
 }
 
-function validateNodes(nodes: readonly VirtualDocumentNode[]): void {
+export function validateVirtualDocumentNodes(nodes: readonly VirtualDocumentNode[]): void {
+  if (snapshots.has(nodes)) return;
   const ids = new Set<string>();
   for (const node of nodes) {
     if (!node.id) throw new Error("Virtual document node IDs cannot be empty.");

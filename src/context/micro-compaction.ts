@@ -19,10 +19,6 @@ export const MICRO_COMPACTION_PLACEHOLDER_PREFIX =
  */
 const COMPACTABLE_TOOL_NAMES = new Set<string>([
   "read_file",
-  "run_command",
-  "start_command",
-  "poll_command",
-  "cancel_command",
   "create_file",
   "update_file",
   "delete_file",
@@ -32,9 +28,6 @@ const COMPACTABLE_TOOL_NAMES = new Set<string>([
   "web_fetch",
   "file_edit",
   "file_write",
-  "manage_tasks",
-  "manage_subagents",
-  "submit_task_result",
 ]);
 
 type JsonRecord = Record<string, unknown>;
@@ -380,39 +373,15 @@ export function microCompactToolResults(
 }
 
 /**
- * Remove model reasoning that has already served its turn from the
- * provider-facing projection.
- *
- * Durable Thread messages are deliberately left untouched. The only
- * reasoning that remains visible to the provider is the reasoning attached
- * to the latest assistant message when that message is an unresolved tool
- * request. This keeps the active native tool-call tail intact while avoiding
- * repeatedly paying for reasoning that preceded an answer or an earlier tool
- * round. The rule is intentionally provider-independent.
+ * Compatibility entry point. Reasoning is an opaque provider continuation,
+ * not disposable prose: GLM preserved thinking and DeepSeek tool use require
+ * unchanged blocks in their original order. Only an accepted conversation
+ * compaction may retire the containing messages.
  */
 export function pruneConsumedReasoning(
   messages: readonly ChatMessage[],
 ): ChatMessage[] {
-  let latestAssistantIndex = -1;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "assistant") {
-      latestAssistantIndex = index;
-      break;
-    }
-  }
-
-  return messages.map((message, index) => {
-    if (message.role !== "assistant" || message.reasoning_content === undefined) {
-      return message;
-    }
-    const preserveActiveToolReasoning =
-      index === latestAssistantIndex && (message.tool_calls?.length ?? 0) > 0;
-    if (preserveActiveToolReasoning) return message;
-
-    const projected = { ...message };
-    delete projected.reasoning_content;
-    return projected;
-  });
+  return [...messages];
 }
 
 /**
@@ -423,5 +392,8 @@ export function pruneConsumedReasoning(
 export function projectModelInputMessages(
   messages: readonly ChatMessage[],
 ): ChatMessage[] {
-  return pruneConsumedReasoning(microCompactToolResults(messages));
+  // Normal requests are append-only. Opportunistically rewriting a result
+  // after a single response both loses evidence and invalidates cached prefixes.
+  // microCompactToolResults is reserved for an explicit pressure fallback.
+  return [...messages];
 }

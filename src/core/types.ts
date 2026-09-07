@@ -413,6 +413,18 @@ export interface CommandAuditEntry {
   durationMs: number;
   timestamp: string;
   summary: string;
+  /** Bounded witness captured by Runtime before model-facing output clipping.
+   * A digest identifies the captured output, not necessarily a complete log. */
+  outputEvidence?: {
+    capturedOutputDigest: string;
+    stdoutTail: string;
+    stderrTail: string;
+    incomplete: boolean;
+    failureKind?: string;
+    processStarted?: boolean;
+  };
+  /** Runtime task/intent scope; absent in legacy command journals. */
+  sourceScopeKey?: string;
   /** Runtime attribution for commands executed by an isolated child worker. */
   sourceAgentRole?: AgentRole;
   sourceAgentId?: string;

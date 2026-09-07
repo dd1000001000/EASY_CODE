@@ -343,8 +343,8 @@
       "bytes": 588
     },
     "tools/compact_context.json": {
-      "sha256": "sha256:95fa2ccfa9f792ff10d4fe8177cc729f1e7909687a57490cda9af393bb5f5291",
-      "bytes": 7436
+      "sha256": "sha256:a04066897a88928c6c54fc2821c0f647cc90cccb095b9b82cfeb317d459d583b",
+      "bytes": 7753
     },
     "tools/create_file.json": {
       "sha256": "sha256:df476587186da40009c80bb28e2a0c7bce2ebfcbcbc2a20c1c8bce898be6c5de",
@@ -416,7 +416,7 @@
     "compact_context": {
       "path": "tools/compact_context.json",
       "contractVersion": "2.0.0",
-      "contentHash": "sha256:95fa2ccfa9f792ff10d4fe8177cc729f1e7909687a57490cda9af393bb5f5291"
+      "contentHash": "sha256:a04066897a88928c6c54fc2821c0f647cc90cccb095b9b82cfeb317d459d583b"
     },
     "create_file": {
       "path": "tools/create_file.json",
@@ -494,5 +494,5 @@
       "contentHash": "sha256:fdb1df23d0ba7faa488c4c7bd51170e65be505875cc91ff2e8ab2a68c13ffebd"
     }
   },
-  "bundleHash": "sha256:fec7fc6b129038c82fc8dffee572555d75fc7861bb3f08e090773f27dce77dd4"
+  "bundleHash": "sha256:aeceeb29f8ed7a4628001b19c07726683ab4d859bfe785df02d66cc546a54505"
 }

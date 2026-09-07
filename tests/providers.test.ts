@@ -551,7 +551,7 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.usage?.reasoningTokens, 3);
   });
 
-  it("defensively removes consumed reasoning before provider serialization", async () => {
+  it("round-trips all reasoning unchanged before provider serialization", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.deepseek.apiKey = "test-deepseek-key";
     let captured: JsonPostRequest | undefined;
@@ -603,7 +603,7 @@ describe("OpenAI-compatible providers", () => {
       messages?: Array<Record<string, unknown>>;
     };
     const assistants = body.messages?.filter((message) => message.role === "assistant") ?? [];
-    assert.equal("reasoning_content" in (assistants[0] ?? {}), false);
+    assert.equal(assistants[0]?.reasoning_content, "consumed reasoning");
     assert.equal(assistants[1]?.reasoning_content, "active tool reasoning");
     assert.deepEqual(messages, durableSnapshot);
   });
@@ -858,7 +858,7 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(body.model, "glm-5.3-flash");
     assert.equal(body.tools?.length, 1);
     assert.equal(body.tools?.[0]?.function?.strict, undefined);
-    assert.deepEqual(body.thinking, { type: "enabled" });
+    assert.deepEqual(body.thinking, { type: "enabled", clear_thinking: false });
     assert.equal(body.reasoning_effort, "high");
     assert.equal(response.message.tool_calls?.[0]?.function.name, "read_file");
     assert.equal(response.message.reasoning_content, "I will inspect the file.");
