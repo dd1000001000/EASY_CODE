@@ -49,6 +49,37 @@ export interface SerializedSessionState {
   readonly updatedAt: string;
 }
 
+/**
+ * A bounded, append-only patch over the state reconstructed immediately before
+ * its journal event. Runtime-authoritative fields (turn/task/plan/approval and
+ * steering state) deliberately have no representation here.
+ */
+export interface SerializedThreadCheckpointDelta {
+  readonly formatVersion: 1;
+  readonly baseSequence: number;
+  readonly settings?: {
+    readonly mode?: SessionState["mode"];
+    readonly provider?: SessionState["provider"];
+    readonly model?: string;
+    readonly thinkingEffort?: ThinkingEffort;
+    readonly promptBundle?: PromptBundleBinding | null;
+    readonly goal?: string | null;
+    readonly constraints?: string[];
+  };
+  readonly messagesAppended?: ChatMessage[];
+  readonly filesReadUpserted?: Array<[string, FileVersion]>;
+  readonly filesReadRemoved?: string[];
+  readonly changesAppended?: FileChangeRecord[];
+  readonly commandsAppended?: CommandAuditEntry[];
+  readonly compaction?: {
+    readonly workingSummary: string;
+    readonly compactedMessageCount: number;
+  };
+}
+
+/** Prevent one save from turning an incremental record back into an unbounded snapshot. */
+export const MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES = 4 * 1024 * 1024;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -333,6 +364,298 @@ export function deserializeChatMessages(serialized: string): ChatMessage[] {
     throw new Error("Invalid serialized chat message list shape");
   }
   return parsed;
+}
+
+function isFileVersion(value: unknown): value is FileVersion {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ["path", "hash", "readAt"]) &&
+    typeof value.path === "string" &&
+    typeof value.hash === "string" &&
+    typeof value.readAt === "string";
+}
+
+function isFileChangeRecord(value: unknown): value is FileChangeRecord {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      "path",
+      "operation",
+      "beforeHash",
+      "afterHash",
+      "source",
+      "status",
+      "timestamp",
+    ]) &&
+    typeof value.path === "string" &&
+    ["create", "update", "delete", "generated", "deleted_by_command"].includes(
+      String(value.operation),
+    ) &&
+    (value.beforeHash === undefined || typeof value.beforeHash === "string") &&
+    (value.afterHash === undefined || typeof value.afterHash === "string") &&
+    (value.source === "file_tool" || value.source === "command") &&
+    ["applied", "verified", "conflict", "failed", "policy_violation"].includes(
+      String(value.status),
+    ) &&
+    typeof value.timestamp === "string";
+}
+
+function isCommandAuditEntry(value: unknown): value is CommandAuditEntry {
+  return isRecord(value) &&
+    hasOnlyKeys(value, [
+      "id",
+      "program",
+      "args",
+      "cwd",
+      "status",
+      "exitCode",
+      "durationMs",
+      "timestamp",
+      "summary",
+      "sourceAgentRole",
+      "sourceAgentId",
+      "sourceTaskId",
+    ]) &&
+    typeof value.id === "string" &&
+    typeof value.program === "string" &&
+    Array.isArray(value.args) &&
+    value.args.every((argument) => typeof argument === "string") &&
+    typeof value.cwd === "string" &&
+    [
+      "exited",
+      "timed_out",
+      "canceled",
+      "spawn_failed",
+      "policy_denied",
+      "sandbox_unavailable",
+    ].includes(String(value.status)) &&
+    (value.exitCode === null || Number.isInteger(value.exitCode)) &&
+    typeof value.durationMs === "number" &&
+    Number.isFinite(value.durationMs) &&
+    value.durationMs >= 0 &&
+    typeof value.timestamp === "string" &&
+    typeof value.summary === "string" &&
+    (value.sourceAgentRole === undefined ||
+      value.sourceAgentRole === "main_agent" ||
+      value.sourceAgentRole === "subagent") &&
+    (value.sourceAgentId === undefined || typeof value.sourceAgentId === "string") &&
+    (value.sourceTaskId === undefined || typeof value.sourceTaskId === "string");
+}
+
+function fileChangeIdentity(change: Readonly<FileChangeRecord>): string {
+  return [
+    change.timestamp,
+    change.path,
+    change.operation,
+    change.beforeHash ?? "",
+    change.afterHash ?? "",
+  ].join("|");
+}
+
+function validateThreadCheckpointDelta(
+  value: unknown,
+): asserts value is SerializedThreadCheckpointDelta {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "formatVersion",
+      "baseSequence",
+      "settings",
+      "messagesAppended",
+      "filesReadUpserted",
+      "filesReadRemoved",
+      "changesAppended",
+      "commandsAppended",
+      "compaction",
+    ]) ||
+    value.formatVersion !== 1 ||
+    !Number.isSafeInteger(value.baseSequence) ||
+    Number(value.baseSequence) < 1
+  ) {
+    throw new Error("Invalid serialized thread checkpoint delta");
+  }
+
+  if (value.settings !== undefined) {
+    const settings = value.settings;
+    if (
+      !isRecord(settings) ||
+      !hasOnlyKeys(settings, [
+        "mode",
+        "provider",
+        "model",
+        "thinkingEffort",
+        "promptBundle",
+        "goal",
+        "constraints",
+      ]) ||
+      (settings.mode !== undefined &&
+        !["plan", "auto", "code"].includes(String(settings.mode))) ||
+      (settings.provider !== undefined && !isProviderName(settings.provider)) ||
+      (settings.model !== undefined && typeof settings.model !== "string") ||
+      (settings.thinkingEffort !== undefined &&
+        !THINKING_EFFORTS.includes(settings.thinkingEffort as ThinkingEffort)) ||
+      (settings.promptBundle !== undefined &&
+        settings.promptBundle !== null &&
+        !isPromptBundleBinding(settings.promptBundle)) ||
+      (settings.goal !== undefined &&
+        settings.goal !== null &&
+        typeof settings.goal !== "string") ||
+      (settings.constraints !== undefined &&
+        (!Array.isArray(settings.constraints) ||
+          !settings.constraints.every((constraint) => typeof constraint === "string")))
+    ) {
+      throw new Error("Invalid settings in serialized thread checkpoint delta");
+    }
+  }
+
+  if (
+    value.messagesAppended !== undefined &&
+    (!Array.isArray(value.messagesAppended) ||
+      !value.messagesAppended.every(isChatMessage))
+  ) {
+    throw new Error("Invalid messages in serialized thread checkpoint delta");
+  }
+
+  const upsertedPaths = new Set<string>();
+  if (value.filesReadUpserted !== undefined) {
+    if (!Array.isArray(value.filesReadUpserted)) {
+      throw new Error("Invalid file upserts in serialized thread checkpoint delta");
+    }
+    for (const entry of value.filesReadUpserted) {
+      if (
+        !Array.isArray(entry) ||
+        entry.length !== 2 ||
+        typeof entry[0] !== "string" ||
+        !isFileVersion(entry[1]) ||
+        upsertedPaths.has(entry[0])
+      ) {
+        throw new Error("Invalid file upsert in serialized thread checkpoint delta");
+      }
+      upsertedPaths.add(entry[0]);
+    }
+  }
+
+  if (value.filesReadRemoved !== undefined) {
+    if (
+      !Array.isArray(value.filesReadRemoved) ||
+      !value.filesReadRemoved.every((filePath) => typeof filePath === "string")
+    ) {
+      throw new Error("Invalid file removals in serialized thread checkpoint delta");
+    }
+    const removed = new Set<string>();
+    for (const filePath of value.filesReadRemoved) {
+      if (removed.has(filePath) || upsertedPaths.has(filePath)) {
+        throw new Error("Conflicting file update in serialized thread checkpoint delta");
+      }
+      removed.add(filePath);
+    }
+  }
+
+  if (
+    value.changesAppended !== undefined &&
+    (!Array.isArray(value.changesAppended) ||
+      !value.changesAppended.every(isFileChangeRecord) ||
+      new Set(value.changesAppended.map(fileChangeIdentity)).size !==
+        value.changesAppended.length)
+  ) {
+    throw new Error("Invalid file changes in serialized thread checkpoint delta");
+  }
+
+  if (
+    value.commandsAppended !== undefined &&
+    (!Array.isArray(value.commandsAppended) ||
+      !value.commandsAppended.every(isCommandAuditEntry) ||
+      new Set(value.commandsAppended.map((command) => command.id)).size !==
+        value.commandsAppended.length)
+  ) {
+    throw new Error("Invalid command audits in serialized thread checkpoint delta");
+  }
+
+  if (value.compaction !== undefined) {
+    const compaction = value.compaction;
+    if (
+      !isRecord(compaction) ||
+      !hasOnlyKeys(compaction, ["workingSummary", "compactedMessageCount"]) ||
+      typeof compaction.workingSummary !== "string" ||
+      !Number.isSafeInteger(compaction.compactedMessageCount) ||
+      Number(compaction.compactedMessageCount) < 0
+    ) {
+      throw new Error("Invalid compaction in serialized thread checkpoint delta");
+    }
+  }
+
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Thread checkpoint delta is not JSON-serializable: ${message}`);
+  }
+  if (Buffer.byteLength(serialized, "utf8") > MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES) {
+    throw new Error(
+      `Thread checkpoint delta exceeds ${MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES} bytes`,
+    );
+  }
+}
+
+/** Validate and detach an incremental checkpoint before it enters the journal. */
+export function serializeThreadCheckpointDelta(
+  delta: SerializedThreadCheckpointDelta,
+): SerializedThreadCheckpointDelta {
+  validateThreadCheckpointDelta(delta);
+  return deserializeThreadCheckpointDelta(JSON.parse(JSON.stringify(delta)) as unknown);
+}
+
+/** Validate and clone an incremental checkpoint read from the authoritative journal. */
+export function deserializeThreadCheckpointDelta(
+  value: unknown,
+): SerializedThreadCheckpointDelta {
+  validateThreadCheckpointDelta(value);
+  return {
+    formatVersion: 1,
+    baseSequence: value.baseSequence,
+    ...(value.settings
+      ? {
+          settings: {
+            ...value.settings,
+            ...(value.settings.promptBundle
+              ? { promptBundle: { ...value.settings.promptBundle } }
+              : {}),
+            ...(value.settings.constraints
+              ? { constraints: [...value.settings.constraints] }
+              : {}),
+          },
+        }
+      : {}),
+    ...(value.messagesAppended
+      ? {
+          messagesAppended: deserializeChatMessages(
+            serializeChatMessages(value.messagesAppended),
+          ),
+        }
+      : {}),
+    ...(value.filesReadUpserted
+      ? {
+          filesReadUpserted: value.filesReadUpserted.map(([filePath, version]) => [
+            filePath,
+            { ...version },
+          ]),
+        }
+      : {}),
+    ...(value.filesReadRemoved
+      ? { filesReadRemoved: [...value.filesReadRemoved] }
+      : {}),
+    ...(value.changesAppended
+      ? { changesAppended: value.changesAppended.map((change) => ({ ...change })) }
+      : {}),
+    ...(value.commandsAppended
+      ? {
+          commandsAppended: value.commandsAppended.map((command) => ({
+            ...command,
+            args: [...command.args],
+          })),
+        }
+      : {}),
+    ...(value.compaction ? { compaction: { ...value.compaction } } : {}),
+  };
 }
 
 export function serializeSessionState(state: SessionState): SerializedSessionState {

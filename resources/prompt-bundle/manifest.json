@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "bundleVersion": "1.1.0",
+  "bundleVersion": "1.2.0",
   "runtimeCompatibility": {
     "min": "0.1.0",
     "maxExclusive": "0.2.0"
@@ -73,6 +73,10 @@
     "context/fallback-tool-result.md": {
       "sha256": "sha256:86ca054ffe429c2cce5ed49baa85cd0180e1b2973a3de492a369945c6152a648",
       "bytes": 27
+    },
+    "context/layered-evidence.md": {
+      "sha256": "sha256:773e2d0e96c6839ef2a756dcbfa7bd46e7c97354f9f3acfd6ad875d0494e2f3d",
+      "bytes": 775
     },
     "context/long-term-memory.md": {
       "sha256": "sha256:b77078b4d974c2d8d933d6877fcd8206be03453ce481d3d50f44dba2cc46dd89",
@@ -435,5 +439,5 @@
       "contentHash": "sha256:fdb1df23d0ba7faa488c4c7bd51170e65be505875cc91ff2e8ab2a68c13ffebd"
     }
   },
-  "bundleHash": "sha256:73fdc8e158d3192d39a6c088d2465c63252ba88dc7c3e9b26f3dc8752672f0b2"
+  "bundleHash": "sha256:98fe54b1bd83d58de8e7d3f17aad950e64feeccffaa1d84098991bd2732bce0a"
 }

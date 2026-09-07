@@ -14,6 +14,7 @@ import {
   MAX_AUTO_ROUTE_CONTEXT_CHARS,
   buildAutoRouteContext,
   determineAutoRoute,
+  projectAutoRouteContext,
 } from "../src/runtime/auto-router.js";
 import { describe, it } from "./harness.js";
 
@@ -523,6 +524,26 @@ describe("tool-only Auto Router", () => {
     assert.doesNotMatch(projected, /TOOL_INJECTION_MUST_NOT_APPEAR/u);
     assert.doesNotMatch(projected, /call_hidden/u);
     assert.doesNotMatch(projected, /OLD_IMAGE_STORAGE_KEY_MUST_NOT_APPEAR/u);
+  });
+
+  it("reports the original boundary of the exact prior-message suffix it projects", () => {
+    const priorMessages: ChatMessage[] = [
+      { role: "user", content: "omitted-old-user" },
+      { role: "tool", tool_call_id: "old-call", content: "omitted-old-tool" },
+      ...Array.from({ length: 11 }, (_, index) => ({
+        role: index % 2 === 0 ? ("assistant" as const) : ("user" as const),
+        content: `projected-recent-${index}`,
+      })),
+    ];
+
+    const projection = projectAutoRouteContext({ priorMessages });
+
+    assert.equal(projection.priorMessageBoundary, 3);
+    assert.doesNotMatch(projection.content, /omitted-old-user/u);
+    assert.doesNotMatch(projection.content, /projected-recent-0/u);
+    assert.match(projection.content, /projected-recent-1/u);
+    assert.match(projection.content, /projected-recent-10/u);
+    assert.equal(projection.content, buildAutoRouteContext({ priorMessages }));
   });
 
   it("passes current images while projecting prior text without duplicating the current request", async () => {

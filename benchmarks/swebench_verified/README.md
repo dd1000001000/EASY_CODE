@@ -49,11 +49,12 @@ A practical layout, created automatically by the integrated commands, is:
 
 ```text
 F:\easy-code-bench\swe-bench-verified-50\
-  cache\
+  cache\                         # Harbor/npm/Python plus the pinned ONNX model
   home\
   python\
   packages\
   jobs\
+  checkpoints\
   tmp\
 ```
 
@@ -89,9 +90,12 @@ easy-code benchmark swe-bench doctor
 ```
 
 `setup` installs `harbor==0.16.1` and `swebench==5.0.2` under the benchmark
-root. `doctor` checks the Linux/x86-64 Docker engine, Docker Compose v2, pinned
-tool versions, the exact dataset digest and 50-task manifest, F-drive storage,
-and the GLM Coding Plan credential without printing it. Docker Desktop itself
+root and prepares the pinned multilingual ONNX embedding model (about 136 MB)
+under `cache\easy-code\models`. Existing verified files are reused. `doctor`
+checks every model asset by size and SHA-256 in addition to the Linux/x86-64
+Docker engine, Docker Compose v2, pinned tool versions, the exact dataset digest
+and 50-task manifest, F-drive storage, and the GLM Coding Plan credential without
+printing it. Docker Desktop itself
 must be installed separately. The runner keeps Docker Desktop's original CLI
 configuration path so its Compose plugin remains discoverable while Harbor,
 Python, npm, and model caches stay on F:. Runs also apply a fixed `4x` Harbor
@@ -146,6 +150,12 @@ easy-code benchmark swe-bench run --limit 1 --run-id glm-coding-plan-5.3-flash-s
 
 The runner packs the current EASY CODE build into `packages\`, uploads that
 exact archive to the task container, and writes Harbor artifacts to `jobs\`.
+It also verifies the F-drive embedding model before reading the API key. The
+trusted adapter copies those already-verified local assets into each isolated
+Trial's `/tmp/easy-code-cache` and verifies them again before EASY CODE starts;
+Trial containers do not download a model from the public network, and the copy
+is discarded with the container instead of being retained in Harbor logs. This
+local transfer can add setup time, especially at high concurrency.
 Use `easy-code benchmark swe-bench prepare` only when you want to create the
 archive without starting a run.
 
@@ -168,6 +178,68 @@ EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `EASY_CODE_OUTER_SANDBOX=harbor` tells EASY CODE that the disposable Harbor
 container is the outer isolation boundary. Do not set that variable for normal
 host use.
+
+The launcher-managed checkpoint and embedding-model paths are not added to the
+Agent process environment inside the container. They do remain in Harbor's host
+process environment, which Docker Compose inherits while expanding the pinned
+task definition. The pinned Harbor dataset and its Compose configuration are
+therefore part of the benchmark's trusted host boundary.
+
+## Infrastructure retry and checkpoint recovery
+
+The runner keeps `--n-attempts 1`, and permits one retry only when Harbor times
+out before the Agent starts (environment start or Agent setup). Those failures
+occur before `agent.run`, so the retry neither consumes a model request nor
+creates or depends on a checkpoint from the failed setup attempt. Agent
+timeouts and non-zero exits are intentionally not retried with a fresh time or
+step budget.
+
+Separately, once `agent.run` begins, its `finally` path captures the EASY CODE
+data directory, the Git workspace patch, and regular untracked files into an
+atomic generation below the launcher-managed `checkpoints\` directory. If an
+interrupted Harbor job is explicitly resumed and recreates the matching task in
+the same job scope, the adapter verifies the existing generation, restores the
+workspace, finds exactly one resumable parent Thread, and asks EASY CODE to
+continue it. The Thread journal remains authoritative; its own bounded
+incremental checkpoint records reduce write amplification during a long run.
+
+Recovery is deliberately per task, not per repository or batch. A checkpoint is
+bound to the issue instruction, Harbor trial scope, base commit, package SHA-256,
+embedding-model manifest SHA-256, provider endpoint identity, model, mode, and
+thinking effort. The binding and
+every captured file are integrity-checked; a mismatch, ambiguous parent Thread,
+changed base commit, symlink, special file, or damaged manifest refuses recovery.
+**A checkpoint is never restored into a
+different SWE-bench task.** Do not copy checkpoint generations between task
+directories or reuse them to seed another issue.
+
+The newest valid generation is selected through an atomic pointer and up to
+three recent generations are retained. Checkpoint capture is best-effort: a
+capture error is recorded for diagnosis and cannot turn failed work into a
+successful result. A present but invalid generation is rejected.
+
+Each trial writes `easy-code-context-metrics.json` beside its other adapter logs
+and also exposes the same object under Harbor metadata as `easyCodeBenchmark`.
+Use these diagnostics to explain recovery and context behavior:
+
+| Field | Meaning |
+| --- | --- |
+| `trialKey` | Hash of the exact recovery binding; compare for equality, but do not treat it as a task ID. |
+| `checkpointGeneration` | Host generation captured at the end of this run, or null if none was committed. |
+| `checkpointError` | Redacted capture/persistence error, or null. |
+| `resumedFromCheckpoint` | Whether this run began from a verified matching generation. |
+| `resumeThreadAvailable` | Whether exactly one parent Thread was available for future recovery. |
+| `threadEventCount` | Non-empty records in the parent Thread's authoritative event journal. |
+| `contextArtifactCount` | Indexed chunks of user, visible assistant, code-read, and tool evidence. Only chunks older than the active working-set boundary are eligible for a given retrieval. |
+| `contextEmbeddingCount` | Context chunks with a compatible stored semantic vector. |
+| `contextLexicalOnlyCount` | Indexed chunks currently lacking a stored semantic vector. |
+| `contextCheckpointSequence` | Sequence of the derived Working Checkpoint, not the Thread journal sequence. |
+| `contextIndexedMessageCount` | Durable messages consumed by the Thread-context index. |
+| `contextCompactedMessageCount` | Messages covered by the cumulative working summary at capture time. |
+| `retrievalBackend` | `hybrid` when semantic vectors are present, otherwise `fts5`; this describes available index state, not proof that a particular query used a vector hit. |
+| `modelRequests` | Model requests recorded across the parent and child Thread journals. |
+| `inputTokens` / `outputTokens` / `cachedInputTokens` | Provider-reported usage aggregated across those requests; absent provider fields remain zero rather than being estimated. |
+| `metricsWarning` | Optional SQLite-read warning when metrics could not be collected completely. |
 
 ## Run all 50 tasks
 
@@ -197,8 +269,10 @@ batch. Keep each batch directory when reporting the combined 50-task result.
 
 The default concurrency is one. Increase it only after confirming your GLM
 Coding Plan rate limit and Docker capacity, for example `--concurrency 4`.
-Keep `--n-attempts 1` for benchmark reporting; silently retrying whole tasks
-changes the evaluation protocol.
+Keep `--n-attempts 1` for benchmark reporting. The configured retry is limited
+to environment-start and Agent-setup timeouts, before a model request can run.
+Agent timeouts, non-zero exits, increased attempts, or silently rerunning whole
+tasks would change the evaluation protocol and are intentionally not retried.
 
 If you exported a temporary credential for the lower-level runner, remove it
 from the shell afterward:
@@ -229,4 +303,7 @@ channel, endpoint, model name, and Harbor job configuration with every reported
 result.
 
 For each run, report at least resolved count/rate, per-instance status, total
-model cost or tokens, wall-clock time, and the hashes/versions pinned above.
+model cost or tokens, wall-clock time, the hashes/versions pinned above, and the
+per-instance checkpoint/context metrics. In particular, retain the trial key,
+whether recovery occurred, any checkpoint or metrics warning, Thread event and
+context-artifact counts, Working Checkpoint sequence, and retrieval backend.

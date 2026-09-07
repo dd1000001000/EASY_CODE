@@ -21,6 +21,7 @@ import {
   deserializeChatMessage,
   deserializeSessionState,
   EventJournal,
+  MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES,
   serializeChatMessage,
   serializeSessionState,
   ThreadStore,
@@ -90,6 +91,11 @@ describe("storage", () => {
         "memories_fts",
         "memory_embeddings",
         "memory_vector_state",
+        "context_artifacts",
+        "context_artifacts_fts",
+        "context_artifact_embeddings",
+        "context_vector_state",
+        "context_checkpoints",
         "tool_audit",
         "thread_leases",
       ]) {
@@ -107,9 +113,9 @@ describe("storage", () => {
               "SELECT COUNT(*) AS count FROM schema_migrations",
             )
             .get()?.count,
-          4,
+            6,
         );
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 4);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 6);
       } finally {
         reopened.close();
       }
@@ -485,6 +491,56 @@ describe("storage", () => {
       assert.equal(third.sequence, 3);
       assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
       assert.equal(journal.readAfter(1).length, 2);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses a file-identity cache but rescans external appends before sequencing", () => {
+    const dataDir = temporaryDataDir();
+    try {
+      const journal = new EventJournal(dataDir, "thread_journal_cache");
+      journal.append({
+        type: "one",
+        eventId: "event_cache_one",
+        payload: { value: 1 },
+      });
+      assert.deepEqual(journal.read().map((event) => event.sequence), [1]);
+      const firstCache = (journal as unknown as { cachedScan?: unknown }).cachedScan;
+      assert.ok(firstCache);
+      journal.read();
+      assert.strictEqual(
+        (journal as unknown as { cachedScan?: unknown }).cachedScan,
+        firstCache,
+      );
+
+      appendFileSync(journal.filePath, `${JSON.stringify({
+        schemaVersion: 1,
+        eventId: "event_cache_external",
+        threadId: "thread_journal_cache",
+        sequence: 2,
+        timestamp: "2026-09-06T12:00:00.000Z",
+        type: "external",
+        payload: { value: 2 },
+      })}\n`, "utf8");
+      assert.deepEqual(journal.read().map((event) => event.type), ["one", "external"]);
+      assert.notStrictEqual(
+        (journal as unknown as { cachedScan?: unknown }).cachedScan,
+        firstCache,
+      );
+      assert.throws(
+        () => journal.append({
+          type: "duplicate",
+          eventId: "event_cache_external",
+          payload: null,
+        }),
+        /Duplicate event id/u,
+      );
+
+      appendFileSync(journal.filePath, '{"schemaVersion":1,"broken":', "utf8");
+      const local = journal.append({ type: "local", payload: { value: 3 } });
+      assert.equal(local.sequence, 3);
+      assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
@@ -1083,6 +1139,358 @@ describe("storage", () => {
           (message) => message.role === "tool" && message.tool_call_id === "call_missing",
         ),
         true,
+      );
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not journal or timestamp an empty checkpoint delta", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const state = threads.create({
+        threadId: "thread_empty_checkpoint",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-max",
+      });
+      const journal = threads.journal(state.threadId);
+      assert.strictEqual(journal, threads.journal(state.threadId));
+      const eventCount = journal.read().length;
+      const stateUpdatedAt = state.updatedAt;
+      const projectedUpdatedAt = threads.list()[0]?.updatedAt;
+
+      threads.save(state);
+
+      assert.equal(journal.read().length, eventCount);
+      assert.equal(state.updatedAt, stateUpdatedAt);
+      assert.equal(threads.list()[0]?.updatedAt, projectedUpdatedAt);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates a cumulative summary at the same compaction boundary", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const state = threads.create({
+        threadId: "thread_same_boundary_summary",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-max",
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "second" },
+        ],
+      });
+      state.workingSummary = "Initial cumulative summary.";
+      state.compactedMessageCount = 2;
+      threads.save(state);
+      state.workingSummary = "Replacement cumulative summary at the same boundary.";
+      threads.save(state);
+
+      const checkpoints = threads.journal(state.threadId).read().filter(
+        (event) => event.type === "thread_checkpoint_delta",
+      );
+      assert.equal(checkpoints.length, 2);
+      assert.deepEqual(
+        (checkpoints[1]?.payload as { compaction?: unknown }).compaction,
+        {
+          workingSummary: "Replacement cumulative summary at the same boundary.",
+          compactedMessageCount: 2,
+        },
+      );
+      assert.equal(
+        threads.recover(state.threadId).workingSummary,
+        "Replacement cumulative summary at the same boundary.",
+      );
+
+      threads.save(state);
+      assert.equal(threads.journal(state.threadId).read().length, 3);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a strict stale message prefix replaces mutable checkpoint state", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const current = threads.create({
+        threadId: "thread_stale_replacement",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        messages: [{ role: "user", content: "base request" }],
+      });
+      const stale = deserializeSessionState(serializeSessionState(current));
+      threads.appendEvent(current.threadId, {
+        type: "message.assistant",
+        turnId: "turn_stale_replacement",
+        phase: "completed",
+        payload: { role: "assistant", content: "newer durable response" },
+      });
+      const eventCount = threads.journal(current.threadId).read().length;
+      stale.mode = "plan";
+      stale.filesRead.set("stale.ts", {
+        path: "stale.ts",
+        hash: "stale-hash",
+        readAt: "2026-09-06T13:00:00.000Z",
+      });
+
+      assert.throws(
+        () => threads.save(stale),
+        /Stale thread checkpoint cannot replace newer checkpoint-owned state/u,
+      );
+      assert.equal(threads.journal(current.threadId).read().length, eventCount);
+      const recovered = threads.recover(current.threadId);
+      assert.equal(recovered.mode, "code");
+      assert.equal(recovered.filesRead.size, 0);
+      assert.equal(recovered.messages.at(-1)?.content, "newer durable response");
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes bounded incremental checkpoints without repeating durable history", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const historicalMarker = `DO_NOT_REPEAT_FULL_HISTORY_${"x".repeat(96_000)}`;
+      const state = threads.create({
+        threadId: "thread_incremental_checkpoint",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "qwen",
+        model: "qwen3.7-max",
+        messages: [{ role: "user", content: historicalMarker }],
+      });
+      state.mode = "code";
+      state.messages.push({ role: "assistant", content: "first incremental message" });
+      state.filesRead.set("src/first.ts", {
+        path: "src/first.ts",
+        hash: "hash-first",
+        readAt: "2026-09-06T10:00:00.000Z",
+      });
+      state.changes.push({
+        path: "src/first.ts",
+        operation: "create",
+        afterHash: "hash-first",
+        source: "file_tool",
+        status: "applied",
+        timestamp: "2026-09-06T10:00:01.000Z",
+      });
+      state.commands.push({
+        id: "command_incremental_first",
+        program: "node",
+        args: ["--version"],
+        cwd: state.workspaceRoot,
+        status: "exited",
+        exitCode: 0,
+        durationMs: 10,
+        timestamp: "2026-09-06T10:00:02.000Z",
+        summary: "version checked",
+      });
+      state.workingSummary = "The original request is represented through message one.";
+      state.compactedMessageCount = 1;
+      threads.save(state);
+
+      state.messages.push({ role: "user", content: "second incremental message" });
+      state.filesRead.delete("src/first.ts");
+      state.filesRead.set("src/second.ts", {
+        path: "src/second.ts",
+        hash: "hash-second",
+        readAt: "2026-09-06T10:00:03.000Z",
+      });
+      state.changes.push({
+        path: "src/second.ts",
+        operation: "update",
+        beforeHash: "before-second",
+        afterHash: "hash-second",
+        source: "file_tool",
+        status: "verified",
+        timestamp: "2026-09-06T10:00:04.000Z",
+      });
+      threads.save(state);
+
+      const checkpoints = threads.journal(state.threadId).read().filter(
+        (event) => event.type === "thread_checkpoint_delta",
+      );
+      assert.equal(checkpoints.length, 2);
+      assert.equal(
+        threads.journal(state.threadId).read().some(
+          (event) => event.type === "thread_checkpoint",
+        ),
+        false,
+      );
+      const firstPayload = checkpoints[0]?.payload as Record<string, unknown>;
+      const secondPayload = checkpoints[1]?.payload as Record<string, unknown>;
+      assert.equal("state" in firstPayload, false);
+      assert.equal(JSON.stringify(firstPayload).includes(historicalMarker), false);
+      assert.equal(JSON.stringify(secondPayload).includes(historicalMarker), false);
+      assert.deepEqual(
+        (firstPayload.messagesAppended as Array<{ content: string }>).map(
+          (message) => message.content,
+        ),
+        ["first incremental message"],
+      );
+      assert.deepEqual(
+        (secondPayload.messagesAppended as Array<{ content: string }>).map(
+          (message) => message.content,
+        ),
+        ["second incremental message"],
+      );
+      assert.equal("commandsAppended" in secondPayload, false);
+      assert.deepEqual(
+        (secondPayload.changesAppended as Array<{ path: string }>).map(
+          (change) => change.path,
+        ),
+        ["src/second.ts"],
+      );
+      assert.deepEqual(secondPayload.filesReadRemoved, ["src/first.ts"]);
+      assert.deepEqual(
+        (secondPayload.filesReadUpserted as Array<[string, unknown]>).map(
+          ([filePath]) => filePath,
+        ),
+        ["src/second.ts"],
+      );
+
+      const recovered = threads.recover(state.threadId);
+      assert.deepEqual(recovered.messages, state.messages);
+      assert.deepEqual([...recovered.filesRead.entries()], [...state.filesRead.entries()]);
+      assert.deepEqual(recovered.changes, state.changes);
+      assert.deepEqual(recovered.commands, state.commands);
+      assert.equal(recovered.mode, "code");
+      assert.equal(recovered.compactedMessageCount, 1);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replays a legacy full checkpoint, an incremental checkpoint, and later events", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const initial = threads.create({
+        threadId: "thread_mixed_checkpoints",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto",
+        provider: "deepseek",
+        model: "deepseek-v4-pro",
+        messages: [{ role: "user", content: "created history" }],
+      });
+      initial.messages.push({ role: "assistant", content: "legacy checkpoint history" });
+      initial.filesRead.set("legacy.ts", {
+        path: "legacy.ts",
+        hash: "legacy-hash",
+        readAt: "2026-09-06T11:00:00.000Z",
+      });
+      threads.journal(initial.threadId).append({
+        type: "thread_checkpoint",
+        payload: { state: serializeSessionState(initial) },
+      });
+
+      const incremental = threads.recover(initial.threadId);
+      incremental.mode = "code";
+      incremental.messages.push({ role: "user", content: "delta history" });
+      incremental.filesRead.delete("legacy.ts");
+      incremental.changes.push({
+        path: "delta.ts",
+        operation: "create",
+        afterHash: "delta-hash",
+        source: "file_tool",
+        status: "applied",
+        timestamp: "2026-09-06T11:00:01.000Z",
+      });
+      threads.save(incremental);
+      threads.appendEvent(initial.threadId, {
+        type: "message.assistant",
+        turnId: "turn_after_delta",
+        phase: "completed",
+        payload: { role: "assistant", content: "later journal event" },
+      });
+
+      const events = threads.journal(initial.threadId).read();
+      assert.deepEqual(events.map((event) => event.type), [
+        "thread_created",
+        "thread_checkpoint",
+        "thread_checkpoint_delta",
+        "message.assistant",
+      ]);
+      assert.equal(
+        (events[2]?.payload as { baseSequence?: number }).baseSequence,
+        events[1]?.sequence,
+      );
+      const recovered = threads.recover(initial.threadId);
+      assert.deepEqual(
+        recovered.messages.map((message) => message.content),
+        [
+          "created history",
+          "legacy checkpoint history",
+          "delta history",
+          "later journal event",
+        ],
+      );
+      assert.equal(recovered.mode, "code");
+      assert.equal(recovered.filesRead.size, 0);
+      assert.equal(recovered.changes[0]?.path, "delta.ts");
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized or sequence-detached incremental checkpoints", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const oversized = threads.create({
+        threadId: "thread_oversized_delta",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-max",
+      });
+      oversized.messages.push({
+        role: "user",
+        content: "x".repeat(MAX_SERIALIZED_THREAD_CHECKPOINT_DELTA_BYTES),
+      });
+      assert.throws(
+        () => threads.save(oversized),
+        /checkpoint delta exceeds/u,
+      );
+      assert.equal(threads.journal(oversized.threadId).read().length, 1);
+
+      const detached = threads.create({
+        threadId: "thread_detached_delta",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "code",
+        provider: "qwen",
+        model: "qwen3.7-max",
+      });
+      threads.journal(detached.threadId).append({
+        type: "thread_checkpoint_delta",
+        payload: { formatVersion: 1, baseSequence: 2 },
+      });
+      assert.throws(
+        () => threads.recover(detached.threadId),
+        /base sequence 2; expected 1/u,
       );
     } finally {
       storage.close();

@@ -6,6 +6,7 @@ import {
   readFileSync,
   closeSync,
   fsyncSync,
+  statSync,
   truncateSync,
 } from "node:fs";
 import path from "node:path";
@@ -34,6 +35,22 @@ interface JournalScan {
   readonly needsNewline: boolean;
   readonly damagedTail: boolean;
 }
+
+interface JournalFileIdentity {
+  readonly exists: boolean;
+  readonly device?: bigint;
+  readonly inode?: bigint;
+  readonly size?: bigint;
+  readonly modifiedAt?: bigint;
+  readonly changedAt?: bigint;
+}
+
+interface CachedJournalScan {
+  readonly identity: JournalFileIdentity;
+  readonly scan: JournalScan;
+}
+
+const MAX_STABLE_SCAN_ATTEMPTS = 3;
 
 function assertSafeThreadId(threadId: string): void {
   if (!/^[A-Za-z0-9._-]+$/.test(threadId)) {
@@ -76,6 +93,53 @@ function parseEvent(value: string, expectedThreadId: string): EventRecord {
   return parsed as EventRecord;
 }
 
+function journalFileIdentity(filePath: string): JournalFileIdentity {
+  try {
+    const stats = statSync(filePath, { bigint: true });
+    if (!stats.isFile()) {
+      throw new Error(`Thread journal is not a regular file: ${filePath}`);
+    }
+    return {
+      exists: true,
+      device: stats.dev,
+      inode: stats.ino,
+      size: stats.size,
+      modifiedAt: stats.mtimeNs,
+      changedAt: stats.ctimeNs,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { exists: false };
+    }
+    throw error;
+  }
+}
+
+function sameJournalFileIdentity(
+  left: Readonly<JournalFileIdentity>,
+  right: Readonly<JournalFileIdentity>,
+): boolean {
+  return left.exists === right.exists &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.size === right.size &&
+    left.modifiedAt === right.modifiedAt &&
+    left.changedAt === right.changedAt;
+}
+
+function freezeJsonValue(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    freezeJsonValue(child);
+  }
+  Object.freeze(value);
+}
+
+function immutableEvent(event: EventRecord): EventRecord {
+  freezeJsonValue(event.payload);
+  return Object.freeze(event);
+}
+
 /**
  * Append-only, per-thread JSONL journal. It is the durable source of truth for a
  * thread; database rows are query projections only.
@@ -83,6 +147,8 @@ function parseEvent(value: string, expectedThreadId: string): EventRecord {
 export class EventJournal {
   readonly threadId: string;
   readonly filePath: string;
+  private cachedScan?: CachedJournalScan;
+  private cachedEventIds?: Set<string>;
 
   constructor(
     dataDir: string,
@@ -103,10 +169,17 @@ export class EventJournal {
     }
 
     const scan = this.scan();
-    if (scan.damagedTail) truncateSync(this.filePath, scan.validLength);
+    if (scan.damagedTail) {
+      truncateSync(this.filePath, scan.validLength);
+      this.cachedScan = undefined;
+      this.cachedEventIds = undefined;
+    }
     const previous = scan.events[scan.events.length - 1];
     const eventId = input.eventId ?? createId("event");
-    if (scan.events.some((event) => event.eventId === eventId)) {
+    const eventIds = this.cachedEventIds ?? new Set(
+      scan.events.map((event) => event.eventId),
+    );
+    if (eventIds.has(eventId)) {
       throw new Error(`Duplicate event id: ${eventId}`);
     }
 
@@ -131,16 +204,42 @@ export class EventJournal {
       throw new Error(`Event payload is not JSON-serializable: ${message}`);
     }
     const separator = scan.needsNewline ? "\n" : "";
-    appendFileSync(this.filePath, `${separator}${serialized}\n`, {
+    const appendedText = `${separator}${serialized}\n`;
+    appendFileSync(this.filePath, appendedText, {
       encoding: "utf8",
       flag: "a",
     });
     this.flush();
+    const identity = journalFileIdentity(this.filePath);
+    const expectedSize = BigInt(scan.validLength + Buffer.byteLength(appendedText, "utf8"));
+    if (identity.exists && identity.size === expectedSize) {
+      // Cache a parsed, detached record. The input payload and append() return
+      // value retain their historical mutability without being able to poison
+      // sequence or duplicate-ID validation in this trusted cache.
+      const cachedRecord = immutableEvent(parseEvent(serialized, this.threadId));
+      scan.events.push(cachedRecord);
+      eventIds.add(cachedRecord.eventId);
+      this.cachedScan = {
+        identity,
+        scan: {
+          events: scan.events,
+          validLength: Number(expectedSize),
+          needsNewline: false,
+          damagedTail: false,
+        },
+      };
+      this.cachedEventIds = eventIds;
+    } else {
+      // An external writer changed the file across our append boundary. Never
+      // derive a future sequence from the optimistic in-memory view.
+      this.cachedScan = undefined;
+      this.cachedEventIds = undefined;
+    }
     return record;
   }
 
   read(): EventRecord[] {
-    return this.scan().events;
+    return [...this.scan().events];
   }
 
   readAfter(sequence: number): EventRecord[] {
@@ -159,6 +258,30 @@ export class EventJournal {
   }
 
   private scan(): JournalScan {
+    let before = journalFileIdentity(this.filePath);
+    if (
+      this.cachedScan &&
+      sameJournalFileIdentity(this.cachedScan.identity, before)
+    ) {
+      return this.cachedScan.scan;
+    }
+
+    for (let attempt = 1; attempt <= MAX_STABLE_SCAN_ATTEMPTS; attempt += 1) {
+      const scan = this.scanFile();
+      const after = journalFileIdentity(this.filePath);
+      if (sameJournalFileIdentity(before, after)) {
+        this.cachedScan = { identity: after, scan };
+        this.cachedEventIds = new Set(scan.events.map((event) => event.eventId));
+        return scan;
+      }
+      before = after;
+    }
+    this.cachedScan = undefined;
+    this.cachedEventIds = undefined;
+    throw new Error("Thread journal changed repeatedly while it was being read");
+  }
+
+  private scanFile(): JournalScan {
     if (!existsSync(this.filePath)) {
       return {
         events: [],
@@ -170,6 +293,7 @@ export class EventJournal {
 
     const buffer = readFileSync(this.filePath);
     const events: EventRecord[] = [];
+    const eventIds = new Set<string>();
     let cursor = 0;
     let validLength = 0;
     let needsNewline = false;
@@ -192,7 +316,11 @@ export class EventJournal {
               `Invalid journal sequence ${event.sequence}; expected ${expectedSequence}`,
             );
           }
-          events.push(event);
+          if (eventIds.has(event.eventId)) {
+            throw new Error(`Duplicate event id: ${event.eventId}`);
+          }
+          eventIds.add(event.eventId);
+          events.push(immutableEvent(event));
         } catch (error) {
           const nextOffset = newline === -1 ? buffer.length : newline + 1;
           if (hasNonWhitespace(buffer, nextOffset)) {

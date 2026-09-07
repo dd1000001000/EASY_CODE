@@ -61,6 +61,9 @@ if (-not $providerUri.IsAbsoluteUri -or $providerUri.Scheme -ne "https" -or [str
 if ([string]::IsNullOrWhiteSpace($RunId)) {
     $RunId = "verified-50-$($benchmarkProfile.provider)-$($benchmarkProfile.model)"
 }
+if ($RunId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+    throw "RunId must start with an alphanumeric character and contain only letters, numbers, ., _, or -."
+}
 $manifestPath = Join-Path $PSScriptRoot "subset-50.json"
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $instanceIds = @($manifest.instance_ids)
@@ -87,7 +90,10 @@ if ($Scope -eq "full") {
 $jobsDir = Join-Path $DataRoot "jobs"
 $homeDir = Join-Path $DataRoot "home"
 $cacheDir = Join-Path $DataRoot "cache"
+$easyCodeCacheDir = Join-Path $cacheDir "easy-code"
+$embeddingModelDir = Join-Path $easyCodeCacheDir "models\paraphrase-multilingual-MiniLM-L12-v2"
 $tempDir = Join-Path $DataRoot "tmp"
+$checkpointDir = Join-Path $DataRoot "checkpoints"
 
 $harborArgs = @(
     "run",
@@ -98,6 +104,9 @@ $harborArgs = @(
     "--job-name", $RunId,
     "--n-concurrent", $Concurrency.ToString(),
     "--n-attempts", "1",
+    "--max-retries", "1",
+    "--retry-include", "AgentSetupTimeoutError",
+    "--retry-include", "EnvironmentStartTimeoutError",
     "--agent-setup-timeout-multiplier", "4",
     "--yes",
     "--allow-agent-host", $allowAgentHost
@@ -115,7 +124,7 @@ if ($DryRun) {
     exit 0
 }
 
-@($jobsDir, $homeDir, $cacheDir, $tempDir) | ForEach-Object {
+@($jobsDir, $homeDir, $cacheDir, $tempDir, $checkpointDir) | ForEach-Object {
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
 }
 
@@ -128,6 +137,31 @@ if ([IO.Path]::GetExtension($packagePath) -ne ".tgz") {
 }
 $env:EASY_CODE_PACKAGE_PATH = $packagePath
 
+$embeddingManifestPath = Join-Path $embeddingModelDir "manifest.json"
+if (-not (Test-Path -LiteralPath $embeddingManifestPath -PathType Leaf)) {
+    throw "The pinned benchmark embedding model is missing at '$embeddingModelDir'. Run 'easy-code benchmark swe-bench setup' first."
+}
+$embeddingVerifier = Join-Path $repositoryRoot "scripts\embedding-model.cjs"
+if (-not (Test-Path -LiteralPath $embeddingVerifier -PathType Leaf)) {
+    throw "The embedding-model verifier is missing at '$embeddingVerifier'."
+}
+$nodePath = (Get-Command node -ErrorAction Stop).Source
+$savedEasyCodeCache = [Environment]::GetEnvironmentVariable("EASY_CODE_CACHE_DIR", "Process")
+$embeddingVerifyOutput = @()
+$embeddingVerifyExitCode = 1
+try {
+    [Environment]::SetEnvironmentVariable("EASY_CODE_CACHE_DIR", $easyCodeCacheDir, "Process")
+    $embeddingVerifyOutput = @(& $nodePath $embeddingVerifier verify 2>&1)
+    $embeddingVerifyExitCode = $LASTEXITCODE
+}
+finally {
+    [Environment]::SetEnvironmentVariable("EASY_CODE_CACHE_DIR", $savedEasyCodeCache, "Process")
+}
+if ($embeddingVerifyExitCode -ne 0) {
+    $embeddingVerifyDetail = ($embeddingVerifyOutput | Out-String).Trim()
+    throw "The pinned benchmark embedding model failed size/SHA-256 verification: $embeddingVerifyDetail Run 'easy-code benchmark swe-bench setup' first."
+}
+
 $apiKey = @($benchmarkApiKeyEnvironmentNames | ForEach-Object {
     [Environment]::GetEnvironmentVariable($_, "Process")
 }) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1
@@ -136,10 +170,13 @@ if ([string]::IsNullOrWhiteSpace($apiKey)) {
 }
 
 $pinnedHarbor = Join-Path $DataRoot "python\Scripts\harbor.exe"
-$harborPath = if (Test-Path -LiteralPath $pinnedHarbor) {
-    (Resolve-Path -LiteralPath $pinnedHarbor).Path
-} else {
-    (Get-Command harbor -ErrorAction Stop).Source
+if (-not (Test-Path -LiteralPath $pinnedHarbor -PathType Leaf)) {
+    throw "Pinned Harbor 0.16.1 is missing at '$pinnedHarbor'. Run 'easy-code benchmark swe-bench setup' first."
+}
+$harborPath = (Resolve-Path -LiteralPath $pinnedHarbor).Path
+$harborVersionOutput = (& $harborPath --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $harborVersionOutput -notmatch '(^|[^0-9])0\.16\.1([^0-9]|$)') {
+    throw "Pinned Harbor version mismatch at '$harborPath': $harborVersionOutput"
 }
 Get-Command docker -ErrorAction Stop | Out-Null
 
@@ -163,6 +200,8 @@ $benchmarkEnvironment = @{
     TEMP = $tempDir
     TMP = $tempDir
     PYTHONPATH = $repositoryRoot
+    EASY_CODE_BENCHMARK_CHECKPOINT_ROOT = $checkpointDir
+    EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR = $embeddingModelDir
 }
 if (-not [string]::IsNullOrWhiteSpace($hostDockerConfig)) {
     # Docker Desktop keeps Compose v2 in the original user's CLI-plugin
@@ -224,6 +263,36 @@ try {
     try {
     & $harborPath @harborArgs
         $commandExitCode = $LASTEXITCODE
+        $jobDirectory = Join-Path $jobsDir $RunId
+        if (Test-Path -LiteralPath $jobDirectory) {
+            $metricFiles = @(Get-ChildItem -LiteralPath $jobDirectory -Recurse -File -Filter "easy-code-context-metrics.json")
+            $metricRows = @($metricFiles | ForEach-Object {
+                Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+            })
+            $contextSummary = [ordered]@{
+                trialsWithMetrics = $metricRows.Count
+                resumedTrials = @($metricRows | Where-Object { $_.resumedFromCheckpoint -eq $true }).Count
+                checkpointedTrials = @($metricRows | Where-Object { $_.checkpointGeneration -match "^[0-9a-f]{32}$" }).Count
+                fts5Trials = @($metricRows | Where-Object { $_.retrievalBackend -eq "fts5" }).Count
+                hybridTrials = @($metricRows | Where-Object { $_.retrievalBackend -eq "hybrid" }).Count
+                contextArtifactCount = [int64](($metricRows | Measure-Object -Property contextArtifactCount -Sum).Sum)
+                contextEmbeddingCount = [int64](($metricRows | Measure-Object -Property contextEmbeddingCount -Sum).Sum)
+                contextLexicalOnlyCount = [int64](($metricRows | Measure-Object -Property contextLexicalOnlyCount -Sum).Sum)
+                contextIndexedMessageCount = [int64](($metricRows | Measure-Object -Property contextIndexedMessageCount -Sum).Sum)
+                maxContextCheckpointSequence = [int64](($metricRows | Measure-Object -Property contextCheckpointSequence -Maximum).Maximum)
+                modelRequests = [int64](($metricRows | Measure-Object -Property modelRequests -Sum).Sum)
+                inputTokens = [int64](($metricRows | Measure-Object -Property inputTokens -Sum).Sum)
+                outputTokens = [int64](($metricRows | Measure-Object -Property outputTokens -Sum).Sum)
+                cachedInputTokens = [int64](($metricRows | Measure-Object -Property cachedInputTokens -Sum).Sum)
+            }
+            $contextSummaryPath = Join-Path $jobDirectory "easy-code-context-summary.json"
+            [IO.File]::WriteAllText(
+                $contextSummaryPath,
+                (($contextSummary | ConvertTo-Json -Depth 3) + "`n"),
+                [Text.UTF8Encoding]::new($false)
+            )
+            Write-Output "Context summary: $contextSummaryPath"
+        }
     }
     finally {
         Pop-Location

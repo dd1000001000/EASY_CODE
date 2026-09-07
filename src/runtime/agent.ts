@@ -67,6 +67,8 @@ import {
   AutoRouteRequestError,
   AutoRouteSelectionError,
   determineAutoRoute,
+  projectAutoRouteContext,
+  type AutoRouteContext,
   type AutoRouteAttempt,
 } from "./auto-router.js";
 import { createProviderAttemptSignal } from "./provider-attempt-signal.js";
@@ -141,6 +143,29 @@ function backgroundCommandFinalizationInstruction(): string {
   return runtimePromptText("runtime/background-command-finalization-required.md");
 }
 
+function contextRetrievalQuery(
+  state: Readonly<SessionState>,
+  currentUserInput: string,
+): string {
+  const task = state.taskGraph ? activeTask(state.taskGraph) : undefined;
+  const recentConversation = state.messages
+    .slice(-8)
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => message.content?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n");
+  return [
+    currentUserInput.trim(),
+    task ? `${task.title}\n${task.description}` : "",
+    recentConversation,
+  ].filter(Boolean).join("\n\n").slice(0, 12_000);
+}
+
+// PromptBuilder bounds retrieved Thread evidence to 20,000 characters. Keep a
+// small allowance for the untrusted-data envelope so ContextManager can use the
+// same raw-message boundary before and after retrieval.
+const LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS = 21_000;
+
 export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   tools: AgentTool[];
@@ -153,6 +178,8 @@ export interface AgentRuntimeDependencies {
     mode: AgentMode;
     workspaceSummary: string;
     memories: ReadonlyArray<Readonly<LongTermMemory>>;
+    workingCheckpoint?: string;
+    retrievedThreadEvidence?: string;
     /** Exact tools exposed on this provider request. */
     toolNames: readonly ToolName[];
     taskGraph?: Readonly<TaskGraph>;
@@ -160,6 +187,20 @@ export interface AgentRuntimeDependencies {
   }) => Promise<string>;
   getWorkspaceSummary: () => Promise<string>;
   searchMemories: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
+  /**
+   * Builds derived, Thread-private context layers. Failures must never replace
+   * the event journal or prevent an otherwise valid model request.
+   */
+  getLayeredContext?: (input: {
+    state: Readonly<SessionState>;
+    query: string;
+    beforeMessageIndex: number;
+  }) => Promise<{
+    workingCheckpoint?: string;
+    retrievedThreadEvidence?: string;
+  }>;
+  /** Catch the derived incremental index up after the final durable message. */
+  checkpointContext?: (state: Readonly<SessionState>) => Promise<void>;
   commitMemoryMutations?: (input: {
     workspaceRoot: string;
     threadId: string;
@@ -632,6 +673,7 @@ export class AgentRuntime {
 
     let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
     let autoReason = "";
+    let contextLayerFailureReported = false;
     if (state.mode === "auto" && options.modeOverride) {
       autoReason = options.modeOverride === "plan"
         ? "The user requested a revision of the pending plan."
@@ -730,16 +772,74 @@ export class AgentRuntime {
                 : "",
               steeringText,
             ].filter(Boolean).join("\n\n");
+            const priorMessagesStart = Math.min(
+              state.compactedMessageCount,
+              turnHistoryStart,
+            );
+            const autoRouteContext: AutoRouteContext = {
+              workingSummary: state.workingSummary,
+              priorMessages: state.messages.slice(priorMessagesStart, turnHistoryStart),
+            };
+            const autoRouteBoundary = priorMessagesStart +
+              projectAutoRouteContext(autoRouteContext).priorMessageBoundary;
+            let routeLayeredContext: {
+              workingCheckpoint?: string;
+              retrievedThreadEvidence?: string;
+            } = {};
+            if (this.dependencies.getLayeredContext) {
+              try {
+                routeLayeredContext = await this.dependencies.getLayeredContext({
+                  state,
+                  query: contextRetrievalQuery(state, memoryContext.userInput),
+                  beforeMessageIndex: 0,
+                });
+              } catch (error) {
+                if (!contextLayerFailureReported) {
+                  contextLayerFailureReported = true;
+                  const detail = error instanceof Error ? error.message : String(error);
+                  this.dependencies.onStatus?.(
+                    `Layered context index is unavailable (${detail}); continuing with the current context.`,
+                  );
+                }
+              }
+            }
             // Direct answers must inherit the same base security contract and
             // layered EASYCODE.md guidance as a normal agent request. Empty
             // workspace/memory inputs prevent this controller from answering
             // questions that require repository or retrieval facts.
-            const controllerPolicy = await this.dependencies.buildSystemPrompt({
+            const buildControllerPolicy = async (
+              context: typeof routeLayeredContext,
+            ): Promise<string> => this.dependencies.buildSystemPrompt({
               mode: "auto",
               workspaceSummary: "",
               memories: [],
+              ...(context.workingCheckpoint
+                ? { workingCheckpoint: context.workingCheckpoint }
+                : {}),
+              ...(context.retrievedThreadEvidence
+                ? { retrievedThreadEvidence: context.retrievedThreadEvidence }
+                : {}),
               toolNames: [],
             });
+            let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
+            if (this.dependencies.getLayeredContext) {
+              try {
+                routeLayeredContext = await this.dependencies.getLayeredContext({
+                  state,
+                  query: contextRetrievalQuery(state, memoryContext.userInput),
+                  beforeMessageIndex: autoRouteBoundary,
+                });
+                controllerPolicy = await buildControllerPolicy(routeLayeredContext);
+              } catch (error) {
+                if (!contextLayerFailureReported) {
+                  contextLayerFailureReported = true;
+                  const detail = error instanceof Error ? error.message : String(error);
+                  this.dependencies.onStatus?.(
+                    `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
+                  );
+                }
+              }
+            }
             routed = await this.runProviderAttempt(
               options.signal,
               (attemptSignal) => this.withModelRequestActivity(
@@ -750,13 +850,7 @@ export class AgentRuntime {
                   attemptSignal,
                   turnImages,
                   state.thinkingEffort,
-                  {
-                    workingSummary: state.workingSummary,
-                    priorMessages: state.messages.slice(
-                      Math.min(state.compactedMessageCount, turnHistoryStart),
-                      turnHistoryStart,
-                    ),
-                  },
+                  autoRouteContext,
                   controllerPolicy,
                 ),
               ),
@@ -950,6 +1044,27 @@ export class AgentRuntime {
           memoryContext,
         );
       }
+      let layeredContext: {
+        workingCheckpoint?: string;
+        retrievedThreadEvidence?: string;
+      } = {};
+      if (this.dependencies.getLayeredContext) {
+        try {
+          layeredContext = await this.dependencies.getLayeredContext({
+            state,
+            query: contextRetrievalQuery(state, memoryContext.userInput),
+            beforeMessageIndex: 0,
+          });
+        } catch (error) {
+          if (!contextLayerFailureReported) {
+            contextLayerFailureReported = true;
+            const detail = error instanceof Error ? error.message : String(error);
+            this.dependencies.onStatus?.(
+              `Layered context index is unavailable (${detail}); continuing with the current context.`,
+            );
+          }
+        }
+      }
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const shortTermChars = this.dependencies.contextManager.estimateShortTermChars(state);
       const contextUtilization = shortTermChars / options.maxContextChars;
@@ -1003,19 +1118,6 @@ export class AgentRuntime {
           : [...toolMap.values()].filter((tool) =>
               !runCommandUnavailable || tool.name !== "run_command"
             );
-      const baseSystemPrompt = await this.dependencies.buildSystemPrompt({
-        mode: effectiveMode,
-        workspaceSummary,
-        memories,
-        toolNames: enabledTools.map((tool) => tool.name),
-        ...(state.taskGraph && (
-          state.taskGraph.status !== "completed" ||
-          state.taskGraph.updatedByTurnId === turnId
-        )
-          ? { taskGraph: state.taskGraph }
-          : {}),
-        ...(state.planReview ? { planReview: state.planReview } : {}),
-      });
       const runtimeInstructions = [
         pressureInstruction,
         runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
@@ -1023,13 +1125,66 @@ export class AgentRuntime {
           ? backgroundCommandFinalizationInstruction()
           : "",
       ].filter(Boolean);
-      const systemPrompt = runtimeInstructions.length
-        ? `${baseSystemPrompt}\n\n${runtimeInstructions.join("\n\n")}`
-        : baseSystemPrompt;
+      const buildStepSystemPrompt = async (
+        context: typeof layeredContext,
+      ): Promise<string> => {
+        const base = await this.dependencies.buildSystemPrompt({
+          mode: effectiveMode,
+          workspaceSummary,
+          memories,
+          ...(context.workingCheckpoint
+            ? { workingCheckpoint: context.workingCheckpoint }
+            : {}),
+          ...(context.retrievedThreadEvidence
+            ? { retrievedThreadEvidence: context.retrievedThreadEvidence }
+            : {}),
+          toolNames: enabledTools.map((tool) => tool.name),
+          ...(state.taskGraph && (
+            state.taskGraph.status !== "completed" ||
+            state.taskGraph.updatedByTurnId === turnId
+          )
+            ? { taskGraph: state.taskGraph }
+            : {}),
+          ...(state.planReview ? { planReview: state.planReview } : {}),
+        });
+        return runtimeInstructions.length
+          ? `${base}\n\n${runtimeInstructions.join("\n\n")}`
+          : base;
+      };
+      let systemPrompt = await buildStepSystemPrompt(layeredContext);
+      let reservedSystemPromptChars: number | undefined;
+      if (this.dependencies.getLayeredContext) {
+        try {
+          reservedSystemPromptChars = systemPrompt.length + 32 +
+            LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS;
+          layeredContext = await this.dependencies.getLayeredContext({
+            state,
+            query: contextRetrievalQuery(state, memoryContext.userInput),
+            beforeMessageIndex: this.dependencies.contextManager.retrievalBoundary(
+              state,
+              options.maxContextChars,
+              systemPrompt,
+              reservedSystemPromptChars,
+            ),
+          });
+          systemPrompt = await buildStepSystemPrompt(layeredContext);
+        } catch (error) {
+          if (!contextLayerFailureReported) {
+            contextLayerFailureReported = true;
+            const detail = error instanceof Error ? error.message : String(error);
+            this.dependencies.onStatus?.(
+              `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
+            );
+          }
+        }
+      }
       const messages = this.dependencies.contextManager.build({
         systemPrompt,
         state,
-        maxContextChars: options.maxContextChars
+        maxContextChars: options.maxContextChars,
+        ...(reservedSystemPromptChars === undefined
+          ? {}
+          : { reservedSystemPromptChars }),
       });
       this.dependencies.onStatus?.(
         `Step ${step}/${stepLimit}: requesting ${this.dependencies.provider.model}`
@@ -2849,6 +3004,16 @@ export class AgentRuntime {
         phase: "completed",
         payload: { count: memoryContext.mutations.length, reason },
       }).catch(() => undefined);
+    }
+    if (this.dependencies.checkpointContext) {
+      try {
+        await this.dependencies.checkpointContext(state);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.dependencies.onStatus?.(
+          `Incremental context checkpoint was not updated (${message}); the Thread journal remains authoritative.`,
+        );
+      }
     }
     return result;
   }

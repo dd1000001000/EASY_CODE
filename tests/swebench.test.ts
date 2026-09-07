@@ -3,6 +3,7 @@ import {
   chmodSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -12,11 +13,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV,
+  EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV,
   SWE_BENCH_VERIFIED_50,
+  benchmarkEmbeddingModelDirectory,
   benchmarkEnvironment,
   buildHarborRunArgs,
   consumeHarborGlmCodingPlanApiKeyFile,
   resolveHarborOuterSandbox,
+  summarizeSweBenchContextMetrics,
   validateSweBenchRoot,
 } from "../src/benchmarks/swebench.js";
 import { PACKAGED_MODEL_CATALOG } from "../src/models/generated-catalog.js";
@@ -209,7 +214,7 @@ describe("SWE-bench Verified integration", () => {
       concurrency: 4,
     });
 
-    assert.deepEqual(args.slice(0, 21), [
+    assert.deepEqual(args.slice(0, 27), [
       "run",
       "--dataset",
       "swe-bench/swe-bench-verified@sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341",
@@ -225,6 +230,12 @@ describe("SWE-bench Verified integration", () => {
       "4",
       "--n-attempts",
       "1",
+      "--max-retries",
+      "1",
+      "--retry-include",
+      "AgentSetupTimeoutError",
+      "--retry-include",
+      "EnvironmentStartTimeoutError",
       "--agent-setup-timeout-multiplier",
       "4",
       "--yes",
@@ -289,6 +300,44 @@ describe("SWE-bench Verified integration", () => {
     assert.doesNotMatch(source, /https:\/\/open\.bigmodel\.cn\/api\/coding\/paas\/v4/u);
     assert.doesNotMatch(source, /_GLM_CODING_PLAN_BASE_URL/u);
     assert.match(source, /def _truncate_output\(/u);
+    assert.match(source, /_CHECKPOINT_ROOT_ENV = "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT"/u);
+    assert.match(source, /"instructionSha256": self\._sha256_text\(instruction\)/u);
+    assert.match(source, /"jobScopeSha256": self\._job_scope_hash/u);
+    assert.match(source, /"workspaceBaseCommit": workspace_base_commit/u);
+    assert.match(source, /"packageSha256": self\._package_sha256/u);
+    assert.match(source, /self\._package_sha256 = self\._sha256_file\(package_path\)/u);
+    assert.match(source, /_REMOTE_CACHE_DIR = "\/tmp\/easy-code-cache"/u);
+    assert.doesNotMatch(source, /_REMOTE_CACHE_DIR = "\/logs\/agent/u);
+    assert.match(source, /environment\.upload_dir\(self\._model_directory, _REMOTE_MODEL_DIR\)/u);
+    assert.match(
+      source,
+      /command=f"mkdir -p \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u,
+    );
+    assert.match(
+      source,
+      /command=f"chmod -R a\+rX \{shlex\.quote\(_REMOTE_MODEL_DIR\)\}"/u,
+    );
+    assert.ok(
+      source.indexOf('command=f"mkdir -p {shlex.quote(_REMOTE_MODEL_DIR)}"') <
+        source.indexOf("environment.upload_dir(self._model_directory, _REMOTE_MODEL_DIR)"),
+      "the remote model directory must exist before Harbor uploads the large tree",
+    );
+    assert.match(source, /"EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR/u);
+    assert.match(source, /"embeddingModelManifestSha256": self\._model_manifest_sha256/u);
+    assert.match(source, /"--resume", shlex\.quote\(resume_thread_id\)/u);
+    assert.match(source, /event\.get\("type"\) == "subagent\.session_bound"/u);
+    assert.match(source, /FROM context_artifacts WHERE thread_id = \?/u);
+    assert.match(source, /FROM context_artifact_embeddings WHERE thread_id = \?/u);
+    assert.match(source, /FROM context_checkpoints WHERE thread_id = \?/u);
+    assert.match(source, /"retrievalBackend": "fts5"/u);
+    assert.match(source, /"hybrid" if embedding_count > 0 else "fts5"/u);
+    assert.match(source, /workspace base commit does not match checkpoint/iu);
+    assert.match(source, /Benchmark checkpoint binding mismatch/iu);
+    const modelExecEnvironment = source.match(
+      /result = await environment\.exec\([\s\S]*?env=\{([\s\S]*?)\},\s*timeout_sec=3600/u,
+    )?.[1];
+    assert.ok(modelExecEnvironment);
+    assert.doesNotMatch(modelExecEnvironment, /BENCHMARK_CHECKPOINT_ROOT/u);
     assert.doesNotMatch(source, /ensure_system_dependencies/u);
     assert.doesNotMatch(source, /installed\.node_install/u);
     assert.doesNotMatch(source, /"(?:ZAI|GLM|ZHIPUAI)_API_KEY":\s*self\._api_key/u);
@@ -303,6 +352,12 @@ describe("SWE-bench Verified integration", () => {
       launcherSource,
       /(?:ZAI|GLM|ZHIPUAI)_API_KEY\?\.trim\(\)\s*\|\|\s*\(await credentialStore\.get\("glm-coding-plan"\)\)/u,
     );
+    const appPath = fileURLToPath(new URL("../../src/app.ts", import.meta.url));
+    const appSource = readFileSync(appPath, "utf8");
+    assert.match(
+      appSource,
+      /new LocalEmbeddingModel\(\{\s*cacheDirectory:\s*config\.cacheDir,?\s*\}\)/u,
+    );
 
     const powershellPath = fileURLToPath(new URL(
       "../../benchmarks/swebench_verified/run.ps1",
@@ -312,6 +367,19 @@ describe("SWE-bench Verified integration", () => {
     assert.match(powershellSource, /models\\catalog\.json/u);
     assert.match(powershellSource, /profiles\.sweBenchVerified50/u);
     assert.match(powershellSource, /"--model",\s*\$harborModel/u);
+    assert.match(powershellSource, /"--max-retries", "1"/u);
+    assert.doesNotMatch(powershellSource, /"--retry-exclude"/u);
+    assert.match(powershellSource, /EASY_CODE_BENCHMARK_CHECKPOINT_ROOT = \$checkpointDir/u);
+    assert.match(powershellSource, /EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR = \$embeddingModelDir/u);
+    assert.match(powershellSource, /scripts\\embedding-model\.cjs/u);
+    assert.match(powershellSource, /& \$nodePath \$embeddingVerifier verify/u);
+    assert.match(powershellSource, /failed size\/SHA-256 verification/u);
+    assert.ok(
+      powershellSource.indexOf("$embeddingVerifyOutput = @(& $nodePath $embeddingVerifier verify") <
+        powershellSource.indexOf("$apiKey = @($benchmarkApiKeyEnvironmentNames"),
+      "the lower-level runner must verify every model asset before reading the API key",
+    );
+    assert.match(powershellSource, /easy-code-context-summary\.json/u);
     assert.doesNotMatch(powershellSource, /"--model",\s*"glm\//u);
   });
 
@@ -338,6 +406,74 @@ describe("SWE-bench Verified integration", () => {
       () => buildHarborRunArgs({ root, runId: "invalid", concurrency: 1, limit: 51 }),
       /limit|50/iu,
     );
+  });
+
+  it("aggregates isolated checkpoint and retrieval metrics for one Harbor job", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-benchmark-summary-"));
+    try {
+      const job = path.join(root, "jobs", "metrics-run");
+      const first = path.join(job, "task-a", "agent");
+      const second = path.join(job, "task-b", "agent");
+      mkdirSync(first, { recursive: true });
+      mkdirSync(second, { recursive: true });
+      writeFileSync(
+        path.join(first, "easy-code-context-metrics.json"),
+        JSON.stringify({
+          checkpointGeneration: "a".repeat(32),
+          resumedFromCheckpoint: true,
+          retrievalBackend: "hybrid",
+          contextArtifactCount: 8,
+          contextEmbeddingCount: 5,
+          contextLexicalOnlyCount: 3,
+          contextIndexedMessageCount: 7,
+          contextCheckpointSequence: 4,
+          modelRequests: 3,
+          inputTokens: 1200,
+          outputTokens: 300,
+          cachedInputTokens: 100,
+        }),
+      );
+      writeFileSync(
+        path.join(second, "easy-code-context-metrics.json"),
+        JSON.stringify({
+          checkpointGeneration: "b".repeat(32),
+          resumedFromCheckpoint: false,
+          retrievalBackend: "fts5",
+          contextArtifactCount: 6,
+          contextEmbeddingCount: 0,
+          contextLexicalOnlyCount: 6,
+          contextIndexedMessageCount: 5,
+          contextCheckpointSequence: 2,
+          modelRequests: 2,
+          inputTokens: 800,
+          outputTokens: 200,
+          cachedInputTokens: 50,
+        }),
+      );
+
+      assert.deepEqual(summarizeSweBenchContextMetrics(root, "metrics-run"), {
+        trialsWithMetrics: 2,
+        resumedTrials: 1,
+        checkpointedTrials: 2,
+        fts5Trials: 1,
+        hybridTrials: 1,
+        contextArtifactCount: 14,
+        contextEmbeddingCount: 5,
+        contextLexicalOnlyCount: 9,
+        contextIndexedMessageCount: 12,
+        maxContextCheckpointSequence: 4,
+        modelRequests: 5,
+        inputTokens: 2000,
+        outputTokens: 500,
+        cachedInputTokens: 150,
+      });
+      assert.throws(
+        () => summarizeSweBenchContextMetrics(root, "../other-job"),
+        /runId|invalid/iu,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("selects strict non-overlapping task slices with a zero-based offset", () => {
@@ -419,6 +555,8 @@ describe("SWE-bench Verified integration", () => {
       PATH: "host-path",
       ...providerConfiguration,
       EASY_CODE_GLM_CODING_PLAN_KEY_FILE: "untrusted-secret-path",
+      EASY_CODE_BENCHMARK_CHECKPOINT_ROOT: "untrusted-checkpoint-root",
+      EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR: "untrusted-model-root",
       BENCHMARK_NON_SECRET: "preserved",
     };
     const originalSnapshot = { ...baseEnvironment };
@@ -432,6 +570,8 @@ describe("SWE-bench Verified integration", () => {
       assert.equal(environment[name], undefined);
     }
     assert.equal(environment.EASY_CODE_GLM_CODING_PLAN_KEY_FILE, undefined);
+    assert.equal(environment.EASY_CODE_BENCHMARK_CHECKPOINT_ROOT, undefined);
+    assert.equal(environment.EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR, undefined);
     assert.equal(environment.BENCHMARK_NON_SECRET, "preserved");
     assert.deepEqual(baseEnvironment, originalSnapshot);
 
@@ -441,6 +581,20 @@ describe("SWE-bench Verified integration", () => {
         EASY_CODE_GLM_CODING_PLAN_KEY_FILE: stagedPath,
       }).EASY_CODE_GLM_CODING_PLAN_KEY_FILE,
       stagedPath,
+    );
+    const checkpointRoot = path.join(root, "checkpoints");
+    assert.equal(
+      benchmarkEnvironment(root, baseEnvironment, {
+        [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: checkpointRoot,
+      })[EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV],
+      checkpointRoot,
+    );
+    const embeddingModelDirectory = benchmarkEmbeddingModelDirectory(root);
+    assert.equal(
+      benchmarkEnvironment(root, baseEnvironment, {
+        [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: embeddingModelDirectory,
+      })[EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV],
+      embeddingModelDirectory,
     );
 
     const explicitDockerConfig = path.resolve("F:\\docker-cli-config");

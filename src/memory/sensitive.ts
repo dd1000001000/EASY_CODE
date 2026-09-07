@@ -4,7 +4,7 @@ const SENSITIVE_TESTS: readonly RegExp[] = [
   /\bsk-[A-Za-z0-9_-]{12,}\b/i,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/i,
   /\bAKIA[0-9A-Z]{16}\b/,
-  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret|authorization)\s*[:=]\s*["']?[^\s"']{6,}/i,
+  /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|authorization)\s*[:=]\s*["']?[^\s"']{6,}/i,
   /:\/\/[^\s/:@]+:[^\s/@]+@/,
 ];
 
@@ -20,9 +20,8 @@ export function redactSensitiveInformation(value: string): string {
     .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/gi, "[REDACTED TOKEN]")
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED ACCESS KEY]")
     .replace(
-      /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret|authorization)(\s*[:=]\s*)["']?[^\s"']{6,}/gi,
+      /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|password|passwd|secret|authorization)(\s*[:=]\s*)["']?[^\s"']{6,}/gi,
       "$1$2[REDACTED]",
     )
     .replace(/:\/\/([^\s/:@]+):([^\s/@]+)@/g, "://$1:[REDACTED]@");
 }
-

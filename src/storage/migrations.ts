@@ -236,6 +236,193 @@ const MIGRATIONS: readonly Migration[] = [
         ON tool_audit(thread_id, source_agent_id, timestamp);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE context_artifacts (
+        id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        source_key TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK(source_type IN ('user', 'assistant', 'tool')),
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+        message_index INTEGER NOT NULL CHECK(message_index >= 0),
+        chunk_index INTEGER NOT NULL CHECK(chunk_index >= 0),
+        importance REAL NOT NULL CHECK(importance >= 0 AND importance <= 1),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(thread_id, source_key)
+      );
+
+      CREATE INDEX context_artifacts_thread_message_idx
+        ON context_artifacts(thread_id, message_index, chunk_index);
+
+      CREATE INDEX context_artifacts_workspace_thread_idx
+        ON context_artifacts(workspace_id, thread_id, updated_at DESC);
+
+      CREATE VIRTUAL TABLE context_artifacts_fts USING fts5(
+        title,
+        content,
+        content='context_artifacts',
+        content_rowid='rowid',
+        tokenize='unicode61'
+      );
+
+      CREATE TRIGGER context_artifacts_fts_insert AFTER INSERT ON context_artifacts BEGIN
+        INSERT INTO context_artifacts_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, new.content);
+      END;
+
+      CREATE TRIGGER context_artifacts_fts_delete AFTER DELETE ON context_artifacts BEGIN
+        INSERT INTO context_artifacts_fts(context_artifacts_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, old.content);
+      END;
+
+      CREATE TRIGGER context_artifacts_fts_update
+      AFTER UPDATE OF title, content ON context_artifacts BEGIN
+        INSERT INTO context_artifacts_fts(context_artifacts_fts, rowid, title, content)
+        VALUES ('delete', old.rowid, old.title, old.content);
+        INSERT INTO context_artifacts_fts(rowid, title, content)
+        VALUES (new.rowid, new.title, new.content);
+      END;
+
+      CREATE TABLE context_artifact_embeddings (
+        artifact_id TEXT PRIMARY KEY REFERENCES context_artifacts(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        dimensions INTEGER NOT NULL CHECK(dimensions > 0),
+        pooling TEXT NOT NULL,
+        embedding_version INTEGER NOT NULL CHECK(embedding_version > 0),
+        content_hash TEXT NOT NULL CHECK(length(content_hash) = 64),
+        embedding BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK(length(embedding) = dimensions * 4)
+      );
+
+      CREATE INDEX context_artifact_embeddings_model_idx
+        ON context_artifact_embeddings(
+          thread_id, model, revision, dimensions, pooling, embedding_version
+        );
+
+      CREATE TABLE context_vector_state (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TRIGGER context_artifacts_vector_state_insert
+      AFTER INSERT ON context_artifacts BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        VALUES (new.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER context_artifacts_vector_state_update
+      AFTER UPDATE OF workspace_id, thread_id, title, content, content_hash,
+                      message_index, chunk_index, importance
+      ON context_artifacts BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        VALUES (new.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE old.thread_id <> new.thread_id
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER context_artifacts_vector_state_delete
+      AFTER DELETE ON context_artifacts BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER context_embeddings_vector_state_insert
+      AFTER INSERT ON context_artifact_embeddings BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        VALUES (new.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER context_embeddings_vector_state_update
+      AFTER UPDATE OF model, revision, dimensions, pooling, embedding_version,
+                      content_hash, embedding
+      ON context_artifact_embeddings BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        VALUES (new.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TRIGGER context_embeddings_vector_state_delete
+      AFTER DELETE ON context_artifact_embeddings BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      CREATE TABLE context_checkpoints (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        workspace_id TEXT NOT NULL,
+        checkpoint_sequence INTEGER NOT NULL CHECK(checkpoint_sequence >= 1),
+        indexed_message_count INTEGER NOT NULL CHECK(indexed_message_count >= 0),
+        compacted_message_count INTEGER NOT NULL CHECK(compacted_message_count >= 0),
+        state_hash TEXT NOT NULL CHECK(length(state_hash) = 64),
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX context_checkpoints_workspace_idx
+        ON context_checkpoints(workspace_id, updated_at DESC);
+    `,
+  },
+  {
+    version: 6,
+    sql: `
+      DROP TRIGGER context_artifacts_vector_state_delete;
+      CREATE TRIGGER context_artifacts_vector_state_delete
+      AFTER DELETE ON context_artifacts BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+
+      DROP TRIGGER context_embeddings_vector_state_delete;
+      CREATE TRIGGER context_embeddings_vector_state_delete
+      AFTER DELETE ON context_artifact_embeddings BEGIN
+        INSERT INTO context_vector_state(thread_id, generation, updated_at)
+        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
+        ON CONFLICT(thread_id) DO UPDATE SET
+          generation = context_vector_state.generation + 1,
+          updated_at = excluded.updated_at;
+      END;
+    `,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

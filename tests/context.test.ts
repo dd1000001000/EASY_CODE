@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import {
   ContextManager,
+  MAX_ACTIVE_WORKING_SET_CHARS,
   contextPressureLevel,
   estimateTextTokens,
 } from "../src/context/manager.js";
@@ -42,6 +43,78 @@ function makeState(): SessionState {
 }
 
 describe("ContextManager", () => {
+  it("keeps a bounded recent working set even when the provider budget is much larger", () => {
+    const state = makeState();
+    state.messages = Array.from({ length: 180 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `rolling-message-${index}-${"x".repeat(1_000)}`,
+    }));
+    const manager = new ContextManager();
+    const boundary = manager.retrievalBoundary(state, 1_600_000);
+    const context = manager.build({
+      systemPrompt: "system",
+      state,
+      maxContextChars: 1_600_000,
+    });
+
+    assert.ok(boundary > 0);
+    assert.equal(context.some((message) => message.content?.includes("rolling-message-0-")), false);
+    assert.equal(context.some((message) => message.content?.includes("rolling-message-179-")), true);
+    assert.ok(contextChars(context) <= MAX_ACTIVE_WORKING_SET_CHARS + 64);
+  });
+
+  it("uses the same system reservation for retrieval and raw-message selection", () => {
+    const state = makeState();
+    const manager = new ContextManager();
+    const systemPrompt = `system-${"s".repeat(1_200)}`;
+    const reservedSystemPromptChars = 4_000;
+    const boundary = manager.retrievalBoundary(
+      state,
+      5_000,
+      systemPrompt,
+      reservedSystemPromptChars,
+    );
+    const context = manager.build({
+      systemPrompt,
+      state,
+      maxContextChars: 5_000,
+      reservedSystemPromptChars,
+    });
+
+    assert.ok(boundary > 0);
+    assert.equal(context.includes(state.messages[boundary]!), true);
+    assert.equal(context.includes(state.messages[boundary - 1]!), false);
+    assert.ok(contextChars(context) <= 5_000);
+  });
+
+  it("preserves the current user message when system reservation exceeds a low budget", () => {
+    const state = makeState();
+    state.messages.push({
+      role: "user",
+      content: `CURRENT_USER_REQUEST_${"z".repeat(2_000)}`,
+    });
+    const manager = new ContextManager();
+    const maxContextChars = 4_096;
+    const reservedSystemPromptChars = 25_000;
+    const boundary = manager.retrievalBoundary(
+      state,
+      maxContextChars,
+      "system",
+      reservedSystemPromptChars,
+    );
+    const context = manager.build({
+      systemPrompt: "system",
+      state,
+      maxContextChars,
+      reservedSystemPromptChars,
+    });
+
+    assert.equal(boundary, state.messages.length - 1);
+    assert.equal(context.at(-1)?.role, "user");
+    assert.match(context.at(-1)?.content ?? "", /CURRENT_USER_REQUEST_/u);
+    assert.ok(contextChars(context) <= maxContextChars);
+  });
+
   it("classifies the exact 60/80/90 percent context-pressure boundaries", () => {
     assert.equal(contextPressureLevel(0.5999), "normal");
     assert.equal(contextPressureLevel(0.6), "suggest");

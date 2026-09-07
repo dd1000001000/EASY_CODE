@@ -26,6 +26,11 @@ import {
   isCommandApprovalPrefixGranted,
 } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
+import {
+  ContextArtifactIndex,
+  renderContextCheckpoint,
+  renderRetrievedContext,
+} from "./context/artifact-index.js";
 import { ContextManager } from "./context/manager.js";
 import type {
   AgentMode,
@@ -478,6 +483,7 @@ export class EasyCodeApp {
   private workspace: WorkspaceManager;
   private state: SessionState;
   private readonly contextManager = new ContextManager();
+  private readonly contextArtifactIndex: ContextArtifactIndex;
   private readonly memoryManager: MemoryManager;
   private readonly threadStore: ThreadStore;
   private threadLease: ThreadLease | undefined;
@@ -516,9 +522,11 @@ export class EasyCodeApp {
       : assumeYes
         ? "auto_approve"
         : "manual";
-    // The postinstall hook and runtime intentionally share the same stable
-    // per-user model cache, independent of workspace/user config layering.
-    const embeddingModel = new LocalEmbeddingModel();
+    // Use the already resolved trusted cache root so normal launches and the
+    // Harbor adapter consume the exact model prepared for this installation.
+    const embeddingModel = new LocalEmbeddingModel({
+      cacheDirectory: config.cacheDir,
+    });
     const vectorIndex = new MemoryVectorIndex(storage, embeddingModel);
     let reportedVectorFailure = false;
     this.memoryManager = new MemoryManager(storage, {
@@ -533,6 +541,20 @@ export class EasyCodeApp {
         );
       },
     });
+    let reportedContextVectorFailure = false;
+    this.contextArtifactIndex = new ContextArtifactIndex(
+      storage,
+      embeddingModel,
+      (error) => {
+        if (reportedContextVectorFailure) return;
+        reportedContextVectorFailure = true;
+        const detail = error instanceof Error ? error.message : String(error);
+        terminal.info(
+          `Semantic Thread-context retrieval is unavailable (${detail}). ` +
+          "EASY CODE is continuing with SQLite FTS5 retrieval.",
+        );
+      },
+    );
     this.threadStore = new ThreadStore(storage);
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: workspace.root,
@@ -1620,6 +1642,8 @@ export class EasyCodeApp {
         mode,
         workspaceSummary,
         memories,
+        workingCheckpoint,
+        retrievedThreadEvidence,
         toolNames,
         taskGraph,
         planReview,
@@ -1629,6 +1653,8 @@ export class EasyCodeApp {
           mode,
           workspaceSummary,
           memories,
+          ...(workingCheckpoint ? { workingCheckpoint } : {}),
+          ...(retrievedThreadEvidence ? { retrievedThreadEvidence } : {}),
           availableTools: toolNames,
           commandExecutionMode: this.commandExecutionMode,
           ...(taskGraph ? { taskGraph } : {}),
@@ -1636,6 +1662,24 @@ export class EasyCodeApp {
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
       searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
+      getLayeredContext: async ({ state, query, beforeMessageIndex }) => {
+        const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
+        const hits = await this.contextArtifactIndex.search(
+          workspaceId,
+          state.threadId,
+          query,
+          { beforeMessageIndex },
+        );
+        return {
+          workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
+          ...(hits.length
+            ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
+            : {}),
+        };
+      },
+      checkpointContext: async (state) => {
+        await this.contextArtifactIndex.checkpoint(workspaceId, state);
+      },
       hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
@@ -2075,6 +2119,8 @@ export class EasyCodeApp {
           mode,
           workspaceSummary,
           memories,
+          workingCheckpoint,
+          retrievedThreadEvidence,
           toolNames,
         }) => {
           const base = await buildSystemPrompt({
@@ -2082,6 +2128,8 @@ export class EasyCodeApp {
             mode,
             workspaceSummary,
             memories,
+            ...(workingCheckpoint ? { workingCheckpoint } : {}),
+            ...(retrievedThreadEvidence ? { retrievedThreadEvidence } : {}),
             availableTools: toolNames,
             commandExecutionMode: this.commandExecutionMode,
           });
@@ -2111,6 +2159,24 @@ export class EasyCodeApp {
             workspaceId,
             `${request.task.title}\n${request.task.description}\n${query}`,
           ),
+        getLayeredContext: async ({ state, query, beforeMessageIndex }) => {
+          const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
+          const hits = await this.contextArtifactIndex.search(
+            workspaceId,
+            state.threadId,
+            `${request.task.title}\n${request.task.description}\n${query}`,
+            { beforeMessageIndex },
+          );
+          return {
+            workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
+            ...(hits.length
+              ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
+              : {}),
+          };
+        },
+        checkpointContext: async (state) => {
+          await this.contextArtifactIndex.checkpoint(workspaceId, state);
+        },
         appendEvent: async (event) => {
           const { threadId, ...input } = event;
           if (threadId !== request.record.childThreadId) {

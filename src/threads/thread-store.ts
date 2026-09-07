@@ -8,6 +8,7 @@ import {
   type CommandAuditEntry,
   type EventRecord,
   type FileChangeRecord,
+  type FileVersion,
   type PlanReviewState,
   type ProviderName,
   type SessionState,
@@ -39,10 +40,13 @@ import {
 import { EventJournal, type AppendEventInput } from "./event-journal.js";
 import {
   deserializeSessionState,
+  deserializeThreadCheckpointDelta,
   isChatMessage,
   isPlanReviewState,
   serializeChatMessage,
   serializeSessionState,
+  serializeThreadCheckpointDelta,
+  type SerializedThreadCheckpointDelta,
 } from "./serialization.js";
 import {
   clonePlanReviewState,
@@ -567,6 +571,269 @@ function mergeCommandAudits(
   }
 }
 
+type CheckpointDeltaSettings = NonNullable<SerializedThreadCheckpointDelta["settings"]>;
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function sameFileVersion(
+  left: Readonly<FileVersion> | undefined,
+  right: Readonly<FileVersion>,
+): boolean {
+  return Boolean(
+    left &&
+    left.path === right.path &&
+    left.hash === right.hash &&
+    left.readAt === right.readAt,
+  );
+}
+
+function sameFilesRead(
+  left: ReadonlyMap<string, FileVersion>,
+  right: ReadonlyMap<string, FileVersion>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [filePath, version] of left) {
+    if (!sameFileVersion(right.get(filePath), version)) return false;
+  }
+  return true;
+}
+
+function createThreadCheckpointDelta(
+  durable: Readonly<SessionState>,
+  requested: Readonly<SessionState>,
+  baseSequence: number,
+): SerializedThreadCheckpointDelta {
+  if (requested.threadId !== durable.threadId) {
+    throw new Error(
+      `Thread checkpoint belongs to ${requested.threadId}, expected ${durable.threadId}`,
+    );
+  }
+  if (requested.workspaceRoot !== durable.workspaceRoot) {
+    throw new Error("Thread checkpoint cannot change the durable workspace root");
+  }
+  if (requested.createdAt !== durable.createdAt) {
+    throw new Error("Thread checkpoint cannot change the durable creation time");
+  }
+
+  let requestedMessagesAreStale = false;
+  let messagesAppended: ChatMessage[] = [];
+  if (messagePrefix(durable.messages, requested.messages)) {
+    messagesAppended = requested.messages
+      .slice(durable.messages.length)
+      .map(cloneMessage);
+  } else if (messagePrefix(requested.messages, durable.messages)) {
+    requestedMessagesAreStale = true;
+  } else {
+    throw new Error("Thread checkpoint diverged from durable message history");
+  }
+
+  // A checkpoint is a derived workspace snapshot. Runtime-owned state can only
+  // be introduced by its validated event transition, never by save().
+  if (!durable.taskGraph && requested.taskGraph) {
+    throw new Error("Thread checkpoint introduced a task DAG without a legal transition");
+  }
+  if (!durable.planReview && requested.planReview) {
+    throw new Error("Thread checkpoint introduced a plan review without a legal event");
+  }
+
+  if (
+    requestedMessagesAreStale &&
+    (
+      requested.mode !== durable.mode ||
+      requested.provider !== durable.provider ||
+      requested.model !== durable.model ||
+      requested.thinkingEffort !== durable.thinkingEffort ||
+      !sameJson(requested.promptBundle ?? null, durable.promptBundle ?? null) ||
+      !sameJson(requested.constraints, durable.constraints) ||
+      !sameFilesRead(requested.filesRead, durable.filesRead) ||
+      requested.compactedMessageCount > durable.compactedMessageCount ||
+      (
+        requested.compactedMessageCount === durable.compactedMessageCount &&
+        requested.workingSummary !== durable.workingSummary
+      )
+    )
+  ) {
+    throw new Error(
+      "Stale thread checkpoint cannot replace newer checkpoint-owned state",
+    );
+  }
+
+  const settings: {
+    mode?: CheckpointDeltaSettings["mode"];
+    provider?: CheckpointDeltaSettings["provider"];
+    model?: string;
+    thinkingEffort?: CheckpointDeltaSettings["thinkingEffort"];
+    promptBundle?: PromptBundleBinding | null;
+    goal?: string | null;
+    constraints?: string[];
+  } = {};
+  if (requested.mode !== durable.mode) settings.mode = requested.mode;
+  if (requested.provider !== durable.provider) settings.provider = requested.provider;
+  if (requested.model !== durable.model) settings.model = requested.model;
+  if (requested.thinkingEffort !== durable.thinkingEffort) {
+    settings.thinkingEffort = requested.thinkingEffort;
+  }
+  if (!sameJson(requested.promptBundle ?? null, durable.promptBundle ?? null)) {
+    settings.promptBundle = requested.promptBundle
+      ? { ...requested.promptBundle }
+      : null;
+  }
+  if (
+    !requestedMessagesAreStale &&
+    requested.goal !== durable.goal
+  ) {
+    settings.goal = requested.goal ?? null;
+  }
+  if (!sameJson(requested.constraints, durable.constraints)) {
+    settings.constraints = [...requested.constraints];
+  }
+
+  const filesReadUpserted = [...requested.filesRead.entries()]
+    .filter(([filePath, version]) => !sameFileVersion(durable.filesRead.get(filePath), version))
+    .map(([filePath, version]): [string, FileVersion] => [
+      filePath,
+      { ...version },
+    ]);
+  const filesReadRemoved = [...durable.filesRead.keys()].filter(
+    (filePath) => !requested.filesRead.has(filePath),
+  );
+
+  const durableChanges = new Set(durable.changes.map(fileChangeKey));
+  const changesAppended = requested.changes
+    .filter((change) => !durableChanges.has(fileChangeKey(change)))
+    .map((change) => ({ ...change }));
+  const durableCommands = new Set(durable.commands.map((command) => command.id));
+  const commandsAppended = requested.commands
+    .filter((command) => !durableCommands.has(command.id))
+    .map((command) => ({ ...command, args: [...command.args] }));
+
+  let compaction: SerializedThreadCheckpointDelta["compaction"];
+  if (
+    requested.compactedMessageCount > durable.compactedMessageCount ||
+    (
+      requested.compactedMessageCount === durable.compactedMessageCount &&
+      requested.workingSummary !== durable.workingSummary
+    )
+  ) {
+    const resultingMessageCount = durable.messages.length + messagesAppended.length;
+    if (requested.compactedMessageCount > resultingMessageCount) {
+      throw new Error("Thread checkpoint compaction exceeds durable message history");
+    }
+    compaction = {
+      workingSummary: requested.workingSummary,
+      compactedMessageCount: requested.compactedMessageCount,
+    };
+  }
+
+  return serializeThreadCheckpointDelta({
+    formatVersion: 1,
+    baseSequence,
+    ...(Object.keys(settings).length > 0 ? { settings } : {}),
+    ...(messagesAppended.length > 0 ? { messagesAppended } : {}),
+    ...(filesReadUpserted.length > 0 ? { filesReadUpserted } : {}),
+    ...(filesReadRemoved.length > 0 ? { filesReadRemoved } : {}),
+    ...(changesAppended.length > 0 ? { changesAppended } : {}),
+    ...(commandsAppended.length > 0 ? { commandsAppended } : {}),
+    ...(compaction ? { compaction } : {}),
+  });
+}
+
+function applyThreadCheckpointDelta(
+  state: SessionState,
+  delta: Readonly<SerializedThreadCheckpointDelta>,
+  event: Pick<EventRecord, "eventId" | "sequence">,
+): void {
+  if (delta.baseSequence !== event.sequence - 1) {
+    throw new Error(
+      `Thread checkpoint delta ${event.eventId} has base sequence ` +
+      `${delta.baseSequence}; expected ${event.sequence - 1}`,
+    );
+  }
+
+  const settings = delta.settings;
+  if (settings) {
+    if (settings.mode !== undefined) state.mode = settings.mode;
+    if (settings.provider !== undefined) state.provider = settings.provider;
+    if (settings.model !== undefined) state.model = settings.model;
+    if (settings.thinkingEffort !== undefined) {
+      state.thinkingEffort = settings.thinkingEffort;
+    }
+    if (settings.promptBundle !== undefined) {
+      if (settings.promptBundle === null) delete state.promptBundle;
+      else state.promptBundle = { ...settings.promptBundle };
+    }
+    if (settings.goal !== undefined) {
+      if (settings.goal === null) delete state.goal;
+      else state.goal = settings.goal;
+    }
+    if (settings.constraints !== undefined) {
+      state.constraints = [...settings.constraints];
+    }
+  }
+
+  for (const message of delta.messagesAppended ?? []) {
+    state.messages.push(cloneMessage(message));
+  }
+  for (const filePath of delta.filesReadRemoved ?? []) {
+    if (!state.filesRead.delete(filePath)) {
+      throw new Error(
+        `Thread checkpoint delta ${event.eventId} removed an unknown file ${filePath}`,
+      );
+    }
+  }
+  for (const [filePath, version] of delta.filesReadUpserted ?? []) {
+    state.filesRead.set(filePath, { ...version });
+  }
+
+  const knownChanges = new Set(state.changes.map(fileChangeKey));
+  for (const change of delta.changesAppended ?? []) {
+    const key = fileChangeKey(change);
+    if (knownChanges.has(key)) {
+      throw new Error(`Thread checkpoint delta ${event.eventId} duplicated a file change`);
+    }
+    state.changes.push({ ...change });
+    knownChanges.add(key);
+  }
+  const knownCommands = new Set(state.commands.map((command) => command.id));
+  for (const command of delta.commandsAppended ?? []) {
+    if (knownCommands.has(command.id)) {
+      throw new Error(
+        `Thread checkpoint delta ${event.eventId} duplicated command ${command.id}`,
+      );
+    }
+    state.commands.push({ ...command, args: [...command.args] });
+    knownCommands.add(command.id);
+  }
+
+  if (delta.compaction) {
+    const boundary = delta.compaction.compactedMessageCount;
+    if (
+      boundary < state.compactedMessageCount ||
+      boundary > state.messages.length
+    ) {
+      throw new Error(`Thread checkpoint delta ${event.eventId} has invalid compaction`);
+    }
+    if (
+      boundary === state.compactedMessageCount &&
+      delta.compaction.workingSummary === state.workingSummary
+    ) {
+      throw new Error(`Thread checkpoint delta ${event.eventId} repeated its compaction`);
+    }
+    state.workingSummary = delta.compaction.workingSummary;
+    state.compactedMessageCount = boundary;
+  }
+}
+
+function threadCheckpointDeltaHasChanges(
+  delta: Readonly<SerializedThreadCheckpointDelta>,
+): boolean {
+  return Object.keys(delta).some(
+    (key) => key !== "formatVersion" && key !== "baseSequence",
+  );
+}
+
 function artifactPayload(payload: Record<string, unknown>): {
   changes: FileChangeRecord[];
   commands: CommandAuditEntry[];
@@ -622,6 +889,9 @@ export function peekThreadWorkspaceRoot(dataDir: string, threadId: string): stri
 
 /** Stores thread metadata as SQLite projections and recovers state from JSONL. */
 export class ThreadStore {
+  private static readonly MAX_CACHED_JOURNALS = 16;
+  private readonly journals = new Map<string, EventJournal>();
+
   constructor(private readonly storage: EasyCodeStorage) {}
 
   /** Read only the creation snapshot needed to locate a Thread's workspace. */
@@ -689,9 +959,10 @@ export class ThreadStore {
 
   save(state: SessionState): void {
     const journal = this.journal(state.threadId);
+    const checkpointTimestamp = new Date().toISOString();
     const snapshot: SessionState = {
       ...state,
-      updatedAt: new Date().toISOString(),
+      updatedAt: checkpointTimestamp,
       constraints: [...state.constraints],
       messages: state.messages.map(cloneMessage),
       filesRead: new Map(state.filesRead),
@@ -711,23 +982,42 @@ export class ThreadStore {
         ? { steeringSealedTurnId: state.steeringSealedTurnId }
         : {}),
     };
-    state.updatedAt = snapshot.updatedAt;
-
     let checkpointEvent: EventRecord | undefined;
     try {
       this.storage.db.transaction(() => {
-        if (journal.read().length === 0 || !this.threadExists(state.threadId)) {
+        const priorEvents = journal.read();
+        if (priorEvents.length === 0 || !this.threadExists(state.threadId)) {
           throw new Error(`Cannot save unknown thread: ${state.threadId}`);
         }
-        checkpointEvent = journal.append({
-          type: "thread_checkpoint",
-          payload: { state: serializeSessionState(snapshot) },
-          turnId: snapshot.activeTurnId,
+        const durable = this.recoverFromEvents(state.threadId, priorEvents);
+        const baseSequence = priorEvents[priorEvents.length - 1]?.sequence;
+        if (baseSequence === undefined) {
+          throw new Error(`Cannot save unknown thread: ${state.threadId}`);
+        }
+        const delta = createThreadCheckpointDelta(durable, snapshot, baseSequence);
+        if (!threadCheckpointDeltaHasChanges(delta)) return;
+        const effective = deserializeSessionState(serializeSessionState(durable));
+        applyThreadCheckpointDelta(effective, delta, {
+          eventId: "pending_thread_checkpoint_delta",
+          sequence: baseSequence + 1,
         });
-        this.projectState(snapshot, "active");
+        effective.updatedAt = checkpointTimestamp;
+        checkpointEvent = journal.append({
+          type: "thread_checkpoint_delta",
+          payload: delta,
+          turnId: effective.activeTurnId,
+          timestamp: checkpointTimestamp,
+        });
+        state.updatedAt = checkpointTimestamp;
+        if (checkpointEvent.sequence !== baseSequence + 1) {
+          throw new Error("Thread journal advanced while saving its checkpoint delta");
+        }
+        this.projectState(effective, "active");
         this.projectEvent(checkpointEvent, journal.filePath);
-        for (const command of snapshot.commands) {
-          this.projectToolAudit(snapshot.threadId, snapshot.activeTurnId, command);
+        // SQLite is only a repairable projection. Preserve save()'s existing
+        // audit-reconciliation behavior without repeating commands in JSONL.
+        for (const command of effective.commands) {
+          this.projectToolAudit(effective.threadId, effective.activeTurnId, command);
         }
       })();
     } catch (error) {
@@ -741,7 +1031,7 @@ export class ThreadStore {
         const recovered = this.recoverFromEvents(state.threadId, events);
         this.reconcileProjection(recovered, events, journal.filePath);
       } catch {
-        // The checkpoint is durable; a later get/recover retries projection.
+        // The checkpoint delta is durable; a later get/recover retries projection.
       }
     }
   }
@@ -1482,6 +1772,7 @@ export class ThreadStore {
       if (event?.turnId !== turnId) continue;
       if (
         event.type === "thread_checkpoint" ||
+        event.type === "thread_checkpoint_delta" ||
         event.type === "subagent.artifact" ||
         event.type === "subagent.result" ||
         event.type === "tool_audit"
@@ -1507,7 +1798,21 @@ export class ThreadStore {
   }
 
   journal(threadId: string): EventJournal {
-    return new EventJournal(this.storage.dataDir, threadId);
+    const cached = this.journals.get(threadId);
+    if (cached) {
+      // Refresh insertion order so active parent/child Threads survive bounded
+      // cache eviction while old resumed Threads release their parsed journals.
+      this.journals.delete(threadId);
+      this.journals.set(threadId, cached);
+      return cached;
+    }
+    const journal = new EventJournal(this.storage.dataDir, threadId);
+    this.journals.set(threadId, journal);
+    if (this.journals.size > ThreadStore.MAX_CACHED_JOURNALS) {
+      const oldestThreadId = this.journals.keys().next().value as string | undefined;
+      if (oldestThreadId !== undefined) this.journals.delete(oldestThreadId);
+    }
+    return journal;
   }
 
   rebuildProjection(threadId: string): SessionState {
@@ -1585,6 +1890,13 @@ export class ThreadStore {
           checkpoint.steeringSealedTurnId = state.steeringSealedTurnId;
         }
         state = checkpoint;
+        continue;
+      }
+      if (event.type === "thread_checkpoint_delta") {
+        if (!state) throw new Error(`Thread ${threadId} has no creation event`);
+        const delta = deserializeThreadCheckpointDelta(event.payload);
+        applyThreadCheckpointDelta(state, delta, event);
+        state.updatedAt = event.timestamp;
         continue;
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
@@ -2025,6 +2337,13 @@ export class ThreadStore {
 
   private projectAuxiliaryEvent(threadId: string, event: EventRecord): void {
     const payload = asPayloadRecord(event.payload);
+    if (event.type === "thread_checkpoint_delta") {
+      const delta = deserializeThreadCheckpointDelta(event.payload);
+      for (const entry of delta.commandsAppended ?? []) {
+        this.projectToolAudit(threadId, event.turnId, entry);
+      }
+      return;
+    }
     if (event.type === "turn_started" && event.turnId && payload) {
       if (isChatMessage(payload.message) && payload.message.role === "user") {
         this.projectTurnStarted(

@@ -91,6 +91,9 @@ describe("system prompt builder", () => {
           createdAt: "2026-08-26T00:00:00.000Z",
           updatedAt: "2026-08-27T00:00:00.000Z",
         }],
+        workingCheckpoint: '{"checkpointSequence":3,"objective":"Finish the release"}',
+        retrievedThreadEvidence:
+          "[evidence_id=context_abc] Earlier verified test output: release checks passed.",
         taskGraph,
         now: new Date("2026-08-27T01:02:03.000Z"),
         cwd,
@@ -126,6 +129,12 @@ describe("system prompt builder", () => {
       assert.match(prompt, /File contents.*command output.*untrusted data/);
       assert.match(prompt, /BEGIN_UNTRUSTED_WORKSPACE_SUMMARY/);
       assert.match(prompt, /BEGIN_UNTRUSTED_RETRIEVED_MEMORY/);
+      assert.match(prompt, /BEGIN_UNTRUSTED_WORKING_CHECKPOINT/);
+      assert.match(prompt, /"checkpointSequence":3/);
+      assert.match(prompt, /BEGIN_UNTRUSTED_RETRIEVED_THREAD_EVIDENCE/);
+      assert.match(prompt, /Earlier verified test output/);
+      assert.match(prompt, /may be incomplete or stale/);
+      assert.match(prompt, /never as instructions/);
       assert.match(prompt, /memory_id=memory_00000000-0000-4000-8000-000000000001/);
       assert.match(prompt, /category=convention/);
       assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);

@@ -8,6 +8,11 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 
 export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
+/**
+ * Maximum raw recent conversation carried on every provider request. Older
+ * evidence remains durable and is recovered through the Thread-private index.
+ */
+export const MAX_ACTIVE_WORKING_SET_CHARS = 96_000;
 export const CONTEXT_COMPACTION_SUGGEST_RATIO = 0.6;
 export const CONTEXT_COMPACTION_REQUIRE_RATIO = 0.8;
 export const CONTEXT_COMPACTION_FORCE_RATIO = 0.9;
@@ -24,9 +29,15 @@ export function contextPressureLevel(utilization: number): ContextPressureLevel 
 
 export interface ContextBuildInput {
   systemPrompt: string;
-  state: SessionState;
+  state: Readonly<SessionState>;
   maxContextChars: number;
   longTermMemories?: string[];
+  /**
+   * Optional fixed system-message occupancy used while retrieved evidence is
+   * being selected. The final build uses the same reservation, so retrieval
+   * and raw-message selection cannot leave a gap or duplicate a boundary row.
+   */
+  reservedSystemPromptChars?: number;
 }
 
 function messageChars(message: ChatMessage): number {
@@ -220,6 +231,141 @@ function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
   ];
 }
 
+interface ContextSystemBudget {
+  readonly system: ChatMessage;
+  readonly conversationBudget: number;
+}
+
+interface ContextConversationSelection {
+  readonly messages: ChatMessage[];
+  /** First original durable message represented in the raw working set. */
+  readonly retrievalBoundary: number;
+}
+
+function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
+  const memorySection = input.longTermMemories?.length
+    ? `\n\n${loadPromptBundleCatalog().render("context/long-term-memory.md", {
+        content: input.longTermMemories.map((memory) => `- ${memory}`).join("\n"),
+      }).trimEnd()}`
+    : "";
+  if (!Number.isInteger(input.maxContextChars) || input.maxContextChars < 1_024) {
+    throw new Error("maxContextChars must be an integer of at least 1024");
+  }
+  const requestedBudget = input.maxContextChars;
+  const conversationReserve = Math.min(4_096, Math.max(512, Math.floor(requestedBudget / 4)));
+  const systemLimit = Math.max(256, requestedBudget - conversationReserve - 32);
+  const system: ChatMessage = {
+    role: "system",
+    content: boundedText(`${input.systemPrompt}${memorySection}`, systemLimit),
+  };
+  const actualSystemChars = messageChars(system);
+  const requestedSystemChars = input.reservedSystemPromptChars === undefined
+    ? actualSystemChars
+    : Math.max(actualSystemChars, Math.trunc(input.reservedSystemPromptChars));
+  const maximumSystemChars = requestedBudget - conversationReserve;
+  const reservedSystemChars = Math.max(
+    actualSystemChars,
+    Math.min(maximumSystemChars, requestedSystemChars),
+  );
+  return {
+    system,
+    conversationBudget: Math.max(0, requestedBudget - reservedSystemChars),
+  };
+}
+
+function selectContextConversation(
+  state: Readonly<SessionState>,
+  budget: number,
+): ContextConversationSelection {
+  const compactedMessageCount = Math.min(
+    Math.max(0, state.compactedMessageCount),
+    state.messages.length,
+  );
+  let activeStart = compactedMessageCount;
+  while (state.messages[activeStart]?.role === "tool") activeStart += 1;
+  const activeMessages = limitActiveImages(state.messages.slice(activeStart));
+  const persistentSummary = state.workingSummary.trim();
+  const persistentSummaryMessage = persistentSummary
+    ? summaryMessage(persistentSummary)
+    : undefined;
+  const workingSetBudget = Math.min(Math.max(0, budget), MAX_ACTIVE_WORKING_SET_CHARS);
+  const totalConversationChars = activeMessages.reduce(
+    (total, message) => total + messageChars(message),
+    persistentSummaryMessage ? messageChars(persistentSummaryMessage) : 0,
+  );
+  if (totalConversationChars <= workingSetBudget) {
+    return {
+      messages: [
+        ...(persistentSummaryMessage ? [persistentSummaryMessage] : []),
+        ...activeMessages,
+      ],
+      retrievalBoundary: activeStart,
+    };
+  }
+
+  const summaryReserve = Math.min(8_000, Math.floor(workingSetBudget * 0.3));
+  const recentBudget = Math.max(0, workingSetBudget - summaryReserve);
+  const selected: ChatMessage[] = [];
+  let selectedStart = activeMessages.length;
+  let used = 0;
+  for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
+    const message = activeMessages[index];
+    if (!message) continue;
+    const size = messageChars(message);
+    if (used + size > recentBudget) {
+      if (selected.length === 0) {
+        const bounded = boundedMessage(message, recentBudget);
+        if (bounded) {
+          selected.unshift(bounded);
+          selectedStart = index;
+        }
+      }
+      break;
+    }
+    selected.unshift(message);
+    selectedStart = index;
+    used += size;
+  }
+  while (selected[0]?.role === "tool") {
+    selected.shift();
+    selectedStart += 1;
+  }
+
+  const omitted = activeMessages.slice(0, selectedStart);
+  const fallbackSummary = summarizeMessages(omitted);
+  const summaryParts: string[] = [];
+  if (persistentSummary) {
+    summaryParts.push(loadPromptBundleCatalog().render(
+      "context/fallback-persistent-summary.md",
+      { content: persistentSummary },
+    ).trimEnd());
+  }
+  if (fallbackSummary) {
+    summaryParts.push(loadPromptBundleCatalog().render(
+      "context/fallback-overflow-summary.md",
+      { content: fallbackSummary },
+    ).trimEnd());
+  }
+
+  const cleanSelected = removeOrphanToolMessages(selected);
+  const combinedSummary = summaryParts.join("\n\n");
+  if (combinedSummary) {
+    const remainingForSummary = Math.max(0, workingSetBudget - cleanSelected.reduce(
+      (total, message) => total + messageChars(message),
+      0,
+    ));
+    const boundedSummary = boundedMessage(
+      summaryMessage(combinedSummary),
+      Math.min(remainingForSummary, summaryReserve),
+    );
+    if (boundedSummary) cleanSelected.unshift(boundedSummary);
+  }
+  return {
+    messages: cleanSelected,
+    retrievalBoundary: activeStart + selectedStart,
+  };
+}
+
 export class ContextManager {
   /** Character budget used by automatic context-pressure thresholds. */
   estimateShortTermChars(state: Readonly<SessionState>): number {
@@ -236,6 +382,29 @@ export class ContextManager {
       (total, message) => total + estimateMessageTextTokens(message),
       estimateVisionTokens(messages),
     );
+  }
+
+  /**
+   * Returns the first durable message index omitted from the rolling working
+   * set. Retrieval must use this exact boundary so it never duplicates recent
+   * messages that are already sent verbatim.
+   */
+  retrievalBoundary(
+    state: Readonly<SessionState>,
+    maxContextChars: number,
+    systemPrompt = "",
+    reservedSystemPromptChars?: number,
+  ): number {
+    const input: ContextBuildInput = {
+      systemPrompt,
+      state,
+      maxContextChars,
+      ...(reservedSystemPromptChars === undefined
+        ? {}
+        : { reservedSystemPromptChars }),
+    };
+    const system = contextSystemBudget(input);
+    return selectContextConversation(state, system.conversationBudget).retrievalBoundary;
   }
 
   applyModelCompaction(
@@ -263,110 +432,9 @@ export class ContextManager {
   }
 
   build(input: ContextBuildInput): ChatMessage[] {
-    const memorySection = input.longTermMemories?.length
-      ? `\n\n${loadPromptBundleCatalog().render("context/long-term-memory.md", {
-          content: input.longTermMemories.map((memory) => `- ${memory}`).join("\n"),
-        }).trimEnd()}`
-      : "";
-
-    if (!Number.isInteger(input.maxContextChars) || input.maxContextChars < 1_024) {
-      throw new Error("maxContextChars must be an integer of at least 1024");
-    }
-    const requestedBudget = input.maxContextChars;
-    const conversationReserve = Math.min(4_096, Math.max(512, Math.floor(requestedBudget / 4)));
-    const systemLimit = Math.max(256, requestedBudget - conversationReserve - 32);
-    const system: ChatMessage = {
-      role: "system",
-      content: boundedText(`${input.systemPrompt}${memorySection}`, systemLimit)
-    };
-
-    const budget = Math.max(0, requestedBudget - messageChars(system));
-    const compactedMessageCount = Math.min(
-      Math.max(0, input.state.compactedMessageCount),
-      input.state.messages.length,
-    );
-    const activeMessages = limitActiveImages(removeOrphanToolMessages(
-      input.state.messages.slice(compactedMessageCount),
-    ));
-    const persistentSummary = input.state.workingSummary.trim();
-    const persistentSummaryMessage = persistentSummary
-      ? summaryMessage(persistentSummary)
-      : undefined;
-    const totalConversationChars = activeMessages.reduce(
-      (total, message) => total + messageChars(message),
-      persistentSummaryMessage ? messageChars(persistentSummaryMessage) : 0,
-    );
-    if (totalConversationChars <= budget) {
-      return [
-        system,
-        ...(persistentSummaryMessage ? [persistentSummaryMessage] : []),
-        ...activeMessages,
-      ];
-    }
-
-    const summaryReserve = Math.min(8_000, Math.floor(budget * 0.3));
-    const recentBudget = Math.max(0, budget - summaryReserve);
-    const selected: ChatMessage[] = [];
-    let selectedStart = activeMessages.length;
-    let used = 0;
-
-    for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
-      const message = activeMessages[index];
-      if (!message) continue;
-      const size = messageChars(message);
-      if (used + size > recentBudget) {
-        if (selected.length === 0) {
-          const bounded = boundedMessage(message, recentBudget);
-          if (bounded) {
-            selected.unshift(bounded);
-            selectedStart = index;
-            used += messageChars(bounded);
-          }
-        }
-        break;
-      }
-      selected.unshift(message);
-      selectedStart = index;
-      used += size;
-    }
-
-    while (selected[0]?.role === "tool") {
-      selected.shift();
-      selectedStart += 1;
-    }
-
-    const omitted = activeMessages.slice(0, selectedStart);
-    const fallbackSummary = summarizeMessages(omitted);
-    const summaryParts: string[] = [];
-    if (persistentSummary) {
-      summaryParts.push(loadPromptBundleCatalog().render(
-        "context/fallback-persistent-summary.md",
-        { content: persistentSummary },
-      ).trimEnd());
-    }
-    if (fallbackSummary) {
-      summaryParts.push(loadPromptBundleCatalog().render(
-        "context/fallback-overflow-summary.md",
-        { content: fallbackSummary },
-      ).trimEnd());
-    }
-    const combinedSummary = summaryParts.join("\n\n");
-
-    const cleanSelected = removeOrphanToolMessages(selected);
-    if (combinedSummary) {
-      const compactedSummaryMessage = summaryMessage(combinedSummary);
-      const remainingForSummary = Math.max(0, budget - cleanSelected.reduce(
-        (total, message) => total + messageChars(message),
-        0,
-      ));
-      const boundedSummary = boundedMessage(
-        compactedSummaryMessage,
-        Math.min(remainingForSummary, summaryReserve),
-      );
-      if (boundedSummary) cleanSelected.unshift(boundedSummary);
-    }
-
-    return [system, ...cleanSelected];
+    const budget = contextSystemBudget(input);
+    const conversation = selectContextConversation(input.state, budget.conversationBudget);
+    return [budget.system, ...conversation.messages];
   }
 
   inspect(state: SessionState, maxContextChars: number): {
