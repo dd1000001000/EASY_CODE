@@ -178,10 +178,10 @@ export class CommandPolicy {
         "deny",
         "destructive",
         name === "nohup"
-          ? "Detached nohup processes are disabled; use run_command action=start"
-          : `${name} polling is disabled; use run_command action=status with waitMs`,
+          ? "Detached nohup processes are disabled; run the real executable directly"
+          : `${name} polling is disabled; run the real executable directly`,
         "deny.async_workaround",
-        "Start the real command with action=start, then long-poll its handle with action=status and waitMs.",
+        "Use one synchronous run_command call with structured program and args; set timeoutMs when needed.",
       );
     }
     const shell = inspectExplicitShellInvocation(name, command.args);

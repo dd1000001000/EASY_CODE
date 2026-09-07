@@ -44,17 +44,12 @@ function commandInvocationProperties(): Record<string, unknown> {
   };
 }
 
-function commandInvocationDefinition(action?: "run" | "start"): Record<string, unknown> {
+function commandInvocationDefinition(): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
-    properties: {
-      ...(action
-        ? { action: { type: "string", enum: [action] } }
-        : {}),
-      ...commandInvocationProperties(),
-    },
-    required: action ? ["action", "program", "intent"] : ["program", "intent"],
+    properties: commandInvocationProperties(),
+    required: ["program", "intent"],
   };
 }
 
@@ -83,38 +78,12 @@ export class RunCommandTool implements AgentTool {
     function: {
       name: this.name,
       strict: true,
-      ...documentToolSchema(this.name, {
-        oneOf: [
-          commandInvocationDefinition(),
-          commandInvocationDefinition("run"),
-          commandInvocationDefinition("start"),
-          {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              action: { type: "string", enum: ["status"] },
-              commandId: {
-                type: "string",
-                pattern: "^command_[0-9a-f-]{36}$",
-              },
-              waitMs: { type: "integer", minimum: 0, maximum: 30_000 },
-            },
-            required: ["action", "commandId"],
-          },
-          {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              action: { type: "string", enum: ["cancel"] },
-              commandId: {
-                type: "string",
-                pattern: "^command_[0-9a-f-]{36}$",
-              },
-            },
-            required: ["action", "commandId"],
-          },
-        ],
-      }),
+      // Keep the model-facing contract flat for every provider. Some
+      // OpenAI-compatible APIs accept a root-level oneOf but then treat the
+      // function as parameterless and emit arguments="{}". Runtime retains
+      // the richer lifecycle input union for compatibility, while models use
+      // the broadly supported synchronous invocation shape.
+      ...documentToolSchema(this.name, commandInvocationDefinition()),
     },
   };
 

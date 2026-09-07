@@ -177,23 +177,23 @@ describe("command runtime", () => {
     );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "node test.js &"])?.reason ?? "",
-      /action=start/u,
+      /synchronous run_command/u,
     );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "sleep 5; tail test.log"])?.reason ?? "",
-      /action=status/u,
+      /timeoutMs/u,
     );
     assert.match(
       inspectExplicitShellInvocation("powershell", ["-Command", "Start-Sleep 5"])?.reason ?? "",
-      /action=status/u,
+      /timeoutMs/u,
     );
     assert.match(
       inspectExplicitShellInvocation("cmd", ["/c", "timeout /t 5"])?.reason ?? "",
-      /action=status/u,
+      /timeoutMs/u,
     );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "echo ready\nsleep 5"])?.reason ?? "",
-      /action=status/u,
+      /timeoutMs/u,
     );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "e''val 'node test.js &'"])?.reason ?? "",
@@ -212,7 +212,7 @@ describe("command runtime", () => {
         "-Command",
         "Write-Output ready\r\nStart-Process node",
       ])?.reason ?? "",
-      /action=start/u,
+      /synchronous run_command/u,
     );
     assert.match(
       inspectExplicitShellInvocation("powershell", ["-Command", "& 'node' test.js"])?.reason ?? "",
@@ -226,7 +226,7 @@ describe("command runtime", () => {
     ]) {
       assert.match(
         inspectExplicitShellInvocation("powershell", ["-Command", command])?.reason ?? "",
-        /action=start/u,
+        /synchronous run_command/u,
       );
     }
     assert.match(
@@ -249,7 +249,7 @@ describe("command runtime", () => {
     );
     assert.match(
       inspectExplicitShellInvocation("cmd", ["/c", "echo ready\r\nstart /b node"])?.reason ?? "",
-      /action=start/u,
+      /synchronous run_command/u,
     );
     assert.equal(inspectExplicitShellInvocation("zsh", ["-c", "pwd"]), undefined);
     assert.equal(

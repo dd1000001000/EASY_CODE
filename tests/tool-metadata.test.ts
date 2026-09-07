@@ -156,42 +156,45 @@ describe("Prompt Bundle tool metadata", () => {
     assertDocumentedToolSchema("read_file", documented);
   });
 
-  it("keeps every run_command model branch aligned with its discriminated input", () => {
+  it("publishes a flat provider-compatible run_command schema", () => {
     const workspace = {} as WorkspaceManager;
-    const parameters = new RunCommandTool(
+    const functionDefinition = new RunCommandTool(
       workspace,
       {} as CommandRuntime,
-    ).definition.function.parameters as {
-      oneOf: Array<{
-        additionalProperties: boolean;
-        properties: Record<string, { enum?: string[]; description?: string }>;
-        required: string[];
-      }>;
+    ).definition.function;
+    const parameters = functionDefinition.parameters as {
+      type: string;
+      additionalProperties: boolean;
+      properties: Record<string, { enum?: string[]; description?: string }>;
+      required: string[];
+      oneOf?: unknown;
+      anyOf?: unknown;
+      allOf?: unknown;
     };
 
-    assert.equal(parameters.oneOf.length, 5);
-    assert.deepEqual(
-      parameters.oneOf.map((branch) => branch.properties.action?.enum?.[0] ?? "legacy"),
-      ["legacy", "run", "start", "status", "cancel"],
-    );
-    assert.deepEqual(
-      parameters.oneOf.map((branch) => branch.required),
-      [
-        ["program", "intent"],
-        ["action", "program", "intent"],
-        ["action", "program", "intent"],
-        ["action", "commandId"],
-        ["action", "commandId"],
-      ],
-    );
-    for (const branch of parameters.oneOf) {
-      assert.equal(branch.additionalProperties, false);
-      for (const property of Object.values(branch.properties)) {
-        assert.equal(typeof property.description, "string");
-        assert.notEqual(property.description, "");
-      }
+    assert.equal(parameters.type, "object");
+    assert.equal(parameters.additionalProperties, false);
+    assert.deepEqual(parameters.required, ["program", "intent"]);
+    assert.equal(parameters.oneOf, undefined);
+    assert.equal(parameters.anyOf, undefined);
+    assert.equal(parameters.allOf, undefined);
+    assert.deepEqual(Object.keys(parameters.properties).sort(), [
+      "args",
+      "cwd",
+      "intent",
+      "program",
+      "reason",
+      "timeoutMs",
+    ]);
+    for (const property of Object.values(parameters.properties)) {
+      assert.equal(typeof property.description, "string");
+      assert.notEqual(property.description, "");
     }
 
+    assertDocumentedToolSchema("run_command", functionDefinition);
+
+    // Runtime still accepts existing lifecycle calls even though providers
+    // only receive the portable synchronous schema above.
     for (const input of [
       { program: "node", args: ["--version"], intent: "inspect" },
       { action: "run", program: "node", intent: "inspect" },

@@ -31,14 +31,13 @@ describe("command request validation", () => {
     }
   });
 
-  it("rejects direct wait/detach workarounds with handle-based recovery guidance", () => {
+  it("rejects direct wait/detach workarounds with synchronous recovery guidance", () => {
     for (const program of ["sleep", "nohup", "timeout", "C:\\Windows\\timeout.exe"]) {
       const failure = validateCommandRequest({ program, args: ["30"] });
       assert.equal(failure?.matchedRule, "input.async_workaround", program);
       assert.match(failure?.reason ?? "", /process was not started/iu);
-      assert.match(failure?.recommendation ?? "", /action=start/iu);
-      assert.match(failure?.recommendation ?? "", /action=status/iu);
-      assert.match(failure?.recommendation ?? "", /waitMs/u);
+      assert.match(failure?.recommendation ?? "", /real executable directly/iu);
+      assert.match(failure?.recommendation ?? "", /timeoutMs/u);
     }
   });
 
@@ -47,7 +46,7 @@ describe("command request validation", () => {
     assert.equal(failure?.matchedRule, "input.duplicate_program_argument");
     assert.match(failure?.reason ?? "", /args\[0\].*repeats program/iu);
     assert.match(failure?.recommendation ?? "", /remove the duplicate first item/iu);
-    assert.match(failure?.recommendation ?? "", /action=start/iu);
-    assert.match(failure?.recommendation ?? "", /action=status/iu);
+    assert.match(failure?.recommendation ?? "", /real executable directly/iu);
+    assert.match(failure?.recommendation ?? "", /timeoutMs/u);
   });
 });
