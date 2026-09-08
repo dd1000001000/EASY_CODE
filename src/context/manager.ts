@@ -9,6 +9,8 @@ import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { sha256 } from "../utils/hash.js";
 import { microCompactToolResults, projectModelInputMessages } from "./micro-compaction.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
+import { requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
 export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
 /**
@@ -16,7 +18,7 @@ export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
  * Older evidence remains durable and is recovered through the Thread-private
  * index.
  */
-export const MAX_ACTIVE_WORKING_SET_CHARS = 250_000;
+export const MAX_ACTIVE_WORKING_SET_CHARS = DEFAULT_RUNTIME_LIMITS.maxActiveContextChars;
 export const CONTEXT_COMPACTION_SUGGEST_RATIO = 0.6;
 export const CONTEXT_COMPACTION_REQUIRE_RATIO = 0.8;
 export const CONTEXT_COMPACTION_FORCE_RATIO = 0.9;
@@ -36,11 +38,11 @@ export function contextPressureLevel(utilization: number): ContextPressureLevel 
  * may be larger, but the local working set is deliberately capped so older
  * evidence can move to the Thread-private retrieval layer.
  */
-export function activeWorkingSetCharBudget(maxContextChars: number): number {
+export function activeWorkingSetCharBudget(maxContextChars: number, activeLimit = MAX_ACTIVE_WORKING_SET_CHARS): number {
   if (!Number.isSafeInteger(maxContextChars) || maxContextChars < 1) {
     throw new RangeError("maxContextChars must be a positive safe integer");
   }
-  return Math.min(maxContextChars, MAX_ACTIVE_WORKING_SET_CHARS);
+  return Math.min(maxContextChars, activeLimit);
 }
 
 export interface ContextBuildInput {
@@ -91,6 +93,9 @@ export interface ContextInspection {
 }
 
 export interface ProviderRequestContextInspection extends ContextInspection {
+  estimatedInputTokens?: number;
+  inputTokenCapacity?: number;
+  outputTokenReserve?: number;
   providerMessageCount: number;
   providerMessageChars: number;
   providerToolDefinitionChars: number;
@@ -231,7 +236,7 @@ function summaryMessage(content: string): ChatMessage {
   };
 }
 
-function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
+export function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] {
   const compactedMessageCount = Math.min(
     Math.max(0, state.compactedMessageCount),
     state.messages.length,
@@ -305,6 +310,7 @@ function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
 function selectContextConversation(
   state: Readonly<SessionState>,
   budget: number,
+  activeLimit = MAX_ACTIVE_WORKING_SET_CHARS,
 ): ContextConversationSelection {
   const compactedMessageCount = Math.min(
     Math.max(0, state.compactedMessageCount),
@@ -320,7 +326,7 @@ function selectContextConversation(
     ? summaryMessage(persistentSummary)
     : undefined;
   const workingSetBudget = budget > 0
-    ? activeWorkingSetCharBudget(Math.trunc(budget))
+    ? activeWorkingSetCharBudget(Math.trunc(budget), activeLimit)
     : 0;
   const totalConversationChars = activeMessages.reduce(
     (total, message) => total + messageChars(message),
@@ -394,6 +400,17 @@ function selectContextConversation(
 }
 
 export class ContextManager {
+  private limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS;
+  private capacity: TokenBudget | undefined;
+  estimateRequestTokens = requestTokens;
+  configureTokenBudget(window: number | undefined, limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>): void {
+    this.limits = limits ?? DEFAULT_RUNTIME_LIMITS;
+    this.capacity = window === undefined ? undefined : tokenBudget(window, limits);
+  }
+  get tokenCapacity(): TokenBudget | undefined { return this.capacity; }
+  activeCharBudget(maxContextChars: number): number {
+    return activeWorkingSetCharBudget(maxContextChars, this.limits.maxActiveContextChars);
+  }
   /** Character budget used by automatic context-pressure thresholds. */
   estimateShortTermChars(state: Readonly<SessionState>): number {
     return shortTermMessages(state).reduce(
@@ -423,6 +440,7 @@ export class ContextManager {
     reservedSystemPromptChars?: number,
     runtimeContext = "",
   ): number {
+    if (this.capacity) return state.compactedMessageCount;
     const input: ContextBuildInput = {
       systemPrompt,
       runtimeContext,
@@ -435,7 +453,7 @@ export class ContextManager {
     const system = contextSystemBudget(input);
     const tailChars = [runtimeContinuityMessage(state), runtimeContext].filter(Boolean)
       .reduce((total, content) => total + messageChars({ role: "user", content }), 0);
-    return selectContextConversation(state, system.conversationBudget - tailChars).retrievalBoundary;
+    return selectContextConversation(state, system.conversationBudget - tailChars, this.limits.maxActiveContextChars).retrievalBoundary;
   }
 
   applyModelCompaction(
@@ -512,11 +530,15 @@ export class ContextManager {
     const continuity = runtimeContinuityMessage(input.state);
     const tail: ChatMessage[] = [continuity, input.runtimeContext ?? ""].filter(Boolean)
       .map((content) => ({ role: "user", content }));
+    // Token-managed history is retired only by a committed phase transaction.
+    // Pressure inspection and the provider guard handle oversized requests;
+    // never make them appear to fit by silently omitting the active chain.
+    if (this.capacity) return [budget.system, ...shortTermMessages(input.state), ...tail];
     const remaining = budget.conversationBudget - estimateMessagesChars(tail);
     if (remaining < 256) {
       throw new Error("Context capacity exceeded: protected Runtime state cannot fit intact. Increase max_context_chars; no constraints or evidence were discarded.");
     }
-    const conversation = selectContextConversation(input.state, remaining);
+    const conversation = selectContextConversation(input.state, remaining, this.limits.maxActiveContextChars);
     return [budget.system, ...conversation.messages, ...tail];
   }
 
@@ -550,8 +572,9 @@ export class ContextManager {
     // This is the projection-level diagnostic used outside a concrete request.
     // Runtime enforcement uses inspectProviderRequest() after final messages
     // and tool schemas have been assembled.
-    const budgetChars = activeWorkingSetCharBudget(conversationBudget);
-    const utilization = estimatedShortTermChars / budgetChars;
+    const budgetChars = this.activeCharBudget(conversationBudget);
+    const utilization = Math.max(estimatedShortTermChars / budgetChars,
+      this.capacity ? this.estimateRequestTokens(shortTermMessages(state)) / this.capacity.inputCapacity : 0);
     return {
       messageCount: state.messages.length,
       durableHistoryChars,
@@ -589,14 +612,21 @@ export class ContextManager {
     const providerMessageChars = estimateMessagesChars(projectedMessages);
     const providerToolDefinitionChars = estimateToolDefinitionsChars(input.tools);
     const providerInputChars = providerMessageChars + providerToolDefinitionChars;
-    const budgetChars = activeWorkingSetCharBudget(input.maxContextChars);
+    const budgetChars = this.activeCharBudget(input.maxContextChars);
     // A bounded fallback must not hide pressure by shrinking the measured
     // request. Include the unselected active history and the actual overhead.
     const projectedActiveChars = this.estimateShortTermChars(input.state);
-    const systemChars = projectedMessages.filter((message) => message.role === "system")
+    const overheadMessages = projectedMessages.filter((message) => message.role === "system" ||
+      message.content?.startsWith("RUNTIME_CONTINUITY_STATE") || message.content?.startsWith("RUNTIME_CONTEXT_DATA"));
+    const systemChars = overheadMessages
       .reduce((total, message) => total + messageChars(message), 0);
-    const utilization = Math.max(providerInputChars,
+    const charUtilization = Math.max(providerInputChars,
       projectedActiveChars + systemChars + providerToolDefinitionChars) / budgetChars;
+    const estimatedInputTokens = this.estimateRequestTokens(projectedMessages, input.tools);
+    const tokenUtilization = this.capacity ? Math.max(estimatedInputTokens,
+      this.estimateRequestTokens(shortTermMessages(input.state)) +
+      this.estimateRequestTokens(overheadMessages, input.tools)) / this.capacity.inputCapacity : 0;
+    const utilization = Math.max(charUtilization, tokenUtilization);
     return {
       ...this.inspect(input.state, input.maxContextChars),
       configuredBudgetChars: input.maxContextChars,
@@ -605,6 +635,9 @@ export class ContextManager {
       providerMessageChars,
       providerToolDefinitionChars,
       providerInputChars,
+      estimatedInputTokens,
+      ...(this.capacity ? { inputTokenCapacity: this.capacity.inputCapacity,
+        outputTokenReserve: this.capacity.outputReserve } : {}),
       utilization,
       pressure: contextPressureLevel(utilization),
     };

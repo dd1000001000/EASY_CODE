@@ -67,6 +67,8 @@ export function cloneProgressGuardState(
     readCoverage: cloneReadCoverage(state.readCoverage),
     failureRuns: state.failureRuns.map(cloneFailureRun),
     recentReads: state.recentReads.map((entry) => ({ ...entry })),
+    recentSearches: (state.recentSearches ?? []).map((entry) => ({ ...entry })),
+    ...(state.searchWarning ? { searchWarning: { ...state.searchWarning } } : {}),
     ...(state.readWarning ? { readWarning: { ...state.readWarning } } : {}),
     incidents: state.incidents.map(cloneIncident),
   };
@@ -168,6 +170,34 @@ function updateReadWindow(
   };
   state.readWarning = warning;
   return { kind: "repeated_reads", warning: { ...warning } };
+}
+
+function updateSearchWindow(state: ProgressGuardState, observation: Readonly<ProgressObservation>): void {
+  // Keep scopes isolated. Actual file evidence or terminal verification ends this weak discovery warning.
+  if (observation.kind === "read" || observation.kind === "verification_terminal") {
+    state.recentSearches = (state.recentSearches ?? []).filter((entry) => entry.scopeKey !== observation.scopeKey);
+    if (state.searchWarning?.scopeKey === observation.scopeKey) state.searchWarning = undefined;
+    return;
+  }
+  if (observation.tool !== "search_files" || observation.searchRepeatLimit === undefined) return;
+  const identity = `${observation.targetKey}:${observation.outcomeKey}`;
+  const minimumOrdinal = Math.max(0, observation.responseOrdinal - PROGRESS_READ_WINDOW_RESPONSES + 1);
+  const recent = (state.recentSearches ?? []).filter((entry) => entry.responseOrdinal >= minimumOrdinal);
+  const previous = recent.filter((entry) => entry.scopeKey === observation.scopeKey);
+  // A different result for the same target is new evidence; don't combine stale and current outcomes.
+  if (previous.length && previous[previous.length - 1]!.identity !== identity) {
+    state.searchWarning = state.searchWarning?.scopeKey === observation.scopeKey ? undefined : state.searchWarning;
+  }
+  const sameTargetPrefix = `${observation.targetKey}:`;
+  state.recentSearches = [...recent.filter((entry) => entry.scopeKey !== observation.scopeKey ||
+    !entry.identity.startsWith(sameTargetPrefix) || entry.identity === identity), {
+    sourceEventId: observation.sourceEventId, scopeKey: observation.scopeKey,
+    responseOrdinal: observation.responseOrdinal, identity,
+  }].slice(-128);
+  const matching = state.recentSearches.filter((entry) => entry.scopeKey === observation.scopeKey && entry.identity === identity);
+  if (matching.length >= observation.searchRepeatLimit) {
+    state.searchWarning = { scopeKey: observation.scopeKey, sourceEventId: observation.sourceEventId, count: matching.length };
+  } else if (state.searchWarning?.scopeKey === observation.scopeKey) state.searchWarning = undefined;
 }
 
 function applyExperimentObservation(
@@ -441,6 +471,7 @@ export function foldProgressObservation(
 
   state.acceptedObservations = increment(state.acceptedObservations);
   applyRead(state, observation);
+  updateSearchWindow(state, observation);
   const readTrigger = updateReadWindow(state, observation);
   applyExperimentObservation(state, observation);
   clearResolvedFailures(state, observation);

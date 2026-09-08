@@ -20,6 +20,7 @@ import {
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 const commandInvocationSchema = z
   .object({
@@ -324,11 +325,13 @@ export class PollCommandTool implements AgentTool {
     if (workspaceFailure) return workspaceFailure;
     const request: PollCommandInput = parsed.data;
     try {
-      return commandResult(
-        await this.runtime.status(request.commandId, context, request.waitMs),
-        "poll",
-        context,
-      );
+      const configuredWait = (context.limits ?? DEFAULT_RUNTIME_LIMITS).commandPollWaitMs;
+      const deadline = Date.now() + Math.min(request.waitMs ?? configuredWait, configuredWait);
+      let output: CommandExecutionOutput;
+      do {
+        output = await this.runtime.status(request.commandId, context, Math.max(0, Math.min(30000, deadline - Date.now())));
+      } while (output.status === "running" && Date.now() < deadline && !context.waitSignal?.aborted && !context.signal?.aborted);
+      return commandResult(output, "poll", context);
     } catch (error) {
       return commandToolFailure(error, "Unable to poll command", "runtime", "unknown_handle");
     }

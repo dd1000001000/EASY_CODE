@@ -26,6 +26,7 @@ import {
   toolSuccess,
 } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
+import { assertDurableMemory } from "../memory/admission.js";
 
 const memoryCategorySchema = z.enum([
   "preference",
@@ -56,10 +57,13 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
 }
 
 export const manageMemoryInputSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recall"), evidenceId: z.string().regex(/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48})$/u),
+    offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(16000).optional() }).strict(),
   z
     .object({
       action: z.literal("search"),
       query: z.string().trim().min(1).max(MAX_MEMORY_SEARCH_CHARS),
+      scope: z.enum(["long_term", "history"]).optional(),
       limit: z.number().int().min(1).max(20).optional(),
       includeInactive: z.boolean().optional(),
     })
@@ -67,6 +71,7 @@ export const manageMemoryInputSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("remember"),
+      sourceRefs: z.array(z.string().min(1).max(100)).min(1).max(8).optional(),
       content: memoryContentSchema,
       category: memoryCategorySchema,
       reason: memoryReasonSchema,
@@ -75,6 +80,7 @@ export const manageMemoryInputSchema = z.discriminatedUnion("action", [
   z
     .object({
       action: z.literal("revise"),
+      sourceRefs: z.array(z.string().min(1).max(100)).min(1).max(8).optional(),
       memoryId: memoryIdSchema,
       content: memoryContentSchema,
       category: memoryCategorySchema.optional(),
@@ -111,14 +117,18 @@ export class ManageMemoryTool implements AgentTool {
         properties: {
           action: {
             type: "string",
-            enum: ["search", "remember", "revise", "forget"],
+            enum: ["search", "remember", "revise", "forget", "recall"],
           },
           query: {
             type: "string",
             minLength: 1,
             maxLength: MAX_MEMORY_SEARCH_CHARS,
           },
-          limit: { type: "integer", minimum: 1, maximum: 20 },
+          limit: { type: "integer", minimum: 1, maximum: 16000 },
+          evidenceId: { type: "string", pattern: "^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48})$" },
+          scope: { type: "string", enum: ["long_term", "history"] },
+          sourceRefs: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } },
+          offset: { type: "integer", minimum: 0 },
           includeInactive: { type: "boolean" },
           memoryId: {
             type: "string",
@@ -158,7 +168,12 @@ export class ManageMemoryTool implements AgentTool {
       await assertMatchingWorkspace(this.workspace, context);
       this.beginTurn(context.turnId);
       const parsed = this.inputSchema.parse(input);
+      if (parsed.action === "remember" || parsed.action === "revise") assertDurableMemory(parsed.content, context.limits);
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
+      if (parsed.action === "recall") {
+        return toolSuccess("Retrieved historical captured evidence; it does not establish current file or test state.",
+          this.manager.evidenceStore.read(workspaceId, context.threadId, parsed.evidenceId, parsed.offset, parsed.limit));
+      }
 
       if (parsed.action === "search") {
         if (
@@ -166,6 +181,12 @@ export class ManageMemoryTool implements AgentTool {
           redactSensitiveInformation(parsed.query) !== parsed.query
         ) {
           throw new Error("Memory search queries must not contain sensitive information");
+        }
+        if (parsed.scope === "history") {
+          if (!context.searchHistory) throw new Error("History search is unavailable in this Runtime profile");
+          const evidence = await context.searchHistory(parsed.query, parsed.limit ?? 4);
+          return toolSuccess("Historical previews only; use recall to expand a returned ID. History does not establish current state.",
+            { evidence, count: evidence.length });
         }
         const exact = MEMORY_ID_PATTERN.test(parsed.query)
           ? this.manager.get(workspaceId, parsed.query)
@@ -205,6 +226,7 @@ export class ManageMemoryTool implements AgentTool {
           data: { staged: true, action: parsed.action },
           memoryMutation: {
             action: "remember",
+            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             content: parsed.content,
             category: parsed.category,
             reason: parsed.reason,
@@ -229,6 +251,7 @@ export class ManageMemoryTool implements AgentTool {
           data: { staged: true, action: parsed.action, memoryId: parsed.memoryId },
           memoryMutation: {
             action: "revise",
+            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             memoryId: parsed.memoryId,
             content: parsed.content,
             category,

@@ -278,7 +278,7 @@ easy-code sandbox repair-workspace --target "C:\path\to\project" --apply --confi
 
 ## 项目规则
 
-在项目中添加 `EASYCODE.md`，可以告诉 Agent 项目架构、常用命令、代码规范和验证要求。项目级高级配置可写入 `.easycode/config.toml`；可配置项和优先级见[技术设计](./docs/TECHNICAL_DESIGN_ZH.md)。
+在项目中添加 `EASYCODE.md`，可以告诉 Agent 项目架构、常用命令、代码规范和验证要求。运行预算统一写入 `.easycode/config.toml` 的 `[limits]` 表；运行 `easy-code config defaults` 查看完整默认值，或参考[配置示例](./docs/config.example.toml)。旧版限制字段不再兼容。使用 `/orchestration` 上下选择是否允许新建 DAG/子 Agent，reviewer 始终独立开启。
 
 ## 常用命令
 

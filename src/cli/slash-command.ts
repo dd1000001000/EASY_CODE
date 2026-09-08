@@ -77,6 +77,7 @@ EASY CODE commands
   /model ${PROVIDER_USAGE} <id>
                               Switch both provider and model
   /approval                 Select manual, auto-approved, or dangerous full-host access
+  /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
   /status                    Show current status
   /workspace                 Show workspace summary
   /workspace refresh         Refresh the workspace inventory

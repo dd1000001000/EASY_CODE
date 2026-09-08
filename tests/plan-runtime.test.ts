@@ -337,7 +337,7 @@ describe("model-controlled plan flow", () => {
       modes,
     ).run(current, input, {
       ...options(),
-      maxSteps: 1,
+      maxSteps: 3,
       maxContextChars: 24_000,
     });
 

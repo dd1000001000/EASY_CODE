@@ -1,4 +1,5 @@
 import path from "node:path";
+import { TaskBudget } from "./runtime/task-budget.js";
 
 import chalk from "chalk";
 
@@ -89,11 +90,10 @@ import {
 } from "./models/catalog.js";
 import {
   thinkingEffortIsApplied,
-  thinkingEffortContextCharLimit,
-  thinkingEffortStepLimit,
 } from "./models/thinking.js";
 import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
+import { TokenCalibration } from "./context/token-calibration.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { AnthropicSandboxBackend } from "./sandbox/anthropic-backend.js";
@@ -106,7 +106,6 @@ import { createSessionState } from "./runtime/state.js";
 import { createStorage, workspaceIdFromRoot, type EasyCodeStorage } from "./storage/database.js";
 import {
   SubagentCoordinator,
-  maxConcurrentSubagents,
   toResultArtifactRef,
   type ObservedSubagentArtifacts,
   type SubagentExecutionOutcome,
@@ -481,6 +480,7 @@ function resumeRecoverySummary(
 }
 
 export class EasyCodeApp {
+  private readonly taskBudgets = new Map<string, TaskBudget>();
   private workspace: WorkspaceManager;
   private state: SessionState;
   private readonly contextManager = new ContextManager();
@@ -529,7 +529,7 @@ export class EasyCodeApp {
     const embeddingModel = new LocalEmbeddingModel({
       cacheDirectory: config.cacheDir,
     });
-    const vectorIndex = new MemoryVectorIndex(storage, embeddingModel);
+    const vectorIndex = new MemoryVectorIndex(storage, embeddingModel, { backgroundVectors: true });
     let reportedVectorFailure = false;
     this.memoryManager = new MemoryManager(storage, {
       vectorIndex,
@@ -556,6 +556,7 @@ export class EasyCodeApp {
           "EASY CODE is continuing with SQLite FTS5 retrieval.",
         );
       },
+      { backgroundVectors: true },
     );
     this.threadStore = new ThreadStore(storage);
     this.executionEnvironments = new ExecutionEnvironmentManager({
@@ -564,12 +565,14 @@ export class EasyCodeApp {
       defaultIsolation: config.subagentIsolation,
       baseMode: config.worktreeBaseMode,
       worktreeRoot: config.worktreeRoot,
-      maxManagedWorktrees: config.maxManagedWorktrees,
+      maxManagedWorktrees: config.limits.maxManagedWorktrees,
     });
     this.imageStore = new ImageStore(config.dataDir);
     this.pendingResumeRecovery = resumeRecovery;
+    this.contextManager.configureTokenBudget(config.limits.maxContextTokens || undefined, config.limits);
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
+      maxConcurrent: config.limits.maxConcurrentSubagents,
       defaultIsolation: config.subagentIsolation,
       onWaitStart: (text) => this.terminal.startActivity(text, "waiting"),
       onWaitEnd: (activityToken) => {
@@ -1060,6 +1063,23 @@ export class EasyCodeApp {
         this.commitModelSelection(provider, model);
         return false;
       }
+      case "orchestration": {
+        if (command.args.length > 1 || (command.args[0] && !["on", "off"].includes(command.args[0]))) {
+          throw new Error("Usage: /orchestration [on|off]");
+        }
+        const selected = command.args[0] ?? await this.terminal.selectChoice(
+          "DAG and subagent creation (reviewer stays enabled)", [
+            { id: "off", label: "Off — lightweight", detail: "No new DAGs or subagents; existing work can still finish." },
+            { id: "on", label: "On — allow orchestration", detail: "Allow DAGs and subagents within configured budgets." },
+          ], this.orchestrationEnabled() ? "on" : "off");
+        if (!selected) { this.terminal.info("Orchestration selection canceled."); return false; }
+        this.state.orchestrationEnabled = selected === "on";
+        this.dirty = true;
+        this.save();
+        this.syncTerminalView();
+        this.terminal.success(`DAG/subagent creation ${selected}; reviewer remains enabled.`);
+        return false;
+      }
       case "approval":
         if (command.args.length) throw new Error("Usage: /approval");
         this.assertNoRunningCommands("change command execution mode");
@@ -1280,6 +1300,8 @@ export class EasyCodeApp {
       }
     }
     try {
+      this.contextArtifactIndex.close();
+      this.memoryManager.close();
       this.storage.close();
     } catch (error) {
       cleanupErrors.push(error);
@@ -1589,9 +1611,11 @@ export class EasyCodeApp {
       const runtime = this.createRuntime(presentReasoning, steeringNotifier);
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.activeStepLimit(),
+        orchestrationEnabled: this.orchestrationEnabled(),
         maxContextChars: this.activeContextCharLimit(),
-        maxOutputChars: this.config.maxOutputChars,
-        commandTimeoutMs: this.config.commandTimeoutMs,
+        maxContextTokens: this.config.limits.maxContextTokens || undefined,
+        maxOutputChars: this.config.limits.maxOutputChars,
+        commandTimeoutMs: this.config.limits.commandTimeoutMs,
         approvalPolicy: this.config.approvalPolicy,
         commandExecutionMode: this.commandExecutionMode,
         isUnrestrictedHostAccessActive: () =>
@@ -1622,6 +1646,11 @@ export class EasyCodeApp {
     steeringNotifier?: TurnSteeringAttemptNotifier,
   ): AgentRuntime {
     const effectiveConfig = this.effectiveConfig();
+    const promptStartedAt = new Date();
+    const childrenRunning = this.subagentCoordinator.snapshot(this.state.threadId)
+      .some((child) => child.status === "running" || child.status === "stopping");
+    const budget = childrenRunning ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
+    this.taskBudgets.set(this.state.threadId, budget);
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
     const provider = createProvider(
       effectiveConfig,
@@ -1645,6 +1674,11 @@ export class EasyCodeApp {
 
     return new AgentRuntime({
       provider,
+      limits: this.config.limits,
+      taskBudget: budget,
+      providerRetryLimit: effectiveConfig[this.state.provider].maxRetries,
+      tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
+        effectiveConfig[provider.name].baseUrl]), this.storage),
       tools,
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
@@ -1660,6 +1694,7 @@ export class EasyCodeApp {
       }) =>
         buildSystemPrompt({
           config: effectiveConfig,
+          now: promptStartedAt,
           mode,
           workspaceSummary,
           memories,
@@ -1683,17 +1718,25 @@ export class EasyCodeApp {
           .sort(([left], [right]) => left.localeCompare(right));
         return `sha256:${sha256(JSON.stringify({ files }))}`;
       },
-      searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query),
-      getLayeredContext: async ({ state, query, beforeMessageIndex }) => {
+      searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query,
+        { workspaceRoot: this.workspace.root, limit: this.config.limits.memorySearchLimit }),
+      captureToolEvidence: (state, callId, tool, result) =>
+        this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
+      validateMemorySources: (state, turnId, userInput, mutation) => this.memoryManager.validateSources({
+        sourceState: state, workspaceId, threadId: state.threadId, turnId, userInput,
+        outcome: "success", mutations: [mutation],
+      }),
+      getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
         const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
         const hits = await this.contextArtifactIndex.search(
           workspaceId,
           state.threadId,
           query,
-          { beforeMessageIndex },
+          { beforeMessageIndex, queries, limit: this.config.limits.memorySearchLimit },
         );
         return {
           workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
+          evidence: hits,
           ...(hits.length
             ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
             : {}),
@@ -1707,6 +1750,7 @@ export class EasyCodeApp {
       hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
+          sourceState: input.sourceState,
           workspaceRoot: input.workspaceRoot,
           threadId: input.threadId,
           turnId: input.turnId,
@@ -2079,6 +2123,7 @@ export class EasyCodeApp {
       request.reportEnvironment(runningEnvironment);
 
       const childConfig = this.effectiveConfig();
+      const childPromptStartedAt = new Date();
       childConfig.workspaceRoot = childWorkspace.root;
       childConfig.mode = "code";
       childConfig.provider = request.record.provider;
@@ -2094,6 +2139,7 @@ export class EasyCodeApp {
         commandRuntime: childCommandRuntime,
       }).filter((tool) =>
         tool.name === "read_file" ||
+        tool.name === "search_files" ||
         tool.name === "create_file" ||
         tool.name === "update_file" ||
         tool.name === "delete_file" ||
@@ -2138,6 +2184,11 @@ export class EasyCodeApp {
       };
       const runtime = new AgentRuntime({
         provider,
+        limits: this.config.limits,
+        taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
+        providerRetryLimit: childConfig[request.record.provider].maxRetries,
+        tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
+          childConfig[provider.name].baseUrl]), this.storage),
         tools,
         agentIdentity: {
           role: "subagent",
@@ -2157,6 +2208,7 @@ export class EasyCodeApp {
         }) => {
           const base = await buildSystemPrompt({
             config: childConfig,
+            now: childPromptStartedAt,
             mode,
             workspaceSummary,
             memories,
@@ -2186,21 +2238,25 @@ export class EasyCodeApp {
           return `${base}\n\n${childContract}`;
         },
         getWorkspaceSummary: async () => json(childWorkspace?.getManifestSummary()),
+        captureToolEvidence: (state, callId, tool, result) =>
+          this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
         searchMemories: async (query) =>
           this.memoryManager.searchHybrid(
             workspaceId,
             `${request.task.title}\n${request.task.description}\n${query}`,
+            { workspaceRoot: childWorkspace?.root, limit: this.config.limits.memorySearchLimit },
           ),
-        getLayeredContext: async ({ state, query, beforeMessageIndex }) => {
+        getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
           const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
           const hits = await this.contextArtifactIndex.search(
             workspaceId,
             state.threadId,
             `${request.task.title}\n${request.task.description}\n${query}`,
-            { beforeMessageIndex },
+            { beforeMessageIndex, queries, limit: this.config.limits.memorySearchLimit },
           );
           return {
             workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
+            evidence: hits,
             ...(hits.length
               ? { retrievedThreadEvidence: renderRetrievedContext(hits) }
               : {}),
@@ -2273,16 +2329,11 @@ export class EasyCodeApp {
               ? promptBundleText("agents/child-resume.md")
               : promptBundleText("agents/child-start.md"),
             {
-              maxSteps: thinkingEffortStepLimit(
-                request.record.thinkingEffort,
-                this.config.maxSteps,
-              ),
-              maxContextChars: thinkingEffortContextCharLimit(
-                request.record.thinkingEffort,
-                this.config.maxContextChars,
-              ),
-              maxOutputChars: this.config.maxOutputChars,
-              commandTimeoutMs: this.config.commandTimeoutMs,
+              maxSteps: this.config.limits.steps[request.record.thinkingEffort],
+              maxContextChars: this.config.limits.maxContextChars,
+              maxOutputChars: this.config.limits.maxOutputChars,
+              maxContextTokens: this.config.limits.maxContextTokens || undefined,
+              commandTimeoutMs: this.config.limits.commandTimeoutMs,
               approvalPolicy: this.config.approvalPolicy,
               commandExecutionMode: this.commandExecutionMode,
               isUnrestrictedHostAccessActive: () =>
@@ -3280,17 +3331,34 @@ export class EasyCodeApp {
   }
 
   private activeStepLimit(): number {
-    return thinkingEffortStepLimit(
-      this.state.thinkingEffort,
-      this.config.maxSteps,
-    );
+    return this.config.limits.steps[this.state.thinkingEffort];
   }
 
   private activeContextCharLimit(): number {
-    return thinkingEffortContextCharLimit(
-      this.state.thinkingEffort,
-      this.config.maxContextChars,
-    );
+    return this.config.limits.maxContextChars;
+  }
+
+  private orchestrationEnabled(): boolean {
+    return this.state.orchestrationEnabled ?? this.config.orchestrationEnabled;
+  }
+
+  private sharedTaskBudget(threadId: string): TaskBudget {
+    let budget = this.taskBudgets.get(threadId);
+    if (!budget) {
+      const saved = [...this.threadStore.journal(threadId).read()].reverse()
+        .find((event) => event.type === "runtime.task_budget");
+      budget = saved ? TaskBudget.restore(saved.payload, this.persistTaskBudget(threadId)) : this.newTaskBudget(threadId);
+      this.taskBudgets.set(threadId, budget);
+    }
+    return budget;
+  }
+
+  private persistTaskBudget(threadId: string): (snapshot: import("./runtime/task-budget.js").TaskBudgetSnapshot) => void {
+    return (snapshot) => { this.threadStore.appendEvent(threadId, { type: "runtime.task_budget", payload: snapshot }); };
+  }
+
+  private newTaskBudget(threadId: string): TaskBudget {
+    return new TaskBudget(this.config.limits.maxModelRequests, this.config.limits.maxTaskTokens, this.persistTaskBudget(threadId));
   }
 
   private syncWorkspaceState(): void {
@@ -3602,6 +3670,8 @@ export class EasyCodeApp {
 
   private terminalSessionInfo(): UISessionInfo {
     return {
+      orchestrationEnabled: this.orchestrationEnabled(),
+      agentConcurrencyLimit: this.config.limits.maxConcurrentSubagents,
       threadId: this.state.threadId,
       workspaceRoot: this.workspace.root,
       mode: this.state.mode,
@@ -3666,9 +3736,11 @@ export class EasyCodeApp {
           this.state.model,
           this.state.thinkingEffort,
         ),
-        baseStepLimit: this.config.maxSteps,
+        limits: this.config.limits,
+        orchestrationEnabled: this.orchestrationEnabled(),
+        reviewerEnabled: true,
+        taskBudget: this.taskBudgets.get(this.state.threadId)?.snapshot(),
         stepLimit: this.activeStepLimit(),
-        baseContextCharLimit: this.config.maxContextChars,
         contextCharLimit: this.activeContextCharLimit(),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
@@ -3689,7 +3761,7 @@ export class EasyCodeApp {
           active: this.subagentCoordinator.snapshot(this.state.threadId).filter(
             (agent) => agent.status === "running" || agent.status === "stopping",
           ).length,
-          limit: maxConcurrentSubagents(this.state.thinkingEffort),
+          limit: this.config.limits.maxConcurrentSubagents,
         },
         planReview: this.state.planReview
           ? {
@@ -3715,7 +3787,7 @@ export class EasyCodeApp {
       ? taskGraphView(this.state.taskGraph)
       : undefined;
     const agents = this.subagentCoordinator.snapshot(this.state.threadId);
-    const concurrencyLimit = maxConcurrentSubagents(this.state.thinkingEffort);
+    const concurrencyLimit = this.config.limits.maxConcurrentSubagents;
     if (snapshot) {
       this.terminal.showSubagentsSnapshot(
         agents,
@@ -3903,7 +3975,7 @@ export class EasyCodeApp {
     const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
     const text = `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE DANGER FULL ACCESS " : "EASY CODE "}` +
       `[${this.state.mode} ${this.state.provider}/${this.state.model} ` +
-      `thinking:${this.state.thinkingEffort} context:${formatTokenCount(shortTermTokens)}] > `;
+      `thinking:${this.state.thinkingEffort} DAG/agents:${this.orchestrationEnabled() ? "on" : "off"} context:${formatTokenCount(shortTermTokens)}] > `;
     return this.commandExecutionMode === "unrestricted"
       ? chalk.bold.red(text)
       : chalk.bold.cyan(text);

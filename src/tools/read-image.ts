@@ -21,6 +21,7 @@ export const readImageInputSchema = z
 export class ReadImageTool implements AgentTool {
   readonly name = "read_image" as const;
   readonly mutating = false;
+  readonly inputSchema = readImageInputSchema;
   readonly definition: ToolDefinition = {
     type: "function",
     function: {

@@ -3,6 +3,7 @@ import type {
   ThinkingEffort,
 } from "../core/types.js";
 import { resolveCatalogModel, type ThinkingProfile } from "./catalog.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 export interface ProviderThinkingParameters {
   enable_thinking?: boolean;
@@ -20,8 +21,8 @@ const QWEN_THINKING_BUDGETS: Readonly<Record<Exclude<ThinkingEffort, "none">, nu
 export const THINKING_EFFORT_BUDGET_MULTIPLIERS: Readonly<Record<ThinkingEffort, number>> = {
   none: 1,
   low: 1,
-  medium: 2,
-  high: 4,
+  medium: 1,
+  high: 2,
 };
 
 /**
@@ -38,21 +39,11 @@ export const THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS: Readonly<
   high: 1,
 };
 
-export const DEFAULT_BASE_STEP_LIMIT = 40;
-export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = 250_000;
-export const THINKING_EFFORT_TIMEOUT_MS: Readonly<Record<ThinkingEffort, number>> = {
-  none: 300_000,
-  low: 300_000,
-  medium: 450_000,
-  high: 600_000,
-};
+export const DEFAULT_BASE_STEP_LIMIT = DEFAULT_RUNTIME_LIMITS.steps.none;
+export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = DEFAULT_RUNTIME_LIMITS.maxContextChars;
+export const THINKING_EFFORT_TIMEOUT_MS = DEFAULT_RUNTIME_LIMITS.providerTimeoutMs;
 
-export const THINKING_EFFORT_STEP_LIMITS: Readonly<Record<ThinkingEffort, number>> = {
-  none: DEFAULT_BASE_STEP_LIMIT,
-  low: DEFAULT_BASE_STEP_LIMIT,
-  medium: DEFAULT_BASE_STEP_LIMIT * THINKING_EFFORT_BUDGET_MULTIPLIERS.medium,
-  high: DEFAULT_BASE_STEP_LIMIT * THINKING_EFFORT_BUDGET_MULTIPLIERS.high,
-};
+export const THINKING_EFFORT_STEP_LIMITS = DEFAULT_RUNTIME_LIMITS.steps;
 
 /** Scale a configurable none/low budget for the selected thinking effort. */
 export function thinkingEffortBudget(

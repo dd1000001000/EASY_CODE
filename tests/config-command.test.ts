@@ -6,6 +6,8 @@ import path from "node:path";
 import { PassThrough, Readable } from "node:stream";
 
 import { Command } from "commander";
+import { parse as parseToml } from "toml";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 
 import {
   SystemKeyringCredentialStore,
@@ -70,6 +72,14 @@ function commandRun(
 }
 
 describe("config commands", () => {
+  it("prints a complete parseable limits template without touching credentials", async () => {
+    const command = commandRun(["config", "defaults"], {});
+    await command.run;
+    const parsed = parseToml(command.output.value) as { limits: unknown; orchestrationEnabled: boolean };
+    assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), defaultRuntimeLimits());
+    assert.equal(parsed.orchestrationEnabled, false);
+    assert.doesNotMatch(command.output.value, /apiKey|api_key/u);
+  });
   it("accepts only the four exact provider API-key keys", () => {
     assert.deepEqual(parseApiKeyConfigKey("qwen.api-key"), {
       key: "qwen.api-key",

@@ -49,6 +49,7 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "select_mode",
   "propose_plan",
   "read_file",
+  "search_files",
   "read_image",
   "create_file",
   "update_file",
@@ -141,11 +142,12 @@ export async function buildSystemPrompt(
       catalog,
       COMMAND_MODE_RESOURCE[options.commandExecutionMode ?? "manual"],
     ),
-    environment,
   ];
   if (instructions.length) {
     sections.push(formatInstructions(catalog, instructions));
   }
+  // Stable policy/tool/project guidance precedes per-turn environment facts.
+  sections.push(environment);
   if (options.workspaceSummary?.trim()) {
     sections.push(
       untrustedBlock(

@@ -298,6 +298,7 @@ export function renderComposerFooter(
     metadata.push(palette.cyan(safeInline(session.mode) || "auto"));
     metadata.push(palette.bold(formatProviderModel(session, false)));
     metadata.push(safeInline(session.thinkingEffort) || "none");
+    metadata.push(palette.gray(`DAG/agents ${session.orchestrationEnabled ? "on" : "off"}`));
     metadata.push(palette.gray(`ctx ${formatContext(session)}`));
   } else {
     metadata.push(palette.gray("starting"));
@@ -693,7 +694,7 @@ export function renderAgentStatusLines(
   const active = agents.filter((agent) => isActiveAgent(agent.status)).length;
   const capacity = boundedOption(
     options.agentConcurrencyLimit ?? options.concurrencyLimit,
-    effortAgentCapacity(state.header.session?.thinkingEffort),
+    state.header.session?.agentConcurrencyLimit ?? effortAgentCapacity(state.header.session?.thinkingEffort),
     1,
     99,
   );

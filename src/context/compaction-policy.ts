@@ -6,6 +6,8 @@ import {
 } from "./manager.js";
 import { projectModelInputMessages } from "./micro-compaction.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
+import type { ToolDefinition } from "../core/types.js";
+import { exactContext } from "./context-request.js";
 
 /** A voluntary compaction must represent more than a nearly empty tool round. */
 export const COMPACTION_MIN_NEW_PROJECTED_CHARS = 8_192;
@@ -35,6 +37,10 @@ export interface CompactionBenefitEvaluation {
 }
 
 export interface CompactionBenefitInput {
+  readonly exactRequest?: boolean;
+  readonly candidateIntentLedger?: SessionState["contextIntentLedger"];
+  /** Next normal request, not the reduced compact-only tool surface. */
+  readonly nextRequest?: { systemPrompt: string; runtimeContext: string; tools: readonly ToolDefinition[]; reservedTokens?: number };
   readonly state: Readonly<SessionState>;
   /** Candidate durable messages, including the compact_context result. */
   readonly candidateMessages: readonly ChatMessage[];
@@ -84,16 +90,19 @@ export function evaluateCompactionBenefit(
     ...input.state,
     messages: [...input.candidateMessages],
     workingSummary: input.summary,
+    contextIntentLedger: input.candidateIntentLedger ?? input.state.contextIntentLedger,
     compactedMessageCount: boundaryValid
       ? input.compactedMessageCount
       : input.state.compactedMessageCount,
   };
-  const afterProjectedChars = manager.estimateShortTermChars(candidateState) + protectedChars;
+  const candidateContinuity = runtimeContinuityMessage(candidateState);
+  const afterProjectedChars = manager.estimateShortTermChars(candidateState) +
+    (candidateContinuity ? candidateContinuity.length + 32 : 0);
   const savedChars = beforeProjectedChars - afterProjectedChars;
   const savingsRatio = beforeProjectedChars > 0
     ? Math.max(0, savedChars / beforeProjectedChars)
     : 0;
-  const budgetChars = activeWorkingSetCharBudget(input.maxContextChars);
+  const budgetChars = manager.activeCharBudget(input.maxContextChars);
   const postCompactionUtilization = afterProjectedChars / budgetChars;
   const safeWaterlineReached =
     postCompactionUtilization <= COMPACTION_SAFE_WATERLINE_RATIO;
@@ -108,6 +117,15 @@ export function evaluateCompactionBenefit(
   };
 
   if (!boundaryValid) return rejection(base, "invalid_boundary");
+  if (manager.tokenCapacity && input.nextRequest) {
+    const after = input.exactRequest ? exactContext(candidateState, input.nextRequest) :
+      manager.build({ state: candidateState, maxContextChars: input.maxContextChars,
+        systemPrompt: input.nextRequest.systemPrompt, runtimeContext: input.nextRequest.runtimeContext });
+    const utilization = (manager.estimateRequestTokens(after, input.nextRequest.tools) + (input.nextRequest.reservedTokens ?? 0)) / manager.tokenCapacity.inputCapacity;
+    base.postCompactionUtilization = Math.max(base.postCompactionUtilization, utilization);
+    base.safeWaterlineReached = base.postCompactionUtilization <= COMPACTION_SAFE_WATERLINE_RATIO;
+    if (!base.safeWaterlineReached) return rejection(base, "unsafe_post_compaction_pressure");
+  }
   if (!input.required && newProjectedChars < COMPACTION_MIN_NEW_PROJECTED_CHARS) {
     return rejection(base, "compaction_cooldown_active");
   }

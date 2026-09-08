@@ -221,6 +221,33 @@ function assertMissingKey(
   };
 }
 
+describe("/orchestration", () => {
+  it("uses the standard picker, keeps reviewer enabled and persists the selection", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const choicesSeen: string[][] = [];
+    const selections: Array<string | undefined> = ["on", undefined, "off"];
+    const displayed: Array<boolean | undefined> = [];
+    fixture.terminal.selectChoice = async (_title, choices) => {
+      choicesSeen.push(choices.map((choice) => choice.id));
+      return selections.shift();
+    };
+    const original = fixture.terminal.setSessionInfo.bind(fixture.terminal);
+    fixture.terminal.setSessionInfo = (session, announce) => { displayed.push(session.orchestrationEnabled); original(session, announce); };
+    try {
+      await fixture.app.handleSlashCommand("/orchestration");
+      await fixture.app.handleSlashCommand("/orchestration");
+      await fixture.app.handleSlashCommand("/status");
+      assert.match(fixture.output(), /"orchestrationEnabled": true/u);
+      assert.match(fixture.output(), /"reviewerEnabled": true/u);
+      await fixture.app.handleSlashCommand("/orchestration");
+      assert.deepEqual(choicesSeen, [["off", "on"], ["off", "on"], ["off", "on"]]);
+      assert.ok(displayed.includes(true));
+      assert.equal(displayed.at(-1), false);
+      await assert.rejects(fixture.app.handleSlashCommand("/orchestration invalid"), /Usage/u);
+    } finally { fixture.close(); }
+  });
+});
+
 describe("/approval", () => {
   it("requires a second confirmation for unrestricted mode and switches all three states", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
@@ -475,9 +502,8 @@ describe("/model", () => {
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
       assert.match(fixture.output(), /"thinkingApplied": false/u);
-      assert.match(fixture.output(), /"baseStepLimit": 40/u);
-      assert.match(fixture.output(), /"stepLimit": 160/u);
-      assert.match(fixture.output(), /"baseContextCharLimit": 250000/u);
+      assert.match(fixture.output(), /"steps":/u);
+      assert.match(fixture.output(), /"stepLimit": 80/u);
       assert.match(fixture.output(), /"contextCharLimit": 250000/u);
       assert.match(fixture.output(), /"configuredBudgetChars": 250000/u);
       assert.match(fixture.output(), /"budgetChars": 250000/u);
@@ -531,7 +557,7 @@ describe("/model", () => {
       assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
       assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
       assert.match(fixture.output(), /"thinkingApplied": true/u);
-      assert.match(fixture.output(), /"stepLimit": 80/u);
+      assert.match(fixture.output(), /"stepLimit": 40/u);
       assert.doesNotMatch(fixture.output(), /Model switched to DeepSeek/u);
     } finally {
       fixture.close();
@@ -589,7 +615,7 @@ describe("/model", () => {
     try {
       await fixture.app.handleSlashCommand("/agents");
       await fixture.app.handleSlashCommand("/subagents");
-      assert.match(fixture.output(), /Child agents · 0\/4 active · 0 total/u);
+      assert.match(fixture.output(), /Child agents · 0\/2 active · 0 total/u);
       assert.match(fixture.output(), /No child agents in this runtime/u);
       await assert.rejects(
         fixture.app.handleSlashCommand("/agents stop"),

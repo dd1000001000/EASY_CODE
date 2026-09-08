@@ -7,6 +7,7 @@ import { CompactContextTool } from "./compact-context.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
 import { ReadFileTool } from "./read-file.js";
+import { SearchFilesTool } from "./search-files.js";
 import { ReadImageTool } from "./read-image.js";
 import {
   CancelCommandTool,
@@ -52,6 +53,7 @@ export function createDefaultTools(
   const commandRuntime = options.commandRuntime ?? new CommandRuntime(workspaceManager);
   return [
     new ReadFileTool(workspaceManager),
+    new SearchFilesTool(workspaceManager),
     new ReadImageTool(workspaceManager),
     new CreateFileTool(workspaceManager),
     new UpdateFileTool(workspaceManager),

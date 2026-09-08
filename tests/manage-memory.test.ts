@@ -23,6 +23,26 @@ function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext 
 }
 
 describe("manage_memory model tool", () => {
+  it("searches historical previews without authorizing long-term memory edits", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-memory-history-"));
+    const storage = createStorage(root);
+    try {
+      const tool = new ManageMemoryTool(new MemoryManager(storage), await WorkspaceManager.create(root));
+      const id = "context_" + "a".repeat(48);
+      const result = await tool.execute({ action: "search", scope: "history", query: "authentication", limit: 2 }, {
+        ...context(root), searchHistory: async (query, limit) => {
+          assert.equal(query, "authentication"); assert.equal(limit, 2);
+          return [{ id, title: "Old authentication evidence", preview: "historical observation", historical: true }];
+        },
+      });
+      assert.equal(result.ok, true);
+      assert.equal((result.data as { evidence: { id: string }[] }).evidence[0]!.id, id);
+      assert.equal(result.memoryMutation, undefined);
+      assert.equal((await tool.execute({ action: "search", scope: "history", query: "authentication" }, context(root))).ok, false);
+      assert.equal((await tool.execute({ action: "recall", evidenceId: id }, context(root))).ok, false);
+    } finally { storage.close(); await rm(root, { recursive: true, force: true }); }
+  });
+
   it("stages new facts without a search but still requires searched IDs for edits", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-workspace-"));
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-data-"));

@@ -1,0 +1,72 @@
+# Copy desired settings to .easycode/config.toml or the user config.toml.
+# Generate the current defaults with: easy-code config defaults
+# Keys inside [limits] use camelCase. Unknown/legacy limit keys are errors.
+orchestrationEnabled = false
+
+[limits]
+maxContextChars = 250000
+maxActiveContextChars = 250000
+# 0 = no additional token-window cap. Set this to your model's usable window.
+# This is NOT derived from maxContextChars and does not vary by provider.
+maxContextTokens = 0
+# Captured raw tool evidence and model-facing results are separate budgets.
+maxOutputChars = 64000
+maxToolResultChars = 16000
+commandTimeoutMs = 120000
+maxManagedWorktrees = 15
+maxConcurrentSubagents = 2
+maxSubagentsPerTurn = 8
+maxSubagentFollowUps = 8
+maxDagNodes = 16
+# Shared by main agent, children, reviewer, routing and compaction; includes retries.
+maxModelRequests = 120
+# 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
+maxTaskTokens = 0
+maxResponseTokens = 16384
+maxProviderRetries = 2
+providerRetryWaitMs = 30000
+defaultReadLines = 100
+maxReadLines = 1000
+maxReadResultTokens = 12000
+memoryAutoTokens = 2000
+memoryRecallTokens = 6000
+memoryMaxItems = 6
+memoryMaxQueries = 3
+memorySearchLimit = 6
+memoryMinRelevantTerms = 1
+maxDurableMemoryTokens = 400
+searchMaxEntries = 10000
+searchMaxDepth = 64
+searchRepeatWarningCount = 3
+searchMaxFileBytes = 1048576
+searchMaxBytes = 16777216
+searchMaxMatches = 60
+searchContextLines = 2
+searchMaxResultTokens = 3000
+commandQueryChars = 12000
+commandMaxDiagnostics = 8
+commandSuccessChars = 2000
+commandFailureChars = 8000
+commandPollWaitMs = 120000
+compactionAttempts = 3
+toolProtocolAttempts = 3
+# Reviewer remains enabled and independently restricted to its read-only profile.
+reviewerModelRequests = 2
+reviewerOutputTokens = 6144
+contextOutputReserveRatio = 0.2
+contextToolReserveTokens = 8192
+contextToolReserveRatio = 0.1
+contextSafetyReserveTokens = 512
+contextSafetyReserveRatio = 0.05
+
+[limits.steps]
+none = 40
+low = 40
+medium = 40
+high = 80
+
+[limits.providerTimeoutMs]
+none = 300000
+low = 300000
+medium = 450000
+high = 600000

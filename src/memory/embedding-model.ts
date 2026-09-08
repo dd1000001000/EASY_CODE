@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { resolveEasyCodePaths } from "../config/defaults.js";
 import type { EmbeddingProvider } from "./vector-index.js";
+import { tokenWindows, type TextWindow } from "./text-windows.js";
 
 export const EMBEDDING_MODEL_ID =
   "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
@@ -14,7 +15,8 @@ export const EMBEDDING_MODEL_REVISION =
 export const EMBEDDING_DIMENSION = 384;
 export const EMBEDDING_MAX_SEQUENCE_LENGTH = 128;
 export const EMBEDDING_POOLING = "masked-mean";
-export const EMBEDDING_VERSION = 1;
+// V2 represents every source window, rather than only the first 128 tokens.
+export const EMBEDDING_VERSION = 2;
 export const EMBEDDING_MODEL_DIRECTORY_NAME =
   "paraphrase-multilingual-MiniLM-L12-v2";
 
@@ -389,19 +391,7 @@ function prepareEncoding(tokenizer: EmbeddingTokenizer, text: string): PreparedE
   }
 
   if (ids.length > EMBEDDING_MAX_SEQUENCE_LENGTH) {
-    const finalIndex = ids.length - 1;
-    ids = [
-      ...ids.slice(0, EMBEDDING_MAX_SEQUENCE_LENGTH - 1),
-      ids[finalIndex]!,
-    ];
-    attentionMask = [
-      ...attentionMask.slice(0, EMBEDDING_MAX_SEQUENCE_LENGTH - 1),
-      attentionMask[finalIndex]!,
-    ];
-    tokenTypeIds = [
-      ...tokenTypeIds.slice(0, EMBEDDING_MAX_SEQUENCE_LENGTH - 1),
-      tokenTypeIds[finalIndex]!,
-    ];
+    throw new Error("Embedding input was not windowed within tokenizer capacity");
   }
   return { ids, attentionMask, tokenTypeIds };
 }
@@ -518,6 +508,44 @@ export class LocalEmbeddingModel implements EmbeddingProvider {
     }
     if (texts.length === 0) return [];
     const loaded = await this.loadOnce();
+    const result: Float32Array[] = [];
+    const groups = texts.map((text) => this.windows(loaded.tokenizer, text));
+    const flat = groups.flat();
+    const allVectors: Float32Array[] = [];
+    for (let start = 0; start < flat.length; start += 16) {
+      allVectors.push(...await this.embedBatch(loaded, flat.slice(start, start + 16).map((window) => window.text)));
+    }
+    let offset = 0;
+    for (const windows of groups) {
+      const vectors = allVectors.slice(offset, offset + windows.length);
+      offset += windows.length;
+      const merged = new Float64Array(this.dimension);
+      for (let index = 0; index < vectors.length; index += 1) {
+        const weight = Math.max(1, loaded.tokenizer.encode(windows[index]!.text,
+          { return_token_type_ids: true }).ids.length - 2);
+        for (let dimension = 0; dimension < this.dimension; dimension += 1) {
+          merged[dimension] = merged[dimension]! + vectors[index]![dimension]! * weight;
+        }
+      }
+      const norm = Math.sqrt(merged.reduce((sum, value) => sum + value * value, 0));
+      if (!(norm > Number.EPSILON)) throw new Error("Embedding windows have no usable direction");
+      result.push(Float32Array.from(merged, (value) => value / norm));
+    }
+    return result;
+  }
+
+  async splitText(text: string): Promise<readonly TextWindow[]> {
+    const loaded = await this.loadOnce();
+    return this.windows(loaded.tokenizer, text);
+  }
+
+  private windows(tokenizer: EmbeddingTokenizer, text: string): TextWindow[] {
+    return text ? tokenWindows(text, (value) => tokenizer.encode(value,
+      { return_token_type_ids: true }).ids.length, EMBEDDING_MAX_SEQUENCE_LENGTH)
+      : [{ text: "", start: 0, end: 0 }];
+  }
+
+  private async embedBatch(loaded: LoadedEmbeddingModel, texts: readonly string[]): Promise<Float32Array[]> {
     const encodings = texts.map((text) => prepareEncoding(loaded.tokenizer, text));
     const sequenceLength = Math.max(...encodings.map((encoding) => encoding.ids.length));
     const elementCount = texts.length * sequenceLength;

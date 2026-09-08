@@ -204,6 +204,10 @@ export class SubagentCoordinator implements SubagentControl {
     request: SpawnSubagentRequest,
     context: ToolContext,
   ): Promise<ToolExecutionResult> {
+    if (context.orchestrationEnabled === false) throw new Error("Subagent creation is disabled. The user can enable it with /orchestration.");
+    if (context.limits && this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >= context.limits.maxSubagentsPerTurn) {
+      throw new Error(`The ${context.limits.maxSubagentsPerTurn}-subagent turn budget is exhausted`);
+    }
     const active = this.recordsForThread(context.threadId).filter(
       (record) => !TERMINAL_STATUSES.has(record.status),
     ).length;
@@ -433,7 +437,7 @@ export class SubagentCoordinator implements SubagentControl {
     if (isTerminal(job.record.status) || job.record.status === "stopping") {
       throw new Error(`Subagent ${request.agentId} is no longer accepting follow-up guidance`);
     }
-    if (job.record.followUpCount >= MAX_FOLLOW_UPS_PER_SUBAGENT) {
+    if (job.record.followUpCount >= (context.limits?.maxSubagentFollowUps ?? MAX_FOLLOW_UPS_PER_SUBAGENT)) {
       throw new Error(`Subagent ${request.agentId} reached its follow-up limit`);
     }
     const message = sanitizeSubagentText(request.message);
@@ -1035,6 +1039,7 @@ export class SubagentCoordinator implements SubagentControl {
   }
 
   private concurrencyLimit(context: ToolContext): number {
+    if (context.limits) return context.limits.maxConcurrentSubagents;
     if (this.maxConcurrentOverride !== undefined) return this.maxConcurrentOverride;
     if (!context.thinkingEffort) {
       throw new Error("The parent thinking effort is unavailable");

@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { foldCompactionControl, prefixHash, completeExchange } from "../context/compaction-transaction.js";
 
 import {
   DEFAULT_THINKING_EFFORT,
@@ -700,6 +701,7 @@ function createThreadCheckpointDelta(
       requested.provider !== durable.provider ||
       requested.model !== durable.model ||
       requested.thinkingEffort !== durable.thinkingEffort ||
+      requested.orchestrationEnabled !== durable.orchestrationEnabled ||
       !sameJson(requested.promptBundle ?? null, durable.promptBundle ?? null) ||
       !sameJson(requested.constraints, durable.constraints) ||
       !sameFilesRead(requested.filesRead, durable.filesRead) ||
@@ -723,6 +725,7 @@ function createThreadCheckpointDelta(
   }
 
   const settings: {
+    orchestrationEnabled?: boolean;
     mode?: CheckpointDeltaSettings["mode"];
     provider?: CheckpointDeltaSettings["provider"];
     model?: string;
@@ -732,6 +735,9 @@ function createThreadCheckpointDelta(
     constraints?: string[];
   } = {};
   if (requested.mode !== durable.mode) settings.mode = requested.mode;
+  if (requested.orchestrationEnabled !== durable.orchestrationEnabled && requested.orchestrationEnabled !== undefined) {
+    settings.orchestrationEnabled = requested.orchestrationEnabled;
+  }
   if (requested.provider !== durable.provider) settings.provider = requested.provider;
   if (requested.model !== durable.model) settings.model = requested.model;
   if (requested.thinkingEffort !== durable.thinkingEffort) {
@@ -842,6 +848,7 @@ function applyThreadCheckpointDelta(
 
   const settings = delta.settings;
   if (settings) {
+    if (settings.orchestrationEnabled !== undefined) state.orchestrationEnabled = settings.orchestrationEnabled;
     if (settings.mode !== undefined) state.mode = settings.mode;
     if (settings.provider !== undefined) state.provider = settings.provider;
     if (settings.model !== undefined) state.model = settings.model;
@@ -910,6 +917,9 @@ function applyThreadCheckpointDelta(
       throw new Error(`Thread checkpoint delta ${event.eventId} repeated its compaction`);
     }
     const metadata = delta.compaction.contextCompactionMetadata;
+    if (state.compactionControl?.transaction) {
+      throw new Error(`Thread checkpoint delta ${event.eventId} cannot replace transaction-owned compaction`);
+    }
     if (metadata) {
       const sourceHistoryHash = `sha256:${sha256(serializeChatMessages(
         state.messages.slice(0, metadata.sourceEndMessageIndex),
@@ -1321,6 +1331,14 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
+        if (input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+            (input.type === "context.compacted" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
+          // Validate before append, so malformed control events cannot poison
+          // recovery. A commit is checked against the same event-folded state.
+          this.recoverFromEvents(threadId, [...priorEvents, { ...input, eventId: input.eventId ?? "pending_compaction",
+            schemaVersion: 1, sequence: priorEvents.at(-1)!.sequence + 1, threadId,
+            timestamp: input.timestamp ?? new Date().toISOString() }]);
+        }
         const payload = asPayloadRecord(input.payload);
         if (
           input.type === "model.usage" &&
@@ -1987,6 +2005,7 @@ export class ThreadStore {
         }
         const checkpoint = deserializeSessionState(payload.state);
         const durableProgress = state?.progressGuard;
+        const durableCompaction = state?.compactionControl;
         if (event.type === "thread_checkpoint" && state) {
           // Messages and the active-turn pointer advance through journal events.
           // A derived checkpoint may add a legacy tail, but it must never erase
@@ -2019,6 +2038,9 @@ export class ThreadStore {
           // Context compaction is an event-authoritative monotonic boundary.
           // A checkpoint may have been serialized before a background append;
           // never let that derived snapshot expand already-compacted history.
+          if (state.compactionControl?.transaction && checkpoint.compactedMessageCount > state.compactedMessageCount) {
+            throw new Error(`Thread checkpoint ${event.eventId} cannot advance transaction-owned compaction`);
+          }
           if (state.compactedMessageCount >= checkpoint.compactedMessageCount) {
             if (state.compactedMessageCount > checkpoint.messages.length) {
               checkpoint.messages = state.messages.map(cloneMessage);
@@ -2064,6 +2086,7 @@ export class ThreadStore {
         checkpoint.progressGuard = durableProgress
           ? structuredClone(durableProgress)
           : createProgressGuardState();
+        checkpoint.compactionControl = durableCompaction ? structuredClone(durableCompaction) : { phaseEnds: [] };
         state = checkpoint;
         continue;
       }
@@ -2076,7 +2099,9 @@ export class ThreadStore {
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
 
-      if (event.type === "turn_started") {
+      if (event.type === "context.phase.closed" || event.type.startsWith("context.compaction.")) {
+        foldCompactionControl(state, event.type, payload);
+      } else if (event.type === "turn_started") {
         state.activeTurnId = event.turnId;
         state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
@@ -2147,10 +2172,11 @@ export class ThreadStore {
           if (!expectedScope || observation.scopeKey !== expectedScope) {
             throw new Error(`Invalid progress scope in event ${event.eventId}`);
           }
-          state.progressGuard = foldProgressObservation(
+          const progressFold = foldProgressObservation(
             state.progressGuard ?? createProgressGuardState(),
             observation,
-          ).state;
+          );
+          state.progressGuard = progressFold.state;
         }
         if ("taskGraph" in payload) {
           state.taskGraph = this.replayTaskGraphResult(state, event, payload);
@@ -2232,7 +2258,19 @@ export class ThreadStore {
         }
       } else if (event.type === "turn.completed") {
         state.activeTurnId = undefined;
+        if ((payload?.reason === "success" || payload?.reason === "planned") && completeExchange(state.messages)) {
+          foldCompactionControl(state, "context.phase.closed", { end: state.messages.length, kind: "turn", turnId: event.turnId });
+        }
       } else if (event.type === "context.compacted" && payload) {
+        const transaction = state.compactionControl?.transaction;
+        if (payload.transactionId !== undefined) {
+          if (!transaction || payload.transactionId !== transaction.id) throw new Error("Unknown compaction commit");
+          if (transaction.status === "committed") continue;
+          if (transaction.start !== state.compactedMessageCount || payload.compactedMessageCount !== transaction.end ||
+              transaction.sourceHash !== prefixHash(state, transaction.end) || !transaction.candidate || transaction.feedback ||
+              asPayloadRecord(payload.contextCompactionMetadata)?.sourceEndMessageIndex !== transaction.end ||
+              asPayloadRecord(payload.contextCompactionMetadata)?.sourceStartMessageIndex !== transaction.start) throw new Error("Stale compaction commit");
+        }
         const summary = payload.summary;
         const compactedMessageCount = payload.compactedMessageCount;
         if (
@@ -2257,6 +2295,11 @@ export class ThreadStore {
           state.compactedMessageCount = replayed.compactedMessageCount;
           state.contextIntentLedger = replayed.contextIntentLedger;
           state.contextCompactionMetadata = replayed.contextCompactionMetadata;
+          if (payload.transactionId !== undefined && transaction) {
+            transaction.status = "committed";
+            transaction.candidate = undefined;
+            transaction.feedback = undefined;
+          }
         }
       } else if (event.type === "tool_audit" && payload) {
         const entry = payload.entry as CommandAuditEntry | undefined;

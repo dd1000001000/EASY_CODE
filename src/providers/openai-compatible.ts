@@ -90,6 +90,7 @@ const chatCompletionSchema = z.object({
 });
 
 export interface ProviderRuntimeOptions {
+  timeoutByEffort?: Readonly<Record<NonNullable<ModelRequest["thinkingEffort"]>, number>>;
   transport?: JsonPostTransport;
   sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
@@ -134,6 +135,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly maxResponseBytes: number;
   private readonly loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
   private readonly visionSupported: boolean;
+  private readonly timeoutByEffort?: ProviderRuntimeOptions["timeoutByEffort"];
 
   constructor(
     name: ProviderName,
@@ -152,6 +154,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     this.loadImage = runtime.loadImage;
     this.visionSupported = runtime.visionSupported ?? false;
+    this.timeoutByEffort = runtime.timeoutByEffort;
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
@@ -183,6 +186,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       thinkingRequestParameters(this.name, this.model, request.thinkingEffort),
     );
     const timeoutMs = this.config.timeoutMs ??
+      this.timeoutByEffort?.[request.thinkingEffort ?? "none"] ??
       thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
     if (
       request.maxRetries !== undefined &&

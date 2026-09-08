@@ -269,14 +269,14 @@ describe("model catalog", () => {
     assert.deepEqual(THINKING_EFFORT_BUDGET_MULTIPLIERS, {
       none: 1,
       low: 1,
-      medium: 2,
-      high: 4,
+      medium: 1,
+      high: 2,
     });
     assert.deepEqual(THINKING_EFFORT_STEP_LIMITS, {
       none: 40,
       low: 40,
-      medium: 80,
-      high: 160,
+      medium: 40,
+      high: 80,
     });
     assert.deepEqual(THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS, {
       none: 1,
@@ -286,8 +286,8 @@ describe("model catalog", () => {
     });
     assert.equal(thinkingEffortStepLimit("none"), 40);
     assert.equal(thinkingEffortStepLimit("low"), 40);
-    assert.equal(thinkingEffortStepLimit("medium"), 80);
-    assert.equal(thinkingEffortStepLimit("high"), 160);
+    assert.equal(thinkingEffortStepLimit("medium"), 40);
+    assert.equal(thinkingEffortStepLimit("high"), 80);
     assert.equal(thinkingEffortContextCharLimit("none"), 250_000);
     assert.equal(thinkingEffortContextCharLimit("low"), 250_000);
     assert.equal(thinkingEffortContextCharLimit("medium"), 250_000);
@@ -297,8 +297,8 @@ describe("model catalog", () => {
   it("scales custom none/low bases and rejects invalid or overflowing budgets", () => {
     assert.equal(thinkingEffortStepLimit("none", 25), 25);
     assert.equal(thinkingEffortStepLimit("low", 25), 25);
-    assert.equal(thinkingEffortStepLimit("medium", 25), 50);
-    assert.equal(thinkingEffortStepLimit("high", 25), 100);
+    assert.equal(thinkingEffortStepLimit("medium", 25), 25);
+    assert.equal(thinkingEffortStepLimit("high", 25), 50);
     assert.equal(thinkingEffortContextCharLimit("medium", 123_456), 123_456);
     assert.equal(thinkingEffortContextCharLimit("high", 123_456), 123_456);
 
