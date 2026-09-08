@@ -13,7 +13,8 @@ export const runtimeLimitsSchema = z.object({
   maxToolResultChars: integer(1024, 1000000),
   commandTimeoutMs: integer(1, 1200000),
   maxManagedWorktrees: integer(1, 200),
-  maxConcurrentSubagents: integer(1, 16),
+  maxConcurrentSubagents: z.object({ none: integer(1, 16), low: integer(1, 16),
+    medium: integer(1, 16), high: integer(1, 16) }).strict(),
   maxSubagentsPerTurn: integer(1, 128),
   maxSubagentFollowUps: integer(0, 32),
   maxDagNodes: integer(1, 32),
@@ -88,5 +89,6 @@ export type RuntimeLimits = z.infer<typeof runtimeLimitsSchema>;
 export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze(runtimeLimitsSchema.parse(defaults));
 export function defaultRuntimeLimits(): RuntimeLimits {
   return { ...DEFAULT_RUNTIME_LIMITS, steps: { ...DEFAULT_RUNTIME_LIMITS.steps },
+    maxConcurrentSubagents: { ...DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents },
     providerTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerTimeoutMs } };
 }

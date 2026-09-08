@@ -47,15 +47,38 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestrationEnabled = true\n[limits]\nmaxTaskTokens = 90000\n[limits.steps]\nhigh = 60\n[limits.providerTimeoutMs]\nhigh = 10000\n");
+        "orchestrationEnabled = true\n[limits]\nmaxTaskTokens = 90000\n[limits.steps]\nhigh = 60\n[limits.providerTimeoutMs]\nhigh = 10000\n[limits.maxConcurrentSubagents]\nmedium = 3\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
       assert.deepEqual(config.limits.steps, { none: 40, low: 40, medium: 40, high: 60 });
       assert.equal(config.limits.providerTimeoutMs.low, 300000);
       assert.equal(config.limits.providerTimeoutMs.high, 10000);
+      assert.deepEqual(defaultRuntimeLimits().maxConcurrentSubagents, { none: 2, low: 2, medium: 4, high: 8 });
+      assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 2, medium: 3, high: 8 });
       assert.equal(config.limits.maxTaskTokens, 90000);
       assert.equal(config.orchestrationEnabled, true);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("merges concurrency overrides across config layers and clones defaults", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-concurrency-limits-"));
+    try {
+      await mkdir(path.join(root, "config"));
+      await mkdir(path.join(root, ".easycode"));
+      await writeFile(path.join(root, "config", "config.toml"), "[limits.maxConcurrentSubagents]\nlow = 3\nmedium = 5\n");
+      await writeFile(path.join(root, ".easycode", "config.toml"), "[limits.maxConcurrentSubagents]\nmedium = 6\n");
+      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
+        env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10}}' }, credentialStore: false });
+      assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 3, medium: 6, high: 10 });
+      const copy = defaultRuntimeLimits();
+      copy.maxConcurrentSubagents.low = 7;
+      assert.equal(defaultRuntimeLimits().maxConcurrentSubagents.low, 2);
+      for (const invalid of [2, { ...copy.maxConcurrentSubagents, high: 0 },
+        { ...copy.maxConcurrentSubagents, high: 17 }, { ...copy.maxConcurrentSubagents, high: 1.5 },
+        { ...copy.maxConcurrentSubagents, typo: 3 }]) {
+        assert.equal(runtimeLimitsSchema.safeParse({ ...copy, maxConcurrentSubagents: invalid }).success, false);
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

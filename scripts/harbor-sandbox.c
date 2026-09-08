@@ -1,6 +1,7 @@
 /* Harbor-only Linux supervisor. No namespaces or privileged Docker required.
  * Landlock ABI >= 6: filesystem allowlist + signal/abstract-socket scoping.
- * seccomp: no sockets, io_uring, namespace escape or privileged inspection.
+ * seccomp: anonymous local socketpairs only; no network sockets, io_uring,
+ * namespace escape or privileged inspection.
  * The root supervisor is outside the target domain and reaps ALL descendants.
  */
 #define _GNU_SOURCE
@@ -92,6 +93,46 @@ static void rule(int fd, const char *p, uint64_t rights) {
 }
 
 #define DENY_NR(nr) BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1), BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
+#define REQUIRE_WORD(offset, value) \
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offset), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, value, 1, 0), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
+
+static void local_ipc_filters(void) {
+    /* Separate conjunctive filters keep branch offsets small. The main filter
+     * has already checked the native ABI and denies socket/connect/bind and
+     * ancillary-message syscalls. No inherited Runtime fds reach exec. */
+    struct sock_filter pair[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socketpair, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        REQUIRE_WORD(offsetof(struct seccomp_data, args[0]), AF_UNIX),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ~(SOCK_CLOEXEC | SOCK_NONBLOCK)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM, 3, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_DGRAM, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_SEQPACKET, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        REQUIRE_WORD(offsetof(struct seccomp_data, args[2]), 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    /* Linux send()/sendall() use sendto with a NULL destination on connected
+     * pairs. Permit that form only; explicit destinations stay forbidden. */
+    struct sock_filter send[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_sendto, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        REQUIRE_WORD(offsetof(struct seccomp_data, args[4]), 0),
+        REQUIRE_WORD(offsetof(struct seccomp_data, args[4]) + 4, 0),
+        REQUIRE_WORD(offsetof(struct seccomp_data, args[5]), 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog p = {(unsigned short)(sizeof(pair) / sizeof(pair[0])), pair};
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p)) die("socketpair filter");
+    p.len = (unsigned short)(sizeof(send) / sizeof(send[0])); p.filter = send;
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p)) die("local send filter");
+}
+
 static void confine(int fd) {
     /* Securebits prevent uid 0 from reacquiring capabilities on exec. */
     if (prctl(PR_SET_SECUREBITS, SECBIT_NOROOT | SECBIT_NOROOT_LOCKED | SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED)) die("securebits");
@@ -108,9 +149,9 @@ static void confine(int fd) {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, 0x40000000, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
-        DENY_NR(SYS_socket), DENY_NR(SYS_socketpair), DENY_NR(SYS_connect),
+        DENY_NR(SYS_socket), DENY_NR(SYS_connect),
         DENY_NR(SYS_bind), DENY_NR(SYS_listen), DENY_NR(SYS_accept), DENY_NR(SYS_accept4),
-        DENY_NR(SYS_sendto), DENY_NR(SYS_sendmsg), DENY_NR(SYS_recvmsg),
+        DENY_NR(SYS_sendmsg), DENY_NR(SYS_recvmsg),
         DENY_NR(SYS_ptrace), DENY_NR(SYS_process_vm_readv), DENY_NR(SYS_process_vm_writev),
         DENY_NR(SYS_unshare), DENY_NR(SYS_setns), DENY_NR(SYS_mount), DENY_NR(SYS_umount2),
         DENY_NR(SYS_pivot_root), DENY_NR(SYS_chroot), DENY_NR(SYS_bpf), DENY_NR(SYS_perf_event_open),
@@ -143,6 +184,7 @@ static void confine(int fd) {
     };
     struct sock_fprog p = {(unsigned short)(sizeof(filter) / sizeof(filter[0])), filter};
     if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &p)) die("seccomp");
+    local_ipc_filters();
 }
 
 static void close_descriptors(int keep) {
@@ -182,10 +224,16 @@ static int doctor(void) {
         if (socket(AF_UNIX, SOCK_STREAM, 0) != -1 || errno != EPERM) _exit(3);
         if (open("/etc/passwd", O_RDONLY) != -1 || errno != EACCES) _exit(4);
         if (kill(getppid(), 0) != -1 || errno != EPERM) _exit(5);
+        int pair[2]; char byte;
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0, pair)) _exit(6);
+        if (send(pair[0], "x", 1, 0) != 1 || recv(pair[1], &byte, 1, 0) != 1 || byte != 'x') _exit(7);
+        close(pair[0]); close(pair[1]);
+        if (socketpair(AF_INET, SOCK_STREAM, 0, pair) != -1 || errno != EPERM) _exit(8);
+        if (socketpair(AF_UNIX, SOCK_STREAM, 1, pair) != -1 || errno != EPERM) _exit(9);
         _exit(0);
     }
     int s; if (waitpid(child, &s, 0) != child || !WIFEXITED(s) || WEXITSTATUS(s)) return 78;
-    puts("Harbor sandbox ready: Landlock filesystem/signal isolation; seccomp denies all command sockets; no nested namespaces.");
+    puts("Harbor sandbox ready: Landlock filesystem/signal isolation; local AF_UNIX socketpairs allowed, network sockets denied; no nested namespaces.");
     return 0;
 }
 

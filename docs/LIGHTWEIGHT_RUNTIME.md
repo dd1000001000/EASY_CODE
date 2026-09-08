@@ -5,7 +5,7 @@ compiled package. `easy-code config defaults` prints a complete, credential-free
 TOML configuration. See [config.example.toml](config.example.toml).
 
 Configuration precedence: defaults → user TOML → workspace TOML → environment.
-Use `[limits]`, `[limits.steps]` and `[limits.providerTimeoutMs]`; maps merge by
+Use `[limits]`, `[limits.steps]`, `[limits.maxConcurrentSubagents]` and `[limits.providerTimeoutMs]`; maps merge by
 field. `EASY_CODE_LIMITS_JSON` accepts the same limits object for headless runs.
 Old flat limit settings, snake_case limit names and `EASY_CODE_MAX_*` limit
 variables are intentionally unsupported. Invalid or unknown limits fail startup.
@@ -35,6 +35,12 @@ Provider credentials and trust-root restrictions are unchanged.
   integrity constraints are safety bounds, not tunable task budgets.
 
 ## Orchestration
+
+Child concurrency defaults to **2/2/4/8** for none/low/medium/high, configured in
+`[limits.maxConcurrentSubagents]`. Runtime and status displays use the current
+parent effort. Lowering effort does not cancel existing children; new spawns wait
+for capacity. Shared token/request budgets and total child creation limits remain
+unchanged. The old scalar `maxConcurrentSubagents = 2` must be replaced by the map.
 
 `/orchestration` opens the existing up/down/Enter/Esc picker. `/orchestration on`
 and `/orchestration off` are also accepted in noninteractive use. Defaults are off

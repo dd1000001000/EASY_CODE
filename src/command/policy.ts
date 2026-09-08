@@ -288,12 +288,14 @@ export class CommandPolicy {
   }
 
   private classifyGit(command: ResolvedCommand, mode: AgentMode): CommandPolicyDecision {
-    if (command.args.some((argument) =>
+    const subcommandIndex = command.args.findIndex(argument => !argument.startsWith("-"));
+    if (command.args.some((argument, index) =>
       argument.startsWith("-C") ||
       argument.startsWith("--git-dir") ||
       argument.startsWith("--work-tree") ||
       argument.startsWith("-c") ||
-      argument.startsWith("--exec-path") || argument === "--paginate" || argument === "-p" ||
+      argument.startsWith("--exec-path") || argument === "--paginate" ||
+      (argument === "-p" && (subcommandIndex < 0 || index < subcommandIndex)) ||
       argument.startsWith("--config-env"),
     )) {
       return decision("deny", "destructive", "Git path/config overrides can escape command policy", "deny.git_override");

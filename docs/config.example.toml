@@ -14,7 +14,6 @@ maxOutputChars = 64000
 maxToolResultChars = 16000
 commandTimeoutMs = 120000
 maxManagedWorktrees = 15
-maxConcurrentSubagents = 2
 maxSubagentsPerTurn = 8
 maxSubagentFollowUps = 8
 maxDagNodes = 16
@@ -81,6 +80,13 @@ none = 40
 low = 40
 medium = 40
 high = 80
+
+# Resolved from the current parent thinking effort, including after a switch.
+[limits.maxConcurrentSubagents]
+none = 2
+low = 2
+medium = 4
+high = 8
 
 [limits.providerTimeoutMs]
 none = 300000

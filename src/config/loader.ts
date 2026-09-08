@@ -222,6 +222,9 @@ function applyLayer(
       steps: layer.limits?.steps === undefined ? base.limits.steps
         : isRecord(layer.limits.steps) ? { ...base.limits.steps, ...layer.limits.steps }
           : layer.limits.steps,
+      maxConcurrentSubagents: layer.limits?.maxConcurrentSubagents === undefined ? base.limits.maxConcurrentSubagents
+        : isRecord(layer.limits.maxConcurrentSubagents) ? { ...base.limits.maxConcurrentSubagents, ...layer.limits.maxConcurrentSubagents }
+          : layer.limits.maxConcurrentSubagents,
       providerTimeoutMs: layer.limits?.providerTimeoutMs === undefined ? base.limits.providerTimeoutMs
         : isRecord(layer.limits.providerTimeoutMs) ? { ...base.limits.providerTimeoutMs, ...layer.limits.providerTimeoutMs }
           : layer.limits.providerTimeoutMs,

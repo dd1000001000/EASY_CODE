@@ -7,7 +7,7 @@
   "maxToolResultChars": 16000,
   "commandTimeoutMs": 120000,
   "maxManagedWorktrees": 15,
-  "maxConcurrentSubagents": 2,
+  "maxConcurrentSubagents": { "none": 2, "low": 2, "medium": 4, "high": 8 },
   "maxSubagentsPerTurn": 8,
   "maxSubagentFollowUps": 8,
   "maxDagNodes": 16,

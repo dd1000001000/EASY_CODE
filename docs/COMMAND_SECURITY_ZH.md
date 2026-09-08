@@ -94,18 +94,31 @@ Harbor 适配器在安装阶段编译受信任的 `scripts/harbor-sandbox.c`，�
 均选择 `HarborSandboxBackend`；普通 CLI 仍使用原 OS 沙箱后端。
 
 这不是裸执行回退：Docker 提供外层隔离，Landlock ABI 6+ 提供文件访问与信号
-隔离，seccomp 禁止模型命令创建任何 socket、使用 io_uring、提升能力或创建
+隔离，seccomp 禁止模型命令创建网络 socket、使用 io_uring、提升能力或创建
 namespace。不要求 Docker 特权模式；缺少内核能力或受信任 helper 时仍失败关闭。
 
 主 Runtime 仅能通过 Harbor 的白名单调用固定模型服务。模型命令即使处于危险模式
-也不能联网，包括访问模型服务、DNS、TCP、UDP、IPv6 和本地 Unix socket。
+也不能联网，包括访问模型服务、DNS、TCP、UDP、IPv6 和具名 Unix socket 服务。
+仅放行协议为 0 的匿名 AF_UNIX socketpair（stream/datagram/seqpacket，支持
+NONBLOCK/CLOEXEC），及无目的地址的发送，用于本地 IPC 和 asyncio 唤醒。
+sendmsg/recvmsg 仍被禁止，避免文件描述符传递；目标启动前关闭继承的 Runtime 描述符。
+doctor 同时检查本地 IPC 可用与网络拒绝，而不是只验证禁止项。
 可信安装／评测依赖准备与模型执行分阶段处理；清理未确认时不恢复 verifier 网络。
 
 命令使用无 capability 的子进程、独立控制管道和 subreaper 监督；普通退出、超时、
 取消均清理包括 setsid／双重 fork 在内的后代。Plan 的工作区仍为内核只读。
 
-兼容性边界：本地 socket 测试和依赖 socket 的多进程功能同样不可用；chmod、
+兼容性边界：本地监听服务、具名 Unix socket 连接和依赖描述符传递的多进程功能
+仍不可用；匿名 socketpair 可用。chmod、
 chown、xattr 操作禁止。容器内 Git／Runtime 元数据移除写权限，可信 root Runtime
 仍可维护；保护目录的祖先下直接条目的删除／重命名受限，普通源码原地写入正常。
 这些限制不会放宽为不受监督的宿主机命令。可用 `scripts/smoke-harbor-sandbox.mjs`
 在一次性 Docker 容器里验证，无须调用模型。
+
+两个沙箱后端共用 Git 参数／环境处理：直接 diff 类命令使用
+`--no-ext-diff --no-textconv`，不再注入错误的 `diff.external=` 空值。
+参数按子命令区分，全局保护配置位于调用者全局设置之后，diff 保护选项紧随子命令，
+避免被其他选项当成参数值；显式启用外部 helper 的选项与命令策略一致地拒绝。
+不修改仓库配置。
+Shell/Python 子进程继承清理后的 Git 环境，但任意代码仍可自行设置环境或执行程序；
+这不是覆盖所有间接调用的 Git 拦截器，底层文件／网络边界仍由 OS 沙箱保证。

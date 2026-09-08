@@ -88,7 +88,7 @@ Auto 使用结构化选择而非关键词匹配。只有无需工作区、工具
 
 执行中调整按 FIFO 独立持久化，在模型前后、工具之间或最终回答前的安全边界封存一个待处理前缀。调整能改变方向，但不能改变权限、沙箱、任务所有权或 Agent 身份；过期响应中尚未启动的工具不会执行。
 
-`none/low/medium/high` 默认分别为 40/40/40/80 步，子 Agent 默认最多并发 2 个，不再随 thinking 放大。运行预算使用 `[limits]` 配置，详见 [完整配置示例](config.example.toml) 和 [轻量 Runtime 说明](LIGHTWEIGHT_RUNTIME.md)。`/orchestration` 控制 DAG/子 Agent 新建，默认关闭，reviewer 独立保持开启。所有强度共用同一个上下文预算和压缩阈值。尚未观察终态的后台命令、活跃 DAG 或未收集子 Agent 会阻止普通最终回答。上下文压力由 Runtime 维护流程处理；必需输入仍放不下时返回可恢复容量限制，不再要求模型反复修复压缩 Schema。
+`none/low/medium/high` 默认分别为 40/40/40/80 步，子 Agent 默认并发上限分别为 2/2/4/8 个，由 `[limits.maxConcurrentSubagents]` 配置，并随父 Agent 当前 thinking 强度切换。运行预算使用 `[limits]` 配置，详见 [完整配置示例](config.example.toml) 和 [轻量 Runtime 说明](LIGHTWEIGHT_RUNTIME.md)。`/orchestration` 控制 DAG/子 Agent 新建，默认关闭，reviewer 独立保持开启。所有强度共用同一个上下文预算和压缩阈值。尚未观察终态的后台命令、活跃 DAG 或未收集子 Agent 会阻止普通最终回答。上下文压力由 Runtime 维护流程处理；必需输入仍放不下时返回可恢复容量限制，不再要求模型反复修复压缩 Schema。
 
 ## 4. 信任、安全与沙箱
 
@@ -216,7 +216,7 @@ Runtime 在面向模型的裁剪之前，将脱敏后的结构化工具数据捕
 
 ### 6.6 容量计量与配置
 
-运行配置位于 `[limits]`，当前值以 [Runtime 默认配置](../src/config/runtime-defaults.json) 和 [配置示例](config.example.toml) 为准。上下文策略对所有 thinking 强度和 Provider 相同。none/low/medium/high 默认分别 40/40/40/80 步，子 Agent 最多并发两个；强度不再倍增子 Agent 并发或上下文容量。
+运行配置位于 `[limits]`，当前值以 [Runtime 默认配置](../src/config/runtime-defaults.json) 和 [配置示例](config.example.toml) 为准。上下文策略对所有 thinking 强度和 Provider 相同。none/low/medium/high 默认分别 40/40/40/80 步，子 Agent 并发上限为 2/2/4/8 个；上下文容量不随强度倍增。降低强度不会取消已有子 Agent，但达到新上限时拒绝新建。共享 Token、请求预算和每轮子 Agent 创建总数上限保持不变。
 
 `maxContextTokens = 0` 表示未启用模型 Token 窗口。默认 `maxContextChars = maxActiveContextChars = 250000` 指**字符，不是 250,000 个模型 Token**。字符模式可用输入容量为 `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`，默认 212,500。控制器 80% 维护触发点约为 170,000 个请求字符，包含指令、Schema 和 Runtime 状态，不只是屏幕上的对话正文。
 
