@@ -37,6 +37,8 @@ export interface CompactionBenefitEvaluation {
 }
 
 export interface CompactionBenefitInput {
+  /** Conservative recovery may use up to 70%, still below the mandatory band. */
+  readonly allowConservativeHeadroom?: boolean;
   readonly exactRequest?: boolean;
   readonly candidateIntentLedger?: SessionState["contextIntentLedger"];
   /** Next normal request, not the reduced compact-only tool surface. */
@@ -124,7 +126,8 @@ export function evaluateCompactionBenefit(
     const utilization = (manager.estimateRequestTokens(after, input.nextRequest.tools) + (input.nextRequest.reservedTokens ?? 0)) / manager.tokenCapacity.inputCapacity;
     base.postCompactionUtilization = Math.max(base.postCompactionUtilization, utilization);
     base.safeWaterlineReached = base.postCompactionUtilization <= COMPACTION_SAFE_WATERLINE_RATIO;
-    if (!base.safeWaterlineReached) return rejection(base, "unsafe_post_compaction_pressure");
+    if (base.postCompactionUtilization > (input.allowConservativeHeadroom ? 0.7 : COMPACTION_SAFE_WATERLINE_RATIO))
+      return rejection(base, "unsafe_post_compaction_pressure");
   }
   if (!input.required && newProjectedChars < COMPACTION_MIN_NEW_PROJECTED_CHARS) {
     return rejection(base, "compaction_cooldown_active");
@@ -139,7 +142,7 @@ export function evaluateCompactionBenefit(
   }
   // A candidate that immediately leaves Runtime in the mandatory band would
   // cause a compaction loop. The 55% target remains diagnostic between bands.
-  if (postCompactionUtilization >= 0.8) {
+  if (postCompactionUtilization > (input.allowConservativeHeadroom ? 0.7 : COMPACTION_SAFE_WATERLINE_RATIO)) {
     return rejection(base, "unsafe_post_compaction_pressure");
   }
   return { ...base, accepted: true };
