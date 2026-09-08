@@ -35,12 +35,22 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
   const incidents = state.progressGuard?.incidents.filter((item) => item.phase !== "resolved") ?? [];
   const runs = state.progressGuard?.failureRuns ?? [];
   const current = state.taskGraph ? activeTask(state.taskGraph) : undefined;
+  const fileChanges = [...new Map(state.changes.map((change) => [change.path, change])).values()];
   const payload = {
+    // Preserve complete retired user messages, not a model-generated paraphrase
+    // or the bounded display quote in the intent ledger. Never truncate to fit.
+    retiredUserMessages: state.messages.slice(0, state.compactedMessageCount)
+      .map((message, sourceMessageIndex) => ({ message, sourceMessageIndex }))
+      .filter(({ message }) => message.role === "user" && !message.content.trimStart().startsWith("RUNTIME_"))
+      .map(({ message, sourceMessageIndex }) => ({ sourceMessageIndex, content: message.content,
+        ...(message.role === "user" && message.images?.length ? { images: message.images.map((image) => image.id) } : {}) })),
     ...(state.goal ? { goal: state.goal } : {}),
     ...(state.constraints.length ? { constraints: state.constraints } : {}),
     ...(state.contextIntentLedger ? { intent: state.contextIntentLedger } : {}),
     ...(state.taskGraph ? { taskGraph: state.taskGraph, currentTaskId: current?.id ?? null } : {}),
     ...(state.planReview ? { plan: state.planReview } : {}),
+    ...(fileChanges.length ? { recordedFileChanges: fileChanges } : {}),
+    ...(state.pendingSteering?.length ? { pendingUserSteering: state.pendingSteering } : {}),
     ...(failures.length ? { unresolvedCommands: failures.map((command) => ({
       id: command.id, program: command.program, args: command.args, cwd: command.cwd,
       status: command.status, exitCode: command.exitCode, summary: command.summary,

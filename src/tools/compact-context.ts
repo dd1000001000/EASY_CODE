@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { semanticPatchSchema } from "../context/semantic-compaction.js";
 import { MAX_CONTEXT_SUMMARY_CHARS } from "../context/manager.js";
 import type {
   AgentTool,
@@ -168,300 +169,39 @@ function copyCoverageCheck(
   };
 }
 
-/** Runtime-owned tool: it proposes a summary but never edits workspace files or history. */
+
+/** Only semantic content crosses the model boundary. Legacy V2 parsers above
+ * remain available for historical records, never as the current tool schema. */
 export class CompactContextTool implements AgentTool {
   readonly name = "compact_context" as const;
   readonly mutating = false;
-  readonly inputSchema = compactContextInputSchema;
+  readonly inputSchema = semanticPatchSchema;
   readonly definition: ToolDefinition = {
     type: "function",
-    function: {
-      name: this.name,
-      strict: true,
-      ...documentToolSchema(this.name, {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          formatVersion: { type: "integer", enum: [2] },
-          primaryRequest: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              sourceMessageIndex: {
-                type: "integer",
-                minimum: 0,
-                maximum: MAX_MESSAGE_INDEX,
-              },
-              text: {
-                type: "string",
-                minLength: 1,
-                maxLength: MAX_PRIMARY_REQUEST_CHARS,
-              },
-            },
-            required: ["sourceMessageIndex", "text"],
-          },
-          activeConstraints: {
-            type: "array",
-            maxItems: MAX_CONSTRAINTS,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                sourceMessageIndex: {
-                  type: "integer",
-                  minimum: 0,
-                  maximum: MAX_MESSAGE_INDEX,
-                },
-                text: {
-                  type: "string",
-                  minLength: 1,
-                  maxLength: MAX_CONSTRAINT_CHARS,
-                },
-              },
-              required: ["sourceMessageIndex", "text"],
-            },
-          },
-          technicalDecisions: {
-            type: "array",
-            maxItems: MAX_DECISIONS,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                decision: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-                evidenceRefIds: {
-                  type: "array",
-                  maxItems: MAX_EVIDENCE_REFS_PER_ITEM,
-                  uniqueItems: true,
-                  items: { type: "string", minLength: 1, maxLength: 64 },
-                },
-              },
-              required: ["decision", "evidenceRefIds"],
-            },
-          },
-          filesAndChanges: {
-            type: "array",
-            maxItems: MAX_FILES_AND_CHANGES,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                path: { type: "string", minLength: 1, maxLength: MAX_PATH_CHARS },
-                status: {
-                  type: "string",
-                  enum: ["read", "created", "updated", "deleted", "planned", "unchanged"],
-                },
-                summary: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-                evidenceRefIds: {
-                  type: "array",
-                  maxItems: MAX_EVIDENCE_REFS_PER_ITEM,
-                  uniqueItems: true,
-                  items: { type: "string", minLength: 1, maxLength: 64 },
-                },
-              },
-              required: ["path", "status", "summary", "evidenceRefIds"],
-            },
-          },
-          verifiedResults: {
-            type: "array",
-            maxItems: MAX_VERIFIED_RESULTS,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                result: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-                evidenceRefIds: {
-                  type: "array",
-                  maxItems: MAX_EVIDENCE_REFS_PER_ITEM,
-                  uniqueItems: true,
-                  items: { type: "string", minLength: 1, maxLength: 64 },
-                },
-              },
-              required: ["result", "evidenceRefIds"],
-            },
-          },
-          errorsAndBlockers: {
-            type: "array",
-            maxItems: MAX_ERRORS_AND_BLOCKERS,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                kind: { type: "string", enum: ["error", "blocker"] },
-                message: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-                evidenceRefIds: {
-                  type: "array",
-                  maxItems: MAX_EVIDENCE_REFS_PER_ITEM,
-                  uniqueItems: true,
-                  items: { type: "string", minLength: 1, maxLength: 64 },
-                },
-              },
-              required: ["kind", "message", "evidenceRefIds"],
-            },
-          },
-          pendingWork: {
-            type: "array",
-            maxItems: MAX_PENDING_WORK,
-            items: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-          },
-          currentWork: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-          nextStep: { type: "string", minLength: 1, maxLength: MAX_ITEM_CHARS },
-          evidenceRefs: {
-            type: "array",
-            maxItems: MAX_EVIDENCE_REFS,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                id: {
-                  type: "string",
-                  minLength: 1,
-                  maxLength: 64,
-                  pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
-                },
-                kind: {
-                  type: "string",
-                  enum: ["message", "file", "command", "test", "task", "artifact"],
-                },
-                reference: {
-                  type: "string",
-                  minLength: 1,
-                  maxLength: MAX_REFERENCE_CHARS,
-                },
-              },
-              required: ["id", "kind", "reference"],
-            },
-          },
-          intentLedger: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              userCorrections: {
-                type: "array",
-                maxItems: MAX_USER_CORRECTIONS,
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    sourceMessageIndex: {
-                      type: "integer",
-                      minimum: 0,
-                      maximum: MAX_MESSAGE_INDEX,
-                    },
-                    text: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: MAX_INTENT_QUOTE_CHARS,
-                    },
-                  },
-                  required: ["sourceMessageIndex", "text"],
-                },
-              },
-              supersededRequests: {
-                type: "array",
-                maxItems: MAX_SUPERSEDED_REQUESTS,
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    sourceMessageIndex: {
-                      type: "integer",
-                      minimum: 0,
-                      maximum: MAX_MESSAGE_INDEX,
-                    },
-                    text: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: MAX_INTENT_QUOTE_CHARS,
-                    },
-                  },
-                  required: ["sourceMessageIndex", "text"],
-                },
-              },
-            },
-            required: ["userCorrections", "supersededRequests"],
-          },
-          coverageCheck: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              coveredMessageIndices: {
-                type: "array",
-                maxItems: MAX_COVERED_MESSAGE_INDICES,
-                uniqueItems: true,
-                items: {
-                  type: "integer",
-                  minimum: 0,
-                  maximum: MAX_MESSAGE_INDEX,
-                },
-              },
-              latestMessageIndex: {
-                type: "integer",
-                minimum: 0,
-                maximum: MAX_MESSAGE_INDEX,
-              },
-              latestRequestPreserved: { type: "boolean" },
-              activeConstraintsPreserved: { type: "boolean" },
-              activePlanOrTaskPreserved: { type: "boolean" },
-              unresolvedErrorsPreserved: { type: "boolean" },
-              currentWorkPreserved: { type: "boolean" },
-              nextStepPreserved: { type: "boolean" },
-              note: { type: "string", maxLength: MAX_COVERAGE_NOTE_CHARS },
-            },
-            required: [
-              "coveredMessageIndices",
-              "latestMessageIndex",
-              "latestRequestPreserved",
-              "activeConstraintsPreserved",
-              "activePlanOrTaskPreserved",
-              "unresolvedErrorsPreserved",
-              "currentWorkPreserved",
-              "nextStepPreserved",
-              "note",
-            ],
-          },
-        },
-        required: [
-          "formatVersion",
-          "primaryRequest",
-          "activeConstraints",
-          "technicalDecisions",
-          "filesAndChanges",
-          "verifiedResults",
-          "errorsAndBlockers",
-          "pendingWork",
-          "currentWork",
-          "nextStep",
-          "evidenceRefs",
-          "intentLedger",
-          "coverageCheck",
-        ],
-      }),
-    },
+    function: { name: this.name, ...documentToolSchema(this.name, {
+  type: "object", additionalProperties: false,
+  properties: {
+    currentWork: { type: "string", minLength: 1, maxLength: 1200 },
+    decisions: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
+    conclusions: { type: "array", maxItems: 32, items: {
+      type: "object", additionalProperties: false, properties: {
+        text: { type: "string", minLength: 1, maxLength: 1200 },
+        evidenceIds: { type: "array", maxItems: 12, items: { type: "string", pattern: "^ev_[a-f0-9]{24}$" } },
+      }, required: ["text"],
+    } },
+    hypotheses: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
+    failedApproaches: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
+    nextStep: { type: "string", minLength: 1, maxLength: 1200 },
+  },
+}) },
   };
-
   async execute(input: unknown, _context: ToolContext): Promise<ToolExecutionResult> {
     try {
-      const parsed = this.inputSchema.parse(input);
-      const summary = buildPersistedSummary(parsed);
-      if (summary.length > MAX_CONTEXT_SUMMARY_CHARS) {
-        throw new Error(
-          `Structured context summary exceeds ${MAX_CONTEXT_SUMMARY_CHARS} characters`,
-        );
-      }
-      return {
-        ok: true,
-        summary: "The cumulative context summary was accepted.",
-        data: { formatVersion: 2, summaryChars: summary.length },
-        contextCompaction: {
-          summary,
-          formatVersion: 2,
-          intentLedger: copyIntentLedger(parsed),
-          coverageCheck: copyCoverageCheck(parsed.coverageCheck),
-        },
-      };
+      const patch = this.inputSchema.parse(input);
+      return { ok: true, summary: "Semantic candidate patch received; Runtime has not committed compaction.",
+        data: { formatVersion: 3 }, contextCompaction: { formatVersion: 3, summary: JSON.stringify(patch) } };
     } catch (error) {
-      return toolFailure(error, "Unable to compact context");
+      return toolFailure(error, "Unable to parse semantic compaction patch");
     }
   }
 }

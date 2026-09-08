@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ChatMessage, ContextCompactionRequest, EventRecord, SessionState, ToolDefinition, ToolExecutionResult } from "../core/types.js";
-import type { ContextManager } from "./manager.js";
+import { MAX_CONTEXT_SUMMARY_CHARS, type ContextManager } from "./manager.js";
 import { createCompactionMetadata, validateCompactionIntegrity } from "./compaction-integrity.js";
 import { evaluateCompactionBenefit } from "./compaction-policy.js";
 import { exactContext, type NormalRequestEnvelope } from "./context-request.js";
@@ -8,7 +8,10 @@ import { budgetedRequest } from "./token-budget.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { ToolProtocolExhausted, MAX_TOOL_PROTOCOL_ATTEMPTS } from "../runtime/tool-recovery.js";
-import { protocolToolFailure, toolResultForModel } from "../tools/errors.js";
+import { toolResultForModel } from "../tools/errors.js";
+import { compactionSnapshot, compactionSnapshotSchema, semanticPatchSchema, semanticSummarySchema,
+  mergeSemanticCandidate, salvageSemanticSections, semanticIssues, semanticDocument, conservativeDocument, runtimeIntent,
+  type CompactionSnapshot } from "./semantic-compaction.js";
 
 const index = z.number().int().nonnegative();
 const transactionSchema = z.object({
@@ -16,14 +19,19 @@ const transactionSchema = z.object({
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/u), attempts: index.max(MAX_TOOL_PROTOCOL_ATTEMPTS),
   maxAttempts: z.number().int().min(1).max(MAX_TOOL_PROTOCOL_ATTEMPTS).optional(),
   status: z.enum(["pending", "committed"]),
+  snapshot: compactionSnapshotSchema.optional(),
 }).strict();
 export interface CompactionControl {
   /** Runtime-closed verification/turn boundaries; never inferred from RAG. */
   phaseEnds: number[];
+  requested?: boolean;
+  seed?: unknown;
   lastVerificationTurnId?: string;
   transaction?: z.infer<typeof transactionSchema> & {
     candidate?: Extract<ChatMessage, { role: "assistant" }>;
     feedback?: string;
+    semantic?: unknown;
+    fallback?: string;
   };
 }
 
@@ -48,6 +56,12 @@ export function prefixHash(state: Readonly<SessionState>, end: number): string {
  * deliberately have no authority over this projection or its retry budget. */
 export function foldCompactionControl(state: SessionState, type: string, payload: unknown): void {
   const control = state.compactionControl ??= { phaseEnds: [] };
+  if (type === "context.compaction.requested") {
+    const p = z.object({ patch: semanticPatchSchema }).strict().parse(payload);
+    control.requested = true;
+    control.seed = p.patch;
+    return;
+  }
   if (type === "context.phase.closed") {
     const p = z.object({ end: index, kind: z.enum(["verification", "turn"]).optional(),
       turnId: z.string().min(1).max(256).optional() }).strict().parse(payload);
@@ -70,13 +84,33 @@ export function foldCompactionControl(state: SessionState, type: string, payload
         p.end <= p.start || p.end > state.messages.length || p.attempts !== 0 || p.status !== "pending" ||
         p.sourceHash !== prefixHash(state, p.end) || !completeExchange(state.messages, p.end) ||
         !control.phaseEnds.includes(p.end)) throw new Error("Invalid compaction transaction source");
+    if (p.snapshot && p.snapshot.digest !== compactionSnapshot(state, p.end).digest) throw new Error("Invalid Runtime fact snapshot");
     control.transaction = p;
+    control.requested = false;
     return;
   }
   const p = z.object({ id: z.string(), attempt: index.optional(),
-    candidate: z.unknown().optional(), feedback: z.string().max(8000).optional() }).strict().parse(payload);
+    candidate: z.unknown().optional(), feedback: z.string().max(8000).optional(),
+    snapshot: compactionSnapshotSchema.optional(), semantic: z.unknown().optional(), fallback: z.string().max(128000).optional() }).strict().parse(payload);
   const tx = control.transaction;
   if (!tx || tx.id !== p.id || tx.status !== "pending") throw new Error("Unknown compaction transaction");
+  if (type === "context.compaction.snapshot") {
+    if (!p.snapshot || p.snapshot.digest !== compactionSnapshot(state, tx.end).digest) throw new Error("Stale Runtime fact snapshot");
+    tx.snapshot = p.snapshot;
+    tx.feedback = "Runtime facts changed. Revalidate the saved semantic candidate against the new evidence catalogue.";
+    tx.fallback = undefined;
+    return;
+  }
+  if (type === "context.compaction.prepared") {
+    if (!p.semantic || JSON.stringify(p.semantic).length > 128000) throw new Error("Invalid semantic candidate");
+    tx.semantic = structuredClone(p.semantic);
+    return;
+  }
+  if (type === "context.compaction.fallback") {
+    if (!p.fallback || !tx.snapshot || p.fallback !== conservativeDocument(state, tx.snapshot)) throw new Error("Invalid conservative fallback");
+    tx.fallback = p.fallback;
+    return;
+  }
   if (type === "context.compaction.attempt") {
     if (p.attempt !== tx.attempts + 1 || p.attempt > (tx.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS)) throw new Error("Invalid compaction attempt ordinal");
     tx.attempts = p.attempt;
@@ -111,8 +145,7 @@ export function eligiblePhaseEnd(state: Readonly<SessionState>, handlesOpen: boo
 
 export async function runCompactionTransaction(input: {
   state: SessionState; manager: ContextManager; turnId: string; maxContextChars: number;
-  required: boolean; handlesOpen: boolean; maxRequests: number;
-  maxAttempts?: number;
+  required: boolean; handlesOpen: boolean; maxRequests: number; maxAttempts?: number;
   nextRequest: NormalRequestEnvelope; tool: ToolDefinition; inventory: () => string;
   append: (event: Omit<EventRecord, "schemaVersion" | "sequence" | "timestamp" | "eventId">) => Promise<unknown>;
   complete: (messages: ChatMessage[], attempt: number) => Promise<Extract<ChatMessage, { role: "assistant" }> | undefined>;
@@ -124,92 +157,155 @@ export async function runCompactionTransaction(input: {
     await input.append({ threadId: state.threadId, turnId: input.turnId, type, payload });
     foldCompactionControl(state, type, payload);
   };
-  let tx = state.compactionControl?.transaction;
-  const end = tx?.status === "pending" ? tx.end : eligiblePhaseEnd(state, input.handlesOpen);
-  const defer = (reason: string): { requests: number; committed: boolean } => {
-    if (input.required) throw new Error(`context_capacity_insufficient: ${reason}; history and compaction budget preserved`);
+  const defer = (reason: string) => {
+    if (input.required) throw new Error(`context_capacity_insufficient: ${reason}; history and transaction budget preserved`);
     return { requests, committed: false };
   };
+  let tx = state.compactionControl?.transaction;
+  const end = tx?.status === "pending" ? tx.end : eligiblePhaseEnd(state, input.handlesOpen);
   if (!end || input.handlesOpen || state.progressGuard?.incidents.some((i) =>
-    ["review_pending", "review_requested", "reviewing", "experiment_required"].includes(i.phase))) {
+    ["review_pending", "review_requested", "reviewing", "experiment_required", "experiment_pending"].includes(i.phase))) {
     return defer("no safely completed phase can be retired");
   }
-  // A zero-length summary is a lower bound, not a candidate to commit. Detect
-  // impossible targets before paying for three futile smaller summaries.
-  const lower = { ...state, workingSummary: "", compactedMessageCount: end };
-  const minimum = evaluateCompactionBenefit(manager, { state, candidateMessages: state.messages,
-    summary: "", compactedMessageCount: end, maxContextChars: input.maxContextChars,
-    historyEndExclusive: state.messages.length, required: true, nextRequest: input.nextRequest, exactRequest: true });
-  if (!minimum.accepted || !minimum.safeWaterlineReached) return defer("protected tail and normal tool envelope cannot reach 55% headroom");
-  if (manager.tokenCapacity && manager.estimateRequestTokens(exactContext(lower, input.nextRequest), input.nextRequest.tools) >
-      manager.tokenCapacity.inputCapacity * 0.55) return defer("protected token lower bound exceeds target");
+  const evaluate = (summary: string, fallback = false) => evaluateCompactionBenefit(manager, {
+    state, candidateMessages: state.messages, summary, compactedMessageCount: end,
+    maxContextChars: input.maxContextChars, historyEndExclusive: state.messages.length,
+    required: input.required, nextRequest: input.nextRequest, exactRequest: true,
+    allowConservativeHeadroom: fallback,
+  });
+  // Count the real fixed facts, original requests, full protected tail and next
+  // normal capability envelope. An empty semantic summary is only a lower bound.
+  const minimum = evaluate("", true);
+  if (!minimum.accepted) return defer("protected facts and live phase cannot fit even without a semantic summary");
   if (tx?.status !== "pending") {
-    if (input.maxRequests <= 0) return { requests, committed: false };
+    if (input.maxRequests <= 0) return defer("no shared request budget remains");
     await emit("context.compaction.started", { id: createId("compaction"), start: state.compactedMessageCount,
-      end, sourceHash: prefixHash(state, end), attempts: 0,
-      maxAttempts: input.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS, status: "pending" });
+      end, sourceHash: prefixHash(state, end), attempts: 0, maxAttempts: input.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS,
+      status: "pending", snapshot: compactionSnapshot(state, end) });
     tx = state.compactionControl!.transaction!;
-  }
-  if (tx.sourceHash !== prefixHash(state, tx.end) || tx.start !== state.compactedMessageCount) {
-    throw new Error("context_compaction_source_changed: transaction was not committed");
-  }
-  while (true) {
-    // A durable candidate is revalidated after a crash without repeating a
-    // model request. Rejected candidates remain available for schema repair.
-    if (tx.candidate && !tx.feedback) {
-      let result = await input.execute(tx.candidate);
-      const proposal: ContextCompactionRequest | undefined = result.contextCompaction;
-      if (result.ok && proposal) {
-        const integrity = validateCompactionIntegrity({ state, request: proposal, sourceEndMessageIndex: state.messages.length });
-        const benefit = evaluateCompactionBenefit(manager, { state, candidateMessages: state.messages,
-          summary: proposal.summary, compactedMessageCount: tx.end, maxContextChars: input.maxContextChars,
-          historyEndExclusive: state.messages.length, required: input.required, nextRequest: input.nextRequest,
-          exactRequest: true, candidateIntentLedger: integrity.intentLedger });
-        if (integrity.ok && benefit.accepted && benefit.safeWaterlineReached) {
-          if (tx.sourceHash !== prefixHash(state, tx.end) || tx.start !== state.compactedMessageCount) {
-            throw new Error("context_compaction_source_changed: candidate was not committed");
-          }
-          const metadata = createCompactionMetadata({ state, sourceStartMessageIndex: tx.start,
-            sourceEndMessageIndex: tx.end, compactedMessageCount: tx.end, benefit });
-          // One journal fact commits boundary + summary + intent + transaction
-          // identity. Nothing mutates canonical messages or their raw thinking.
-          await input.append({ threadId: state.threadId, turnId: input.turnId, type: "context.compacted", phase: "completed",
-            payload: { transactionId: tx.id, summary: proposal.summary, compactedMessageCount: tx.end,
-              contextIntentLedger: integrity.intentLedger, contextCompactionMetadata: metadata } });
-          manager.applyModelCompaction(state, proposal.summary, tx.end, { intentLedger: integrity.intentLedger!, metadata });
-          tx.status = "committed";
-          tx.candidate = undefined;
-          tx.feedback = undefined;
-          return { requests, committed: true };
-        }
-        result = { ok: false, summary: "Compaction candidate was not committed.",
-          failure: protocolToolFailure("context_compaction_rejected", integrity.ok
-            ? `Reduce the cumulative summary; ${benefit.rejectionReason ?? "55% target not reached"}. Preserve all required evidence.`
-            : `Repair these evidence/coverage fields: ${integrity.errors.join(", ")}. Never invent coverage flags.`) };
-      }
-      await emit("context.compaction.rejected", { id: tx.id, feedback: toolResultForModel(result, 8000) });
+    if (state.compactionControl?.seed) {
+      const seed = state.compactionControl.seed;
+      await emit("context.compaction.candidate", { id: tx.id, candidate: { role: "assistant", content: null,
+        tool_calls: [{ id: createId("compaction_seed"), type: "function",
+          function: { name: "compact_context", arguments: JSON.stringify(seed) } }] } });
     }
-    if (tx.attempts >= (tx.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS)) throw new ToolProtocolExhausted("compact_context", tx.attempts, requests, true);
-    if (requests >= input.maxRequests) return { requests, committed: false };
-    const system = "Runtime control-plane compaction transaction. Call only compact_context; no other work. " +
-      `Retire the completed prefix [${tx.start}, ${tx.end}) into a cumulative summary. ` +
-      "The newer tail remains verbatim. Keep current user intent and constraints globally, distinguish verified evidence " +
-      "from unverified hypotheses, and preserve the next experiment. Do not rewrite the retained thinking chain.\n" + input.inventory();
-    const messages = exactContext(state, { systemPrompt: system, runtimeContext: "", tools: [input.tool] });
-    // The candidate is data, not executable conversation history. A compact
-    // correction packet avoids accumulating failed control-plane transcripts.
-    if (tx.candidate) messages.push({ role: "user", content: "Previous candidate (data):\n" +
-      JSON.stringify(tx.candidate.tool_calls ?? tx.candidate.content) + "\nRuntime validation:\n" + tx.feedback });
-    budgetedRequest({ messages, tools: [input.tool] }, manager.tokenCapacity, manager.estimateRequestTokens);
-    await emit("context.compaction.attempt", { id: tx.id, attempt: tx.attempts + 1 });
+  }
+  const current = tx;
+  const refresh = async () => {
+    if (current.sourceHash !== prefixHash(state, current.end) || current.start !== state.compactedMessageCount)
+      throw new Error("context_compaction_source_changed: source was not committed");
+    const snapshot = compactionSnapshot(state, current.end);
+    if (current.snapshot?.digest !== snapshot.digest)
+      await emit("context.compaction.snapshot", { id: current.id, snapshot });
+    return current.snapshot!;
+  };
+  const commit = async (summary: string, snapshot: CompactionSnapshot, fallback = false) => {
+    const benefit = evaluate(summary, fallback);
+    if (summary.length > MAX_CONTEXT_SUMMARY_CHARS || !benefit.accepted || (!fallback && !benefit.safeWaterlineReached)) return false;
+    if (compactionSnapshot(state, current.end).digest !== snapshot.digest)
+      throw new Error("context_compaction_source_changed: facts changed before commit");
+    const intentLedger = runtimeIntent(state);
+    const metadata = createCompactionMetadata({ state, sourceStartMessageIndex: current.start,
+      sourceEndMessageIndex: current.end, compactedMessageCount: current.end, benefit });
+    await input.append({ threadId: state.threadId, turnId: input.turnId, type: "context.compacted", phase: "completed",
+      payload: { transactionId: current.id, snapshotDigest: snapshot.digest, mode: fallback ? "conservative" : "semantic",
+        coverage: { sourceUnchanged: true, runtimeFactsPinned: true, protectedTailIntact: true,
+          evidencePolicy: "observations_only", capacityChecked: true },
+        summary, compactedMessageCount: current.end, contextIntentLedger: intentLedger, contextCompactionMetadata: metadata } });
+    manager.applyModelCompaction(state, summary, current.end, { intentLedger, metadata });
+    current.status = "committed";
+    current.candidate = undefined;
+    current.feedback = undefined;
+    current.semantic = undefined;
+    current.fallback = undefined;
+    state.compactionControl!.seed = undefined;
+    return true;
+  };
+  const fallback = async (snapshot: CompactionSnapshot) => {
+    // No facts or previous accepted semantics are silently dropped. If this
+    // conservative representation is too large, save the pending transaction.
+    const summary = conservativeDocument(state, snapshot);
+    if (summary.length > MAX_CONTEXT_SUMMARY_CHARS || !evaluate(summary, true).accepted) return false;
+    if (current.fallback !== summary) await emit("context.compaction.fallback", { id: current.id, fallback: summary });
+    return commit(summary, snapshot, true);
+  };
+  while (true) {
+    let snapshot = await refresh();
+    if (current.fallback && await commit(current.fallback, snapshot, true)) return { requests, committed: true };
+    if (current.candidate && !current.feedback) {
+      const calls = current.candidate.tool_calls ?? [];
+      if (calls.length === 1 && calls[0]!.function.name === "compact_context") {
+        let saved: unknown;
+        try {
+          saved = salvageSemanticSections(current.semantic, JSON.parse(calls[0]!.function.arguments));
+        } catch { /* Raw candidate remains durable for a corrected JSON call. */ }
+        if (saved && JSON.stringify(saved).length <= 128000)
+          await emit("context.compaction.prepared", { id: current.id, semantic: saved });
+      }
+      const result = await input.execute(current.candidate);
+      if (result.ok && result.contextCompaction?.formatVersion === 3) {
+        try {
+          const merged = mergeSemanticCandidate(current.semantic, JSON.parse(result.contextCompaction.summary));
+          await emit("context.compaction.prepared", { id: current.id, semantic: merged });
+        } catch (error) {
+          await emit("context.compaction.rejected", { id: current.id,
+            feedback: `Invalid patch: ${error instanceof Error ? error.message : String(error)}`.slice(0, 8000) });
+        }
+      } else await emit("context.compaction.rejected", { id: current.id,
+        feedback: toolResultForModel(result, 7000) + "\nSubmit a V3 semantic patch, not coverage flags or source quotes." });
+      if (!current.feedback) {
+        const issues = semanticIssues(current.semantic, snapshot);
+        const exhausted = current.attempts >= (current.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS);
+        const structurallyValid = semanticSummarySchema.safeParse(current.semantic).success;
+        if ((!issues.length || (exhausted && structurallyValid)) &&
+            await commit(semanticDocument(current.semantic, snapshot, exhausted), snapshot))
+          return { requests, committed: true };
+        await emit("context.compaction.rejected", { id: current.id, feedback: (issues.length
+          ? issues.join("\n") : "Semantic summary is too large. Shorten decisions/conclusions/hypotheses/failedApproaches; preserve useful meaning.")
+          .slice(0, 8000) });
+      }
+    }
+    if (current.attempts >= (current.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS)) {
+      if (await fallback(snapshot)) return { requests, committed: true };
+      return defer("semantic repair exhausted and conservative snapshot cannot release safe headroom");
+    }
+    if (requests >= input.maxRequests) {
+      if (input.required && await fallback(snapshot)) return { requests, committed: true };
+      return defer("shared request budget exhausted before a safe compaction was available");
+    }
+    const messages = exactContext(state, { systemPrompt:
+      "Runtime semantic compaction. Call only compact_context, no other work or extended analysis. " +
+      `Summarize completed prefix [${current.start}, ${current.end}); the newer phase stays verbatim. ` +
+      "Runtime pins requests, constraints, tasks, failures and pending experiments. Never copy or attest them. " +
+      "Use supplied evidence IDs; interpretations are not verified facts. The first candidate needs currentWork and nextStep. " +
+      "For corrections send ONLY changed top-level sections; omitted sections remain unchanged.\n" +
+      JSON.stringify({ snapshotDigest: snapshot.digest, evidence: snapshot.evidence }),
+      runtimeContext: "", tools: [input.tool] });
+    if (current.semantic || current.feedback) messages.push({ role: "user", content:
+      "Saved candidate (data):\n" + JSON.stringify(current.semantic ?? {}) +
+      "\nCorrect only these issues:\n" + (current.feedback ?? "") });
+    try {
+      budgetedRequest({ messages, tools: [input.tool] }, manager.tokenCapacity, manager.estimateRequestTokens);
+      if (!manager.tokenCapacity && JSON.stringify({ messages, tools: [input.tool] }).length > input.maxContextChars)
+        throw new Error("Compactor request exceeds character capacity");
+    } catch {
+      if (await fallback(snapshot)) return { requests, committed: true };
+      return defer("compactor request cannot fit; raw source and candidate preserved");
+    }
+    await emit("context.compaction.attempt", { id: current.id, attempt: current.attempts + 1 });
     requests += 1;
-    const response = await input.complete(messages, tx.attempts);
+    const dispatchedSnapshot = snapshot.digest;
+    const response = await input.complete(messages, current.attempts);
     if (!response) return { requests, committed: false };
-    // Compactor reasoning is not part of the work chain and is not required to
-    // execute a correction; persist the full bounded candidate, never a slice.
+    snapshot = await refresh();
+    if (snapshot.digest !== dispatchedSnapshot) {
+      await emit("context.compaction.rejected", { id: current.id,
+        feedback: "Source facts changed during the request; the stale response was discarded. Repair against the new catalogue." });
+      continue;
+    }
     const candidate = { role: "assistant" as const, content: response.content, tool_calls: response.tool_calls };
-    if (JSON.stringify(candidate).length > 256_000) {
-      await emit("context.compaction.rejected", { id: tx.id, feedback: "Candidate exceeded 256000 characters; submit a bounded structured summary." });
-    } else await emit("context.compaction.candidate", { id: tx.id, candidate });
+    if (JSON.stringify(candidate).length > 128000)
+      await emit("context.compaction.rejected", { id: current.id, feedback: "Candidate too large. Submit a bounded semantic patch." });
+    else await emit("context.compaction.candidate", { id: current.id, candidate });
   }
 }

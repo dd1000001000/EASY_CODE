@@ -242,7 +242,7 @@ export interface ToolExecutionResult {
 export interface ContextCompactionRequest {
   summary: string;
   /** Present for structured V2 summaries; omitted only by legacy recovered results. */
-  formatVersion?: 2;
+  formatVersion?: 2 | 3;
   /** Structured user-intent lineage validated and persisted separately by Runtime. */
   intentLedger?: ContextIntentLedger;
   /**

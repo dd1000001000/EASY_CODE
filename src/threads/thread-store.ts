@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import { foldCompactionControl, prefixHash, completeExchange } from "../context/compaction-transaction.js";
+import { compactionSnapshot } from "../context/semantic-compaction.js";
 
 import {
   DEFAULT_THINKING_EFFORT,
@@ -2267,7 +2268,10 @@ export class ThreadStore {
           if (!transaction || payload.transactionId !== transaction.id) throw new Error("Unknown compaction commit");
           if (transaction.status === "committed") continue;
           if (transaction.start !== state.compactedMessageCount || payload.compactedMessageCount !== transaction.end ||
-              transaction.sourceHash !== prefixHash(state, transaction.end) || !transaction.candidate || transaction.feedback ||
+              transaction.sourceHash !== prefixHash(state, transaction.end) ||
+              ((!transaction.candidate || transaction.feedback) && !transaction.fallback) ||
+              (transaction.snapshot && payload.snapshotDigest !== transaction.snapshot.digest) ||
+              (transaction.snapshot && compactionSnapshot(state, transaction.end).digest !== transaction.snapshot.digest) ||
               asPayloadRecord(payload.contextCompactionMetadata)?.sourceEndMessageIndex !== transaction.end ||
               asPayloadRecord(payload.contextCompactionMetadata)?.sourceStartMessageIndex !== transaction.start) throw new Error("Stale compaction commit");
         }
@@ -2299,6 +2303,9 @@ export class ThreadStore {
             transaction.status = "committed";
             transaction.candidate = undefined;
             transaction.feedback = undefined;
+            transaction.semantic = undefined;
+            transaction.fallback = undefined;
+            state.compactionControl!.seed = undefined;
           }
         }
       } else if (event.type === "tool_audit" && payload) {

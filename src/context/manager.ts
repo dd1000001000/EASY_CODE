@@ -440,20 +440,7 @@ export class ContextManager {
     reservedSystemPromptChars?: number,
     runtimeContext = "",
   ): number {
-    if (this.capacity) return state.compactedMessageCount;
-    const input: ContextBuildInput = {
-      systemPrompt,
-      runtimeContext,
-      state,
-      maxContextChars,
-      ...(reservedSystemPromptChars === undefined
-        ? {}
-        : { reservedSystemPromptChars }),
-    };
-    const system = contextSystemBudget(input);
-    const tailChars = [runtimeContinuityMessage(state), runtimeContext].filter(Boolean)
-      .reduce((total, content) => total + messageChars({ role: "user", content }), 0);
-    return selectContextConversation(state, system.conversationBudget - tailChars, this.limits.maxActiveContextChars).retrievalBoundary;
+    return state.compactedMessageCount;
   }
 
   applyModelCompaction(
@@ -533,13 +520,7 @@ export class ContextManager {
     // Token-managed history is retired only by a committed phase transaction.
     // Pressure inspection and the provider guard handle oversized requests;
     // never make them appear to fit by silently omitting the active chain.
-    if (this.capacity) return [budget.system, ...shortTermMessages(input.state), ...tail];
-    const remaining = budget.conversationBudget - estimateMessagesChars(tail);
-    if (remaining < 256) {
-      throw new Error("Context capacity exceeded: protected Runtime state cannot fit intact. Increase max_context_chars; no constraints or evidence were discarded.");
-    }
-    const conversation = selectContextConversation(input.state, remaining, this.limits.maxActiveContextChars);
-    return [budget.system, ...conversation.messages, ...tail];
+    return [budget.system, ...shortTermMessages(input.state), ...tail];
   }
 
   inspect(

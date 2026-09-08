@@ -140,7 +140,7 @@ export class UpdateFileTool implements AgentTool {
         }
         updated = edit.replaceAll
           ? updated.split(edit.oldText).join(edit.newText)
-          : updated.replace(edit.oldText, edit.newText);
+          : updated.replace(edit.oldText, () => edit.newText);
       }
 
       const updatedBuffer = Buffer.from(updated, "utf8");
