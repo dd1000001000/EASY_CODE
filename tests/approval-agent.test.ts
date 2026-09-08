@@ -16,6 +16,23 @@ const request = (): ApprovalRequest => ({ id: "approval", title: "Run git status
 const provider = (complete: ModelProvider["complete"]): ModelProvider => ({ name: "deepseek", model: "test", complete });
 
 describe("independent approval agent", () => {
+  it("clips oversized reasons without retry and ignores returned thinking", async () => {
+    let calls = 0;
+    let original = "";
+    const result = await reviewCommandApproval(request(), "Inspect", {
+      provider: provider(async () => { calls++; return { message: { role: "assistant",
+        content: JSON.stringify({ decision: "allow_once", reason: "中文".repeat(5000) }),
+        reasoning_content: "DO NOT USE THIS AS THE DECISION" } }; }),
+      budget: new TaskBudget(2, 0), maxInputChars: 24000, maxOutputTokens: 256, timeoutMs: 1000,
+      onResponse: response => { original = response.message.content ?? ""; },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.decision, "allow_once");
+    assert.equal(result.unavailable, undefined);
+    assert.ok(result.reason.length < 2000);
+    assert.match(result.reason, /truncated/u);
+    assert.ok(original.length > 10000);
+  });
   it("accepts all three decisions with a tool-free bounded request and shared usage debit", async () => {
     const budget = new TaskBudget(3, 100000);
     for (const decision of ["allow_once", "allow_prefix", "reject"] as const) {
@@ -26,7 +43,7 @@ describe("independent approval agent", () => {
       });
       assert.equal(result.decision, decision); assert.equal(result.unavailable, undefined);
       assert.equal(captured!.tools, undefined); assert.equal(captured!.thinkingEffort, "none");
-      assert.equal(captured!.maxRetries, 0); assert.equal(captured!.maxTokens, 512);
+      assert.equal(captured!.maxRetries, 0); assert.equal("maxTokens" in captured!, false);
       assert.match(captured!.messages[1]!.content!, /proposedPermission/);
     }
     assert.equal(budget.snapshot().requests, 3); assert.equal(budget.snapshot().tokens, 150);

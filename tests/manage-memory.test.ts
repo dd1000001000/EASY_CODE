@@ -8,6 +8,7 @@ import { createStorage, workspaceIdFromRoot } from "../src/storage/index.js";
 import { ManageMemoryTool } from "../src/tools/manage-memory.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
+import { ThreadStore } from "../src/threads/thread-store.js";
 
 function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext {
   return {
@@ -23,6 +24,26 @@ function context(root: string, mode: ToolContext["mode"] = "code"): ToolContext 
 }
 
 describe("manage_memory model tool", () => {
+  it("archives an oversized proposal as a retrievable preview without committing a partial fact", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-memory-preview-"));
+    const storage = createStorage(root);
+    try {
+      new ThreadStore(storage).create({ threadId: context(root).threadId, workspaceRoot: root,
+        mode: "code", provider: "deepseek", model: "test", thinkingEffort: "none" });
+      const tool = new ManageMemoryTool(new MemoryManager(storage), await WorkspaceManager.create(root));
+      const content = "The project uses local storage. ".repeat(500);
+      const result = await tool.execute({ action: "remember", content, category: "architecture", reason: "Observed source" }, context(root));
+      assert.equal(result.ok, true, result.error);
+      assert.equal(result.memoryMutation, undefined);
+      const data = result.data as { staged: boolean; truncated: boolean; content: string; sourceRef: string };
+      assert.equal(data.staged, false);
+      assert.equal(data.truncated, true);
+      assert.ok(content.startsWith(data.content));
+      const recalled = await tool.execute({ action: "recall", evidenceId: data.sourceRef, limit: 16000 }, context(root));
+      assert.equal(recalled.ok, true);
+      assert.match(JSON.stringify(recalled.data), /The project uses local storage/u);
+    } finally { storage.close(); await rm(root, { recursive: true, force: true }); }
+  });
   it("searches historical previews without authorizing long-term memory edits", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-memory-history-"));
     const storage = createStorage(root);
@@ -156,6 +177,8 @@ describe("manage_memory model tool", () => {
       assert.equal(committed.memoryIds.length, 3);
       assert.equal(manager.list(workspaceIdFromRoot(workspace.root)).length, 3);
 
+      new ThreadStore(storage).create({ threadId: toolContext.threadId, workspaceRoot,
+        mode: "code", provider: "deepseek", model: "test", thinkingEffort: "none" });
       const tooLong = await tool.execute(
         {
           action: "remember",
@@ -165,8 +188,10 @@ describe("manage_memory model tool", () => {
         },
         toolContext,
       );
-      assert.equal(tooLong.ok, false);
-      assert.match(tooLong.error ?? "", /120/iu);
+      assert.equal(tooLong.ok, true, tooLong.error);
+      assert.equal(tooLong.memoryMutation, undefined);
+      assert.equal((tooLong.data as { staged: boolean }).staged, false);
+      assert.equal(manager.list(workspaceIdFromRoot(workspace.root)).length, 3);
     } finally {
       storage.close();
       await rm(workspaceRoot, { recursive: true, force: true });

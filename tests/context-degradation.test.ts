@@ -118,7 +118,8 @@ describe("bounded context degradation", () => {
     try {
       let requests = 0;
       const result = await f.run({ nextRequest: largeEnvelope, complete: async () => {
-        requests++; return { role: "assistant", content: "not a handoff" };
+        requests++; return { role: "assistant", content: null, tool_calls: [{ id: "bad_summary", type: "function",
+          function: { name: "compact_context", arguments: "{incomplete" } }] };
       } });
       assert.equal(requests, 1);
       assert.equal(result.committed, true);

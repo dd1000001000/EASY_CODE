@@ -13,12 +13,12 @@ Both token-managed and character-only sessions use the same controller:
    then reduce that tail locally if an empty-summary lower bound cannot fit.
    Read, write and command exchanges use the same rule. Verification phase events
    are observations, not permission to release history.
-4. Make one best-effort handoff submission, with at most one length-only correction.
-   Each text field/item has a 1200-character bound. Preserve the first candidate;
-   a correction may supply only changed fields. If still overlong on submission
-   two, or correction cannot fit the remaining budget, clip only the overlong text
-   prefixes at safe UTF-16 boundaries. Journal records original text, field lengths,
-   rejection and deterministic acceptance; the resulting document marks lost text.
+4. Make one best-effort handoff submission, without a length-only correction.
+   Each text field/item has a 1200-character bound; clip oversized prefixes locally
+   at safe UTF-16 boundaries. Preserve the complete business candidate in Journal.
+   Aggregate storage overflow uses a valid JSON text-prefix wrapper marked lossy
+   and unverified. Ordinary non-thinking prose may supply that wrapper; thinking
+   alone never supplies a summary. Journal records original text and clipping diagnostics.
    Invalid JSON, types, missing required fields and unavailable summaries use local
    recovery. Unknown evidence is never promoted to verified fact. Capacity is still
    checked after repair; clipping is not a guarantee of sufficient context space.
@@ -50,12 +50,14 @@ before relying on them. A reference is not evidence of successful verification.
 - contextCompactionMinGrowthRatio=0.1 prevents another paid summary after tiny
   growth. An unchanged history is not resummarized just because retrieval changes.
   Hard overflow and an explicit request bypass the appropriate soft guards.
-- compactionAttempts defaults to 2, with a Runtime hard cap of 2. Only length
-  violations qualify for the correction; other errors do not obtain a second paid
-  request. An explicit parent submission counts as attempt one. Existing transaction
-  limits and spent attempts are never reset by Resume or configuration changes.
-- contextSummaryMaxTokens=2048 bounds the auxiliary request/output; the existing
-  12,000-character summary storage ceiling also remains.
+- compactionAttempts remains available for historical transaction replay. New
+  transactions do not make a second summary call for length overflow. An explicit
+  parent submission counts as attempt one. Resume never resets spent attempts.
+- contextSummaryMaxTokens=2048 bounds only retained summary storage (including the
+  wrapper), alongside the 12,000-character ceiling. No output-token limit is sent
+  to the server. Local output reservations and actual-usage settlement remain;
+  an in-flight request may exceed its reservation. Transport size/timeout guards
+  are separate from text retention, and never turn partial JSON into an executable call.
 - contextToolBatchTokens=16000 budgets model-visible tool bodies across an entire
   multi-call exchange. References and protocol metadata have an irreducible cost;
   if that alone is large, overall capacity recovery retires the complete group.

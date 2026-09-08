@@ -15,7 +15,7 @@ import { completeExchange, retirementBoundaries } from "./exchange-boundary.js";
 export { completeExchange } from "./exchange-boundary.js";
 import { assessCapacity, contextHistoryHash, contextRequestKey, type CapacityPause } from "./capacity.js";
 import { compactionSnapshot, compactionSnapshotSchema, semanticPatchSchema, semanticSummarySchema,
-  inspectSemanticPatch, parseSemanticRequestPatch, parseSemanticCandidatePatch, clipSemanticFields, semanticDocument, conservativeDocument, runtimeIntent } from "./semantic-compaction.js";
+  inspectSemanticPatch, parseSemanticRequestPatch, parseSemanticCandidatePatch, clipSemanticFields, semanticDocument, conservativeDocument, boundedSummaryDocument, runtimeIntent } from "./semantic-compaction.js";
 
 const index = z.number().int().nonnegative();
 const transactionSchema = z.object({
@@ -117,7 +117,7 @@ export function foldCompactionControl(state: SessionState, type: string, payload
     return;
   }
   if (type === "context.compaction.prepared") {
-    if (!p.semantic || JSON.stringify(p.semantic).length > 128000) throw new Error("Invalid semantic candidate");
+    if (!p.semantic) throw new Error("Invalid semantic candidate");
     tx.semantic = structuredClone(p.semantic);
     return;
   }
@@ -142,7 +142,6 @@ export function foldCompactionControl(state: SessionState, type: string, payload
     const candidate = p.candidate as Extract<ChatMessage, { role: "assistant" }> | undefined;
     if (!candidate || candidate.role !== "assistant" ||
         !(candidate.content === null || typeof candidate.content === "string") ||
-        JSON.stringify(candidate).length > 256_000 ||
         (candidate.tool_calls !== undefined && (!Array.isArray(candidate.tool_calls) ||
           candidate.tool_calls.some((c) => typeof c.id !== "string" || c.type !== "function" ||
             !c.function || typeof c.function.name !== "string" || typeof c.function.arguments !== "string")))) {
@@ -275,27 +274,22 @@ export async function runCompactionTransaction(input: {
 
   let summary: string | undefined;
   const clippingDiagnostics: string[] = [];
-  let correction = Boolean(current.feedback?.includes("exceeds maximum 1200") && current.semantic && inspectSemanticPatch(current.semantic).lengthOnly);
-  while (true) {
-  if ((!current.candidate && current.attempts === 0 || correction) && current.attempts < (current.maxAttempts ?? 1) && requests < input.maxRequests && input.tool) {
+  // Includes restored length-only failures: repair locally, never spend a correction request.
+  if (!current.candidate && current.attempts === 0 && requests < input.maxRequests && input.tool) {
     const messages = exactContext(state, { systemPrompt:
       "Runtime context handoff. Call only compact_context once, with currentWork and nextStep; optional hypotheses/decisions/conclusions. " +
       "Each text field/item must be at most 1200 characters. Keep it brief. No extended analysis, no coverage flags, no self-certification. " +
       `Summarize the closed prefix [${current.start}, ${end}); newer exchanges remain verbatim. ` +
       "An investigation boundary is NOT task completion. Unfinished work and unverified conclusions must stay explicit. " +
       "Runtime pins user requirements, pending commands/children, errors and experiments. " +
-      "Evidence IDs are observations, not proof of arbitrary conclusions.\n" + JSON.stringify(snapshot.evidence) +
-      (correction ? "\nCorrect ONLY the overlong fields once; omitted fields retain this candidate.\n" +
-        current.feedback + "\nCandidate: " + JSON.stringify(current.semantic) : ""),
+      "Evidence IDs are observations, not proof of arbitrary conclusions.\n" + JSON.stringify(snapshot.evidence),
       runtimeContext: "", tools: [input.tool] });
     try {
-      budgetedRequest({ messages, tools: [input.tool], maxTokens: limits.contextSummaryMaxTokens }, manager.tokenCapacity, manager.estimateRequestTokens);
+      budgetedRequest({ messages, tools: [input.tool] }, manager.tokenCapacity, manager.estimateRequestTokens);
       if (!manager.tokenCapacity && manager.inspectProviderRequest({ state, messages, tools: [input.tool],
         maxContextChars: input.maxContextChars }).utilization > 1) throw new Error("request too large");
     } catch {
-      if (!correction) return recover("The summary request itself cannot fit.");
-      // No room for a correction: repair length locally without a paid call.
-      break;
+      return recover("The summary request itself cannot fit.");
     }
     await emit("context.compaction.attempt", { id: current.id, attempt: current.attempts + 1 });
     requests++;
@@ -316,11 +310,9 @@ export async function runCompactionTransaction(input: {
       return recover("Runtime facts changed during summary.");
     }
     const candidate = { role: "assistant" as const, content: response.content, tool_calls: response.tool_calls };
-    if (JSON.stringify(candidate).length > 128000) return recover("Summary response exceeds its bound.");
     await emit("context.compaction.candidate", { id: current.id, candidate });
-    correction = false;
   }
-  if (current.candidate && !correction) {
+  if (current.candidate) {
     const calls = current.candidate.tool_calls ?? [];
     if (calls.length === 1 && calls[0]!.function.name === "compact_context") {
       let semantic: unknown;
@@ -335,21 +327,20 @@ export async function runCompactionTransaction(input: {
         return recover("Semantic structure is invalid; deterministic recovery used.");
       }
       await emit("context.compaction.prepared", { id: current.id, semantic });
-      const inspection = inspectSemanticPatch(semantic);
-      if (inspection.lengthOnly) {
-        await emit("context.compaction.rejected", { id: current.id, feedback: inspection.issues.join("\n").slice(0, 8000) });
-        correction = true;
-        if (current.attempts < (current.maxAttempts ?? 1) && requests < input.maxRequests && input.tool) continue;
-      }
+    } else if (calls.length === 0 && current.candidate.content?.trim()) {
+      // Auxiliary prose is an unverified handoff, never a substitute executable tool call.
+      const prose = current.candidate.content.trim();
+      await emit("context.compaction.prepared", { id: current.id,
+        semantic: { currentWork: prose, nextStep: "Recover original Journal and validate unfinished work before claiming completion." } });
+      summary = boundedSummaryDocument(prose, snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS, true);
     }
-  }
-  break;
   }
   if (current.semantic) {
     const repaired = clipSemanticFields(current.semantic);
     clippingDiagnostics.push(...repaired.diagnostics);
     // The original candidate remains in Journal. Clipping never certifies claims.
-    summary = semanticDocument(semanticSummarySchema.parse(repaired.patch), snapshot, true, clippingDiagnostics);
+    summary ??= boundedSummaryDocument(semanticDocument(semanticSummarySchema.parse(repaired.patch), snapshot, true, clippingDiagnostics),
+      snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS);
   }
   if (summary && summary.length <= MAX_CONTEXT_SUMMARY_CHARS && estimatedTokens(summary) <= limits.contextSummaryMaxTokens) {
     const intentLedger = runtimeIntent(state);
@@ -375,6 +366,6 @@ export async function runCompactionTransaction(input: {
     }
   }
   if (!current.feedback) await emit("context.compaction.rejected", { id: current.id,
-    feedback: summary ? "Semantic candidate exceeds summary/capacity budget; use deterministic recovery." : "No usable compact_context candidate was submitted; use deterministic recovery." });
+    feedback: summary ? "Semantic candidate exceeds capacity budget; use deterministic recovery." : "empty_or_invalid_non_reasoning_output: No usable compact_context candidate or non-thinking prose was submitted; use deterministic recovery." });
   return recover("Bounded summary submissions did not provide a usable handoff.");
 }

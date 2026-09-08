@@ -39,9 +39,9 @@ export function requestTokens(messages: readonly ChatMessage[], tools: readonly 
 export function budgetedRequest(request: ModelRequest, budget: TokenBudget | undefined,
   estimate = requestTokens): ModelRequest {
   if (!budget) return request;
-  const maxTokens = Math.min(request.maxTokens ?? budget.outputReserve, budget.outputReserve);
-  if (estimate(request.messages, request.tools) + maxTokens + budget.toolReserve + budget.safetyReserve > budget.window) {
+  const outputReserveTokens = request.outputReserveTokens ?? budget.outputReserve;
+  if (estimate(request.messages, request.tools) + outputReserveTokens + budget.toolReserve + budget.safetyReserve > budget.window) {
     throw new Error("context_capacity_insufficient: protected request exceeds the configured token window; history was preserved");
   }
-  return { ...request, maxTokens };
+  return { ...request, outputReserveTokens };
 }

@@ -17,6 +17,7 @@
   "maxModelRequests": 120,
   "maxTaskTokens": 0,
   "maxResponseTokens": 16384,
+  "providerResponseMaxBytes": 16777216,
   "providerTimeoutMs": { "none": 300000, "low": 300000, "medium": 450000, "high": 600000 },
   "maxProviderRetries": 2,
   "providerRetryWaitMs": 30000,

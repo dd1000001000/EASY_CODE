@@ -2838,6 +2838,10 @@ export class EasyCodeApp {
       return await reviewCommandApproval(request, task, {
         provider, budget: this.sharedTaskBudget(threadId), maxInputChars: this.config.limits.approvalInputChars,
         maxOutputTokens: this.config.limits.approvalOutputTokens, timeoutMs: this.config.limits.approvalTimeoutMs,
+        onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured", turnId,
+          payload: { purpose: "command_approval", finishReason: response.finishReason ?? null,
+            message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
+              tool_calls: response.message.tool_calls }))) } }),
         onUsage: usage => this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
           actor: "approval_agent", purpose: "command_approval", provider: provider.name, model: provider.model,
           turnId, retry: false, usage,

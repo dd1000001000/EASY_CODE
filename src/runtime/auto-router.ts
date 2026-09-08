@@ -10,6 +10,7 @@ import type {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { documentToolSchema } from "../tools/metadata.js";
+import { boundedText } from "../utils/bounded-text.js";
 
 export interface AutoModeSelection {
   readonly kind: "route";
@@ -330,8 +331,7 @@ function parseAutoRouteDecision(
   if (call.function.name === RESPOND_DIRECTLY_TOOL_NAME) {
     if (keys.length !== 1 || keys[0] !== "content") return undefined;
     if (typeof record.content !== "string") return undefined;
-    if (record.content.length > MAX_AUTO_DIRECT_RESPONSE_CHARS) return undefined;
-    const content = sanitizeRouteContextText(record.content);
+    const content = boundedText(sanitizeRouteContextText(record.content), MAX_AUTO_DIRECT_RESPONSE_CHARS);
     if (!content || content.length > MAX_AUTO_DIRECT_RESPONSE_CHARS) return undefined;
     const reasoningContent = message.reasoning_content?.trim()
       ? boundedRouteText(
@@ -351,7 +351,7 @@ function parseAutoRouteDecision(
   }
   if (record.mode !== "plan" && record.mode !== "code") return undefined;
   if (typeof record.reason !== "string") return undefined;
-  const reason = sanitizeRouteContextText(record.reason);
+  const reason = boundedText(sanitizeRouteContextText(record.reason), MAX_AUTO_ROUTE_REASON_CHARS);
   if (!reason || reason.length > MAX_AUTO_ROUTE_REASON_CHARS) return undefined;
   return {
     kind: "route",

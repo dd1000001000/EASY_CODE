@@ -75,12 +75,14 @@ are never auto-replayed. Compaction no longer uses that protocol as a mandatory
 multi-attempt gate. A bad summary cannot manufacture missing coverage booleans or
 erase constraints; Runtime supplies the facts independently.
 
-Summary calls are isolated from the active work transcript. A transaction allows
-two submissions at most, including an explicit parent submission; only text-length
-overflow qualifies for one correction. A second overflow is clipped field-by-field
-to 1200 characters, with a lossy marker and detailed Journal diagnostics. Insufficient
-correction budget uses local clipping immediately. Types and evidence remain checked;
-there are no auxiliary transport retries. Raw candidates and atomic commit
+Summary calls are isolated from the active work transcript. A transaction makes at
+most one summary request (an explicit parent submission already supplies its candidate).
+Text-length overflow is clipped immediately to 1200 characters per field, with a
+lossy marker and detailed Journal diagnostics. Aggregate overflow becomes a valid
+JSON text-prefix handoff within the 2048-token storage estimate. Non-thinking prose
+is accepted as an explicitly unverified fallback; thinking-only output uses local
+recovery. No generation-token ceiling is sent to the server. Types and evidence
+remain checked; there are no length-correction or auxiliary transport retries. Raw candidates and atomic commit
 events remain durable. A response generated against changed Runtime facts is
 discarded without another paid correction. Historical V2/repair events remain
 readable, but do not authorize new repair loops.

@@ -152,7 +152,8 @@ export interface ModelRequest {
   tools?: ToolDefinition[];
   signal?: AbortSignal;
   temperature?: number;
-  maxTokens?: number;
+  /** Local accounting/context reservation only. NEVER serialized to the API. */
+  outputReserveTokens?: number;
   /** Optional Runtime-owned retry cap for isolated control-plane requests. */
   maxRetries?: number;
   /** User-selected normalized effort; unsupported provider/model combinations ignore it. */

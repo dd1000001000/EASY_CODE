@@ -27,6 +27,10 @@ import {
 } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { assertDurableMemory } from "../memory/admission.js";
+import { displayTextSchema, projectText } from "../utils/bounded-text.js";
+import { estimatedTokens } from "../context/token-budget.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { sha256 } from "../utils/hash.js";
 
 const memoryCategorySchema = z.enum([
   "preference",
@@ -38,9 +42,8 @@ const memoryCategorySchema = z.enum([
 const memoryContentSchema = z
   .string()
   .trim()
-  .min(MIN_MEMORY_CONTENT_CHARS)
-  .max(MAX_MEMORY_CONTENT_CHARS);
-const memoryReasonSchema = z.string().trim().min(1).max(MAX_MEMORY_REASON_CHARS);
+  .min(MIN_MEMORY_CONTENT_CHARS);
+const memoryReasonSchema = displayTextSchema(MAX_MEMORY_REASON_CHARS);
 const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
 const tentativeMemory = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;
 const MAX_SEARCHED_MEMORY_IDS_PER_TURN = 100;
@@ -168,8 +171,24 @@ export class ManageMemoryTool implements AgentTool {
       await assertMatchingWorkspace(this.workspace, context);
       this.beginTurn(context.turnId);
       const parsed = this.inputSchema.parse(input);
-      if (parsed.action === "remember" || parsed.action === "revise") assertDurableMemory(parsed.content, context.limits);
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
+      if (parsed.action === "remember" || parsed.action === "revise") {
+        const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
+        // A prefix may omit qualifications: archive it as a historical preview,
+        // not a durable fact or an applied revision. Do not ask the model to retry for length.
+        if (parsed.content.length > MAX_MEMORY_CONTENT_CHARS || estimatedTokens(parsed.content) > limits.maxDurableMemoryTokens) {
+          this.assertSafeWrite(parsed.content, parsed.reason);
+          const sourceRef = this.manager.evidenceStore.capture(workspaceId, context.threadId,
+            `memory-preview:${context.turnId}:${sha256(parsed.content)}`, "manage_memory",
+            { ok: false, summary: "Uncommitted memory proposal; not a verified fact", data: { content: parsed.content } });
+          const preview = projectText(projectText(parsed.content, MAX_MEMORY_CONTENT_CHARS).text,
+            limits.maxDurableMemoryTokens, estimatedTokens);
+          return toolSuccess("Length-only overflow archived as a lossy preview; no long-term fact or revision was committed. No retry is required.",
+            { staged: false, committed: false, historical: true, truncated: true, sourceRef,
+              content: preview.text, originalChars: parsed.content.length, retainedChars: preview.text.length });
+        }
+        assertDurableMemory(parsed.content, limits);
+      }
       if (parsed.action === "recall") {
         return toolSuccess("Retrieved historical captured evidence; it does not establish current file or test state.",
           this.manager.evidenceStore.read(workspaceId, context.threadId, parsed.evidenceId, parsed.offset, parsed.limit));

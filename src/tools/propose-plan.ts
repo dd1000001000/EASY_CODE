@@ -14,16 +14,18 @@ import {
   MAX_PLAN_STEP_VERIFICATION_CHARS,
   MAX_PLAN_TITLE_CHARS,
   normalizePlanDraft,
+  sanitizePlanText,
 } from "../plans/plan.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
+import { displayTextSchema } from "../utils/bounded-text.js";
 
 const boundedPlanText = (maximum: number) =>
   z.string().trim().min(1).max(maximum);
 
 export const planStepDraftInputSchema = z
   .object({
-    title: boundedPlanText(MAX_PLAN_TITLE_CHARS),
+    title: displayTextSchema(MAX_PLAN_TITLE_CHARS, sanitizePlanText),
     description: boundedPlanText(MAX_PLAN_STEP_DESCRIPTION_CHARS),
     verification: boundedPlanText(MAX_PLAN_STEP_VERIFICATION_CHARS),
   })
@@ -31,8 +33,8 @@ export const planStepDraftInputSchema = z
 
 export const proposePlanInputSchema = z
   .object({
-    title: boundedPlanText(MAX_PLAN_TITLE_CHARS),
-    overview: boundedPlanText(MAX_PLAN_OVERVIEW_CHARS),
+    title: displayTextSchema(MAX_PLAN_TITLE_CHARS, sanitizePlanText),
+    overview: displayTextSchema(MAX_PLAN_OVERVIEW_CHARS, sanitizePlanText),
     steps: z.array(planStepDraftInputSchema).min(1).max(MAX_PLAN_STEPS),
   })
   .strict();

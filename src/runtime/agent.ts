@@ -987,7 +987,7 @@ export class AgentRuntime {
       complete: async (request) => {
         if (this.remainingRequests <= 0) throw new TaskBudgetExceeded("actor step limit reached");
         const limits = dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-        const sent = budgetedRequest({ ...request, maxTokens: Math.min(request.maxTokens ?? limits.maxResponseTokens, limits.maxResponseTokens) }, dependencies.contextManager.tokenCapacity,
+        const sent = budgetedRequest({ ...request, outputReserveTokens: request.outputReserveTokens ?? dependencies.contextManager.tokenCapacity?.outputReserve ?? limits.maxResponseTokens }, dependencies.contextManager.tokenCapacity,
           dependencies.contextManager.estimateRequestTokens);
         const retries = Math.min(request.maxRetries ?? limits.maxProviderRetries,
           dependencies.providerRetryLimit ?? limits.maxProviderRetries, limits.maxProviderRetries);
@@ -1408,6 +1408,13 @@ export class AgentRuntime {
               },
             );
             await this.reportProgressReviewRequestUsage(state, turnId, request);
+          },
+          onResponse: async response => {
+            await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "model.output.captured",
+              payload: { purpose: "reviewer", reviewId: binding.reviewId,
+                finishReason: response.finishReason ?? null,
+                message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
+                  tool_calls: response.message.tool_calls }))) } });
           },
         },
       ),
@@ -3786,16 +3793,21 @@ export class AgentRuntime {
         this.observeProviderContext({ state, turnId, purpose: "context_compaction", attempt, messages,
           tools: [compactTool.definition], enforcedPressure: required ? "require" : "suggest",
           enforcedUtilization: inspection.utilization, maxContextChars: options.maxContextChars, actualRequest: inspection });
-        this.dependencies.onStatus?.(attempt > 1 ? "Context maintenance: correcting overlong summary fields once; further length overflow will be clipped locally." : "Context maintenance: bounded handoff summary; Runtime can repair length overflow and recover locally.");
+        this.dependencies.onStatus?.("Context maintenance: complete response, local summary projection; length overflow needs no model retry.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
           "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
-            maxTokens: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSummaryMaxTokens, maxRetries: 0,
+            maxRetries: 0,
             tools: [compactTool.definition], signal, thinkingEffort: "none",
             currentTurnImageIds: images.map((image) => image.id) })));
         if (attempted.kind === "steering_interrupted") {
           return undefined;
         }
         await this.reportModelUsage(state, turnId, "context_compaction", attempted.value.usage, { attempt, retry: attempt > 1 });
+        await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+          type: "context.summary.response", payload: { finishReason: attempted.value.finishReason ?? null,
+            usage: attempted.value.usage, contentChars: attempted.value.message.content?.length ?? 0,
+            thinkingChars: attempted.value.message.reasoning_content?.length ?? 0,
+            toolCalls: attempted.value.message.tool_calls?.length ?? 0 } });
         return { ...attempted.value.message,
           tool_calls: attempted.value.message.tool_calls?.map(durableToolCall) };
       },

@@ -1,6 +1,7 @@
 import type { ModelRequest, ProviderUsage } from "../core/types.js";
 import { requestTokens } from "../context/token-budget.js";
 import { z } from "zod";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const snapshotSchema = z.object({ requests: count, tokens: count, reservedTokens: count,
@@ -36,7 +37,8 @@ export class TaskBudget {
   snapshot() { return { requests: this.requests, tokens: this.tokens, reservedTokens: this.reserved,
     maxRequests: this.maxRequests, maxTokens: this.maxTokens }; }
   reserve(request: ModelRequest, estimate = requestTokens): (usage?: ProviderUsage) => void {
-    const reservation = estimate(request.messages, request.tools) + (request.maxTokens ?? 0);
+    // Reservation is an estimate, not a server-enforced ceiling. Settle actual usage.
+    const reservation = estimate(request.messages, request.tools) + (request.outputReserveTokens ?? DEFAULT_RUNTIME_LIMITS.maxResponseTokens);
     if (this.requests >= this.maxRequests) throw new TaskBudgetExceeded("shared model-request limit reached");
     if (this.maxTokens > 0 && this.tokens + this.reserved + reservation > this.maxTokens) {
       throw new TaskBudgetExceeded("next request does not fit the shared token budget");

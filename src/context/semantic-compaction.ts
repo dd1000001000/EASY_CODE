@@ -3,6 +3,8 @@ import type { ContextIntentLedger, SessionState, ToolExecutionResult } from "../
 import { sha256 } from "../utils/hash.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { projectText } from "../utils/bounded-text.js";
+import { estimatedTokens } from "./token-budget.js";
 
 export const SEMANTIC_FIELD_MAX_CHARS = 1200;
 const text = z.string().trim().min(1).max(SEMANTIC_FIELD_MAX_CHARS);
@@ -28,12 +30,15 @@ export function inspectSemanticPatch(value: unknown): { issues: string[]; overfl
   if (parsed.success) return { issues: [], overflows: [], lengthOnly: false };
   const overflows: Array<{ path: (string | number)[]; actual: number; maximum: number }> = [];
   const issues = parsed.error.issues.map(issue => {
-    if (issue.code === "too_big" && issue.type === "string" && issue.maximum === SEMANTIC_FIELD_MAX_CHARS) {
+    if (issue.code === "too_big" && ((issue.type === "string" && issue.maximum === SEMANTIC_FIELD_MAX_CHARS) ||
+      (issue.type === "array" && issue.maximum === 32 && issue.path.length === 1 &&
+        ["decisions", "conclusions", "hypotheses", "failedApproaches"].includes(String(issue.path[0]))))) {
       let field: any = value;
       for (const key of issue.path) field = field?.[key];
-      const actual = typeof field === "string" ? field.trim().length : 0;
-      overflows.push({ path: issue.path, actual, maximum: SEMANTIC_FIELD_MAX_CHARS });
-      return `${issue.path.join(".")}: ${actual} chars exceeds maximum ${SEMANTIC_FIELD_MAX_CHARS}`;
+      const actual = typeof field === "string" ? field.trim().length : Array.isArray(field) ? field.length : 0;
+      const maximum = Number(issue.maximum);
+      overflows.push({ path: issue.path, actual, maximum });
+      return `${issue.path.join(".")}: ${actual} ${issue.type === "array" ? "items" : "chars"} exceeds maximum ${maximum}`;
     }
     return `${issue.path.join(".") || "input"}: ${issue.message}`;
   });
@@ -44,7 +49,7 @@ export function inspectSemanticPatch(value: unknown): { issues: string[]; overfl
 export function parseSemanticRequestPatch(value: unknown): unknown {
   const parsed = semanticPatchSchema.safeParse(value);
   if (parsed.success) return parsed.data;
-  if (JSON.stringify(value)?.length <= 128000 && inspectSemanticPatch(value).lengthOnly) return value;
+  if (inspectSemanticPatch(value).lengthOnly) return value;
   throw parsed.error;
 }
 
@@ -61,17 +66,22 @@ export function parseSemanticCandidatePatch(value: unknown): unknown {
 export function clipSemanticFields(value: unknown): { patch: unknown; diagnostics: string[] } {
   const inspection = inspectSemanticPatch(value);
   const patch: any = structuredClone(value);
-  for (const overflow of inspection.overflows) {
+  // Repair items before dropping array tails, so nested paths remain addressable.
+  for (const overflow of [...inspection.overflows].sort((a, b) => b.path.length - a.path.length)) {
     let parent = patch;
     for (const key of overflow.path.slice(0, -1)) parent = parent[key];
     const key = overflow.path.at(-1)!;
+    if (Array.isArray(parent[key])) {
+      parent[key] = parent[key].slice(0, overflow.maximum);
+      continue;
+    }
     let prefix = parent[key].trim().slice(0, overflow.maximum);
     // Do not leave half a UTF-16 surrogate at the prefix boundary.
     if (/[\uD800-\uDBFF]$/u.test(prefix)) prefix = prefix.slice(0, -1);
     parent[key] = prefix;
   }
   return { patch, diagnostics: inspection.overflows.map(item =>
-    `${item.path.join(".")}: ${item.actual} chars; retained first ${item.maximum} chars (remaining text is in Journal)`) };
+    `${item.path.join(".")}: ${item.actual} units; retained first ${item.maximum} (remainder is in Journal)`) };
 }
 
 export const evidenceSchema = z.object({
@@ -189,6 +199,22 @@ export function conservativeDocument(state: Readonly<SessionState>, snapshot: Co
     note: snapshot.investigation
       ? "Runtime facts and user requests remain pinned outside this summary; protected recent exchanges and the live tool chain remain verbatim. Raw retired history is preserved, not deleted."
       : "Runtime facts and user requests remain pinned outside this summary; the newest full phase and live tool chain remain verbatim. Raw retired history is preserved, not deleted." }));
+}
+
+/** Preserve valid JSON at the storage boundary, never an executable partial object. */
+export function boundedSummaryDocument(document: string, snapshot: CompactionSnapshot,
+  maxTokens: number, maxChars: number, prose = false): string {
+  if (!prose && document.length <= maxChars && estimatedTokens(document) <= maxTokens) return document;
+  const wrap = (content: string) => JSON.stringify({ formatVersion: 3, mode: "text_prefix",
+    lossy: true, unverified: true, snapshotDigest: snapshot.digest,
+    sourceRef: "context.compaction.candidate", content,
+    note: "Incomplete handoff. Recover original Journal before relying on omitted qualifications. Runtime facts remain pinned." });
+  const clean = redactSensitiveInformation(document);
+  const result = projectText(clean, maxTokens, text => {
+    const encoded = wrap(text);
+    return encoded.length > maxChars ? maxTokens + 1 : estimatedTokens(encoded);
+  });
+  return wrap(result.text);
 }
 
 /** Exact current-thread Journal projection; never RAG, subprocesses or file reads. */

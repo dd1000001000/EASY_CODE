@@ -66,6 +66,17 @@ function selectionProvider(
 }
 
 describe("tool-only Auto Router", () => {
+  it("accepts oversized valid reasons and direct replies after local clipping without retry", async () => {
+    for (const call of [selectModeCall("code", "x".repeat(500)), respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 500))]) {
+      let requests = 0;
+      const decision = await determineAutoRoute({ name: "deepseek", model: "mock-model", async complete() {
+        requests++;
+        return { message: { role: "assistant", content: null, reasoning_content: "not the response", tool_calls: [call] } };
+      } }, "Inspect");
+      assert.equal(requests, 1);
+      assert.match(decision.kind === "route" ? decision.reason : decision.content, /truncated/u);
+    }
+  });
   it("exposes only strict router controls and routes exclusively from select_mode", async () => {
     let inspected = false;
     const result = await determineAutoRoute(
@@ -301,7 +312,7 @@ describe("tool-only Auto Router", () => {
     assert.equal(requests, 2);
   });
 
-  it("rejects malformed, empty, extra-property, and overlong direct responses", async () => {
+  it("rejects malformed, empty and extra-property direct responses", async () => {
     const invalidCalls: FunctionToolCall[] = [
       {
         ...respondDirectlyCall("valid"),
@@ -315,7 +326,6 @@ describe("tool-only Auto Router", () => {
           arguments: '{"content":"valid","extra":true}',
         },
       },
-      respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 1)),
     ];
 
     for (const invalidCall of invalidCalls) {
@@ -403,7 +413,6 @@ describe("tool-only Auto Router", () => {
         ...selectModeCall("code"),
         function: { name: "select_mode", arguments: '{"mode":"code","reason":"   "}' },
       },
-      selectModeCall("code", "x".repeat(301)),
     ];
 
     for (const invalidCall of invalidCalls) {

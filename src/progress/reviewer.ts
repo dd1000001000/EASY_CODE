@@ -14,6 +14,8 @@ import type {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { safeJsonParse } from "../utils/json.js";
+import { displayTextSchema, projectText } from "../utils/bounded-text.js";
+import { estimatedTokens } from "../context/token-budget.js";
 
 export const PROGRESS_REVIEW_TOOL_NAME = "submit_review_result";
 export const MAX_PROGRESS_REVIEW_PACKET_CHARS = 64_000;
@@ -46,10 +48,13 @@ function boundedReviewText(maximum: number): z.ZodPipeline<
   z.ZodEffects<z.ZodString, string, string>,
   z.ZodString
 > {
-  return z
-    .string()
-    .max(maximum)
-    .transform(normalizeReviewText)
+  return displayTextSchema(maximum, normalizeReviewText);
+}
+
+/** Evidence and experiment success/falsification conditions are an actual contract,
+ * not presentation. Preserve the existing bounded correction path for these. */
+function reviewContractText(maximum: number) {
+  return z.string().max(maximum).transform(normalizeReviewText)
     .pipe(z.string().min(1).max(maximum));
 }
 
@@ -62,10 +67,10 @@ export const progressReviewReportSchema = z
     recommendation: z.enum(["run_experiment", "insufficient_evidence"]),
     summary: boundedReviewText(MAX_REVIEW_SUMMARY_CHARS),
     diagnosis: boundedReviewText(MAX_REVIEW_DETAIL_CHARS),
-    evidence: boundedReviewText(MAX_REVIEW_DETAIL_CHARS),
-    experiment: boundedReviewText(MAX_REVIEW_DETAIL_CHARS),
-    expectedSignal: boundedReviewText(MAX_REVIEW_SIGNAL_CHARS),
-    falsifyingSignal: boundedReviewText(MAX_REVIEW_SIGNAL_CHARS),
+    evidence: reviewContractText(MAX_REVIEW_DETAIL_CHARS),
+    experiment: reviewContractText(MAX_REVIEW_DETAIL_CHARS),
+    expectedSignal: reviewContractText(MAX_REVIEW_SIGNAL_CHARS),
+    falsifyingSignal: reviewContractText(MAX_REVIEW_SIGNAL_CHARS),
     // Optional only when reading pre-contract Journal records. Fresh reports
     // are required to provide these fields by parseReviewResponse below.
     experimentProgram: z.string().max(1024).optional(),
@@ -159,6 +164,8 @@ export type ProgressReviewExecutionResult =
 
 export interface ProgressReviewerOptions {
   readonly provider: ModelProvider;
+  /** Archive complete non-thinking business output before local storage projection. */
+  readonly onResponse?: (response: Readonly<ProviderResponse>) => Promise<void>;
   /** Injectable monotonic clock for deterministic tests. */
   readonly nowMs?: () => number;
   /** Durable boundary invoked before the Provider can receive the request. */
@@ -308,7 +315,6 @@ export async function runProgressReviewer(
       profile.messages,
       1,
       "initial",
-      maxTokens,
       accounting,
       nowMs,
     );
@@ -322,7 +328,7 @@ export async function runProgressReviewer(
     );
   }
 
-  const firstParsed = parseReviewResponse(first);
+  const firstParsed = parseReviewResponse(first, maxTokens);
   if (firstParsed.report) {
     accounting.validReviews = 1;
     accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
@@ -363,7 +369,6 @@ export async function runProgressReviewer(
       correctionMessages,
       2,
       "schema_correction",
-      maxTokens,
       accounting,
       nowMs,
     );
@@ -377,7 +382,7 @@ export async function runProgressReviewer(
     );
   }
 
-  const correctedParsed = parseReviewResponse(corrected);
+  const correctedParsed = parseReviewResponse(corrected, maxTokens);
   accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
   if (!correctedParsed.report) {
     return unavailable(
@@ -420,7 +425,6 @@ async function completeReviewRequest(
   messages: readonly ChatMessage[],
   ordinal: 1 | 2,
   kind: ProgressReviewModelRequestRecord["kind"],
-  maxTokens: number,
   accounting: MutableAccounting,
   nowMs: () => number,
 ): Promise<ProviderResponse> {
@@ -432,7 +436,6 @@ async function completeReviewRequest(
     tools: [cloneToolDefinition(profile.tool)],
     signal: request.signal,
     temperature: 0,
-    maxTokens,
     // Every reviewer Provider dispatch has its own durable lifecycle event;
     // suppress hidden transport retries so accounting remains exact.
     maxRetries: 0,
@@ -451,6 +454,7 @@ async function completeReviewRequest(
     };
     accounting.requests.push(record);
     await options.onRequestFinished?.(record);
+    await options.onResponse?.(response);
     return response;
   } catch (error) {
     const existing = accounting.requests.find(
@@ -472,7 +476,7 @@ async function completeReviewRequest(
   }
 }
 
-function parseReviewResponse(response: Readonly<ProviderResponse>): ParsedReviewResponse {
+function parseReviewResponse(response: Readonly<ProviderResponse>, maxTokens: number): ParsedReviewResponse {
   const calls = response.message.tool_calls ?? [];
   if (calls.length !== 1) {
     return {
@@ -489,6 +493,19 @@ function parseReviewResponse(response: Readonly<ProviderResponse>): ParsedReview
     );
     if (report.recommendation === "run_experiment" && report.experimentProgram === undefined) {
       return { error: "Supply experimentProgram, experimentArgsJson (JSON array of strings), and experimentCwd to bind a real command. Otherwise choose insufficient_evidence." };
+    }
+    // Validate executable fields first; only descriptive text may be projected.
+    const fields = ["diagnosis", "summary"] as const;
+    for (const field of fields) {
+      if (estimatedTokens(JSON.stringify(report)) <= maxTokens) break;
+      const suffix = " [truncated]";
+      const maximumChars = field === "summary" ? MAX_REVIEW_SUMMARY_CHARS : MAX_REVIEW_DETAIL_CHARS;
+      const projection = projectText(report[field], maxTokens, text => text.length + suffix.length > maximumChars
+        ? maxTokens + 1 : estimatedTokens(JSON.stringify({ ...report, [field]: text + suffix })));
+      report[field] = projection.text + suffix;
+    }
+    if (estimatedTokens(JSON.stringify(report)) > maxTokens) {
+      return { error: "The complete experiment contract exceeds the report storage budget. Evidence, validation conditions and command/arguments cannot be truncated; submit a smaller complete contract." };
     }
     return { report };
   } catch (error) {

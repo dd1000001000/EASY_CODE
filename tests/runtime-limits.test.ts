@@ -29,7 +29,7 @@ function state(): SessionState {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
 const options = { maxSteps: 4, maxContextChars: 250000, maxOutputChars: 16000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
-const request = { messages: [{ role: "user" as const, content: "inspect" }], maxTokens: 100 };
+const request = { messages: [{ role: "user" as const, content: "inspect" }], outputReserveTokens: 100 };
 const context = (root: string): ToolContext => ({ workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn",
   approvalPolicy: "never", commandTimeoutMs: 1000, maxOutputChars: 64000, requestApproval: async () => false,
   limits: defaultRuntimeLimits() });
