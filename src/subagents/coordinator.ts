@@ -1,3 +1,4 @@
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import type {
   CommandAuditEntry,
   FileChangeRecord,
@@ -37,7 +38,7 @@ import type {
   WaitForSubagentsRequest,
 } from "./types.js";
 
-export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 2;
+export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents.none;
 const MAX_FOLLOW_UPS_PER_SUBAGENT = 32;
 
 function agentPromptText(path: string): string {
@@ -46,9 +47,7 @@ function agentPromptText(path: string): string {
 
 /** Scale child concurrency from the user's selected parent thinking effort. */
 export function maxConcurrentSubagents(thinkingEffort: ThinkingEffort): number {
-  if (thinkingEffort === "high") return DEFAULT_MAX_CONCURRENT_SUBAGENTS * 4;
-  if (thinkingEffort === "medium") return DEFAULT_MAX_CONCURRENT_SUBAGENTS * 2;
-  return DEFAULT_MAX_CONCURRENT_SUBAGENTS;
+  return DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents[thinkingEffort];
 }
 
 export interface SubagentExecutionRequest {
@@ -1039,12 +1038,12 @@ export class SubagentCoordinator implements SubagentControl {
   }
 
   private concurrencyLimit(context: ToolContext): number {
-    if (context.limits) return context.limits.maxConcurrentSubagents;
-    if (this.maxConcurrentOverride !== undefined) return this.maxConcurrentOverride;
+    if (!context.limits && this.maxConcurrentOverride !== undefined) return this.maxConcurrentOverride;
     if (!context.thinkingEffort) {
       throw new Error("The parent thinking effort is unavailable");
     }
-    return maxConcurrentSubagents(context.thinkingEffort);
+    return context.limits?.maxConcurrentSubagents[context.thinkingEffort]
+      ?? maxConcurrentSubagents(context.thinkingEffort);
   }
 
   private recordsForThread(threadId: string): SubagentRecord[] {

@@ -67,6 +67,14 @@ describe("command usability and boundaries", () => {
     assert.equal(command.cwdAbsolute, root);
     assert.deepEqual(command.args, ["--no-pager", "diff"]);
     assert.notEqual(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "deny");
+    for (const args of [["diff", "-p"], ["log", "-p", "-1"], ["show", "-p", "HEAD"]]) {
+      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
+        { ...command, args }, "plan").effect, "allow");
+    }
+    for (const args of [["-p", "diff"], ["--paginate", "log"], ["diff", "--ext-diff"], ["show", "--textconv"]]) {
+      assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
+        { ...command, args }, "code").effect, "deny");
+    }
     await assert.rejects(() => resolver.resolve({ program: "git", args: ["-C", "..", "diff"], intent: "inspect" }), /boundary/u);
     for (const args of [["-c", "core.pager=evil", "diff"], ["reset", "--hard"]]) {
       assert.equal(new CommandPolicy().classify({ program: "git", intent: "run" }, { ...command, trustedExecutable: true, args }, "code").effect, "deny");

@@ -577,7 +577,6 @@ export class EasyCodeApp {
     this.contextManager.configureTokenBudget(config.limits.maxContextTokens || undefined, config.limits);
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
-      maxConcurrent: config.limits.maxConcurrentSubagents,
       defaultIsolation: config.subagentIsolation,
       onWaitStart: (text) => this.terminal.startActivity(text, "waiting"),
       onWaitEnd: (activityToken) => {
@@ -3686,7 +3685,7 @@ export class EasyCodeApp {
   private terminalSessionInfo(): UISessionInfo {
     return {
       orchestrationEnabled: this.orchestrationEnabled(),
-      agentConcurrencyLimit: this.config.limits.maxConcurrentSubagents,
+      agentConcurrencyLimit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
       threadId: this.state.threadId,
       workspaceRoot: this.workspace.root,
       mode: this.state.mode,
@@ -3776,7 +3775,7 @@ export class EasyCodeApp {
           active: this.subagentCoordinator.snapshot(this.state.threadId).filter(
             (agent) => agent.status === "running" || agent.status === "stopping",
           ).length,
-          limit: this.config.limits.maxConcurrentSubagents,
+          limit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
         },
         planReview: this.state.planReview
           ? {
@@ -3802,7 +3801,7 @@ export class EasyCodeApp {
       ? taskGraphView(this.state.taskGraph)
       : undefined;
     const agents = this.subagentCoordinator.snapshot(this.state.threadId);
-    const concurrencyLimit = this.config.limits.maxConcurrentSubagents;
+    const concurrencyLimit = this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort];
     if (snapshot) {
       this.terminal.showSubagentsSnapshot(
         agents,

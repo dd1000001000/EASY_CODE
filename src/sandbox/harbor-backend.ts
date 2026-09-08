@@ -4,6 +4,7 @@ import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "n
 import { constants } from "node:fs";
 import { execa } from "execa";
 import { resolveHarborOuterSandbox } from "../benchmarks/swebench.js";
+import { sandboxGitArgs, sandboxGitEnvironment } from "./git-policy.js";
 import type { WorkspaceManager } from "../workspace/index.js";
 import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionMetadata, SandboxExecutionRequest } from "./types.js";
 
@@ -115,11 +116,9 @@ export class HarborSandboxBackend implements CommandExecutionBackend {
         ...await harborPathRules(workspace, this.sensitivePaths, READ),
         ...await harborPathRules(scratch, [], READ | WRITE),
         ...(request.context.mode === "plan" ? [] : await harborPathRules(workspace, protectedPaths, WRITE))];
-      const env = { ...request.command.environment, HOME: scratch, TMPDIR: scratch, TMP: scratch, TEMP: scratch,
-        GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_PAGER: "cat" };
-      const args = path.basename(request.command.executablePath) === "git"
-        ? ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", ...request.command.args]
-        : request.command.args;
+      const env = sandboxGitEnvironment({ ...request.command.environment,
+        HOME: scratch, TMPDIR: scratch, TMP: scratch, TEMP: scratch }, "/dev/null");
+      const args = sandboxGitArgs(request.command.executablePath, request.command.args);
       const environment = Object.entries(env).filter((pair): pair is [string, string] => pair[1] !== undefined).map(([k, v]) => `${k}=${v}`);
       const fields = ["harbor-v1", request.commandId, request.command.cwdAbsolute, request.command.executablePath,
         String(rules.length), ...rules.flatMap(([rights, p]) => [String(rights), p]),

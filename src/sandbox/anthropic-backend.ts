@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getEasyCodeHome } from "../prompt-bundle/paths.js";
+import { sandboxGitArgs, sandboxGitEnvironment } from "./git-policy.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type {
   CommandExecutionBackend,
@@ -1135,7 +1136,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         mkdir(scratchCache),
       ]);
 
-      const targetEnvironment: NodeJS.ProcessEnv = {
+      const targetEnvironment = sandboxGitEnvironment({
         ...request.command.environment,
         HOME: scratchHome,
         USERPROFILE: scratchHome,
@@ -1147,11 +1148,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         XDG_CONFIG_HOME: scratchConfig,
         XDG_CACHE_HOME: scratchCache,
         EASY_CODE_SANDBOXED: "1",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: path.join(scratchConfig, "empty-git-config"),
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_PAGER: "cat",
-      };
+      }, path.join(scratchConfig, "empty-git-config"));
       const officialRuntimeHome = getEasyCodeHome();
       const protectedMetadataCandidates = [
         path.join(this.workspace.root, ".easycode"),
@@ -1204,10 +1201,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         bridgePath: stagedBridgePath,
         target: {
           executablePath: request.command.executablePath,
-          args: path.basename(request.command.executablePath).replace(/\.exe$/iu, "").toLowerCase() === "git"
-            ? ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-              "-c", "diff.external=", "-c", "diff.trustExitCode=false", ...request.command.args]
-            : [...request.command.args],
+          args: sandboxGitArgs(request.command.executablePath, request.command.args),
           cwdAbsolute: request.command.cwdAbsolute,
           environment: targetEnvironment,
         },

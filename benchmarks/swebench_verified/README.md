@@ -322,8 +322,12 @@ not use this backend. A bare Docker marker does not activate it.
 
 This is not a host-execution fallback. Docker remains the outer boundary;
 Landlock ABI 6 or later enforces filesystem and signal isolation without nested
-namespaces, and a seccomp filter denies all target sockets (including DNS, TCP,
-UDP, IPv6 and Unix sockets), io_uring, capability changes and namespace creation.
+namespaces, and seccomp denies network socket creation (including DNS, TCP,
+UDP, IPv6 and named Unix sockets), io_uring, capability changes and namespace creation.
+Anonymous `AF_UNIX` socketpairs (stream/datagram/seqpacket, protocol 0) and sends
+without a destination are permitted for local IPC and asyncio self-pipe wakeups.
+Ancillary `sendmsg`/`recvmsg` operations remain denied; Runtime descriptors are
+closed before target exec. Doctor checks both usable local IPC and blocked sockets.
 No Docker privileged mode or added `SYS_ADMIN` capability is required. Missing
 kernel support or an untrusted helper fails the installation before model use.
 
@@ -338,8 +342,10 @@ a private control pipe. As a subreaper it kills and reaps remaining descendants,
 including double-fork/setsid processes, on normal exit, timeout or cancellation.
 Unconfirmed cleanup quarantines execution and prevents network restoration.
 
-Limitations: commands cannot use sockets even for local test servers or socket-
-based multiprocessing. Metadata-changing chmod/chown/xattr syscalls are denied.
+Limitations: commands cannot create local test servers or connect to named Unix
+services (including Docker); multiprocessing requiring those or descriptor
+passing remains unsupported. Anonymous local socketpairs are supported.
+Metadata-changing chmod/chown/xattr syscalls are denied.
 Protected Git/Runtime metadata in the disposable workspace is made non-writable
 to capability-less targets; the trusted root Runtime can still update it.
 Removal/rename of direct entries at protected ancestor directories is restricted;
@@ -348,6 +354,21 @@ remain available. These are explicit isolation tradeoffs, not model/API errors.
 
 The no-model integration test is `scripts/smoke-harbor-sandbox.mjs`, run inside a
 disposable Docker container with the compiled helper, Node, Python and Git.
+`scripts/harbor-smoke.Dockerfile` supplies the test dependencies, including Django.
+Build the project first, mount it read-only at `/source`, compile the helper to
+`/opt/easy-code-harbor/harbor-sandbox`, then run the script with `--network none`.
+The smoke covers asyncio wakeups, Django setup/tests, Git diff/show/log and hostile
+diff configuration, plus the existing denial, Plan and process-cleanup checks.
+
+Both sandbox backends share Git argument/environment preparation. Direct diff
+commands use `--no-ext-diff --no-textconv`, never `-c diff.external=`. Global
+hardening follows caller global settings; diff flags immediately follow the
+subcommand so option values/path separators cannot swallow them. Explicit helper-
+enabling options are rejected consistently with the command policy.
+All targets receive sanitized Git environment variables, also inherited by shell
+and interpreter children. This is not an unbypassable Git wrapper: arbitrary
+child code can change its environment or run programs itself, still confined by
+the OS filesystem/network policy. Repository configuration is not rewritten.
 
 Harbor's task names include an organization prefix. A valid exact filter is:
 

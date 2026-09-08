@@ -59,12 +59,13 @@ export function registerConfigCommands(
     .description("print the complete operational limits as TOML (no credentials)")
     .allowExcessArguments(false)
     .action(() => {
-      const { steps, providerTimeoutMs, ...limits } = defaultRuntimeLimits();
+      const { steps, maxConcurrentSubagents, providerTimeoutMs, ...limits } = defaultRuntimeLimits();
       const table = (name: string, values: Record<string, unknown>) =>
         `[${name}]\n` + Object.entries(values).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join("\n");
       writeLine(resolveRuntime(runtime).output,
         "orchestrationEnabled = false\n\n" + table("limits", limits) + "\n\n" +
-        table("limits.steps", steps) + "\n\n" + table("limits.providerTimeoutMs", providerTimeoutMs));
+        table("limits.steps", steps) + "\n\n" + table("limits.maxConcurrentSubagents", maxConcurrentSubagents) +
+        "\n\n" + table("limits.providerTimeoutMs", providerTimeoutMs));
     });
 
   config

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 
 import type {
   ResultArtifact,
@@ -150,6 +151,8 @@ describe("SubagentCoordinator", () => {
       ["medium", 4],
       ["high", 8],
     ] as const) {
+      // Isolate the simultaneous cap from the independent per-turn creation budget.
+      const limits = { ...defaultRuntimeLimits(), maxSubagentsPerTurn: 9 };
       const ids = Array.from({ length: limit + 1 }, (_value, index) =>
         `subagent_00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`);
       const coordinator = new SubagentCoordinator({
@@ -166,7 +169,7 @@ describe("SubagentCoordinator", () => {
             completionChecks: ["Verification is reported"],
           },
           instructions: "Keep the result concise.",
-        }, context(undefined, { thinkingEffort }));
+        }, context(undefined, { thinkingEffort, limits }));
         const concurrency = (spawned.data as {
           concurrency: { active: number; limit: number };
         }).concurrency;
@@ -183,10 +186,32 @@ describe("SubagentCoordinator", () => {
             completionChecks: ["It is never started"],
           },
           instructions: "Do not run.",
-        }, context(undefined, { thinkingEffort })),
+        }, context(undefined, { thinkingEffort, limits })),
         new RegExp(`concurrency limit is ${limit}`, "u"),
       );
     }
+  });
+
+  it("uses configured caps after effort switches without canceling existing children", async () => {
+    const limits = defaultRuntimeLimits();
+    limits.maxConcurrentSubagents.medium = 3;
+    const coordinator = new SubagentCoordinator({
+      maxConcurrent: 1, // Actual Runtime limits take precedence over legacy injection.
+      createAgentId: idFactory([AGENT_ONE, AGENT_TWO, AGENT_THREE]),
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    const spawn = (thinkingEffort: "low" | "medium") => coordinator.spawn({
+      action: "spawn", task: { title: "Inspect", description: "Inspect isolated source.",
+        completionChecks: ["Evidence is reported"] }, instructions: "Inspect only.",
+    }, context(undefined, { thinkingEffort, limits }));
+    await spawn("low");
+    await spawn("low");
+    await assert.rejects(spawn("low"), /concurrency limit is 2/u);
+    const third = await spawn("medium");
+    assert.deepEqual((third.data as { concurrency: unknown }).concurrency, { active: 3, limit: 3 });
+    await assert.rejects(spawn("medium"), /concurrency limit is 3/u);
+    await assert.rejects(spawn("low"), /concurrency limit is 2/u);
+    assert.equal(coordinator.snapshot("thread_subagent_coordinator").length, 3);
   });
 
   it("authorizes every parent thinking effort in effective Code mode", () => {

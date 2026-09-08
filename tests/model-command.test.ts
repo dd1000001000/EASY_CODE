@@ -616,8 +616,22 @@ describe("/model", () => {
     try {
       await fixture.app.handleSlashCommand("/agents");
       await fixture.app.handleSlashCommand("/subagents");
-      assert.match(fixture.output(), /Child agents · 0\/2 active · 0 total/u);
+      assert.match(fixture.output(), /Child agents · 0\/4 active · 0 total/u);
       assert.match(fixture.output(), /No child agents in this runtime/u);
+      const internal = fixture.app as unknown as {
+        state: SessionState;
+        terminalSessionInfo(): { agentConcurrencyLimit: number };
+      };
+      for (const [effort, limit] of [["none", 2], ["low", 2], ["medium", 4], ["high", 8]] as const) {
+        internal.state.thinkingEffort = effort;
+        assert.equal(internal.terminalSessionInfo().agentConcurrencyLimit, limit);
+        const before = fixture.output().length;
+        await fixture.app.handleSlashCommand("/agents");
+        await fixture.app.handleSlashCommand("/status");
+        const output = fixture.output().slice(before);
+        assert.match(output, new RegExp(`Child agents · 0/${limit} active · 0 total`, "u"));
+        assert.match(output, new RegExp(`"subagentConcurrency": \\{\\s*"active": 0,\\s*"limit": ${limit}`, "u"));
+      }
       await assert.rejects(
         fixture.app.handleSlashCommand("/agents stop"),
         /Usage: \/agents/u,

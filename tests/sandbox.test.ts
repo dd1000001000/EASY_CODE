@@ -97,6 +97,8 @@ function sandboxRequest(root: string): SandboxExecutionRequest {
       environment: {
         PATH: process.env.PATH,
         EASY_CODE_TEST_ENV: "preserved-value",
+        GIT_EXTERNAL_DIFF: "must-not-inherit",
+        GIT_CONFIG_PARAMETERS: "must-not-inherit",
       },
       environmentKeys: ["EASY_CODE_TEST_ENV", "PATH"],
     },
@@ -395,6 +397,25 @@ describe("sandbox command execution boundary", () => {
     assert.equal(extracted.digest.truncated, false);
   });
 
+  it("uses the shared Git policy in the ordinary sandbox payload", async () => {
+    await withWorkspace(async (root, manager) => {
+      const backend = new AnthropicSandboxBackend(manager, {
+        windowsAclPreflight: { check: async () => undefined },
+        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
+      });
+      const git = (await execFileAsync(process.platform === "win32" ? "where" : "which", ["git"])).stdout.trim().split(/\r?\n/u)[0]!;
+      const original = sandboxRequest(root);
+      const prepared = await backend.prepare({ ...original, command: { ...original.command,
+        program: "git", executablePath: git, args: ["diff", "--", "a b.txt"] } });
+      try {
+        const payload = JSON.parse(await readFile(prepared.args[1]!, "utf8")) as SandboxWorkerPayload;
+        assert.deepEqual(payload.target.args.slice(-5), ["diff", "--no-ext-diff", "--no-textconv", "--", "a b.txt"]);
+        assert.ok(!payload.target.args.includes("diff.external="));
+        assert.equal(payload.target.environment.GIT_EXTERNAL_DIFF, undefined);
+      } finally { await prepared.cleanup(); }
+    });
+  });
+
   it("prepares a structured worker payload and removes its scratch data", async () => {
     await withWorkspace(async (root, manager) => {
       const backend = new AnthropicSandboxBackend(manager, {
@@ -434,6 +455,9 @@ describe("sandbox command execution boundary", () => {
         assert.deepEqual(payload.target.args, request.command.args);
         assert.equal(payload.target.cwdAbsolute, root);
         assert.equal(payload.target.environment.EASY_CODE_TEST_ENV, "preserved-value");
+        assert.equal(payload.target.environment.GIT_EXTERNAL_DIFF, undefined);
+        assert.equal(payload.target.environment.GIT_CONFIG_PARAMETERS, undefined);
+        assert.equal(payload.target.environment.GIT_CONFIG_KEY_0, "core.fsmonitor");
         assert.equal(payload.target.environment.EASY_CODE_SANDBOXED, "1");
         assert.equal(payload.target.environment.HOME, path.join(payload.scratchRoot, "home"));
         assert.deepEqual(payload.network.allowedDomains, []);

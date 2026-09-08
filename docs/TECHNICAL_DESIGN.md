@@ -235,7 +235,7 @@ Recall defaults to 8,000 characters per page and allows at most 16,000. Referenc
 
 ### 6.6 Capacity accounting and configuration
 
-Operational settings are in `[limits]`; [runtime defaults](../src/config/runtime-defaults.json) and the [configuration example](config.example.toml) are the source of current values. Context policy is the same for all thinking efforts and providers. Defaults for steps are 40/40/40/80 for none/low/medium/high, with at most two concurrent child Agents; effort no longer multiplies child concurrency or context capacity.
+Operational settings are in `[limits]`; [runtime defaults](../src/config/runtime-defaults.json) and the [configuration example](config.example.toml) are the source of current values. Context policy is the same for all thinking efforts and providers. Defaults for steps are 40/40/40/80 for none/low/medium/high, with child concurrency caps of 2/2/4/8 configured in `[limits.maxConcurrentSubagents]`. Runtime and status displays resolve the current parent effort. Lowering effort does not cancel existing children, but rejects new spawns at the new cap. Context capacity, shared token/request budgets and total per-turn child creation limits do not increase with effort.
 
 `maxContextTokens = 0` disables the model-token window. The default `maxContextChars = maxActiveContextChars = 250000` means **characters, not 250,000 model tokens**. Character-mode input capacity is `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`: 212,500 by default. The controller's 80% maintenance trigger is about 170,000 measured request characters, including instructions, schemas and Runtime state, not just the visible conversation.
 
