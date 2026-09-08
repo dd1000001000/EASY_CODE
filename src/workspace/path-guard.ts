@@ -6,7 +6,7 @@ import {
   realpath,
   stat,
 } from "node:fs/promises";
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 import { getEasyCodeHome } from "../prompt-bundle/paths.js";
@@ -45,6 +45,7 @@ function isInsideOrEqual(parent: string, candidate: string): boolean {
  */
 export class WorkspacePathGuard {
   readonly root: string;
+  private readonly protectedRoots: string[] = [];
 
   constructor(workspaceRoot: string) {
     if (!workspaceRoot || workspaceRoot.includes("\0")) {
@@ -52,6 +53,12 @@ export class WorkspacePathGuard {
     }
 
     const absolute = path.resolve(workspaceRoot);
+    if (/^(?:\\\\|\/\/)/u.test(workspaceRoot)) throw new Error("Network/device workspace roots are not supported by offline tools");
+    let ancestor = path.parse(absolute).root;
+    for (const segment of absolute.slice(ancestor.length).split(path.sep).filter(Boolean)) {
+      ancestor = path.join(ancestor, segment);
+      if (lstatSync(ancestor).isSymbolicLink()) throw new Error("Workspace roots must not traverse symbolic links or junctions");
+    }
     const info = realpathSync.native(absolute);
     if (!statSync(info).isDirectory()) {
       throw new Error("Workspace root must be a directory");
@@ -111,6 +118,7 @@ export class WorkspacePathGuard {
     options: ResolveExistingOptions = {},
   ): Promise<string> {
     const lexical = this.resolveLexical(input);
+    await this.assertNoRedirectedAncestors(lexical);
     const linkInfo = await lstat(lexical);
     if (linkInfo.isSymbolicLink() && options.allowFinalSymlink === false) {
       throw new Error("Writing through a symbolic link is not allowed");
@@ -132,6 +140,7 @@ export class WorkspacePathGuard {
 
   async resolveForCreate(input: string, createParents = true): Promise<string> {
     const target = this.resolveLexical(input);
+    await this.assertNoRedirectedAncestors(target);
     const parent = path.dirname(target);
     await this.assertNearestExistingAncestorInside(parent);
     if (createParents) {
@@ -165,6 +174,9 @@ export class WorkspacePathGuard {
     const root = comparable(this.root);
     const value = comparable(path.resolve(candidate));
     const relative = path.relative(root, value);
+    if (this.protectedRoots.some(protectedRoot => isInsideOrEqual(protectedRoot, value))) {
+      throw new Error("Runtime resources cannot be accessed through workspace tools");
+    }
     if (relative === "") return;
     if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error("Resolved path escapes the workspace boundary");
@@ -173,6 +185,25 @@ export class WorkspacePathGuard {
       throw new Error(
         "Official EASY CODE Runtime resources cannot be accessed through agent workspace tools",
       );
+    }
+  }
+
+  protect(root: string): void {
+    this.protectedRoots.push(path.resolve(root));
+  }
+
+  private async assertNoRedirectedAncestors(target: string): Promise<void> {
+    let current = this.root;
+    for (const segment of path.relative(this.root, target).split(path.sep)) {
+      current = path.join(current, segment);
+      try {
+        if ((await lstat(current)).isSymbolicLink()) {
+          throw new Error("Symbolic link/junction access is rejected before traversal: target may escape the workspace boundary or initiate network access");
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
     }
   }
 

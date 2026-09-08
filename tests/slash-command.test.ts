@@ -67,6 +67,6 @@ describe("parseSlashCommand", () => {
     assert.match(HELP_TEXT, /\/memory short \[limit\]/u);
     assert.match(HELP_TEXT, /\/usage/u);
     assert.match(HELP_TEXT, /\/approval/u);
-    assert.match(HELP_TEXT, /dangerous full-host access/u);
+    assert.match(HELP_TEXT, /isolated no-prompt execution/u);
   });
 });

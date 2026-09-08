@@ -302,12 +302,12 @@ class EasyCodeAgent(BaseInstalledAgent):
             environment,
             command=(
                 "if [ -f /etc/alpine-release ]; then"
-                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep;"
+                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep bubblewrap socat;"
                 " elif command -v apt-get >/dev/null 2>&1; then"
                 "  apt-get update && DEBIAN_FRONTEND=noninteractive "
-                "apt-get install -y ca-certificates curl git ripgrep;"
+                "apt-get install -y ca-certificates curl git ripgrep bubblewrap socat;"
                 " elif command -v yum >/dev/null 2>&1; then"
-                "  yum install -y ca-certificates curl git ripgrep;"
+                "  yum install -y ca-certificates curl git ripgrep bubblewrap socat;"
                 " else"
                 '  echo "No supported package manager was found" >&2; exit 1;'
                 " fi"
@@ -347,6 +347,7 @@ export EASY_CODE_CACHE_DIR={shlex.quote(_REMOTE_CACHE_DIR)}
 global_root="$(npm root --global)"
 node "$global_root/easy-code-agent/scripts/embedding-model.cjs" verify
 easy-code --version
+easy-code sandbox doctor || {{ echo "Mandatory inner sandbox unavailable; enable supported nested namespaces on the host. Host execution fallback is forbidden." >&2; exit 78; }}
 """.strip()
 
         result = await self.exec_as_agent(
@@ -447,9 +448,16 @@ easy-code --version
                         timeout_sec=3600,
                     )
                 finally:
-                    await environment.set_network_policy(
-                        baseline_network_policy
-                    )
+                    # A returned root process is not sufficient: all command
+                    # leases must have closed and no cleanup quarantine may
+                    # remain. On timeout/uncertainty keep egress restricted.
+                    if result is not None:
+                        exit_code = getattr(result, "return_code", getattr(result, "exit_code", None))
+                        if not isinstance(exit_code, int):
+                            raise RuntimeError("Agent exit is unknown; verifier networking stays restricted.")
+                        await self._restore_network_after_clean_exit(
+                            environment, baseline_network_policy
+                        )
                 self._record_output("easy-code.log", result)
                 if result is None:
                     raise RuntimeError(
@@ -1163,11 +1171,29 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
         value = text or ""
         return value.replace(self._api_key, "[REDACTED]") if self._api_key else value
 
+    async def _restore_network_after_clean_exit(
+        self, environment: BaseEnvironment, baseline: NetworkPolicy
+    ) -> None:
+        script = f"""
+set -euo pipefail
+for directory in {shlex.quote(_REMOTE_DATA_DIR + '/command-leases')} {shlex.quote(_REMOTE_DATA_DIR + '/command-quarantine')}; do
+  if [ -d "$directory" ] && [ -n "$(find "$directory" -type f -print -quit)" ]; then
+    echo 'Unfinished command or cleanup quarantine; verifier networking stays restricted' >&2
+    exit 79
+  fi
+done
+""".strip()
+        checked = await environment.exec(command=self._bash(script), cwd="/", timeout_sec=30)
+        code = getattr(checked, "return_code", getattr(checked, "exit_code", None))
+        if code != 0:
+            raise RuntimeError("Command cleanup was not confirmed; public verifier networking was not restored.")
+        await environment.set_network_policy(baseline)
+
     def _require_success(self, label: str, result: Any) -> None:
         exit_code = getattr(result, "return_code", None)
         if exit_code is None:
             exit_code = getattr(result, "exit_code", None)
-        if exit_code not in (None, 0):
+        if exit_code != 0:
             raise self._classify_exec_error(label, result)
 
     @staticmethod

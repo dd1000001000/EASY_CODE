@@ -35,146 +35,55 @@ queries remain available. Independent append-only revision rows preserve future
 changes beyond the existing bounded per-memory audit rendering. Historical audit
 details already compacted by older versions cannot be recreated.
 
-Accepted cumulative summary versions are archived independently and indexed as
-historical claims, not automatically promoted to long-term facts. Token-managed
-sessions now retire completed prefixes through independent Runtime transactions;
-the character-only legacy protocol remains available for compatibility.
+## Runtime context maintenance
 
-### Optional token capacity
+See [the context-maintenance contract](semantic-compaction-v3.md) for the current
+pipeline, configuration defaults, event/replay protocol and verification scope.
 
-Set `[limits].maxContextTokens` in TOML, or provide it in `EASY_CODE_LIMITS_JSON`,
-to enable a provider-neutral operational token cap (`0` disables this additional cap).
-It is not inferred from `maxContextChars`, and is not a claim about the provider's
-native model window. Choose a cap no larger than the model actually supports.
-Legacy character limits remain as an additional guard.
+The message builder is non-destructive. It exposes the full active projection;
+it does not silently trim thinking or throw an overflow exception before Runtime
+can try recovery. Retirement uses complete tool exchanges, not verified phases.
 
-The estimator counts the full request (including thinking, tools and image
-estimates), adds a 20% text-estimation margin, and reserves output, tool growth and
-safety capacity. All Runtime provider requests use the same output cap, preserving
-any smaller per-request limit. A versioned, conservative calibration learns from
-adapter-normalized `usage.promptTokens`, including cache hits exactly once.
-Endpoint/model identities and text/image inputs have separate sample windows.
-Only numeric ratios are stored (migration 8), never API keys, prompts or thinking.
-The last 32 samples can raise the estimate above its conservative baseline; missing
-usage leaves it unchanged. This is empirical calibration, not a native tokenizer
-or automatic discovery of a model's context-window limit.
-With token capacity enabled, compaction acceptance checks the next normal request,
-including restored optional memory, against the 55% target. Without it, the legacy
-character policy remains compatible.
+One capacity assessment covers ordinary system/tools/history/Runtime facts.
+When maxContextTokens is nonzero it is the primary operational capacity, with
+output/tool-growth/safety reserves and provider-neutral calibrated estimates.
+Otherwise the character working budget and explicit headroom are used. A configured
+window must not exceed what the selected model actually supports.
 
-### Completed-phase transactions (enabled with token capacity)
+Runtime first removes optional memory and oversized tool bodies, then attempts one
+short semantic handoff. It can move old exchanges and summaries into Journal-backed
+references without a complete semantic summary. The 55% default target is soft:
+sufficient execution space, source integrity and preserved control state are the
+acceptance criteria. Growth-based cooldown prevents repeated paid summarization.
 
-Runtime closes a phase only after an observed terminal verification and a complete
-assistant/tool exchange with no open command handles, or a successfully completed
-turn. Poll waits, ordinary assistant replies and summaries do not close a phase.
-A final reply after a verification does not create a tiny extra cycle. The most
-recent completed cycle and all newer work remain raw, including their thinking.
-Pending reviews/experiments and open commands prevent retirement. Older journals
-can supply successful turn boundaries; missing verification-phase events are not
-guessed from their clipped tool output. A single oversized unfinished phase may
-therefore pause for more capacity instead of being destructively compacted.
+In the last recovery stage, the most recent complete exchange may also leave the
+active context whole. Its original thinking is archived, not clipped or rewritten.
+One such minimal rebase is allowed per durable user request. It preserves files,
+command/child identities, task requirements, unresolved evidence and review budgets.
+A new explicit request creates a new scope; replaying the old one does not.
 
-At pressure, optional recall is removed first. Runtime measures a zero-summary
-lower bound against the next ordinary tool/system envelope and retained raw tail.
-If even that cannot reach 55%, it defers under soft pressure and pauses under
-mandatory pressure without spending model requests. Candidates must reach 55%
-with the actual summary, intent ledger and ordinary envelope included. The final
-provider guard also reserves future tool output as well as answer/thinking and
-safety space. A capacity pause uses `failure.code: context_capacity_insufficient`,
-distinct from invalid-compaction exhaustion and code verification. Token-managed requests do not use the legacy overflow selector to
-hide active history; image-count/byte limits remain explicit.
+If mandatory input still cannot fit, the run returns a recoverable capacity pause:
+reason=limit_reached, failure.code=context_capacity_exhausted. The DAG is neither
+completed nor externally blocked by this result. User cancellation, broken storage
+and invalid Journal state are not hidden as successful recovery.
 
-`context.phase.closed`, `context.compaction.started`, `.attempt`, `.candidate`
-and `.rejected` are control-plane journal events, not ordinary chat/tool messages.
-The source boundary and hash are frozen. The model may summarize the retired prefix
-while keeping current user intent global; it does not move the prefix boundary.
-Schema corrections include the previous candidate and exact validation feedback,
-not an ever-growing transcript. Each request is reserved before dispatch and
-charged to the shared model-request budget. At most three attempts belong to one
-transaction, including requests whose response was lost.
+## Runtime evidence and tool errors
 
-One `context.compacted` event atomically commits transaction identity, summary,
-intent and provenance before live state advances. A recovered candidate can be
-revalidated without a second model request. New steering is checked against the
-current intent ledger; a stale candidate must be corrected under the same budget.
-Checkpoint snapshots cannot erase a transaction or reset its attempts. Exhausted
-transactions remain exhausted on Resume; they do not silently get three more
-calls. Raw source history and rejected candidates remain in the journal. There is
-not yet a user-facing command for replacing an exhausted transaction's candidate
-or granting it a fresh budget.
+Built-in tools keep the common versioned error protocol. Invalid Plan and child
+submissions still have their own bounded correction handling; ordinary mutations
+are never auto-replayed. Compaction no longer uses that protocol as a mandatory
+multi-attempt gate. A bad summary cannot manufacture missing coverage booleans or
+erase constraints; Runtime supplies the facts independently.
 
-Validate rollout with isolated long-task runs: pass rate, total tokens per success
-(including compaction/repair), repeated investigations, recall relevance, input
-estimation error and retrieval latency. No benchmark improvement is assumed.
-
-All providers share one history policy. Provider adapters translate API fields;
-they do not decide which reasoning blocks to discard.
-
-## Normal requests
-
-- Keep all `reasoning_content` blocks in the active conversation segment,
-  unchanged and in order. An assistant reply or new user message is not a
-  reasoning-eviction boundary.
-- Do not rewrite old tool results on every request. Preserve command output and
-  task/reviewer results; reusable source/search material can be cleared only in
-  the explicit pressure fallback.
-- Keep the stable system prompt before history. Put changing workspace,
-  checkpoint, retrieval, and Runtime continuity data after history.
-
-## Pressure and fallback
-
-The accepted working summary, latest request, user-intent ledger, constraints,
-task state, unresolved command witnesses, and active ProgressGuard incidents
-have protected space. Summaries and reasoning are never head/tail sliced.
-Artificial reserved headroom may shrink to accommodate those fields.
-
-In character-only compatibility mode, overflow selects complete assistant/tool exchanges and explicitly labels its
-view as incomplete. It does not fabricate a summary from message snippets.
-Pressure still includes the pre-selection active history, so this fallback
-cannot silently permit normal work while dropping history. Runtime requires
-structured compaction. If the protected state or newest exchange cannot fit
-intact, Runtime returns a capacity error; increase the context budget or reduce
-tool output. No durable history is deleted.
-
-Only an accepted, provenance-checked cumulative compaction advances the durable
-history boundary. It replaces old reasoning/messages with task conclusions and
-evidence, not a rewritten chain of thought. It does not promise lossless recall.
-
-## Runtime evidence
-
-### Tool errors and compaction recovery
-
-Runtime prevalidates built-in tool arguments before execution. Failures carry a
-versioned `failure` envelope with a code, execution status, recovery advice, and
-bounded field-level issues. A validation failure inside an already-entered tool
-is conservatively treated as an unknown execution outcome. No error envelope
-authorizes replaying a mutation, bypassing a denial, or inventing missing facts.
-
-In character-only compatibility mode, complete sanitized compaction candidates, including `coverageCheck` and
-`intentLedger`, remain in assistant/tool-call audit events and recoverable
-history. They are not removed before validation. Accepted compaction retires
-the old calls from active context; its persisted summary still excludes these
-temporary fields. Failed candidates never advance the compaction boundary.
-
-Mandatory compaction (including pre-Auto routing) has at most three attempts.
-Corrections include the actual field paths or integrity/benefit rejection.
-Main-loop corrective step extensions are capped at two per run, shared with
-other tools; existing continuation/finalization allowances remain separate.
-Plan and child-result submissions share the protocol budget. Ordinary tools
-receive correction guidance but are never automatically executed again.
-
-Exhaustion retains the existing `reason: failed` for caller compatibility, with
-`failure.code: context_compaction_failed` (or `tool_protocol_failed`) and
-`recoverable: true` in the run result and durable `turn.completed` event. It does
-not complete/block a DAG node or claim that the coding task failed verification.
-History and pending work remain intact. In character-only compatibility mode, an
-explicit new turn/resume receives a fresh bounded correction budget; the stopped
-turn never retries itself. Token-managed transactions preserve their consumed
-attempts across Resume as described above.
-
-Malformed JSON and invalid values are rejected, not filled with defaults.
-In particular, missing constraints are not replaced with empty arrays and
-missing coverage flags are not changed to `true`.
+Summary calls are isolated from the active work transcript. A transaction allows
+two submissions at most, including an explicit parent submission; only text-length
+overflow qualifies for one correction. A second overflow is clipped field-by-field
+to 1200 characters, with a lossy marker and detailed Journal diagnostics. Insufficient
+correction budget uses local clipping immediately. Types and evidence remain checked;
+there are no auxiliary transport retries. Raw candidates and atomic commit
+events remain durable. A response generated against changed Runtime facts is
+discarded without another paid correction. Historical V2/repair events remain
+readable, but do not authorize new repair loops.
 
 Command audits retain bounded stdout/stderr tails, a captured-output digest,
 truncation information, and process-start/failure metadata. These witnesses are

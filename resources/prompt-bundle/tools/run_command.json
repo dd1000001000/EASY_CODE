@@ -1,15 +1,15 @@
 {
   "id": "run_command",
   "contractVersion": "1.1.0",
-  "description": "Run one structured program/argv command. Manual and auto-approved modes use Runtime policy plus the Anthropic workspace sandbox. User-confirmed dangerous mode runs directly as the current OS user with host filesystem, working-directory, environment, and internet access and no EASY CODE approval prompt. Explicit one-shot shells remain supported.",
+  "description": "Run a structured program/argv command inside the workspace sandbox. Development network access follows the selected approval mode; Benchmark commands stay offline. Plan is read-only. Shells and multiline interpreter arguments are supported in Code mode; Runtime manages approval, timeout and cleanup.",
   "propertyDescriptions": {
-    "program": "Executable name or workspace-relative executable; absolute host executables require dangerous mode.",
-    "args": "The structured argument vector passed directly to the program. Never repeat program in args[0]. For cmd /c, the entire shell command must be ONE argument: program=cmd, args=[\"/c\",\"dir /b\"], cwd=\".\". For simple directory listing prefer search_files mode=list, without a shell.",
-    "cwd": "Workspace-relative existing directory, or an absolute host directory only in dangerous mode.",
-    "intent": "The purpose of the command, used by Runtime when applying execution policy. Use verify for a validation command that is not accurately described by the legacy test or build intents.",
-    "verificationKind": "Required when intent is verify and forbidden for inspect, run, or install. It may optionally classify legacy test/build calls as unit_test, integration_test, build, typecheck, lint, format_check, smoke_test, benchmark, or custom.",
+    "program": "Executable name, path relative to cwd, or absolute local executable. Runtime checks links and executable identity; remote paths are not accepted.",
+    "args": "Literal structured argv, including multiline code and punctuation. Supply real arguments, not an extra launcher name. For cmd /c pass the whole command as ONE argument, e.g. [\"/c\",\"dir /b\"]. Prefer search_files mode=list for directory listing.",
+    "cwd": "Existing absolute or workspace-relative directory whose normalized real path stays inside the workspace; normalized parent segments are allowed.",
+    "intent": "Declared purpose, not permission or proof of read-only behavior. Use test, build or verify for validation.",
+    "verificationKind": "Optional validation category: unit_test, integration_test, build, typecheck, lint, format_check, smoke_test, benchmark, custom. Missing verify/test categories default to custom; build defaults to build. Invalid or inapplicable metadata is normalized without blocking execution.",
     "timeoutMs": "An optional requested command-phase timeout. Runtime applies the minimum of this request, the configured command limit, and the classified capability limit, then returns all four timeout values including the effective limit.",
     "reason": "A concise explanation of why this command is needed for the current task."
   },
-  "guidance": "Prefer existing project scripts and one synchronous command for short checks. Put the executable only in program. Classify verification accurately using the schema. One-shot shells are allowed; interactive, login, encoded or detached shells and shell-level backgrounding are forbidden. Use start_command for supervised background work. Never bypass Runtime policy, approval or sandbox failures; retry only when Runtime explicitly permits a bounded recovery. Treat a turn-scoped sandbox pause as a pause, not a permanent code/DAG failure."
+  "guidance": "Prefer direct test runners and existing scripts; Runtime compacts display output, so avoid piping test output through grep just to save tokens. Multiline Python -c/Node -e, shell scripts, heredocs, pipes, redirects and synchronous nested calls are supported. Use start_command/poll_command for long work; bounded sleeps and timeout wrappers are allowed. Exit code and validation verdict are separate: an outer exit 0 does not prove tests passed. Unknown validation means insufficient evidence, not an instruction to rerun blindly. Outside dangerous mode, interactive/login/encoded and explicit detached protocols remain unsupported. Never bypass network authorization, Benchmark isolation or sandbox failures; do not retry unknown execution or cleanup."
 }

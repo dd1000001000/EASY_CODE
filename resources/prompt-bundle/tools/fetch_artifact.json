@@ -1,0 +1,7 @@
+{
+  "contractVersion": "1.0.0",
+  "id": "fetch_artifact",
+  "description": "List or fetch integrity-verified dependency/file artifacts through the trusted Runtime downloader. Fetch requires download approval or a matching network prefix except in dangerous mode. Catalog eligibility still requires an initial lockfile or user-owned catalogue; model input cannot provide URLs or headers. List makes no network request.",
+  "propertyDescriptions": {"action":"list approved IDs or fetch one ID", "artifactId":"An ID from list, required for fetch", "offset":"Page offset for list"},
+  "guidance": "Main-agent Code only. Files are integrity-checked and staged under vendor/downloads. Use offline installation, disable lifecycle scripts by default, and run necessary build scripts only offline. Missing approval is not permission to use curl, a browser, a proxy, or another download mechanism. Do not alter a lockfile to manufacture download authority."
+}

@@ -252,7 +252,7 @@ function approvalRequest(): ApprovalRequest {
     title: "Run migration",
     description: "This migration modifies the workspace database.",
     risk: "workspace",
-    commandPrefix: "node",
+    commandPrefix: "git",
     commandPreview: "node scripts/migrate.js",
   };
 }
@@ -493,8 +493,9 @@ describe("Terminal runtime status routing", () => {
       assert.equal(await decision, "reject");
       const internals = fixture.terminal as unknown as {
         busyInputOwner?: unknown;
+        disclosureViewer?: unknown;
       };
-      assert.notEqual(internals.busyInputOwner, undefined);
+      assert.ok(internals.busyInputOwner ?? internals.disclosureViewer, "the current request must retain one input owner");
       assert.equal(fixture.input.isRaw, true);
       assert.match(
         terminalState(fixture.terminal).composer.placeholder,

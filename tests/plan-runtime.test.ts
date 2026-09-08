@@ -14,7 +14,6 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { describe, it } from "./harness.js";
-import { compactionV2Input } from "./compaction-fixture.js";
 
 function state(mode: AgentMode = "auto"): SessionState {
   const now = new Date().toISOString();
@@ -285,14 +284,17 @@ describe("model-controlled plan flow", () => {
 
   it("compacts an Auto thread at 80% and then restores model-controlled routing", async () => {
     const current = state("auto");
-    current.messages.push({ role: "user", content: "x".repeat(20_000) });
+    current.messages.push(
+      { role: "user", content: "Keep existing compatibility" },
+      { role: "assistant", content: "Old investigation", reasoning_content: "r".repeat(60_000) },
+      { role: "assistant", content: "Recent observation" },
+      { role: "assistant", content: "Live work", reasoning_content: "keep this reasoning" },
+    );
     const input = "What is the current task?";
-    const compactionInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: input,
+    const compactionInput = {
       currentWork: "Reducing the active Auto-thread context before routing.",
       nextStep: "Resume model-controlled routing for the current request.",
-    });
+    };
     const requestTools: string[][] = [];
     const modes: AgentMode[] = [];
     const events: Array<Omit<EventRecord, "schemaVersion" | "eventId" | "sequence" | "timestamp">> = [];
@@ -338,14 +340,15 @@ describe("model-controlled plan flow", () => {
     ).run(current, input, {
       ...options(),
       maxSteps: 3,
-      maxContextChars: 24_000,
+      maxContextChars: 100_000,
+      maxContextTokens: 34_000,
     });
 
-    assert.equal(result.reason, "planned");
+    assert.equal(result.reason, "planned", result.text);
     assert.deepEqual(requestTools[0], ["compact_context"]);
     assert.deepEqual(requestTools[1], ["select_mode", "respond_directly"]);
-    assert.deepEqual(requestTools[2], ["propose_plan", "compact_context"]);
-    assert.deepEqual(modes, ["auto", "auto", "plan"]);
+    assert.deepEqual(requestTools[2], ["propose_plan"]);
+    assert.deepEqual(modes, ["code", "auto", "plan"]);
     const eventTypes = events.map((event) => event.type);
     assert.ok(eventTypes.indexOf("context.compacted") >= 0);
     assert.ok(

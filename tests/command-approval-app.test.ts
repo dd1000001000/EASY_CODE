@@ -10,8 +10,9 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   SessionState,
+  CommandExecutionMode,
 } from "../src/core/types.js";
-import { normalizeCommandApprovalPrefix } from "../src/command/approval.js";
+import { normalizeCommandApprovalPrefix, networkCommandApprovalPrefix } from "../src/command/approval.js";
 import { createStorage, type EasyCodeStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
@@ -42,10 +43,11 @@ interface ApprovalHarness {
   readonly terminal: ScriptedApprovalTerminal;
   readonly state: SessionState;
   request(request: ApprovalRequest): Promise<boolean>;
+  setMode(mode: CommandExecutionMode): void;
   close(): void;
 }
 
-function approvalRequest(commandPrefix = process.execPath): ApprovalRequest {
+function approvalRequest(commandPrefix = path.join(path.dirname(process.execPath), "git.exe")): ApprovalRequest {
   return {
     id: "approval_app_test",
     title: "Run executable",
@@ -75,6 +77,7 @@ function approvalHarness(threadId: string): ApprovalHarness {
     state: { value: state, writable: true },
     threadStore: { value: threads },
     dirty: { value: false, writable: true },
+    commandExecutionMode: { value: "manual", writable: true },
   });
   const internal = app as unknown as {
     requestToolApproval(request: ApprovalRequest): Promise<boolean>;
@@ -86,6 +89,7 @@ function approvalHarness(threadId: string): ApprovalHarness {
     terminal,
     state,
     request: (request) => internal.requestToolApproval(request),
+    setMode: (mode) => { Object.defineProperty(app, "commandExecutionMode", { value: mode }); },
     close: () => {
       terminal.close();
       storage.close();
@@ -95,6 +99,52 @@ function approvalHarness(threadId: string): ApprovalHarness {
 }
 
 describe("application command approval decisions", () => {
+  it("automatically approves routine local work but prompts for high-risk local effects", async () => {
+    const harness = approvalHarness("local_risk_modes");
+    try {
+      for (const mode of ["manual", "auto_approve", "unrestricted"] as const) {
+        harness.setMode(mode);
+        for (const risk of ["read", "workspace", "install", "system", "destructive", "external"] as const) {
+          const automatic = mode === "unrestricted" || mode === "auto_approve" && ["read", "workspace", "install"].includes(risk);
+          const before = harness.terminal.requests.length;
+          assert.equal(await harness.request({ ...approvalRequest(), risk }), automatic, `${mode}/${risk}`);
+          assert.equal(harness.terminal.requests.length - before, automatic ? 0 : 1);
+        }
+      }
+    } finally { harness.close(); }
+  });
+  it("does not let Auto/--yes bypass network writes and lets dangerous mode bypass every approval", async () => {
+    const harness = approvalHarness("network_mode_app");
+    try {
+      const prefix = networkCommandApprovalPrefix(process.execPath, [], "a".repeat(64));
+      for (const mode of ["manual", "auto_approve", "unrestricted"] as const) {
+        harness.setMode(mode);
+        for (const effect of ["read", "download", "upload", "unknown"] as const) {
+          const before = harness.terminal.requests.length;
+          const automatic = mode === "unrestricted" || mode === "auto_approve" && effect === "read";
+          assert.equal(await harness.request({ ...approvalRequest(prefix), network: { effect } }), automatic);
+          assert.equal(harness.terminal.requests.length - before, automatic ? 0 : 1);
+        }
+      }
+      assert.equal(await harness.request({ ...approvalRequest(), risk: "destructive" }), true);
+    } finally { harness.close(); }
+  });
+
+  it("remembers explicit network prefixes, honors them with prompts disabled, and consumes them for local execution", async () => {
+    const harness = approvalHarness("network_prefix_app");
+    try {
+      const prefix = networkCommandApprovalPrefix(process.execPath, [], "a".repeat(64));
+      const request: ApprovalRequest = { ...approvalRequest(prefix), network: { effect: "download" } };
+      assert.equal(await harness.request({ ...request, allowPrompt: false }), false);
+      assert.equal(harness.terminal.requests.length, 0);
+      harness.terminal.decisions.push("allow_prefix");
+      assert.equal(await harness.request(request), true);
+      assert.equal(await harness.request({ ...request, network: { effect: "upload" }, allowPrompt: false }), true);
+      assert.equal(await harness.request({ ...approvalRequest(process.execPath), existingNetworkCommandPrefix: prefix }), true);
+      assert.equal(harness.terminal.requests.length, 1);
+      assert.deepEqual(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes, [prefix]);
+    } finally { harness.close(); }
+  });
   it("allows once without remembering and asks again next time", async () => {
     const harness = approvalHarness("thread_approval_once");
     try {
@@ -126,7 +176,7 @@ describe("application command approval decisions", () => {
       harness.terminal.decisions.push("allow_prefix");
       assert.equal(await harness.request(approvalRequest()), true);
       assert.deepEqual(harness.state.commandApprovalPrefixes, [
-        normalizeCommandApprovalPrefix(process.execPath),
+        normalizeCommandApprovalPrefix(path.join(path.dirname(process.execPath), "git.exe")),
       ]);
       assert.equal(harness.terminal.requests.length, 1);
 
@@ -135,11 +185,11 @@ describe("application command approval decisions", () => {
 
       const resumed = harness.threads.recover(harness.state.threadId);
       assert.deepEqual(resumed.commandApprovalPrefixes, [
-        normalizeCommandApprovalPrefix(process.execPath),
+        normalizeCommandApprovalPrefix(path.join(path.dirname(process.execPath), "git.exe")),
       ]);
 
       const differentPrefix = path.join(
-        path.dirname(process.execPath),
+        path.dirname(path.join(path.dirname(process.execPath), "git.exe")),
         "different-executable",
       );
       harness.terminal.decisions.push("reject");

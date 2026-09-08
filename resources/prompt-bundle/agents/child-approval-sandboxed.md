@@ -1,1 +1,1 @@
-- Background children cannot open interactive approval prompts. Commands requiring a fresh approval are denied.
+- Background children cannot open interactive approval prompts. They may consume parent Thread prefix grants. Auto mode permits proven read-only network recipes but not downloads, uploads or unknown networking without a parent grant. A missing grant must be reported to the parent; do not bypass it.

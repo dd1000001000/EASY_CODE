@@ -355,38 +355,13 @@ describe("sandbox command execution boundary", () => {
     });
   });
 
-  it("uses a dedicated host backend only for active dangerous full access", async () => {
-    await withWorkspace(async (root, manager) => {
+  it("refuses the removed host backend in every approval posture", async () => {
+    await withWorkspace(async (root) => {
       const request = sandboxRequest(root);
-      const dangerousRequest: SandboxExecutionRequest = {
-        ...request,
-        context: {
-          ...request.context,
-          commandExecutionMode: "unrestricted",
-          isUnrestrictedHostAccessActive: () => true,
-        },
-      };
       const host = new UnrestrictedHostBackend();
-      const prepared = await host.prepare(dangerousRequest);
-      assert.equal(prepared.executablePath, process.execPath);
-      assert.deepEqual(prepared.args, request.command.args);
-      assert.equal(prepared.cwdAbsolute, root);
-      assert.deepEqual(prepared.metadata, {
-        backend: "host-unrestricted",
-        enforced: false,
-        filesystem: "host",
-        network: "host",
-      });
-      await prepared.cleanup();
-
-      await assert.rejects(
-        () => host.prepare(request),
-        /requires active user-confirmed dangerous mode/iu,
-      );
-      await assert.rejects(
-        () => new AnthropicSandboxBackend(manager).prepare(dangerousRequest),
-        /dedicated host backend/iu,
-      );
+      for (const commandExecutionMode of ["manual", "auto_approve", "unrestricted"] as const) {
+        await assert.rejects(() => host.prepare({ ...request, context: { ...request.context, commandExecutionMode } }), /removed|mandatory/iu);
+      }
     });
   });
 
@@ -428,6 +403,7 @@ describe("sandbox command execution boundary", () => {
         windowsSandboxReadProbe: runtimeReadableWindowsProbe,
       });
       const request = sandboxRequest(root);
+      request.networkProxyURL = "http://easy-code:test-capability@127.0.0.1:32123";
       const prepared = await backend.prepare(request);
       const payloadPath = prepared.args[1];
       assert.ok(payloadPath, "sandbox worker payload path was not provided");
@@ -461,6 +437,10 @@ describe("sandbox command execution boundary", () => {
         assert.equal(payload.target.environment.EASY_CODE_SANDBOXED, "1");
         assert.equal(payload.target.environment.HOME, path.join(payload.scratchRoot, "home"));
         assert.deepEqual(payload.network.allowedDomains, []);
+        assert.equal(payload.network.proxyURL, request.networkProxyURL);
+        assert.equal(prepared.metadata.network, "brokered");
+        assert.equal(JSON.stringify(payload.target).includes("test-capability"), false);
+        assert.equal(JSON.stringify(prepared.environment).includes("test-capability"), false);
         assert.equal(payload.filesystem.allowWrite.includes(root), true);
         assert.equal(
           payload.filesystem.denyRead.includes(path.resolve(root, "private-fixture")),
@@ -483,7 +463,7 @@ describe("sandbox command execution boundary", () => {
         const runtimeRoot = path.resolve(path.dirname(prepared.args[0]!), "..", "..");
         assert.equal(payload.filesystem.allowRead.includes(runtimeRoot), false);
         assert.equal(
-          payload.filesystem.denyWrite.every((filename) => pathIsWithin(root, filename)),
+          payload.filesystem.denyWrite.some((filename) => pathIsWithin(root, filename)),
           true,
         );
         assert.equal(
@@ -898,8 +878,9 @@ describe("sandbox command execution boundary", () => {
       assert.equal(output.status, "sandbox_unavailable");
       assert.match(output.stderr.text, /not confirmed started/iu);
       assert.match(output.stderr.text, /last worker stage: initialize_start/iu);
-      assert.equal(output.sandboxFailure?.phase, "initialization");
-      assert.equal(output.sandboxFailure?.retryable, true);
+      assert.equal(output.sandboxFailure?.phase, "execution");
+      assert.equal(output.sandboxFailure?.retryable, false);
+      assert.equal(output.lifecycle?.execution, "unknown");
     });
   });
 

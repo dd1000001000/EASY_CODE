@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
 const TASKKILL_TIMEOUT_MS = 5_000;
 
@@ -25,7 +26,7 @@ function runTaskkill(
     const args = ["/PID", String(pid), "/T", ...(force ? ["/F"] : [])];
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawnTaskkill("taskkill.exe", args, {
+      child = spawnTaskkill(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), args, {
         shell: false,
         windowsHide: true,
         stdio: "ignore",
@@ -79,13 +80,15 @@ async function waitForProcessGroupExit(pid: number, timeoutMs: number): Promise<
 }
 
 /** Terminate a command and its descendants without invoking a shell. */
+export interface TerminationResult { confirmed: boolean; method: string; }
+
 export async function terminateProcessTree(
   subprocess: KillableSubprocess,
   graceMs = 1_500,
   testHooks: ProcessTreeTerminationTestHooks = {},
-): Promise<void> {
+): Promise<TerminationResult> {
   const pid = subprocess.pid;
-  if (!pid || subprocess.killed) return;
+  if (!pid) return { confirmed: true, method: "not-started" };
 
   if ((testHooks.platform ?? process.platform) === "win32") {
     // Let taskkill enumerate and terminate the whole tree before touching the
@@ -99,7 +102,7 @@ export async function terminateProcessTree(
       testHooks.spawnTaskkill ?? spawn,
       testHooks.taskkillTimeoutMs ?? TASKKILL_TIMEOUT_MS,
     );
-    if (treeTerminated) return;
+    if (treeTerminated) return { confirmed: true, method: "system-taskkill-tree" };
 
     // Constrained hosts may block taskkill. Direct-child termination is the
     // fallback that still guarantees the command promise can settle.
@@ -108,7 +111,7 @@ export async function terminateProcessTree(
     } catch {
       // The process may already have exited.
     }
-    return;
+    return { confirmed: false, method: "direct-child-only" };
   }
 
   let usedProcessGroup = false;
@@ -120,10 +123,11 @@ export async function terminateProcessTree(
     try {
       subprocess.kill("SIGTERM", { forceKillAfterTimeout: graceMs });
     } catch {
-      return;
+      return { confirmed: false, method: "signal-failed" };
     }
   }
-  if (!usedProcessGroup || await waitForProcessGroupExit(pid, graceMs)) return;
+  if (!usedProcessGroup) return { confirmed: false, method: "direct-child-only" };
+  if (await waitForProcessGroupExit(pid, graceMs)) return { confirmed: true, method: "process-group" };
 
   try {
     process.kill(-pid, "SIGKILL");
@@ -131,8 +135,8 @@ export async function terminateProcessTree(
     try {
       subprocess.kill("SIGKILL", { forceKillAfterTimeout: false });
     } catch {
-      return;
+      return { confirmed: false, method: "signal-failed" };
     }
   }
-  await waitForProcessGroupExit(pid, graceMs);
+  return { confirmed: await waitForProcessGroupExit(pid, graceMs), method: "process-group" };
 }

@@ -17,14 +17,50 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
     if (!value || typeof value !== "object" || !("type" in value)) return undefined;
     const type = (value as { type?: unknown }).type;
-    if (type === "ready") return value as SandboxWorkerControl;
-    if (type === "stage") return value as SandboxWorkerControl;
+    if (["execution_dispatched", "cleanup_complete", "cleanup_requested"].includes(String(type))) return value as SandboxWorkerControl;
+    if (type === "execution_exited" && Number.isSafeInteger((value as { exitCode?: unknown }).exitCode)) return value as SandboxWorkerControl;
+    if (type === "cleanup_error" && typeof (value as { message?: unknown }).message === "string") return value as SandboxWorkerControl;
+    if (type === "ready" && ["anthropic-srt-linux","anthropic-srt-windows","anthropic-srt-macos"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
+    if (type === "stage" && ["worker_started","runtime_loaded","initialize_start","initialize_complete","wrap_start","wrap_complete"].includes(String((value as {stage?:unknown}).stage))) return value as SandboxWorkerControl;
     if (type === "sandbox_error" || type === "target_spawn_error") {
-      return value as SandboxWorkerControl;
+      if (typeof (value as {message?:unknown}).message === "string") return value as SandboxWorkerControl;
     }
     return undefined;
   } catch {
     return undefined;
+  }
+}
+
+/** Control state is bounded independently from stdout/stderr and never clipped. */
+export class SandboxControlStream {
+  private pending = "";
+  readonly controls: SandboxWorkerControl[] = [];
+  private ready = false;
+  private dispatched = false;
+  private exited = false;
+  private cleaned = false;
+  constructor(private readonly commandId: string, private readonly observe: (event: SandboxWorkerControl) => void, private readonly strict = false) {}
+  push(chunk: Buffer | string): void {
+    this.pending += chunk.toString();
+    let end: number;
+    while ((end = this.pending.indexOf("\n")) >= 0) {
+      const line = this.pending.slice(0, end + 1);
+      this.pending = this.pending.slice(end + 1);
+      const { controls } = extractSandboxControls(this.commandId, { head: line, tail: "", text: line, totalBytes: Buffer.byteLength(line), truncated: false });
+      if (this.strict && (line.length > 32768 || controls.length !== 1)) throw new Error("Malformed private control frame");
+      for (const control of controls) {
+        if (this.controls.length >= 64) throw new Error("Sandbox control event bound exceeded");
+        if (this.strict) {
+          if (control.type === "ready") { if(this.ready||this.cleaned)throw new Error("Invalid ready transition");this.ready=true; }
+          if (control.type === "execution_dispatched") {if(!this.ready||this.dispatched||this.cleaned)throw new Error("Invalid dispatch transition");this.dispatched=true;}
+          if (control.type === "execution_exited") {if(!this.dispatched||this.exited||this.cleaned)throw new Error("Invalid exit transition");this.exited=true;}
+          if (control.type === "cleanup_complete"||control.type === "cleanup_error") {if(this.cleaned)throw new Error("Duplicate cleanup transition");this.cleaned=true;}
+        }
+        this.controls.push(control);
+        this.observe(control);
+      }
+    }
+    if (this.pending.length > 32768) throw new Error("Invalid sandbox control frame");
   }
 }
 

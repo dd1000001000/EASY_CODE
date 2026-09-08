@@ -72,7 +72,7 @@ describe("context reliability", () => {
     assert.equal(validateCompactionIntegrity({ state: current, request, sourceEndMessageIndex: 1 }).ok, true);
   });
 
-  it("preserves a full accepted summary and constraints through overflow selection", () => {
+  it("preserves a full accepted summary and constraints until explicit Runtime recovery", () => {
     const current = state();
     current.constraints = ["Never remove rollback support"];
     current.workingSummary = JSON.stringify({ currentWork: "x".repeat(8_100), nextStep: "RUN_COUNTEREXAMPLE_42" });
@@ -81,7 +81,7 @@ describe("context reliability", () => {
     const text = built.map((message) => message.content).join("\n");
     assert.ok(text.includes(current.workingSummary));
     assert.match(text, /Never remove rollback support/u);
-    assert.ok(estimateMessagesChars(built) <= 16_000);
+    assert.ok(estimateMessagesChars(built) > 16_000);
     const inspected = new ContextManager().inspectProviderRequest({ state: current, messages: built, maxContextChars: 16_000 });
     assert.equal(inspected.pressure, "force");
   });
@@ -90,7 +90,9 @@ describe("context reliability", () => {
     const current = state();
     current.constraints = ["constraint".repeat(1_000)];
     const before = structuredClone(current);
-    assert.throws(() => new ContextManager().build({ state: current, systemPrompt: "rules", maxContextChars: 4_096 }), /protected Runtime state/u);
+    const manager = new ContextManager();
+    const built = manager.build({ state: current, systemPrompt: "rules", maxContextChars: 4_096 });
+    assert.ok(manager.inspectProviderRequest({ state: current, messages: built, maxContextChars: 4_096 }).utilization > 1);
     assert.deepEqual(current, before);
   });
 
@@ -132,7 +134,8 @@ describe("context reliability", () => {
     const first = manager.build({ state: current, systemPrompt: "stable rules", runtimeContext: "old retrieval", maxContextChars: 20_000 });
     current.messages.push({ role: "user", content: "continue" });
     const next = manager.build({ state: current, systemPrompt: "stable rules", runtimeContext: "new retrieval", maxContextChars: 20_000 });
-    assert.deepEqual(next.slice(0, first.length - 1), first.slice(0, -1));
+    // Stable system + raw history; both Runtime continuity and retrieval are a changing suffix.
+    assert.deepEqual(next.slice(0, first.length - 2), first.slice(0, -2));
     const tracker = new RequestPrefixTracker();
     assert.equal(tracker.observe("thread:model", first).hasPrefixBaseline, false);
     assert.ok(tracker.observe("thread:model", next).unchangedPrefixChars > 50);

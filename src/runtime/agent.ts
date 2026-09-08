@@ -38,20 +38,13 @@ import { renderPinnedCurrentState, renderRetrievedContext, type ContextSearchHit
 import { memoryQueries, memoryQueryKey, optionalMemoryTokenBudget, selectMemoryContext, expandedMemoryRecall, visibleMemoryText } from "../context/memory-controller.js";
 import { budgetedRequest, requestTokens } from "../context/token-budget.js";
 import type { TokenCalibration } from "../context/token-calibration.js";
-import { runCompactionTransaction, foldCompactionControl, completeExchange } from "../context/compaction-transaction.js";
+import { runCompactionTransaction, foldCompactionControl, completeExchange, investigationExchangeStart, type CompactionResult } from "../context/compaction-transaction.js";
 import type { NormalRequestEnvelope } from "../context/context-request.js";
-import { unresolvedCommands } from "../context/runtime-state.js";
-import { semanticPatchSchema, recallCompactionEvidence } from "../context/semantic-compaction.js";
+import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
+import { parseSemanticRequestPatch, recallCompactionEvidence } from "../context/semantic-compaction.js";
+import { captureValidationBaseline } from "../progress/validation-standard.js";
+import { matchesReviewExperiment } from "../progress/experiment.js";
 import { RequestPrefixTracker } from "../context/request-prefix.js";
-import {
-  createCompactionMetadata,
-  validateCompactionIntegrity,
-} from "../context/compaction-integrity.js";
-import {
-  compactionCooldownSatisfied,
-  evaluateCompactionBenefit,
-  type CompactionBenefitEvaluation,
-} from "../context/compaction-policy.js";
 import {
   ContextManager,
   estimateToolDefinitionsChars,
@@ -132,7 +125,7 @@ import {
   normalizeToolFailure, prepareToolInput, protocolToolFailure, toolResultForModel,
 } from "../tools/errors.js";
 import {
-  MAX_TOOL_PROTOCOL_ATTEMPTS, MAX_TOOL_CORRECTION_STEPS,
+  MAX_TOOL_CORRECTION_STEPS,
   ToolRecoveryBudget, ToolProtocolExhausted,
 } from "./tool-recovery.js";
 
@@ -163,44 +156,21 @@ function contextUtilizationPercent(utilization: number): string {
   return (Math.floor(Math.max(0, utilization) * 1_000) / 10).toFixed(1);
 }
 
-function contextPressureInstruction(
-  level: ContextPressureLevel,
-  utilization: number,
-): string {
-  const percent = contextUtilizationPercent(utilization);
-  if (level === "suggest") {
-    return renderRuntimePrompt(
-      "runtime/context-pressure-suggest.md",
-      { percent },
-    );
-  }
-  if (level === "require") {
-    return renderRuntimePrompt(
-      "runtime/context-pressure-require.md",
-      { percent },
-    );
-  }
-  if (level === "force") {
-    return renderRuntimePrompt(
-      "runtime/context-pressure-force.md",
-      { percent },
-    );
-  }
-  return "";
-}
-
-function contextPressureRank(level: ContextPressureLevel): number {
-  if (level === "force") return 3;
-  if (level === "require") return 2;
-  if (level === "suggest") return 1;
-  return 0;
-}
-
 function contextCapacityFailure(error: unknown, state: Readonly<SessionState>): AgentRunResult["failure"] {
   if (error instanceof TaskBudgetExceeded) return { code: "task_budget_exhausted", tool: "runtime", attempts: 0, recoverable: true };
-  return error instanceof Error && error.message.startsWith("context_capacity_insufficient:")
-    ? { code: "context_capacity_insufficient", tool: "compact_context",
+  return isContextCapacityError(error)
+    ? { code: "context_capacity_exhausted", tool: "runtime",
       attempts: state.compactionControl?.transaction?.attempts ?? 0, recoverable: true } : undefined;
+}
+
+/** Provider-neutral, narrow classification: timeouts/429/auth errors are not capacity errors. */
+function isContextCapacityError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message.startsWith("context_capacity_insufficient:")) return true;
+  if (!(error instanceof ProviderError) || (error.statusCode !== undefined &&
+      ![400, 413, 422].includes(error.statusCode))) return false;
+  return /context_length_exceeded|context_window_exceeded|maximum context length|context (?:window|length).*(?:exceed|limit)|prompt (?:is )?too long|input (?:is )?too long/i
+    .test(`${error.code} ${error.message}`);
 }
 
 export interface ProviderContextSnapshot {
@@ -401,6 +371,8 @@ function progressReviewPacket(
     "[PROGRESS_INCIDENT]",
     JSON.stringify({
       incidentId: incident.incidentId,
+      reason: incident.reason ?? "repeated_verified_failure",
+      baselineDigest: incident.baselineDigest,
       scopeKey: incident.scopeKey,
       targetKey: incident.targetKey,
       outcomeClass: incident.outcomeClass,
@@ -421,6 +393,8 @@ function progressRuntimeInstruction(
 ): string {
   const guard = state.progressGuard;
   if (!guard) return "";
+  const suspected = guard.incidents.find(item => item.scopeKey === scopeKey && item.phase === "investigation_suspected");
+  if (suspected) return "Runtime observed repeated source/search evidence in a complete investigation window. This is a stagnation suspicion, not proof that the task is stuck. Propose and execute one minimal falsifiable experiment with expected and opposite outcomes. New filenames, summaries and thinking alone do not prove progress. Continued repetition in a separate window may request one read-only reviewer. Incident: " + suspected.incidentId;
   const incident = [...guard.incidents]
     .reverse()
     .find((candidate) =>
@@ -436,7 +410,10 @@ function progressRuntimeInstruction(
       incidentId: incident.incidentId,
       diagnosis: incident.reviewReport.diagnosis,
       evidence: incident.reviewReport.evidence,
-      experiment: incident.reviewReport.experiment,
+      experiment: incident.reviewReport.experiment + (incident.reviewReport.experimentProgram ?
+        "\nExact experiment command (normal approval still applies): " + JSON.stringify({
+          program: incident.reviewReport.experimentProgram, args: JSON.parse(incident.reviewReport.experimentArgsJson ?? "[]"),
+          cwd: incident.reviewReport.experimentCwd || ".", intent: "verify", verificationKind: "custom" }) : ""),
       expectedSignal: incident.reviewReport.expectedSignal,
       falsifyingSignal: incident.reviewReport.falsifyingSignal,
     });
@@ -500,7 +477,8 @@ function commandVerificationClassification(
 ): CommandVerificationClassification {
   if (toolName === "run_command" || toolName === "start_command") {
     try {
-      const parsed = safeJsonParse(rawArguments) as {
+      const output = result.data as { requestMetadata?: { intent?: unknown; verificationKind?: unknown } } | undefined;
+      const parsed = (output?.requestMetadata ?? safeJsonParse(rawArguments)) as {
         intent?: unknown;
         verificationKind?: unknown;
       };
@@ -905,7 +883,6 @@ function durableToolCall(call: AssistantToolCall): AssistantToolCall {
 }
 
 const MAX_PINNED_INTENT_QUOTE_CHARS = 400;
-const MAX_COMPACTION_INVENTORY_USER_MESSAGES = 96;
 
 function boundedIntentQuote(value: string): string {
   const redacted = redactSensitiveInformation(value).trim();
@@ -951,96 +928,6 @@ function appendSteeringLedgerEntry(
     ].slice(-32),
     supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
   };
-}
-
-function isRuntimeCompactionMessage(content: string): boolean {
-  return /^RUNTIME_CONTEXT_(?:COMPACTION|PRESSURE)/u.test(content.trimStart());
-}
-
-/** Runtime-owned source map lets every provider cite durable message indices. */
-function compactionSourceInventory(state: Readonly<SessionState>): string {
-  const userMessages = state.messages
-    .map((message, sourceMessageIndex) => ({ message, sourceMessageIndex }))
-    .filter(({ message }) =>
-      message.role === "user" &&
-      message.content.trim() &&
-      !isRuntimeCompactionMessage(message.content)
-    )
-    .slice(-MAX_COMPACTION_INVENTORY_USER_MESSAGES)
-    .map(({ message, sourceMessageIndex }) => ({
-      sourceMessageIndex,
-      exactQuote: boundedIntentQuote(message.content ?? ""),
-      ...(message.role === "user" && message.images?.length
-        ? { images: message.images.map((image) => image.label) }
-        : {}),
-    }));
-  const latestMessageIndex = userMessages.at(-1)?.sourceMessageIndex ?? -1;
-  const blockedTask = state.taskGraph?.tasks.find((task) => task.status === "blocked");
-  const failures = unresolvedCommands(state);
-  const latestFailedCommand = failures.at(-1);
-  return [
-    "RUNTIME_COMPACTION_SOURCE_INVENTORY:",
-    "Use these zero-based durable message indices and exact bounded quotes in " +
-      "primaryRequest, activeConstraints, intentLedger, and coverageCheck. " +
-      "Preserve currentIntentLedger.latestRequest as the primary request and " +
-      "keep later steering in userCorrections. latestMessageIndex is the newest " +
-      "durable user message. coverageCheck is temporary and discarded after validation.",
-    JSON.stringify({
-      sourceEndExclusive: state.messages.length,
-      latestMessageIndex,
-      recentToolEvidence: state.messages.map((message, index) => ({ message, index }))
-        .filter(({ message }) => message.role === "tool").slice(-32)
-        .map(({ message, index }) => ({ reference: `message:${index}`,
-          tool: message.role === "tool" ? message.name : undefined })),
-      unresolvedCommands: failures.map((command) => ({
-        id: command.id, status: command.status, exitCode: command.exitCode,
-        summary: redactSensitiveInformation(command.summary),
-      })),
-      currentIntentLedger: state.contextIntentLedger ?? null,
-      runtimeConstraints: state.constraints.map((constraint) =>
-        redactSensitiveInformation(constraint)
-      ),
-      userMessages,
-      activePlan: state.planReview
-        ? {
-            id: state.planReview.proposal.id,
-            revision: state.planReview.proposal.revision,
-            status: state.planReview.status,
-          }
-        : null,
-      taskGraph: state.taskGraph
-        ? {
-            id: state.taskGraph.id,
-            goal: state.taskGraph.goal,
-            status: state.taskGraph.status,
-            currentTaskId: activeTask(state.taskGraph)?.id ?? null,
-            blockedTask: blockedTask
-              ? { id: blockedTask.id, blocker: blockedTask.blocker ?? null }
-              : null,
-          }
-        : null,
-      latestUnresolvedCommand: latestFailedCommand
-        ? {
-            id: latestFailedCommand.id,
-            status: latestFailedCommand.status,
-            summary: redactSensitiveInformation(
-              latestFailedCommand.summary,
-            ).slice(0, 800),
-          }
-        : null,
-    }),
-  ].join("\n");
-}
-
-interface AcceptedContextCompaction {
-  readonly benefit: CompactionBenefitEvaluation;
-  readonly intentLedger: NonNullable<SessionState["contextIntentLedger"]>;
-  readonly metadata: NonNullable<SessionState["contextCompactionMetadata"]>;
-}
-
-interface ContextCompactionAssessment {
-  readonly result: ToolExecutionResult;
-  readonly accepted?: AcceptedContextCompaction;
 }
 
 function isSubagentAssignmentSnapshot(
@@ -1598,102 +1485,6 @@ export class AgentRuntime {
     return execution.accounting.reviewModelRequests;
   }
 
-  private assessContextCompaction(input: {
-    nextRequest?: { systemPrompt: string; runtimeContext: string; tools: readonly ToolDefinition[]; reservedTokens?: number };
-    state: SessionState;
-    call: AssistantToolCall;
-    result: ToolExecutionResult;
-    sourceEndMessageIndex: number;
-    retainedTail?: readonly ChatMessage[];
-    required: boolean;
-    maxContextChars: number;
-    maxOutputChars: number;
-  }): ContextCompactionAssessment {
-    const request = input.result.contextCompaction;
-    if (!input.result.ok || !request) return { result: input.result };
-
-    const integrity = validateCompactionIntegrity({
-      state: input.state,
-      request,
-      sourceEndMessageIndex: input.sourceEndMessageIndex,
-    });
-    const previewToolMessage: Extract<ChatMessage, { role: "tool" }> = {
-      role: "tool",
-      tool_call_id: input.call.id,
-      name: input.call.function.name,
-      content: resultForModel(input.result, input.maxOutputChars),
-    };
-    const compactedMessageCount = input.state.messages.length + 1;
-    const candidateMessages = [
-      ...input.state.messages,
-      previewToolMessage,
-      ...(input.retainedTail ?? []),
-    ];
-    const benefit = evaluateCompactionBenefit(
-      this.dependencies.contextManager,
-      {
-        state: input.state,
-        candidateMessages,
-        summary: request.summary,
-        compactedMessageCount,
-        maxContextChars: input.maxContextChars,
-        historyEndExclusive: input.sourceEndMessageIndex,
-        required: input.required,
-        nextRequest: input.nextRequest,
-      },
-    );
-    if (!integrity.ok) {
-      return {
-        result: {
-          ok: false,
-          summary: "Runtime rejected an incomplete or stale context summary.",
-          error: `context_compaction_integrity_failed:${integrity.errors.join(",")}`,
-          failure: protocolToolFailure("context_compaction_integrity_failed",
-            `Repair the candidate using Runtime evidence: ${integrity.errors.join(", ")}. Do not assert coverage without preserving the evidence.`),
-          data: {
-            formatVersion: request.formatVersion ?? null,
-            validationErrors: integrity.errors,
-          },
-        },
-      };
-    }
-    if (!benefit.accepted) {
-      return {
-        result: {
-          ok: false,
-          summary: "Runtime rejected a low-benefit context compaction.",
-          error: benefit.rejectionReason ?? "context_compaction_benefit_failed",
-          failure: protocolToolFailure("context_compaction_benefit_failed",
-            "Reduce the cumulative summary enough to leave context headroom while retaining all required intent and unresolved evidence. The candidate was not committed."),
-          data: {
-            beforeProjectedChars: benefit.beforeProjectedChars,
-            afterProjectedChars: benefit.afterProjectedChars,
-            newProjectedChars: benefit.newProjectedChars,
-            savedChars: benefit.savedChars,
-            savingsRatio: benefit.savingsRatio,
-            postCompactionUtilization: benefit.postCompactionUtilization,
-          },
-        },
-      };
-    }
-
-    const metadata = createCompactionMetadata({
-      state: input.state,
-      sourceStartMessageIndex: input.state.compactedMessageCount,
-      sourceEndMessageIndex: input.sourceEndMessageIndex,
-      compactedMessageCount,
-      benefit,
-    });
-    return {
-      result: input.result,
-      accepted: {
-        benefit,
-        intentLedger: integrity.intentLedger!,
-        metadata,
-      },
-    };
-  }
-
   private observeProviderContext(input: {
     state: SessionState;
     turnId: string;
@@ -1882,6 +1673,7 @@ export class AgentRuntime {
     };
     const turnHistoryStart = state.messages.length;
     let phaseCompactionRequestsUsed = 0;
+    let contextCapacityRetries = 0;
     state.messages.push(userMessage);
     updateLatestRequestLedger(state, turnHistoryStart, userMessage.content);
 
@@ -1964,12 +1756,11 @@ export class AgentRuntime {
       );
     } else if (state.mode === "auto") {
       const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
-      const routeContextPressure = this.dependencies.contextManager
-        .inspect(state, options.maxContextChars).pressure;
+      const routingPressure = this.dependencies.contextManager.inspect(state, options.maxContextChars).utilization;
       if (
         !unfinishedGraph &&
         outstandingSubagentsAtRoute.length === 0 &&
-        (routeContextPressure === "require" || routeContextPressure === "force")
+        routingPressure >= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextCompactionTriggerRatio
       ) {
         {
           const nextTools = availableTools(this.dependencies.tools, "code", agentIdentity.role, state.thinkingEffort,
@@ -1980,9 +1771,13 @@ export class AgentRuntime {
             runtimeContext: renderPinnedCurrentState(state), tools: nextTools.map((tool) => tool.definition),
             reservedTokens: optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens,
               this.dependencies.limits, true) };
-          const compacted = await this.compactCompletedPhases(state, turnId, turnImages, memoryContext,
-            options, nextRequest, true, options.maxSteps);
+          const compacted = await this.maintainContext(state, turnId, turnImages, memoryContext,
+            options, nextRequest, false, options.maxSteps);
           phaseCompactionRequestsUsed += compacted.requests;
+          if (compacted.paused) return this.finish(state, turnId,
+            `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
+            "limit_reached", phaseCompactionRequestsUsed, memoryContext, undefined, undefined,
+            { code: "context_capacity_exhausted", tool: "runtime", attempts: state.compactionControl?.transaction?.attempts ?? 0, recoverable: true });
           if (phaseCompactionRequestsUsed >= options.maxSteps) return this.finish(state, turnId,
             "The shared model-request budget was exhausted during pre-route context compaction.",
             "limit_reached", phaseCompactionRequestsUsed, memoryContext);
@@ -2315,10 +2110,8 @@ export class AgentRuntime {
 
     const stepLimit = options.maxSteps;
     let taskDagFinalizationOnly = false;
-    const toolRecovery = new ToolRecoveryBudget(this.dependencies.limits?.toolProtocolAttempts,
-      { compact_context: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).compactionAttempts });
+    const toolRecovery = new ToolRecoveryBudget(this.dependencies.limits?.toolProtocolAttempts);
     let toolCorrectionStepsUsed = 0;
-    let forcedContextCompactionRequestActive = false;
     let lastContextPressureLevel: ContextPressureLevel = "normal";
     let subagentCollectionReminderIssued = false;
     let subagentCollectionAllowanceGranted = false;
@@ -2414,13 +2207,12 @@ export class AgentRuntime {
       }
       const memorySearchDurationMs = Date.now() - memorySearchStarted;
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const compactContextTool = toolMap.get("compact_context");
       const ordinaryEnabledTools = taskDagFinalizationOnly
         ? state.taskGraph?.status === "completed"
           ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
           : []
         : [...toolMap.values()].filter((tool) =>
-            (!runCommandUnavailable ||
+            tool.name !== "compact_context" && (!runCommandUnavailable ||
             (tool.name !== "run_command" && tool.name !== "start_command"))
           );
       const fixedRuntimeInstructions = [
@@ -2552,7 +2344,7 @@ export class AgentRuntime {
 
       // Optional recall must not force eviction of the live working chain.
       // First remove optional memory as whole records, then reassess pressure.
-      if (selectedOptionalCount > 0 && (contextPressure === "require" || contextPressure === "force")) {
+      if (selectedOptionalCount > 0 && contextPressure !== "normal") {
         optionalAllowance = 0;
         systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools, fixedRuntimeInstructions);
         messages = this.dependencies.contextManager.build({ systemPrompt, runtimeContext: stepRuntimeContext,
@@ -2564,20 +2356,22 @@ export class AgentRuntime {
       }
 
       // One isolated transaction for token/character capacity and explicit requests.
-      if (contextPressure !== "normal" || state.compactionControl?.transaction?.status === "pending" ||
-          state.compactionControl?.requested) {
-        const compacted = await this.compactCompletedPhases(state, turnId, turnImages, memoryContext, options,
+      { // Also enforce the aggregate tool-output budget below the pressure trigger.
+        const compacted = await this.maintainContext(state, turnId, turnImages, memoryContext, options,
           { systemPrompt, runtimeContext: stepRuntimeContext, tools: ordinaryToolDefinitions,
             reservedTokens: Math.max(0, optionalAllowance - memorySelectionInfo.estimatedTokens) },
-          contextPressure === "require" || contextPressure === "force",
+          contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
           stepLimit - step + 1 - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed);
         phaseCompactionRequestsUsed += compacted.requests;
+        if (compacted.paused) return this.finish(state, turnId,
+          `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
+          "limit_reached", step, memoryContext, undefined, undefined,
+          { code: "context_capacity_exhausted", tool: "runtime", attempts: state.compactionControl?.transaction?.attempts ?? 0, recoverable: true });
         if (compacted.committed || compacted.requests > 0) {
           step -= 1;
           continue;
         }
       }
-      const contextCompactionRequired = false; // Work-loop calls only request the isolated transaction.
       if (contextPressure !== lastContextPressureLevel) {
         const percent = contextUtilizationPercent(contextUtilization);
         if (contextPressure === "normal") {
@@ -2586,15 +2380,15 @@ export class AgentRuntime {
           );
         } else if (contextPressure === "suggest") {
           this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; Runtime is waiting for a safe completed-phase boundary.`,
+            `Context utilization is ${percent}%; Runtime will maintain context at complete tool-exchange boundaries.`,
           );
         } else if (contextPressure === "require") {
           this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; compact_context is required before other work.`,
+            `Context utilization is ${percent}%; Runtime is reclaiming context before more work.`,
           );
         } else {
           this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; Runtime is forcing a context compaction request.`,
+            `Context utilization is ${percent}%; Runtime is checking local recovery capacity.`,
           );
         }
         lastContextPressureLevel = contextPressure;
@@ -2631,7 +2425,7 @@ export class AgentRuntime {
         turnId,
         step,
         attempt: 1,
-        purpose: contextCompactionRequired ? "context_compaction" : "agent_step",
+        purpose: "agent_step",
         messages,
         tools: enabledTools.map((tool) => tool.definition),
         enforcedPressure: contextPressure,
@@ -2685,7 +2479,7 @@ export class AgentRuntime {
         await this.reportModelUsage(
           state,
           turnId,
-          contextCompactionRequired || compactOnly
+          compactOnly
             ? "context_compaction"
             : "agent_step",
           response.usage,
@@ -2693,6 +2487,24 @@ export class AgentRuntime {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        if (!options.signal?.aborted && isContextCapacityError(error)) {
+          // The remote window may be smaller than our estimate. Shrink locally,
+          // then retry once; never send the same oversized prompt in a loop.
+          if (contextCapacityRetries < (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextMaxCapacityRetries) {
+            contextCapacityRetries++;
+            const recovered = await this.maintainContext(state, turnId, turnImages, memoryContext, options,
+              { systemPrompt, runtimeContext: stepRuntimeContext, tools: ordinaryToolDefinitions }, true, 0, true);
+            if (recovered.committed && !recovered.paused) {
+              phaseCompactionRequestsUsed++; // The rejected normal request still consumed a request.
+              step--;
+              continue;
+            }
+          }
+          return this.finish(state, turnId,
+            "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
+            "limit_reached", step, memoryContext, undefined, undefined,
+            { code: "context_capacity_exhausted", tool: "runtime", attempts: contextCapacityRetries, recoverable: true });
+        }
         await this.dependencies.appendEvent({
           threadId: state.threadId,
           turnId,
@@ -2734,7 +2546,6 @@ export class AgentRuntime {
       }
 
       const suppressFinalizationToolCalls =
-        !contextCompactionRequired &&
         taskDagFinalizationOnly &&
         Boolean(response.message.tool_calls?.length) &&
         !(
@@ -2800,32 +2611,6 @@ export class AgentRuntime {
       // in history until an accepted compaction retires it.
       const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
-        if (contextCompactionRequired) {
-          const recovery = toolRecovery.fail("compact_context");
-          if (recovery.remaining > 0) {
-            await this.appendContextCompactionRequest({
-              state,
-              turnId,
-              step,
-              utilization: contextUtilization,
-              correction: true,
-            });
-            if (
-              step === stepLimit &&
-              toolCorrectionStepsUsed < MAX_TOOL_CORRECTION_STEPS
-            ) {
-              toolCorrectionStepsUsed += 1;
-              this.dependencies.onStatus?.(
-                "Context correction must fit within the remaining step budget.",
-              );
-            }
-            this.dependencies.onStatus?.(
-              "The model did not compact the required context; requesting one correction.",
-            );
-            continue;
-          }
-          throw new ToolProtocolExhausted("compact_context", recovery.attempt, step);
-        }
         if (this.dependencies.hasOpenCommandHandles?.()) {
           const instruction = backgroundCommandFinalizationInstruction();
           if (!backgroundCommandFinalizationReminderIssued) {
@@ -3067,8 +2852,6 @@ export class AgentRuntime {
 
       const compactContextIsExclusive =
         calls.length === 1 && calls[0]?.function.name === "compact_context";
-      const contextCompactionProtocolViolated =
-        contextCompactionRequired && !compactContextIsExclusive;
       const manageTasksBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
       const manageSubagentsMixed =
@@ -3080,20 +2863,12 @@ export class AgentRuntime {
       const submitTaskResultBatched =
         calls.length > 1 &&
         calls.some((call) => call.function.name === "submit_task_result");
-      const compactContextHasNewHistory =
-        contextPressure !== "normal" &&
-        (
-          contextCompactionRequired ||
-          compactionCooldownSatisfied(state, state.messages.length - 1)
-        );
       const stepImageAttachments: ImageAttachment[] = [];
-      let successfulContextCompaction = false;
       let proposedPlan: PlanProposal | undefined;
       let submittedTaskReport: SubagentTaskReport | undefined;
       let sandboxPauseRequested = false;
       let steeringAppliedBetweenTools = false;
       let backgroundCommandFinalizationRejected = false;
-      let acceptedContextCompaction: AcceptedContextCompaction | undefined;
       let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
       let completedVerificationPhase = false;
 
@@ -3171,6 +2946,14 @@ export class AgentRuntime {
         }
         const toolName = call.function.name as ToolName;
         const tool = toolMap.get(toolName);
+        // Pure file reading and Plan explanations pay no inventory-scan cost.
+        // Capture before the first capability that could change verification bytes,
+        // including arbitrary inspect commands and shared-workspace children.
+        if (!state.progressGuard?.validationBaseline && tool &&
+            (tool.mutating || ["run_command", "start_command", "manage_subagents"].includes(toolName))) {
+          const baseline = await captureValidationBaseline(state.workspaceRoot, this.dependencies.limits);
+          await this.appendProgressReviewEvent(state, turnId, "progress.validation.baseline", "completed", { baseline });
+        }
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
         const progressExperimentAtCall = agentIdentity.role === "main_agent"
           ? requiredProgressExperiment(
@@ -3197,25 +2980,22 @@ export class AgentRuntime {
 
         const journalRecall = tool && toolName === "manage_memory"
           ? recallCompactionEvidence(state, call.function.arguments) : undefined;
-        if (journalRecall) {
+        if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
+          result = { ok: false, summary: "compact_context cannot be batched with workspace tools; no call in this batch was executed.",
+            error: "context_compaction_must_be_exclusive",
+            failure: protocolToolFailure("context_compaction_must_be_exclusive", "Continue normal work without compact_context; Runtime manages context maintenance.") };
+        } else if (journalRecall) {
           result = journalRecall;
         } else if (toolName === "compact_context") {
           try {
             if (!tool || !compactContextIsExclusive) throw new Error("compact_context must be available and called alone");
-            const patch = semanticPatchSchema.parse(JSON.parse(call.function.arguments));
+            const patch = parseSemanticRequestPatch(JSON.parse(call.function.arguments));
             const payload = { patch };
             await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
               type: "context.compaction.requested", payload });
             foldCompactionControl(state, "context.compaction.requested", payload);
-            result = { ok: true, summary: "Compaction requested. Runtime will preserve the live phase and process the semantic candidate at the next safe boundary." };
+            result = { ok: true, summary: "Compaction requested. Runtime will assess the candidate at the next complete tool-exchange boundary." };
           } catch (error) { result = toolFailure(error, "Invalid semantic compaction request"); }
-        } else if (contextCompactionProtocolViolated) {
-          result = {
-            ok: false,
-            summary:
-              "Context compaction is required; compact_context must be the only tool call.",
-            error: "context_compaction_required",
-          };
         } else if (
           progressExperimentAtCall &&
           !PROGRESS_EXPERIMENT_TOOLS.has(toolName)
@@ -3334,6 +3114,9 @@ export class AgentRuntime {
                 JSON.stringify(projectionHistory).length - estimateToolDefinitionsChars(ordinaryToolDefinitions) - 1024),
               orchestrationEnabled: options.orchestrationEnabled,
               workspaceRoot: state.workspaceRoot,
+              validationBaseline: state.progressGuard?.validationBaseline,
+              ...(progressExperimentAtCall?.reviewReport ? { progressExperiment: {
+                incidentId: progressExperimentAtCall.incidentId, report: progressExperimentAtCall.reviewReport } } : {}),
               mode: effectiveMode,
               threadId: state.threadId,
               turnId,
@@ -3625,26 +3408,6 @@ export class AgentRuntime {
           submittedTaskReport = undefined;
         }
 
-        if (toolName === "compact_context" && result.ok && result.contextCompaction) {
-          // Acceptance includes memory restored after compaction, not the
-          // pressure-only request from which optional evidence was removed.
-          optionalAllowance = optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens,
-            this.dependencies.limits, true);
-          const normalPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools, fixedRuntimeInstructions);
-          const assessment = this.assessContextCompaction({
-            nextRequest: { systemPrompt: normalPrompt, runtimeContext: stepRuntimeContext, tools: ordinaryToolDefinitions },
-            state,
-            call,
-            result,
-            sourceEndMessageIndex: state.messages.length - 1,
-            required: contextCompactionRequired,
-            maxContextChars: options.maxContextChars,
-            maxOutputChars: options.maxOutputChars,
-          });
-          result = assessment.result;
-          acceptedContextCompaction = assessment.accepted;
-        }
-
         if (result.ok && result.memoryMutation && this.dependencies.validateMemorySources) {
           try {
             this.dependencies.validateMemorySources(state, turnId, memoryContext.userInput, result.memoryMutation);
@@ -3655,8 +3418,8 @@ export class AgentRuntime {
         }
         result = normalizeToolFailure(result);
         if (result.ok) toolRecovery.succeed(toolName);
-        // Compaction has an exclusive mandatory gate below. Other tools share
-        // field-level repair guidance, but mutations are never auto-replayed.
+        // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
+        // Context maintenance is isolated and never uses this repair budget.
         if (toolName !== "compact_context" && result.failure?.recovery === "correct_arguments") {
           const recovery = toolRecovery.fail(toolName);
           result = { ...result, failure: { ...result.failure,
@@ -3731,6 +3494,13 @@ export class AgentRuntime {
           tool: call.function.name,
           result,
           verificationIntent: verification.intent,
+          investigationPolicy: {
+            minimum: projectionLimits.progressInvestigationMinSamples, ratio: projectionLimits.progressInvestigationRepeatRatio,
+            window: projectionLimits.progressInvestigationWindowResponses, review: projectionLimits.progressInvestigationReviewEnabled,
+          },
+          ...(progressExperimentAtCall?.reviewReport && ["run_command", "start_command"].includes(toolName) &&
+            matchesReviewExperiment(progressExperimentAtCall.reviewReport, call.function.arguments, state.workspaceRoot)
+            ? { experimentIncidentId: progressExperimentAtCall.incidentId } : {}),
           ...(verification.kind ? { verificationKind: verification.kind } : {}),
         });
         const rollbackPreparedSubagent = (): void => {
@@ -3743,6 +3513,7 @@ export class AgentRuntime {
           }
         };
         if (!result.ok) rollbackPreparedSubagent();
+        const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
         try {
           await this.dependencies.appendEvent({
             eventId: toolResultEventId,
@@ -3756,6 +3527,7 @@ export class AgentRuntime {
               tool: call.function.name,
               message: toolMessage,
               progressObservation,
+              ...(contextCommand ? { contextCommand } : {}),
               outputProjection: { capturedResultChars: JSON.stringify(result.data ?? null).length,
                 modelResultChars: toolMessage.content.length },
               ...(result.failure ? { failure: result.failure } : {}),
@@ -3785,6 +3557,8 @@ export class AgentRuntime {
           progressObservation,
         );
         state.progressGuard = progressFold.state;
+        foldPendingOperations(state, { tool: toolName, contextCommand,
+          ...(result.ok ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment } : {}) });
         completedVerificationPhase ||= progressFold.accepted && progressObservation.kind === "verification_terminal";
         state.messages.push(toolMessage);
         if (taskGraphUpdate) {
@@ -3799,51 +3573,6 @@ export class AgentRuntime {
         if (result.ok && result.imageAttachments?.length) {
           stepImageAttachments.push(...result.imageAttachments);
         }
-        if (
-          toolName === "compact_context" &&
-          result.ok &&
-          result.contextCompaction &&
-          acceptedContextCompaction
-        ) {
-          const compaction = this.dependencies.contextManager.applyModelCompaction(
-            state,
-            result.contextCompaction.summary,
-            state.messages.length,
-            {
-              intentLedger: acceptedContextCompaction.intentLedger,
-              metadata: acceptedContextCompaction.metadata,
-            },
-          );
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "context.compacted",
-            phase: "completed",
-            payload: {
-              summary: state.workingSummary,
-              compactedMessageCount: compaction.compactedMessageCount,
-              summaryChars: compaction.summaryChars,
-              contextIntentLedger: state.contextIntentLedger,
-              contextCompactionMetadata: state.contextCompactionMetadata,
-            },
-          });
-          this.dependencies.onStatus?.(
-            `Context compacted through ${compaction.compactedMessageCount} messages ` +
-              `into ${compaction.summaryChars} characters.`,
-          );
-          if (!acceptedContextCompaction.benefit.safeWaterlineReached) {
-            this.dependencies.onStatus?.(
-              `Compaction succeeded but remains above the 55% headroom target ` +
-                `(${contextUtilizationPercent(
-                  acceptedContextCompaction.benefit.postCompactionUtilization,
-                )}%).`,
-            );
-          }
-          successfulContextCompaction = true;
-          toolRecovery.succeed("compact_context");
-          forcedContextCompactionRequestActive = false;
-        }
         if (toolName === "manage_memory" && result.ok && result.memoryMutation) {
           memoryContext.mutations.push(result.memoryMutation);
         }
@@ -3851,6 +3580,8 @@ export class AgentRuntime {
       }
 
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
+      else if (investigationExchangeStart(state.messages) !== undefined)
+        await this.closeContextPhase(state, turnId, "investigation");
       if (!steeringAppliedBetweenTools && agentIdentity.role === "main_agent") {
         steeringAppliedBetweenTools = Boolean(await this.takeAndApplySteering(
           state,
@@ -3915,33 +3646,6 @@ export class AgentRuntime {
           undefined,
           submittedTaskReport,
         );
-      }
-
-      if (contextCompactionRequired && !successfulContextCompaction) {
-        const recovery = toolRecovery.fail("compact_context");
-        if (recovery.remaining > 0) {
-          await this.appendContextCompactionRequest({
-            state,
-            turnId,
-            step,
-            utilization: contextUtilization,
-            correction: true,
-          });
-          if (
-            step === stepLimit &&
-            toolCorrectionStepsUsed < MAX_TOOL_CORRECTION_STEPS
-          ) {
-            toolCorrectionStepsUsed += 1;
-            this.dependencies.onStatus?.(
-              "Context correction must fit within the remaining step budget.",
-            );
-          }
-          this.dependencies.onStatus?.(
-            "The model violated the required compaction protocol; requesting one correction.",
-          );
-          continue;
-        }
-        throw new ToolProtocolExhausted("compact_context", recovery.attempt, step);
       }
 
       if (proposedPlan) {
@@ -4015,9 +3719,12 @@ export class AgentRuntime {
       const message = error instanceof Error ? error.message : String(error);
       const protocolFailure = !interrupted && error instanceof ToolProtocolExhausted ? error : undefined;
       const controlFailure = protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
+      const capacityExhausted = !interrupted && isContextCapacityError(error);
       const result: AgentRunResult = {
-        text: interrupted ? "The task was interrupted by the user." : `Agent run failed: ${message}`,
-        reason: interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
+        text: interrupted ? "The task was interrupted by the user." : capacityExhausted
+          ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
+          : `Agent run failed: ${message}`,
+        reason: interrupted ? "interrupted" : capacityExhausted || error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
         steps: error instanceof TaskBudgetExceeded ? options.maxSteps - this.remainingRequests : protocolFailure?.steps ?? 0,
         threadId: state.threadId,
         turnId,
@@ -4045,110 +3752,54 @@ export class AgentRuntime {
     }
   }
 
-  private async closeContextPhase(state: SessionState, turnId: string, kind: "verification" | "turn" = "verification"): Promise<void> {
-    if (!state.messages.length || !completeExchange(state.messages) || this.dependencies.hasOpenCommandHandles?.()) return;
+  private async closeContextPhase(state: SessionState, turnId: string, kind: "verification" | "turn" | "investigation" = "verification"): Promise<void> {
+    if (!state.messages.length || !completeExchange(state.messages)) return;
     if (kind === "turn" && state.compactionControl?.lastVerificationTurnId === turnId) return;
     const payload = { end: state.messages.length, kind, turnId };
     await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "context.phase.closed", phase: "completed", payload });
     foldCompactionControl(state, "context.phase.closed", payload);
   }
 
-  private async compactCompletedPhases(state: SessionState, turnId: string, images: ImageAttachment[],
+  private async maintainContext(state: SessionState, turnId: string, images: ImageAttachment[],
     memoryContext: { userInput: string }, options: AgentRunOptions, nextRequest: NormalRequestEnvelope,
-    required: boolean, maxRequests: number): Promise<{ requests: number; committed: boolean }> {
+    required: boolean, maxRequests: number, forceRecovery = false): Promise<CompactionResult> {
     const compactTool = this.dependencies.tools.find((tool) => tool.name === "compact_context");
-    if (!compactTool) throw new Error("The context compaction tool is unavailable");
     const result = await runCompactionTransaction({ state, manager: this.dependencies.contextManager, turnId,
-      maxAttempts: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).compactionAttempts,
+      limits: this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS, signal: options.signal,
+      skipSummary: forceRecovery, forceRecovery,
+      retainRecentExchanges: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).compactionRetainRecentExchanges,
       maxContextChars: options.maxContextChars, required, maxRequests, nextRequest,
-      handlesOpen: (this.dependencies.hasOpenCommandHandles?.() ?? false) ||
-        (this.dependencies.getOutstandingSubagents?.().length ?? 0) > 0,
-      tool: compactTool.definition, inventory: () => compactionSourceInventory(state),
+      tool: compactTool?.definition,
       append: (event) => this.dependencies.appendEvent(event),
       complete: async (messages, attempt) => {
+        if (!compactTool) return undefined;
         const inspection = this.dependencies.contextManager.inspectProviderRequest({ state,
           maxContextChars: options.maxContextChars, messages, tools: [compactTool.definition] });
         this.observeProviderContext({ state, turnId, purpose: "context_compaction", attempt, messages,
           tools: [compactTool.definition], enforcedPressure: required ? "require" : "suggest",
           enforcedUtilization: inspection.utilization, maxContextChars: options.maxContextChars, actualRequest: inspection });
-        const maxAttempts = state.compactionControl?.transaction?.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS;
-        this.dependencies.onStatus?.(`Completed-phase compaction ${attempt}/${maxAttempts}; active thinking is retained.`);
+        this.dependencies.onStatus?.(attempt > 1 ? "Context maintenance: correcting overlong summary fields once; further length overflow will be clipped locally." : "Context maintenance: bounded handoff summary; Runtime can repair length overflow and recover locally.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
-          "Compacting completed phases", () => this.dependencies.provider.complete({ messages,
-            tools: [compactTool.definition], signal, thinkingEffort: state.thinkingEffort,
+          "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
+            maxTokens: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSummaryMaxTokens, maxRetries: 0,
+            tools: [compactTool.definition], signal, thinkingEffort: "none",
             currentTurnImageIds: images.map((image) => image.id) })));
         if (attempted.kind === "steering_interrupted") {
-          await this.takeAndApplySteering(state, turnId, "after_model", images, false, memoryContext);
           return undefined;
         }
         await this.reportModelUsage(state, turnId, "context_compaction", attempted.value.usage, { attempt, retry: attempt > 1 });
-        await this.takeAndApplySteering(state, turnId, "after_model", images, false, memoryContext);
         return { ...attempted.value.message,
           tool_calls: attempted.value.message.tool_calls?.map(durableToolCall) };
       },
-      execute: async (candidate) => {
-        const calls = candidate.tool_calls ?? [];
-        if (calls.length !== 1 || calls[0]!.function.name !== "compact_context") return {
-          ok: false, summary: "Submit exactly one compact_context call.",
-          failure: protocolToolFailure("context_compaction_must_be_exclusive", "Supply the complete compact_context schema; no other tools are executed.") };
-        try {
-          return normalizeToolFailure(await compactTool.execute(prepareToolInput(compactTool, calls[0]!.function.arguments), {
-            workspaceRoot: state.workspaceRoot, mode: "code", threadId: state.threadId, turnId,
-            approvalPolicy: options.approvalPolicy, commandExecutionMode: options.commandExecutionMode,
-            requestApproval: this.dependencies.requestApproval, signal: options.signal,
-            commandTimeoutMs: options.commandTimeoutMs, maxOutputChars: options.maxOutputChars,
-          }));
-        } catch (error) { return toolFailure(error, "Unable to compact context"); }
+      afterComplete: async () => {
+        await this.takeAndApplySteering(state, turnId, "after_model", images, false, memoryContext);
       },
     });
     if (result.committed) this.dependencies.onStatus?.(
-      `Completed-phase compaction committed through ${state.compactedMessageCount} messages; recent thinking and tools remain intact.`);
+      state.workingSummary.includes('"mode":"minimal_rebase"')
+        ? "Context recovery: a complete exchange (including thinking) was archived. Continuing the same task from pinned state and Journal references; budgets and pending operations are unchanged."
+        : "Context maintenance completed: bounded history and tool references retained; raw Journal remains available.");
     return result;
-  }
-
-  private async appendContextCompactionRequest(input: {
-    state: SessionState;
-    turnId: string;
-    step: number;
-    utilization: number;
-    correction: boolean;
-  }): Promise<void> {
-    const percent = contextUtilizationPercent(input.utilization);
-    const request: Extract<ChatMessage, { role: "user" }> = {
-      role: "user",
-      content: input.correction
-        ? renderRuntimePrompt(
-            "runtime/context-compaction-correction.md",
-            { percent },
-          )
-        : renderRuntimePrompt(
-            "runtime/context-compaction-force-request.md",
-            { percent },
-          ),
-    };
-    if (input.correction) {
-      const previous = [...input.state.messages].reverse().find((message) =>
-        message.role === "tool" && message.name === "compact_context");
-      if (previous?.content) {
-        try {
-          const result = JSON.parse(previous.content) as ToolExecutionResult;
-          if (result.ok === false) {
-            request.content += "\nRUNTIME_TOOL_REPAIR: " + resultForModel(result, 3_000) +
-              "\nRepair the previous complete candidate; do not remove its other valid fields. " +
-              "Supply missing coverage flags only after checking Runtime evidence; a missing value is not proof of coverage.";
-          }
-        } catch { /* Legacy/truncated results still have the fixed schema guidance. */ }
-      }
-    }
-    input.state.messages.push(request);
-    await this.dependencies.appendEvent({
-      threadId: input.state.threadId,
-      turnId: input.turnId,
-      stepId: `step_${input.step}`,
-      type: "message.user.synthetic",
-      phase: "completed",
-      payload: request,
-    });
   }
 
   private async withModelRequestActivity<T>(
@@ -4320,12 +3971,12 @@ export class AgentRuntime {
       ...(subagentTaskReport ? { subagentTaskReport } : {}),
       ...(failure ? { failure } : {}),
     };
-    if (
+    if (completeExchange(state.messages) && (
       !lastMessage ||
       lastMessage.role !== "assistant" ||
       Boolean(lastMessage.tool_calls?.length) ||
       !lastMessage.content?.trim()
-    ) {
+    )) {
       const syntheticMessage: ChatMessage = { role: "assistant", content: text };
       state.messages.push(syntheticMessage);
       await this.dependencies.appendEvent({

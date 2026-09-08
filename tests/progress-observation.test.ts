@@ -28,6 +28,14 @@ function commandOutput(
 }
 
 describe("progress observation", () => {
+  it("does not recover stagnation or request code review from unsafe cleanup", () => {
+    const observation = observeToolResult({ sourceEventId: "event_cleanup", sourceCallId: "call_cleanup", scopeKey: "thread:test", responseOrdinal: 1,
+      tool: "run_command", verificationIntent: true, result: { ok: false, summary: "cleanup unknown", data: {
+        ...commandOutput("exited", 0), lifecycle: { execution: "exited", cleanup: "unconfirmed" },
+      } } });
+    assert.equal(observation.kind, "infrastructure_failure");
+    assert.equal(observation.outcomeClass, "unknown");
+  });
   it("derives bounded command evidence before model-facing output is truncated", () => {
     const observation = observeToolResult({
       sourceEventId: "event_command_result",

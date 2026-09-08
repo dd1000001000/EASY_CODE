@@ -85,7 +85,7 @@ async function withTool(
 }
 
 describe("run_command model contract", () => {
-  it("enforces flat verification metadata before command preparation", async () => {
+  it("normalizes optional verification metadata without another model call", async () => {
     await withTool(async (root, tool, backend) => {
       const valid = await tool.execute(
         {
@@ -102,8 +102,8 @@ describe("run_command model contract", () => {
         { program: "node", args: ["--version"], intent: "verify" },
         context(root),
       );
-      assert.equal(missingKind.ok, false);
-      assert.match(missingKind.error ?? "", /verificationKind is required/u);
+      assert.equal(missingKind.ok, true);
+      assert.equal((missingKind.data as { requestMetadata: { verificationKind: string } }).requestMetadata.verificationKind, "custom");
 
       const misplacedKind = await tool.execute(
         {
@@ -114,47 +114,42 @@ describe("run_command model contract", () => {
         },
         context(root),
       );
-      assert.equal(misplacedKind.ok, false);
-      assert.match(misplacedKind.error ?? "", /verificationKind is not allowed/u);
-      assert.equal(backend.prepareCalls, 1);
+      assert.equal(misplacedKind.ok, true);
+      assert.equal((misplacedKind.data as { requestMetadata: { verificationKind?: string } }).requestMetadata.verificationKind, undefined);
+      assert.equal(backend.prepareCalls, 3);
+      const invalidKind = await tool.execute({ program: "node", args: ["--version"], intent: "verify", verificationKind: { wrong: true } }, context(root));
+      assert.equal(invalidKind.ok, true);
+      const missingProgram = await tool.execute({ args: ["--version"], intent: "inspect" }, context(root));
+      assert.equal(missingProgram.ok, false);
+      assert.equal(backend.prepareCalls, 4);
     });
   });
 
-  it("rejects a duplicated program before resolution, approval, or process preparation", async () => {
+  it("does not guess or remove a same-named script argument", async () => {
     await withTool(async (root, tool, backend) => {
+      await writeFile(path.join(root, "node"), "console.log('same-named-script')");
       const result = await tool.execute(
         {
-          program: "definitely-not-an-installed-program",
-          args: ["definitely-not-an-installed-program", "--version"],
+          program: "node",
+          args: ["node"],
           intent: "inspect",
         },
         context(root),
       );
 
-      assert.equal(result.ok, false);
-      assert.equal(backend.prepareCalls, 0);
-      const output = result.data as {
-        status: string;
-        policyDecision: { matchedRule: string; recommendation?: string };
-        failure: { kind: string; processStarted: boolean };
-      };
-      assert.equal(output.status, "policy_denied");
-      assert.equal(output.failure.kind, "parameter");
-      assert.equal(output.failure.processStarted, false);
-      assert.equal(output.policyDecision.matchedRule, "input.duplicate_program_argument");
-      assert.match(output.policyDecision.recommendation ?? "", /remove.*args/iu);
-      assert.match(result.error ?? "", /process was not started/iu);
-      assert.match(result.error ?? "", /Recovery:.*remove.*args/iu);
+      assert.equal(result.ok, true);
+      assert.equal(backend.prepareCalls, 1);
+      assert.match((result.data as { stdout: { text: string } }).stdout.text, /same-named-script/u);
     });
   });
 
-  it("does not let unrestricted mode bypass wait/detach input rejection", async () => {
+  it("keeps direct detach rejection outside dangerous mode", async () => {
     await withTool(async (root, tool, backend) => {
       const result = await tool.execute(
-        { program: "sleep", args: ["30"], intent: "run" },
+        { program: "nohup", args: ["node", "--version"], intent: "run" },
         {
           ...context(root),
-          commandExecutionMode: "unrestricted",
+          commandExecutionMode: "manual",
           isUnrestrictedHostAccessActive: () => true,
         },
       );
@@ -170,12 +165,12 @@ describe("run_command model contract", () => {
     });
   });
 
-  it("does not let unrestricted mode bypass explicit-shell lifecycle supervision", async () => {
+  it("keeps explicit-shell protocol checks outside dangerous mode", async () => {
     await withTool(async (root, tool, backend) => {
       for (const input of [
         {
           program: "sh",
-          args: ["-c", "echo ready\nsleep 30"],
+          args: ["-i"],
           intent: "run" as const,
         },
         {
@@ -186,7 +181,7 @@ describe("run_command model contract", () => {
       ]) {
         const result = await tool.execute(input, {
           ...context(root),
-          commandExecutionMode: "unrestricted",
+          commandExecutionMode: "manual",
           isUnrestrictedHostAccessActive: () => true,
         });
 

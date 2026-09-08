@@ -183,18 +183,19 @@ describe("unified memory control", () => {
     }
   });
 
-  it("rejects a compact-only win when restored memory would exceed the post-compaction target", () => {
+  it("rejects a compact-only win when restored memory would exceed actual input capacity", () => {
     const f = fixture();
     try {
-      f.state.messages.push({ role: "user", content: "history ".repeat(6000) });
+      f.state.messages.push({ role: "user", content: "Investigate the task" },
+        { role: "assistant", content: "history ".repeat(6000) });
       const manager = new ContextManager();
       manager.configureTokenBudget(16000);
       const input = { state: f.state, candidateMessages: f.state.messages, summary: "Verified work and pending tasks.",
-        compactedMessageCount: 1, maxContextChars: 100000, historyEndExclusive: 1, required: true };
+        compactedMessageCount: 2, maxContextChars: 100000, historyEndExclusive: 2, required: true };
       assert.equal(evaluateCompactionBenefit(manager, { ...input,
         nextRequest: { systemPrompt: "rules", runtimeContext: "", tools: [] } }).accepted, true);
       const rejected = evaluateCompactionBenefit(manager, { ...input,
-        nextRequest: { systemPrompt: "rules", runtimeContext: "汉".repeat(7000), tools: [] } });
+        nextRequest: { systemPrompt: "rules", runtimeContext: "汉".repeat(12000), tools: [] } });
       assert.equal(rejected.accepted, false);
       assert.equal(rejected.rejectionReason, "unsafe_post_compaction_pressure");
     } finally { f.dispose(); }

@@ -4,6 +4,8 @@ import {
   type VerificationKind,
 } from "../command/types.js";
 import { sha256 } from "../utils/hash.js";
+import { z } from "zod";
+import { legacyCommandValidation, type CommandValidation } from "../command/verification.js";
 import {
   PROGRESS_OBSERVATION_SCHEMA_VERSION,
   type ProgressObservation,
@@ -38,6 +40,7 @@ const OBSERVATION_KEYS = new Set([
   "outcomeKey",
   "evidenceDigest",
   "searchRepeatLimit",
+  "standardStatus", "baselineDigest", "experimentIncidentId", "changedTestPaths", "readRange", "investigationPolicy",
 ]);
 
 const COMMAND_TOOLS = new Set([
@@ -64,6 +67,8 @@ const INFRASTRUCTURE_STATUSES = new Set([
 ]);
 
 export interface ObserveToolResultInput {
+  readonly experimentIncidentId?: string;
+  readonly investigationPolicy?: ProgressObservation["investigationPolicy"];
   readonly sourceEventId: string;
   readonly sourceCallId: string;
   readonly scopeKey: string;
@@ -142,6 +147,7 @@ function commandData(value: unknown): CommandResultData | undefined {
 
 function commandTargetKey(data: CommandResultData, override?: string): string {
   if (override !== undefined) return override;
+  if (isRecord(data.validation) && typeof data.validation.targetKey === "string" && SHA256_DIGEST.test(data.validation.targetKey)) return data.validation.targetKey;
   const executed = isRecord(data.executed) ? data.executed : undefined;
   return digest({
     program: typeof executed?.program === "string" ? executed.program : "unknown",
@@ -193,6 +199,7 @@ function readObservation(input: ObserveToolResultInput): ProgressObservation | u
     responseOrdinal: input.responseOrdinal,
     tool: input.tool,
     kind: "read",
+    readRange: { fileKey: digest(data.path), start: Number(data.startLine), end: Number(data.endLine) },
     confidence: "high",
     outcomeClass: "unknown",
     targetKey,
@@ -230,7 +237,8 @@ function commandObservation(
   }
 
   const evidenceDigest = commandEvidenceDigest(data);
-  if (INFRASTRUCTURE_STATUSES.has(data.status)) {
+  if (INFRASTRUCTURE_STATUSES.has(data.status) || isRecord(data.lifecycle) &&
+      ["failed", "unconfirmed"].includes(String(data.lifecycle.cleanup))) {
     return {
       schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,
       sourceEventId: input.sourceEventId,
@@ -247,6 +255,17 @@ function commandObservation(
   }
 
   if (input.verificationIntent !== true) {
+    const completeInspection = data.status === "exited" && data.exitCode === 0 && input.result.ok &&
+      isRecord(data.requestMetadata) && data.requestMetadata.intent === "inspect" &&
+      [data.stdout, data.stderr].every(stream => isRecord(stream) && stream.truncated === false &&
+        typeof stream.text === "string" && stream.text.length <= MAX_HASH_INPUT_CHARS) &&
+      (outputText(data.stdout).length > 0 || outputText(data.stderr).length > 0);
+    if (completeInspection) return {
+      schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION, sourceEventId: input.sourceEventId,
+      sourceCallId: input.sourceCallId, scopeKey: input.scopeKey, responseOrdinal: input.responseOrdinal,
+      tool: input.tool, kind: "investigation_terminal", confidence: "high", outcomeClass: "unknown",
+      commandId: data.commandId, evidenceDigest, outcomeKey: evidenceDigest,
+    };
     return {
       schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,
       sourceEventId: input.sourceEventId,
@@ -262,11 +281,12 @@ function commandObservation(
   }
 
   const targetKey = commandTargetKey(data, input.targetKey);
+  const validation = isRecord(data.validation) && ["passed", "failed", "unknown"].includes(String(data.validation.status)) &&
+    ["high", "low"].includes(String(data.validation.confidence))
+    ? data.validation as unknown as CommandValidation : legacyCommandValidation(data);
   const outcomeClass: ProgressOutcomeClass = data.status === "timed_out"
     ? "timed_out"
-    : data.exitCode === 0
-      ? "passed"
-      : "failed";
+    : validation.status;
   return {
     schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,
     sourceEventId: input.sourceEventId,
@@ -275,13 +295,24 @@ function commandObservation(
     responseOrdinal: input.responseOrdinal,
     tool: input.tool,
     kind: "verification_terminal",
-    confidence: "high",
+    ...(validation.standard ? {
+      standardStatus: validation.standard.status, baselineDigest: validation.standard.baselineDigest,
+      changedTestPaths: validation.standard.changedPaths,
+    } : {}),
+    ...(typeof (isRecord(data.requestMetadata) ? data.requestMetadata.experimentIncidentId : undefined) === "string"
+      ? { experimentIncidentId: (data.requestMetadata as { experimentIncidentId: string }).experimentIncidentId }
+      : input.experimentIncidentId ? { experimentIncidentId: input.experimentIncidentId } : {}),
+    // Exit status of a custom script proves that script exited, not that tests
+    // actually ran. Keep build/typecheck/lint command contracts usable.
+    confidence: data.status === "timed_out" ? "high" : validation.source === "process_exit" &&
+      !["build", "typecheck", "lint", "format_check"].includes(input.verificationKind ?? "custom") && isRecord(data.validation)
+      ? "low" : validation.confidence,
     outcomeClass,
     verificationKind: input.verificationKind ?? "custom",
     verificationCycleId: input.verificationCycleId ?? data.commandId,
     commandId: data.commandId,
     targetKey,
-    outcomeKey: outcomeClass === "passed" ? "passed" : evidenceDigest,
+    outcomeKey: outcomeClass === "passed" ? "passed" : validation.evidenceKey && SHA256_DIGEST.test(validation.evidenceKey) ? validation.evidenceKey : evidenceDigest,
     evidenceDigest,
   };
 }
@@ -322,7 +353,7 @@ export function observeToolResult(input: ObserveToolResultInput): ProgressObserv
     readObservation(input) ??
     searchObservation(input) ??
     neutralObservation(input);
-  return parseProgressObservation(observation, {
+  return parseProgressObservation({ ...observation, ...(input.investigationPolicy ? { investigationPolicy: input.investigationPolicy } : {}) }, {
     sourceEventId: input.sourceEventId,
     sourceCallId: input.sourceCallId,
     ...(observation.commandId ? { commandId: observation.commandId } : {}),
@@ -365,11 +396,23 @@ export function parseProgressObservation(
   optionalSafeText(value.verificationCycleId, MAX_IDENTIFIER_CHARS, "verificationCycleId");
   optionalSafeText(value.targetKey, MAX_KEY_CHARS, "targetKey");
   optionalSafeText(value.outcomeKey, MAX_KEY_CHARS, "outcomeKey");
+  optionalSafeText(value.experimentIncidentId, MAX_IDENTIFIER_CHARS, "experimentIncidentId");
+  const extra = z.object({
+    standardStatus: z.enum(["unchanged", "changed", "unknown"]).optional(),
+    baselineDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+    changedTestPaths: z.array(z.string().max(1024)).max(32).optional(),
+    readRange: z.object({ fileKey: z.string().regex(SHA256_DIGEST), start: z.number().int().min(1), end: z.number().int().min(1) }).strict().optional(),
+    investigationPolicy: z.object({ minimum: z.number().int().min(5).max(64), ratio: z.number().min(0.5).max(1),
+      window: z.number().int().min(4).max(64), review: z.boolean() }).strict().optional(),
+  }).parse(value);
+  if (extra.readRange && (value.kind !== "read" || extra.readRange.end < extra.readRange.start) ||
+      extra.standardStatus && (value.kind !== "verification_terminal" || !extra.baselineDigest) ||
+      value.experimentIncidentId !== undefined && value.kind !== "verification_terminal") throw new Error("Invalid progress evidence binding");
   if (
     value.schemaVersion !== PROGRESS_OBSERVATION_SCHEMA_VERSION ||
     !Number.isSafeInteger(value.responseOrdinal) ||
     Number(value.responseOrdinal) < 0 ||
-    !["read", "verification_terminal", "infrastructure_failure", "neutral"].includes(
+    !["read", "investigation_terminal", "verification_terminal", "infrastructure_failure", "neutral"].includes(
       String(value.kind),
     ) ||
     (value.confidence !== "high" && value.confidence !== "low") ||
@@ -410,7 +453,7 @@ export function parseProgressObservation(
     throw new Error("A read ProgressObservation requires one high-confidence target");
   }
   if (
-    (kind === "neutral" || kind === "infrastructure_failure") &&
+    (kind === "neutral" || kind === "infrastructure_failure" || kind === "investigation_terminal") &&
     outcomeClass !== "unknown"
   ) {
     throw new Error("Non-verification ProgressObservations must have unknown outcome");
@@ -426,8 +469,12 @@ export function parseProgressObservation(
   if (kind === "neutral" && value.commandId !== undefined) {
     throw new Error("Neutral observations must not consume a terminal command ID");
   }
+  if (kind === "investigation_terminal" && (value.commandId === undefined || value.evidenceDigest === undefined ||
+      value.outcomeKey !== value.evidenceDigest || value.confidence !== "high")) throw new Error("Invalid inspection terminal evidence");
 
   const parsed: ProgressObservation = {
+    ...extra,
+    ...(typeof value.experimentIncidentId === "string" ? { experimentIncidentId: value.experimentIncidentId } : {}),
     schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,
     sourceEventId: value.sourceEventId,
     sourceCallId: value.sourceCallId,

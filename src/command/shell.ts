@@ -269,17 +269,23 @@ function asynchronousShellProtocolReason(
   command: string,
 ): string | undefined {
   const lexemes = lexShellCommand(command, kind);
-  if (lexemes.some((lexeme) => lexeme.kind === "operator" && HEREDOC_OPERATORS.has(lexeme.value))) {
-    return "Shell heredoc/here-string input is disabled; pass bounded input without another shell parser";
-  }
+  // Here-document bodies and script files are opaque project code. Their safety
+  // comes from process containment, not an incomplete shell grammar.
+  if (lexemes.some((lexeme) => lexeme.kind === "operator" && HEREDOC_OPERATORS.has(lexeme.value))) return undefined;
   if (
-    (kind === "posix" || kind === "powershell") &&
+    kind === "posix" &&
     lexemes.some((lexeme) => lexeme.kind === "operator" && lexeme.value === "&")
   ) {
-    return kind === "powershell"
-      ? "PowerShell call/background operators are disabled; run the executable directly with synchronous run_command"
-      : "Shell background operators are disabled; run the executable directly with synchronous run_command";
+    return "Shell background operators are unsupported; use start_command for supervised background work";
   }
+  if (kind === "powershell" && lexemes.some((token, index) => {
+    if (token.kind !== "operator" || token.value !== "&") return false;
+    const before = lexemes[index - 1];
+    // Prefix invocation (`& tool`, `$x = & tool`, `... | & {}`) is synchronous.
+    return before !== undefined && before.kind !== "newline" &&
+      !(before.kind === "operator" && COMMAND_SEPARATORS.has(before.value)) &&
+      !(before.kind === "word" && before.value === "=");
+  })) return "PowerShell background operator is unsupported; use start_command for supervised background work";
 
   for (const segment of commandSegments(lexemes)) {
     const words = commandWords(segment);
@@ -289,17 +295,8 @@ function asynchronousShellProtocolReason(
       const first = words[0]?.toLowerCase() ?? "";
       if (first === "rem" || first.startsWith("::")) continue;
       const name = executableBasename(first);
-      if (name === "call") {
-        return "Nested cmd CALL dispatch is disabled; run the executable directly";
-      }
-      if (name === "start") {
+      if (name === "start" && !words.some(word => word.toLowerCase() === "/wait")) {
         return "Detached cmd start processes are disabled; run the executable directly with synchronous run_command";
-      }
-      if (name === "timeout" && words.slice(1).some((word) => word.toLowerCase() === "/t")) {
-        return "cmd timeout polling is disabled; use timeoutMs on the real synchronous command";
-      }
-      if (hasNestedCommandString(first, words.slice(1))) {
-        return "Nested shell command strings are disabled; use structured program and args";
       }
       continue;
     }
@@ -314,32 +311,15 @@ function asynchronousShellProtocolReason(
       if (name === "nohup" || name === "disown") {
         return "Detached nohup/disown processes are disabled; run the executable directly with synchronous run_command";
       }
-      if (name === "sleep") {
-        return "Shell sleep polling is disabled; run the real command synchronously with timeoutMs when needed";
-      }
-      if (name === "eval") {
-        return "POSIX eval command dispatch is disabled; use structured program and args";
-      }
-      if (hasNestedCommandString(commandWord, args)) {
-        return "Nested shell command strings are disabled; use structured program and args";
-      }
       continue;
     }
 
-    if (["start-process", "start", "saps", "start-job", "sajb", "start-threadjob"].includes(name)) {
+    if (["start-job", "sajb", "start-threadjob"].includes(name) ||
+        ["start-process", "start", "saps"].includes(name) && !args.some(arg => arg.toLowerCase() === "-wait")) {
       return "Detached PowerShell jobs/processes are disabled; run the executable directly with synchronous run_command";
-    }
-    if (name === "start-sleep" || name === "sleep") {
-      return "PowerShell sleep polling is disabled; run the real command synchronously with timeoutMs when needed";
-    }
-    if (name === "invoke-expression" || name === "iex") {
-      return "PowerShell expression dispatch is disabled; use structured program and args";
     }
     if (words.some((word) => word.toLowerCase() === "-asjob")) {
       return "PowerShell -AsJob execution is disabled; run the executable directly with synchronous run_command";
-    }
-    if (hasNestedCommandString(commandWord, args)) {
-      return "Nested shell command strings are disabled; use structured program and args";
     }
   }
   return undefined;
@@ -364,13 +344,17 @@ export function normalizeExplicitShellArgs(programName: string, args: readonly s
   if (kind === "powershell") {
     const lowerArgs = args.map((argument) => argument.toLowerCase());
     const commandIndex = lowerArgs.findIndex((argument) =>
-      argument === "-command" || argument === "--command" || argument === "-c"
+      argument === "-command" || argument === "--command" || argument === "-c" || argument === "-file" || argument === "-f"
     );
     if (commandIndex < 0) return [...args];
     const prefix = lowerArgs.slice(0, commandIndex);
     const required = ["-NoLogo", "-NoProfile", "-NonInteractive"].filter(
       (flag) => !prefix.includes(flag.toLowerCase()),
     );
+    // Match the already-authorized -Command capability for local script files.
+    // This affects this child process only; never mutate user/machine policy.
+    if (["-file", "-f"].includes(lowerArgs[commandIndex]!) &&
+        !prefix.includes("-executionpolicy") && !prefix.includes("-ep")) required.push("-ExecutionPolicy", "Bypass");
     return [...required, ...args];
   }
   return [...args];
@@ -386,10 +370,10 @@ export function inspectExplicitShellInvocation(
   const lowerArgs = args.map((argument) => argument.toLowerCase());
 
   if (kind === "cmd") {
-    if (lowerArgs.includes("/k")) {
+    const commandIndex = lowerArgs.indexOf("/c");
+    if (lowerArgs.slice(0, commandIndex < 0 ? undefined : commandIndex).includes("/k")) {
       return { kind, valid: false, reason: "Interactive cmd /k sessions are disabled" };
     }
-    const commandIndex = lowerArgs.indexOf("/c");
     if (commandIndex < 0) {
       return { kind, valid: false, reason: "cmd requires an explicit /c command" };
     }
@@ -416,7 +400,11 @@ export function inspectExplicitShellInvocation(
   }
 
   if (kind === "powershell") {
-    if (lowerArgs.some((argument) =>
+    const commandIndex = lowerArgs.findIndex((argument) =>
+      ["-command", "--command", "-c", "-file", "-f"].includes(argument)
+    );
+    const hostArgs = lowerArgs.slice(0, commandIndex < 0 ? undefined : commandIndex);
+    if (hostArgs.some((argument) =>
       argument === "-encodedcommand" ||
       argument === "--encoded-command" ||
       argument.startsWith("-enc") ||
@@ -424,22 +412,26 @@ export function inspectExplicitShellInvocation(
     )) {
       return { kind, valid: false, reason: "Encoded PowerShell commands are disabled" };
     }
-    if (lowerArgs.some((argument) => argument === "-noexit" || argument.startsWith("-noe"))) {
+    if (hostArgs.some((argument) => argument === "-noexit" || argument.startsWith("-noe"))) {
       return { kind, valid: false, reason: "Interactive PowerShell sessions are disabled" };
     }
-    const commandIndex = lowerArgs.findIndex((argument) =>
-      argument === "-command" || argument === "--command" || argument === "-c"
-    );
     if (commandIndex < 0) {
-      return { kind, valid: false, reason: "PowerShell requires an explicit -Command invocation" };
+      return { kind, valid: false, reason: "PowerShell requires an explicit -Command or -File invocation" };
     }
     const allowedPrefix = new Set(["-nologo", "-noprofile", "-noninteractive"]);
-    if (lowerArgs.slice(0, commandIndex).some((argument) => !allowedPrefix.has(argument))) {
-      return { kind, valid: false, reason: "PowerShell received an unsupported host option" };
+    for (let index = 0; index < hostArgs.length; index++) {
+      if (["-executionpolicy", "-ep"].includes(hostArgs[index]!)) {
+        if (!["restricted", "allsigned", "remotesigned", "unrestricted", "bypass", "undefined"].includes(hostArgs[++index] ?? "")) {
+          return { kind, valid: false, reason: "PowerShell -ExecutionPolicy requires a supported process-scoped value" };
+        }
+      } else if (!allowedPrefix.has(hostArgs[index]!)) {
+        return { kind, valid: false, reason: "PowerShell received an unsupported host option" };
+      }
     }
     if (!(args[commandIndex + 1]?.trim())) {
       return { kind, valid: false, reason: "PowerShell -Command requires a non-empty command string" };
     }
+    if (["-file", "-f"].includes(lowerArgs[commandIndex]!)) return { kind, valid: true };
     const asynchronousReason = asynchronousShellProtocolReason(
       kind,
       args[commandIndex + 1] as string,
@@ -448,17 +440,53 @@ export function inspectExplicitShellInvocation(
     return { kind, valid: true };
   }
 
-  if (args[0] !== "-c") {
+  let commandIndex = 0;
+  while (["--noprofile", "--norc", "-e", "-u"].includes(args[commandIndex] ?? "")) commandIndex++;
+  if (args[commandIndex] === "--") commandIndex++;
+  if (args[commandIndex] && !args[commandIndex]!.startsWith("-")) return { kind, valid: true };
+  if (args[commandIndex] !== "-c") {
     return {
       kind,
       valid: false,
-      reason: "POSIX shells require a non-interactive -c invocation; login and interactive shells are disabled",
+      reason: "POSIX shells require a script file or non-interactive -c invocation; login and interactive shells are disabled",
     };
   }
-  if (!(args[1]?.trim())) {
+  if (!(args[commandIndex + 1]?.trim())) {
     return { kind, valid: false, reason: "POSIX shell -c requires a non-empty command string" };
   }
-  const asynchronousReason = asynchronousShellProtocolReason(kind, args[1] as string);
+  const asynchronousReason = asynchronousShellProtocolReason(kind, args[commandIndex + 1] as string);
   if (asynchronousReason) return { kind, valid: false, reason: asynchronousReason };
   return { kind, valid: true };
+}
+
+/** Bounded advisory extraction, never a proof of read-only behavior or permission. */
+export function shellCommandWords(program: string, args: readonly string[]): string[][] {
+  const kind = explicitShellKind(executableBasename(program));
+  if (!kind) return [];
+  const index = args.findIndex(arg => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
+  if (index < 0 || !args[index + 1]) return [];
+  const lexemes = lexShellCommand(args[index + 1]!, kind);
+  if (lexemes.some(token => token.kind === "operator" && HEREDOC_OPERATORS.has(token.value))) return [];
+  return commandSegments(lexemes).map(commandWords).map(words => kind === "posix" ? words.slice(posixCommandIndex(words)) : words);
+}
+
+/** Identity extraction only: reject expansion/control flow rather than pretending
+ * to evaluate a shell. This never changes execution or grants permission. */
+export function literalPipelineCommands(program: string, args: readonly string[]): string[][] | undefined {
+  const kind = explicitShellKind(executableBasename(program));
+  if (!kind) return undefined;
+  const index = args.findIndex(arg => ["-c", "-command", "--command", "/c"].includes(arg.toLowerCase()));
+  const script = index >= 0 ? args[index + 1] : undefined;
+  if (!script || /[\r\n$`%!*?{}()]/u.test(script)) return undefined;
+  // Only a literal stdout pipeline and stderr-to-stdout redirection are known.
+  const lexemes = lexShellCommand(script, kind);
+  const tokens: ShellLexeme[] = [];
+  for (let i = 0; i < lexemes.length; i++) {
+    const item = lexemes[i]!;
+    if (item.kind === "word" && item.value === "2" && lexemes[i + 1]?.kind === "operator" &&
+        lexemes[i + 1]?.value === ">&" && lexemes[i + 2]?.kind === "word" && lexemes[i + 2]?.value === "1") { i += 2; continue; }
+    tokens.push(item);
+  }
+  if (tokens.some(token => token.kind !== "word" && !(token.kind === "operator" && token.value === "|"))) return undefined;
+  return commandSegments(tokens).map(commandWords);
 }

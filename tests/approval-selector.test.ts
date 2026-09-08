@@ -44,7 +44,7 @@ function captureOutput(output: PassThrough): () => string {
   return () => transcript;
 }
 
-function approvalRequest(commandPrefix = "E:\\miniconda3\\python.exe"): ApprovalRequest {
+function approvalRequest(commandPrefix = "E:\\tools\\git.exe"): ApprovalRequest {
   return {
     id: "approval_test",
     title: "Run python",
@@ -56,6 +56,13 @@ function approvalRequest(commandPrefix = "E:\\miniconda3\\python.exe"): Approval
 }
 
 describe("command approval selector", () => {
+  it("offers only one-shot approval or rejection for interpreters", async () => {
+    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const result = selectApproval("C:\\tools\\node.exe", { input, output, color: false });
+    input.write("\u001B[B\r");
+    assert.equal(await result, "reject");
+    assert.doesNotMatch(renderApprovalSelector("/usr/bin/python3", 0, false).join("\n"), /authorize this exact executable/u);
+  });
   it("renders the selected choice in white, the others in gray, and escapes controls", () => {
     const lines = renderApprovalSelector(
       "E:\\safe\u001B[31m\u202Ehidden.exe",
@@ -68,7 +75,7 @@ describe("command approval selector", () => {
     assert.match(lines[2] ?? "", /\u001B\[37m/u);
     assert.match(lines[3] ?? "", /\u001B\[90m/u);
     assert.match(lines[1] ?? "", /Yes, allow execute one time/u);
-    assert.match(lines[2] ?? "", /Yes, don't ask me again with prefix/u);
+    assert.match(lines[2] ?? "", /Yes, authorize this exact executable/u);
     assert.match(lines[3] ?? "", /Reject/u);
 
     const plain = renderApprovalSelector(
@@ -87,7 +94,7 @@ describe("command approval selector", () => {
   it("returns all three structured decisions with arrow-key navigation", async () => {
     const onceInput = new TtyInput();
     const onceOutput = new TtyOutput();
-    const once = selectApproval("python", {
+    const once = selectApproval("git", {
       input: onceInput,
       output: onceOutput,
       color: false,
@@ -97,7 +104,7 @@ describe("command approval selector", () => {
 
     const prefixInput = new TtyInput();
     const prefixOutput = new TtyOutput();
-    const prefix = selectApproval("python", {
+    const prefix = selectApproval("git", {
       input: prefixInput,
       output: prefixOutput,
       color: false,
@@ -107,7 +114,7 @@ describe("command approval selector", () => {
 
     const rejectInput = new TtyInput();
     const rejectOutput = new TtyOutput();
-    const reject = selectApproval("python", {
+    const reject = selectApproval("git", {
       input: rejectInput,
       output: rejectOutput,
       color: false,
@@ -119,7 +126,7 @@ describe("command approval selector", () => {
   it("accepts CSI-u arrows and Enter from enhanced terminal keyboards", async () => {
     const prefixInput = new TtyInput();
     const prefixOutput = new TtyOutput();
-    const prefix = selectApproval("python", {
+    const prefix = selectApproval("git", {
       input: prefixInput,
       output: prefixOutput,
       color: false,
@@ -129,7 +136,7 @@ describe("command approval selector", () => {
 
     const rejectInput = new TtyInput();
     const rejectOutput = new TtyOutput();
-    const reject = selectApproval("python", {
+    const reject = selectApproval("git", {
       input: rejectInput,
       output: rejectOutput,
       color: false,
@@ -144,7 +151,7 @@ describe("command approval selector", () => {
   it("ignores enhanced-key releases and malformed confirmation sequences", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
-    const decision = selectApproval("python", {
+    const decision = selectApproval("git", {
       input,
       output,
       color: false,
@@ -162,7 +169,7 @@ describe("command approval selector", () => {
 
   it("supports enhanced keypad Enter and Esc cancellation", async () => {
     const enterInput = new TtyInput();
-    const enter = selectApproval("python", {
+    const enter = selectApproval("git", {
       input: enterInput,
       output: new TtyOutput(),
       color: false,
@@ -171,7 +178,7 @@ describe("command approval selector", () => {
     assert.equal(await enter, "allow_once");
 
     const escapeInput = new TtyInput();
-    const escape = selectApproval("python", {
+    const escape = selectApproval("git", {
       input: escapeInput,
       output: new TtyOutput(),
       color: false,
@@ -182,7 +189,7 @@ describe("command approval selector", () => {
 
   it("accepts strict CSI-u associated text and rejects unsafe modifiers", async () => {
     const textInput = new TtyInput();
-    const textSelection = selectApproval("python", {
+    const textSelection = selectApproval("git", {
       input: textInput,
       output: new TtyOutput(),
       color: false,
@@ -191,7 +198,7 @@ describe("command approval selector", () => {
     assert.equal(await textSelection, "allow_once");
 
     const unsafeInput = new TtyInput();
-    const unsafeSelection = selectApproval("python", {
+    const unsafeSelection = selectApproval("git", {
       input: unsafeInput,
       output: new TtyOutput(),
       color: false,
@@ -204,7 +211,7 @@ describe("command approval selector", () => {
   it("accepts keypad and modifyOtherKeys Enter encodings", async () => {
     const keypadInput = new TtyInput();
     const keypadOutput = new TtyOutput();
-    const keypad = selectApproval("python", {
+    const keypad = selectApproval("git", {
       input: keypadInput,
       output: keypadOutput,
       color: false,
@@ -214,7 +221,7 @@ describe("command approval selector", () => {
 
     const modifiedInput = new TtyInput();
     const modifiedOutput = new TtyOutput();
-    const modified = selectApproval("python", {
+    const modified = selectApproval("git", {
       input: modifiedInput,
       output: modifiedOutput,
       color: false,
@@ -226,7 +233,7 @@ describe("command approval selector", () => {
   it("fails closed on Ctrl+C, Esc, and EOF", async () => {
     const ctrlInput = new TtyInput();
     const ctrlOutput = new TtyOutput();
-    const ctrlSelection = selectApproval("python", {
+    const ctrlSelection = selectApproval("git", {
       input: ctrlInput,
       output: ctrlOutput,
       color: false,
@@ -236,7 +243,7 @@ describe("command approval selector", () => {
 
     const escapeInput = new TtyInput();
     const escapeOutput = new TtyOutput();
-    const escapeSelection = selectApproval("python", {
+    const escapeSelection = selectApproval("git", {
       input: escapeInput,
       output: escapeOutput,
       color: false,
@@ -250,7 +257,7 @@ describe("command approval selector", () => {
 
     const eofInput = new TtyInput();
     const eofOutput = new TtyOutput();
-    const eofSelection = selectApproval("python", {
+    const eofSelection = selectApproval("git", {
       input: eofInput,
       output: eofOutput,
       color: false,
@@ -263,7 +270,7 @@ describe("command approval selector", () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     const transcript = captureOutput(output);
-    const selection = selectApproval("python", {
+    const selection = selectApproval("git", {
       input,
       output,
       color: false,
@@ -280,7 +287,7 @@ describe("command approval selector", () => {
   it("preserves an already-raw owner and cleans up when overlay redraw fails", async () => {
     const rawInput = new TtyInput();
     rawInput.isRaw = true;
-    const rawSelection = selectApproval("python", {
+    const rawSelection = selectApproval("git", {
       input: rawInput,
       output: new TtyOutput(),
       color: false,
@@ -295,7 +302,7 @@ describe("command approval selector", () => {
     const failingInput = new TtyInput();
     let renders = 0;
     let cleared = false;
-    const failingSelection = selectApproval("python", {
+    const failingSelection = selectApproval("git", {
       input: failingInput,
       output: new TtyOutput(),
       color: false,
@@ -319,7 +326,7 @@ describe("command approval selector", () => {
   it("fails closed if the terminal is too short to review an approval", async () => {
     const output = new TtyOutput();
     const input = new TtyInput();
-    const selection = selectApproval("python", {
+    const selection = selectApproval("git", {
       input,
       output,
       color: false,
@@ -345,5 +352,19 @@ describe("command approval selector", () => {
     const nonTtyTerminal = new Terminal(new PassThrough(), nonTtyOutput);
     assert.equal(await nonTtyTerminal.approve(approvalRequest()), "reject");
     nonTtyTerminal.close();
+  });
+
+  it("cancels an expired Runtime approval and restores input ownership", async () => {
+    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const terminal = new Terminal(input, output);
+    const controller = new AbortController();
+    try {
+      const pending = terminal.approve({ ...approvalRequest(), signal: controller.signal });
+      controller.abort();
+      assert.equal(await pending, "reject");
+      assert.equal(input.isRaw, false);
+      const next = terminal.approve(approvalRequest());
+      input.write("\r"); assert.equal(await next, "allow_once");
+    } finally { terminal.close(); }
   });
 });

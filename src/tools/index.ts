@@ -1,4 +1,5 @@
 export * from "./base.js";
+export * from "./fetch-artifact.js";
 export * from "./errors.js";
 export * from "./compact-context.js";
 export * from "./create-file.js";

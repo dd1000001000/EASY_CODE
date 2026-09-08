@@ -1,5 +1,6 @@
 import { progressReviewPacketDigest, progressReviewReportSchema } from "./reviewer.js";
 import { cloneProgressGuardState } from "./guard.js";
+import { validationBaselineSchema } from "./validation-standard.js";
 import type {
   ProgressGuardState,
   ProgressIncident,
@@ -7,6 +8,7 @@ import type {
 } from "./types.js";
 
 export const PROGRESS_REVIEW_EVENT_TYPES = [
+  "progress.validation.baseline",
   "progress.review.requested",
   "progress.review.started",
   "progress.review.model_request.started",
@@ -234,6 +236,11 @@ export function foldProgressReviewEvent(
 ): ProgressGuardState {
   const state = cloneProgressGuardState(current);
   const payload = record(rawPayload);
+  if (eventType === "progress.validation.baseline") {
+    if (state.validationBaseline) throw new Error("Validation baseline is already pinned");
+    state.validationBaseline = validationBaselineSchema.parse(payload.baseline);
+    return state;
+  }
   const incidentId = safeText(payload.incidentId, "incidentId", 256);
   const incident = incidentFor(state, incidentId);
 

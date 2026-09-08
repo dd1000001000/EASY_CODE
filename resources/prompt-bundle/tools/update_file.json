@@ -1,9 +1,9 @@
 {
   "id": "update_file",
   "contractVersion": "1.0.0",
-  "description": "Update a previously read UTF-8 file using exact text replacements and its expected SHA-256 hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
+  "description": "Update a previously read UTF-8 file using exact text replacements and its expected SHA-256 hash. Paths are workspace-relative in every approval posture.",
   "propertyDescriptions": {
-    "path": "Workspace-relative file path, or an absolute host path only in unrestricted mode.",
+    "path": "Workspace-relative file path.",
     "expectedHash": "The full-file SHA-256 version hash returned by the latest successful read_file call for this file.",
     "edits": "The ordered exact-text replacements to apply to the verified file version.",
     "edits[].oldText": "Existing text that identifies the exact content to replace.",

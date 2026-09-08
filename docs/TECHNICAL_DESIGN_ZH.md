@@ -1,5 +1,7 @@
 # EASY CODE 技术设计
 
+验证目标标识、测试/配置基线、reviewer 实验绑定、调查停滞窗口和压缩字段局部修复的当前机制见[进展与上下文可靠性](./PROGRESS_RELIABILITY_ZH.md)。这些机制与 Provider 无关，不修改命令授权或 Benchmark 联网策略。
+
 [English](./TECHNICAL_DESIGN.md) | 简体中文 | [返回 README](../README_zh.md)
 
 本文描述 EASY CODE 当前实现的稳定边界，而不是源码函数或行号索引。安装、配置和命令用法见 [README](../README_zh.md)。
@@ -86,7 +88,7 @@ Auto 使用结构化选择而非关键词匹配。只有无需工作区、工具
 
 执行中调整按 FIFO 独立持久化，在模型前后、工具之间或最终回答前的安全边界封存一个待处理前缀。调整能改变方向，但不能改变权限、沙箱、任务所有权或 Agent 身份；过期响应中尚未启动的工具不会执行。
 
-`none/low/medium/high` 默认分别为 40/40/40/80 步，子 Agent 默认最多并发 2 个，不再随 thinking 放大。全部运行预算使用 `[limits]` 配置，详见 [完整配置示例](config.example.toml) 和 [轻量 Runtime 说明](LIGHTWEIGHT_RUNTIME.md)。`/orchestration` 控制 DAG/子 Agent 新建，默认关闭，reviewer 独立保持开启。所有强度共用同一个上下文预算和压缩阈值。尚未观察终态的后台命令、强制压缩、活跃 DAG 或未收集子 Agent 会阻止普通最终回答。
+`none/low/medium/high` 默认分别为 40/40/40/80 步，子 Agent 默认最多并发 2 个，不再随 thinking 放大。运行预算使用 `[limits]` 配置，详见 [完整配置示例](config.example.toml) 和 [轻量 Runtime 说明](LIGHTWEIGHT_RUNTIME.md)。`/orchestration` 控制 DAG/子 Agent 新建，默认关闭，reviewer 独立保持开启。所有强度共用同一个上下文预算和压缩阈值。尚未观察终态的后台命令、活跃 DAG 或未收集子 Agent 会阻止普通最终回答。上下文压力由 Runtime 维护流程处理；必需输入仍放不下时返回可恢复容量限制，不再要求模型反复修复压缩 Schema。
 
 ## 4. 信任、安全与沙箱
 
@@ -103,52 +105,187 @@ Runtime 每次调用都会依据模式、主/子 Agent 角色、Plan/DAG 阶段�
 | 平台 | 沙箱边界 |
 | --- | --- |
 | Windows | 随包 Anthropic Sandbox Runtime 后端，目前为 alpha，可能需要一次 UAC 初始化。 |
-| macOS | 系统 Seatbelt。 |
+| macOS | 等待内核级后代进程监督实现，严格命令暂时拒绝；文件工具可用。 |
 | Linux | bubblewrap，依赖 `bubblewrap`、`socat`、`ripgrep` 和可用的非特权用户命名空间。 |
 
-手动和自动审批都使用沙箱；初始化或启动失败会关闭受保护命令，不会退回宿主机执行。“危险的完全访问”只有用户二次确认后才在当前进程启用，它绕过命令策略、审批、沙箱和工作区文件边界，并以当前 OS 用户权限运行。Git Worktree 只隔离源码状态，不是安全沙箱。
+手动模式审批所有联网；自动模式放行明确只读联网，下载/上传/未知行为仍需审批；危险 `unrestricted` 不再请求任何命令或联网审批。显式联网前缀绑定可执行文件内容及结构化参数，支持 Resume 和撤销，历史普通程序授权不会升级为网络权限。所有模式保留 OS 沙箱、Plan 只读、Benchmark 命令禁网和进程清理监督。详见[命令安全说明](COMMAND_SECURITY_ZH.md)。Git Worktree 只隔离源码状态，不是安全沙箱。
+
+本地命令使用统一 Runtime 元数据规范化：缺少验证分类不再阻止执行。路径按工作区真实边界校验、argv 按字面传递，脚本和同步 Shell 写法不获得 Plan 只读豁免。自动模式允许常规本地工作，对明确高风险/系统影响及未分类工具请求审批。输出展示裁剪前生成独立 `validation` 证据；管道返回 0 不等于测试通过，无法判断时记未知。ProgressGuard 仅以高置信通过清除停滞，失败签名跨独立验证周期计数，轮询去重。Windows 取消/超时先结束后代，再保留可信 worker 恢复 ACL，最后关闭 Job。详细合约和只读历史请求回放见[命令易用性与验证证据](COMMAND_SECURITY_ZH.md#命令易用性与验证证据)。
 
 Key 位于操作系统凭据存储或显式环境变量中，项目配置不能保存或重定向它们。标准 GLM 与 GLM Coding Plan 使用不同凭据和端点，绝不互相回退。受保护命令默认不继承供应商 Key；模型错误、日志、Checkpoint、Summary、检索和记忆都会脱敏并过滤终端控制字符。
 
 ## 5. 持久状态与 Resume
 
-每个 Thread 有独立的追加式 JSONL Journal，事件具有连续序号、唯一身份、时间、阶段和结构化载荷，并在追加后刷新到磁盘。Journal 是权威来源；SQLite 中的会话、记忆、用量和上下文索引只是可重建查询投影。图片字节、子 Agent 结果和 Worktree 描述保存在私有文件中，Journal 保存引用与完整性信息。
+每个 Thread 有独立的追加式 JSONL Journal，事件具有连续序号、唯一身份、时间、阶段和结构化载荷，并在追加后刷新到磁盘。Thread 执行状态以 Journal 为权威来源；SQLite 保存会话/用量投影、Working Checkpoint、检索材料，以及长期记忆。长期记忆记录、来源和修订表本身是 SQLite 中的主数据，不能当作可随意丢弃的向量缓存。Thread 投影失败不能撤销已追加的事件，过期投影可通过回放修复。图片字节、子 Agent 结果和 Worktree 描述保存在私有文件中，Journal 保存引用与完整性信息。
 
 增量 Checkpoint 减少长 Thread 的重复写入。Delta 绑定精确 Journal 基准，只允许追加消息、更新设置/文件观察、追加变更/命令，以及让压缩状态前移；Plan、DAG、审批和执行中调整仍由事件决定。Schema、大小或基准不匹配会拒绝提交，旧版全量快照仍可恢复。
 
-持久状态包括消息与工具结果、模式/模型/Bundle 身份、Summary V2 与意图账本、Plan/DAG、文件观察与 Diff、命令与 Thread 授权、待处理调整、子 Agent/环境/Artifact 绑定，以及 Provider 上报用量。
+持久状态包括消息与工具结果、模式/模型/Bundle 身份、工作摘要与意图账本、压缩事务和降级预算、Plan/DAG、文件观察与 Diff、命令与 Thread 授权、待处理调整、子 Agent/环境/Artifact 绑定，以及 Provider 上报用量。模型上下文中的 Working Checkpoint 是确定性、有界、可重建的 SQLite 投影，不是 Thread 恢复 Checkpoint，也不是权威状态来源。
 
 Resume 先取得 Thread Lease 并校验工作区与 Bundle，再从兼容 Checkpoint 开始按 Journal 顺序回放，修复 SQLite 投影，追平检索索引，并重新验证文件、授权和托管环境。中断请求和命令不盲目重放；无完成证据的任务不变成成功；未接管的已批准 Plan 回到审核；缺失 Worktree 只有在身份与快照可验证时重建。
 
 只有末尾不完整的 Journal 记录可在确认后截断；中部损坏、重复 ID、序号断裂或持续并发变化会停止恢复，而不是跳过证据。
 
-## 6. 上下文、MicroCompaction、Summary V2 与混合 RAG
+## 6. 统一记忆管理与上下文恢复
 
-完整 Transcript 保留在 Journal，每次 Provider 请求只接收三层有界投影：
+本节描述当前 provider 无关实现，覆盖短期上下文、thinking、摘要、长期记忆、历史检索和容量降级。历史 Summary V2 读取器和 MicroCompaction 辅助函数不代表当前每轮请求策略。更细的恢复约束见 [Runtime 上下文维护契约](semantic-compaction-v3.md) 和 [上下文可靠性说明](CONTEXT_RELIABILITY.md)。
 
-1. **Working Checkpoint：** Runtime 对目标、约束、执行身份、文件/命令、Plan/DAG 和子 Agent 状态的确定性恢复地图。
-2. **近期工作集：** 累计 Summary 与压缩边界后的有界消息尾部，发送前统一执行 MicroCompaction。
-3. **相关历史：** 只从近期边界之前的 Thread 私有证据中检索少量去重片段。
+### 6.1 分层、权威来源与隔离范围
 
-系统契约、当前环境、项目规则和长期记忆一起组装。请求仍超限时可临时省略或有界概括较旧活跃消息，但不会推进持久压缩边界。
+以下是逻辑职责，不是六套独立数据库：
 
-**MicroCompaction** 是幂等、供应商无关且不修改 Journal 的请求前投影。已有后续模型消息、长度至少 2,048 字符的文件、命令、搜索、修改、任务或子 Agent 工具结果，会被替换为恢复引用；当前未闭合的工具尾部保持完整。引用保留角色、顺序、工具/调用 ID、长度、SHA-256 和路径、行范围、退出状态、Task/Agent/Artifact ID 等必要摘要，原始正文仍在 Journal。已消费 Thinking 被移除，只有最新未闭合工具请求所需的 Thinking 暂时保留。压力估算和实际请求使用同一投影。
+| 层 | 内容与权威来源 | 范围 / 模型可见性 |
+| --- | --- | --- |
+| 活跃对话 | 持久 `messages` 在 `compactedMessageCount` 之后的投影；当前用户文字、模型正文/thinking、工具调用及结果。 | Thread 私有；发送活跃投影，不发送全部存储历史。 |
+| 工作摘要 | `workingSummary`：已接受的语义交接，或确定性的未完成/未验证降级说明。 | Thread 私有；属于历史解释，不是验证证据或权限。 |
+| Runtime 连续性状态 | 用户要求、约束、意图账本、Plan/DAG、变更、待处理工作、失败、reviewer/实验状态。 | 从权威状态恢复并独立注入，不依赖摘要是否完整。 |
+| 历史证据 / RAG | 脱敏后的消息材料、工具证据、已接受摘要快照、关键词索引和可选向量。 | 精确工作区 + Thread；按需取回有界片段。 |
+| 长期记忆 | 原子化偏好、约定、架构、决策、环境事实；SQLite 保存来源与修订。 | 同一逻辑工作区内跨 Thread 共享，不是所有对话的归档。 |
+| Journal / 恢复存储 | 追加式 Thread 事件、兼容恢复 Checkpoint、私有证据和附件。 | 用于本地持久化和回放；存储不等于自动注入 Prompt。 |
 
-**Compaction Summary V2** 是严格、供应商无关、最多 12,000 字符的 JSON，固定保存主请求、活跃约束、技术决策、文件与改动、已验证结果、错误/阻塞、待办、当前工作、下一步和短证据引用；不允许自由 analysis、XML 或 Schema 变体。Runtime 提供带持久消息序号和用户原文的来源清单。
+工作区身份由规范化的绝对工作区根路径生成，Windows 下统一大小写。父子 Thread 的对话与历史检索互相隔离；子 Agent 接收有界任务材料并返回有界报告，不把完整 thinking 交给父 Agent。子 Agent 可以接收所属逻辑工作区的精选记忆，但没有主 Agent 的长期记忆修改能力。
 
-独立**意图账本**持久保存当前主请求、活跃约束、用户纠正和已取代请求，关键项使用可回查的精确原文。一次性 `coverage check` 确认最新请求、Plan/Task、失败、当前工作和下一步均已覆盖；它不进入 `workingSummary` 或独立意图状态，审计事件仍在 Journal。
+### 6.2 一次普通请求：短期上下文与 thinking
 
-接收 Summary 前，Runtime 会脱敏并校验格式、原文/序号、既有意图、活跃 Plan/DAG、最近失败、证据引用、单向边界和来源哈希，再模拟下一次请求验证净收益。失败不改变 Summary、账本或边界；成功后保存来源范围/哈希、压缩前后大小、节省比例和压缩后利用率。
+普通请求按以下顺序组装消息：
 
-压力按 MicroCompaction、检索和工具裁剪后实际发送的消息加工具 Schema 计算。默认和硬性近期上限均为 250,000 字符，配置更小时取较小值：`60%` 建议压缩、`80%` 强制只做压缩、`90%` 由 Runtime 插入强制请求。自愿压缩要求至少约 8,192 个新投影字符，并至少节省 8,192 字符和 10%；强制压力可绕过冷却与自愿门槛，但不能绕过完整性、正收益和压缩后 `<80%`。`55%` 是诊断安全水位。
+```text
+稳定系统指令                                      （工具 Schema 单独提供）
+→ workingSummary（如果存在）
+→ compactedMessageCount 之后的活跃消息              （包含保持原样的近期 thinking）
+→ RUNTIME_CONTINUITY_STATE                         （必需控制事实）
+→ RUNTIME_CONTEXT_DATA                             （工作区补充 + 精选记忆/证据）
+```
 
-Thread RAG 将较早用户消息、可见模型文本、显式工具请求和工具证据脱敏、分块并增量索引；系统 Prompt 与隐藏 Thinking 不进入索引。候选同时绑定规范化工作区和精确 Thread，并限制在近期边界之前，因此父子 Thread 不能互查私有证据。
+动态检索材料不放入稳定系统前缀，以利于前缀复用；这不是 Provider 缓存命中的保证。消息构建器不会为了凑容量而悄悄修改持久消息或截断 thinking。当前通用消息/thinking 投影是非破坏性的；大工具正文由后文的独立有界投影处理。
 
-SQLite FTS5 是权威关键词索引，本地多语言 ONNX 模型生成 Embedding，SQLite 保存带版本和内容哈希的向量，Orama 提供可丢弃、带代际校验的内存排序。关键词与语义候选按排名融合，再结合重要性和时间接近度去重。Embedding 缺失、损坏或不兼容时自动退回 FTS5；检索结果始终标记为不可信且可能过期。
+Thinking 以 `reasoning_content` 保存，不逐段改写，也不在下一次模型响应后立即删除。较早的完整交互可以整体退出活跃上下文；紧急最小重建也可整体移出最新一组**已闭合**交互及其 thinking。普通 RAG 不索引 thinking；必要时可通过精确历史消息引用读回序列化消息。UI 折叠或展开 thinking 不改变此策略。
 
-长期记忆按规范化工作区保存短原子偏好、约定、架构、决策和环境事实，并沿用“SQLite 权威、向量可重建”的混合检索。模型变更先暂存，只有成功边界才事务提交；相同新增是 no-op，修订/遗忘需精确记忆 ID。Plan 回合仅在用户明确表达持久偏好或约定时可保存这两类内容。
+`RUNTIME_CONTINUITY_STATE` 保留已退出活跃消息的普通用户要求原文并脱敏，不只保留意图账本摘录。它还携带目标/约束、Plan/DAG 所有权与要求、最新文件变更、待处理调整、命令与子 Agent 句柄、未解决命令结果、停滞事件、review 预算和未验证 review/实验状态。无关命令成功不能抹去先前失败；摘要不能完成任务、解决失败或重置执行/reviewer 预算。
 
-### 证据驱动的进展控制
+工作区补充中的 Working Checkpoint 是近期文件/变更/命令和任务状态的确定性、有界恢复地图，不需要调用摘要模型，并避免重复注入已有连续性数据。它既不是 Thread 恢复 Checkpoint，也不能取代权威 Runtime 事实。
+
+### 6.3 长期记忆生命周期
+
+`manage_memory` 按当前能力配置提供 `search`、`recall`、`remember`、`revise` 和 `forget`。历史回读与长期存储是不同动作；摘要和 RAG 命中不会自动成为持久项目事实。
+
+1. 提出五种类别之一的单条原子事实，通常为 8–120 字符。Runtime 拒绝敏感信息、猜测和明显的任务流水账；这些检查不是通用的真假判定器。
+2. 对 `remember`/`revise`，应用 Runtime 要求 `sourceRefs`。`user` 必须对应用户明确表达的长期偏好/约定或决策；项目/环境事实目前要求同一工作区、同一 Thread 内成功、未截断且包含文件版本的 `read_file` 证据。证据身份只校验来源，不保证任意自然语言结论都能由它推出。
+3. 校验后暂存变更。工具返回“已暂存”不等于已写入数据库。`revise`/`forget` 必须使用本回合搜索返回的记忆 ID；`forget` 不要求新的事实来源证据。
+4. 只有允许的 `turn.completed` 结果才提交已验证批次：`success`，或用户有明确持久意图、且仅写入 preference/convention 的 `planned`。失败、中断和触及上限的回合不提交提案。每回合最多八次记忆变更。
+5. SQLite 事务提交记忆和修订历史；向量属于派生数据，其失败不撤销有效记忆提交。同类别、规范化内容完全相同的 `remember` 是 no-op，不刷新时间戳或置信度。
+6. 自动检索重新校验来源文件路径和哈希。来源变化、缺失、路径不安全，以及缺少依据的旧版项目事实，会变为 `needs_verification` 并停止自动注入。显式审计/搜索仍可查看不能自动使用的记录。
+
+同一工作区的新 Thread 保留长期记忆及修订。长期记忆仍只是有来源的陈述，不能授权跳过当前文件读取、版本校验或任务验证。
+
+### 6.4 历史 RAG 与统一回忆预算
+
+Thread 索引增量处理新持久化的用户文字、模型公开正文/工具名、有用工具结果及已接受的语义摘要快照；不索引系统指令和 thinking。缺少语义快照元数据的紧急降级说明不会自动成为语义摘要索引条目；先前摘要文本仍可通过 Journal 引用恢复。
+
+单个索引来源最多保留 96,000 字符，并明确记录头尾保留与中间省略。分块保存来源偏移、哈希，以及可用的文件路径/版本/行号元数据。固定本地 `paraphrase-multilingual-MiniLM-L12-v2` 模型产生 384 维向量，每个分词窗口最多 128 Token，包含特殊 Token；分词器不可用时退回 1,400 字符窗口、160 字符重叠。较长 Embedding 输入聚合多个窗口，不默默丢掉尾部。Embedding 的 Token 单位与聊天上下文估算不是同一回事。
+
+SQLite 提供关键词搜索及适合中日韩文本的回退；可选本地向量和可丢弃的 Orama 缓存提供语义候选。Thread 关键词/向量排名融合后去重。后台补齐向量期间仍可使用关键词检索，向量失败退回词法搜索；查询 Embedding 本身仍有本地计算成本。检索使用本地数据与推理，不调用外部网页搜索或聊天模型 API；准备缺失模型资源时可能另行下载。
+
+每次普通请求前，记忆控制器：
+
+1. 根据当前任务/用户要求、命令结果和相关路径生成最多三个有界查询；查询/状态签名变化时更新缓存候选。
+2. 搜索工作区长期记忆与私有 Thread 历史。普通自动历史检索仅覆盖 `compactedMessageCount` 之前；显式历史搜索可查看当前 Thread 中超出这一自动边界的已有消息。
+3. 排除非活跃/临时记忆、不相关命中、完全重复、已经可见/覆盖的证据，以及已知过期文件版本。相似度不代表相关性或时效性。
+4. 两种来源共用**一份预算**：通常 2,000 个估算 Token；压缩边界/DAG 节点变化，或最新命令尚不是已观察到的零退出结果时，上限可扩展到 6,000，总计最多六项。后一条件也包含运行中的命令。额度还受 `floor(maxContextChars / 24)` 和启用时 `maxContextTokens` 的 8% 限制。
+5. 请求有压力时先移除可选回忆，再考虑移出活跃历史。检索是补充信息；Runtime 不会为了塞入更多 RAG 命中而牺牲必需任务状态。
+
+### 6.5 工具输出、证据捕获与精确回读
+
+Runtime 在面向模型的裁剪之前，将脱敏后的结构化工具数据捕获到不可变、工作区/Thread 隔离的证据存储，最多 1,000,000 字符。捕获对象是工具实际返回的数据：命令和文件读取可能已经有界。证据库与 Journal 都不承诺保存无限原始 stdout。截断状态、已捕获内容哈希和分页信息保持明确。
+
+普通输出投影返回相关诊断与有界头尾文本。命令调查/成功/失败默认分别为 12,000/2,000/8,000 字符，最多八条诊断；重复轮询返回增量或变化后的终态，避免反复发送相同正文。文件定位默认 100 行，单次允许最多 1,000 行，同时受 12,000 个估算 Token 的读取结果上限约束。
+
+每组多工具交互的正文合计预算为 16,000 个估算 Token，即使没有高压力也会控制。压力下，至少 4,096 字符的较早正文可替换为引用；批次合计超额时也可能引用更小的单条正文。调用/结果身份与协议顺序保留，投影不覆盖规范持久消息。
+
+当前能力配置开放 `manage_memory` 时，`recall` 支持按精确 ID 分页：
+
+| 引用 | 无需重新执行即可读取的内容 |
+| --- | --- |
+| `evidence_…` | 捕获的结构化工具证据。 |
+| `context_…` | 一个已索引历史分块，不是无限原始进程输出。 |
+| `ev_…` | 当前 Thread Journal 中匹配的工具消息或命令审计。 |
+| `journal_message_<index>` | 精确存储的消息，存在 reasoning 时一并包含。 |
+| `journal_summary_<sha256>` | 已归档的恢复摘要版本。 |
+
+回读默认每页 8,000 字符，最多 16,000 字符。引用受范围和脱敏校验约束，不授予跨 Thread 权限。历史代码/结果可能过期，引用不证明当前 Checkout 通过验证。
+
+### 6.6 容量计量与配置
+
+运行配置位于 `[limits]`，当前值以 [Runtime 默认配置](../src/config/runtime-defaults.json) 和 [配置示例](config.example.toml) 为准。上下文策略对所有 thinking 强度和 Provider 相同。none/low/medium/high 默认分别 40/40/40/80 步，子 Agent 最多并发两个；强度不再倍增子 Agent 并发或上下文容量。
+
+`maxContextTokens = 0` 表示未启用模型 Token 窗口。默认 `maxContextChars = maxActiveContextChars = 250000` 指**字符，不是 250,000 个模型 Token**。字符模式可用输入容量为 `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`，默认 212,500。控制器 80% 维护触发点约为 170,000 个请求字符，包含指令、Schema 和 Runtime 状态，不只是屏幕上的对话正文。
+
+当 `maxContextTokens` 非零时，该窗口成为主要运行容量。provider 无关估算统计文字、thinking、工具参数/Schema、消息开销和图片估算，并按端点/模型/模态，利用近期实际输入用量保守校准。校准保存比例，不再保存一份对话。它不是模型原生精确分词器，也不会自动发现 Provider 的真实窗口。
+
+配置 Token 窗口为 `W` 时，默认可用输入容量为：
+
+```text
+W - min(maxResponseTokens, floor(W × 0.20))  [输出预留；maxResponseTokens = 16384]
+  - min(8192, floor(W × 0.10))              [后续工具预留]
+  - max(512, ceil(W × 0.05))                [安全余量]
+```
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `contextCompactionTriggerRatio` | `0.8` | 相对于可用输入容量的维护触发点。 |
+| `contextCompactionTargetRatio` | `0.55` | 期望余量，不是强制验收阈值。 |
+| `contextCompactionMinGrowthRatio` | `0.1` | 增长冷却，避免微小变化后反复付费摘要。 |
+| `compactionRetainRecentExchanges` | `2` | 优先保留的近期完整交互数量；恢复时可减少。 |
+| `compactionAttempts` | `2` | 最多两次提交：仅长度超限可纠正一次，之后局部截断；Resume 不重置已用次数。 |
+| `contextSummaryMaxTokens` | `2048` | 辅助摘要输出上限；同时保留 12,000 字符的摘要存储上限。 |
+| `contextToolBatchTokens` / `contextToolReferenceMinChars` | `16000` / `4096` | 工具正文合计预算 / 较早正文引用阈值。 |
+| `contextMaxRebasesPerRequest` | `1` | 每个持久用户请求范围的紧急重建额度；`0` 禁用。 |
+| `contextMaxCapacityRetries` | `1` | 已分类 Provider 容量拒绝后的较小普通请求重试次数，当前运行内有界。 |
+| `memoryAutoTokens` / `memoryRecallTokens` | `2000` / `6000` | 可选回忆共享上限，不是每种来源各有一份。 |
+| `memoryMaxItems` / `memoryMaxQueries` | `6` / `3` | 共享入选条目数 / 生成查询数。 |
+| `maxDurableMemoryTokens` | `400` | 原子事实字符限制之外，单条提案的估算检查。 |
+
+部分存储/协议保护仍是代码常量，例如原子事实长度和证据捕获上限，并非每个限制都可配置。通用 60/80/90% 上下文诊断不等于旧的强制模型纠错状态机。真正发送与恢复都检查下一次完整普通请求，包括普通工具 Schema。
+
+### 6.7 逐级降级：保留工作，缩小活跃历史
+
+```text
+测量下一次普通请求
+→ 移除可选回忆 / 引用过大工具正文
+→ 至多一次短语义交接
+→ 本地整体移出旧交互和旧摘要，留下 Journal 引用
+→ 每个用户请求至多一次最小重建
+→ 继续同一任务，或返回可恢复容量暂停
+```
+
+1. 先做低成本回收。选择由完整模型/工具交互组成的历史前缀，优先保留最近两组，必要时缩小尾部。模型发出的每个工具调用必须有对应结果，未闭合交互不能拆开。普通模型交互和已完成读/写/命令交互均可进入前缀；**不要求**语义阶段结束或测试通过：调查未完成也能归档，但必须明确仍未完成、未验证。
+2. 在已有请求/Token 预算内，每个事务最多两次隔离摘要提交，主模型主动提交也算第一次。仅文本长度超限可纠正一次；再次超长则对应字段/条目保留前 1200 字符，保留合法兄弟字段并注明有损。纠正预算或容量不足时直接本地截断。只开放 `compact_context`，最多输出 2,048 Token，不做辅助传输重试。事实和证据目录由 Runtime 提供，不依赖模型生成覆盖布尔字段。
+3. 尽可能提取有效语义片段，未知/无绑定证据的陈述降为未验证假设。仅在来源/事实快照未变、边界单向前移、实际缩小且**下一次普通请求**放得下时接受。安全结果可以高于 55%，甚至高于 80% 触发点；目标与增长冷却用于避免不必要的重复付费维护，不保证未来永不再有容量压力。
+4. 格式错误、缺字段、过大摘要、摘要能力不可用、辅助 Provider 失败或收益不足，进入确定性本地恢复，不进入 Schema 纠错循环。较早完整交互和过大的旧摘要可以退出活跃上下文，保留精确引用及明确的未完成/未验证状态。这可以在没有语义摘要提交的情况下推进持久退出边界；原始消息仍保存在本地。
+5. 必要时整体归档最新一组**已闭合**交互，进行最小重建，保留可继续操作的固定状态。这是有损上下文退出，不是新任务、进程重启、工作区回滚，也不授权重启待处理命令/子 Agent。只有实际缩小且放得下才提交。重建消耗按持久用户请求范围写入 Journal：Resume 不重置额度，新明确用户请求才建立新范围。
+6. 如果必需指令、Schema、Runtime 事实或未完成协议数据仍放不下，返回 `reason=limit_reached`、`failure.code=context_capacity_exhausted`、`recoverable=true`。保留文件、历史、待处理工作和预算，不完成 DAG，也不声明外部阻塞；这不是所有任务都能无限继续的承诺。
+7. 普通 Provider 请求被严格识别为上下文长度拒绝时，允许有界地重试更小的本地请求，不再调用摘要模型，也不重置共享请求预算。认证错误、429 和普通超时不是容量错误。用户取消、存储/Journal 损坏仍是真正停止条件，不能伪装成降级成功。
+
+### 6.8 回放、用户指令与验证边界
+
+`context.compaction.*` 与 `context.compacted` 记录摘要尝试/提交；`context.history.evicted` 记录工具引用、整体历史退出或最小重建，包含来源/事实身份和精确恢复引用；`context.maintenance.checked` 记录已评估历史、请求身份、大小及容量暂停。事件回放恢复边界和已消耗的摘要/重建预算；过期 Checkpoint 不能推进边界或重置额度。恢复后待处理命令/子 Agent ID 与 reviewer 实验仍可继续操作。
+
+`/memory short [limit]` 查看短期状态；`/memory long [id]` 查看工作区记忆及审计状态，两者均只读。`/clear` 清除终端显示，不清模型上下文或持久记忆。`/new` 创建新 Thread，但保留工作区长期记忆；`/resume` 恢复已有 Thread，不是从空对话开始。也不能假定清理独立的 benchmark Job 目录会同时删除其他 EASY CODE 数据根或恢复存储。
+
+本地测试覆盖请求容量、坏摘要、交互边界、退出消息的无损存储、有界有损重建、待处理工作、记忆选择和回放；不证明 benchmark 准确率或 Token 节省已经改善。保留 thinking、本地 Embedding、精确回读和较大的固定事实都有成本，有损退出可能导致重新阅读。应在受控长任务上比较总输入/缓存 Token、每个成功任务 Token、重复验证、耗时、容量暂停比例与 Resume 行为。
+
+主要代码入口：
+
+| 职责 | 源码 |
+| --- | --- |
+| 请求投影与必需状态 | [manager.ts](../src/context/manager.ts)、[context-request.ts](../src/context/context-request.ts)、[runtime-state.ts](../src/context/runtime-state.ts) |
+| 选择、历史索引、精确捕获 | [memory-controller.ts](../src/context/memory-controller.ts)、[artifact-index.ts](../src/context/artifact-index.ts)、[evidence-store.ts](../src/context/evidence-store.ts) |
+| 持久事实与工具接口 | [memory-manager.ts](../src/memory/memory-manager.ts)、[manage-memory.ts](../src/tools/manage-memory.ts) |
+| 容量与校准 | [capacity.ts](../src/context/capacity.ts)、[token-budget.ts](../src/context/token-budget.ts)、[token-calibration.ts](../src/context/token-calibration.ts) |
+| 摘要与本地降级 | [compaction-transaction.ts](../src/context/compaction-transaction.ts)、[pressure-projection.ts](../src/context/pressure-projection.ts)、[pressure-recovery.ts](../src/context/pressure-recovery.ts)、[exchange-boundary.ts](../src/context/exchange-boundary.ts) |
+| Runtime 接入与回放 | [agent.ts](../src/runtime/agent.ts)、[thread-store.ts](../src/threads/thread-store.ts) |
+
+### 6.9 证据驱动的进展控制
 
 Runtime 在工具输出被裁剪前，从权威结果中提取有界进展证据。版本相同的重复读取只产生弱提醒；只有跨不同验证周期、重复出现的高置信验证失败才会建立停滞事件。扁平命令协议保留原有测试与构建意图，并新增显式验证意图，可区分单元、集成、构建、类型、Lint、格式、冒烟、Benchmark 和自定义验证；验证类别进入持久化失败身份，避免把无关检查合并成同一事件。网络、权限、取消、沙箱和其他基础设施失败单独分类，不能成为“代码策略错误”的证据。
 
@@ -200,7 +337,7 @@ Harbor 适配器评测公开 HAL/MariusHobbhahn 50 题集合（Django 25、Sphin
 
 固定 Profile 为 `glm-coding-plan / glm-5.3-flash / code / high`，端点为 `https://open.bigmodel.cn/api/coding/paas/v4`，审批为 safe auto-approved。它只读取 Coding Plan 专用 Key，不读取标准 GLM Key。当前构建先打包为 npm Archive，每题在独立 Linux Trial 的 `/testbed` 中运行并评分。
 
-Harbor 容器是可信的一次性外层隔离；专用标志只允许适配器跳过嵌套主机沙箱，普通主机运行不得设置。Key 在主机和 Trial 中依次通过随机 owner-only 临时文件传递、消费并删除，不进入模型命令环境。固定多语言 ONNX 资产从 Benchmark 根复制到每个 Trial 并二次校验，使被测配置实际运行混合 RAG，且无需容器联网下载。
+Harbor 容器是可信的一次性外层隔离；专用标志不再跳过内层命令沙箱。安装阶段须通过严格沙箱预检；命令租约或清理状态不确定时不会恢复评测器公共网络。普通主机运行不得设置该标志。Key 在主机和 Trial 中依次通过随机 owner-only 临时文件传递、消费并删除，不进入模型命令环境。固定多语言 ONNX 资产从 Benchmark 根复制到每个 Trial 并二次校验，使被测配置实际运行混合 RAG，且无需容器联网下载。
 
 评测保持 `n-attempts=1`；仅 `agent.run` 前的环境启动或安装超时可自动重试，Agent 超时和非零退出不获得新预算。Agent 启动后会在清理路径捕获数据目录、Git Patch 和普通未跟踪文件为原子 Generation。恢复只允许同一 Job/Trial，绑定题目、基础提交、Archive/Embedding 哈希、端点、模型、模式和强度；任一不匹配、父 Thread 歧义、链接/特殊文件或 Manifest 损坏都拒绝，Generation 不能跨题复用，最多保留三个。
 
@@ -219,8 +356,8 @@ Harbor 容器是可信的一次性外层隔离；专用标志只允许适配器�
 
 数据根带产品归属标记；清理只处理规范化且验证归属的真实目录，不跟随链接。数据库占用、根归属不明或可能存在未交付代码时安全停止或保留。
 
-主要失败策略是：模型工具或 Schema 无效则拒绝；文件版本变化则冲突；策略、审批或沙箱失败则不执行；Provider 仅对明确暂时错误有限重试；Journal 只修复损坏尾部；SQLite 投影按 Journal 重建；Summary 校验失败不提交；Embedding/Orama 失败退回 FTS5；子 Agent 无证据不完成；Worktree/Handoff 冲突保留 Artifact；高级 TUI 不可用则降级普通 CLI。终端日志只是视图，`/changes`、`/commands`、`/permissions`、`/tasks`、`/agents`、`/context`、`/memory` 和 `/usage` 都读取 Runtime 状态。
+主要失败策略是：模型工具或 Schema 无效则拒绝；文件版本变化则冲突；策略、审批或沙箱失败则不执行；Provider 仅对明确暂时错误有限重试；Journal 只修复损坏尾部；可重建 Thread 投影按主数据恢复，不把长期记忆/证据主数据当缓存丢弃；无效/低收益摘要不提交语义候选，改走 Journal 引用支持的本地退出/重建；必需上下文仍过大则返回可恢复的 `limit_reached` / `context_capacity_exhausted`，保留待处理工作和已花预算；Embedding/Orama 失败退回 FTS5；子 Agent 无证据不完成；Worktree/Handoff 冲突保留 Artifact；高级 TUI 不可用则降级普通 CLI。终端日志只是视图，`/changes`、`/commands`、`/permissions`、`/tasks`、`/agents`、`/context`、`/memory` 和 `/usage` 都读取 Runtime 状态。
 
-主要权衡包括：本地优先仍依赖远程推理；确定性字符预算不同于精确 Token；MicroCompaction 的引用需要在必要时重新取回正文；Summary V2 与意图校验以复杂度换取长任务连续性；混合 RAG 增加本地资产但保留 FTS5 回退；共享子 Agent 兼容非 Git 项目但写入串行；Worktree 改善源码隔离却不能替代 OS 沙箱；非流式主请求简化持久步骤边界，但 TUI 更依赖耗时状态和执行中调整。
+主要权衡包括：本地优先仍依赖远程推理；配置容量使用保守估算而非原生精确分词；保留近期 thinking 占用空间，整体历史退出和最小重建可能丢失活跃细节；工具证据存储有界，恢复引用可能需要显式回读；混合 RAG 增加本地计算与资产但保留 FTS5 回退；共享子 Agent 兼容非 Git 项目但写入串行；Worktree 改善源码隔离却不能替代 OS 沙箱；非流式主请求简化持久步骤边界，但 TUI 更依赖耗时状态和执行中调整。
 
 只要继续保持权限、身份、持久化和恢复不变量，系统可以扩展新的 Provider、模型、检索后端、子 Agent 角色或执行环境。源码采用 [MIT License](../LICENSE)，第三方组件见[第三方开源声明](../THIRD_PARTY_NOTICES.md)。

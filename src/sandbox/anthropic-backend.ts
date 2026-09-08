@@ -13,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,6 +58,7 @@ class AsyncGate {
 // within this EASY CODE process prevents concurrent child Worktrees from
 // receiving overlapping ACL grants through that identity.
 const SANDBOX_BROKER_RUNTIME_PARENT = path.join(os.tmpdir(), "easy-code-srt-runtime");
+const WINDOWS_QUARANTINE_PATH = path.join(SANDBOX_BROKER_RUNTIME_PARENT, "windows-acl-quarantine.json");
 const WINDOWS_SANDBOX_SCRATCH_DIRECTORY = ".easy-code-srt-runtime";
 const WINDOWS_SANDBOX_SCRATCH_MARKER = ".easy-code-scratch.json";
 const WINDOWS_SANDBOX_SCRATCH_GRACE_MS = 60_000;
@@ -302,11 +303,7 @@ async function collectWindowsSensitiveProbePaths(
 }
 
 function sandboxMetadata(request: SandboxExecutionRequest): SandboxExecutionMetadata {
-  const network = request.policyDecision.capability === "shell_exec"
-    ? "allowed"
-    : request.policyDecision.capability === "registry_install"
-      ? "registry-only"
-      : "denied";
+  const network = request.networkProxyURL ? "brokered" : "denied";
   return {
     backend: process.platform === "win32"
       ? "anthropic-srt-windows"
@@ -314,20 +311,13 @@ function sandboxMetadata(request: SandboxExecutionRequest): SandboxExecutionMeta
         ? "anthropic-srt-macos"
         : "anthropic-srt-linux",
     enforced: true,
-    filesystem: "workspace-write",
+    filesystem: request.context.mode === "plan" ? "workspace-read" : "workspace-write",
     network,
   };
 }
 
 function networkDomains(request: SandboxExecutionRequest): string[] {
-  if (
-    request.policyDecision.capability === "shell_exec"
-  ) {
-    return ["*"];
-  }
-  if (request.policyDecision.capability === "registry_install") {
-    return ["registry.npmjs.org"];
-  }
+  void request;
   return [];
 }
 
@@ -863,6 +853,17 @@ async function windowsAclMutationProbes(filesystem: {
 }
 
 export class AnthropicSandboxBackend implements CommandExecutionBackend {
+  assertEnvironmentSafe(): void {
+    if (this.platform === "win32" && existsSync(WINDOWS_QUARANTINE_PATH)) {
+      throw new Error(`Shared Windows sandbox identity is quarantined; inspect ACL cleanup before continuing: ${WINDOWS_QUARANTINE_PATH}`);
+    }
+  }
+
+  quarantine(reason: string): void {
+    if (this.platform !== "win32") return;
+    mkdirSync(SANDBOX_BROKER_RUNTIME_PARENT, { recursive: true });
+    writeFileSync(WINDOWS_QUARANTINE_PATH, JSON.stringify({ workspaceRoot: this.workspace.root, reason: reason.slice(0,2048), at: new Date().toISOString() }), { mode: 0o600 });
+  }
   private readonly workerPath: string;
   private readonly bridgePath: string;
   private readonly sensitiveReadPaths: string[];
@@ -1099,8 +1100,15 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
-    if (request.context.commandExecutionMode === "unrestricted") {
-      throw new Error("Dangerous full access must use the dedicated host backend");
+    this.assertEnvironmentSafe();
+    // Inherited Windows DENY ACEs do not override every pre-existing explicit
+    // child ACE. Until a mandatory read-only token is available, even an
+    // accidentally classified inspection must not spawn under Plan.
+    if (this.platform === "win32" && request.context.mode === "plan") {
+      throw new Error("Windows Plan is file-tools-only: this ACL backend cannot guarantee read-only command execution for every existing file");
+    }
+    if (this.platform !== "win32" && this.platform !== "linux") {
+      throw new Error("Strict command supervision currently requires Windows Job Objects or Linux PID namespaces; no weaker process-group fallback is permitted");
     }
     const releaseGate = process.platform === "win32"
       ? await WINDOWS_SANDBOX_GATE.acquire()
@@ -1139,16 +1147,24 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         XDG_CONFIG_HOME: scratchConfig,
         XDG_CACHE_HOME: scratchCache,
         EASY_CODE_SANDBOXED: "1",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: path.join(scratchConfig, "empty-git-config"),
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_PAGER: "cat",
       };
       const officialRuntimeHome = getEasyCodeHome();
       const protectedMetadataCandidates = [
         path.join(this.workspace.root, ".easycode"),
         path.join(this.workspace.root, ".git"),
+        ...[
+          ...this.sensitiveReadPaths,
+          path.resolve(fileURLToPath(new URL("..", import.meta.url))),
+          path.resolve(fileURLToPath(new URL("../../node_modules", import.meta.url))),
+        ].filter(candidate => pathIsInsideOrEqual(this.workspace.root, candidate)),
       ];
       // If the workspace is the user's home directory (or one of its
       // ancestors), carve the official prompt/tool bundle back out of the
-      // otherwise writable workspace. In Dangerous mode this backend is
-      // bypassed deliberately; startup integrity checks still repair changes.
+      // otherwise writable workspace. No approval posture bypasses this carve-out.
       if (pathIsInsideOrEqual(this.workspace.root, officialRuntimeHome)) {
         protectedMetadataCandidates.push(officialRuntimeHome);
       }
@@ -1188,7 +1204,10 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         bridgePath: stagedBridgePath,
         target: {
           executablePath: request.command.executablePath,
-          args: [...request.command.args],
+          args: path.basename(request.command.executablePath).replace(/\.exe$/iu, "").toLowerCase() === "git"
+            ? ["--no-pager", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+              "-c", "diff.external=", "-c", "diff.trustExitCode=false", ...request.command.args]
+            : [...request.command.args],
           cwdAbsolute: request.command.cwdAbsolute,
           environment: targetEnvironment,
         },
@@ -1205,20 +1224,22 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
           // allowWrite grants read/execute as well, so workspace/scratch do not
           // need duplicate read ACEs. External executables are granted as
           // canonical files, never as Program Files or NVM directory trees.
-          allowRead: executableReadPaths,
+          allowRead: uniquePaths([...executableReadPaths,
+            ...(request.context.mode === "plan" ? [this.workspace.root] : [])]),
           allowWrite: uniquePaths([
-            this.workspace.root,
+            ...(request.context.mode === "plan" ? [] : [this.workspace.root]),
             ...(this.platform === "win32" ? [] : [scratchRoot]),
           ]),
           // Paths outside allowWrite are already immutable to the sandbox user.
           // Only workspace metadata needs an explicit deny carve-out.
           denyWrite: uniquePaths([
+            ...(request.context.mode === "plan" ? [this.workspace.root] : []),
             ...protectedMetadata,
             ...(this.platform === "win32" ? [scratchMarkerPath, payloadPath] : []),
           ]),
           allowGitConfig: false,
         },
-        network: { allowedDomains: networkDomains(request) },
+        network: { allowedDomains: networkDomains(request), ...(request.networkProxyURL ? { proxyURL: request.networkProxyURL } : {}) },
       };
       if (this.platform === "win32") {
         await this.windowsAclPreflight.check(
@@ -1297,6 +1318,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
           EASY_CODE_SRT_WORKER: "1",
         },
         metadata: this.describe(request),
+        controlPipe: true,
         cleanup: cleanupPrepared,
       };
     } catch (error) {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { semanticPatchSchema } from "../context/semantic-compaction.js";
+import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
 import { MAX_CONTEXT_SUMMARY_CHARS } from "../context/manager.js";
 import type {
   AgentTool,
@@ -175,7 +175,7 @@ function copyCoverageCheck(
 export class CompactContextTool implements AgentTool {
   readonly name = "compact_context" as const;
   readonly mutating = false;
-  readonly inputSchema = semanticPatchSchema;
+  readonly inputSchema = z.unknown().transform(parseSemanticRequestPatch);
   readonly definition: ToolDefinition = {
     type: "function",
     function: { name: this.name, ...documentToolSchema(this.name, {

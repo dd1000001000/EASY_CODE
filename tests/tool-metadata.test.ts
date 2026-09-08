@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import type { CommandRuntime } from "../src/command/runtime.js";
+import type { DownloadBroker } from "../src/downloads/broker.js";
 import type { TaskNode } from "../src/core/types.js";
 import { loadPromptBundleCatalog } from "../src/prompt-bundle/index.js";
 import { autoRouteToolDefinitions } from "../src/runtime/auto-router.js";
@@ -11,6 +12,7 @@ import {
   CancelCommandTool,
   CreateFileTool,
   DeleteFileTool,
+  FetchArtifactTool,
   ManageMemoryTool,
   ManageSubagentsTool,
   ManageTasksTool,
@@ -19,6 +21,7 @@ import {
   ReadFileTool,
   ReadImageTool,
   RunCommandTool,
+  SearchFilesTool,
   StartCommandTool,
   cancelCommandInputSchema,
   pollCommandInputSchema,
@@ -44,12 +47,14 @@ function actualDefinitions() {
     new CompactContextTool().definition,
     new CreateFileTool(workspace).definition,
     new DeleteFileTool(workspace).definition,
+    new FetchArtifactTool({} as DownloadBroker).definition,
     new ManageMemoryTool({} as MemoryManager, workspace).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
     new ManageTasksTool().definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
     new ReadImageTool(workspace).definition,
+    new SearchFilesTool(workspace).definition,
     new RunCommandTool(workspace, {} as CommandRuntime).definition,
     new StartCommandTool(workspace, {} as CommandRuntime).definition,
     new PollCommandTool(workspace, {} as CommandRuntime).definition,
@@ -69,6 +74,7 @@ describe("Prompt Bundle tool metadata", () => {
       "compact_context",
       "create_file",
       "delete_file",
+      "fetch_artifact",
       "manage_memory",
       "manage_subagents",
       "manage_tasks",
@@ -78,6 +84,7 @@ describe("Prompt Bundle tool metadata", () => {
       "read_image",
       "respond_directly",
       "run_command",
+      "search_files",
       "select_mode",
       "start_command",
       "submit_task_result",
@@ -241,13 +248,13 @@ describe("Prompt Bundle tool metadata", () => {
       program: "npm",
       args: ["test"],
       intent: "verify",
-    }).success, false, "verify requires an explicit verificationKind");
+    }).success, true, "verify defaults to custom without a correction call");
     assert.equal(runCommandInputSchema.safeParse({
       program: "node",
       args: ["--version"],
       intent: "inspect",
       verificationKind: "smoke_test",
-    }).success, false, "non-verification intents must not carry verificationKind");
+    }).success, true, "inapplicable verification metadata is ignored, not an execution error");
     const runParameters = functions[0]?.parameters as {
       properties: Record<string, { enum?: string[] }>;
     };

@@ -3,7 +3,7 @@
   "contractVersion": "1.1.0",
   "description": "List a directory or find files/literal text without a shell or command approval. For project overview, start with mode=list at the root. Search results do not authorize editing; use read_file for a versioned read.",
   "propertyDescriptions": {
-    "path": "File or directory to search, default workspace root. Absolute host paths require unrestricted access. Explicit paths can target normally excluded build/dependency directories.",
+    "path": "File or directory to search, default workspace root. Absolute host paths are not accepted. Explicit paths can target normally excluded build/dependency directories.",
     "glob": "Optional relative filename filter supporting *, **, ? and flat brace alternatives such as *.{json,md,toml}. At most 32 alternatives; no nested braces, character classes, regex or parent traversal. Use forward slashes. A basename filter searches all visited depths, not only the root.",
     "query": "Optional literal text to locate. Omit to list matching filenames.",
     "caseSensitive": "Match text case-sensitively; default false.",

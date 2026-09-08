@@ -3,7 +3,6 @@ import path from "node:path";
 import { describe, it } from "./harness.js";
 import {
   compactionV2Input,
-  persistedCompactionV2Summary,
 } from "./compaction-fixture.js";
 import {
   ContextManager,
@@ -68,6 +67,38 @@ function primeRuntimeContextChars(
     new ContextManager().estimateShortTermChars(currentState) + currentInputChars,
     targetChars,
   );
+}
+
+
+const degradationOptions = {
+  maxSteps: 4, maxContextChars: 100_000, maxContextTokens: 34_000,
+  maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const,
+};
+function investigationState(reasoningChars = 60_000): SessionState {
+  const current = state();
+  current.messages = [
+    { role: "user", content: "Preserve Node.js 16 support" },
+    { role: "assistant", content: "Earlier unfinished investigation", reasoning_content: "r".repeat(reasoningChars) },
+    { role: "assistant", content: "Recent evidence", reasoning_content: "recent reasoning" },
+    { role: "assistant", content: "Live work", reasoning_content: "keep this exactly" },
+  ];
+  return current;
+}
+function summaryResponse(currentWork = "Investigation unfinished; no fix verified."): ProviderResponse {
+  return { message: { role: "assistant", content: null, tool_calls: [{
+    id: "compact_candidate", type: "function", function: { name: "compact_context",
+      arguments: JSON.stringify({ currentWork, nextStep: "Test the competing hypotheses." }) },
+  }] } };
+}
+function contextRuntime(provider: ModelProvider, tools: AgentTool[],
+  events: Array<{ type: string; payload: unknown }> = [], purposes: string[] = []) {
+  return new AgentRuntime({
+    provider, tools, contextManager: new ContextManager(), buildSystemPrompt: async () => "rules",
+    getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
+    appendEvent: async (event) => { events.push(event); },
+    onModelUsage: async (record) => { purposes.push(record.purpose); },
+    requestApproval: async () => false,
+  });
 }
 
 describe("AgentRuntime", () => {
@@ -228,7 +259,7 @@ describe("AgentRuntime", () => {
   it("keeps the current request when layered-system reservation exceeds a low context budget", async () => {
     const currentState = state();
     currentState.messages = Array.from({ length: 20 }, (_, index) => ({
-      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      role: "assistant" as const,
       content: `large-history-${index}-${"x".repeat(500)}`,
     }));
     // Keep the old history durable but already summarized so this case tests
@@ -817,7 +848,6 @@ describe("AgentRuntime", () => {
       "read_image",
       "run_command",
       "propose_plan",
-      "compact_context",
       "manage_memory",
     ]);
   });
@@ -2039,104 +2069,33 @@ describe("AgentRuntime", () => {
     assert.equal(secondRequest.some((message) => message.role === "user" && message.images?.length), false);
   });
 
-  it("lets the model replace earlier context with a cumulative summary", async () => {
-    const originalPrompt = "ORIGINAL_USER_PROMPT_MARKER";
-    const maxContextChars = 400_000;
-    const compactionInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: originalPrompt,
-      activeConstraints: [{
-        sourceMessageIndex: 0,
-        text: "PRESERVE_NODE_16_CONSTRAINT",
-      }],
-      currentWork: "Finishing the current task while preserving Node.js 16.",
-      nextStep: "Return the verified result.",
-    });
-    const modelSummary = persistedCompactionV2Summary(compactionInput);
-    let requestCount = 0;
-    let secondRequestMessages: Parameters<ModelProvider["complete"]>[0]["messages"] = [];
-    const events: EventRecord[] = [];
-    const provider: ModelProvider = {
-      name: "qwen",
-      model: "mock",
-      async complete(request) {
-        requestCount += 1;
-        if (requestCount === 1) {
-          return {
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: [{
-                id: "call_compact",
-                type: "function",
-                function: {
-                  name: "compact_context",
-                  arguments: JSON.stringify(compactionInput),
-                },
-              }],
-            },
-          };
-        }
-        secondRequestMessages = request.messages;
-        return { message: { role: "assistant", content: "done", tool_calls: [] } };
-      },
-    };
-    const currentState = state();
-    primeRuntimeContextChars(
-      currentState,
-      originalPrompt,
-      MAX_ACTIVE_WORKING_SET_CHARS * 0.65,
-      "PRESERVE_NODE_16_CONSTRAINT",
-    );
-    const runtime = new AgentRuntime({
-      provider,
-      tools: [new CompactContextTool()],
-      contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system",
-      getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [],
-      appendEvent: async (event) => {
-        events.push({
-          ...event,
-          schemaVersion: 1,
-          eventId: `event_${events.length + 1}`,
-          sequence: events.length + 1,
-          timestamp: new Date().toISOString(),
-        });
-      },
-      requestApproval: async () => false,
-    });
 
-    const result = await runtime.run(currentState, originalPrompt, {
-      maxSteps: 3,
-      maxContextChars,
-      maxOutputChars: 4_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(result.reason, "success");
-    assert.equal(currentState.workingSummary, modelSummary);
-    assert.equal(currentState.compactedMessageCount, 4);
-    assert.equal(currentState.messages.some((message) => message.content === originalPrompt), true);
-    const storedToolResult = currentState.messages.find(
-      (message) => message.role === "tool" && message.name === "compact_context",
-    );
-    assert.ok(storedToolResult?.content);
-    assert.doesNotMatch(storedToolResult.content, /PRESERVE_NODE_16_CONSTRAINT/u);
-    assert.equal(
-      secondRequestMessages.some((message) => message.content?.includes(modelSummary)),
-      true,
-    );
-    assert.equal(
-      secondRequestMessages.some((message) => message.content === originalPrompt),
-      false,
-    );
-    assert.equal(secondRequestMessages.some((message) => message.role === "tool"), false);
-    assert.equal(events.some((event) => event.type === "context.compacted"), true);
+  it("accepts an exclusive legacy model compaction intent without another paid summary", async () => {
+    const current = investigationState(15_000);
+    const raw = JSON.stringify(current.messages);
+    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const result = await contextRuntime({
+      name: "qwen", model: "mock", async complete(request) {
+        requests.push(request);
+        return requests.length === 1 ? summaryResponse("Preserve compatibility while investigating.") :
+          { message: { role: "assistant", content: "done" } };
+      },
+    }, [new CompactContextTool()], events).run(current, "Continue the investigation", degradationOptions);
+    assert.equal(result.reason, "success", result.text);
+    assert.equal(requests.length, 2);
+    // The parent's submission consumes attempt one without another provider call.
+    assert.equal(events.filter((event) => event.type === "context.compaction.attempt").length, 1);
+    assert.equal(events.filter((event) => event.type === "context.compacted").length, 1);
+    assert.match(current.workingSummary, /Preserve compatibility/);
+    assert.ok(current.compactedMessageCount > 0);
+    assert.equal(JSON.stringify(current.messages.slice(0, 4)), raw);
+    assert.match(JSON.stringify(requests[1]?.messages), /Preserve Node.js 16 support/);
+    assert.ok(requests[1]?.messages.some((message) =>
+      message.role === "assistant" && message.reasoning_content === "keep this exactly"));
   });
 
-  it("advises compaction in the 60% band while keeping normal tools available", async () => {
+  it("keeps normal tools available below the trigger without a model-driven compaction protocol", async () => {
     const maxContextChars = 400_000;
     const input = "Continue the task at the advisory boundary.";
     const historyMarker = "ADVISORY_HISTORY_MARKER";
@@ -2217,15 +2176,15 @@ describe("AgentRuntime", () => {
     assert.equal(readExecutions, 1);
     assert.deepEqual(
       requests[0]?.tools?.map((tool) => tool.function.name),
-      ["compact_context", "read_file"],
+      ["read_file"],
     );
     const firstSystemPrompt = requests[0]?.messages[0]?.content ?? "";
-    assert.match(firstSystemPrompt, /RUNTIME_CONTEXT_PRESSURE/u);
+    assert.equal(firstSystemPrompt, "system");
     assert.doesNotMatch(firstSystemPrompt, /RUNTIME_CONTEXT_COMPACTION_(?:REQUIRED|FORCED)/u);
     assert.equal(eventTypes.includes("message.user.synthetic"), false);
   });
 
-  it("requires compaction when overflow selection would hide active history pressure", async () => {
+  it("pauses oversized user requirements without silently dropping them or dispatching an impossible request", async () => {
     const maxContextChars = 100_000;
     const input = "Continue with the current request.";
     const currentState = state();
@@ -2263,24 +2222,12 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "failed");
-    assert.ok(requests.length >= 1);
-    assert.ok(snapshots.length >= 1);
+    assert.equal(result.reason, "limit_reached", result.text);
+    assert.equal(result.failure?.code, "context_capacity_exhausted");
+    assert.equal(requests.length, 0);
+    assert.equal(snapshots.length, 0);
     assert.equal(currentState.compactedMessageCount, 0);
-    assert.ok(snapshots[0]!.actualRequest.durableHistoryChars > maxContextChars);
-    assert.ok(
-      snapshots[0]!.actualRequest.providerInputChars <
-        snapshots[0]!.actualRequest.durableHistoryChars,
-    );
-    assert.equal(snapshots[0]!.enforcedPressure, "force");
-    assert.match(
-      requests[0]?.messages[0]?.content ?? "",
-      /RUNTIME_CONTEXT_COMPACTION_(?:REQUIRED|FORCED)/u,
-    );
-    assert.doesNotMatch(
-      JSON.stringify(requests[0]?.messages ?? []),
-      /OMITTED_HISTORY_END/u,
-    );
+    assert.match(currentState.messages[0]?.content ?? "", /OMITTED_HISTORY_END/);
   });
 
   it("reports provider context snapshots from the exact captured request", async () => {
@@ -2357,436 +2304,95 @@ describe("AgentRuntime", () => {
     assert.equal(snapshot.enforcedUtilization, snapshot.actualRequest.utilization);
   });
 
-  it("requires compaction at exactly 80% and restores normal tools afterward", async () => {
-    const maxContextChars = 400_000;
-    const input = "Continue after reducing the active context.";
-    const historyMarker = "REQUIRED_OLD_HISTORY_MARKER";
-    const compactionInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: input,
-      currentWork: "Reducing the required active context safely.",
-      nextStep: "Return the verified result.",
-    });
-    const modelSummary = persistedCompactionV2Summary(compactionInput);
+
+  it("uses one isolated summary at the token trigger then restores ordinary tools", async () => {
+    const current = investigationState();
+    const originalHistory = JSON.stringify(current.messages);
     const requests: Parameters<ModelProvider["complete"]>[0][] = [];
-    const promptToolNames: string[][] = [];
-    const usagePurposes: string[] = [];
-    const events: EventRecord[] = [];
-    const provider: ModelProvider = {
-      name: "qwen",
-      model: "mock",
-      async complete(request) {
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const purposes: string[] = [];
+    const read: AgentTool = {
+      name: "read_file", mutating: false,
+      definition: { type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      async execute() { return { ok: true, summary: "read" }; },
+    };
+    const result = await contextRuntime({
+      name: "qwen", model: "mock", async complete(request) {
         requests.push(request);
-        if (requests.length === 1) {
-          return {
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: [{
-                id: "call_required_compaction",
-                type: "function",
-                function: {
-                  name: "compact_context",
-                  arguments: JSON.stringify(compactionInput),
-                },
-              }],
-            },
-            usage: { promptTokens: 40, completionTokens: 8, totalTokens: 48 },
-          };
-        }
-        return {
-          message: { role: "assistant", content: "done", tool_calls: [] },
-          usage: { promptTokens: 12, completionTokens: 2, totalTokens: 14 },
-        };
+        return requests.length === 1 ? summaryResponse() : { message: { role: "assistant", content: "done" } };
       },
-    };
-    const readTool: AgentTool = {
-      name: "read_file",
-      mutating: false,
-      definition: {
-        type: "function",
-        function: { name: "read_file", description: "read", parameters: { type: "object" } },
-      },
-      async execute() {
-        return { ok: true, summary: "read" };
-      },
-    };
-    const currentState = state();
-    primeRuntimeContextChars(
-      currentState,
-      input,
-      MAX_ACTIVE_WORKING_SET_CHARS * 0.8,
-      historyMarker,
-    );
-    const runtime = new AgentRuntime({
-      provider,
-      tools: [new CompactContextTool(), readTool],
-      contextManager: new ContextManager(),
-      buildSystemPrompt: async ({ toolNames }) => {
-        promptToolNames.push([...toolNames]);
-        return "system";
-      },
-      getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [],
-      appendEvent: async (event) => {
-        events.push({
-          ...event,
-          schemaVersion: 1,
-          eventId: `event_${events.length + 1}`,
-          sequence: events.length + 1,
-          timestamp: new Date().toISOString(),
-        });
-      },
-      onModelUsage: async (record) => {
-        usagePurposes.push(record.purpose);
-      },
-      requestApproval: async () => false,
-    });
-
-    const result = await runtime.run(currentState, input, {
-      maxSteps: 2,
-      maxContextChars,
-      maxOutputChars: 4_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(result.reason, "success");
+    }, [new CompactContextTool(), read], events, purposes).run(current, "Continue", degradationOptions);
+    assert.equal(result.reason, "success", result.text);
     assert.equal(requests.length, 2);
-    assert.deepEqual(
-      requests[0]?.tools?.map((tool) => tool.function.name),
-      ["compact_context"],
-    );
-    // Runtime first budgets against the complete ordinary prompt, then emits
-    // the compact-only prompt selected by that pressure decision.
-    assert.deepEqual(promptToolNames[0], ["compact_context", "read_file"]);
-    assert.deepEqual(promptToolNames[1], ["compact_context"]);
-    assert.match(
-      requests[0]?.messages[0]?.content ?? "",
-      /RUNTIME_CONTEXT_COMPACTION_REQUIRED/u,
-    );
-    assert.deepEqual(
-      requests[1]?.tools?.map((tool) => tool.function.name),
-      ["compact_context", "read_file"],
-    );
-    assert.deepEqual(promptToolNames[2], ["compact_context", "read_file"]);
-    assert.deepEqual(usagePurposes, ["context_compaction", "agent_step"]);
-    assert.equal(
-      requests[1]?.messages.some((message) => message.content?.includes(modelSummary)),
-      true,
-    );
-    assert.equal(
-      requests[1]?.messages.some((message) => message.content?.includes(historyMarker)),
-      false,
-    );
-    assert.equal(requests[1]?.messages.some((message) => message.role === "tool"), false);
-    assert.equal(currentState.workingSummary, modelSummary);
-    assert.equal(currentState.compactedMessageCount, 4);
-    assert.equal(currentState.compactedMessageCount, currentState.messages.length - 1);
-    const compactionEvent = events.find((event) => event.type === "context.compacted");
-    assert.ok(compactionEvent);
-    const compactionPayload = compactionEvent.payload as Record<string, unknown>;
-    assert.equal(compactionPayload.summary, modelSummary);
-    assert.equal(compactionPayload.compactedMessageCount, 4);
-    assert.equal(compactionPayload.summaryChars, modelSummary.length);
-    assert.deepEqual(
-      (compactionPayload.contextIntentLedger as { latestRequest?: unknown })
-        .latestRequest,
-      { sourceMessageIndex: 1, text: input },
-    );
-    assert.equal(
-      (compactionPayload.contextCompactionMetadata as { formatVersion?: unknown })
-        .formatVersion,
-      2,
-    );
-    const compactAssistantEvent = events.find((event) =>
-      event.type === "message.assistant" &&
-      Array.isArray((event.payload as { tool_calls?: unknown }).tool_calls)
-    );
-    const durableAssistantArguments = JSON.parse(
-      ((compactAssistantEvent?.payload as {
-        tool_calls: Array<{ function: { arguments: string } }>;
-      }).tool_calls[0]?.function.arguments) ?? "{}",
-    ) as Record<string, unknown>;
-    assert.equal(durableAssistantArguments.formatVersion, 2);
-    assert.equal("coverageCheck" in durableAssistantArguments, true);
-    assert.equal("intentLedger" in durableAssistantArguments, true);
-    const compactToolCallEvent = events.find((event) =>
-      event.type === "tool.call" &&
-      (event.payload as { function?: { name?: unknown } }).function?.name ===
-        "compact_context"
-    );
-    const durableToolCallArguments = JSON.parse(
-      (compactToolCallEvent?.payload as { function?: { arguments?: string } })
-        .function?.arguments ?? "{}",
-    ) as Record<string, unknown>;
-    assert.equal(durableToolCallArguments.formatVersion, 2);
-    assert.equal("coverageCheck" in durableToolCallArguments, true);
-    assert.equal("intentLedger" in durableToolCallArguments, true);
+    assert.deepEqual(requests.map((request) => request.tools?.map((tool) => tool.function.name)),
+      [["compact_context"], ["read_file"]]);
+    assert.equal(requests[0]?.thinkingEffort, "none");
+    assert.equal(requests[0]?.maxTokens, 2048);
+    assert.deepEqual(purposes, ["context_compaction", "agent_step"]);
+    assert.equal(current.compactedMessageCount, 2);
+    assert.equal(JSON.stringify(current.messages.slice(0, 4)), originalHistory);
+    assert.ok(requests[1]?.messages.some((message) =>
+      message.role === "assistant" && message.reasoning_content === "keep this exactly"));
+    assert.match(JSON.stringify(requests[1]?.messages), /Preserve Node.js 16 support/);
+    assert.equal(events.filter((event) => event.type === "context.compaction.attempt").length, 1);
+    assert.equal(events.filter((event) => event.type === "context.compacted").length, 1);
+    assert.equal(current.contextCompactionMetadata?.formatVersion, 2); // Provenance schema, not semantic handoff version.
+    assert.equal(JSON.parse(current.workingSummary).formatVersion, 3);
     assert.equal(events.some((event) => event.type === "message.user.synthetic"), false);
-    assert.equal(
-      new ContextManager().inspect(currentState, maxContextChars).pressure,
-      "normal",
-    );
   });
 
-  it("inserts and persists a forced compaction request at exactly 90%", async () => {
-    const maxContextChars = 400_000;
-    const input = "Continue at the forced compaction boundary.";
-    const historyMarker = "FORCED_OLD_HISTORY_MARKER";
-    const compactionInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: input,
-      currentWork: "Reducing context at the forced boundary.",
-      nextStep: "Answer the current request.",
-    });
-    const requests: Parameters<ModelProvider["complete"]>[0][] = [];
-    const events: EventRecord[] = [];
-    const provider: ModelProvider = {
-      name: "qwen",
-      model: "mock",
-      async complete(request) {
-        requests.push(request);
-        if (requests.length === 1) {
-          return {
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: [{
-                id: "call_forced_compaction",
-                type: "function",
-                function: {
-                  name: "compact_context",
-                  arguments: JSON.stringify(compactionInput),
-                },
-              }],
-            },
-          };
-        }
-        return { message: { role: "assistant", content: "done", tool_calls: [] } };
-      },
-    };
-    const currentState = state();
-    primeRuntimeContextChars(
-      currentState,
-      input,
-      MAX_ACTIVE_WORKING_SET_CHARS * 0.9,
-      historyMarker,
-    );
-    const runtime = new AgentRuntime({
-      provider,
-      tools: [new CompactContextTool()],
-      contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system",
-      getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [],
-      appendEvent: async (event) => {
-        events.push({
-          ...event,
-          schemaVersion: 1,
-          eventId: `event_${events.length + 1}`,
-          sequence: events.length + 1,
-          timestamp: new Date().toISOString(),
-        });
-      },
-      requestApproval: async () => false,
-    });
 
-    const result = await runtime.run(currentState, input, {
-      maxSteps: 2,
-      maxContextChars,
-      maxOutputChars: 4_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(result.reason, "success");
-    assert.deepEqual(
-      requests[0]?.tools?.map((tool) => tool.function.name),
-      ["compact_context"],
-    );
-    assert.match(
-      requests[0]?.messages[0]?.content ?? "",
-      /RUNTIME_CONTEXT_COMPACTION_FORCED/u,
-    );
-    assert.equal(
-      requests[0]?.messages.some((message) =>
-        message.content?.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
-      ),
-      true,
-    );
-    assert.equal(
-      requests[1]?.messages.some((message) =>
-        message.content?.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
-      ),
-      false,
-    );
-    assert.equal(
-      currentState.messages.some((message) =>
-        message.role === "user" &&
-        message.content.includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
-      ),
-      true,
-    );
-    assert.equal(currentState.compactedMessageCount, 5);
-    assert.equal(currentState.compactedMessageCount, currentState.messages.length - 1);
-    assert.equal(
-      events.some((event) =>
-        event.type === "message.user.synthetic" &&
-        JSON.stringify(event.payload).includes("RUNTIME_CONTEXT_COMPACTION_FORCE"),
-      ),
-      true,
-    );
+  it("handles higher pressure without injecting forced repair instructions into work history", async () => {
+    const current = investigationState(64_000);
+    const events: Array<{ type: string; payload: unknown }> = [];
+    let requests = 0;
+    const result = await contextRuntime({
+      name: "qwen", model: "mock", async complete() {
+        return ++requests === 1 ? summaryResponse() : { message: { role: "assistant", content: "done" } };
+      },
+    }, [new CompactContextTool()], events).run(current, "Continue", degradationOptions);
+    assert.equal(result.reason, "success", result.text);
+    assert.ok(current.compactedMessageCount > 0);
+    assert.equal(events.filter((event) => event.type === "context.compaction.attempt").length, 1);
+    assert.equal(events.some((event) => event.type === "message.user.synthetic"), false);
+    assert.equal(current.messages.some((message) => message.role === "user" &&
+      message.content.includes("RUNTIME_CONTEXT_COMPACTION_FORCE")), false);
+    assert.equal(requests, 2);
   });
 
-  it("blocks batched or incorrect tools from causing side effects at 80%", async () => {
-    const maxContextChars = 400_000;
-    const scenarios = [
-      {
-        name: "batched compact_context and create_file",
-        calls: [
-          {
-            id: "call_blocked_compaction",
-            type: "function" as const,
-            function: {
-              name: "compact_context",
-              arguments: JSON.stringify(compactionV2Input({
-                primaryRequestIndex: 1,
-                primaryRequestText:
-                  "Continue after batched compact_context and create_file.",
-                currentWork: "This valid summary must still be rejected because it was batched.",
-                nextStep: "Request an exclusive compaction call.",
-              })),
-            },
-          },
-          {
-            id: "call_blocked_create",
-            type: "function" as const,
-            function: { name: "create_file", arguments: "{}" },
-          },
-        ],
-      },
-      {
-        name: "incorrect create_file call",
-        calls: [{
-          id: "call_incorrect_create",
-          type: "function" as const,
-          function: { name: "create_file", arguments: "{}" },
-        }],
-      },
-    ];
 
-    for (const scenario of scenarios) {
-      const input = `Continue after ${scenario.name}.`;
-      const recoveryInput = compactionV2Input({
-        primaryRequestIndex: 1,
-        primaryRequestText: input,
-        currentWork: `Recovering safely after ${scenario.name}.`,
-        nextStep: "Continue without executing the blocked side effect.",
-      });
-      const recoveredSummary = persistedCompactionV2Summary(recoveryInput);
+  it("never executes workspace tools returned by the isolated summarizer", async () => {
+    for (const batched of [true, false]) {
+      const current = investigationState();
       const requests: Parameters<ModelProvider["complete"]>[0][] = [];
-      let sideEffectExecutions = 0;
-      const provider: ModelProvider = {
-        name: "qwen",
-        model: "mock",
-        async complete(request) {
+      let writes = 0;
+      const create: AgentTool = {
+        name: "create_file", mutating: true,
+        definition: { type: "function", function: { name: "create_file", description: "write sentinel", parameters: { type: "object" } } },
+        async execute() { writes++; return { ok: true, summary: "written" }; },
+      };
+      const result = await contextRuntime({
+        name: "qwen", model: "mock", async complete(request) {
           requests.push(request);
           if (requests.length === 1) {
-            return {
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: scenario.calls,
-              },
-            };
+            const response = summaryResponse();
+            response.message.tool_calls = [
+              ...(batched ? response.message.tool_calls ?? [] : []),
+              { id: "forbidden_write", type: "function", function: { name: "create_file", arguments: "{}" } },
+            ];
+            return response;
           }
-          if (requests.length === 2) {
-            return {
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [{
-                  id: "call_recovery_compaction",
-                  type: "function",
-                  function: {
-                    name: "compact_context",
-                    arguments: JSON.stringify(recoveryInput),
-                  },
-                }],
-              },
-            };
-          }
-          return { message: { role: "assistant", content: "done", tool_calls: [] } };
+          return { message: { role: "assistant", content: "done" } };
         },
-      };
-      const sideEffectTool: AgentTool = {
-        name: "create_file",
-        mutating: true,
-        definition: {
-          type: "function",
-          function: {
-            name: "create_file",
-            description: "side-effect sentinel",
-            parameters: { type: "object" },
-          },
-        },
-        async execute() {
-          sideEffectExecutions += 1;
-          return { ok: true, summary: "side effect executed" };
-        },
-      };
-      const currentState = state();
-      primeRuntimeContextChars(
-        currentState,
-        input,
-        MAX_ACTIVE_WORKING_SET_CHARS * 0.8,
-        `BLOCKED_SIDE_EFFECT_HISTORY_${scenario.name}`,
-      );
-      const runtime = new AgentRuntime({
-        provider,
-        tools: [new CompactContextTool(), sideEffectTool],
-        contextManager: new ContextManager(),
-        buildSystemPrompt: async () => "system",
-        getWorkspaceSummary: async () => "workspace",
-        searchMemories: async () => [],
-        appendEvent: async () => undefined,
-        requestApproval: async () => false,
-      });
-
-      const result = await runtime.run(currentState, input, {
-        maxSteps: 3,
-        maxContextChars,
-        maxOutputChars: 4_000,
-        commandTimeoutMs: 1_000,
-        approvalPolicy: "never",
-      });
-
-      assert.equal(result.reason, "success", scenario.name);
-      assert.equal(sideEffectExecutions, 0, scenario.name);
-      assert.deepEqual(
-        requests[0]?.tools?.map((tool) => tool.function.name),
-        ["compact_context"],
-        scenario.name,
-      );
-      assert.deepEqual(
-        requests[1]?.tools?.map((tool) => tool.function.name),
-        ["compact_context"],
-        scenario.name,
-      );
-      assert.deepEqual(
-        requests[2]?.tools?.map((tool) => tool.function.name),
-        ["compact_context", "create_file"],
-        scenario.name,
-      );
-      const blockedResults = currentState.messages.filter(
-        (message) =>
-          message.role === "tool" &&
-          (message.name === "create_file" || message.name === "compact_context") &&
-          message.content.includes("context_compaction_required"),
-      );
-      assert.equal(blockedResults.length, scenario.calls.length, scenario.name);
-      assert.equal(currentState.workingSummary, recoveredSummary, scenario.name);
+      }, [new CompactContextTool(), create]).run(current, "Continue", degradationOptions);
+      assert.equal(result.reason, "success", result.text);
+      assert.equal(writes, 0);
+      assert.equal(requests.length, 2);
+      assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["compact_context"]);
+      assert.deepEqual(requests[1]?.tools?.map((tool) => tool.function.name), ["create_file"]);
+      assert.equal(current.compactionControl?.transaction?.attempts, 1);
+      assert.equal(JSON.parse(current.workingSummary).mode, "history_evicted");
+      assert.equal(current.messages.some((message) => message.role === "tool" && message.name === "create_file"), false);
     }
   });
 
@@ -2864,87 +2470,33 @@ describe("AgentRuntime", () => {
     const failedCompaction = currentState.messages.find(
       (message) => message.role === "tool" && message.name === "compact_context",
     );
-    assert.match(failedCompaction?.content ?? "", /compact_context_must_be_exclusive/u);
+    assert.match(failedCompaction?.content ?? "", /context_compaction_must_be_exclusive/u);
   });
 
-  it("rejects repeated compaction when no new history exists", async () => {
-    const input = "compact once";
-    const maxContextChars = 400_000;
-    const acceptedInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: input,
-      currentWork: "Applying the first useful compaction.",
-      nextStep: "Continue the current request.",
-    });
-    const repeatedInput = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: input,
-      currentWork: "Attempting a redundant compaction.",
-      nextStep: "Continue the current request.",
-    });
-    const acceptedSummary = persistedCompactionV2Summary(acceptedInput);
-    let requestCount = 0;
-    const provider: ModelProvider = {
-      name: "qwen",
-      model: "mock",
-      async complete() {
-        requestCount += 1;
-        if (requestCount <= 2) {
-          return {
-            message: {
-              role: "assistant",
-              content: null,
-              tool_calls: [{
-                id: `call_compact_${requestCount}`,
-                type: "function",
-                function: {
-                  name: "compact_context",
-                  arguments: JSON.stringify(
-                    requestCount === 1 ? acceptedInput : repeatedInput,
-                  ),
-                },
-              }],
-            },
-          };
-        }
-        return { message: { role: "assistant", content: "done", tool_calls: [] } };
-      },
+
+  it("does not buy another summary after a tiny normal tool round", async () => {
+    const current = investigationState();
+    let requests = 0;
+    const events: Array<{ type: string; payload: unknown }> = [];
+    const read: AgentTool = {
+      name: "read_file", mutating: false,
+      definition: { type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      async execute() { return { ok: true, summary: "small observation" }; },
     };
-    const currentState = state();
-    primeRuntimeContextChars(
-      currentState,
-      input,
-      MAX_ACTIVE_WORKING_SET_CHARS * 0.65,
-      "REPEATED_COMPACTION_HISTORY",
-    );
-    const runtime = new AgentRuntime({
-      provider,
-      tools: [new CompactContextTool()],
-      contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system",
-      getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [],
-      appendEvent: async () => undefined,
-      requestApproval: async () => false,
-    });
-
-    await runtime.run(currentState, input, {
-      maxSteps: 3,
-      maxContextChars,
-      maxOutputChars: 4_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(currentState.workingSummary, acceptedSummary);
-    assert.equal(currentState.compactedMessageCount, 4);
-    assert.equal(
-      currentState.messages.some(
-        (message) =>
-          message.role === "tool" && message.content.includes("context_compaction_cooldown_active"),
-      ),
-      true,
-    );
+    const result = await contextRuntime({
+      name: "qwen", model: "mock", async complete() {
+        if (++requests === 1) return summaryResponse();
+        if (requests === 2) return { message: { role: "assistant", content: null, tool_calls: [{
+          id: "read_after_summary", type: "function", function: { name: "read_file", arguments: "{}" },
+        }] } };
+        return { message: { role: "assistant", content: "done" } };
+      },
+    }, [new CompactContextTool(), read], events).run(current, "Continue", degradationOptions);
+    assert.equal(result.reason, "success", result.text);
+    assert.equal(requests, 3);
+    assert.equal(events.filter((event) => event.type === "context.compaction.attempt").length, 1);
+    assert.equal(events.filter((event) => event.type === "context.compacted").length, 1);
+    assert.equal(current.compactedMessageCount, 2);
   });
 
   it("commits staged memory only after turn completion within the step budget", async () => {

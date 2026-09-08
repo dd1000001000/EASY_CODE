@@ -295,13 +295,14 @@ describe("/approval", () => {
       assert.deepEqual(choiceIds[1], ["cancel", "confirm"]);
       assert.deepEqual(choiceIds[3], ["cancel", "confirm"]);
       assert.equal(
-        titles.filter((title) => title === "DANGER — enable full computer access?").length,
+        titles.filter((title) => title === "Enable no-prompt isolated execution?").length,
         2,
       );
-      assert.match(fixture.output(), /DANGER: the main Agent and all child Agents/u);
-      assert.match(fixture.output(), /without a sandbox or approval prompts/u);
-      assert.match(fixture.output(), /! DANGEROUS FULL ACCESS IS ACTIVE/u);
-      assert.match(fixture.output(), /Dangerous full access disabled/u);
+      assert.match(fixture.output(), /Commands may change workspace files/u);
+      assert.match(fixture.output(), /OS isolation and Benchmark network restrictions remain active/u);
+      assert.match(fixture.output(), /uploads and remote changes need no approval/u);
+      assert.match(fixture.output(), /ISOLATED NO-PROMPT/u);
+      assert.match(fixture.output(), /Auto approval is active inside permanent policy/u);
       assert.deepEqual(sessionAnnouncements, [false, false, false]);
       await assert.rejects(
         fixture.app.handleSlashCommand("/approval unrestricted"),

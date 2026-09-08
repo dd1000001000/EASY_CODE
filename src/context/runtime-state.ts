@@ -1,6 +1,7 @@
 import type { CommandAuditEntry, SessionState } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { activeTask } from "../tasks/task-graph.js";
+import { legacyRunningCommands } from "./pending-operations.js";
 
 /** Exact invocation and owner, not merely the most recent shell command. */
 function commandTarget(command: CommandAuditEntry): string {
@@ -36,6 +37,8 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
   const runs = state.progressGuard?.failureRuns ?? [];
   const current = state.taskGraph ? activeTask(state.taskGraph) : undefined;
   const fileChanges = [...new Map(state.changes.map((change) => [change.path, change])).values()];
+  const pendingOperations = { commands: { ...legacyRunningCommands(state), ...state.contextOperations?.commands },
+    children: state.contextOperations?.children ?? {} };
   const payload = {
     // Preserve complete retired user messages, not a model-generated paraphrase
     // or the bounded display quote in the intent ledger. Never truncate to fit.
@@ -51,6 +54,9 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
     ...(state.planReview ? { plan: state.planReview } : {}),
     ...(fileChanges.length ? { recordedFileChanges: fileChanges } : {}),
     ...(state.pendingSteering?.length ? { pendingUserSteering: state.pendingSteering } : {}),
+    ...((Object.keys(pendingOperations.commands).length || Object.keys(pendingOperations.children).length)
+      ? { pendingOperations,
+        pendingOperationsPolicy: "Commands are last-observed running: use poll_command, do not restart them. Children await manage_subagents status/wait; preserve assignment and follow-ups. A stop request does not mean completion." } : {}),
     ...(failures.length ? { unresolvedCommands: failures.map((command) => ({
       id: command.id, program: command.program, args: command.args, cwd: command.cwd,
       status: command.status, exitCode: command.exitCode, summary: command.summary,
@@ -60,6 +66,7 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
     ...(runs.length ? { failureRuns: runs } : {}),
     ...(incidents.length ? { incidents: incidents.map((item) => ({
       id: item.incidentId, phase: item.phase, targetKey: item.targetKey,
+      reason: item.reason ?? "repeated_verified_failure", baselineDigest: item.baselineDigest,
       outcomeKey: item.outcomeKey, sourceEventId: item.triggerSourceEventId,
       reviewAttempts: item.reviewAttempts,
       // A review remains an unverified proposal, not a fact or a successful test.

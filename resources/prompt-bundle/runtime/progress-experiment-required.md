@@ -15,4 +15,4 @@ Expected signal if the hypothesis is supported:
 Signal that would falsify it:
 {{falsifyingSignal}}
 
-Use read-only inspection as needed, then produce one real terminal command result. Ordinary file mutations and task transitions remain paused until that result exists. Receiving this review does not itself establish progress or correctness; an unrelated command does not prove the diagnosis.
+Use read-only inspection as needed, then execute the exact experiment command with intent verify and obtain its terminal result (poll the same commandId if necessary). Ordinary file mutations and task transitions remain paused until the bound result exists. An unrelated command cannot complete the experiment. Receiving this review does not establish progress or correctness; a new error is evidence, not verified improvement. Existing tests/configuration must remain comparable before a pass can resolve the original failure.

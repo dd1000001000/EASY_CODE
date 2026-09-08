@@ -12,11 +12,7 @@ const HOST_METADATA: SandboxExecutionMetadata = {
   network: "host",
 };
 
-/**
- * Explicit danger-mode backend. It is intentionally separate from the
- * Anthropic sandbox backend so a routing mistake fails instead of silently
- * weakening Manual or Auto approval modes.
- */
+/** Legacy import/audit compatibility only. No authorization enables host execution. */
 export class UnrestrictedHostBackend implements CommandExecutionBackend {
   describe(request?: SandboxExecutionRequest): SandboxExecutionMetadata {
     // Metadata is safe to produce for denied/resolution-failure audit records;
@@ -26,23 +22,7 @@ export class UnrestrictedHostBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
-    this.assertAuthorized(request);
-    return {
-      executablePath: request.command.executablePath,
-      args: [...request.command.args],
-      cwdAbsolute: request.command.cwdAbsolute,
-      environment: { ...request.command.environment },
-      metadata: { ...HOST_METADATA },
-      cleanup: async () => undefined,
-    };
-  }
-
-  private assertAuthorized(request: SandboxExecutionRequest): void {
-    if (
-      request.context.commandExecutionMode !== "unrestricted" ||
-      !(request.context.isUnrestrictedHostAccessActive?.() ?? true)
-    ) {
-      throw new Error("Unrestricted host backend requires active user-confirmed dangerous mode");
-    }
+    void request;
+    throw new Error("Unrestricted host execution was removed: model commands require OS isolation and Runtime-mediated networking");
   }
 }

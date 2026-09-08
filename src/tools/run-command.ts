@@ -6,6 +6,7 @@ import type {
   ToolExecutionResult,
 } from "../core/types.js";
 import { CommandRuntime } from "../command/runtime.js";
+import { normalizeCommandRequest } from "../command/normalize-request.js";
 import { formatCommandTimeoutBudget } from "../command/timeout.js";
 import type {
   CancelCommandInput,
@@ -28,30 +29,12 @@ const commandInvocationSchema = z
     args: z.array(z.string().max(16_384)).max(256).optional(),
     cwd: z.string().min(1).max(4_096).optional(),
     intent: z.enum(COMMAND_INTENTS),
-    verificationKind: z.enum(VERIFICATION_KINDS).optional(),
+    verificationKind: z.unknown().optional(),
     timeoutMs: z.number().int().positive().optional(),
     reason: z.string().max(2_000).optional(),
   })
   .strict()
-  .superRefine((input, context) => {
-    if (input.intent === "verify" && input.verificationKind === undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["verificationKind"],
-        message: "verificationKind is required when intent is verify",
-      });
-    }
-    if (
-      (input.intent === "inspect" || input.intent === "run" || input.intent === "install") &&
-      input.verificationKind !== undefined
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["verificationKind"],
-        message: `verificationKind is not allowed when intent is ${input.intent}`,
-      });
-    }
-  });
+  .transform(normalizeCommandRequest);
 
 const commandHandleSchema = z.string().regex(/^command_[0-9a-f-]{36}$/u);
 
@@ -107,9 +90,11 @@ function commandResult(
   operation: CommandOperation,
   context: ToolContext,
 ): ToolExecutionResult {
-  const successful = operation === "cancel"
+  const cleanupUnsafe = output.status !== "running" && (output.lifecycle?.cleanup === "failed" || output.lifecycle?.cleanup === "unconfirmed");
+  const successful = !cleanupUnsafe && (operation === "cancel"
     ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
-    : output.status === "running" || (output.status === "exited" && output.exitCode === 0);
+    : output.status === "running" || (output.status === "exited" && output.exitCode === 0 &&
+        !(output.requestMetadata?.verificationKind && output.validation?.status === "failed")));
   const retryableSandboxFailure =
     output.status === "sandbox_unavailable" &&
     output.sandboxFailure?.retryable === true;
@@ -145,18 +130,24 @@ function commandResult(
       ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
     : output.status === "sandbox_unavailable"
       ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
-        `The target process did not start. ${sandboxRecovery} ` +
+        `${output.failure?.processStarted ? "Execution may already have occurred; do not rerun automatically." : "The target process did not start."} ${sandboxRecovery} ` +
         (retryableSandboxFailure
           ? ""
           : "Run `easy-code sandbox doctor` outside the agent.")
     : output.status === "spawn_failed"
-      ? `Command target did not start: ${output.failure?.message ?? output.stderr.text}`
+      ? `Command execution could not be confirmed: ${output.failure?.message ?? output.stderr.text}`
     : output.status === "timed_out"
       ? "Command timed out and its process tree was terminated"
     : output.status === "canceled"
       ? `Command ${output.commandId} canceled and its process tree terminated`
-    : `Command exited with code ${output.exitCode}`;
-  const summary = `${baseSummary}${timeoutSummary}`;
+    : `Command exited with code ${output.exitCode}` +
+      (output.requestMetadata?.verificationKind && output.validation
+        ? `; validation ${output.validation.status}: ${output.validation.reason}` +
+          (output.validation.standard?.status === "changed" ? "; original tests/configuration changed: this result cannot resolve the original failure" :
+            output.validation.standard?.status === "unknown" ? "; testing-standard coverage is incomplete: no verified recovery can be claimed" : "") : "");
+  const summary = cleanupUnsafe
+    ? `Command outcome retained (exit=${output.exitCode}); cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
+    : `${baseSummary}${timeoutSummary}`;
   return {
     ok: successful,
     summary,

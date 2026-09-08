@@ -118,7 +118,7 @@ export function analyzeNpmInstall(args: readonly string[]): NpmInstallAnalysis {
   }
 
   const normalizedArgs = [...args];
-  for (const safeFlag of ["--ignore-scripts", "--no-audit", "--no-fund"] as const) {
+  for (const safeFlag of ["--ignore-scripts", "--no-audit", "--no-fund", "--offline"] as const) {
     if (!normalizedArgs.includes(safeFlag)) normalizedArgs.push(safeFlag);
   }
   if (packageSpecs.length > 0 && !normalizedArgs.includes("--save-exact")) {
@@ -133,4 +133,3 @@ export function analyzeNpmInstall(args: readonly string[]): NpmInstallAnalysis {
     runsLifecycleScripts: false,
   };
 }
-

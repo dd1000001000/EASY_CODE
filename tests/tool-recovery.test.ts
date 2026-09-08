@@ -51,78 +51,67 @@ function createRuntime(provider: ModelProvider, tools: AgentTool[], extra: Parti
 }
 
 describe("Runtime tool recovery", () => {
-  it("repairs the reported two missing fields across two corrections without losing the candidate", async () => {
-    const current = newState(true);
+
+  it("salvages semantic fields from the reported legacy failure without correction rounds", async () => {
+    const current = newState();
+    current.messages = [
+      { role: "user", content: requestText },
+      { role: "assistant", content: "Older unfinished work", reasoning_content: "r".repeat(60_000) },
+      { role: "assistant", content: "Recent observation" },
+      { role: "assistant", content: "Current work", reasoning_content: "keep current reasoning intact" },
+    ];
+    const raw = JSON.stringify(current.messages);
     const requests: Parameters<ModelProvider["complete"]>[0][] = [];
     const provider: ModelProvider = { name: "qwen", model: "mock", async complete(request) {
       requests.push(request);
-      const attempt = requests.length;
-      if (attempt === 4) return { message: { role: "assistant", content: "communication explained" } };
+      if (requests.length > 1) return { message: { role: "assistant", content: "Continue tracing communication" } };
       const candidate = fixture(current);
-      if (attempt < 3) delete (candidate.coverageCheck as Partial<typeof candidate.coverageCheck>).unresolvedErrorsPreserved;
-      if (attempt === 1) delete (candidate as Partial<typeof candidate>).activeConstraints;
-      if (attempt === 2) {
-        const previous = [...request.messages].reverse().find((message) => message.role === "assistant" && message.tool_calls?.length);
-        assert.ok(previous?.role === "assistant");
-        const parsed = JSON.parse(previous.tool_calls![0]!.function.arguments);
-        assert.equal(parsed.coverageCheck.latestRequestPreserved, true);
-        assert.ok(parsed.intentLedger);
-        assert.equal(previous.reasoning_content, "keep current reasoning intact");
-      }
-      if (attempt > 1) {
-        const repair = request.messages.filter((message) => message.role === "user").map((message) => message.content).join("\n");
-        assert.match(repair, /RUNTIME_TOOL_REPAIR/);
-        assert.match(repair, /coverageCheck.unresolvedErrorsPreserved/);
-      }
-      return toolCall("compact_context", candidate, attempt);
+      delete (candidate.coverageCheck as Partial<typeof candidate.coverageCheck>).unresolvedErrorsPreserved;
+      delete (candidate as Partial<typeof candidate>).activeConstraints;
+      return toolCall("compact_context", candidate, 1);
     } };
-    const result = await createRuntime(provider, [new CompactContextTool()]).run(current, requestText, options);
+    const result = await createRuntime(provider, [new CompactContextTool()]).run(current, requestText,
+      { ...options, maxContextChars: 100_000, maxContextTokens: 34_000 });
     assert.equal(result.reason, "success", result.text);
-    assert.equal(requests.length, 4);
-    assert.ok(current.compactedMessageCount > 0);
+    assert.equal(requests.length, 2);
+    assert.equal(current.compactionControl?.transaction?.attempts, 1);
+    assert.equal(JSON.stringify(current.messages.slice(0, 4)), raw);
     const summary = JSON.parse(current.workingSummary);
+    assert.equal(summary.formatVersion, 3);
+    assert.ok(summary.semantic.currentWork);
+    assert.ok(summary.semantic.nextStep);
     assert.equal(summary.coverageCheck, undefined);
-    assert.equal(summary.intentLedger, undefined);
-    assert.ok(!JSON.stringify(requests[3]!.messages).includes("latestRequestPreserved"));
+    assert.doesNotMatch(JSON.stringify(requests[1]?.messages), /RUNTIME_TOOL_REPAIR|unresolvedErrorsPreserved/);
   });
 
   for (const mode of ["code", "auto"] as const) {
-    it(`preserves failed ${mode} compaction and its error classification through checkpoint serialization`, async () => {
+    it(`preserves a recoverable ${mode} capacity pause and can resume with a sufficient window`, async () => {
       const current = newState(true, mode);
+      const original = current.messages[0]?.content;
       let calls = 0;
       const events: Array<{ type: string; payload: unknown }> = [];
       const provider: ModelProvider = { name: "qwen", model: "mock", async complete() {
-        calls += 1;
-        const candidate = fixture(current);
-        delete (candidate.coverageCheck as Partial<typeof candidate.coverageCheck>).unresolvedErrorsPreserved;
-        return toolCall("compact_context", candidate, calls);
+        calls++; return { message: { role: "assistant", content: "done" } };
       } };
       const result = await createRuntime(provider, [new CompactContextTool()], {
         appendEvent: async (event) => { events.push(event); },
-      }).run(current, requestText, options);
-      assert.equal(calls, 3);
-      assert.equal(result.reason, "failed");
-      assert.equal(result.failure?.code, "context_compaction_failed");
+      }).run(current, requestText, { ...options, maxContextChars: 100_000 });
+      assert.equal(calls, 0);
+      assert.equal(result.reason, "limit_reached", result.text);
+      assert.equal(result.failure?.code, "context_capacity_exhausted");
       assert.equal(result.failure?.recoverable, true);
       assert.equal(current.compactedMessageCount, 0);
-      assert.equal(current.workingSummary, "");
       assert.equal(current.activeTurnId, undefined);
-      assert.equal(([...events].reverse().find((event) => event.type === "turn.completed")?.payload as { failure?: { code: string } }).failure?.code, "context_compaction_failed");
+      const final = [...events].reverse().find((event) => event.type === "turn.completed");
+      assert.equal((final?.payload as { failure?: { code: string } }).failure?.code, "context_capacity_exhausted");
       const restored = deserializeSessionState(serializeSessionState(current));
-      const candidate = [...restored.messages].reverse().find((message) => message.role === "assistant" && message.tool_calls?.length);
-      assert.ok(candidate?.role === "assistant");
-      assert.ok(JSON.parse(candidate.tool_calls![0]!.function.arguments).coverageCheck);
-      assert.ok(restored.messages.some((message) => message.role === "tool" && message.content.includes("unresolvedErrorsPreserved")));
-      // An explicit new turn can retry from preserved evidence, not a fresh empty history.
+      assert.equal(restored.messages[0]?.content, original);
       restored.mode = "code";
-      let resumedCalls = 0;
-      const resumed: ModelProvider = { name: "qwen", model: "mock", async complete() {
-        resumedCalls += 1;
-        return resumedCalls === 1 ? toolCall("compact_context", fixture(restored), 10)
-          : { message: { role: "assistant", content: "resumed" } };
-      } };
-      const resumedResult = await createRuntime(resumed, [new CompactContextTool()]).run(restored, requestText, options);
-      assert.equal(resumedResult.reason, "success", resumedResult.text);
+      const resumed = await createRuntime(provider, [new CompactContextTool()]).run(restored, requestText,
+        { ...options, maxContextTokens: 256_000 });
+      assert.equal(resumed.reason, "success", resumed.text);
+      assert.equal(calls, 1);
+      assert.equal(restored.messages[0]?.content, original);
     });
   }
 
@@ -224,9 +213,9 @@ describe("Runtime tool recovery", () => {
   });
 
   it("preserves machine-readable missing paths when long errors are clipped", () => {
-    const tool = new CompactContextTool();
-    const candidate = compactionV2Input({ primaryRequestIndex: 0, primaryRequestText: "question" });
-    delete (candidate.coverageCheck as Partial<typeof candidate.coverageCheck>).unresolvedErrorsPreserved;
+    const tool = new ProposePlanTool();
+    const candidate = { title: "Trace", overview: "Trace communication",
+      steps: [{ title: "Read", description: "Read the receiver" }] };
     let result: ToolExecutionResult | undefined;
     try { prepareToolInput(tool, JSON.stringify(candidate)); }
     catch (error) { result = toolFailure(error, "Invalid parameters"); }
@@ -234,8 +223,8 @@ describe("Runtime tool recovery", () => {
     result.error = "very long error ".repeat(1000);
     const serialized = toolResultForModel(result, 1024);
     assert.ok(serialized.length <= 1024);
-    assert.equal(JSON.parse(serialized).failure.issues[0].path, "coverageCheck.unresolvedErrorsPreserved");
+    assert.equal(JSON.parse(serialized).failure.issues[0].path, "steps.0.verification");
     assert.equal(JSON.parse(serialized).failure.execution, "not_started");
-    assert.equal("unresolvedErrorsPreserved" in candidate.coverageCheck, false);
+    assert.equal("verification" in candidate.steps[0]!, false);
   });
 });

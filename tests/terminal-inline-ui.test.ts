@@ -468,12 +468,12 @@ describe("Terminal retained inline shell", () => {
         const dangerOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "unrestricted" }));
         const dangerFrame = stripAnsi(captured().slice(dangerOffset));
-        assert.match(dangerFrame, /! EASY CODE DANGER: FULL ACCESS/u);
+        assert.match(dangerFrame, /! EASY CODE ISOLATED NO-PROMPT/u);
 
         const safeOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
         const safeFrame = stripAnsi(captured().slice(safeOffset));
-        assert.doesNotMatch(safeFrame, /! EASY CODE DANGER/u);
+        assert.doesNotMatch(safeFrame, /! EASY CODE ISOLATED NO-PROMPT/u);
         assert.equal(
           (stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length,
           1,
@@ -927,7 +927,7 @@ describe("Terminal retained inline shell", () => {
           title: "Run verification",
           description: "Run one workspace verification command.",
           risk: "workspace",
-          commandPrefix: "node",
+          commandPrefix: "git",
           commandPreview: "node --check src/app.js",
         });
         await settlePromptInput();
@@ -1259,7 +1259,7 @@ describe("Terminal retained inline shell", () => {
           title: "Run verification",
           description: "Run one workspace verification command.",
           risk: "workspace",
-          commandPrefix: "node",
+          commandPrefix: "git",
           commandPreview: "node --check src/app.js",
         };
         const choice = terminal.approve(approval);
@@ -1874,7 +1874,7 @@ describe("Terminal retained inline shell", () => {
           .filter((row) => row.region === "footer")
           .map((row) => row.text)
           .join("\n"));
-        assert.match(dangerFooter, /! EASY CODE DANGER: FULL ACCESS/u);
+        assert.match(dangerFooter, /! EASY CODE ISOLATED NO-PROMPT/u);
         const completeTurn = nodes.map(disclosureNodeText);
         const completeDocument = completeTurn.join("\n");
         const orderedMarkers = [
