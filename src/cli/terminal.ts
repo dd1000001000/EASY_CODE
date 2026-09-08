@@ -179,6 +179,7 @@ interface ActiveDisclosureViewer {
   readonly deferredCommits: string[];
   /** Primary prompt/composer changed while hidden by the alternate buffer. */
   primaryDisplayDirty: boolean;
+  clearPrimaryOnClose?: boolean;
   idleTimer?: NodeJS.Timeout;
   repaintTimer?: NodeJS.Timeout;
   closing: boolean;
@@ -620,8 +621,16 @@ export class Terminal {
   }
 
   clearScreen(): void {
+    // Only the process-local display is cleared, never Runtime history, tasks,
+    // memory, pending input or cancellation ownership. Discard old text before
+    // rebuilding the virtual document, so /clear cannot reflow it all again.
+    this.uiState = { ...this.uiState, transcript: [], live: { ...this.uiState.live, thinking: null } };
+    this.currentTurnDisclosures = [];
+    this.currentTurnTranscriptStart = this.uiState.composer.busy ? 0 : undefined;
+    this.currentTurnTranscriptEnd = undefined;
+    this.pendingRequestTranscriptStart = undefined;
     if (!this.inlineShellActive) {
-      if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001Bc");
+      if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001B[3J\u001B[2J\u001B[H");
       return;
     }
     const viewer = this.disclosureViewer;
@@ -629,13 +638,22 @@ export class Terminal {
       // RIS would leave DEC 1049 while FullScreenWriter still believed its
       // alternate buffer and row cache were active. Invalidate and repaint
       // through the owner instead, keeping one coherent fixed-height shell.
-      viewer.writer.clear();
+      viewer.deferredCommits.length = 0;
+      viewer.clearPrimaryOnClose = true;
       viewer.primaryDisplayDirty = true;
+      // Do not normalize the previous (possibly very large) document just to
+      // clear its selection/scroll offset. Build an empty projection instead.
+      viewer.state = createDisclosureViewState({ nodes: [], columns: viewer.state.columns,
+        rows: viewer.state.rows, headerLines: viewer.state.headerLines,
+        composerLines: viewer.state.composerLines, footerLines: viewer.state.footerLines,
+        preserveAnsi: viewer.state.preserveAnsi });
+      delete viewer.kind;
+      delete viewer.registryId;
       this.refreshDisclosureViewer(true);
+      this.reclaimPersistentViewerInput();
       return;
     }
-    this.screen?.clearLive();
-    this.output.write("\u001Bc");
+    this.screen?.clearScreen();
     this.showSessionHeader();
   }
 
@@ -2410,6 +2428,9 @@ export class Terminal {
       this.input.removeListener("data", viewer.onData);
       this.input.removeListener("error", viewer.onError);
       viewer.writer.close();
+      // Clear the hidden primary buffer only after leaving the alternate one,
+      // before restoring the editor. Never replay text discarded by /clear.
+      if (viewer.clearPrimaryOnClose) this.screen?.clearScreen();
       // The writer's paired exit sequence restores the physical cursor.
       this.terminalCursorVisible = true;
     } finally {
