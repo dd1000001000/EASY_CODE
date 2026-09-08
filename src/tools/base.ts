@@ -6,10 +6,15 @@ import type {
   ToolPresentation,
 } from "../core/types.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
+import { describeToolFailure } from "./errors.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
 
 export function toolFailure(error: unknown, summary = "Tool execution failed"): ToolExecutionResult {
-  const message = error instanceof Error ? error.message : String(error);
-  return { ok: false, summary, error: message };
+  const failure = describeToolFailure(error);
+  const message = failure.kind === "validation" && failure.execution === "not_started"
+    ? failure.issues.map((issue) => `${issue.path}: ${issue.message}${issue.expected ? ` Expected ${issue.expected}.` : ""}`).join("\n")
+    : error instanceof Error ? error.message : String(error);
+  return { ok: false, summary, error: redactSensitiveInformation(message), failure };
 }
 
 export function toolSuccess(

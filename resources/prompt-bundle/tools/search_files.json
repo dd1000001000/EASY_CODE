@@ -1,0 +1,14 @@
+{
+  "id": "search_files",
+  "contractVersion": "1.1.0",
+  "description": "List a directory or find files/literal text without a shell or command approval. For project overview, start with mode=list at the root. Search results do not authorize editing; use read_file for a versioned read.",
+  "propertyDescriptions": {
+    "path": "File or directory to search, default workspace root. Absolute host paths require unrestricted access. Explicit paths can target normally excluded build/dependency directories.",
+    "glob": "Optional relative filename filter supporting *, **, ? and flat brace alternatives such as *.{json,md,toml}. At most 32 alternatives; no nested braces, character classes, regex or parent traversal. Use forward slashes. A basename filter searches all visited depths, not only the root.",
+    "query": "Optional literal text to locate. Omit to list matching filenames.",
+    "caseSensitive": "Match text case-sensitively; default false.",
+    "mode": "list returns files and directories, default one level deep; search (default) recursively locates files or literal text. Omit query with list.",
+    "maxDepth": "Maximum levels to visit: 1 means the selected directory only. Defaults to 1 for list, configured searchMaxDepth for search; capped by the configured limit."
+  },
+  "guidance": "For project purpose/structure questions, call mode=list at the root, then read the root README/manifest or one relevant child directory. Do not recursively explore installed dependencies, caches or unrelated files to explain the project. Default scans skip dependency/build/cache/control directories and symlinks; explicit paths can inspect ordinary excluded directories. Partial results are not absence: narrow path/depth instead of repeating a broad scan. Stop discovery once enough evidence supports a concise answer; state uncertainty when no project description exists."
+}

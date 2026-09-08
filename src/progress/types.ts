@@ -53,6 +53,8 @@ export interface ProgressObservation {
   readonly targetKey?: string;
   readonly outcomeKey?: string;
   readonly evidenceDigest?: string;
+  /** Captured with search evidence so replay uses the original configured threshold. */
+  readonly searchRepeatLimit?: number;
 }
 
 export interface ProgressObservationBinding {
@@ -198,6 +200,8 @@ export interface ProgressGuardState {
   /** Bounded, response-window evidence used only for a weak read-loop hint. */
   recentReads: ProgressRecentRead[];
   readWarning?: ProgressReadWarning;
+  recentSearches?: ProgressRecentRead[];
+  searchWarning?: { scopeKey: string; sourceEventId: string; count: number };
   /** Durable intervention state. Reviewer attempts never enter the task DAG. */
   incidents: ProgressIncident[];
   saturated: boolean;

@@ -592,7 +592,7 @@ describe("AgentRuntime subagent boundaries", () => {
         agentId: CHILD_AGENT_ID,
         assignedTaskId: taskId,
       },
-    }).run(currentState, "Complete the assigned task", options(1));
+    }).run(currentState, "Complete the assigned task", options(2));
 
     assert.equal(requests, 2);
     assert.equal(correctionWasVisible, true);

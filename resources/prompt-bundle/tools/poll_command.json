@@ -4,7 +4,7 @@
   "description": "Read the current or terminal state of one Runtime-supervised background command owned by this agent. An optional bounded wait avoids shell-level sleep loops.",
   "propertyDescriptions": {
     "commandId": "The exact opaque command handle returned by start_command.",
-    "waitMs": "Optional bounded long-poll duration from 0 through 30000 milliseconds. The command's original total timeout continues independently."
+    "waitMs": "Omit for Runtime-managed waiting until completion or the configured wait limit (default 120000 ms), interruptible by user input. Explicit values 0..30000 ms request a shorter wait; 0 is an intentional immediate probe. The command timeout continues independently."
   },
-  "guidance": "Call poll_command with the unchanged commandId returned by start_command. A running result is a current bounded output snapshot, not a terminal success. Poll until Runtime reports exited, timed_out, canceled, spawn_failed, or sandbox_unavailable. Do not invent a handle or use shell sleep commands."
+  "guidance": "Use the original commandId and omit waitMs for Runtime-managed waiting. Do not issue rapid zero-wait polls or shell sleep loops. A running snapshot is not terminal success; inspect the terminal result before claiming validation."
 }

@@ -37,6 +37,7 @@ const OBSERVATION_KEYS = new Set([
   "targetKey",
   "outcomeKey",
   "evidenceDigest",
+  "searchRepeatLimit",
 ]);
 
 const COMMAND_TOOLS = new Set([
@@ -304,10 +305,22 @@ function neutralObservation(input: ObserveToolResultInput): ProgressObservation 
   };
 }
 
+function searchObservation(input: ObserveToolResultInput): ProgressObservation | undefined {
+  if (input.tool !== "search_files" || !input.result.ok || !isRecord(input.result.data)) return undefined;
+  const data = input.result.data;
+  if (typeof data.searchIdentity !== "string" || !/^[a-f0-9]{64}$/u.test(data.searchIdentity) ||
+      typeof data.outcomeIdentity !== "string" || !/^[a-f0-9]{64}$/u.test(data.outcomeIdentity) ||
+      !Number.isInteger(data.repeatWarningCount) || Number(data.repeatWarningCount) < 2 || Number(data.repeatWarningCount) > 20) return undefined;
+  // Discovery is not verification or read-before-write evidence. Only exact repeated outcomes prompt a weak hint.
+  return { ...neutralObservation(input), targetKey: `sha256:${data.searchIdentity}`,
+    outcomeKey: `sha256:${data.outcomeIdentity}`, searchRepeatLimit: Number(data.repeatWarningCount) };
+}
+
 /** Derive bounded evidence before Runtime discards/truncates the raw result. */
 export function observeToolResult(input: ObserveToolResultInput): ProgressObservation {
   const observation = commandObservation(input) ??
     readObservation(input) ??
+    searchObservation(input) ??
     neutralObservation(input);
   return parseProgressObservation(observation, {
     sourceEventId: input.sourceEventId,
@@ -373,6 +386,12 @@ export function parseProgressObservation(
 
   const kind = value.kind as ProgressObservationKind;
   const outcomeClass = value.outcomeClass as ProgressOutcomeClass;
+  if (value.searchRepeatLimit !== undefined && (value.tool !== "search_files" || kind !== "neutral" ||
+      !Number.isInteger(value.searchRepeatLimit) || Number(value.searchRepeatLimit) < 2 || Number(value.searchRepeatLimit) > 20 ||
+      typeof value.targetKey !== "string" || !SHA256_DIGEST.test(value.targetKey) ||
+      typeof value.outcomeKey !== "string" || !SHA256_DIGEST.test(value.outcomeKey))) {
+    throw new Error("Invalid search repetition evidence");
+  }
   if (
     kind === "verification_terminal" &&
     (
@@ -418,6 +437,7 @@ export function parseProgressObservation(
     kind,
     confidence: value.confidence,
     outcomeClass,
+    ...(value.searchRepeatLimit !== undefined ? { searchRepeatLimit: Number(value.searchRepeatLimit) } : {}),
     ...(kind === "verification_terminal"
       ? {
           verificationKind: typeof value.verificationKind === "string"

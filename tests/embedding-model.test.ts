@@ -746,7 +746,7 @@ function vectorNorm(vector: Float32Array): number {
 }
 
 describe("local embedding provider", () => {
-  it("pads, truncates, masked-mean pools, and L2 normalizes fake ONNX output", async () => {
+  it("pads, windows, masked-mean pools, and L2 normalizes fake ONNX output", async () => {
     const directory = writeProviderFixture();
     const captured: ProviderFakeTensor[] = [];
     const session: EmbeddingSession = {
@@ -800,9 +800,12 @@ describe("local embedding provider", () => {
       assert.ok(Math.abs(vectorNorm(vectors[0]!) - 1) < 1e-6);
 
       await provider.embed(["truncate"]);
-      assert.deepEqual(captured[1]?.dims, [1, EMBEDDING_MAX_SEQUENCE_LENGTH]);
+      const windows = await provider.splitText("truncate");
+      assert.equal(windows.map((window) => window.text).join(""), "truncate");
+      assert.ok(windows.length > 1);
+      assert.equal(captured[1]?.dims[0], windows.length);
+      assert.ok((captured[1]?.dims[1] ?? Infinity) <= EMBEDDING_MAX_SEQUENCE_LENGTH);
       assert.equal(captured[1]?.data[0], 101n);
-      assert.equal(captured[1]?.data[EMBEDDING_MAX_SEQUENCE_LENGTH - 1], 102n);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

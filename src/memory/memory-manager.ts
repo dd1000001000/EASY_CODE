@@ -3,10 +3,16 @@ import {
   type AgentRunResult,
   type LongTermMemory,
   type MemoryMutationRequest,
+  type SessionState,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
+import { EvidenceStore } from "../context/evidence-store.js";
+import { assertDurableMemory } from "./admission.js";
+import { readFile, realpath } from "node:fs/promises";
+import path from "node:path";
+import { sha256 } from "../utils/hash.js";
 import {
   containsSensitiveInformation,
   redactSensitiveInformation,
@@ -18,6 +24,7 @@ import type {
 } from "./vector-index.js";
 
 export interface MemorySearchOptions {
+  readonly workspaceRoot?: string;
   readonly limit?: number;
   readonly minimumConfidence?: number;
   /** Include inactive audit-history rows. Ordinary retrieval stays active-only. */
@@ -31,6 +38,7 @@ export interface MemoryListOptions {
 }
 
 export interface MemorySemanticSearchIndex {
+  close?(): void;
   search(
     workspaceId: string,
     query: string,
@@ -67,6 +75,8 @@ export const MAX_MEMORY_REASON_CHARS = 500;
 export const MAX_MEMORY_SEARCH_CHARS = 500;
 
 export interface ApplyModelMemoryMutationsInput {
+  /** Runtime supplied, never a model argument. Legacy importers may omit it. */
+  readonly sourceState?: Readonly<SessionState>;
   readonly workspaceId?: string;
   readonly workspaceRoot?: string;
   readonly threadId: string;
@@ -98,6 +108,13 @@ interface MemoryRow {
   evidence: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface MemoryProvenance {
+  version: 1;
+  verification: "user_stated" | "observed";
+  refs: string[];
+  files: Array<{ path: string; hash: string }>;
 }
 
 type MemoryAuditAction =
@@ -364,6 +381,8 @@ function ftsExpression(query: string): string | undefined {
  * decisions with thread/turn evidence; revision and forgetting retain history.
  */
 export class MemoryManager {
+  readonly evidenceStore: EvidenceStore;
+  close(): void { this.vectorIndex?.close?.(); }
   private readonly vectorIndex: MemorySemanticSearchIndex | undefined;
   private readonly onVectorError: ((error: unknown) => void) | undefined;
 
@@ -371,6 +390,7 @@ export class MemoryManager {
     private readonly storage: EasyCodeStorage,
     options: MemoryManagerOptions = {},
   ) {
+    this.evidenceStore = new EvidenceStore(storage);
     this.vectorIndex = options.vectorIndex;
     this.onVectorError = options.onVectorError;
   }
@@ -424,7 +444,7 @@ export class MemoryManager {
     );
 
     if (!this.vectorIndex || !boundedQuery.trim()) {
-      const selected = lexical.slice(0, limit);
+      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit);
       this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
@@ -439,7 +459,7 @@ export class MemoryManager {
       });
     } catch (error) {
       this.reportVectorError(error);
-      const selected = lexical.slice(0, limit);
+      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit);
       this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
@@ -489,11 +509,93 @@ export class MemoryManager {
         right.memory.confidence - left.memory.confidence ||
         right.memory.updatedAt.localeCompare(left.memory.updatedAt),
       )
-      .slice(0, limit)
       .map((candidate) => candidate.memory);
+    const selected = await this.currentCandidates(workspaceId, ranked, resolvedOptions.workspaceRoot, limit);
+    this.touch(workspaceId, selected.map((memory) => memory.id));
+    return Object.freeze(selected);
+  }
 
-    this.touch(workspaceId, ranked.map((memory) => memory.id));
-    return Object.freeze(ranked);
+  private async currentCandidates(workspaceId: string, candidates: readonly Readonly<LongTermMemory>[],
+    root: string | undefined, limit: number): Promise<Readonly<LongTermMemory>[]> {
+    if (!root) return candidates.slice(0, limit);
+    const selected: Readonly<LongTermMemory>[] = [];
+    for (const memory of candidates) {
+      const stored = this.storage.db.prepare<[string], { document_json: string }>(
+        "SELECT document_json FROM memory_provenance WHERE memory_id = ?").get(memory.id);
+      const document = stored ? JSON.parse(stored.document_json) as MemoryProvenance : undefined;
+      let stale = !document && ["architecture", "environment", "decision"].includes(memory.category);
+      if (document) for (const file of document.files) {
+        try {
+          const target = await realpath(path.resolve(root, file.path));
+          const relative = path.relative(await realpath(root), target);
+          if (relative.startsWith("..") || path.isAbsolute(relative) || sha256(await readFile(target)) !== file.hash) stale = true;
+        } catch { stale = true; }
+      }
+      if (stale && memory.status === "active") {
+        this.storage.db.transaction(() => {
+          this.storage.db.prepare("UPDATE memories SET status = 'needs_verification', updated_at = ? WHERE id = ? AND workspace_id = ?")
+            .run(new Date().toISOString(), memory.id, workspaceId);
+          this.appendRevision(memory.id, "runtime", "revalidation");
+        })();
+        this.vectorIndex?.invalidate?.(workspaceId);
+        continue;
+      }
+      selected.push(memory);
+      if (selected.length >= limit) break;
+    }
+    return selected;
+  }
+
+  private appendRevision(memoryId: string, threadId: string, turnId: string): void {
+    const row = this.storage.db.prepare<[string], MemoryRow>("SELECT * FROM memories WHERE id = ?").get(memoryId);
+    const provenance = this.storage.db.prepare<[string], { document_json: string }>(
+      "SELECT document_json FROM memory_provenance WHERE memory_id = ?").get(memoryId);
+    if (row) this.storage.db.prepare(
+      "INSERT INTO memory_revisions(memory_id, thread_id, turn_id, snapshot_json, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(memoryId, threadId, turnId, JSON.stringify({ memory: row,
+      provenance: provenance ? JSON.parse(provenance.document_json) : null }), new Date().toISOString());
+  }
+
+  validateSources(input: ApplyModelMemoryMutationsInput): void {
+    for (const mutation of input.mutations) this.provenance(input, mutation);
+  }
+
+  private provenance(input: ApplyModelMemoryMutationsInput, mutation: MemoryMutationRequest): MemoryProvenance | undefined {
+    if (!input.sourceState || mutation.action === "forget") return undefined;
+    assertDurableMemory(mutation.content);
+    const state = input.sourceState;
+    if (state.threadId !== input.threadId) throw new Error("Memory evidence belongs to another thread");
+    const refs = [...new Set(mutation.sourceRefs ?? [])];
+    if (!refs.length) throw new Error("Durable memory requires sourceRefs; use user or captured evidence IDs, never an unsupported reason alone");
+    const files: MemoryProvenance["files"] = [];
+    let userStated = false;
+    for (const ref of refs) {
+      if (ref === "user") {
+        if (!input.userInput?.trim() || !EXPLICIT_DURABLE_USER_CUE.test(input.userInput)) {
+          throw new Error("User memory evidence must explicitly state a durable preference or convention");
+        }
+        if (mutation.category !== "preference" && mutation.category !== "convention" && mutation.category !== "decision") {
+          throw new Error("Repository/environment facts require observed tool evidence");
+        }
+        userStated = true;
+        continue;
+      }
+      const workspaceId = input.workspaceId ?? workspaceIdFromRoot(input.workspaceRoot ?? state.workspaceRoot);
+      const row = this.storage.db.prepare<[string, string, string], { content: string; truncated: number; tool: string }>(
+        "SELECT content, truncated, tool FROM context_evidence WHERE id = ? AND thread_id = ? AND workspace_id = ?"
+      ).get(ref, input.threadId, workspaceId);
+      if (!row || row.truncated) throw new Error("Memory source is missing or truncated");
+      const observed = JSON.parse(row.content);
+      if (observed.ok !== true) throw new Error("Failed tools do not establish a durable project fact");
+      if (row.tool === "read_file" && typeof observed.data?.path === "string" && typeof observed.data?.contentHash === "string") {
+        const relative = path.relative(state.workspaceRoot, path.resolve(state.workspaceRoot, observed.data.path));
+        if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Memory source is outside the workspace");
+        files.push({ path: relative, hash: observed.data.contentHash });
+      } else {
+        throw new Error("Durable project facts currently require versioned read_file evidence; keep other observations in task history");
+      }
+    }
+    return { version: 1, verification: userStated ? "user_stated" : "observed", refs, files };
   }
 
   private searchLexical(
@@ -655,15 +757,26 @@ export class MemoryManager {
   async applyModelMutationsWithEmbeddings(
     input: ApplyModelMemoryMutationsInput,
   ): Promise<ApplyModelMemoryMutationsResult> {
+    this.validateSources(input);
     const prepare = this.vectorIndex?.prepareEmbeddings;
     const write = this.vectorIndex?.writePreparedEmbedding;
     if (!prepare || !write || input.mutations.length === 0) {
       return this.commitModelMutations(input);
     }
 
-    const contents = [...new Set(input.mutations.flatMap((mutation) =>
-      mutation.action === "forget" ? [] : [memoryContent(mutation.content)],
-    ))];
+    const workspaceId = input.workspaceId ?? (input.workspaceRoot ? workspaceIdFromRoot(input.workspaceRoot) : "");
+    const contents = [...new Set(input.mutations.flatMap((mutation) => {
+      if (mutation.action === "forget") return [];
+      const content = memoryContent(mutation.content);
+      if (mutation.action === "remember") {
+        const existing = this.storage.db.prepare<[string, string], { status: string; category: string }>(
+          "SELECT status, category FROM memories WHERE workspace_id = ? AND normalized_content = ?"
+        ).get(workspaceId, normalizeContent(content));
+        if (existing?.status === "active" && existing.category === mutation.category) return [];
+      }
+      return [content];
+    }))];
+    if (!contents.length) return this.commitModelMutations(input);
     let preparedByContent: ReadonlyMap<string, PreparedMemoryEmbedding> | undefined;
     try {
       const prepared = await prepare.call(this.vectorIndex, contents);
@@ -740,6 +853,8 @@ export class MemoryManager {
         WHERE workspace_id = ? AND id = ?`,
     );
     const memoryIds: string[] = [];
+    const provenanceByMutation = new Map(input.mutations.map((mutation) => [mutation, this.provenance(input, mutation)]));
+    let activeProvenance: MemoryProvenance | undefined;
     let applied = 0;
 
     const assertOutcomeCategory = (
@@ -762,6 +877,10 @@ export class MemoryManager {
     });
     const recordId = (memoryId: string): void => {
       if (!memoryIds.includes(memoryId)) memoryIds.push(memoryId);
+      if (activeProvenance) this.storage.db.prepare(
+        "INSERT INTO memory_provenance(memory_id, document_json) VALUES (?, ?) ON CONFLICT(memory_id) DO UPDATE SET document_json = excluded.document_json"
+      ).run(memoryId, JSON.stringify(activeProvenance));
+      this.appendRevision(memoryId, threadId, turnId);
     };
     const storeEmbedding = (
       memoryId: string,
@@ -782,6 +901,7 @@ export class MemoryManager {
 
     this.storage.db.transaction(() => {
       for (const mutation of input.mutations) {
+        activeProvenance = provenanceByMutation.get(mutation);
         const now = new Date().toISOString();
         if (mutation.action === "remember") {
           const category = assertCategory(mutation.category);
@@ -951,6 +1071,7 @@ export class MemoryManager {
           workspaceId,
           existing.id,
         );
+        this.appendRevision(existing.id, threadId, turnId);
         const newEvidence = appendEvidence(
           null,
           modelEvidence(evidenceSource(reason), "revise", now, {

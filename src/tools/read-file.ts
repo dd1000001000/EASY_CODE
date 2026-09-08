@@ -11,6 +11,8 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { recordFileToolRead, resolveExistingFileToolTarget } from "./file-access.js";
 import { documentToolSchema } from "./metadata.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { estimatedTokens } from "../context/token-budget.js";
 
 export const readFileInputSchema = z
   .object({
@@ -32,10 +34,10 @@ export interface ReadFileOutput {
   newline: "lf" | "crlf" | "cr" | "none" | "mixed";
   contentHash: string;
   truncated: boolean;
+  nextStartLine: number | null;
 }
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_LINES_PER_READ = 500;
 
 function detectNewline(text: string): ReadFileOutput["newline"] {
   const crlf = (text.match(/\r\n/gu) ?? []).length;
@@ -107,11 +109,27 @@ export class ReadFileTool implements AgentTool {
       if (startLine > totalLines) {
         throw new Error(`startLine ${startLine} is beyond the file's ${totalLines} lines`);
       }
-      const requestedEnd = parsed.endLine ?? totalLines;
+      const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
+      const requestedEnd = parsed.endLine ?? Math.min(totalLines, startLine + limits.defaultReadLines - 1);
       if (requestedEnd < startLine) {
         throw new Error("endLine must be greater than or equal to startLine");
       }
-      const endLine = Math.min(requestedEnd, totalLines, startLine + MAX_LINES_PER_READ - 1);
+      const rangeEnd = Math.min(requestedEnd, totalLines, startLine + limits.maxReadLines - 1);
+      const tokenLimit = Math.min(limits.maxReadResultTokens, context.resultTokenBudget ?? limits.maxReadResultTokens);
+      // Include JSON escaping and metadata allowance, keep only complete lines.
+      const metadata = JSON.stringify({ path: target.displayPath, startLine, endLine: rangeEnd, totalLines });
+      let used = estimatedTokens(metadata) + 256;
+      let usedChars = metadata.length + 1024;
+      let endLine = startLine - 1;
+      for (let index = startLine - 1; index < rangeEnd; index += 1) {
+        const encoded = JSON.stringify(lines[index]);
+        const cost = estimatedTokens(encoded) + 2;
+        if (used + cost > tokenLimit || usedChars + encoded.length + 2 > (context.resultCharBudget ?? Infinity)) break;
+        used += cost;
+        usedChars += encoded.length + 2;
+        endLine = index + 1;
+      }
+      if (endLine < startLine) throw new Error("The first requested line cannot fit the read result budget. Narrow the request or increase limits.maxReadResultTokens; no partial line was returned.");
       const contentHash = sha256(buffer);
       recordFileToolRead(this.workspace, target, contentHash, context);
 
@@ -125,6 +143,7 @@ export class ReadFileTool implements AgentTool {
         newline: detectNewline(text),
         contentHash,
         truncated: endLine < requestedEnd || endLine < totalLines,
+        nextStartLine: endLine < totalLines ? endLine + 1 : null,
       };
       return toolSuccess(`Read ${target.displayPath} lines ${startLine}-${endLine}`, output);
     } catch (error) {

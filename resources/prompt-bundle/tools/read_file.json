@@ -1,11 +1,11 @@
 {
   "id": "read_file",
-  "contractVersion": "1.0.0",
+  "contractVersion": "1.1.0",
   "description": "Read a UTF-8 text file by a 1-based line range and return its full-file SHA-256 version hash. Paths are workspace-relative unless the user explicitly enabled unrestricted host access.",
   "propertyDescriptions": {
     "path": "Workspace-relative file path, or an absolute host path only in unrestricted mode.",
     "startLine": "The first 1-based line to return. Omit it to begin at the start of the file.",
-    "endLine": "The final 1-based line to return. Omit it to continue through the end of the file, subject to the bounded read window."
+    "endLine": "Final 1-based line. Omit for the configured locating window (default 100 lines). Explicit ranges allow up to 1000 lines by default, subject to the separate read-result token budget. Inspect actual endLine and nextStartLine."
   },
-  "guidance": "read_file reads bounded text and returns a version hash. It accepts only workspace-relative paths unless Runtime reports Dangerous full access, where an explicit absolute host path is also allowed."
+  "guidance": "If location is unknown, use search_files or a small read to locate it, then read a coherent function/class and enough surrounding code in one larger range. Known locations and small files may be read directly; a preliminary read is not mandatory. Avoid many tiny consecutive reads. Output preserves complete lines and a full-file version hash; inspect truncation and nextStartLine. Absolute host paths require Dangerous full access."
 }

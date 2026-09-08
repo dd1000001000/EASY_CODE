@@ -121,6 +121,7 @@ describe("workspace file tools", () => {
         createDefaultTools(manager).map((tool) => tool.name),
         [
           "read_file",
+          "search_files",
           "read_image",
           "create_file",
           "update_file",

@@ -1,5 +1,6 @@
 import path from "node:path";
 import envPaths from "env-paths";
+import { defaultRuntimeLimits } from "./runtime-limits.js";
 
 import {
   DEFAULT_THINKING_EFFORT,
@@ -31,7 +32,7 @@ export const DEFAULT_GLM_CODING_PLAN_MODEL =
 
 /** Backward-compatible name for the default none/low request timeout. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = THINKING_EFFORT_TIMEOUT_MS.none;
-export const DEFAULT_PROVIDER_MAX_RETRIES = 2;
+export const DEFAULT_PROVIDER_MAX_RETRIES = defaultRuntimeLimits().maxProviderRetries;
 /** Configurable none/low thinking-effort step budget. */
 export const DEFAULT_BASE_MAX_STEPS = DEFAULT_BASE_STEP_LIMIT;
 /** Configurable none/low thinking-effort context-character budget. */
@@ -76,16 +77,11 @@ export function createDefaultEasyCodeConfig(
     dataDir: path.resolve(paths.dataDir),
     configDir: path.resolve(paths.configDir),
     cacheDir: path.resolve(paths.cacheDir),
-    // These are the configurable none/low bases. Runtime derives the active
-    // medium/high budgets from them without changing the persisted config.
-    maxSteps: DEFAULT_BASE_MAX_STEPS,
-    maxContextChars: DEFAULT_BASE_MAX_CONTEXT_CHARS,
-    maxOutputChars: 64_000,
-    commandTimeoutMs: 120_000,
+    limits: defaultRuntimeLimits(),
+    orchestrationEnabled: false,
     subagentIsolation: "auto",
     worktreeBaseMode: "current-snapshot",
     worktreeRoot: path.join(path.resolve(paths.dataDir), "worktrees"),
-    maxManagedWorktrees: 15,
     qwen: createDefaultProviderConfig("qwen"),
     deepseek: createDefaultProviderConfig("deepseek"),
     glm: createDefaultProviderConfig("glm"),

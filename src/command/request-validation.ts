@@ -110,7 +110,9 @@ export function validateCommandRequest(
       matchedRule: "input.shell_protocol",
       reason: `${shellInspection.reason ?? "Unsupported shell protocol"}. The process was not started.`,
       recommendation:
-        "Run the real executable directly with structured program and args as one synchronous " +
+        shellInspection.reason === "cmd /c accepts exactly one structured command-string argument"
+          ? 'For directory listing use search_files with mode="list". Otherwise pass the entire cmd command as ONE argument after /c, for example program="cmd", args=["/c", "dir /b"], cwd=".". This corrects argument shape only; normal policy and approval still apply.'
+          : "Run the real executable directly with structured program and args as one synchronous " +
         "run_command call; use timeoutMs to bound long-running work.",
     };
   }

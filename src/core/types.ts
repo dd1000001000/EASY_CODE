@@ -17,6 +17,7 @@ export type ToolName =
   | "select_mode"
   | "propose_plan"
   | "read_file"
+  | "search_files"
   | "read_image"
   | "create_file"
   | "update_file"
@@ -179,31 +180,40 @@ export interface EasyCodeConfig {
   dataDir: string;
   configDir: string;
   cacheDir: string;
-  /** Base step budget for none/low thinking; higher efforts derive their budget from this value. */
-  maxSteps: number;
-  /** Base context-character budget for none/low thinking; higher efforts derive their budget from this value. */
-  maxContextChars: number;
-  maxOutputChars: number;
-  commandTimeoutMs: number;
+  limits: import("../config/runtime-limits.js").RuntimeLimits;
+  orchestrationEnabled: boolean;
   /** Default child checkout selection; individual spawn calls may narrow it. */
   subagentIsolation: SubagentIsolationMode;
   /** Git baseline used when a managed child has no DAG dependency artifact. */
   worktreeBaseMode: WorktreeBaseMode;
   /** Trusted manager-owned root, always resolved outside model control. */
   worktreeRoot: string;
-  /** Retention target for completed managed child environments. */
-  maxManagedWorktrees: number;
   qwen: ProviderConfig;
   deepseek: ProviderConfig;
   glm: ProviderConfig;
   "glm-coding-plan": ProviderConfig;
 }
 
+/** Shared, bounded failure contract. A correction is not authorization to replay. */
+export interface ToolFailureInfo {
+  version: 1;
+  kind: "validation" | "protocol" | "execution";
+  code: string;
+  execution: "not_started" | "unknown";
+  recovery: "correct_arguments" | "inspect_state" | "none";
+  issues: Array<{ path: string; code: string; expected?: string; message: string }>;
+  issuesTruncated?: boolean;
+  instruction: string;
+}
+
 export interface ToolExecutionResult {
+  /** Scoped locator for captured tool data before model-output clipping. */
+  evidenceId?: string;
   ok: boolean;
   summary: string;
   data?: unknown;
   error?: string;
+  failure?: ToolFailureInfo;
   /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
   presentation?: ToolPresentation;
   /** Local-only context transition. AgentRuntime deliberately excludes the submitted summary from tool messages. */
@@ -292,7 +302,7 @@ export type LongTermMemoryCategory =
 
 export const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 
-export type MemoryMutationRequest =
+export type MemoryMutationRequest = (
   | {
       action: "remember";
       category: LongTermMemoryCategory;
@@ -310,7 +320,7 @@ export type MemoryMutationRequest =
       action: "forget";
       memoryId: string;
       reason: string;
-    };
+    }) & { sourceRefs?: string[] };
 
 export interface FileDiffPresentation {
   type: "file_diff";
@@ -339,6 +349,13 @@ export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 
 export interface ToolContext {
+  limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
+  orchestrationEnabled?: boolean;
+  /** Interrupt waiting for status without canceling the underlying process. */
+  waitSignal?: AbortSignal;
+  /** Remaining model-facing tool payload capacity, issued by Runtime. */
+  resultTokenBudget?: number;
+  resultCharBudget?: number;
   workspaceRoot: string;
   mode: AgentMode;
   threadId: string;
@@ -367,6 +384,10 @@ export interface ToolContext {
   toolCallId?: string;
   /** Read-only authoritative snapshot used by manage_tasks to propose one transition. */
   taskGraph?: Readonly<TaskGraph>;
+  /** Runtime-bound, read-only history search; never accepts a model-selected thread. */
+  searchHistory?: (query: string, limit: number) => Promise<ReadonlyArray<{
+    id: string; title: string; preview: string; historical: true;
+  }>>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
     absolutePath: string;
@@ -378,6 +399,8 @@ export interface AgentTool {
   readonly name: ToolName;
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
+  /** Legacy/custom tools may omit this; built-in tools validate before execution. */
+  readonly inputSchema?: { parse(input: unknown): unknown };
   execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult>;
 }
 
@@ -678,6 +701,9 @@ export type TurnSteeringBoundary =
   | "before_final";
 
 export interface SessionState {
+  orchestrationEnabled?: boolean;
+  /** Event-authoritative phase boundaries and compaction transaction budget. */
+  compactionControl?: import("../context/compaction-transaction.js").CompactionControl;
   threadId: string;
   activeTurnId?: string;
   mode: AgentMode;
@@ -748,6 +774,8 @@ export interface LongTermMemory {
 export interface AgentRunResult {
   text: string;
   reason: "success" | "planned" | "needs_input" | "blocked" | "limit_reached" | "interrupted" | "failed";
+  /** A recoverable control-plane failure, not evidence that the coding task failed. */
+  failure?: { code: "context_compaction_failed" | "context_capacity_insufficient" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
   steps: number;
   threadId: string;
   turnId: string;

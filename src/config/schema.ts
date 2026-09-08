@@ -5,6 +5,7 @@ import {
   type EasyCodeConfig,
 } from "../core/types.js";
 import { PROVIDER_NAMES } from "../models/catalog.js";
+import { runtimeLimitsSchema } from "./runtime-limits.js";
 
 const nonEmptyString = z.string().trim().min(1);
 const positiveInteger = z.number().int().positive();
@@ -34,15 +35,11 @@ export const easyCodeConfigSchema = z.object({
   dataDir: nonEmptyString,
   configDir: nonEmptyString,
   cacheDir: nonEmptyString,
-  // Base budgets for none/low thinking. Runtime applies the effort multiplier.
-  maxSteps: z.number().int().min(1).max(200),
-  maxContextChars: z.number().int().min(4_096).max(2_000_000),
-  maxOutputChars: z.number().int().min(256).max(1_000_000),
-  commandTimeoutMs: z.number().int().min(1).max(20 * 60_000),
+  limits: runtimeLimitsSchema,
+  orchestrationEnabled: z.boolean(),
   subagentIsolation: z.enum(["auto", "shared", "worktree"]),
   worktreeBaseMode: z.enum(["fresh", "head", "current-snapshot"]),
   worktreeRoot: nonEmptyString,
-  maxManagedWorktrees: z.number().int().min(1).max(200),
   qwen: providerConfigSchema,
   deepseek: providerConfigSchema,
   glm: providerConfigSchema,

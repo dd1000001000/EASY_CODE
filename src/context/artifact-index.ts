@@ -40,6 +40,7 @@ export interface ContextSearchOptions {
   /** Only evidence older than this durable message index is eligible. */
   readonly beforeMessageIndex?: number;
   readonly minimumSimilarity?: number;
+  readonly queries?: readonly string[];
 }
 
 export interface ContextSearchHit {
@@ -50,6 +51,19 @@ export interface ContextSearchHit {
   readonly contentHash: string;
   readonly messageIndex: number;
   readonly score: number;
+  readonly metadata?: ContextEvidenceMetadata;
+}
+
+export interface ContextEvidenceMetadata {
+  readonly kind?: "tool_evidence" | "accepted_summary";
+  readonly evidenceId?: string;
+  readonly filePath?: string;
+  readonly fileHash?: string;
+  readonly startLine?: number;
+  readonly endLine?: number;
+  readonly startOffset: number;
+  readonly endOffset: number;
+  readonly sourceTruncated: boolean;
 }
 
 interface ContextArtifactRow {
@@ -66,6 +80,7 @@ interface ContextArtifactRow {
   importance: number;
   created_at: string;
   updated_at: string;
+  metadata_json: string | null;
 }
 
 interface ContextCheckpointRow {
@@ -114,6 +129,7 @@ interface PendingArtifact {
   readonly messageIndex: number;
   readonly chunkIndex: number;
   readonly importance: number;
+  readonly metadata: ContextEvidenceMetadata;
 }
 
 interface PreparedEmbedding {
@@ -350,14 +366,49 @@ function splitIntoChunks(value: string): string[] {
   return chunks;
 }
 
-function artifactsForMessage(
+async function artifactsForMessage(
   threadId: string,
   message: ChatMessage,
   messageIndex: number,
-): PendingArtifact[] {
+  provider: EmbeddingProvider,
+): Promise<PendingArtifact[]> {
   const document = artifactText(message, messageIndex);
   if (!document) return [];
-  return splitIntoChunks(document.content).map((content, chunkIndex) => {
+  const text = boundedText(redactSensitiveInformation(document.content), MAX_INDEXED_MESSAGE_CHARS);
+  let windows: readonly { text: string; start: number; end: number }[];
+  try {
+    windows = provider.splitText ? await provider.splitText(text) : [];
+  } catch {
+    // Missing tokenizer must not disable lexical retrieval.
+    windows = [];
+  }
+  if (!windows.length) {
+    let cursor = 0;
+    windows = splitIntoChunks(text).map((content) => {
+      const start = text.indexOf(content, cursor);
+      cursor = Math.max(start + 1, start + content.length - CHUNK_OVERLAP_CHARS);
+      return { text: content, start, end: start + content.length };
+    });
+  }
+  let file: Partial<ContextEvidenceMetadata> = {};
+  if (message.role === "tool") {
+    try {
+      const evidenceId = JSON.parse(message.content)?.evidenceId;
+      if (typeof evidenceId === "string") file = { evidenceId };
+    } catch { /* Legacy messages have no captured evidence locator. */ }
+  }
+  if (message.role === "tool" && message.name === "read_file") {
+    try {
+      const data = JSON.parse(message.content)?.data;
+      if (typeof data?.path === "string" && typeof data?.contentHash === "string") {
+        file = { ...file, filePath: data.path, fileHash: data.contentHash,
+          ...(Number.isInteger(data.startLine) ? { startLine: data.startLine } : {}),
+          ...(Number.isInteger(data.endLine) ? { endLine: data.endLine } : {}) };
+      }
+    } catch { /* Opaque historical tool output remains searchable. */ }
+  }
+  return windows.map((window, chunkIndex) => {
+    const content = window.text;
     const sourceKey = `message:${String(messageIndex)}:chunk:${String(chunkIndex)}`;
     return {
       id: `context_${sha256(`${threadId}\n${sourceKey}`).slice(0, 48)}`,
@@ -369,6 +420,8 @@ function artifactsForMessage(
       messageIndex,
       chunkIndex,
       importance: document.importance,
+      metadata: { ...file, startOffset: window.start, endOffset: window.end,
+        sourceTruncated: document.content.length > MAX_INDEXED_MESSAGE_CHARS },
     };
   });
 }
@@ -590,6 +643,8 @@ function checkpointSnapshot(row: ContextCheckpointRow): ContextCheckpointSnapsho
  * SQLite/FTS5 is authoritative; Orama is a disposable vector projection.
  */
 export class ContextArtifactIndex {
+  private stopped = false;
+  private readonly backfills = new Map<string, Promise<void>>();
   private readonly caches = new Map<string, CachedIndex>();
   private readonly cacheBuilds = new Map<string, Promise<CachedIndex>>();
   private readonly vectorDisabledUntil = new Map<string, number>();
@@ -598,10 +653,25 @@ export class ContextArtifactIndex {
     private readonly storage: EasyCodeStorage,
     private readonly provider: EmbeddingProvider,
     private readonly onVectorError?: (error: unknown) => void,
+    private readonly options: { backgroundVectors?: boolean } = {},
   ) {
     if (!Number.isInteger(provider.dimension) || provider.dimension <= 0) {
       throw new Error("Context embedding provider dimension is invalid");
     }
+  }
+
+  close(): void { this.stopped = true; this.caches.clear(); }
+
+  private queueBackfill(threadId: string, boundary: number): void {
+    if (this.stopped || this.backfills.has(threadId)) return;
+    const pending = Promise.resolve().then(async () => {
+      if (!this.stopped) await this.backfill(threadId, boundary, DEFAULT_BACKFILL_LIMIT);
+    }).catch((error: unknown) => {
+      if (this.stopped) return;
+      this.vectorDisabledUntil.set(threadId, Date.now() + VECTOR_RETRY_DELAY_MS);
+      try { this.onVectorError?.(error); } catch { /* Diagnostics cannot break retrieval. */ }
+    }).finally(() => { this.backfills.delete(threadId); });
+    this.backfills.set(threadId, pending);
   }
 
   async checkpoint(
@@ -614,17 +684,34 @@ export class ContextArtifactIndex {
     const reset = Boolean(
       previous && (
         previous.workspace_id !== workspaceId ||
-        previous.indexed_message_count > state.messages.length
+        previous.indexed_message_count > state.messages.length ||
+        JSON.parse(previous.payload_json).retrievalIndexVersion !== 2
       ),
     );
     const start = reset ? 0 : Math.min(previous?.indexed_message_count ?? 0, state.messages.length);
     const pending: PendingArtifact[] = [];
     for (let index = start; index < state.messages.length; index += 1) {
       const message = state.messages[index];
-      if (message) pending.push(...artifactsForMessage(threadId, message, index));
+      if (message) pending.push(...await artifactsForMessage(threadId, message, index, this.provider));
     }
 
-    const payload = redactCheckpointValue(checkpointPayload(state)) as Readonly<Record<string, unknown>>;
+    const summaryHash = state.workingSummary ? sha256(state.workingSummary) : undefined;
+    const priorSummaryHash = previous ? JSON.parse(previous.payload_json)?.conversation?.workingSummaryHash : undefined;
+    const summaryChanged = Boolean(state.contextCompactionMetadata && summaryHash && (reset || summaryHash !== priorSummaryHash));
+    if (summaryChanged) {
+      const metadata = state.contextCompactionMetadata!;
+      const chunks = await artifactsForMessage(threadId, { role: "assistant", content: state.workingSummary },
+        Math.max(0, metadata.sourceEndMessageIndex - 1), this.provider);
+      for (const chunk of chunks) {
+        const key = `summary:${summaryHash}:${chunk.chunkIndex}`;
+        pending.push({ ...chunk, id: `context_${sha256(`${threadId}\n${key}`).slice(0, 48)}`,
+          sourceKey: key, title: "Previously accepted summary (historical claims, consult source evidence)",
+          metadata: { ...chunk.metadata, kind: "accepted_summary" } });
+      }
+    }
+
+    const payload = { ...redactCheckpointValue(checkpointPayload(state)) as Record<string, unknown>,
+      retrievalIndexVersion: 2 };
     const payloadJson = JSON.stringify(payload);
     const stateHash = sha256(payloadJson);
     const checkpointChanged = !previous || reset || previous.state_hash !== stateHash ||
@@ -634,6 +721,14 @@ export class ContextArtifactIndex {
 
     if (pending.length > 0 || checkpointChanged || reset) {
       this.storage.db.transaction(() => {
+        if (summaryChanged) {
+          const metadata = state.contextCompactionMetadata!;
+          this.storage.db.prepare(
+            `INSERT OR IGNORE INTO context_summary_snapshots(id, thread_id, source_hash, summary, metadata_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`
+          ).run(`summary_${sha256(`${threadId}\n${metadata.sourceHistoryHash}\n${summaryHash}`)}`,
+            threadId, metadata.sourceHistoryHash, state.workingSummary, JSON.stringify(metadata), now);
+        }
         if (reset) {
           this.storage.db.prepare<[string]>(
             "DELETE FROM context_artifacts WHERE thread_id = ?",
@@ -641,13 +736,13 @@ export class ContextArtifactIndex {
         }
         const upsert = this.storage.db.prepare<[
           string, string, string, string, string, string, string, string,
-          number, number, number, string, string,
+          number, number, number, string, string, string,
         ]>(
           `INSERT INTO context_artifacts(
              id, workspace_id, thread_id, source_key, source_type, title,
              content, content_hash, message_index, chunk_index, importance,
-             created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             created_at, updated_at, metadata_json
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(thread_id, source_key) DO UPDATE SET
              workspace_id = excluded.workspace_id,
              source_type = excluded.source_type,
@@ -657,7 +752,8 @@ export class ContextArtifactIndex {
              message_index = excluded.message_index,
              chunk_index = excluded.chunk_index,
              importance = excluded.importance,
-             updated_at = excluded.updated_at`,
+             updated_at = excluded.updated_at,
+             metadata_json = excluded.metadata_json`,
         );
         for (const artifact of pending) {
           upsert.run(
@@ -674,6 +770,7 @@ export class ContextArtifactIndex {
             artifact.importance,
             now,
             now,
+            JSON.stringify(artifact.metadata),
           );
         }
 
@@ -721,7 +818,7 @@ export class ContextArtifactIndex {
           );
         }
       })();
-      this.invalidate(threadId);
+      if (pending.length > 0 || reset) this.invalidate(threadId);
     }
 
     const row = this.checkpointRow(threadId);
@@ -744,6 +841,7 @@ export class ContextArtifactIndex {
     queryInput: string,
     options: ContextSearchOptions = {},
   ): Promise<ReadonlyArray<Readonly<ContextSearchHit>>> {
+    if (this.stopped) return Object.freeze([]);
     const workspaceId = cleanIdentifier(workspaceIdInput, "workspaceId");
     const threadId = cleanIdentifier(threadIdInput, "threadId");
     const query = queryInput.trim().slice(0, 12_000);
@@ -757,43 +855,48 @@ export class ContextArtifactIndex {
     );
     if (beforeMessageIndex <= 0) return Object.freeze([]);
     const candidateLimit = Math.max(24, limit * 8);
-    const lexical = this.lexicalCandidates(
-      workspaceId,
-      threadId,
-      query,
-      beforeMessageIndex,
-      candidateLimit,
-    );
+    const queries = [...new Set((options.queries?.length ? options.queries : [query])
+      .map((value) => value.trim()).filter(Boolean))].slice(0, 4);
+    const lexical = [...new Map(queries.flatMap((value) => this.lexicalCandidates(
+      workspaceId, threadId, value, beforeMessageIndex, candidateLimit,
+    )).map((row) => [row.id, row])).values()];
 
     let semantic: ReadonlyArray<{ id: string; score: number }> = [];
     if (Date.now() >= (this.vectorDisabledUntil.get(threadId) ?? 0)) {
       try {
-        await this.backfill(threadId, beforeMessageIndex, DEFAULT_BACKFILL_LIMIT);
+        if (this.options.backgroundVectors) this.queueBackfill(threadId, beforeMessageIndex);
+        else await this.backfill(threadId, beforeMessageIndex, DEFAULT_BACKFILL_LIMIT);
         const index = await this.getCachedIndex(threadId);
         if (index.size > 0) {
-          const [queryVector] = await this.prepareEmbeddings([query]);
-          if (!queryVector) throw new Error("Embedding provider returned no context query vector");
+          const queryVectors = await this.prepareEmbeddings(queries);
           const where: Partial<WhereCondition<ContextVectorSchema>> = {
             workspaceId: { eq: workspaceId },
             threadId: { eq: threadId },
             messageIndex: { lt: beforeMessageIndex },
           };
-          const result = await search(index.database, {
-            mode: "vector",
-            vector: { value: decodeFloat32(queryVector.bytes, this.provider.dimension), property: "embedding" },
-            similarity: boundedUnit(options.minimumSimilarity, 0.08),
-            limit: Math.max(candidateLimit, 80),
-            where,
-            includeVectors: true,
-          });
-          semantic = result.hits
-            .filter((hit) => {
-              const document = hit.document as { messageIndex?: unknown };
-              return typeof document.messageIndex === "number" &&
-                document.messageIndex < beforeMessageIndex;
-            })
-            .slice(0, candidateLimit)
-            .map((hit) => ({ id: hit.id, score: hit.score }));
+          const semanticHits = new Map<string, { id: string; score: number }>();
+          for (const queryVector of queryVectors) {
+            const result = await search(index.database, {
+              mode: "vector",
+              vector: { value: decodeFloat32(queryVector.bytes, this.provider.dimension), property: "embedding" },
+              similarity: boundedUnit(options.minimumSimilarity, 0.08),
+              limit: Math.max(candidateLimit, 80),
+              where,
+              includeVectors: true,
+            });
+            const hits = result.hits
+              .filter((hit) => {
+                const document = hit.document as { messageIndex?: unknown };
+                return typeof document.messageIndex === "number" &&
+                  document.messageIndex < beforeMessageIndex;
+              })
+              .slice(0, candidateLimit)
+              .map((hit) => ({ id: hit.id, score: hit.score }));
+            for (const hit of hits) {
+              if ((semanticHits.get(hit.id)?.score ?? -Infinity) < hit.score) semanticHits.set(hit.id, hit);
+            }
+          }
+          semantic = [...semanticHits.values()].sort((a, b) => b.score - a.score).slice(0, candidateLimit);
         }
         this.vectorDisabledUntil.delete(threadId);
       } catch (error) {
@@ -855,6 +958,7 @@ export class ContextArtifactIndex {
         contentHash: candidate.row.content_hash,
         messageIndex: candidate.row.message_index,
         score: candidate.score,
+        ...(candidate.row.metadata_json ? { metadata: JSON.parse(candidate.row.metadata_json) as ContextEvidenceMetadata } : {}),
       }));
       if (hits.length >= limit) break;
     }
@@ -1008,6 +1112,7 @@ export class ContextArtifactIndex {
     const stale = rows.filter((row) => !this.isCurrentEmbedding(row));
     if (stale.length === 0) return;
     const prepared = await this.prepareEmbeddings(stale.map((row) => row.content));
+    if (this.stopped) return;
     const now = new Date().toISOString();
     this.storage.db.transaction(() => {
       const upsert = this.storage.db.prepare<[
@@ -1216,8 +1321,17 @@ export function renderContextCheckpoint(
 export function renderPinnedCurrentState(
   state: Readonly<SessionState>,
   approvedPlanReview?: Readonly<PlanReviewState>,
+  continuityAlreadyPresent = false,
 ): string {
   const payload = checkpointPayload(state);
+  if (continuityAlreadyPresent) {
+    const { objective: _goal, constraints: _constraints, taskGraph: _tasks,
+      planReview: _plan, commands: _commands, latestFailure: _failure,
+      conversation: _conversation, ...workspace } = payload;
+    return JSON.stringify(redactCheckpointValue({ pinnedCurrentState: true, ...workspace,
+      ...(approvedPlanReview && !state.planReview
+        ? { approvedPlan: planCheckpoint(approvedPlanReview) } : {}) }));
+  }
   const pinned = {
     pinnedCurrentState: true,
     ...payload,
@@ -1235,6 +1349,7 @@ export function renderRetrievedContext(
     `[evidence_id=${hit.id}] [source=${hit.source}] ` +
       `[message_index=${String(hit.messageIndex)}] [content_hash=${hit.contentHash}]`,
     hit.title,
+    ...(hit.metadata ? [`[historical_metadata=${JSON.stringify(hit.metadata)}]`] : []),
     hit.content,
   ].join("\n")).join("\n\n");
 }

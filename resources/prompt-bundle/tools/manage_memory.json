@@ -1,11 +1,15 @@
 {
   "id": "manage_memory",
-  "contractVersion": "1.0.0",
+  "contractVersion": "2.1.0",
   "description": "Search and maintain workspace-scoped long-term memory. A new remember proposal does not require a preliminary search; Runtime skips an already-active exact fact at commit. Search first only when revising or forgetting an existing memory. Store one short, self-contained sentence per memory, at most 120 characters. When several independent durable facts were established, issue several remember calls together in the same response so each gets its own category, vector, evidence, and lifecycle; a turn may stage at most eight changes. Never combine a paragraph or list into one memory, but keep conditions together when separating them would make a fact inaccurate. Remember only durable user preferences, project conventions, verified architecture, explicit decisions, or stable environment facts that will help future tasks. Never store secrets, guesses, transient task state, raw tool output, or facts useful only in the current turn. revise keeps the old record as superseded; forget expires a record without deleting its audit history.",
   "propertyDescriptions": {
-    "action": "search retrieves existing memories; remember proposes one deduplicated atomic fact; revise supersedes; forget expires.",
+    "action": "search retrieves existing memories; remember proposes one deduplicated atomic fact; revise supersedes; forget expires; recall reads captured historical tool evidence in the current thread without rerunning the tool.",
     "query": "For search, use a concise keyword query or a memory ID.",
-    "limit": "The optional number of memory results to return from a search.",
+    "scope": "For search, long_term (default) returns durable facts; history returns short current-thread evidence previews. Use recall on a preview ID for the captured text.",
+    "limit": "For search, 1-20 memory results. For recall, 1-16000 characters per evidence page (default 8000).",
+    "evidenceId": "For recall, use an evidence_ or context_ ID from a prior result or history preview. Scope is restricted to the current workspace and thread.",
+    "offset": "For recall, zero-based character offset; use nextOffset from the preceding page to continue.",
+    "sourceRefs": "For remember/revise, cite 1-8 captured evidence IDs from read_file for versioned project facts, or user for an explicit durable user preference/convention. Runtime requires resolvable sources before committing; source presence is not proof of arbitrary claims. Other observations belong in task history.",
     "includeInactive": "For search only. Include superseded and expired audit-history entries.",
     "memoryId": "For revise and forget, use a memory ID returned by memory search.",
     "content": "For remember and revise, provide one short, self-contained durable fact with no secrets, lists, or bundled claims.",

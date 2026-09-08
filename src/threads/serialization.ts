@@ -22,6 +22,7 @@ import { validateCommandApprovalPrefixes } from "../command/approval.js";
 import { sha256 } from "../utils/hash.js";
 
 export interface SerializedSessionState {
+  readonly orchestrationEnabled?: boolean;
   readonly threadId: string;
   readonly activeTurnId?: string;
   readonly mode: SessionState["mode"];
@@ -62,6 +63,7 @@ export interface SerializedThreadCheckpointDelta {
   readonly formatVersion: 1;
   readonly baseSequence: number;
   readonly settings?: {
+    readonly orchestrationEnabled?: boolean;
     readonly mode?: SessionState["mode"];
     readonly provider?: SessionState["provider"];
     readonly model?: string;
@@ -589,6 +591,7 @@ function validateThreadCheckpointDelta(
     if (
       !isRecord(settings) ||
       !hasOnlyKeys(settings, [
+        "orchestrationEnabled",
         "mode",
         "provider",
         "model",
@@ -600,6 +603,7 @@ function validateThreadCheckpointDelta(
       (settings.mode !== undefined &&
         !["plan", "auto", "code"].includes(String(settings.mode))) ||
       (settings.provider !== undefined && !isProviderName(settings.provider)) ||
+      (settings.orchestrationEnabled !== undefined && typeof settings.orchestrationEnabled !== "boolean") ||
       (settings.model !== undefined && typeof settings.model !== "string") ||
       (settings.thinkingEffort !== undefined &&
         !THINKING_EFFORTS.includes(settings.thinkingEffort as ThinkingEffort)) ||
@@ -804,6 +808,7 @@ export function deserializeThreadCheckpointDelta(
 export function serializeSessionState(state: SessionState): SerializedSessionState {
   const steering = normalizedSteeringState(state);
   return {
+    ...(state.orchestrationEnabled !== undefined ? { orchestrationEnabled: state.orchestrationEnabled } : {}),
     threadId: state.threadId,
     activeTurnId: state.activeTurnId,
     mode: state.mode,
@@ -851,6 +856,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
 export function deserializeSessionState(value: unknown): SessionState {
   if (!isRecord(value)) throw new Error("Invalid serialized session state");
   if (
+    (value.orchestrationEnabled !== undefined && typeof value.orchestrationEnabled !== "boolean") ||
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
     !isProviderName(value.provider) ||
@@ -970,6 +976,7 @@ export function deserializeSessionState(value: unknown): SessionState {
 
   return {
     threadId: value.threadId,
+    ...(typeof value.orchestrationEnabled === "boolean" ? { orchestrationEnabled: value.orchestrationEnabled } : {}),
     activeTurnId:
       typeof value.activeTurnId === "string" ? value.activeTurnId : undefined,
     mode: value.mode as SessionState["mode"],

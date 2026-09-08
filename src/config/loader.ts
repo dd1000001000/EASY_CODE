@@ -43,16 +43,11 @@ interface EasyCodeConfigLayer {
   dataDir?: unknown;
   configDir?: unknown;
   cacheDir?: unknown;
-  /** Base step budget for none/low thinking. */
-  maxSteps?: unknown;
-  /** Base context-character budget for none/low thinking. */
-  maxContextChars?: unknown;
-  maxOutputChars?: unknown;
-  commandTimeoutMs?: unknown;
+  limits?: UnknownRecord;
+  orchestrationEnabled?: unknown;
   subagentIsolation?: unknown;
   worktreeBaseMode?: unknown;
   worktreeRoot?: unknown;
-  maxManagedWorktrees?: unknown;
   qwen?: ProviderConfigLayer;
   deepseek?: ProviderConfigLayer;
   glm?: ProviderConfigLayer;
@@ -117,6 +112,16 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
   }
 
   const limits = recordAt(value, "limits");
+  if (value.limits !== undefined && !isRecord(value.limits)) {
+    throw new EasyCodeConfigError("limits must be a TOML table");
+  }
+  const removed = ["maxSteps", "max_steps", "maxContextChars", "max_context_chars",
+    "maxContextTokens", "max_context_tokens", "maxOutputChars", "max_output_chars",
+    "commandTimeoutMs", "command_timeout_ms", "maxManagedWorktrees", "max_managed_worktrees"];
+  if (removed.some((key) => value[key] !== undefined) ||
+      recordAt(value, "worktrees").max_managed !== undefined || recordAt(value, "worktrees").maxManaged !== undefined) {
+    throw new EasyCodeConfigError("Legacy limit fields are no longer supported. Use the [limits] table and [limits.steps]; see docs/config.example.toml.");
+  }
   const paths = recordAt(value, "paths");
   const providers = recordAt(value, "providers");
   const subagents = recordAt(value, "subagents");
@@ -153,22 +158,8 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
       field(value, "cacheDir", "cache_dir"),
       field(paths, "cacheDir", "cache_dir"),
     ),
-    maxSteps: firstDefined(
-      field(value, "maxSteps", "max_steps"),
-      field(limits, "maxSteps", "max_steps"),
-    ),
-    maxContextChars: firstDefined(
-      field(value, "maxContextChars", "max_context_chars"),
-      field(limits, "maxContextChars", "max_context_chars"),
-    ),
-    maxOutputChars: firstDefined(
-      field(value, "maxOutputChars", "max_output_chars"),
-      field(limits, "maxOutputChars", "max_output_chars"),
-    ),
-    commandTimeoutMs: firstDefined(
-      field(value, "commandTimeoutMs", "command_timeout_ms"),
-      field(limits, "commandTimeoutMs", "command_timeout_ms"),
-    ),
+    limits,
+    orchestrationEnabled: field(value, "orchestrationEnabled", "orchestration_enabled"),
     subagentIsolation: firstDefined(
       field(value, "subagentIsolation", "subagent_isolation"),
       field(subagents, "isolation", "isolation"),
@@ -180,10 +171,6 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
     worktreeRoot: firstDefined(
       field(value, "worktreeRoot", "worktree_root"),
       field(worktrees, "root", "root"),
-    ),
-    maxManagedWorktrees: firstDefined(
-      field(value, "maxManagedWorktrees", "max_managed_worktrees"),
-      field(worktrees, "maxManaged", "max_managed"),
     ),
     qwen: providerLayer({ ...nestedQwen, ...directQwen }),
     deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
@@ -221,19 +208,24 @@ function applyLayer(
     dataDir: layer.dataDir,
     configDir: layer.configDir,
     cacheDir: layer.cacheDir,
-    maxSteps: layer.maxSteps,
-    maxContextChars: layer.maxContextChars,
-    maxOutputChars: layer.maxOutputChars,
-    commandTimeoutMs: layer.commandTimeoutMs,
+    orchestrationEnabled: layer.orchestrationEnabled,
     subagentIsolation: layer.subagentIsolation,
     worktreeBaseMode: layer.worktreeBaseMode,
     worktreeRoot: layer.worktreeRoot,
-    maxManagedWorktrees: layer.maxManagedWorktrees,
   });
 
   return {
     ...base,
     ...topLevel,
+    limits: {
+      ...base.limits, ...layer.limits,
+      steps: layer.limits?.steps === undefined ? base.limits.steps
+        : isRecord(layer.limits.steps) ? { ...base.limits.steps, ...layer.limits.steps }
+          : layer.limits.steps,
+      providerTimeoutMs: layer.limits?.providerTimeoutMs === undefined ? base.limits.providerTimeoutMs
+        : isRecord(layer.limits.providerTimeoutMs) ? { ...base.limits.providerTimeoutMs, ...layer.limits.providerTimeoutMs }
+          : layer.limits.providerTimeoutMs,
+    },
     qwen: applyProviderLayer(base.qwen, layer.qwen),
     deepseek: applyProviderLayer(base.deepseek, layer.deepseek),
     glm: applyProviderLayer(base.glm, layer.glm),
@@ -329,6 +321,20 @@ function envInteger(
 }
 
 function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
+  const oldLimits = ["EASY_CODE_MAX_STEPS", "EASY_CODE_MAX_CONTEXT_CHARS", "EASY_CODE_MAX_CONTEXT_TOKENS",
+    "EASY_CODE_MAX_OUTPUT_CHARS", "EASY_CODE_COMMAND_TIMEOUT_MS", "EASY_CODE_MAX_MANAGED_WORKTREES"];
+  if (oldLimits.some((key) => env[key] !== undefined)) {
+    throw new EasyCodeConfigError("Legacy limit environment variables are no longer supported; use EASY_CODE_LIMITS_JSON or [limits].");
+  }
+  let limits: UnknownRecord | undefined;
+  const encodedLimits = envValue(env, "EASY_CODE_LIMITS_JSON");
+  if (encodedLimits) {
+    try {
+      const parsed: unknown = JSON.parse(encodedLimits);
+      if (!isRecord(parsed)) throw new Error();
+      limits = parsed;
+    } catch { throw new EasyCodeConfigError("EASY_CODE_LIMITS_JSON must be a JSON object"); }
+  }
   const providers = Object.fromEntries(
     PROVIDER_CATALOG.map(({ provider }) => {
       const names = providerEnvironment(provider);
@@ -349,14 +355,10 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     dataDir: envValue(env, "EASY_CODE_DATA_DIR"),
     configDir: envValue(env, "EASY_CODE_CONFIG_DIR"),
     cacheDir: envValue(env, "EASY_CODE_CACHE_DIR"),
-    maxSteps: envInteger(env, "EASY_CODE_MAX_STEPS"),
-    maxContextChars: envInteger(env, "EASY_CODE_MAX_CONTEXT_CHARS"),
-    maxOutputChars: envInteger(env, "EASY_CODE_MAX_OUTPUT_CHARS"),
-    commandTimeoutMs: envInteger(env, "EASY_CODE_COMMAND_TIMEOUT_MS"),
+    limits,
     subagentIsolation: envValue(env, "EASY_CODE_SUBAGENT_ISOLATION"),
     worktreeBaseMode: envValue(env, "EASY_CODE_WORKTREE_BASE_MODE"),
     worktreeRoot: envValue(env, "EASY_CODE_WORKTREE_ROOT"),
-    maxManagedWorktrees: envInteger(env, "EASY_CODE_MAX_MANAGED_WORKTREES"),
     ...providers,
   });
 }

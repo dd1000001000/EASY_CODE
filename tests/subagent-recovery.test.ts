@@ -107,6 +107,7 @@ function restoreStandaloneViaApp(
 ): number {
   const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
   Object.defineProperties(app, {
+    taskBudgets: { value: new Map() },
     threadStore: { value: threads },
     state: { value: state },
     subagentCoordinator: { value: coordinator },
@@ -168,6 +169,7 @@ describe("subagent task journal recovery", () => {
       };
       const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
       Object.defineProperties(app, {
+        taskBudgets: { value: new Map() },
         threadStore: { value: threads },
         state: { value: state },
         subagentCoordinator: { value: coordinator },
@@ -214,6 +216,7 @@ describe("subagent task journal recovery", () => {
       });
       const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
       Object.defineProperties(app, {
+        taskBudgets: { value: new Map() },
         threadStore: { value: threads },
         state: { value: parent },
         workspace: { value: { root: parent.workspaceRoot } },
@@ -396,11 +399,13 @@ describe("subagent task journal recovery", () => {
       config.deepseek.model = "deepseek-v4-flash";
       const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
       Object.defineProperties(app, {
+        taskBudgets: { value: new Map() },
         config: { value: config },
         state: { value: parent },
         workspace: { value: workspace },
         threadStore: { value: threads },
         executionEnvironments: { value: executionEnvironments },
+        commandRuntimes: { value: new Map() },
         workspaceMutationLock: { value: new WorkspaceMutationLock() },
         memoryManager: {
           value: { searchHybrid: async () => [] },
@@ -475,7 +480,9 @@ describe("subagent task journal recovery", () => {
           runSubagent(input: SubagentExecutionRequest): Promise<SubagentExecutionOutcome>;
         }
       ).runSubagent(request);
-      await finalizeEntered;
+      await Promise.race([finalizeEntered, outcomePromise.then((outcome) => {
+        throw new Error(`Child returned before entering finalization: ${JSON.stringify(outcome)}`);
+      })]);
       pauseRequested = true;
       controller.abort();
       releaseFinalize();

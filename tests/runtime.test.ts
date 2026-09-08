@@ -1338,7 +1338,7 @@ describe("AgentRuntime", () => {
     });
     const currentState = state();
     const result = await runtime.run(currentState, "Do the gated task", {
-      maxSteps: 3,
+      maxSteps: 4,
       maxContextChars: 20_000,
       maxOutputChars: 8_000,
       commandTimeoutMs: 1_000,
@@ -1693,7 +1693,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, "Retry verification once", {
-      maxSteps: 3,
+      maxSteps: 4,
       maxContextChars: 30_000,
       maxOutputChars: 8_000,
       commandTimeoutMs: 1_000,
@@ -1708,7 +1708,7 @@ describe("AgentRuntime", () => {
     assert.match(currentState.taskGraph.tasks[0]?.blocker ?? "", /credentials/iu);
   });
 
-  it("uses one finalization step when the final task completes at the limit", async () => {
+  it("does not exceed the hard step cap for DAG finalization", async () => {
     let requestCount = 0;
     let finalRequestTools: string[] = [];
     const call = (id: string, input: unknown) => ({
@@ -1796,12 +1796,10 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
-    assert.equal(result.steps, 4);
-    assert.equal(
-      result.text,
-      "The task DAG completed all declared tasks and completion checks.",
-    );
+    assert.equal(result.reason, "limit_reached");
+    assert.equal(result.steps, 3);
+    assert.equal(requestCount, 3);
+    assert.match(result.text, /hard limit/u);
     assert.equal(currentState.taskGraph?.status, "completed");
     assert.deepEqual(finalRequestTools, []);
     const lastAssistant = [...currentState.messages]
@@ -2258,7 +2256,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, input, {
-      maxSteps: 1,
+      maxSteps: 3,
       maxContextChars,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,
@@ -2331,7 +2329,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, "capture context telemetry", {
-      maxSteps: 1,
+      maxSteps: 2,
       maxContextChars,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,
@@ -2446,7 +2444,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, input, {
-      maxSteps: 1,
+      maxSteps: 2,
       maxContextChars,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,
@@ -2511,8 +2509,8 @@ describe("AgentRuntime", () => {
       }).tool_calls[0]?.function.arguments) ?? "{}",
     ) as Record<string, unknown>;
     assert.equal(durableAssistantArguments.formatVersion, 2);
-    assert.equal("coverageCheck" in durableAssistantArguments, false);
-    assert.equal("intentLedger" in durableAssistantArguments, false);
+    assert.equal("coverageCheck" in durableAssistantArguments, true);
+    assert.equal("intentLedger" in durableAssistantArguments, true);
     const compactToolCallEvent = events.find((event) =>
       event.type === "tool.call" &&
       (event.payload as { function?: { name?: unknown } }).function?.name ===
@@ -2523,8 +2521,8 @@ describe("AgentRuntime", () => {
         .function?.arguments ?? "{}",
     ) as Record<string, unknown>;
     assert.equal(durableToolCallArguments.formatVersion, 2);
-    assert.equal("coverageCheck" in durableToolCallArguments, false);
-    assert.equal("intentLedger" in durableToolCallArguments, false);
+    assert.equal("coverageCheck" in durableToolCallArguments, true);
+    assert.equal("intentLedger" in durableToolCallArguments, true);
     assert.equal(events.some((event) => event.type === "message.user.synthetic"), false);
     assert.equal(
       new ContextManager().inspect(currentState, maxContextChars).pressure,
@@ -2595,7 +2593,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, input, {
-      maxSteps: 1,
+      maxSteps: 2,
       maxContextChars,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,
@@ -2949,7 +2947,7 @@ describe("AgentRuntime", () => {
     );
   });
 
-  it("reserves a final response step and commits staged memory only after turn completion", async () => {
+  it("commits staged memory only after turn completion within the step budget", async () => {
     let requestCount = 0;
     let commitCount = 0;
     const eventTypes: string[] = [];
@@ -3040,7 +3038,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(state(), "Use strict TypeScript from now on", {
-      maxSteps: 1,
+      maxSteps: 2,
       maxContextChars: 20_000,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,
@@ -3126,7 +3124,7 @@ describe("AgentRuntime", () => {
     });
 
     const result = await runtime.run(currentState, "Remember the verified conventions", {
-      maxSteps: 1,
+      maxSteps: 2,
       maxContextChars: 20_000,
       maxOutputChars: 4_000,
       commandTimeoutMs: 1_000,

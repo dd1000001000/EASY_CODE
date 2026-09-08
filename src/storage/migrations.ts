@@ -423,6 +423,47 @@ const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE context_artifacts ADD COLUMN metadata_json TEXT;
+      CREATE TABLE memory_provenance (
+        memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+        document_json TEXT NOT NULL
+      );
+      CREATE TABLE memory_revisions (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+        thread_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX memory_revisions_memory_idx ON memory_revisions(memory_id, sequence);
+      CREATE TABLE context_evidence (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        call_id TEXT NOT NULL, tool TEXT NOT NULL,
+        content TEXT NOT NULL, content_hash TEXT NOT NULL,
+        truncated INTEGER NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(thread_id, call_id)
+      );
+      CREATE TABLE context_summary_snapshots (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        source_hash TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+    `,
+  },
+  {
+    version: 8,
+    sql: `CREATE TABLE context_token_samples (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL, ratio REAL NOT NULL CHECK(ratio > 0)
+    );
+    CREATE INDEX context_token_samples_scope_idx ON context_token_samples(scope, sequence);`,
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

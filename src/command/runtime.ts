@@ -236,7 +236,15 @@ export class CommandRuntime {
   ): Promise<CommandExecutionOutput> {
     const job = this.requireOwnedJob(commandId, context);
     if (!job.final && !job.failure && waitMs > 0) {
-      await this.waitForStatus(job, Math.min(waitMs, MAX_STATUS_WAIT_MS), context.signal);
+      const signal = context.waitSignal && context.signal ? AbortSignal.any([context.waitSignal, context.signal])
+        : context.waitSignal ?? context.signal;
+      try {
+        await this.waitForStatus(job, Math.min(waitMs, MAX_STATUS_WAIT_MS), signal);
+      } catch (error) {
+        // Steering wakes the wait, not the process. Return its real current
+        // status and let Runtime apply the queued user instruction.
+        if (!context.waitSignal?.aborted || context.signal?.aborted) throw error;
+      }
     }
     if (job.failure) {
       job.terminalObserved = true;

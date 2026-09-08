@@ -171,6 +171,20 @@ describe("pure terminal UI views", () => {
     assertBoundedLines(rendered, 80);
   });
 
+  it("shows the orchestration switch in the live footer without crowding header context", () => {
+    for (const enabled of [false, true]) {
+      const state = applyEvents(createUIState(), [{ type: "session.set", session: {
+        threadId: "toggle-thread", workspaceRoot: "F:\\project", mode: "code", provider: "deepseek",
+        model: "deepseek-v4-pro", thinkingEffort: "medium", orchestrationEnabled: enabled,
+        contextTokens: 82_400, contextLimitTokens: 128_000,
+      } }]);
+      const footer = renderComposerFooter(state, { columns: 80, color: false });
+      assert.ok(footer.includes(`DAG/agents ${enabled ? "on" : "off"}`));
+      assert.match(renderSessionHeader(state, { columns: 80, color: false }), /context:82\.4k\/128k/u);
+      assertBoundedLines(footer, 80);
+    }
+  });
+
   it("keeps one stable session title and renders unrestricted mode in the live footer", () => {
     const state = applyEvents(createUIState(), [{
       type: "session.set",

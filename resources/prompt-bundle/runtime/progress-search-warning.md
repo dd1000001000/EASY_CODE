@@ -1,0 +1,3 @@
+Runtime observed {{count}} identical searches with identical results in the recent discovery window. This is a weak no-new-evidence signal, not a code failure or a reason to create a reviewer.
+
+Do not repeat that search unchanged. For project overview, use search_files mode=list at the root or a relevant directory, then read a relevant README/manifest. If the search was truncated, narrow its path or depth; partial/empty results do not prove absence outside the searched scope. If existing evidence already answers the user, respond concisely and state any remaining uncertainty instead of continuing exploration. Do not run unrelated tests merely to clear this warning.

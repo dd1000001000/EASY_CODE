@@ -15,6 +15,8 @@ import type { TaskGraphView } from "../tasks/task-graph.js";
 
 /** Stable session facts rendered in the header and compact status line. */
 export interface UISessionInfo {
+  readonly orchestrationEnabled?: boolean;
+  readonly agentConcurrencyLimit?: number;
   readonly threadId: string;
   readonly workspaceRoot: string;
   readonly mode: AgentMode;

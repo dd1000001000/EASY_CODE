@@ -15,6 +15,8 @@ export interface EmbeddingProvider {
   readonly revision: string;
   readonly pooling: string;
   readonly version: number;
+  /** Token-aware source windows. Legacy/custom providers may omit this. */
+  splitText?(text: string): Promise<readonly import("./text-windows.js").TextWindow[]>;
   embed(texts: readonly string[]): Promise<readonly Float32Array[]>;
 }
 
@@ -220,6 +222,8 @@ export function embeddingModelKey(provider: EmbeddingProvider): string {
  * SQLite remains authoritative; every Orama index can be discarded and rebuilt.
  */
 export class MemoryVectorIndex {
+  private stopped = false;
+  private retryAfter = 0;
   private readonly caches = new Map<string, CachedIndex>();
   private readonly cacheBuilds = new Map<string, Promise<CachedIndex>>();
   private readonly backfills = new Map<string, Promise<MemoryEmbeddingBackfillResult>>();
@@ -230,10 +234,13 @@ export class MemoryVectorIndex {
   constructor(
     private readonly storage: EasyCodeStorage,
     private readonly provider: EmbeddingProvider,
+    private readonly options: { backgroundVectors?: boolean } = {},
   ) {
     assertProvider(provider);
     this.modelKey = embeddingModelKey(provider);
   }
+
+  close(): void { this.stopped = true; this.caches.clear(); }
 
   async prepareEmbeddings(
     contents: readonly string[],
@@ -364,6 +371,7 @@ export class MemoryVectorIndex {
       const generationBefore = this.getGeneration(workspaceId);
       const result = await this.runBackfill(workspaceId, options);
       firstResult ??= result;
+      if (this.stopped) return firstResult;
       const generationAfter = this.getGeneration(workspaceId);
       if (
         result.embedded === 0 &&
@@ -395,7 +403,11 @@ export class MemoryVectorIndex {
     let queryVector: Float32Array | undefined;
 
     for (let attempt = 0; attempt < MAX_CACHE_RETRIES; attempt += 1) {
-      await this.backfill(workspaceId);
+      if (this.options.backgroundVectors) {
+        if (!this.stopped && Date.now() >= this.retryAfter) {
+          void this.backfill(workspaceId).catch(() => { this.retryAfter = Date.now() + 60_000; });
+        }
+      } else await this.backfill(workspaceId);
       const index = await this.getCachedIndex(workspaceId);
       if (index.size === 0) {
         if (this.getGeneration(workspaceId) === index.generation) {
@@ -466,6 +478,8 @@ export class MemoryVectorIndex {
     for (let offset = 0; offset < stale.length; offset += batchSize) {
       const batch = stale.slice(offset, offset + batchSize);
       const prepared = await this.prepareEmbeddings(batch.map((row) => row.content));
+      if (this.stopped) return { scanned: rows.length, embedded, current: rows.length - stale.length,
+        skipped: stale.length - embedded };
       this.storage.db.transaction(() => {
         for (let index = 0; index < batch.length; index += 1) {
           const candidate = batch[index]!;
