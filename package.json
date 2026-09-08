@@ -20,6 +20,7 @@
     "resources/prompt-bundle",
     "scripts/embedding-model.cjs",
     "scripts/postinstall.cjs",
+    "scripts/harbor-sandbox.c",
     "scripts/install-vscode-extension.cjs",
     "scripts/verify-vscode-extension.cjs",
     "vscode-extension/easy-code-vscode.manifest.json",

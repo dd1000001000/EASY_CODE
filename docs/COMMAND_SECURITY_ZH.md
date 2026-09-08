@@ -5,9 +5,9 @@
 ## 四批改动
 
 1. 所有命令统一走 OS 沙箱。Plan 始终只读；旧 ID `unrestricted` 现在仅表示“隔离下免逐条审批”，不再提供宿主机完全访问。工作区同名 Git/Node/npm 不享受可信只读豁免；审批后重新校验可执行文件内容和 npm 策略材料。
-2. 独立 worker 管道传递有界生命周期事件，不再从裁剪后的输出推断执行状态。派发、启动器退出、清理分开记录。Windows 用 kill-on-close Job Object 管住进程树，确认后代结束后才恢复 ACL，确认 Job 为空后才释放资源；Linux 使用沙箱 PID namespace。
+2. 独立 worker 管道传递有界生命周期事件，不再从裁剪后的输出推断执行状态。派发、启动器退出、清理分开记录。Windows 用 kill-on-close Job Object 管住进程树，确认后代结束后才恢复 ACL，确认 Job 为空后才释放资源；普通 Linux 使用沙箱 PID namespace，Harbor 使用下述专用内核隔离与 subreaper 后端。
 3. Runtime 清单下载代理只接受已授权 artifact ID。开发模式另外提供逐命令联网代理，按下述审批规则授权；Benchmark 命令在清单下载期间仍完全离线。
-4. Harbor 外层保留模型端点白名单，内层命令沙箱不再跳过。安装阶段补齐 bubblewrap/socat/ripgrep 并运行 `sandbox doctor`。只有 Agent 根进程已返回，且没有未结束命令租约和清理隔离标记，才恢复可信评测器的网络。
+4. Harbor 外层保留模型端点白名单，命令改用 Landlock/seccomp 后端，不再要求嵌套 namespace。安装阶段编译受信任的 supervisor，预检与执行选择同一后端。只有 Agent 根进程已返回，且没有未结束命令租约和清理隔离标记，才恢复可信评测器的网络。
 
 ## 审批和文件边界
 
@@ -87,3 +87,25 @@ ProgressGuard 使用 Runtime 结论和失败签名，不使用展示摘要：三
 回归覆盖联网授权、命令、安全底线、审批、沙箱、下载、生命周期和 benchmark 接入。构建后，`node scripts/smoke-command-isolation.mjs` 检查 OS 隔离和清理；`node scripts/smoke-command-network.mjs` 用真实 curl 检查 SRT 与授权网关链路，测试专用可信解析器仅把固定测试域名映射到本地服务。两项均不调用模型 API 或公共互联网；失败时保留精确目录用于诊断。
 
 单元测试不能代替部署机的内核/防火墙预检。Linux/Docker 命名空间策略、Windows WFP/ACL 初始化仍须在真实运行环境中验证。
+## Harbor Benchmark 专用后端（2026-09）
+
+Harbor 适配器在安装阶段编译受信任的 `scripts/harbor-sandbox.c`，并在
+`sandbox doctor` 前设置 `EASY_CODE_OUTER_SANDBOX=harbor`。预检和 Runtime
+均选择 `HarborSandboxBackend`；普通 CLI 仍使用原 OS 沙箱后端。
+
+这不是裸执行回退：Docker 提供外层隔离，Landlock ABI 6+ 提供文件访问与信号
+隔离，seccomp 禁止模型命令创建任何 socket、使用 io_uring、提升能力或创建
+namespace。不要求 Docker 特权模式；缺少内核能力或受信任 helper 时仍失败关闭。
+
+主 Runtime 仅能通过 Harbor 的白名单调用固定模型服务。模型命令即使处于危险模式
+也不能联网，包括访问模型服务、DNS、TCP、UDP、IPv6 和本地 Unix socket。
+可信安装／评测依赖准备与模型执行分阶段处理；清理未确认时不恢复 verifier 网络。
+
+命令使用无 capability 的子进程、独立控制管道和 subreaper 监督；普通退出、超时、
+取消均清理包括 setsid／双重 fork 在内的后代。Plan 的工作区仍为内核只读。
+
+兼容性边界：本地 socket 测试和依赖 socket 的多进程功能同样不可用；chmod、
+chown、xattr 操作禁止。容器内 Git／Runtime 元数据移除写权限，可信 root Runtime
+仍可维护；保护目录的祖先下直接条目的删除／重命名受限，普通源码原地写入正常。
+这些限制不会放宽为不受监督的宿主机命令。可用 `scripts/smoke-harbor-sandbox.mjs`
+在一次性 Docker 容器里验证，无须调用模型。

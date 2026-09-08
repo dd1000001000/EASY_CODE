@@ -296,18 +296,21 @@ class EasyCodeAgent(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         """Install Node and the exact locally packed EASY CODE build."""
 
+        if not isinstance(environment, EasyCodeBenchmarkDockerEnvironment):
+            raise RuntimeError("EASY CODE requires the trusted Harbor Docker environment with managed egress.")
+
         # Harbor 0.16.1 does not expose a system-dependency helper. Keep this
         # distro-aware bootstrap aligned with its built-in installed agents.
         await self.exec_as_root(
             environment,
             command=(
                 "if [ -f /etc/alpine-release ]; then"
-                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep bubblewrap socat;"
+                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep gcc musl-dev linux-headers;"
                 " elif command -v apt-get >/dev/null 2>&1; then"
                 "  apt-get update && DEBIAN_FRONTEND=noninteractive "
-                "apt-get install -y ca-certificates curl git ripgrep bubblewrap socat;"
+                "apt-get install -y ca-certificates curl git ripgrep gcc libc6-dev linux-libc-dev;"
                 " elif command -v yum >/dev/null 2>&1; then"
-                "  yum install -y ca-certificates curl git ripgrep bubblewrap socat;"
+                "  yum install -y ca-certificates curl git ripgrep gcc glibc-devel kernel-headers;"
                 " else"
                 '  echo "No supported package manager was found" >&2; exit 1;'
                 " fi"
@@ -345,12 +348,16 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if
 npm install --global --ignore-scripts {shlex.quote(_REMOTE_PACKAGE)}
 export EASY_CODE_CACHE_DIR={shlex.quote(_REMOTE_CACHE_DIR)}
 global_root="$(npm root --global)"
+install -d -m 755 /opt/easy-code-harbor
+cc -O2 -Wall -Wextra -Werror "$global_root/easy-code-agent/scripts/harbor-sandbox.c" -o /opt/easy-code-harbor/harbor-sandbox
+chmod 755 /opt/easy-code-harbor/harbor-sandbox
 node "$global_root/easy-code-agent/scripts/embedding-model.cjs" verify
 easy-code --version
-easy-code sandbox doctor || {{ echo "Mandatory inner sandbox unavailable; enable supported nested namespaces on the host. Host execution fallback is forbidden." >&2; exit 78; }}
+export EASY_CODE_OUTER_SANDBOX=harbor
+easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no host execution fallback or privileged Docker is permitted." >&2; exit 78; }}
 """.strip()
 
-        result = await self.exec_as_agent(
+        result = await self.exec_as_root(
             environment,
             command=self._bash(install_script),
             timeout_sec=600,
@@ -366,6 +373,9 @@ easy-code sandbox doctor || {{ echo "Mandatory inner sandbox unavailable; enable
         context: AgentContext,
     ) -> None:
         """Give one isolated SWE-bench issue to EASY CODE and retain its state."""
+
+        if not isinstance(environment, EasyCodeBenchmarkDockerEnvironment):
+            raise RuntimeError("Harbor outer isolation requires the managed Docker environment.")
 
         workspace_base_commit = await self._workspace_base_commit(environment)
         binding = self._trial_binding(instruction, workspace_base_commit)
@@ -432,6 +442,7 @@ easy-code sandbox doctor || {{ echo "Mandatory inner sandbox unavailable; enable
                 try:
                     result = await environment.exec(
                         command=self._bash(run_script),
+                        user="root",
                         cwd=_TESTBED,
                         env={
                             "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE": _REMOTE_API_KEY_FILE,
@@ -1117,7 +1128,9 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
     async def _stage_api_key(self, environment: BaseEnvironment) -> None:
         """Upload an owner-only one-shot key without putting it in a command."""
 
-        owner = environment.default_user
+        # The trusted supervisor is root; model-controlled descendants drop all
+        # capabilities and receive neither this file nor its environment value.
+        owner = "root"
         ownership = ""
         if owner is not None:
             ownership = (
@@ -1183,7 +1196,7 @@ for directory in {shlex.quote(_REMOTE_DATA_DIR + '/command-leases')} {shlex.quot
   fi
 done
 """.strip()
-        checked = await environment.exec(command=self._bash(script), cwd="/", timeout_sec=30)
+        checked = await environment.exec(command=self._bash(script), user="root", cwd="/", timeout_sec=30)
         code = getattr(checked, "return_code", getattr(checked, "exit_code", None))
         if code != 0:
             raise RuntimeError("Command cleanup was not confirmed; public verifier networking was not restored.")

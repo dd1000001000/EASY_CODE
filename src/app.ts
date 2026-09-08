@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
+import { HarborSandboxBackend } from "./sandbox/harbor-backend.js";
 
 import chalk from "chalk";
 
@@ -3858,7 +3859,9 @@ export class EasyCodeApp {
     const runtime = new CommandRuntime(
       workspace,
       undefined,
-      new AnthropicSandboxBackend(workspace, {
+      this.trustedOuterSandbox === "harbor"
+        ? new HarborSandboxBackend(workspace, [this.config.configDir, this.config.dataDir, this.config.cacheDir])
+        : new AnthropicSandboxBackend(workspace, {
         sensitiveReadPaths: [
           this.config.configDir,
           this.config.dataDir,
@@ -3911,7 +3914,7 @@ export class EasyCodeApp {
         osSandbox: {
           enabled: true,
           failClosed: true,
-          backend: process.platform === "win32"
+          backend: this.trustedOuterSandbox === "harbor" ? "harbor-landlock-seccomp" : process.platform === "win32"
               ? "anthropic-srt-windows-alpha"
               : process.platform === "darwin"
                 ? "anthropic-srt-macos-seatbelt"
