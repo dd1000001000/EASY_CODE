@@ -23,14 +23,10 @@ export function createProvider(
     maxRetries: Math.min(config[providerName].maxRetries, config.limits.maxProviderRetries),
     model: modelOverride?.trim() || config[providerName].model,
   };
-  const responseLimit = Math.max(
-    1_048_576,
-    Math.min(config.limits.maxOutputChars * 8, 16 * 1024 * 1024),
-  );
   const effectiveRuntime: ProviderRuntimeOptions = {
     ...runtime,
     timeoutByEffort: config.limits.providerTimeoutMs,
-    maxResponseBytes: runtime?.maxResponseBytes ?? responseLimit,
+    maxResponseBytes: runtime?.maxResponseBytes ?? config.limits.providerResponseMaxBytes,
     visionSupported:
       runtime?.visionSupported ??
       modelSupportsVision(providerName, providerConfig.model),

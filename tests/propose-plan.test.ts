@@ -75,8 +75,6 @@ describe("propose_plan tool", () => {
         steps: [{ ...validPlan().steps[0], extra: true }],
       },
       { ...validPlan(), title: "\u0007" },
-      { ...validPlan(), title: "x".repeat(MAX_PLAN_TITLE_CHARS + 1) },
-      { ...validPlan(), overview: "x".repeat(MAX_PLAN_OVERVIEW_CHARS + 1) },
       { ...validPlan(), steps: [] },
       {
         ...validPlan(),

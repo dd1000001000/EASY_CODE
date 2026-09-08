@@ -156,8 +156,8 @@ describe("unified memory control", () => {
     const thinking = requestTokens([{ role: "assistant", content: "result", reasoning_content: "reasoning ".repeat(100) }]);
     assert.ok(thinking > plain);
     assert.throws(() => tokenBudget(2000), /4096/u);
-    assert.equal(budgetedRequest({ messages: [], maxTokens: 256 }, budget).maxTokens, 256);
-    assert.equal(budgetedRequest({ messages: [] }, budget).maxTokens, budget.outputReserve);
+    assert.equal(budgetedRequest({ messages: [], outputReserveTokens: 256 }, budget).outputReserveTokens, 256);
+    assert.equal(budgetedRequest({ messages: [] }, budget).outputReserveTokens, budget.outputReserve);
     assert.throws(() => budgetedRequest({ messages: [{ role: "user", content: "汉".repeat(40000) }] }, budget), /context_capacity_insufficient/u);
   });
 

@@ -117,7 +117,6 @@ interface CompletionBody extends ProviderThinkingParameters {
   stream: false;
   tools?: ModelRequest["tools"];
   temperature?: number;
-  max_tokens?: number;
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -180,7 +179,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (request.temperature !== undefined) {
       body.temperature = request.temperature;
     }
-    if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
     Object.assign(
       body,
       thinkingRequestParameters(this.name, this.model, request.thinkingEffort),

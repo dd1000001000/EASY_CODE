@@ -23,7 +23,10 @@ maxDagNodes = 16
 maxModelRequests = 120
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
 maxTaskTokens = 0
+# Local output reservation only. No output-token ceiling is sent to the server.
 maxResponseTokens = 16384
+# Independent transport safety ceiling, not a summary/display limit (16 MiB).
+providerResponseMaxBytes = 16777216
 maxProviderRetries = 2
 providerRetryWaitMs = 30000
 defaultReadLines = 100
@@ -56,16 +59,17 @@ contextCompactionTargetRatio = 0.55
 contextCompactionMinGrowthRatio = 0.1
 contextMaxRebasesPerRequest = 1
 contextMaxCapacityRetries = 1
+# Retained summary estimate including JSON wrapper; not a generation limit.
 contextSummaryMaxTokens = 2048
 contextToolBatchTokens = 16000
 contextToolReferenceMinChars = 4096
 toolProtocolAttempts = 3
 # Reviewer remains enabled and independently restricted to its read-only profile.
 reviewerModelRequests = 2
-reviewerOutputTokens = 6144
+reviewerOutputTokens = 6144 # local report storage budget
 # Independent command approval agent: one bounded, tool-free request.
 approvalInputChars = 24000
-approvalOutputTokens = 1024
+approvalOutputTokens = 1024 # local report storage budget
 approvalTimeoutMs = 60000
 validationBaselineMaxFiles = 8000
 validationScanMaxEntries = 50000

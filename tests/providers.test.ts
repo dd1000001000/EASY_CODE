@@ -516,7 +516,7 @@ describe("OpenAI-compatible providers", () => {
     const response = await provider.complete({
       messages: [{ role: "user", content: "Inspect the entry point" }],
       tools: [tool],
-      maxTokens: 512,
+      outputReserveTokens: 512,
       thinkingEffort: "medium",
     });
 
@@ -537,7 +537,10 @@ describe("OpenAI-compatible providers", () => {
       "oneOf" in (requestBody.tools?.[0]?.function?.parameters ?? {}),
       false,
     );
-    assert.equal(requestBody.max_tokens, 512);
+    assert.equal(requestBody.max_tokens, undefined);
+    assert.equal("max_completion_tokens" in requestBody, false);
+    assert.equal("max_output_tokens" in requestBody, false);
+    assert.equal("outputReserveTokens" in requestBody, false);
     assert.equal(requestBody.enable_thinking, true);
     assert.equal(requestBody.thinking_budget, 16_384);
     assert.equal(response.message.tool_calls?.[0]?.id, "call_1");

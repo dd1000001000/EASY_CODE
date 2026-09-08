@@ -6,7 +6,7 @@ import { describe, it } from "./harness.js";
 import { compactionV2Input } from "./compaction-fixture.js";
 import { ContextManager } from "../src/context/manager.js";
 import { TokenCalibration } from "../src/context/token-calibration.js";
-import { requestTokens, tokenBudget, budgetedRequest } from "../src/context/token-budget.js";
+import { requestTokens, tokenBudget, budgetedRequest, estimatedTokens } from "../src/context/token-budget.js";
 import { completeExchange, eligiblePhaseEnd, foldCompactionControl, prefixHash,
   runCompactionTransaction } from "../src/context/compaction-transaction.js";
 import { exactContext } from "../src/context/context-request.js";
@@ -82,25 +82,66 @@ function fixture() {
 }
 
 describe("completed-phase compaction transactions", () => {
-  it("corrects only length once, then clips individual fields and retains valid siblings", async () => {
+  it("retains non-thinking prose as a bounded handoff with one request and durable original", async () => {
+    const f = fixture();
+    try {
+      const prose = "中文😀 investigation unfinished; ".repeat(10000);
+      const result = await f.run({ complete: async () => ({ role: "assistant", content: prose,
+        reasoning_content: "PRIVATE_THINKING".repeat(10000) }) });
+      assert.equal(result.requests, 1);
+      assert.equal(result.committed, true);
+      const document = JSON.parse(f.state.workingSummary);
+      assert.equal(document.mode, "text_prefix");
+      assert.equal(document.unverified, true);
+      assert.ok(prose.startsWith(document.content));
+      assert.ok(estimatedTokens(f.state.workingSummary) <= 2048);
+      assert.doesNotMatch(f.state.workingSummary, /PRIVATE_THINKING/u);
+      assert.ok(JSON.stringify(f.events.find(e => e.type === "context.compaction.candidate")).includes(prose));
+      assert.equal(f.store.recover(f.state.threadId).workingSummary, f.state.workingSummary);
+    } finally { f.dispose(); }
+  });
+  it("clips aggregate summary capacity locally and preserves valid JSON", async () => {
+    const f = fixture();
+    try {
+      const result = await f.run({ complete: async () => {
+        const reply = candidate();
+        reply.tool_calls[0]!.function.arguments = JSON.stringify({ currentWork: "Work", nextStep: "Verify",
+          hypotheses: Array(32).fill("多语言😀".repeat(120)) });
+        return reply;
+      } });
+      assert.equal(result.requests, 1);
+      assert.equal(result.committed, true);
+      assert.ok(estimatedTokens(f.state.workingSummary) <= 2048);
+      assert.equal(JSON.parse(f.state.workingSummary).lossy, true);
+    } finally { f.dispose(); }
+  });
+  it("never promotes thinking-only output into a summary or spends a second request", async () => {
+    const f = fixture();
+    try {
+      const result = await f.run({ complete: async () => ({ role: "assistant", content: "", reasoning_content: "WRONG_SUMMARY".repeat(10000) }) });
+      assert.equal(result.requests, 1);
+      assert.equal(result.paused, undefined);
+      assert.doesNotMatch(f.state.workingSummary, /WRONG_SUMMARY/u);
+      assert.ok(JSON.stringify(f.events).includes("empty_or_invalid_non_reasoning_output"));
+      assert.equal((await f.run({ complete: async () => { throw Error("no retry"); } })).requests, 0);
+    } finally { f.dispose(); }
+  });
+  it("clips length immediately without a correction request and retains valid siblings", async () => {
     const f = fixture();
     try {
       const result = await f.run({ maxAttempts: 2, maxRequests: 2, complete: async (messages, attempt) => {
         if (attempt === 1) return candidate(0, "x".repeat(1332));
-        assert.match(JSON.stringify(messages), /currentWork: 1332 chars exceeds maximum 1200/u);
-        const patch = candidate();
-        patch.tool_calls[0]!.function.arguments = JSON.stringify({ currentWork: "y".repeat(1450) });
-        return patch;
+        throw new Error("Length-only overflow must not request correction");
       } });
-      assert.equal(result.requests, 2);
+      assert.equal(result.requests, 1);
       assert.equal(result.committed, true);
       const document = JSON.parse(f.state.workingSummary);
-      assert.equal(document.semantic.currentWork, "y".repeat(1200));
+      assert.equal(document.semantic.currentWork, "x".repeat(1200));
       assert.equal(document.semantic.nextStep, "Verify the outstanding task before claiming completion");
       assert.equal(document.lossy, true);
-      assert.match(document.truncatedFields[0], /1450/u);
+      assert.match(document.truncatedFields[0], /1332/u);
       const resumed = f.store.recover(f.state.threadId);
-      assert.equal(resumed.compactionControl?.transaction?.attempts, 2);
+      assert.equal(resumed.compactionControl?.transaction?.attempts, 1);
       assert.equal((await f.run({ state: resumed, complete: async () => { throw new Error("no third request"); } })).requests, 0);
     } finally { f.dispose(); }
   });
@@ -415,6 +456,6 @@ describe("provider-neutral token calibration", () => {
     assert.throws(() => budgetedRequest({ messages, tools: [] }, budget,
       () => budget.inputCapacity + 1), /context_capacity_insufficient/u);
     assert.equal(budgetedRequest({ messages, tools: [] }, budget,
-      () => budget.inputCapacity).maxTokens, budget.outputReserve);
+      () => budget.inputCapacity).outputReserveTokens, budget.outputReserve);
   });
 });

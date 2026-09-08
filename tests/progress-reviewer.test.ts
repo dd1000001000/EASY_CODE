@@ -87,6 +87,22 @@ class ScriptedProvider implements ModelProvider {
 }
 
 describe("isolated progress reviewer", () => {
+  it("clips descriptive field and aggregate budgets without a reviewer correction", async () => {
+    const reply = response(reportArguments({ summary: "中".repeat(10000), diagnosis: "文".repeat(6000) }));
+    reply.message.reasoning_content = "ignored thinking";
+    const provider = new ScriptedProvider([reply]);
+    let archived: Readonly<ProviderResponse> | undefined;
+    const result = await runProgressReviewer({ binding: binding(), packet: PACKET, thinkingEffort: "none", maxOutputTokens: 512 },
+      { provider, onResponse: async response => { archived = response; } });
+    assert.equal(result.status, "completed");
+    assert.equal(provider.requests.length, 1);
+    assert.equal(archived, reply);
+    if (result.status === "completed") {
+      assert.equal(result.report.experimentArgsJson, "[]");
+      assert.equal(result.report.experimentProgram, "node");
+      assert.match(JSON.stringify(result.report), /truncated/u);
+    }
+  });
   it("exposes only one flat strict report tool and accounts for a valid review", async () => {
     const provider = new ScriptedProvider([
       response(reportArguments(), {
@@ -130,7 +146,7 @@ describe("isolated progress reviewer", () => {
     assert.equal(request.tools?.length, 1);
     assert.equal(request.tools?.[0]?.function.name, PROGRESS_REVIEW_TOOL_NAME);
     assert.equal(request.tools?.[0]?.function.strict, true);
-    assert.equal(request.maxTokens, 2_048);
+    assert.equal(request.outputReserveTokens, undefined); // storage budget is not a generation reservation
     assert.equal(request.temperature, 0);
     const parameters = request.tools?.[0]?.function.parameters as {
       type?: unknown;

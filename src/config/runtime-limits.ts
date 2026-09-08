@@ -20,7 +20,9 @@ export const runtimeLimitsSchema = z.object({
   maxDagNodes: integer(1, 32),
   maxModelRequests: integer(1, 10000),
   maxTaskTokens: integer(0, Number.MAX_SAFE_INTEGER),
+  // Local output reservation; never a server generation limit.
   maxResponseTokens: integer(256, 131072),
+  providerResponseMaxBytes: integer(1048576, 67108864),
   providerTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
     medium: integer(1000, 3600000), high: integer(1000, 3600000) }).strict(),
   maxProviderRetries: integer(0, 10),
@@ -48,7 +50,7 @@ export const runtimeLimitsSchema = z.object({
   commandSuccessChars: integer(256, 1000000),
   commandFailureChars: integer(256, 1000000),
   commandPollWaitMs: integer(0, 1200000),
-  // Runtime allows at most one length-only correction, then clips locally.
+  // Legacy transaction replay limit. Length overflow is repaired without a request.
   compactionAttempts: integer(1, 3),
   compactionRetainRecentExchanges: integer(1, 64),
   contextCompactionTriggerRatio: z.number().min(0.5).max(0.9),

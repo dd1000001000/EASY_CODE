@@ -2328,7 +2328,8 @@ describe("AgentRuntime", () => {
     assert.deepEqual(requests.map((request) => request.tools?.map((tool) => tool.function.name)),
       [["compact_context"], ["read_file"]]);
     assert.equal(requests[0]?.thinkingEffort, "none");
-    assert.equal(requests[0]?.maxTokens, 2048);
+    assert.equal("maxTokens" in requests[0]!, false);
+    assert.ok(requests[0]?.outputReserveTokens);
     assert.deepEqual(purposes, ["context_compaction", "agent_step"]);
     assert.equal(current.compactedMessageCount, 2);
     assert.equal(JSON.stringify(current.messages.slice(0, 4)), originalHistory);

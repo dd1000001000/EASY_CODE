@@ -15,6 +15,7 @@ import {
 } from "../subagents/types.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
+import { displayTextSchema } from "../utils/bounded-text.js";
 
 const MAX_SUBAGENT_COMPLETION_EVIDENCE = 16;
 
@@ -33,7 +34,7 @@ export const submitTaskResultInputSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("completed"),
-      summary: boundedAgentText(MAX_SUBAGENT_SUMMARY_CHARS),
+      summary: displayTextSchema(MAX_SUBAGENT_SUMMARY_CHARS, sanitizeSubagentText),
       evidence: z
         .array(boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS))
         .min(1)
@@ -43,7 +44,7 @@ export const submitTaskResultInputSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("blocked"),
-      summary: boundedAgentText(MAX_SUBAGENT_SUMMARY_CHARS),
+      summary: displayTextSchema(MAX_SUBAGENT_SUMMARY_CHARS, sanitizeSubagentText),
       blocker: boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS),
     })
     .strict(),
