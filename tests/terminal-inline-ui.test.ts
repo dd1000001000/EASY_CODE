@@ -1941,7 +1941,47 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("commits each Thinking marker once at event time and only freezes it on the next request", async () => {
+  it("keeps completed Thinking clickable after empty input and slash commands without consuming the next draft", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Explain this project");
+        const id = terminal.addReasoning("Retained reasoning from a completed answer.");
+        terminal.write("Final answer.\n");
+        terminal.clearCurrentRequest();
+        for (const text of ["", "/permissions"]) {
+          const submitted = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+          input.write(`${text}\r`);
+          await submitted;
+          assert.equal(terminal.toggleReasoning(id), true);
+          assert.equal(terminalState(terminal).live.thinking?.id, id);
+          assert.equal(terminal.toggleReasoning(id), true);
+          assert.equal(terminalState(terminal).live.thinking, null);
+        }
+        const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("draft ");
+        await settlePromptInput();
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking?.id, id);
+        input.write(vscodeToggleThinkingSequence(id));
+        await settlePromptInput();
+        assert.equal(terminalState(terminal).live.thinking, null);
+        input.write("preserved\r");
+        assert.equal((await next)?.text, "draft preserved");
+        assert.doesNotMatch(stripAnsi(captured()), /historical or unavailable/u);
+        terminal.clearScreen();
+        assert.equal(terminal.toggleReasoning(id), false);
+        assert.equal(terminal.showReasoning(id), true, "/clear must retain the reasoning registry");
+      } finally { terminal.close(); }
+    });
+  });
+
+  it("commits each Thinking marker once and retains its controls across later requests", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -1999,8 +2039,8 @@ describe("Terminal retained inline shell", () => {
         // append-only transcript remains the authoritative duplication check.
         assert.equal(
           terminal.toggleReasoning(thinkingId),
-          false,
-          "a marker becomes historical once the next request owns the UI",
+          true,
+          "retained markers remain interactive when the next request owns the UI",
         );
         terminal.clearCurrentRequest();
       } finally {
