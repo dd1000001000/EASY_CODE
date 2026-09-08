@@ -41,7 +41,7 @@ function makeState(): SessionState {
 }
 
 describe("ContextManager", () => {
-  it("keeps a bounded recent working set even when the provider budget is much larger", () => {
+  it("keeps the complete view until Runtime commits retirement, even above the working budget", () => {
     const state = makeState();
     state.messages = Array.from({ length: 360 }, (_, index) => ({
       role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
@@ -55,13 +55,13 @@ describe("ContextManager", () => {
       maxContextChars: 1_600_000,
     });
 
-    assert.ok(boundary > 0);
-    assert.equal(context.some((message) => message.content?.includes("rolling-message-0-")), false);
+    assert.equal(boundary, state.compactedMessageCount);
+    assert.equal(context.some((message) => message.content?.includes("rolling-message-0-")), true);
     assert.equal(context.some((message) => message.content?.includes("rolling-message-359-")), true);
-    assert.ok(contextChars(context) <= MAX_ACTIVE_WORKING_SET_CHARS + 64);
+    assert.ok(contextChars(context) > MAX_ACTIVE_WORKING_SET_CHARS);
   });
 
-  it("uses the same system reservation for retrieval and raw-message selection", () => {
+  it("does not move the retrieval boundary for artificial system reservations", () => {
     const state = makeState();
     const manager = new ContextManager();
     const systemPrompt = `system-${"s".repeat(1_200)}`;
@@ -79,13 +79,13 @@ describe("ContextManager", () => {
       reservedSystemPromptChars,
     });
 
-    assert.ok(boundary > 0);
+    assert.equal(boundary, state.compactedMessageCount);
     assert.equal(context.includes(state.messages[boundary]!), true);
     assert.equal(context.includes(state.messages[boundary - 1]!), false);
-    assert.ok(contextChars(context) <= 5_000);
+    assert.ok(contextChars(context) > 5_000);
   });
 
-  it("reduces artificial reservation to preserve the current request intact", () => {
+  it("preserves the entire current request despite oversized artificial reservations", () => {
     const state = makeState();
     state.messages.push({
       role: "user",
@@ -100,7 +100,7 @@ describe("ContextManager", () => {
       "system",
       reservedSystemPromptChars,
     );
-    assert.equal(boundary, state.messages.length - 1);
+    assert.equal(boundary, state.compactedMessageCount);
     const context = manager.build({
       systemPrompt: "system",
       state,
@@ -109,8 +109,8 @@ describe("ContextManager", () => {
     });
 
     assert.equal(context.at(-1)?.role, "user");
-    assert.match(context.at(-1)?.content ?? "", /CURRENT_USER_REQUEST_/u);
-    assert.ok(contextChars(context) <= maxContextChars);
+    assert.ok(context.some((m) => m.content?.startsWith("CURRENT_USER_REQUEST_")));
+    assert.ok(contextChars(context) > maxContextChars);
   });
 
   it("classifies the exact 60/80/90 percent context-pressure boundaries", () => {
@@ -140,7 +140,7 @@ describe("ContextManager", () => {
     assert.equal(inspection.pressure, "require");
   });
 
-  it("charges the real request system reservation before active messages are omitted", () => {
+  it("treats retrieval reservations as diagnostics, not actual provider occupancy", () => {
     const current = makeState();
     current.messages = [{
       role: "user",
@@ -161,9 +161,10 @@ describe("ContextManager", () => {
     });
 
     assert.equal(generic.pressure, "normal");
-    assert.equal(request.budgetChars, 2_500);
-    assert.equal(request.utilization, 0.84);
-    assert.equal(request.pressure, "require");
+    assert.ok(request.budgetChars >= 2_500);
+    const exact = manager.inspectProviderRequest({ state: current, maxContextChars: 10_000, messages: built });
+    assert.equal(exact.pressure, "normal");
+    assert.ok(exact.utilization < 0.4);
     assert.ok(contextChars(built) <= 10_000);
   });
 
@@ -276,7 +277,7 @@ describe("ContextManager", () => {
     assert.equal(manager.inspect(state, 50_000).estimatedShortTermTokens, after);
   });
 
-  it("applies a bounded overflow fallback without mutating model-owned summary state", () => {
+  it("leaves overflow recovery to Runtime without mutating the summary or hiding history", () => {
     const state = makeState();
     const context = new ContextManager().build({
       systemPrompt: "system",
@@ -290,11 +291,11 @@ describe("ContextManager", () => {
       context.some((message) =>
         message.content?.includes("Earlier messages are omitted"),
       ),
-      true,
+      false,
     );
     assert.equal(state.workingSummary, "");
     assert.equal(state.compactedMessageCount, 0);
-    assert.ok(contextChars(context) <= 5_000);
+    assert.ok(contextChars(context) > 5_000);
 
     const second = new ContextManager().build({
       systemPrompt: "system",
@@ -302,10 +303,10 @@ describe("ContextManager", () => {
       maxContextChars: 5_000
     });
     assert.equal(state.workingSummary, "");
-    assert.ok(contextChars(second) <= 5_000);
+    assert.deepEqual(second, context);
   });
 
-  it("uses a persistent model summary and never revives messages before its boundary", () => {
+  it("uses the accepted summary and restores retired user requirements, not retired reasoning", () => {
     const state = makeState();
     const manager = new ContextManager();
     const summary = "Objective: keep the model summary. Next step: inspect message 20.";
@@ -324,10 +325,11 @@ describe("ContextManager", () => {
 
     for (const context of [first, second]) {
       assert.equal(context.some((message) => message.content?.includes(summary)), true);
-      assert.equal(context.some((message) => message.content?.includes("message-0-")), false);
+      assert.equal(context.some((message) => message.content?.includes("message-0-")), true);
+      assert.equal(context.some((message) => message.role === "assistant" && message.content?.includes("message-1-")), false);
       assert.equal(context.some((message) => message.content?.includes("message-20-")), true);
       assert.equal(context.some((message) => message.content?.includes("message-29-")), true);
-      assert.ok(contextChars(context) <= 5_000);
+      assert.ok(contextChars(context) > 5_000);
     }
     assert.equal(state.workingSummary, summary);
     assert.equal(state.compactedMessageCount, 20);
@@ -352,14 +354,13 @@ describe("ContextManager", () => {
     assert.equal(state.compactedMessageCount, 24);
   });
 
-  it("rejects oversized instructions instead of silently truncating them", () => {
+  it("preserves oversized instructions so Runtime can diagnose capacity without truncation", () => {
     const state = makeState();
     state.messages.push({ role: "user", content: "latest-" + "y".repeat(20_000) });
-    assert.throws(() => new ContextManager().build({
-      systemPrompt: "rules-" + "z".repeat(20_000),
-      state,
-      maxContextChars: 4_096
-    }), /system instructions cannot be truncated/u);
+    const manager = new ContextManager();
+    const built = manager.build({ systemPrompt: "rules-" + "z".repeat(20_000), state, maxContextChars: 4_096 });
+    assert.equal(built[0]?.content?.length, 20_006);
+    assert.ok(manager.inspectProviderRequest({ state, messages: built, maxContextChars: 4_096 }).utilization > 1);
     assert.equal(state.messages.at(-1)?.content?.length, 20_007);
   });
 
@@ -426,11 +427,9 @@ describe("ContextManager", () => {
       }],
     }];
 
-    assert.throws(() => new ContextManager().build({
-      systemPrompt: "system",
-      state,
-      maxContextChars: 1_024,
-    }), /cannot fit intact/u);
+    const small = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 1_024 });
+    assert.ok(contextChars(small) > 1_024);
+    assert.ok(small.some((message) => message.role === "user" && message.images?.[0]?.id === id));
     const context = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 30_000 });
     const latest = context.find((message) => message.role === "user" && message.images?.length);
     assert.equal(latest?.role, "user");

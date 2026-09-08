@@ -1,13 +1,11 @@
 import type { ChatMessage, SessionState } from "../core/types.js";
 import {
-  activeWorkingSetCharBudget,
   ContextManager,
   estimateMessagesChars,
 } from "./manager.js";
 import { projectModelInputMessages } from "./micro-compaction.js";
-import { runtimeContinuityMessage } from "./runtime-state.js";
 import type { ToolDefinition } from "../core/types.js";
-import { exactContext } from "./context-request.js";
+import { assessCapacity } from "./capacity.js";
 
 /** A voluntary compaction must represent more than a nearly empty tool round. */
 export const COMPACTION_MIN_NEW_PROJECTED_CHARS = 8_192;
@@ -34,10 +32,11 @@ export interface CompactionBenefitEvaluation {
   readonly savingsRatio: number;
   readonly postCompactionUtilization: number;
   readonly safeWaterlineReached: boolean;
+  readonly targetRatio?: number;
 }
 
 export interface CompactionBenefitInput {
-  /** Conservative recovery may use up to 70%, still below the mandatory band. */
+  /** Legacy call-site hint; every mode now uses the same capacity check. */
   readonly allowConservativeHeadroom?: boolean;
   readonly exactRequest?: boolean;
   readonly candidateIntentLedger?: SessionState["contextIntentLedger"];
@@ -78,57 +77,26 @@ export function evaluateCompactionBenefit(
     ...input.state,
     messages: input.state.messages.slice(0, historyEndExclusive),
   };
-  const continuityChars = runtimeContinuityMessage(input.state);
-  const protectedChars = continuityChars ? continuityChars.length + 32 : 0;
-  const beforeProjectedChars = manager.estimateShortTermChars(beforeState) + protectedChars;
-  const newProjectedChars = estimateMessagesChars(projectModelInputMessages(
-    beforeState.messages.slice(input.state.compactedMessageCount),
-  ));
-
   const boundaryValid = Number.isInteger(input.compactedMessageCount) &&
     input.compactedMessageCount > input.state.compactedMessageCount &&
     input.compactedMessageCount <= input.candidateMessages.length;
-  const candidateState: SessionState = {
-    ...input.state,
-    messages: [...input.candidateMessages],
-    workingSummary: input.summary,
-    contextIntentLedger: input.candidateIntentLedger ?? input.state.contextIntentLedger,
-    compactedMessageCount: boundaryValid
-      ? input.compactedMessageCount
-      : input.state.compactedMessageCount,
-  };
-  const candidateContinuity = runtimeContinuityMessage(candidateState);
-  const afterProjectedChars = manager.estimateShortTermChars(candidateState) +
-    (candidateContinuity ? candidateContinuity.length + 32 : 0);
+  const candidateState: SessionState = { ...input.state, messages: [...input.candidateMessages],
+    workingSummary: input.summary, contextIntentLedger: input.candidateIntentLedger ?? input.state.contextIntentLedger,
+    compactedMessageCount: boundaryValid ? input.compactedMessageCount : input.state.compactedMessageCount };
+  const envelope = input.nextRequest ?? { systemPrompt: "", runtimeContext: "", tools: [] };
+  const before = assessCapacity(manager, beforeState, input.maxContextChars, envelope);
+  const after = assessCapacity(manager, candidateState, input.maxContextChars, envelope);
+  const beforeProjectedChars = estimateMessagesChars(before.messages);
+  const afterProjectedChars = estimateMessagesChars(after.messages);
+  const newProjectedChars = estimateMessagesChars(projectModelInputMessages(
+    beforeState.messages.slice(input.state.compactedMessageCount)));
   const savedChars = beforeProjectedChars - afterProjectedChars;
-  const savingsRatio = beforeProjectedChars > 0
-    ? Math.max(0, savedChars / beforeProjectedChars)
-    : 0;
-  const budgetChars = manager.activeCharBudget(input.maxContextChars);
-  const postCompactionUtilization = afterProjectedChars / budgetChars;
-  const safeWaterlineReached =
-    postCompactionUtilization <= COMPACTION_SAFE_WATERLINE_RATIO;
-  const base = {
-    beforeProjectedChars,
-    afterProjectedChars,
-    newProjectedChars,
-    savedChars,
-    savingsRatio,
-    postCompactionUtilization,
-    safeWaterlineReached,
-  };
-
+  const savingsRatio = beforeProjectedChars > 0 ? Math.max(0, savedChars / beforeProjectedChars) : 0;
+  const base = { beforeProjectedChars, afterProjectedChars, newProjectedChars, savedChars, savingsRatio,
+    postCompactionUtilization: after.utilization, safeWaterlineReached: after.targetReached,
+    targetRatio: manager.runtimeLimits.contextCompactionTargetRatio };
   if (!boundaryValid) return rejection(base, "invalid_boundary");
-  if (manager.tokenCapacity && input.nextRequest) {
-    const after = input.exactRequest ? exactContext(candidateState, input.nextRequest) :
-      manager.build({ state: candidateState, maxContextChars: input.maxContextChars,
-        systemPrompt: input.nextRequest.systemPrompt, runtimeContext: input.nextRequest.runtimeContext });
-    const utilization = (manager.estimateRequestTokens(after, input.nextRequest.tools) + (input.nextRequest.reservedTokens ?? 0)) / manager.tokenCapacity.inputCapacity;
-    base.postCompactionUtilization = Math.max(base.postCompactionUtilization, utilization);
-    base.safeWaterlineReached = base.postCompactionUtilization <= COMPACTION_SAFE_WATERLINE_RATIO;
-    if (base.postCompactionUtilization > (input.allowConservativeHeadroom ? 0.7 : COMPACTION_SAFE_WATERLINE_RATIO))
-      return rejection(base, "unsafe_post_compaction_pressure");
-  }
+  if (!after.fits) return rejection(base, "unsafe_post_compaction_pressure");
   if (!input.required && newProjectedChars < COMPACTION_MIN_NEW_PROJECTED_CHARS) {
     return rejection(base, "compaction_cooldown_active");
   }
@@ -139,11 +107,6 @@ export function evaluateCompactionBenefit(
       savingsRatio < COMPACTION_MIN_SAVINGS_RATIO)
   ) {
     return rejection(base, "insufficient_compaction_benefit");
-  }
-  // A candidate that immediately leaves Runtime in the mandatory band would
-  // cause a compaction loop. The 55% target remains diagnostic between bands.
-  if (postCompactionUtilization > (input.allowConservativeHeadroom ? 0.7 : COMPACTION_SAFE_WATERLINE_RATIO)) {
-    return rejection(base, "unsafe_post_compaction_pressure");
   }
   return { ...base, accepted: true };
 }

@@ -1,1 +1,1 @@
-- Background commands do not request approval while dangerous full access remains active. Minimize host access and report every external effect.
+- Background commands and networking do not request individual approval in this posture, including downloads/uploads. Workspace confinement, Plan read-only, Benchmark offline execution and cleanup supervision remain mandatory.

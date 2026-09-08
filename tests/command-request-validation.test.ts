@@ -31,26 +31,23 @@ describe("command request validation", () => {
     }
   });
 
-  it("rejects direct wait/detach workarounds with synchronous recovery guidance", () => {
-    for (const program of ["sleep", "nohup", "timeout", "C:\\Windows\\timeout.exe"]) {
+  it("rejects detach workarounds but allows ordinary bounded waiting", () => {
+    for (const program of ["nohup", "disown"]) {
       const failure = validateCommandRequest({ program, args: ["30"] });
       assert.equal(failure?.matchedRule, "input.async_workaround", program);
       assert.match(failure?.reason ?? "", /process was not started/iu);
       assert.match(failure?.recommendation ?? "", /real executable directly/iu);
       assert.match(failure?.recommendation ?? "", /timeoutMs/u);
     }
+    for (const program of ["sleep", "timeout", "C:\\Windows\\timeout.exe"]) assert.equal(validateCommandRequest({ program, args: ["1"] }), undefined);
   });
 
-  it("reports duplicate-program recovery before other input guidance", () => {
+  it("does not reject potentially legitimate same-name argv", () => {
     const failure = validateCommandRequest({ program: "sleep", args: ["sleep", "30"] });
-    assert.equal(failure?.matchedRule, "input.duplicate_program_argument");
-    assert.match(failure?.reason ?? "", /args\[0\].*repeats program/iu);
-    assert.match(failure?.recommendation ?? "", /remove the duplicate first item/iu);
-    assert.match(failure?.recommendation ?? "", /real executable directly/iu);
-    assert.match(failure?.recommendation ?? "", /timeoutMs/u);
+    assert.equal(failure, undefined);
   });
 
-  it("requires coherent verification intent metadata", () => {
+  it("leaves verification metadata correction to the shared normalizer", () => {
     assert.equal(
       validateCommandRequest({
         program: "npm",
@@ -66,7 +63,7 @@ describe("command request validation", () => {
         args: ["run", "lint"],
         intent: "verify",
       })?.matchedRule,
-      "input.verification_metadata",
+      undefined,
     );
     assert.equal(
       validateCommandRequest({
@@ -75,7 +72,7 @@ describe("command request validation", () => {
         intent: "inspect",
         verificationKind: "smoke_test",
       })?.matchedRule,
-      "input.verification_metadata",
+      undefined,
     );
   });
 });

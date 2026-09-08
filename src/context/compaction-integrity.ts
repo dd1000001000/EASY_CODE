@@ -326,5 +326,6 @@ export function createCompactionMetadata(input: {
     savingsRatio: input.benefit.savingsRatio,
     postCompactionUtilization: input.benefit.postCompactionUtilization,
     safeWaterlineReached: input.benefit.safeWaterlineReached,
+    ...(input.benefit.targetRatio !== undefined ? { targetRatio: input.benefit.targetRatio } : {}),
   };
 }

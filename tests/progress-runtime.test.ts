@@ -111,6 +111,7 @@ describe("AgentRuntime progress intervention", () => {
                     diagnosis: "The fixture may be stale.",
                     evidence: "Three distinct runs had the same assertion.",
                     experiment: "Run the narrow fixture verification once.",
+                    experimentProgram: "node", experimentArgsJson: "[]", experimentCwd: ".",
                     expectedSignal: "It passes after the state refresh.",
                     falsifyingSignal: "The identical assertion remains.",
                   }),

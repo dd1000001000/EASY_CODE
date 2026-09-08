@@ -336,7 +336,7 @@ export function renderDangerStatusLabel(
   options: RenderViewOptions = {},
 ): string {
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
-  return viewPalette(options).red.bold("! EASY CODE DANGER: FULL ACCESS");
+  return viewPalette(options).red.bold("! EASY CODE ISOLATED NO-PROMPT");
 }
 
 function renderDangerIndicator(
@@ -346,7 +346,7 @@ function renderDangerIndicator(
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
   const palette = viewPalette(options);
   return truncateToWidth(
-    palette.red.bold("! EASY CODE DANGER: FULL COMPUTER ACCESS — NO SANDBOX OR APPROVALS"),
+    palette.red.bold("! EASY CODE ISOLATED NO-PROMPT — NETWORK NO-PROMPT; PLAN READ-ONLY"),
     viewColumns(options),
     { preserveAnsi: viewColor(options) },
   );

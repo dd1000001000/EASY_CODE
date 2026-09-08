@@ -18,6 +18,7 @@ export const PROGRESS_READ_WARNING_RATIO = 0.7;
 
 export type ProgressObservationKind =
   | "read"
+  | "investigation_terminal"
   | "verification_terminal"
   | "infrastructure_failure"
   | "neutral";
@@ -55,6 +56,12 @@ export interface ProgressObservation {
   readonly evidenceDigest?: string;
   /** Captured with search evidence so replay uses the original configured threshold. */
   readonly searchRepeatLimit?: number;
+  readonly standardStatus?: "unchanged" | "changed" | "unknown";
+  readonly baselineDigest?: string;
+  readonly experimentIncidentId?: string;
+  readonly changedTestPaths?: readonly string[];
+  readonly readRange?: { fileKey: string; start: number; end: number };
+  readonly investigationPolicy?: { minimum: number; ratio: number; window: number; review: boolean };
 }
 
 export interface ProgressObservationBinding {
@@ -81,6 +88,7 @@ export interface ProgressReadCoverage {
 }
 
 export interface ProgressFailureRun {
+  baselineDigest?: string;
   signature: string;
   scopeKey: string;
   targetKey: string;
@@ -113,6 +121,7 @@ export interface ProgressReadWarning {
 }
 
 export type ProgressIncidentPhase =
+  | "investigation_suspected"
   | "review_pending"
   | "review_requested"
   | "reviewing"
@@ -133,6 +142,9 @@ export interface ProgressReviewBindingSnapshot {
 }
 
 export interface ProgressReviewReportSnapshot {
+  experimentProgram?: string;
+  experimentArgsJson?: string;
+  experimentCwd?: string;
   recommendation: "run_experiment" | "insufficient_evidence";
   summary: string;
   diagnosis: string;
@@ -155,12 +167,14 @@ export interface ProgressExperimentSnapshot {
 }
 
 export interface ProgressIncident {
+  reason?: "repeated_verified_failure" | "investigation_stalled" | "validation_standard_changed";
+  baselineDigest?: string;
   incidentId: string;
   signature: string;
   scopeKey: string;
   targetKey: string;
   outcomeKey: string;
-  outcomeClass: Extract<ProgressOutcomeClass, "failed" | "timed_out">;
+  outcomeClass: ProgressOutcomeClass;
   verificationKind?: VerificationKind;
   triggerSourceEventId: string;
   triggerResponseOrdinal: number;
@@ -186,6 +200,13 @@ export interface ProgressIncident {
 }
 
 export interface ProgressGuardState {
+  investigations?: Array<{
+    scopeKey: string; after: number;
+    samples: Array<{ ordinal: number; repeated: boolean }>;
+    sources: Array<{ key: string; hash: string; ranges: Array<[number, number]> }>;
+    searches: string[];
+  }>;
+  validationBaseline?: import("./validation-standard.js").ValidationBaseline;
   schemaVersion: typeof PROGRESS_GUARD_STATE_SCHEMA_VERSION;
   acceptedObservations: number;
   duplicateObservations: number;

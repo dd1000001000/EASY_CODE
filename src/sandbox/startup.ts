@@ -683,6 +683,10 @@ export class DefaultSandboxStartupService implements SandboxStartupService {
 
   async inspect(): Promise<SandboxReadiness> {
     const backend = backendLabel(this.platform);
+    if (this.platform !== "win32" && this.platform !== "linux") {
+      return { status: "unsupported", platform: this.platform, backend,
+        details: ["Strict command supervision requires Windows Job Objects or Linux PID namespaces; file tools remain available."], warnings: [], canSetup: false };
+    }
     const outerSandbox = this.platform === "win32"
       ? restrictedOuterSandbox(this.environment)
       : undefined;
@@ -1133,7 +1137,7 @@ export async function runSandboxStartupGuide(
     if (selected === "continue") {
       terminal.warning(
         "Continuing without a ready OS sandbox. Manual and auto-approved commands remain fail-closed. " +
-          "Commands can run on the host only if you later choose Dangerous full access and confirm its separate warning.",
+          "No approval posture bypasses OS isolation; command execution remains unavailable until the sandbox is repaired.",
       );
       return true;
     }

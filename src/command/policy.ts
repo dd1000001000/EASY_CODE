@@ -3,7 +3,8 @@ import type { AgentMode } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { analyzeNpmInstall } from "./npm-installer.js";
-import { inspectExplicitShellInvocation } from "./shell.js";
+import { inspectExplicitShellInvocation, shellCommandWords } from "./shell.js";
+import { inspectNetworkOperation } from "./network-policy.js";
 import type {
   CommandCapability,
   CommandPolicyDecision,
@@ -44,11 +45,6 @@ const EXTERNAL_PROGRAMS = new Set([
 ]);
 
 const DESTRUCTIVE_PROGRAMS = new Set([
-  "rm",
-  "rmdir",
-  "del",
-  "erase",
-  "unlink",
   "shred",
   "mkfs",
   "format",
@@ -59,9 +55,17 @@ const DESTRUCTIVE_PROGRAMS = new Set([
   "killall",
   "pkill",
   "taskkill",
-  "remove-item",
-  "move-item",
 ]);
+const LOCAL_FILE_PROGRAMS = new Set(["rm", "rmdir", "del", "erase", "unlink", "mv", "move", "remove-item", "move-item"]);
+const LOCAL_WORK_PROGRAMS = new Set(["ls", "dir", "cat", "head", "tail", "wc", "rg", "grep", "find", "sort", "sed", "awk", "echo", "printf", "pwd", "cp", "copy", "mkdir", "touch", "sleep", "timeout", "pytest", "pytest3", "make", "cmake", "ninja", "gcc", "g++", "clang", "clang++", "go", "cargo", "rustc", "java", "javac", "mvn", "gradle", "dotnet", "tsc", "eslint"]);
+
+function highRiskFileArguments(args: readonly string[], cwd: string): boolean {
+  const targets = args.filter(argument => !argument.startsWith("-"));
+  return args.some(argument => /^(?:--recursive|-recurse|\/s)$/iu.test(argument) || /^-[dfirRv]+$/u.test(argument) && /r/iu.test(argument)) || targets.length === 0 || targets.some(target => {
+    const relative = path.relative(cwd, path.resolve(cwd, target));
+    return !relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || /[*?\[\]$%]/u.test(target);
+  });
+}
 
 const INTERPRETER_EVAL_FLAGS = new Set([
   "-c",
@@ -76,7 +80,7 @@ const INTERPRETER_EVAL_FLAGS = new Set([
 ]);
 
 const INTERPRETERS = new Set(["node", "python", "python3", "perl", "ruby", "php"]);
-const ASYNC_WORKAROUND_PROGRAMS = new Set(["nohup", "sleep", "timeout"]);
+const ASYNC_WORKAROUND_PROGRAMS = new Set(["nohup", "disown"]);
 const GIT_EXTERNAL = new Set(["push", "send-email"]);
 const GIT_DESTRUCTIVE = new Set([
   "clean",
@@ -126,7 +130,7 @@ function decision(
   const risk: CommandPolicyDecision["risk"] =
     capability === "safe_inspect"
       ? "read"
-      : capability === "workspace_exec"
+      : capability === "workspace_exec" || capability === "shell_exec"
         ? "workspace"
         : capability === "registry_install"
           ? "install"
@@ -166,12 +170,22 @@ function modeDecision(
 }
 
 export class CommandPolicy {
-  classify(input: RunCommandInput, command: ResolvedCommand, mode: AgentMode): CommandPolicyDecision {
+  classify(input: RunCommandInput, command: ResolvedCommand, mode: AgentMode, networkEnabled = false): CommandPolicyDecision {
     const name = executableName(command);
     const lowerArgs = command.args.map((argument) => argument.toLowerCase());
+    const curlInfoArgs = command.args.filter(a => a !== "-q");
+    if (name === "curl" && command.trustedExecutable === true && !command.executableInsideWorkspace &&
+        curlInfoArgs.length === 1 && ["--version", "--help", "-h"].includes(curlInfoArgs[0]!)) {
+      return decision("allow", "safe_inspect", "Reads local curl version/help without networking", "allow.curl_info");
+    }
+    const network = networkEnabled ? inspectNetworkOperation(command) : undefined;
+    if (network) {
+      if (mode === "plan" && network.effect !== "read") return decision("deny", "external_write", "Plan permits only proven read-only network commands", "mode.plan_network");
+      return decision("ask", network.effect === "read" ? "safe_inspect" : "external_write", network.description, `ask.network_${network.effect}`);
+    }
 
     if (SCRIPT_HOSTS.has(name)) {
-      return decision("deny", "destructive", "Windows Script Host execution is disabled", "deny.script_host");
+      return modeDecision(mode, "destructive", "Script Host effects require explicit approval", "ask.script_host");
     }
     if (ASYNC_WORKAROUND_PROGRAMS.has(name)) {
       return decision(
@@ -194,32 +208,48 @@ export class CommandPolicy {
       );
     }
     if (shell) {
+      const highRisk = shellCommandWords(command.executablePath, command.args).some(words => {
+        const name = path.basename(words[0] ?? "").replace(/\.(exe|cmd|bat)$/iu, "").toLowerCase();
+        return SYSTEM_PROGRAMS.has(name) || DESTRUCTIVE_PROGRAMS.has(name) ||
+          LOCAL_FILE_PROGRAMS.has(name) && highRiskFileArguments(words.slice(1), command.cwdAbsolute);
+      });
       return modeDecision(
         mode,
-        "shell_exec",
-        "Executes an explicit shell command inside the workspace OS sandbox",
-        "ask.shell_exec",
+        highRisk ? "destructive" : "shell_exec",
+        highRisk ? "Shell contains explicitly high-risk local effects" : "Executes explicit project shell code inside the workspace OS sandbox",
+        highRisk ? "ask.shell_high_risk" : "ask.shell_exec",
       );
     }
     if (SYSTEM_PROGRAMS.has(name)) {
-      return decision("deny", "system_write", "System-level package and configuration commands are disabled", "deny.system");
+      return modeDecision(mode, "system_write", "System-level effects require explicit approval; sandbox boundaries remain enforced", "ask.system");
     }
     if (EXTERNAL_PROGRAMS.has(name)) {
       return decision("deny", "external_write", "Direct network and remote commands are disabled", "deny.external");
     }
     if (DESTRUCTIVE_PROGRAMS.has(name)) {
-      return decision("deny", "destructive", "Destructive process or filesystem commands are disabled", "deny.destructive");
+      return modeDecision(mode, "destructive", "High-risk process or filesystem effects require explicit approval", "ask.destructive");
+    }
+    if (LOCAL_FILE_PROGRAMS.has(name)) {
+      const highRisk = highRiskFileArguments(command.args, command.cwdAbsolute);
+      return modeDecision(mode, highRisk ? "destructive" : "workspace_exec",
+        highRisk ? "Recursive or uncertain file effects require explicit approval" : "Changes explicitly named workspace-local files inside the sandbox",
+        highRisk ? "ask.file_scope" : "ask.local_file");
     }
     if (name === "npx") {
       return decision("deny", "external_write", "npx may download and execute an unpinned package", "deny.npx");
     }
-    if (INTERPRETERS.has(name) && lowerArgs.some((argument) => INTERPRETER_EVAL_FLAGS.has(argument))) {
-      return decision("deny", "destructive", "Interpreter inline-code flags are disabled", "deny.interpreter_eval");
-    }
-    if (lowerArgs.some((argument) => ["&&", "||", ";", "|", ">", ">>", "<", "&"].includes(argument))) {
-      return decision("deny", "destructive", "Shell operators are not valid structured command arguments", "deny.shell_operator");
+    if ((INTERPRETERS.has(name) || /^python\d+(?:\.\d+)*$/u.test(name)) && lowerArgs.some((argument) => INTERPRETER_EVAL_FLAGS.has(argument))) {
+      return modeDecision(mode, "workspace_exec", "Executes inline interpreter code inside the OS sandbox", "ask.interpreter_eval");
     }
 
+    // Names never grant a read-only exemption to repository code. Permanent
+    // request denials above still apply even when a local shim has that name.
+    if (command.executableInsideWorkspace) {
+      return modeDecision(mode, "workspace_exec", "Executes untrusted project code", "ask.workspace_executable");
+    }
+    if ((name === "git" || name === "npm" || name === "node") && command.trustedExecutable !== true) {
+      return modeDecision(mode, "workspace_exec", "Executable is not from a trusted tool location", "ask.untrusted_executable");
+    }
     if (name === "git") return this.classifyGit(command, mode);
     if (name === "npm") return this.classifyNpm(input, command, mode);
 
@@ -227,7 +257,7 @@ export class CommandPolicy {
       return decision("allow", "safe_inspect", "Reads the installed Node.js version", "allow.node_version");
     }
 
-    if (INTERPRETERS.has(name) || command.executableInsideWorkspace) {
+    if (INTERPRETERS.has(name) || /^python\d+(?:\.\d+)*$/u.test(name) || command.executableInsideWorkspace) {
       return modeDecision(
         mode,
         "workspace_exec",
@@ -238,7 +268,7 @@ export class CommandPolicy {
 
     return modeDecision(
       mode,
-      "workspace_exec",
+      LOCAL_WORK_PROGRAMS.has(name) ? "workspace_exec" : "destructive",
       "Command is not a recognized read-only recipe and may have side effects",
       "ask.unknown_command",
     );
@@ -259,10 +289,11 @@ export class CommandPolicy {
 
   private classifyGit(command: ResolvedCommand, mode: AgentMode): CommandPolicyDecision {
     if (command.args.some((argument) =>
-      argument === "-C" ||
+      argument.startsWith("-C") ||
       argument.startsWith("--git-dir") ||
       argument.startsWith("--work-tree") ||
-      argument === "-c" ||
+      argument.startsWith("-c") ||
+      argument.startsWith("--exec-path") || argument === "--paginate" || argument === "-p" ||
       argument.startsWith("--config-env"),
     )) {
       return decision("deny", "destructive", "Git path/config overrides can escape command policy", "deny.git_override");
@@ -280,6 +311,10 @@ export class CommandPolicy {
       return decision("deny", "destructive", `git ${subcommand} is outside the MVP command scope`, "deny.git_mutation");
     }
     if (GIT_SAFE_READ.has(subcommand)) {
+      if (subcommand === "branch" && command.args.slice(command.args.indexOf("branch") + 1)
+        .some((argument) => !["--list", "--all", "-a", "--remotes", "-r", "--show-current", "--no-color"].includes(argument))) {
+        return decision("deny", "destructive", "Only explicit branch listing is read-only", "deny.git_branch_mutation");
+      }
       if (command.args.some((argument) =>
         argument.startsWith("--output") || argument === "--ext-diff" || argument === "--textconv",
       )) {

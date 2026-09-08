@@ -1,16 +1,16 @@
 {
   "id": "compact_context",
-  "contractVersion": "3.0.0",
-  "description": "Request Runtime-owned completed-phase compaction. Submit concise semantic content only; Runtime preserves user requests, constraints, tasks, errors and evidence. In an isolated correction, supply only changed top-level sections; omitted sections are preserved. No workspace or history is changed by the tool itself.",
+  "contractVersion": "3.1.0",
+  "description": "Request Runtime context maintenance with a brief handoff. Runtime owns capacity, retirement of complete exchanges, and deterministic recovery. It pins user requirements, pending operations, errors and experiments. This tool itself does not modify the workspace or history.",
   "propertyDescriptions": {
-    "currentWork": "Current investigation or implementation work; no extended reasoning.",
+    "currentWork": "Current investigation or implementation work, at most 1200 characters; no extended reasoning.",
     "decisions": "Key decisions and their rationale, without chain-of-thought.",
     "conclusions": "Model interpretations of evidence, not self-certified facts.",
     "conclusions[].text": "A concise interpretation; Runtime does not treat citation existence as proof.",
     "conclusions[].evidenceIds": "Select exact ev_ IDs from the Runtime catalogue. Do not invent IDs. Without supporting evidence retain the claim as a hypothesis.",
-    "hypotheses": "Unverified explanations, assumptions and candidate requirements.",
+    "hypotheses": "Unverified explanations, assumptions and candidate requirements; preserve uncertainty and the next validation step.",
     "failedApproaches": "Failed approaches and the changed conditions required before retrying.",
-    "nextStep": "One concrete next action or falsifiable experiment."
+    "nextStep": "One concrete next action or falsifiable experiment, at most 1200 characters."
   },
-  "guidance": "Only currentWork and nextStep are required in the first candidate; empty optional lists are supplied mechanically. On correction replace only the named top-level sections. Never provide coverage flags, user quotes, message indices or an invented evidence registry. Runtime owns all fixed facts and commits only at a safe completed-phase boundary. Model interpretations remain unverified; only recorded observation fields are Runtime facts. Keep completed phases concise and the active thinking/tool chain unchanged."
+  "guidance": "Supply currentWork and nextStep, plus useful optional sections. Each text field/item is limited to 1200 characters. Runtime permits at most two submissions per transaction, counting an explicit initial request: one length-only correction, then deterministic prefix clipping if still too long or correction cannot fit. Omitted correction fields retain the first candidate. Types, required fields and evidence identities remain checked; Runtime handles failure locally. Never provide coverage flags, user quotes, message indices or invented evidence IDs. An unfinished investigation can be summarized; preserve uncertainty and the next validation step. Recent thinking stays whole; emergency recovery may archive a complete exchange rather than rewrite thinking. Model interpretations are not verified facts."
 }

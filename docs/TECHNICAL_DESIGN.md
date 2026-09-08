@@ -4,6 +4,11 @@ English | [简体中文](./TECHNICAL_DESIGN_ZH.md) | [Back to README](../README.
 
 This document describes EASY CODE's current architecture and stable engineering contracts. It intentionally avoids function-level implementation detail. Installation and command usage belong in the [README](../README.md).
 
+The current validation identity, test/configuration baseline, bound reviewer experiment,
+investigation-stagnation windows and length-only compaction repair contracts are documented
+in [Progress and context reliability](./PROGRESS_RELIABILITY.md). These Runtime mechanisms
+are provider-neutral and do not change command authorization or Benchmark network policy.
+
 EASY CODE's original source is [MIT licensed](../LICENSE). Third-party components retain their own licenses; see [Third-Party Notices](../THIRD_PARTY_NOTICES.md).
 
 ## 1. Goals and design principles
@@ -78,11 +83,11 @@ A normal turn:
 | Auto | A tool-less structured controller chooses direct response, Plan, or Code; routing is not keyword-based. |
 | Code | Direct answers, implementation, and verification under normal capability and security gates. |
 
-Agent mode and command posture are independent. Manual approval prompts for eligible commands; Auto approval removes those prompts but keeps permanent denials and sandboxing; Dangerous full access requires separate confirmation and bypasses command policy and sandboxing only for the current process.
+Agent mode and command posture are independent. Manual asks for all networking; Auto permits proven read-only networking but asks for downloads/uploads/unknown behavior; dangerous `unrestricted` never asks for command/network approval. Explicit network prefixes bind executable bytes and structured argv, survive Resume and can be revoked. Legacy executable grants do not acquire network authority. All postures retain the OS sandbox, read-only Plan and Benchmark command-network denial. See [command security](COMMAND_SECURITY.md).
 
 The composer remains active during work. Mid-turn adjustments are journaled in FIFO order and delivered at safe model-step boundaries. Steering can redirect work but cannot silently change mode, security posture, task owner, or child identity. Unstarted calls from a superseded provider response are discarded.
 
-The Runtime, not the model, decides finalization. A running command, mandatory compaction, incomplete DAG, or running/unobserved child blocks ordinary completion.
+The Runtime, not the model, decides finalization. A running command, incomplete DAG, or running/unobserved child blocks ordinary completion. Context pressure goes through Runtime-owned maintenance; if required input still cannot fit, the turn returns a recoverable capacity limit rather than requiring the model to repair a compaction schema indefinitely.
 
 ## 4. Trust, security, and sandbox
 
@@ -106,13 +111,13 @@ Commands are a resolved executable, argument vector, working directory, intent, 
 
 Long-running commands return a Thread/Agent-scoped handle and require terminal polling or cancellation evidence before completion. Failures are classified as parameter, policy, approval, sandbox, exit, timeout, or Runtime lifecycle failures. One explicitly retryable Windows sandbox-start failure permits one exact retry; a repeat pauses command starts for the turn without blocking safe file work.
 
-Manual and Auto approval both use Anthropic Sandbox Runtime. Protected execution constrains writes, denies undeclared network access, isolates temporary/home locations where supported, strips provider keys, bounds output, and owns process-tree cleanup. Initialization failure prevents the target from starting and never falls back to direct host execution.
+All approval postures use Anthropic Sandbox Runtime, workspace-scoped files and a filtered environment. Command networking has no shell/npm exception. Approved downloads use a separate Runtime broker. Unknown execution and cleanup failure never imply safe automatic retry.
 
 | Platform | Protected boundary |
 | --- | --- |
 | Windows | Restricted identity, Windows Filtering Platform fence, ACL preflight/stamp/reset, and a machine-wide ACL lease. |
 | Linux | Bubblewrap isolation with trusted system dependencies and controlled network mediation. |
-| macOS | Platform sandboxing through Sandbox Runtime; reduced-isolation warnings fail closed. |
+| macOS | Strict commands currently fail closed pending kernel-backed descendant supervision; file tools remain available. |
 
 Windows serializes the shared sandbox identity's ACL lifetime across processes. Effective-access preflight verifies the exact required ACL mutations. The repair workflow is dry-run first, changes only ownership left by the managed identity, preserves DACL/inheritance, and refuses broad, redirected, network, profile-root, or protected-system targets.
 
@@ -120,7 +125,9 @@ Shared Windows and Program Files executables rely on existing ordinary-user read
 
 Readiness is established before work. Windows verifies sandbox identity and network fencing, then uses a bounded out-of-process probe to exercise real initialization, wrapping, execution, cleanup, and reset. The probe uses the canonical System32 command shell, no explicit read allowlist, and an isolated scratch ACL transition. On timeout, the parent terminates the process tree and waits for confirmed closure before the ACL lease can be released.
 
-Dangerous full access runs directly as the current OS user and can expose inherited secrets. Structured arguments, timeouts, output bounds/redaction, cleanup, workspace accounting, and audit remain, but they are not isolation or rollback.
+Private worker control records preserve dispatch, launcher exit and cleanup independently of display truncation. Windows Job Objects quiesce descendants before ACL reset; Linux uses PID namespaces. Durable unfinished leases/quarantine block further mutations across Resume. See [mandatory command isolation](COMMAND_SECURITY.md) for artifact authorization, limits, compatibility changes, and operator recovery.
+
+Command requests use one Runtime metadata normalizer: missing verification categories do not block execution. Paths use canonical workspace boundaries and argv stays literal; scripts and synchronous shell forms do not gain a read-only exemption. Auto approval permits routine local work but asks for explicit high-risk/system or unclassified effects. Streaming framework evidence is recorded before display clipping as a separate `validation` verdict. A pipeline exit of zero is not a test pass; ambiguous results remain unknown, and ProgressGuard only clears stagnation with high-confidence pass evidence. See [command usability and validation](COMMAND_SECURITY.md#command-usability-and-validation-evidence) for the detailed contract and read-only benchmark request replay.
 
 Credentials live in the OS credential store or provider-specific environment variables, never workspace configuration. Standard GLM and GLM Coding Plan have separate key identities with no cross-channel fallback. Persisted/model-facing text is secret- and terminal-control-filtered.
 
@@ -128,7 +135,7 @@ Credentials live in the OS credential store or provider-specific environment var
 
 Each Thread has an append-only JSONL journal with schema version, unique event ID, strict sequence, timestamp, and turn/step identity. Appends are flushed before activation. Loading validates identity, order, duplicates, and stable file identity; committed-history corruption fails closed, while an incomplete final record can be treated as never committed.
 
-SQLite WASM stores session, memory, usage, Working Checkpoint, and retrieval projections. A failed projection cannot undo a durable journal append; replay repairs stale projections. Thread leases bind process, host, and random token, and ambiguous liveness is never permission to steal ownership.
+SQLite WASM stores session/usage projections, Working Checkpoints, retrieval artifacts, and long-term memory. Thread execution state is journal-authoritative; long-term memory records, provenance, and revision rows are primary SQLite data, not merely a disposable vector cache. A failed Thread projection cannot undo a durable journal append; replay repairs stale projections. Thread leases bind process, host, and random token, and ambiguous liveness is never permission to steal ownership.
 
 Thread Checkpoints are bounded deltas against an exact journal sequence. They may append settings, messages, file observations, changes, commands, and a forward-only compaction update. Turn, Plan, DAG, approval, steering, and child transitions remain event-authoritative and cannot be forged or erased by a Checkpoint. Divergent or oversized deltas are rejected; legacy full-state Checkpoints remain readable.
 
@@ -138,40 +145,166 @@ Resume replays events in order, applies compatible Checkpoints, validates worksp
 
 Interrupted provider calls and commands are not replayed. A Plan interrupted before durable execution ownership returns to review. Uncertain child claims are reconciled from durable outcomes or released to pending work. Child histories remain private; the parent receives only bounded assignment and result records.
 
-## 6. Context, MicroCompaction, Summary V2, intent ledger, and hybrid RAG
+## 6. Unified memory management and context recovery
 
-Every request combines three bounded layers:
+This section describes the current provider-independent implementation, including short-term context, thinking, summaries, long-term memory, historical retrieval, and capacity degradation. Historical Summary V2 readers and MicroCompaction helpers are not the current per-request policy. Detailed recovery invariants are in [Runtime-owned context maintenance](semantic-compaction-v3.md) and [Context reliability](CONTEXT_RELIABILITY.md).
 
-1. A deterministic **Working Checkpoint**: objective, constraints, execution identity, counters, intent anchors, unresolved failures, recent files/changes/commands, and active Plan/DAG state.
-2. The accepted cumulative summary plus a bounded recent message tail after provider-independent projection.
-3. A small deduplicated set of relevant evidence older than the exact recent-tail boundary.
+### 6.1 Layers, ownership, and scope
 
-The journal remains complete and authoritative. Derived context and retrieval may be rebuilt or skipped. A request-local overflow fallback does not silently advance the durable compaction boundary.
+These are logical roles, not six independent databases:
 
-**MicroCompaction** runs before every provider call without mutating durable messages. It removes consumed Thinking except the latest unresolved tool-request reasoning, and replaces consumed reconstructable tool results of at least 2,048 characters with recovery references. The active protocol tail remains intact. References preserve call identity/order, original size and SHA-256, plus tool-specific path/hash, command outcome, search scope, mutation, task, child, or artifact metadata; raw bodies, stdout, and argv are omitted.
+| Layer | Contents and authority | Scope / model visibility |
+| --- | --- | --- |
+| Active conversation | Durable `messages`, projected after `compactedMessageCount`; current user text, assistant text/thinking, tool calls and results. | Private Thread; the active projection is sent, not the entire stored history. |
+| Working summary | `workingSummary`: accepted semantic handoff or a deterministic incomplete/unverified recovery notice. | Private Thread; historical interpretation, not proof or permission. |
+| Runtime continuity | User instructions, constraints, intent ledger, Plan/DAG, changes, pending work, failures, reviewer/experiment state. | Rebuilt from authoritative state and pinned independently of summary quality. |
+| Historical evidence / RAG | Sanitized message artifacts, tool evidence, accepted summary snapshots, lexical indexes and optional vectors. | Exact workspace + Thread; retrieve a bounded subset on demand. |
+| Long-term memory | Atomic preferences, conventions, architecture, decisions, and environment facts, with provenance and revisions in SQLite. | Shared across Threads in the same logical workspace; not an archive of every conversation. |
+| Journal / recovery storage | Append-only Thread events, compatible recovery Checkpoints, private evidence and attachments. | Local persistence and replay; storage does not imply automatic prompt injection. |
 
-| Projected utilization | Behavior |
+Workspace identity is derived from the normalized resolved workspace root, case-normalized on Windows. Parent and child Threads have separate conversations and historical retrieval; children receive bounded assignments and return bounded reports, not their full thinking. They may receive selected memories for the logical workspace, but do not have the main Agent's long-term memory mutation capability.
+
+### 6.2 One ordinary request: short-term context and thinking
+
+The normal message order is:
+
+```text
+Stable system instructions                         (tool schemas supplied separately)
+→ workingSummary, when present
+→ active messages after compactedMessageCount      (including unchanged recent thinking)
+→ RUNTIME_CONTINUITY_STATE                         (required control facts)
+→ RUNTIME_CONTEXT_DATA                             (workspace supplement + selected memory/evidence)
+```
+
+Dynamic retrieval stays out of the stable system prefix to improve prefix reuse; this is not a guarantee of provider cache hits. The builder does not silently mutate durable messages or truncate thinking to make a request fit. The current general message/thinking projection is non-destructive; large tool bodies have a separate bounded projection described below.
+
+Thinking is stored as `reasoning_content`. It is not rewritten piece by piece or removed immediately after the next model response. Older complete exchanges can leave active context as a whole. Emergency minimal rebase can also retire the newest **closed** exchange, including its thinking, as a whole. Ordinary RAG excludes thinking; exact historical message recall can recover the serialized message when necessary. UI folding or expanding thinking has no effect on this policy.
+
+`RUNTIME_CONTINUITY_STATE` preserves full retired ordinary user instructions after secret redaction, not only intent-ledger excerpts. It also carries goals/constraints, Plan/DAG ownership and requirements, latest file changes, pending steering, command and child handles, unresolved command outcomes, stagnation incidents, review budgets, and unverified review/experiment state. A successful unrelated command cannot erase an earlier failure. A summary cannot complete a task, resolve a failure, or reset an execution/reviewer budget.
+
+The Working Checkpoint in the workspace supplement is a deterministic, bounded recovery map of recent files/changes/commands and task state. It costs no summary-model call and avoids duplicating already injected continuity data. It is neither the Thread recovery Checkpoint nor a substitute for authoritative Runtime facts.
+
+### 6.3 Long-term memory lifecycle
+
+`manage_memory` exposes `search`, `recall`, `remember`, `revise`, and `forget`, subject to the current capability profile. Historical recall and long-term storage are different actions; summarization and RAG hits never automatically become durable project facts.
+
+1. Propose one atomic fact, normally 8–120 characters, in one of the five categories. Runtime rejects secrets, tentative statements and obvious task diaries; these checks are not a general truth classifier.
+2. For `remember`/`revise`, the application Runtime requires `sourceRefs`. `user` must point to an explicit durable user preference/convention or decision; project/environment facts currently require successful, non-truncated, versioned `read_file` evidence in the same workspace and Thread. Evidence identity checks provenance, not whether arbitrary prose logically follows from it.
+3. Validate and stage the mutation. A staged success response is not a database commit. `revise`/`forget` must identify a memory returned by a search in the same turn; `forget` does not require new factual source evidence.
+4. Commit the validated batch only after an allowed `turn.completed` outcome: `success`, or `planned` with an explicit durable user cue and only preference/convention writes. Failed, interrupted, and limit-reached turns do not commit proposals. There are at most eight mutations per turn.
+5. SQLite commits memory data and revision history transactionally; vector work is derived and may fail without undoing a valid memory commit. An exact normalized duplicate `remember` in the same category is a no-op, not a timestamp/confidence refresh.
+6. Automatic retrieval rechecks provenance file paths and hashes. Changed, missing, or unsafe sources, and unsupported legacy project facts, become `needs_verification` and are withheld from automatic injection. Explicit audit/search can still inspect records that are not automatically usable.
+
+Memory state and revisions survive new Threads in the same workspace. Long-term memory still represents supported claims, not permission to skip current file reads, version checks, or task verification.
+
+### 6.4 Historical RAG and one shared recall budget
+
+Thread indexing incrementally reads newly persisted user text, assistant public text/tool names, useful tool results, and accepted semantic summary snapshots. It excludes system instructions and thinking. An emergency fallback notice without semantic snapshot metadata is not automatically a semantic-summary index entry; its prior text remains accessible through Journal references.
+
+Sources are bounded to 96,000 characters with explicit head/tail omission metadata. Chunks retain source offsets, hashes, and available file path/version/line metadata. The pinned local `paraphrase-multilingual-MiniLM-L12-v2` embedding model uses 384-dimensional vectors and tokenizer windows of at most 128 tokens including special tokens. Without that tokenizer, chunking falls back to 1,400-character windows with 160-character overlap. Long embedding inputs aggregate windows instead of silently dropping the tail. Embedding token units are distinct from chat-context estimates.
+
+SQLite supplies lexical search, including CJK-friendly fallback; optional local vectors and a disposable Orama cache supply semantic candidates. Thread lexical/vector ranks are fused and deduplicated. Background vector backfill keeps lexical retrieval available; vector failure degrades to lexical search. Query embedding still has local compute cost. Retrieval uses local data and local inference, not external web search or the chat-model API; preparing missing model assets may separately require downloads.
+
+Before each ordinary request, the memory controller:
+
+1. Builds at most three bounded queries from the current task/user request, command outcomes and relevant paths; cached candidates are refreshed when the query/state signature changes.
+2. Searches workspace memories and private Thread history. Normal automatic history recall is restricted to before `compactedMessageCount`; an explicit historical search can inspect existing messages in the current Thread beyond that automatic boundary.
+3. Filters inactive/transient memories, irrelevant hits, exact duplicates, already visible/covered evidence, and known obsolete file versions. Similarity alone does not make a hit relevant or current.
+4. Selects both sources under **one shared** allowance: normally 2,000 estimated tokens, expanded up to 6,000 after a compaction-boundary/DAG-node change or when the latest command is not an observed zero-exit result, with at most six items total. The latter condition also includes a running command. The allowance is additionally capped by `floor(maxContextChars / 24)` and, if enabled, 8% of `maxContextTokens`.
+5. Removes optional recall under request pressure before retiring active history. Retrieval is supplementary; the Runtime does not sacrifice required task state merely to fit more RAG hits.
+
+### 6.5 Tool output, evidence capture, and exact recall
+
+Runtime captures sanitized structured tool data before model-facing shortening in an immutable, workspace/Thread-scoped evidence store, up to 1,000,000 characters. This is the result the tool produced: commands and reads may already be bounded. Neither this store nor Journal promises unlimited raw stdout. Truncation, captured-content hashes, and pagination remain explicit.
+
+Ordinary output projection returns relevant diagnostics and bounded head/tail text. Command inspection/success/failure defaults are 12,000/2,000/8,000 characters with at most eight diagnostics; repeated command polls return deltas or changed terminal state instead of repeatedly paying for the same body. File reads default to a 100-line location window and allow up to 1,000 lines, subject to the 12,000 estimated-token read-result limit.
+
+The aggregate tool-body budget is 16,000 estimated tokens per multi-call exchange, even without high pressure. Under pressure, older bodies of at least 4,096 characters may become references; an oversized batch can also reference smaller individual bodies. Call/result identity and protocol order remain intact. The projection does not overwrite canonical messages.
+
+When the current capability profile exposes `manage_memory`, `recall` supports bounded pages by exact ID:
+
+| Reference | Reads without re-executing work |
 | --- | --- |
-| Below 60% | Normal capabilities. |
-| 60%–79% | Suggest compaction. |
-| 80%–89% | Require a standalone compaction action. |
-| 90%+ | Force a compaction correction before further work. |
+| `evidence_…` | Captured structured tool evidence. |
+| `context_…` | An indexed historical chunk, not unlimited original process output. |
+| `ev_…` | A matching tool message or command audit in the current Thread Journal. |
+| `journal_message_<index>` | The exact stored message, including reasoning if present. |
+| `journal_summary_<sha256>` | An archived recovery summary version. |
 
-All efforts share the same 250,000-character default context/compaction budget. Medium and high do not receive 2× or 4× context thresholds. They retain larger local step budgets: none/low 1×, medium 2×, high 4×. Higher effort also increases provider wait and child concurrency, not context headroom.
+Recall defaults to 8,000 characters per page and allows at most 16,000. References are scoped and secret-filtered, not permission to access another Thread. Historical code/results may be stale; a reference is not proof that the present checkout passes.
 
-Compaction Summary V2 is strict provider-neutral JSON containing the primary request with exact source, active constraints, technical decisions, files/changes, verified results, errors/blockers, pending work, current work, next step, and compact evidence references.
+### 6.6 Capacity accounting and configuration
 
-The accompanying durable **intent ledger** records the pinned primary/latest request, constraints, user corrections, and superseded requests as bounded exact quotes plus message indices. A separate coverage check attests current intent, Plan/task state, unresolved failures, current work, and next step; it is validated and discarded rather than persisted in summary prose.
+Operational settings are in `[limits]`; [runtime defaults](../src/config/runtime-defaults.json) and the [configuration example](config.example.toml) are the source of current values. Context policy is the same for all thinking efforts and providers. Defaults for steps are 40/40/40/80 for none/low/medium/high, with at most two concurrent child Agents; effort no longer multiplies child concurrency or context capacity.
 
-Acceptance is transactional. The Runtime verifies quotes against immutable user history, source indices, evidence references, constraints, Plan/DAG IDs, unresolved failures, and a forward-only boundary, then simulates the next provider request. Voluntary compaction requires 8,192 new projected characters, 8,192 saved characters, and 10% savings. Mandatory pressure may bypass cooldown/minimum savings, but never integrity, positive benefit, or safe post-pressure.
+`maxContextTokens = 0` disables the model-token window. The default `maxContextChars = maxActiveContextChars = 250000` means **characters, not 250,000 model tokens**. Character-mode input capacity is `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`: 212,500 by default. The controller's 80% maintenance trigger is about 170,000 measured request characters, including instructions, schemas and Runtime state, not just the visible conversation.
 
-The target waterline is 55%. A candidate below 80% may be accepted with a headroom warning; a candidate still at or above 80% is rejected to prevent a loop. Metadata records source range/hash, before/after size, savings, ratio, utilization, and waterline result. Rejection changes none of summary, ledger, or boundary.
+With a nonzero `maxContextTokens`, that window is the primary operational capacity. A provider-neutral estimate counts text, thinking, tool arguments/schemas, message overhead and image estimates; it is calibrated conservatively from recent actual prompt usage by endpoint/model/modality. Calibration stores ratios, not another transcript. It is not a native exact tokenizer and does not discover the provider window automatically.
 
-Older Thread artifacts index user text, visible assistant content/tool requests, and useful tool evidence. Hidden reasoning and system messages are excluded; content is secret-filtered and scoped by normalized workspace plus exact Thread. SQLite FTS5 is authoritative, including a CJK-friendly substring fallback. Optional pinned multilingual ONNX embeddings are stored with model/version/content identities, while Orama is a bounded rebuildable cache. Lexical and semantic ranks fuse with importance/recency and deduplicate by content hash. Vector failure degrades to FTS5.
+For a configured token window `W`, default input capacity is:
 
-Long-term memory stores short atomic workspace-scoped preferences, conventions, architecture, decisions, and environment notes. Writes are staged until a successful boundary; revision/removal requires an exact ID returned by same-turn search. Secret or tentative facts are rejected, and Plan mode cannot persist unverified project claims. Memory uses the same FTS5/optional-vector authority pattern.
+```text
+W - min(maxResponseTokens, floor(W × 0.20))  [output reserve; maxResponseTokens = 16384]
+  - min(8192, floor(W × 0.10))              [future tool reserve]
+  - max(512, ceil(W × 0.05))                [safety reserve]
+```
 
-### Evidence-driven progress control
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `contextCompactionTriggerRatio` | `0.8` | Start maintenance against usable input capacity. |
+| `contextCompactionTargetRatio` | `0.55` | Preferred headroom, not a mandatory acceptance threshold. |
+| `contextCompactionMinGrowthRatio` | `0.1` | Growth hysteresis to avoid repeated paid summaries after tiny changes. |
+| `compactionRetainRecentExchanges` | `2` | Preferred recent complete exchange tail; reducible during recovery. |
+| `compactionAttempts` | `2` | At most two submissions: one length-only correction, then local field clipping; Resume retains spent attempts. |
+| `contextSummaryMaxTokens` | `2048` | Auxiliary summary output cap; the 12,000-character summary storage ceiling also remains. |
+| `contextToolBatchTokens` / `contextToolReferenceMinChars` | `16000` / `4096` | Aggregate tool-body allowance / old-body reference threshold. |
+| `contextMaxRebasesPerRequest` | `1` | Emergency rebase allowance per durable user-request scope; `0` disables it. |
+| `contextMaxCapacityRetries` | `1` | Smaller ordinary-request retries for classified provider capacity rejection, bounded within the current run. |
+| `memoryAutoTokens` / `memoryRecallTokens` | `2000` / `6000` | Shared optional recall caps, not a quota for each source separately. |
+| `memoryMaxItems` / `memoryMaxQueries` | `6` / `3` | Shared selected items / generated queries. |
+| `maxDurableMemoryTokens` | `400` | Additional per-proposal estimate check, alongside the atomic-fact character bound. |
+
+Some storage/protocol guards remain code constants, such as atomic-fact length and maximum evidence capture; not every bound is a configuration field. Generic 60/80/90% context diagnostics are not the old mandatory model-correction state machine. Actual dispatch and recovery use the full next ordinary request envelope, including its normal tool schemas.
+
+### 6.7 Graded recovery: preserve work, reduce active history
+
+```text
+Measure next ordinary request
+→ remove optional recall / reference oversized tool bodies
+→ at most one short semantic handoff
+→ local whole-exchange and old-summary eviction with Journal references
+→ at most one minimal rebase per user request
+→ continue the same task, or return a recoverable capacity pause
+```
+
+1. Perform cheap reclamation first. Choose a prefix of complete assistant/tool exchanges, preferably retaining two recent exchanges, then a smaller tail if necessary. Every assistant tool call must have its matching result; a pending tool exchange is never split. Plain assistant exchanges and completed read/write/command exchanges are eligible. A semantic phase or successful test is **not** required: an unfinished investigation may be archived while explicitly remaining unfinished/unverified.
+2. Allow at most two isolated summary submissions within the existing request/token budget, counting an explicit parent submission. Only text-length overflow receives one correction; if still overlong, clip individual text fields/items to 1200 characters, preserving valid siblings and marking lost text. Correction without sufficient capacity/budget is replaced by local clipping. Use only `compact_context`, up to 2,048 output tokens, with no auxiliary transport retries. Runtime supplies facts and the evidence catalogue, not model-generated coverage booleans.
+3. Salvage valid semantic sections where possible. Unknown/unbound evidence claims become unverified hypotheses. Accept only with unchanged source/fact snapshots, a forward boundary, actual size reduction, and a fitting **next ordinary request**. A safe result above 55%, or even above the 80% trigger, may proceed; the target and growth cooldown prevent unnecessary repeated paid maintenance, not all possible future pressure.
+4. Malformed/missing/oversized summaries, unavailable summary capabilities, auxiliary provider failures, or insufficient savings go to deterministic local recovery, not a schema-correction loop. Older whole exchanges and an oversized prior summary can leave active context with precise references and explicit incomplete/unverified status. This can advance the durable retired boundary without a semantic-summary commit; original messages remain stored.
+5. If necessary, archive the newest **closed** exchange whole as a minimal rebase, retaining actionable pinned state. This is lossy context retirement, not a new task, process restart, workspace rollback, or permission to restart pending commands/children. Commit only when it actually reduces size and fits. Rebase consumption is journaled per durable user-request scope: Resume does not reset it; a new explicit user request starts a new scope.
+6. If mandatory instructions, schemas, Runtime facts or unresolved protocol data still cannot fit, return `reason=limit_reached`, `failure.code=context_capacity_exhausted`, `recoverable=true`. Preserve files, history, pending work and budgets. This neither completes the DAG nor declares an external blocker; it is not a guarantee that every task can continue indefinitely.
+7. A narrowly classified context-length rejection from an ordinary provider request permits a bounded smaller local retry, without another summarizer and without resetting the shared request budget. Authentication errors, 429s and generic timeouts are not capacity errors. User cancellation and storage/Journal corruption remain real stop conditions, not successful degradation.
+
+### 6.8 Replay, user commands, and verification limits
+
+`context.compaction.*` and `context.compacted` record summary attempts/commits. `context.history.evicted` records tool references, whole-history eviction or minimal rebase with source/fact identities and exact recovery references. `context.maintenance.checked` records evaluated history, request identity, size and any capacity pause. Event replay restores boundaries and spent summary/rebase budgets; a stale Checkpoint cannot advance the boundary or reset them. Pending command/child IDs and reviewer experiments remain actionable after recovery.
+
+`/memory short [limit]` inspects short-term state; `/memory long [id]` inspects workspace memory, including audit state. Both are read-only. `/clear` clears the terminal display, not model context or persistent memory. `/new` creates a fresh Thread while retaining workspace long-term memory; `/resume` restores an existing Thread rather than starting empty. Clearing a separate benchmark job directory should not be assumed to erase independent EASY CODE data roots or recovery storage.
+
+Local tests cover request capacity, malformed summaries, exchange boundaries, lossless storage of retired messages, bounded lossy rebase, pending work, memory selection and replay. They do not establish a benchmark accuracy or token-saving improvement. Preserved thinking, local embedding, exact recall and larger pinned facts all have costs; lossy retirement can require re-reading. Evaluate total/cached input tokens, tokens per successful task, repeated validations, latency, capacity-pause rate and Resume behavior on controlled long-task runs.
+
+Implementation entry points:
+
+| Responsibility | Source |
+| --- | --- |
+| Request projection and required state | [manager.ts](../src/context/manager.ts), [context-request.ts](../src/context/context-request.ts), [runtime-state.ts](../src/context/runtime-state.ts) |
+| Selection, historical indexing, exact capture | [memory-controller.ts](../src/context/memory-controller.ts), [artifact-index.ts](../src/context/artifact-index.ts), [evidence-store.ts](../src/context/evidence-store.ts) |
+| Durable facts and tool interface | [memory-manager.ts](../src/memory/memory-manager.ts), [manage-memory.ts](../src/tools/manage-memory.ts) |
+| Capacity and calibration | [capacity.ts](../src/context/capacity.ts), [token-budget.ts](../src/context/token-budget.ts), [token-calibration.ts](../src/context/token-calibration.ts) |
+| Summary and local degradation | [compaction-transaction.ts](../src/context/compaction-transaction.ts), [pressure-projection.ts](../src/context/pressure-projection.ts), [pressure-recovery.ts](../src/context/pressure-recovery.ts), [exchange-boundary.ts](../src/context/exchange-boundary.ts) |
+| Integration and replay | [agent.ts](../src/runtime/agent.ts), [thread-store.ts](../src/threads/thread-store.ts) |
+
+### 6.9 Evidence-driven progress control
 
 The Runtime derives bounded progress evidence from authoritative tool results before model-facing output is shortened. Versioned reads provide only a weak repetition hint; only repeated, high-confidence verification failures across distinct cycles can open a stagnation incident. The flat command protocol preserves legacy test/build intent and adds an explicit verification intent classified as unit, integration, build, type, lint, format, smoke, benchmark, or custom validation. The category participates in the durable failure identity, so unrelated checks cannot be merged into one incident. Infrastructure, policy, network, cancellation, and sandbox failures remain separate and never become evidence that the code strategy is wrong.
 
@@ -263,8 +396,9 @@ Cleanup validates owned real directories, refuses redirected roots, never recurs
 | Failure | Behavior |
 | --- | --- |
 | Journal corruption | Refuse uncertain history; only an incomplete final record is repairable as uncommitted. |
-| SQLite/index/vector failure | Replay the journal or degrade semantic retrieval to FTS5. |
-| Invalid/low-benefit compaction | Preserve prior summary, intent ledger, and boundary. |
+| Thread projection/index/vector failure | Rebuild eligible projections from primary data or degrade semantic retrieval to FTS5; do not treat primary memory/evidence data as disposable. |
+| Invalid/low-benefit compaction | Reject the semantic candidate, then try Journal-backed local retirement/rebase; preserve required Runtime facts. |
+| Required context still too large | Return recoverable `limit_reached` / `context_capacity_exhausted`, retaining pending work and spent budgets. |
 | Concurrent file edit or Git failure | Preserve user bytes; report conflict or use full-filesystem fallback. |
 | Sandbox setup/start failure | Do not start the target and never use host fallback. |
 | Running command at finalization | Require terminal poll/cancel evidence. |
@@ -273,6 +407,6 @@ Cleanup validates owned real directories, refuses redirected roots, never recurs
 | Image mismatch | Refuse the bytes for that request without rewriting history. |
 | Benchmark binding mismatch | Refuse recovery across tasks or Trials. |
 
-Key trade-offs are explicit: local-first is not offline; character budgets approximate Tokens; compaction keeps the full journal but not every raw byte in the active prompt; semantic retrieval costs local compute but has lexical fallback; incremental Git auditing needs full Checkpoint/final reconciliation; shared children trade isolation for non-Git compatibility; Worktrees are not security sandboxes; non-streaming provider steps simplify durability but favor elapsed activity over token streaming; and cross-platform sandbox implementations differ beneath one fail-closed contract.
+Key trade-offs are explicit: local-first is not offline; configured capacity uses conservative estimates rather than an exact native tokenizer; recent thinking continuity consumes space, while whole-exchange retirement and minimal rebase can lose active detail; stored tool evidence is bounded and recovery references may require explicit recall; semantic retrieval costs local compute but has lexical fallback; incremental Git auditing needs full Checkpoint/final reconciliation; shared children trade isolation for non-Git compatibility; Worktrees are not security sandboxes; non-streaming provider steps simplify durability but favor elapsed activity over token streaming; and cross-platform sandbox implementations differ beneath one fail-closed contract.
 
 New providers, retrieval backends, child roles, or execution environments are acceptable only when they preserve the same authority, durability, isolation, integrity, and recovery invariants.

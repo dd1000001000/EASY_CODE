@@ -3,13 +3,13 @@
   "contractVersion": "1.1.0",
   "description": "Start one structured program/argv command under Runtime supervision and return a command handle after policy, approval, and sandbox initialization succeed. Use this for commands that may outlast one tool call.",
   "propertyDescriptions": {
-    "program": "Executable name or workspace-relative executable; absolute host executables require dangerous mode.",
-    "args": "The structured argument vector passed directly to the program. Never repeat program or its executable basename in args[0]; args starts with the first real argument.",
-    "cwd": "Workspace-relative existing directory, or an absolute host directory only in dangerous mode.",
-    "intent": "The purpose of the command, used by Runtime when applying execution policy. Use verify for a validation command that is not accurately described by the legacy test or build intents.",
-    "verificationKind": "Required when intent is verify and forbidden for inspect, run, or install. It may optionally classify legacy test/build calls as unit_test, integration_test, build, typecheck, lint, format_check, smoke_test, benchmark, or custom.",
+    "program": "Executable name, path relative to cwd, or absolute local executable. Same resolution and isolation as run_command.",
+    "args": "Literal structured argv, including multiline code. For cmd /c the complete command must be one argument; no automatic shell-string joining.",
+    "cwd": "Existing absolute or workspace-relative directory whose normalized real path stays inside the workspace.",
+    "intent": "Declared command purpose, not permission. Use test, build or verify for validation.",
+    "verificationKind": "Optional validation category. Missing verify/test categories default to custom; build defaults to build. Inapplicable or invalid metadata is normalized without blocking execution.",
     "timeoutMs": "An optional requested total command-phase timeout. It remains attached to the process across later polls; Runtime returns the effective capped budget.",
     "reason": "A concise explanation of why this command is needed for the current task."
   },
-  "guidance": "Use start_command for a legitimate long-running build, test, verification, install, or program. It accepts the same flat program/args contract as run_command and never accepts an action object or nested invocation. Classify validation commands accurately: keep existing test/build intents compatible, or use intent verify with verificationKind for type checks, lint, formatting checks, smoke tests, benchmarks, and custom validation. Do not attach verificationKind to inspect, run, or install. After it returns status running, use poll_command for bounded status waits and cancel_command only when the process is no longer needed. Do not complete the task until a poll or cancel observes the terminal result. Its terminal failures use the same stable parameter, policy, approval, sandbox, exit, timeout, and runtime failure.kind values as run_command."
+  "guidance": "Use for a long-running build, test, verification, install or program, with the same flat contract and network rules as run_command. Prefer direct test output over a filtering pipeline; Runtime returns execution status separately from validation passed/failed/unknown. After status running, use poll_command for bounded waits and cancel_command when no longer needed. Do not complete the task before observing its terminal result. Missing validation metadata is normalized once, and remains attached across polls."
 }

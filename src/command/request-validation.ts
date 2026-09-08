@@ -2,14 +2,12 @@ import type { RunCommandInput } from "./types.js";
 import { inspectExplicitShellInvocation } from "./shell.js";
 
 const WINDOWS_EXECUTABLE_EXTENSION = /\.(?:exe|cmd|bat|com)$/iu;
-const ASYNC_WORKAROUND_PROGRAMS = new Set(["nohup", "sleep", "timeout"]);
+const DETACHED_PROGRAMS = new Set(["nohup", "disown"]);
 
 export interface CommandRequestValidationFailure {
   readonly matchedRule:
-    | "input.duplicate_program_argument"
     | "input.async_workaround"
-    | "input.shell_protocol"
-    | "input.verification_metadata";
+    | "input.shell_protocol";
   readonly reason: string;
   readonly recommendation: string;
 }
@@ -27,8 +25,7 @@ function executableBasename(value: string): string {
 /**
  * Detect the common structured-argv mistake where the executable is supplied
  * in both `program` and `args[0]` (for example `sleep`, `["sleep", "5"]`).
- * The comparison is deliberately host-independent so Windows paths emitted by
- * a model are rejected consistently even when tests run on another platform.
+ * This is advisory only: `python python` can legitimately run a script named python.
  */
 export function hasDuplicateProgramArgument(
   input: Pick<RunCommandInput, "program" | "args">,
@@ -48,56 +45,12 @@ export function validateCommandRequest(
   input: Pick<RunCommandInput, "program" | "args"> &
     Partial<Pick<RunCommandInput, "intent" | "verificationKind">>,
 ): CommandRequestValidationFailure | undefined {
-  if (input.intent === "verify" && input.verificationKind === undefined) {
-    return {
-      matchedRule: "input.verification_metadata",
-      reason:
-        "Invalid verification command: verificationKind is required when intent is verify. " +
-        "The process was not started.",
-      recommendation:
-        "Choose the narrowest verificationKind: unit_test, integration_test, build, typecheck, " +
-        "lint, format_check, smoke_test, benchmark, or custom.",
-    };
-  }
-  if (
-    (input.intent === "inspect" || input.intent === "run" || input.intent === "install") &&
-    input.verificationKind !== undefined
-  ) {
-    return {
-      matchedRule: "input.verification_metadata",
-      reason:
-        `Invalid verification command: verificationKind is not allowed when intent is ${input.intent}. ` +
-        "The process was not started.",
-      recommendation:
-        "Remove verificationKind, or change intent to verify when this command is authoritative validation.",
-    };
-  }
-
   const programName = executableBasename(input.program);
-  if (hasDuplicateProgramArgument(input)) {
-    const asyncRecovery = ASYNC_WORKAROUND_PROGRAMS.has(programName)
-      ? (
-          " Do not retry this wait/detach program; run the real executable directly with " +
-          "structured program and args, using timeoutMs when a bounded synchronous timeout is needed."
-        )
-      : "";
-    return {
-      matchedRule: "input.duplicate_program_argument",
-      reason:
-        "Invalid structured command: args[0] repeats program (or its executable basename). " +
-        "The process was not started.",
-      recommendation:
-        "Keep the executable only in program and remove the duplicate first item from args; " +
-        `args must begin with the first real argument.${asyncRecovery}`,
-    };
-  }
-
-  if (ASYNC_WORKAROUND_PROGRAMS.has(programName)) {
+  if (DETACHED_PROGRAMS.has(programName)) {
     return {
       matchedRule: "input.async_workaround",
       reason:
-        `Direct ${programName} wait/detach commands are disabled because they consume a tool ` +
-        "call without managing the real command. The process was not started.",
+        `Direct ${programName} detached commands are unsupported. The process was not started.`,
       recommendation:
         "Run the real executable directly with structured program and args, using timeoutMs " +
         "when a bounded synchronous timeout is needed.",

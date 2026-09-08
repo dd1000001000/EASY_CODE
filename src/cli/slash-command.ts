@@ -76,7 +76,7 @@ EASY CODE commands
   /model <model>             Switch the current provider's model
   /model ${PROVIDER_USAGE} <id>
                               Switch both provider and model
-  /approval                 Select manual, auto-approved, or dangerous full-host access
+  /approval                 Select manual, auto-approved, or isolated no-prompt execution
   /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
   /status                    Show current status
   /workspace                 Show workspace summary
@@ -89,6 +89,7 @@ EASY CODE commands
   /agents                    Show child sessions, tasks, isolation, and handoff
   /tools                     Show available tools
   /permissions               Show command permissions and sandbox status
+  /permissions revoke <index> Revoke a saved command/network prefix for this Thread
   /commands                  Show recent commands
   /context                   Show context budget
   /usage                     Show cumulative provider-reported Token usage

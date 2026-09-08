@@ -40,6 +40,7 @@ function reportArguments(overrides: Record<string, unknown> = {}): string {
     diagnosis: "The repeated failure is consistent with stale generated state.",
     evidence: "Three verification cycles retained the same high-confidence outcome.",
     experiment: "Regenerate only the affected fixture, then rerun the narrow test once.",
+    experimentProgram: "node", experimentArgsJson: "[]", experimentCwd: ".",
     expectedSignal: "The narrow failure disappears without introducing a new failure.",
     falsifyingSignal: "The same outcome remains after the fixture is regenerated.",
     ...overrides,

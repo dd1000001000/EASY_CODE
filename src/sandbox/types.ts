@@ -14,8 +14,8 @@ export type SandboxBackendName =
 export interface SandboxExecutionMetadata {
   backend: SandboxBackendName;
   enforced: boolean;
-  filesystem: "workspace-write" | "host";
-  network: "denied" | "registry-only" | "allowed" | "host";
+  filesystem: "workspace-write" | "workspace-read" | "host";
+  network: "denied" | "registry-only" | "allowed" | "host" | "brokered";
 }
 
 export interface PreparedCommand {
@@ -24,6 +24,8 @@ export interface PreparedCommand {
   cwdAbsolute: string;
   environment: NodeJS.ProcessEnv;
   metadata: SandboxExecutionMetadata;
+  /** Private fd 3, not inherited by model-controlled target processes. */
+  controlPipe?: boolean;
   cleanup(): Promise<void>;
 }
 
@@ -33,9 +35,13 @@ export interface SandboxExecutionRequest {
   policyDecision: CommandPolicyDecision;
   context: ToolContext;
   commandPreview: string;
+  /** Runtime-issued per-command capability; never copied into target environment. */
+  networkProxyURL?: string;
 }
 
 export interface CommandExecutionBackend {
+  assertEnvironmentSafe?(): void;
+  quarantine?(reason: string): void;
   describe(request?: SandboxExecutionRequest): SandboxExecutionMetadata;
   prepare(request: SandboxExecutionRequest): Promise<PreparedCommand>;
 }
@@ -63,10 +69,16 @@ export interface SandboxWorkerPayload {
   };
   network: {
     allowedDomains: string[];
+    proxyURL?: string;
   };
 }
 
 export type SandboxWorkerControl =
+  | { type: "cleanup_requested" }
+  | { type: "execution_dispatched" }
+  | { type: "execution_exited"; exitCode: number }
+  | { type: "cleanup_complete" }
+  | { type: "cleanup_error"; message: string }
   | { type: "ready"; backend: SandboxBackendName }
   | {
       type: "stage";

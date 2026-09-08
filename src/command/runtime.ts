@@ -1,4 +1,8 @@
 import { execa } from "execa";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { containWindowsWorker, type WindowsCommandJob } from "./windows-job.js";
+import { ExecutionJournal } from "./execution-journal.js";
 import type { ToolContext } from "../core/types.js";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
@@ -6,15 +10,24 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import {
   AnthropicSandboxBackend,
   extractSandboxControls,
-  UnrestrictedHostBackend,
   type CommandExecutionBackend,
   type PreparedCommand,
   type SandboxExecutionMetadata,
   type SandboxExecutionRequest,
 } from "../sandbox/index.js";
 import { terminateProcessTree } from "./lifecycle.js";
+import { SandboxControlStream } from "../sandbox/control.js";
+import type { SandboxWorkerControl } from "../sandbox/types.js";
 import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
+import { commandRequestMetadata, normalizeCommandRequest } from "./normalize-request.js";
+import { CommandVerificationCollector } from "./verification.js";
+import { captureValidationBaseline, compareValidationBaseline } from "../progress/validation-standard.js";
+import { matchesReviewExperiment } from "../progress/experiment.js";
+import { inspectNetworkOperation } from "./network-policy.js";
+import { createCommandNetworkGate } from "./network-gate.js";
+import { networkCommandApprovalPrefix } from "./approval.js";
+import { requestNetworkApproval } from "./network-approval.js";
 import {
   validateCommandRequest,
   type CommandRequestValidationFailure,
@@ -43,7 +56,12 @@ interface ProcessResult {
 }
 
 export interface CommandRuntimeOptions {
+  /** Trusted host selection, never controlled by model arguments. */
+  networkProfile?: "development" | "benchmark";
   sandboxStartupTimeoutMs?: number;
+  quarantinePath?: string;
+  lifecycleDirectory?: string;
+  recordLifecycle?: (context: ToolContext, commandId: string, type: string, payload: unknown) => void;
 }
 
 interface BackgroundCommandOwner {
@@ -135,8 +153,27 @@ export class CommandRuntime {
   readonly resolver: CommandResolver;
   readonly policy: CommandPolicy;
   private readonly executionBackend: CommandExecutionBackend;
-  private readonly unrestrictedExecutionBackend: CommandExecutionBackend;
   private readonly backgroundJobs = new Map<string, BackgroundCommandJob>();
+  private quarantineReason?: string;
+  private readonly executionJournal: ExecutionJournal;
+
+  assertEnvironmentSafe(): void {
+    this.executionBackend.assertEnvironmentSafe?.();
+    this.executionJournal.assertRecovered();
+    if (this.quarantineReason || (this.options.quarantinePath && existsSync(this.options.quarantinePath))) {
+      throw new Error(`Command environment quarantined; inspect cleanup before resuming mutations: ${this.quarantineReason ?? this.options.quarantinePath}`);
+    }
+  }
+
+  private quarantine(reason: string): void {
+    this.quarantineReason = reason;
+    this.executionBackend.quarantine?.(reason);
+    if (this.options.quarantinePath) {
+      mkdirSync(path.dirname(this.options.quarantinePath), { recursive: true });
+      writeFileSync(this.options.quarantinePath, JSON.stringify({ version: 1, workspace: this.workspace.root,
+        reason: sanitizeCommandOutput(reason).slice(0, 2048), at: new Date().toISOString() }), { mode: 0o600 });
+    }
+  }
 
   constructor(
     private readonly workspace: WorkspaceManager,
@@ -145,11 +182,12 @@ export class CommandRuntime {
     unrestrictedExecutionBackend?: CommandExecutionBackend,
     private readonly options: CommandRuntimeOptions = {},
   ) {
+    this.executionJournal = new ExecutionJournal(options.lifecycleDirectory);
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
     this.executionBackend = executionBackend ?? new AnthropicSandboxBackend(workspace);
-    this.unrestrictedExecutionBackend = unrestrictedExecutionBackend ??
-      new UnrestrictedHostBackend();
+    // Retain the constructor slot for integrations; it can no longer grant a host backend.
+    void unrestrictedExecutionBackend;
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
@@ -316,14 +354,40 @@ export class CommandRuntime {
     context: ToolContext,
     hooks: CommandExecutionHooks = {},
   ): Promise<RunCommandOutput> {
+    const normalized = normalizeCommandRequest(input);
+    const baseline = context.validationBaseline;
+    const before = baseline && normalized.verificationKind ? await captureValidationBaseline(context.workspaceRoot, context.limits) : undefined;
+    const requestMetadata = commandRequestMetadata(normalized);
+    if (context.progressExperiment && matchesReviewExperiment(context.progressExperiment.report, normalized, context.workspaceRoot)) {
+      requestMetadata.experimentIncidentId = context.progressExperiment.incidentId;
+    }
+    const output = await this.executeNormalizedCommand(normalized, context, {
+      ...hooks,
+      ...(hooks.onStarted ? { onStarted: (snapshot: () => RunningCommandOutput) =>
+        hooks.onStarted!(() => ({ ...snapshot(), requestMetadata })) } : {}),
+    });
+    if (output.validation && baseline && before) {
+      output.validation.standard = compareValidationBaseline(baseline, before, await captureValidationBaseline(context.workspaceRoot, context.limits));
+      this.options.recordLifecycle?.(context, output.commandId, "command.validation.standard", output.validation.standard);
+    }
+    return { ...output, requestMetadata };
+  }
+
+  private async executeNormalizedCommand(
+    input: RunCommandInput,
+    context: ToolContext,
+    hooks: CommandExecutionHooks = {},
+  ): Promise<RunCommandOutput> {
     const commandId = createId("command");
     const startedAt = Date.now();
+    this.assertEnvironmentSafe();
+    this.options.recordLifecycle?.(context, commandId, "command.request_normalized", commandRequestMetadata(input));
     const unrestricted = context.commandExecutionMode === "unrestricted" &&
       (context.isUnrestrictedHostAccessActive?.() ?? true);
-    const executionBackend = unrestricted
-      ? this.unrestrictedExecutionBackend
-      : this.executionBackend;
-    const validationFailure = validateCommandRequest(input);
+    const executionBackend = this.executionBackend;
+    const validation = validateCommandRequest(input);
+    const validationFailure = unrestricted && context.mode !== "plan" &&
+      (validation?.matchedRule === "input.async_workaround" || validation?.matchedRule === "input.shell_protocol") ? undefined : validation;
     if (validationFailure) {
       return this.resolutionFailure(
         commandId,
@@ -336,10 +400,10 @@ export class CommandRuntime {
       );
     }
     let resolved: ResolvedCommand;
+    const networkEnabled = this.options.networkProfile !== "benchmark";
+    const resolverOptions = { unrestrictedHostAccess: false, unrestrictedCommands: unrestricted && context.mode !== "plan", networkEnabled };
     try {
-      resolved = await this.resolver.resolve(input, {
-        unrestrictedHostAccess: unrestricted,
-      });
+      resolved = await this.resolver.resolve(input, resolverOptions);
     } catch (error) {
       return this.resolutionFailure(
         commandId,
@@ -350,23 +414,53 @@ export class CommandRuntime {
         executionBackend,
       );
     }
-    let policyDecision = this.policy.classify(input, resolved, context.mode);
-    if (unrestricted) {
+    const networkOperation = inspectNetworkOperation(resolved);
+    let policyDecision = this.policy.classify(input, resolved, context.mode, networkEnabled);
+    if (unrestricted && context.mode !== "plan") {
       policyDecision = {
         ...policyDecision,
         id: createId("policy"),
         effect: "allow",
         reason:
-          "User explicitly enabled dangerous full-computer access for this EASY CODE process",
+          "User enabled no-prompt execution; environment isolation remains active",
         matchedRule: "allow.unrestricted",
       };
     }
+    if (!networkEnabled && networkOperation) {
+      policyDecision = { ...policyDecision, effect: "deny", reason: "Benchmark command networking is disabled, including dangerous mode", matchedRule: "deny.benchmark_network" };
+    }
     const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
 
-    const shouldAsk = !unrestricted &&
+    // A single approval authorizes this invocation, not the entire Thread.
+    // Cache denial too: a command cannot generate an approval-prompt loop.
+    let networkApproval: Promise<boolean> | undefined;
+    const networkApprovalController = new AbortController();
+    const networkSignal = context.signal ? AbortSignal.any([context.signal, networkApprovalController.signal]) : networkApprovalController.signal;
+    const approveNetwork = (destination?: string): Promise<boolean> => networkApproval ??= (async () => {
+      const effect = networkOperation?.effect ?? "unknown";
+      if (!networkEnabled || context.mode === "plan" && effect !== "read") return false;
+      const prefix = networkCommandApprovalPrefix(resolved.executablePath, networkOperation?.prefixArgs ?? [], resolved.executableHash!);
+      let granted = false;
+      try {
+        granted = await requestNetworkApproval({ ...context, signal: networkSignal }, {
+          id: `${fingerprint}:network`, title: `Network: ${resolved.program}`,
+          description: `${networkOperation?.description ?? "Unclassified program requests network access"}. This approval covers this command and its children. Downloads/uploads may expose data or change remote state.`,
+          risk: effect === "read" ? "read" : "external", commandPrefix: prefix,
+          commandPreview: commandPreview(resolved), network: { effect, ...(destination ? { destination } : {}) },
+        });
+        this.options.recordLifecycle?.(context, commandId, "network.authorization", { effect, granted, ...(destination ? { destination } : {}) });
+      } catch { granted = false; }
+      return granted && !networkSignal.aborted;
+    })();
+
+    const shouldAsk = !unrestricted && !networkOperation &&
       (policyDecision.effect === "ask" || context.approvalPolicy === "ask");
     if (policyDecision.effect === "deny") {
       return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
+    }
+    if (networkOperation && !await approveNetwork()) {
+      policyDecision = { ...policyDecision, effect: "deny", reason: "Network approval was not granted", matchedRule: "deny.network_approval" };
+      return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend, "approval", "approval_not_granted");
     }
     if (shouldAsk) {
       if (context.approvalPolicy === "never") {
@@ -398,6 +492,7 @@ export class CommandRuntime {
           // realpath canonicalization. The UI must never derive a reusable
           // grant by parsing the redacted human-readable preview below.
           commandPrefix: resolved.executablePath,
+          ...(networkEnabled ? { existingNetworkCommandPrefix: networkCommandApprovalPrefix(resolved.executablePath, [], resolved.executableHash!) } : {}),
           commandPreview: commandPreview(resolved),
         });
       } catch {
@@ -427,7 +522,7 @@ export class CommandRuntime {
       policyDecision = {
         ...policyDecision,
         effect: "deny",
-        reason: "Unrestricted host access was revoked before the command started",
+        reason: "Isolated no-prompt authorization was revoked before the command started",
         matchedRule: "deny.unrestricted_revoked",
       };
       return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
@@ -451,11 +546,32 @@ export class CommandRuntime {
       );
     }
 
+    // Re-resolve after an approval wait. Changed executable/npm material needs a
+    // fresh invocation and cannot silently reuse the old approval.
+    const fresh = await this.resolver.resolve(input, resolverOptions);
+    if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
+      throw new Error("Command material changed while awaiting approval; request again");
+    }
+    const networkGate = networkEnabled && (context.mode !== "plan" || networkOperation?.effect === "read")
+      ? await createCommandNetworkGate({
+          signal: networkSignal,
+          authorize: async (host, port) => {
+            if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) return false;
+            return approveNetwork(`${host}:${port}`);
+          },
+          record: (host, port, outcome) => this.options.recordLifecycle?.(context, commandId, "network.connection", { host, port, outcome }),
+        }) : undefined;
+    if (networkGate) sandboxRequest.networkProxyURL = networkGate.proxyURL;
+    try {
     const before = await this.workspace.beginCommandChangeTracking(context.signal);
+    this.executionJournal.begin(commandId, context);
+    this.options.recordLifecycle?.(context, commandId, "command.preparing", { execution: "not_started" });
     let prepared: PreparedCommand;
     try {
       prepared = await executionBackend.prepare(sandboxRequest);
     } catch (error) {
+      if (error instanceof AggregateError) this.quarantine("Sandbox preparation cleanup was incomplete");
+      else this.executionJournal.complete(commandId);
       if (context.signal?.aborted) {
         return this.canceledBeforeStart(
           commandId,
@@ -480,9 +596,9 @@ export class CommandRuntime {
     if (context.signal?.aborted) {
       try {
         await prepared.cleanup();
-      } catch {
-        // The cancellation result remains authoritative; a later doctor run
-        // can diagnose cleanup failures without starting the target command.
+        this.executionJournal.complete(commandId);
+      } catch (error) {
+        this.quarantine(`Canceled preparation cleanup failed: ${String(error)}`);
       }
       return this.canceledBeforeStart(
         commandId,
@@ -496,6 +612,8 @@ export class CommandRuntime {
     const maxOutputChars = Math.max(256, Math.min(context.maxOutputChars, 1_000_000));
     const stdout = new OutputCollector(maxOutputChars);
     const stderr = new OutputCollector(maxOutputChars);
+    const verification = new CommandVerificationCollector({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute,
+      environmentDigest: sha256(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))) });
     const timeout = resolveCommandTimeoutBudget(
       input.timeoutMs,
       context.commandTimeoutMs,
@@ -505,7 +623,7 @@ export class CommandRuntime {
     let timeoutPhase: "initialization" | "command" | undefined;
     let canceled = false;
     let result: ProcessResult = {};
-    let termination: Promise<void> | undefined;
+    let termination: ReturnType<typeof terminateProcessTree> | undefined;
     const sandboxStartupTimeoutMs = Math.max(
       1,
       this.options.sandboxStartupTimeoutMs ??
@@ -514,12 +632,10 @@ export class CommandRuntime {
 
     const subprocess = execa(prepared.executablePath, prepared.args, {
       cwd: prepared.cwdAbsolute,
-      env: prepared.environment,
+      env: { ...prepared.environment, ...(prepared.controlPipe && process.platform === "win32" ? { EASY_CODE_JOB_HANDSHAKE: "1" } : {}) },
       extendEnv: false,
       shell: false,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: prepared.controlPipe ? [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
       buffer: false,
       reject: false,
       cleanup: true,
@@ -528,8 +644,27 @@ export class CommandRuntime {
       stripFinalNewline: false,
     });
 
+    let windowsJob: WindowsCommandJob | undefined;
+    let cooperativeStop: Promise<void> | undefined;
+    let cleanupDeadline: NodeJS.Timeout | undefined;
+    const forceTermination = (): void => {
+      termination ??= windowsJob ? windowsJob.stop() : terminateProcessTree(subprocess);
+    };
     const requestTermination = (): void => {
-      termination ??= terminateProcessTree(subprocess);
+      networkApprovalController.abort();
+      void networkGate?.close();
+      // Leave the trusted Windows worker alive to revoke/restore its ACL lease.
+      // Killing the entire Job here would prevent cleanup_complete forever.
+      if (windowsJob && dispatched && !protocolError && !cleanupError) {
+        if (!cooperativeStop) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          cleanupDeadline = setTimeout(forceTermination, 45_000);
+          cooperativeStop = windowsJob.quiesce().catch(error => {
+            cleanupError = `Descendant cancellation failed: ${String(error)}`;
+            forceTermination();
+          });
+        }
+      } else forceTermination();
     };
     let timeoutTimer: NodeJS.Timeout | undefined;
     const armTimeout = (
@@ -545,6 +680,12 @@ export class CommandRuntime {
     };
     let readyProbe = "";
     let readyObserved = !prepared.metadata.enforced;
+    let dispatched = !prepared.metadata.enforced;
+    let targetExitCode: number | undefined;
+    let cleanupConfirmed = !prepared.metadata.enforced;
+    let cleanupError: string | undefined;
+    let protocolError: string | undefined;
+    const lifecycleEvents: SandboxWorkerControl[] = [];
     let startedAnnounced = false;
     const runningSnapshot = (): RunningCommandOutput => {
       const stdoutDigest = stdout.snapshot();
@@ -583,10 +724,36 @@ export class CommandRuntime {
       armTimeout("command", timeoutMs);
       announceStarted();
     };
-    subprocess.stdout?.on("data", (chunk: Buffer | string) => stdout.push(chunk));
+    const controlStream = new SandboxControlStream(commandId, (control) => {
+      lifecycleEvents.push(control);
+      this.options.recordLifecycle?.(context, commandId, `command.${control.type}`, control);
+      if (control.type === "ready") { readyObserved = true; armTimeout("command", timeoutMs); }
+      if (control.type === "execution_dispatched") { dispatched = true; announceStarted(); }
+      if (control.type === "execution_exited") targetExitCode = control.exitCode;
+      if (control.type === "cleanup_complete") cleanupConfirmed = true;
+      if (control.type === "cleanup_error") cleanupError = control.message;
+      if (control.type === "cleanup_requested") {
+        if (!windowsJob) throw new Error("Missing Windows job supervisor at cleanup");
+        void windowsJob.quiesce().then(()=>subprocess.stdin?.end("CLEANUP\n"),error=>{
+          cleanupError=String(error);requestTermination();
+        });
+      }
+    }, prepared.controlPipe === true);
+    if (prepared.controlPipe) subprocess.stdio[3]?.on("data", (chunk: Buffer) => {
+      try { controlStream.push(chunk); } catch (error) {
+        protocolError = error instanceof Error ? error.message : String(error);
+        requestTermination();
+      }
+    });
+    subprocess.stdout?.on("data", (chunk: Buffer | string) => { verification.push("stdout", chunk); stdout.push(chunk); });
     subprocess.stderr?.on("data", (chunk: Buffer | string) => {
+      verification.push("stderr", chunk);
       stderr.push(chunk);
-      observeReady(chunk);
+      if (!prepared.controlPipe) {
+        observeReady(chunk);
+        // Legacy/test workers: remember controls independently from clipped output.
+        try { controlStream.push(chunk); } catch { /* Untrusted legacy stdout cannot prove an unstarted target. */ }
+      }
     });
 
     const onAbort = (): void => {
@@ -608,20 +775,41 @@ export class CommandRuntime {
     );
     if (!prepared.metadata.enforced) announceStarted();
 
+    if (prepared.controlPipe && process.platform === "win32") {
+      try {
+        if (!subprocess.pid) throw new Error("Worker did not start");
+        windowsJob = await containWindowsWorker(subprocess.pid);
+        if (context.signal?.aborted) requestTermination();
+        else subprocess.stdin?.write("GO\n");
+      } catch (error) {
+        protocolError = error instanceof Error ? error.message : String(error);
+        requestTermination();
+      }
+    }
+
     try {
       result = (await subprocess) as ProcessResult;
     } catch (error) {
       result = error as ProcessResult;
     } finally {
       if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (cleanupDeadline) clearTimeout(cleanupDeadline);
       if (revocationTimer) clearInterval(revocationTimer);
       context.signal?.removeEventListener("abort", onAbort);
     }
-    await termination;
+    const terminationResult = await (windowsJob?.stop() ?? termination);
+    await networkGate?.close();
+    if (terminationResult && !terminationResult.confirmed) {
+      cleanupError = "Process tree termination could not be confirmed";
+      this.quarantine(cleanupError);
+    }
 
     try {
-      await prepared.cleanup();
+      if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) await prepared.cleanup();
+      else this.quarantine(cleanupError ?? "Sandbox cleanup was not confirmed");
     } catch (error) {
+      cleanupError = error instanceof Error ? error.message : String(error);
+      this.quarantine(cleanupError);
       stderr.push(
         `EASY CODE sandbox cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
@@ -633,18 +821,19 @@ export class CommandRuntime {
       ? extractSandboxControls(commandId, rawStderr)
       : { digest: rawStderr, controls: [] };
     const stderrDigest = extractedStderr.digest;
-    const sandboxError = extractedStderr.controls.find((control) =>
+    const controls = prepared.controlPipe ? lifecycleEvents : [...lifecycleEvents, ...extractedStderr.controls];
+    const sandboxError = controls.find((control) =>
       control.type === "sandbox_error"
     );
-    const targetSpawnError = extractedStderr.controls.find((control) =>
+    const targetSpawnError = controls.find((control) =>
       control.type === "target_spawn_error"
     );
-    const lastSandboxStage = [...extractedStderr.controls].reverse().find((control) =>
+    const lastSandboxStage = [...controls].reverse().find((control) =>
       control.type === "stage"
     );
-    const sandboxReady = !prepared.metadata.enforced ||
-      extractedStderr.controls.some((control) => control.type === "ready");
-    const sandboxUnavailableMessage = sandboxError?.type === "sandbox_error"
+    const sandboxReady = readyObserved;
+    const provenNotStarted = !dispatched && !readyObserved && !protocolError && cleanupConfirmed;
+    const sandboxUnavailableMessage = protocolError ?? (sandboxError?.type === "sandbox_error"
       ? sandboxError.message
       : !sandboxReady
         ? timeoutPhase === "initialization" || result.timedOut
@@ -654,7 +843,7 @@ export class CommandRuntime {
               ? ` (last worker stage: ${lastSandboxStage.stage})`
               : " (the worker reported no startup stage)")
           : "Sandbox worker exited without confirming that enforcement was active"
-        : undefined;
+        : undefined);
     const reportedStderr = sandboxUnavailableMessage
       ? (() => {
           const collector = new OutputCollector(maxOutputChars);
@@ -669,11 +858,16 @@ export class CommandRuntime {
     // A normal turn cancellation aborts an in-progress verification pass. If
     // cancellation stopped the command, still complete the workspace audit so
     // command-side changes are never left untracked.
-    const delta = await this.workspace.completeCommandChangeTracking(
-      before,
-      context.signal?.aborted ? undefined : context.signal,
-    );
+    let delta: Awaited<ReturnType<WorkspaceManager["completeCommandChangeTracking"]>>;
+    try {
+      delta = await this.workspace.completeCommandChangeTracking(before, context.signal?.aborted ? undefined : context.signal);
+    } catch (error) {
+      cleanupError = `Post-execution workspace audit failed: ${String(error)}`;
+      this.quarantine(cleanupError);
+      delta = { created: [], updated: [], deleted: [], truncated: true };
+    }
 
+    if (targetExitCode !== undefined) result.exitCode = targetExitCode;
     const status: RunCommandOutput["status"] = canceled
       ? "canceled"
       : sandboxUnavailableMessage
@@ -682,7 +876,7 @@ export class CommandRuntime {
             ? "timed_out"
           : targetSpawnError
             ? "spawn_failed"
-            : result.exitCode === undefined
+          : (targetExitCode ?? result.exitCode) === undefined
               ? "spawn_failed"
               : "exited";
     const failure: RunCommandOutput["failure"] = status === "exited" && result.exitCode !== 0
@@ -713,10 +907,10 @@ export class CommandRuntime {
             ? {
                 kind: "runtime",
                 code: "target_spawn_failed",
-                message: targetSpawnError?.type === "target_spawn_error"
+                message: dispatched ? "Execution was dispatched but its target outcome is unknown; do not rerun automatically" : targetSpawnError?.type === "target_spawn_error"
                   ? targetSpawnError.message
                   : "Runtime could not start the target process",
-                processStarted: false,
+                processStarted: dispatched,
                 retryable: false,
               }
             : sandboxUnavailableMessage
@@ -724,14 +918,21 @@ export class CommandRuntime {
                   kind: "sandbox",
                   code: "sandbox_unavailable",
                   message: sandboxUnavailableMessage,
-                  processStarted: false,
-                  retryable: retryableSandboxFailure(sandboxUnavailableMessage),
+                  processStarted: !provenNotStarted,
+                  executionState: targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
+                  retryable: provenNotStarted && retryableSandboxFailure(sandboxUnavailableMessage),
                 }
               : undefined;
     const output: RunCommandOutput = {
+      validation: { ...verification.finish(status, typeof result.exitCode === "number" ? result.exitCode : null, input.verificationKind), targetKey: verification.targetKey },
       commandId,
       status,
-      exitCode: typeof result.exitCode === "number" ? result.exitCode : null,
+      exitCode: targetExitCode ?? (typeof result.exitCode === "number" ? result.exitCode : null),
+      lifecycle: {
+        execution: targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
+        cleanup: cleanupError ? "failed" : !prepared.metadata.enforced ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
+        ...(cleanupError ? { cleanupError } : {}),
+      },
       signal: result.signal ?? null,
       durationMs: Date.now() - startedAt,
       stdout: stdoutDigest,
@@ -743,14 +944,22 @@ export class CommandRuntime {
       ...(sandboxUnavailableMessage
         ? {
             sandboxFailure: {
-              phase: "initialization" as const,
-              retryable: retryableSandboxFailure(sandboxUnavailableMessage),
+              phase: provenNotStarted ? "initialization" as const : "execution" as const,
+              retryable: provenNotStarted && retryableSandboxFailure(sandboxUnavailableMessage),
             },
           }
         : {}),
       ...(failure ? { failure } : {}),
       executed: this.executionSummary(resolved),
     };
+
+    try {
+      this.options.recordLifecycle?.(context, commandId, "command.finished", { status: output.status, exitCode: output.exitCode, lifecycle: output.lifecycle, validation: output.validation });
+      if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) this.executionJournal.complete(commandId);
+    } catch (error) {
+      this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`);
+      output.lifecycle!.cleanup = "unconfirmed";
+    }
 
     const summary = status === "exited"
       ? `Exited with code ${output.exitCode}`
@@ -759,6 +968,10 @@ export class CommandRuntime {
         : status.replace(/_/gu, " ");
     this.audit(output, resolved, context, summary);
     return output;
+    } finally {
+      networkApprovalController.abort();
+      await networkGate?.close();
+    }
   }
 
   private ownerFor(context: CommandRuntimeOwner): BackgroundCommandOwner {

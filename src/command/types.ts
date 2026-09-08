@@ -2,6 +2,8 @@ import type { AgentMode, ApprovalRequest } from "../core/types.js";
 import type { SandboxExecutionMetadata } from "../sandbox/types.js";
 import type { WorkspaceDelta } from "../workspace/snapshot.js";
 import type { CommandTimeoutBudget } from "./timeout.js";
+import type { CommandRequestMetadata } from "./normalize-request.js";
+import type { CommandValidation } from "./verification.js";
 
 export const COMMAND_INTENTS = [
   "inspect",
@@ -37,9 +39,10 @@ export type VerificationKind = typeof VERIFICATION_KINDS[number];
 export function commandVerificationKind(
   input: Pick<RunCommandInput, "intent" | "verificationKind">,
 ): VerificationKind | undefined {
+  if (!["verify", "test", "build"].includes(input.intent)) return undefined;
   if (input.verificationKind) return input.verificationKind;
   if (input.intent === "build") return "build";
-  if (input.intent === "test") return "custom";
+  if (input.intent === "test" || input.intent === "verify") return "custom";
   return undefined;
 }
 
@@ -48,8 +51,10 @@ export interface RunCommandInput {
   args?: string[];
   cwd?: string;
   intent: CommandIntent;
-  /** Required for verify; optional metadata for backward-compatible test/build calls. */
+  /** Optional metadata; Runtime defaults verify/test to custom and build to build. */
   verificationKind?: VerificationKind;
+  /** Runtime-issued; not accepted as a model tool argument. */
+  normalizationWarnings?: string[];
   timeoutMs?: number;
   reason?: string;
 }
@@ -82,10 +87,14 @@ export interface ResolvedCommand {
   cwdAbsolute: string;
   cwdRelative: string;
   executableInsideWorkspace: boolean;
+  /** Issued by Resolver, never by model input. */
+  trustedExecutable?: boolean;
   environment: NodeJS.ProcessEnv;
   environmentKeys: string[];
   /** Hash of npm script/package/.npmrc material bound into exact approval. */
   approvalMaterialHash?: string;
+  /** Canonical executable content identity for reusable network grants. */
+  executableHash?: string;
 }
 
 export interface CommandPolicyDecision {
@@ -124,6 +133,7 @@ export type CommandFailureKind =
   | "runtime";
 
 export interface CommandFailure {
+  executionState?: "not_started" | "unknown" | "started" | "exited";
   kind: CommandFailureKind;
   /** Stable, concise reason suitable for recovery decisions and tests. */
   code: string;
@@ -134,6 +144,13 @@ export interface CommandFailure {
 }
 
 export interface RunCommandOutput {
+  validation?: CommandValidation;
+  requestMetadata?: CommandRequestMetadata;
+  lifecycle?: {
+    execution: "not_started" | "unknown" | "started" | "exited";
+    cleanup: "not_required" | "confirmed" | "failed" | "unconfirmed";
+    cleanupError?: string;
+  };
   commandId: string;
   status:
     | "exited"
@@ -153,7 +170,7 @@ export interface RunCommandOutput {
   /** Present once Runtime can classify and apply the invocation's command-phase budget. */
   timeout?: CommandTimeoutBudget;
   sandboxFailure?: {
-    phase: "prepare" | "initialization";
+    phase: "prepare" | "initialization" | "execution";
     retryable: boolean;
   };
   /** Present for every unsuccessful terminal execution result. */
@@ -168,6 +185,7 @@ export interface RunCommandOutput {
 
 /** A command whose policy/approval and sandbox startup have completed successfully. */
 export interface RunningCommandOutput {
+  requestMetadata?: CommandRequestMetadata;
   commandId: string;
   status: "running";
   exitCode: null;

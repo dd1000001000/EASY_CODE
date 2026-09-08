@@ -20,6 +20,8 @@ import { ManageTasksTool } from "./manage-tasks.js";
 import { ManageSubagentsTool } from "./manage-subagents.js";
 import { ProposePlanTool } from "./propose-plan.js";
 import { UpdateFileTool } from "./update-file.js";
+import { FetchArtifactTool } from "./fetch-artifact.js";
+import type { DownloadBroker } from "../downloads/broker.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<ToolName, AgentTool>();
@@ -48,6 +50,7 @@ export function createDefaultTools(
   options: {
     subagentControl?: SubagentControl;
     commandRuntime?: CommandRuntime;
+    downloadBroker?: DownloadBroker;
   } = {},
 ): AgentTool[] {
   const commandRuntime = options.commandRuntime ?? new CommandRuntime(workspaceManager);
@@ -62,6 +65,7 @@ export function createDefaultTools(
     new StartCommandTool(workspaceManager, commandRuntime),
     new PollCommandTool(workspaceManager, commandRuntime),
     new CancelCommandTool(workspaceManager, commandRuntime),
+    ...(options.downloadBroker ? [new FetchArtifactTool(options.downloadBroker)] : []),
     new ManageTasksTool(),
     ...(options.subagentControl
       ? [new ManageSubagentsTool(options.subagentControl)]
@@ -69,7 +73,16 @@ export function createDefaultTools(
     new ProposePlanTool(),
     new CompactContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
-  ];
+  ].map((tool) => {
+    if (tool.mutating) {
+      const execute = tool.execute.bind(tool);
+      tool.execute = (input: unknown, context: import("../core/types.js").ToolContext) => {
+        commandRuntime.assertEnvironmentSafe();
+        return execute(input, context);
+      };
+    }
+    return tool;
+  });
 }
 
 export function createDefaultToolRegistry(
@@ -78,6 +91,7 @@ export function createDefaultToolRegistry(
   options: {
     subagentControl?: SubagentControl;
     commandRuntime?: CommandRuntime;
+    downloadBroker?: DownloadBroker;
   } = {},
 ): ToolRegistry {
   return new ToolRegistry(createDefaultTools(workspaceManager, memoryManager, options));

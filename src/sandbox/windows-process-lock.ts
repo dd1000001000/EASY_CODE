@@ -9,6 +9,7 @@ interface WindowsProcessLockOwner {
 }
 
 export interface WindowsProcessLockOptions {
+  refuseAbandoned?: boolean;
   waitTimeoutMs?: number;
   pollIntervalMs?: number;
   incompleteOwnerGraceMs?: number;
@@ -95,6 +96,7 @@ export class WindowsSandboxProcessLock {
   private readonly incompleteOwnerGraceMs: number;
   private readonly createToken: () => string;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly refuseAbandoned: boolean;
 
   constructor(
     private readonly lockPath: string,
@@ -107,6 +109,7 @@ export class WindowsSandboxProcessLock {
       options.incompleteOwnerGraceMs ?? DEFAULT_INCOMPLETE_OWNER_GRACE_MS;
     this.createToken = options.createToken ?? (() => `${process.pid}-${Date.now()}-${Math.random()}`);
     this.isProcessAlive = options.isProcessAlive ?? defaultProcessAlive;
+    this.refuseAbandoned = options.refuseAbandoned ?? false;
   }
 
   async acquire(signal?: AbortSignal): Promise<() => Promise<void>> {
@@ -191,6 +194,7 @@ export class WindowsSandboxProcessLock {
       if (errorCode(error) !== "ENOENT") return;
       if (ownerText !== undefined) return;
     }
+    if (this.refuseAbandoned) throw new Error("Abandoned Windows ACL lease: cleanup is unknown; operator recovery is required before another workspace can use the shared sandbox identity");
     await rm(this.lockPath, { recursive: true, force: true });
   }
 }
@@ -198,5 +202,5 @@ export class WindowsSandboxProcessLock {
 export function createDefaultWindowsSandboxProcessLock(
   options: WindowsProcessLockOptions = {},
 ): WindowsSandboxProcessLock {
-  return new WindowsSandboxProcessLock(WINDOWS_SANDBOX_PROCESS_LOCK_PATH, options);
+  return new WindowsSandboxProcessLock(WINDOWS_SANDBOX_PROCESS_LOCK_PATH, { ...options, refuseAbandoned: true });
 }

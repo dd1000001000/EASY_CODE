@@ -46,7 +46,7 @@ function approvalRequest(): ApprovalRequest {
     title: "Run workspace command",
     description: "A test command requires explicit approval.",
     risk: "workspace",
-    commandPrefix: process.execPath,
+    commandPrefix: path.join(path.dirname(process.execPath), "git.exe"),
   };
 }
 
@@ -122,7 +122,7 @@ describe("background subagent approvals", () => {
   it("consumes an exact parent-Thread executable grant without opening stdin", async () => {
     const harness = approvalHarness(
       false,
-      grantCommandApprovalPrefix([], process.execPath),
+      grantCommandApprovalPrefix([], path.join(path.dirname(process.execPath), "git.exe")),
     );
     try {
       assert.equal(await harness.request(approvalRequest()), true);
@@ -131,7 +131,7 @@ describe("background subagent approvals", () => {
 
       const different = {
         ...approvalRequest(),
-        commandPrefix: path.join(path.dirname(process.execPath), "different-executable"),
+        commandPrefix: path.join(path.dirname(path.join(path.dirname(process.execPath), "git.exe")), "different-executable"),
       };
       assert.equal(await harness.request(different), false);
       assert.equal(harness.terminal.approvalCalls, 0);

@@ -45,7 +45,8 @@ export function projectToolResult(result: ToolExecutionResult,
   if (!record(data) || typeof data.commandId !== "string" || typeof data.status !== "string" ||
       !record(data.stdout) || !record(data.stderr) || typeof data.stdout.text !== "string" || typeof data.stderr.text !== "string") return result;
   const previous = previousCommand(context.previousMessages ?? [], data.commandId);
-  const intent = context.intent ?? (typeof previous?.intent === "string" ? previous.intent : undefined);
+  const intent = record(data.requestMetadata) && typeof data.requestMetadata.intent === "string" ? data.requestMetadata.intent
+    : context.intent ?? (typeof previous?.intent === "string" ? previous.intent : undefined);
   const verification = ["test", "verify", "build"].includes(intent ?? "");
   const maximum = intent === "inspect" ? limits.commandQueryChars : result.ok ? limits.commandSuccessChars : limits.commandFailureChars;
   const priorCursor = record(previous?.outputCursor) ? previous.outputCursor : undefined;
@@ -69,6 +70,10 @@ export function projectToolResult(result: ToolExecutionResult,
   });
   return { ...result, data: {
     commandId: data.commandId, status: data.status, exitCode: data.exitCode,
+    requestMetadata: data.requestMetadata,
+    validation: record(data.validation) ? { ...data.validation,
+      ...(Array.isArray(data.validation.evidence) ? { evidence: data.validation.evidence.slice(0, 4) } : {}) } : undefined,
+    lifecycle: data.lifecycle,
     intent,
     signal: data.signal, durationMs: data.durationMs,
     stdout: digest(data.stdout, stdoutText, stdoutLimit), stderr: digest(data.stderr, stderrText, stderrLimit),

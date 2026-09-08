@@ -43,7 +43,6 @@ const ALL_TOOL_NAMES: ToolName[] = [
 ];
 
 const CHILD_TOOL_NAMES: ToolName[] = [
-  "compact_context",
   "create_file",
   "delete_file",
   "read_file",

@@ -166,7 +166,7 @@ Use `-y` to auto-approve policy-allowed prompts while keeping permanent denials 
 easy-code --workspace ./my-project --mode code -y
 ```
 
-During an interactive session, run `/approval` to choose Manual approval, Auto approve, or Dangerous full access. Dangerous full access requires a second confirmation and removes the workspace sandbox and approval prompts for the current process.
+Run `/approval` to select Manual (all networking asks), Auto (proven read-only networking is automatic; downloads/uploads/unknown networking ask), or dangerous no-prompt execution (no command/network approvals). Saved network prefixes bypass repeated prompts; inspect/revoke them with `/permissions`. Every posture keeps the workspace sandbox, read-only Plan and Benchmark command-network restrictions. See [command security](docs/COMMAND_SECURITY.md).
 
 Useful checks:
 

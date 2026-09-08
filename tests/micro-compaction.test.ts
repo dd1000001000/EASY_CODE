@@ -403,7 +403,7 @@ describe("MicroCompaction", () => {
       consumedReasoning);
   });
 
-  it("rejects insufficient capacity rather than truncating active thinking", () => {
+  it("reports mandatory pressure to Runtime rather than truncating active thinking", () => {
     const activeCall = call("call_active", "run_command");
     if (activeCall.role !== "assistant") throw new Error("expected assistant call");
     activeCall.reasoning_content = "reasoning".repeat(2_000);
@@ -411,11 +411,16 @@ describe("MicroCompaction", () => {
       { role: "user", content: "run the verification" },
       activeCall,
     ]);
-    assert.throws(() => new ContextManager().build({
+    const manager = new ContextManager();
+    const pressured = manager.build({
       systemPrompt: "system",
       state,
       maxContextChars: 4_096,
-    }), /latest reasoning\/tool exchange cannot fit intact/u);
+    });
+    assert.equal(manager.inspectProviderRequest({ state, messages: pressured,
+      tools: [], maxContextChars: 4_096 }).pressure, "force");
+    assert.ok(pressured.some((message) => message.role === "assistant" &&
+      message.reasoning_content === activeCall.reasoning_content));
     const built = new ContextManager().build({ systemPrompt: "system", state, maxContextChars: 30_000 });
     const projectedCall = built.find((message) =>
       message.role === "assistant" && message.tool_calls?.[0]?.id === "call_active"

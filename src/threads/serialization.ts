@@ -138,12 +138,14 @@ function isContextCompactionMetadata(
     "savingsRatio",
     "postCompactionUtilization",
     "safeWaterlineReached",
+    "targetRatio",
   ])) return false;
   const beforeProjectedChars = Number(value.beforeProjectedChars);
   const afterProjectedChars = Number(value.afterProjectedChars);
   const savedChars = Number(value.savedChars);
   const savingsRatio = Number(value.savingsRatio);
   const postCompactionUtilization = Number(value.postCompactionUtilization);
+  const targetRatio = value.targetRatio === undefined ? 0.55 : value.targetRatio;
   return value.formatVersion === 2 &&
     Number.isSafeInteger(value.sourceStartMessageIndex) &&
     Number(value.sourceStartMessageIndex) >= 0 &&
@@ -167,9 +169,10 @@ function isContextCompactionMetadata(
     savedChars > 0 &&
     Math.abs((beforeProjectedChars - afterProjectedChars) - savedChars) < 1e-6 &&
     savingsRatio > 0 && savingsRatio <= 1 &&
-    postCompactionUtilization >= 0 && postCompactionUtilization < 0.8 &&
+    postCompactionUtilization >= 0 && postCompactionUtilization <= 1 &&
+    typeof targetRatio === "number" && Number.isFinite(targetRatio) && targetRatio > 0 && targetRatio < 1 &&
     typeof value.safeWaterlineReached === "boolean" &&
-    value.safeWaterlineReached === (postCompactionUtilization <= 0.55);
+    value.safeWaterlineReached === (postCompactionUtilization <= targetRatio);
 }
 
 function cloneContextIntentLedger(

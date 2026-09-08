@@ -298,7 +298,7 @@ describe("SWE-bench Verified integration", () => {
     );
     assert.match(
       source,
-      /finally:\s*await environment\.set_network_policy\(\s*baseline_network_policy\s*\)/u,
+      /await self\._restore_network_after_clean_exit\(\s*environment, baseline_network_policy/u,
     );
     assert.doesNotMatch(source, /NetworkPolicy\(network_mode=NetworkMode\.NO_NETWORK\)/u);
     assert.match(source, /environment\.upload_file\(\s*self\._host_api_key_file,\s*_REMOTE_API_KEY_FILE/u);

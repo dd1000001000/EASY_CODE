@@ -40,7 +40,17 @@ async function main() {
   if (failures > 0) process.exitCode = 1;
 }
 
-main().catch((error) => {
+let completed = false;
+process.once("beforeExit", () => {
+  if (completed) return;
+  process.stderr.write("Test runner exited before completing all tests (an unresolved promise may have no live handles).\n");
+  process.exitCode = 1;
+});
+
+main().then(() => {
+  completed = true;
+}).catch((error) => {
+  completed = true;
   process.stderr.write(`${error.stack || error.message || String(error)}\n`);
   process.exitCode = 1;
 });

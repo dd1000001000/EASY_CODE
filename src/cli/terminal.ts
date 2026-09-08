@@ -11,6 +11,7 @@ import type {
   ThinkingEffort,
 } from "../core/types.js";
 import { selectApproval } from "./approval-selector.js";
+import { formatCommandApprovalPrefix } from "../command/approval.js";
 import {
   formatPlanProposal,
   sanitizePlanText,
@@ -260,6 +261,7 @@ export class Terminal {
   private currentRequestOptions?: Readonly<CurrentRequestOptions>;
   /** Coalesce a Ctrl+C key-repeat burst into one cancellation per request. */
   private currentRequestInterruptSignaled = false;
+  private activeApprovalController?: AbortController;
   private busyInputOwner?: BusyInputOwner;
   private busyPromptController?: AbortController;
   private busyPromptSession?: PromptInputSession;
@@ -389,6 +391,7 @@ export class Terminal {
     images: readonly Readonly<ImageAttachment>[] = [],
     options: Readonly<CurrentRequestOptions> = {},
   ): void {
+    this.activeApprovalController?.abort();
     this.stopBusyComposer();
     this.stopBusyInputOwner();
     this.steeringAdmissionPaused = false;
@@ -460,6 +463,7 @@ export class Terminal {
   }
 
   clearCurrentRequest(): void {
+    this.activeApprovalController?.abort();
     this.currentRequestOptions = undefined;
     this.currentRequestInterruptSignaled = false;
     this.steeringAdmissionPaused = false;
@@ -1124,6 +1128,7 @@ export class Terminal {
   }
 
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
+    if (request.signal?.aborted) return "reject";
     const title = redactSensitiveInformation(sanitizeCommandOutput(request.title))
       .replace(/\s+/gu, " ")
       .trim();
@@ -1140,6 +1145,8 @@ export class Terminal {
     this.write(
       chalk.yellow(`\nApproval required: ${title}\n`) +
         `${description}\n` +
+        (request.network ? `Network effect: ${request.network.effect}; destination: ${sanitizeCommandOutput(request.network.destination ?? "resolved when the command connects")}\n` : "") +
+        (request.network ? `Optional saved grant scope: ${sanitizeCommandOutput(formatCommandApprovalPrefix(request.commandPrefix))}\n` : "") +
         (preview ? chalk.gray(`Command: ${preview}\n`) : ""),
     );
 
@@ -1152,9 +1159,15 @@ export class Terminal {
     ) {
       return "reject";
     }
+    const controller = new AbortController();
+    this.activeApprovalController = controller;
+    const onRequestAbort = () => controller.abort();
+    request.signal?.addEventListener("abort", onRequestAbort, { once: true });
+    if (request.signal?.aborted) controller.abort();
     try {
       return await this.withPrivateProtocolFilteredInput((input) =>
         selectApproval(request.commandPrefix, {
+          signal: controller.signal,
           input: input as ModelSelectorInput,
           output: this.output as ModelSelectorOutput,
           color: this.colorEnabled(),
@@ -1174,6 +1187,9 @@ export class Terminal {
       );
     } catch {
       return "reject";
+    } finally {
+      request.signal?.removeEventListener("abort", onRequestAbort);
+      if (this.activeApprovalController === controller) this.activeApprovalController = undefined;
     }
   }
 
@@ -1622,6 +1638,7 @@ export class Terminal {
   }
 
   close(): void {
+    this.activeApprovalController?.abort();
     this.vscodeMenuBridge?.close();
     if (this.closed) return;
     this.closeDisclosureViewer();

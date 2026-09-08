@@ -1,6 +1,8 @@
 import { hostname } from "node:os";
 import { foldCompactionControl, prefixHash, completeExchange } from "../context/compaction-transaction.js";
 import { compactionSnapshot } from "../context/semantic-compaction.js";
+import { foldPendingOperations } from "../context/pending-operations.js";
+import { foldPressureRecovery, foldContextMaintenance } from "../context/pressure-recovery.js";
 
 import {
   DEFAULT_THINKING_EFFORT,
@@ -63,6 +65,7 @@ import {
 import {
   grantCommandApprovalPrefix,
   normalizeCommandApprovalPrefix,
+  validateCommandApprovalPrefixes,
 } from "../command/approval.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
@@ -918,7 +921,7 @@ function applyThreadCheckpointDelta(
       throw new Error(`Thread checkpoint delta ${event.eventId} repeated its compaction`);
     }
     const metadata = delta.compaction.contextCompactionMetadata;
-    if (state.compactionControl?.transaction) {
+    if (state.compactionControl?.transaction || state.pressureRecovery) {
       throw new Error(`Thread checkpoint delta ${event.eventId} cannot replace transaction-owned compaction`);
     }
     if (metadata) {
@@ -1332,7 +1335,7 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
-        if (input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+        if (input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
             (input.type === "context.compacted" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
@@ -1409,6 +1412,10 @@ export class ThreadStore {
             priorState.commandApprovalPrefixes,
             payload.commandPrefix,
           );
+        }
+        if (input.type === "command.approval_prefix_revoked") {
+          if (input.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation");
+          normalizeCommandApprovalPrefix(payload.commandPrefix);
         }
         if (payload && "taskGraph" in payload) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
@@ -1666,6 +1673,11 @@ export class ThreadStore {
       phase: "completed",
       payload: { commandPrefix: normalized },
     });
+  }
+
+  recordCommandApprovalPrefixRevocation(threadId: string, commandPrefix: string, turnId?: string): EventRecord {
+    return this.appendEvent(threadId, { type: "command.approval_prefix_revoked", turnId, phase: "completed",
+      payload: { commandPrefix: normalizeCommandApprovalPrefix(commandPrefix) } });
   }
 
   recordSubagentArtifacts(
@@ -2039,7 +2051,7 @@ export class ThreadStore {
           // Context compaction is an event-authoritative monotonic boundary.
           // A checkpoint may have been serialized before a background append;
           // never let that derived snapshot expand already-compacted history.
-          if (state.compactionControl?.transaction && checkpoint.compactedMessageCount > state.compactedMessageCount) {
+          if ((state.compactionControl?.transaction || state.pressureRecovery) && checkpoint.compactedMessageCount > state.compactedMessageCount) {
             throw new Error(`Thread checkpoint ${event.eventId} cannot advance transaction-owned compaction`);
           }
           if (state.compactedMessageCount >= checkpoint.compactedMessageCount) {
@@ -2088,6 +2100,8 @@ export class ThreadStore {
           ? structuredClone(durableProgress)
           : createProgressGuardState();
         checkpoint.compactionControl = durableCompaction ? structuredClone(durableCompaction) : { phaseEnds: [] };
+        checkpoint.pressureRecovery = state?.pressureRecovery ? structuredClone(state.pressureRecovery) : undefined;
+        checkpoint.contextOperations = state?.contextOperations ? structuredClone(state.contextOperations) : undefined;
         state = checkpoint;
         continue;
       }
@@ -2100,7 +2114,11 @@ export class ThreadStore {
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
 
-      if (event.type === "context.phase.closed" || event.type.startsWith("context.compaction.")) {
+      if (event.type === "context.maintenance.checked") {
+        foldContextMaintenance(state, payload);
+      } else if (event.type === "context.history.evicted") {
+        foldPressureRecovery(state, payload);
+      } else if (event.type === "context.phase.closed" || event.type.startsWith("context.compaction.")) {
         foldCompactionControl(state, event.type, payload);
       } else if (event.type === "turn_started") {
         state.activeTurnId = event.turnId;
@@ -2153,6 +2171,7 @@ export class ThreadStore {
       ) {
         appendMessageIfNew(state, event.payload);
       } else if (event.type === "tool.result" && payload) {
+        foldPendingOperations(state, payload);
         if ("progressObservation" in payload) {
           if (
             typeof payload.callId !== "string" ||
@@ -2325,10 +2344,16 @@ export class ThreadStore {
         ) {
           throw new Error(`Invalid command approval prefix grant in event ${event.eventId}`);
         }
-        state.commandApprovalPrefixes = grantCommandApprovalPrefix(
-          state.commandApprovalPrefixes,
+        // Historical interpreter grants must remain recoverable, but the
+        // command permission check treats them as inert in the new policy.
+        state.commandApprovalPrefixes = validateCommandApprovalPrefixes([
+          ...state.commandApprovalPrefixes.filter((prefix) => prefix !== payload.commandPrefix),
           payload.commandPrefix,
-        );
+        ]);
+      } else if (event.type === "command.approval_prefix_revoked") {
+        if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation event");
+        const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
+        state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(p => normalizeCommandApprovalPrefix(p) !== prefix);
       } else if (isProgressReviewEventType(event.type)) {
         state.progressGuard = foldProgressReviewEvent(
           state.progressGuard ?? createProgressGuardState(),

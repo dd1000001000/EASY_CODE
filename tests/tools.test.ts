@@ -112,7 +112,7 @@ describe("workspace file tools", () => {
     const relative = path.relative(home, path.join(getEasyCodeHome(), "active.json"));
     assert.throws(
       () => guard.normalizeRelative(relative),
-      /official EASY CODE Runtime resources/u,
+      /official EASY CODE Runtime resources/iu,
     );
   });
   it("exports the workspace tools and runtime context tool", async () => {
@@ -174,9 +174,9 @@ describe("workspace file tools", () => {
     });
   });
 
-  it("accepts Compaction Summary V2 without exposing coverage or intent metadata", async () => {
+  it("accepts a semantic handoff without delegating Runtime facts or committing context", async () => {
     const tool = new CompactContextTool();
-    const input = compactContextV2Input();
+    const input = { currentWork: "Communication investigation unfinished", nextStep: "Trace the receiver", hypotheses: ["A local bridge may be involved"] };
     const accepted = await tool.execute(
       input,
       context(process.cwd()),
@@ -194,23 +194,14 @@ describe("workspace file tools", () => {
       coverageCheck?: unknown;
       intentLedger?: unknown;
     };
-    assert.equal(persisted.formatVersion, 2);
-    assert.deepEqual(persisted.activeConstraints, input.activeConstraints);
+    assert.deepEqual(persisted, input);
     assert.equal(persisted.coverageCheck, undefined);
     assert.equal(persisted.intentLedger, undefined);
-    assert.deepEqual(accepted.contextCompaction?.intentLedger, {
-      latestRequest: input.primaryRequest,
-      activeConstraints: input.activeConstraints,
-      ...input.intentLedger,
-    });
-    assert.deepEqual(
-      accepted.contextCompaction?.coverageCheck,
-      input.coverageCheck,
-    );
-    assert.deepEqual(accepted.data, {
-      formatVersion: 2,
-      summaryChars: accepted.contextCompaction?.summary.length,
-    });
+    assert.equal(accepted.contextCompaction?.intentLedger, undefined);
+    assert.equal(accepted.contextCompaction?.coverageCheck, undefined);
+    assert.equal(accepted.contextCompaction?.formatVersion, 3);
+    assert.deepEqual(accepted.data, { formatVersion: 3 });
+    assert.match(accepted.summary, /Runtime has not committed/);
     const modelVisibleResult = JSON.stringify({
       summary: accepted.summary,
       data: accepted.data,
@@ -219,7 +210,7 @@ describe("workspace file tools", () => {
     assert.equal(rejected.ok, false);
   });
 
-  it("publishes one strict provider-neutral V2 schema without analysis escape hatches", () => {
+  it("publishes one small provider-neutral semantic schema without self-certification flags", () => {
     const parameters = new CompactContextTool().definition.function.parameters;
     const serialized = JSON.stringify(parameters);
     const root = parameters as {
@@ -229,8 +220,10 @@ describe("workspace file tools", () => {
     };
 
     assert.equal(root.additionalProperties, false);
-    assert.equal(root.required?.includes("coverageCheck"), true);
-    assert.equal(root.required?.includes("intentLedger"), true);
+    assert.equal(root.properties?.coverageCheck, undefined);
+    assert.equal(root.properties?.intentLedger, undefined);
+    assert.ok(root.properties?.currentWork);
+    assert.ok(root.properties?.nextStep);
     assert.equal(root.properties?.summary, undefined);
     assert.equal(root.properties?.analysis, undefined);
     assert.doesNotMatch(serialized, /"(?:oneOf|anyOf|allOf)"/u);
@@ -401,88 +394,23 @@ describe("workspace file tools", () => {
     });
   });
 
-  it("allows checked absolute host file operations only during dangerous full access", async () => {
+  it("rejects absolute host reads and writes in every approval posture", async () => {
     const hostRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-files-"));
     try {
+      const target = path.join(hostRoot, "outside.txt");
+      await writeFile(target, "user content");
       await withWorkspace(async (root, manager) => {
-        const reader = new ReadFileTool(manager);
-        const creator = new CreateFileTool(manager);
-        const updater = new UpdateFileTool(manager);
-        const remover = new DeleteFileTool(manager);
-        const target = path.join(
-          path.normalize(await realpath(hostRoot)),
-          "nested",
-          "outside.txt",
-        );
-
-        const restrictedCreate = await creator.execute(
-          { path: target, content: "blocked\n" },
-          context(root),
-        );
-        assert.equal(restrictedCreate.ok, false);
-        assert.match(restrictedCreate.error ?? "", /Absolute paths are not allowed/iu);
-
-        let active = true;
-        let epoch = 1;
-        const dangerous = context(root, "code", {
-          commandExecutionMode: "unrestricted",
-          isUnrestrictedHostAccessActive: () => active,
-          unrestrictedHostAccessEpoch: () => epoch,
-        });
-        const created = await creator.execute(
-          { path: target, content: "outside one\n" },
-          dangerous,
-        );
-        assert.equal(created.ok, true);
-        assert.equal((created.data as { path: string }).path, path.normalize(target));
-
-        const read = await reader.execute({ path: target }, dangerous);
-        assert.equal(read.ok, true);
-        const hash = (read.data as { contentHash: string }).contentHash;
-        const updated = await updater.execute(
-          {
-            path: target,
-            expectedHash: hash,
-            edits: [{ oldText: "outside one", newText: "outside two" }],
-          },
-          dangerous,
-        );
-        assert.equal(updated.ok, true);
-        assert.equal(await readFile(target, "utf8"), "outside two\n");
-
-        const updatedHash = (updated.data as { contentHash: string }).contentHash;
-        epoch += 1;
-        const staleAuthorization = await remover.execute(
-          { path: target, expectedHash: updatedHash },
-          dangerous,
-        );
-        assert.equal(staleAuthorization.ok, false);
-        assert.match(staleAuthorization.error ?? "", /must be successfully read/iu);
-
-        const reread = await reader.execute({ path: target }, dangerous);
-        const rereadHash = (reread.data as { contentHash: string }).contentHash;
-        const removed = await remover.execute(
-          { path: target, expectedHash: rereadHash },
-          dangerous,
-        );
-        assert.equal(removed.ok, true);
-        await assert.rejects(() => readFile(target, "utf8"), /ENOENT/u);
-
-        active = false;
-        const revoked = await creator.execute(
-          { path: path.join(hostRoot, "revoked", "no.txt"), content: "no" },
-          dangerous,
-        );
-        assert.equal(revoked.ok, false);
-        await assert.rejects(
-          () => readFile(path.join(hostRoot, "revoked", "no.txt"), "utf8"),
-          /ENOENT/u,
-        );
-        assert.equal(manager.getChangeSet().some((change) => path.isAbsolute(change.path)), false);
+        for (const commandExecutionMode of ["manual", "auto_approve", "unrestricted"] as const) {
+          const ctx = context(root, "code", { commandExecutionMode, isUnrestrictedHostAccessActive: () => true });
+          assert.equal((await new ReadFileTool(manager).execute({ path: target }, ctx)).ok, false);
+          assert.equal((await new CreateFileTool(manager).execute({ path: path.join(hostRoot, "new.txt"), content: "no" }, ctx)).ok, false);
+          assert.equal((await new UpdateFileTool(manager).execute({ path: target, expectedHash: "0".repeat(64), edits: [{ oldText: "user", newText: "model" }] }, ctx)).ok, false);
+          assert.equal((await new DeleteFileTool(manager).execute({ path: target, expectedHash: "0".repeat(64) }, ctx)).ok, false);
+        }
+        assert.equal(await readFile(target, "utf8"), "user content");
+        assert.equal(manager.getChangeSet().some(change => path.isAbsolute(change.path)), false);
       });
-    } finally {
-      await rm(hostRoot, { recursive: true, force: true });
-    }
+    } finally { await rm(hostRoot, { recursive: true, force: true }); }
   });
 
   it("does not return host content when dangerous access is revoked during a read", async () => {
@@ -503,7 +431,7 @@ describe("workspace file tools", () => {
           }),
         );
         assert.equal(result.ok, false);
-        assert.match(result.error ?? "", /revoked/iu);
+        assert.match(result.error ?? "", /Absolute paths/iu);
         assert.doesNotMatch(JSON.stringify(result), /host content/u);
       });
     } finally {

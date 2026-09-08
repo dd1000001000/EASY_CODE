@@ -27,6 +27,7 @@ import {
 } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
+import { captureValidationBaseline } from "../src/progress/validation-standard.js";
 
 class HostCommandBackend implements CommandExecutionBackend {
   describe(): PreparedCommand["metadata"] {
@@ -51,6 +52,36 @@ class HostCommandBackend implements CommandExecutionBackend {
     };
   }
 }
+
+describe("command validation baseline integration", () => {
+  it("retains a bound experiment through polling and marks a weakened original test non-comparable", async () => {
+    await withWorkspace(async (root, manager) => {
+      const filename = path.join(root, "test.cjs");
+      const original = "const t=require('node:test');const a=require('node:assert/strict');t('boundary',async()=>{await new Promise(r=>setTimeout(r,100));a.equal(2,3)});\n";
+      await writeFile(filename, original);
+      const tools = commandTools(manager);
+      const args = ["--test", "--test-reporter=tap", "test.cjs"];
+      const runContext = { ...context(root, { approve: true, timeoutMs: 5000 }), validationBaseline: await captureValidationBaseline(root),
+        progressExperiment: { incidentId: "incident_bound", report: { recommendation: "run_experiment" as const,
+          summary: "s", diagnosis: "d", evidence: "e", experiment: "run", expectedSignal: "pass", falsifyingSignal: "fail",
+          experimentProgram: process.execPath, experimentArgsJson: JSON.stringify(args), experimentCwd: "." } } };
+      try {
+        let output = await tools.runtime.start({ program: process.execPath, args, intent: "verify" }, runContext);
+        while (output.status === "running") output = await tools.runtime.status(output.commandId, runContext, 1000);
+        assert.equal(output.validation?.status, "failed");
+        assert.equal(output.validation?.standard?.status, "unchanged");
+        assert.equal(output.requestMetadata?.experimentIncidentId, "incident_bound");
+        const repeated = await tools.runtime.status(output.commandId, runContext);
+        assert.deepEqual(repeated.requestMetadata, output.requestMetadata);
+        await writeFile(filename, original.replace("a.equal(2,3)", "a.equal(2,2)"));
+        const weakened = await tools.runtime.run({ program: process.execPath, args, intent: "verify" }, runContext);
+        assert.equal(weakened.validation?.status, "passed");
+        assert.equal(weakened.validation?.standard?.status, "changed");
+        assert.deepEqual(weakened.validation?.standard?.changedPaths, ["test.cjs"]);
+      } finally { await tools.runtime.cancelAll(); }
+    });
+  });
+});
 
 class RunCommandTool extends ProductionRunCommandTool {
   constructor(manager: WorkspaceManager) {
@@ -161,6 +192,11 @@ describe("command runtime", () => {
       normalizeExplicitShellArgs("powershell", ["-Command", "Get-ChildItem"]),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-ChildItem"],
     );
+    assert.deepEqual(normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "check.ps1"]);
+    assert.equal(inspectExplicitShellInvocation("pwsh", normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]))?.valid, true);
+    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "node test.js &"])?.valid, false);
+    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "$result = & node test.js"])?.valid, true);
     assert.equal(
       inspectExplicitShellInvocation("powershell", ["-EncodedCommand", "ZQBjAGgAbwA="])?.valid,
       false,
@@ -203,36 +239,19 @@ describe("command runtime", () => {
     );
     assert.match(
       inspectExplicitShellInvocation("sh", ["-c", "node test.js &"])?.reason ?? "",
-      /synchronous run_command/u,
+      /start_command/u,
     );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "sleep 5; tail test.log"])?.reason ?? "",
-      /timeoutMs/u,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("powershell", ["-Command", "Start-Sleep 5"])?.reason ?? "",
-      /timeoutMs/u,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("cmd", ["/c", "timeout /t 5"])?.reason ?? "",
-      /timeoutMs/u,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "echo ready\nsleep 5"])?.reason ?? "",
-      /timeoutMs/u,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "e''val 'node test.js &'"])?.reason ?? "",
-      /eval/iu,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "sh -c 'node test.js &'"])?.reason ?? "",
-      /nested shell/iu,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "node <<EOF\ninput\nEOF"])?.reason ?? "",
-      /heredoc/iu,
-    );
+    for (const [program, args] of [
+      ["sh", ["-c", "sleep 0.1; tail test.log"]],
+      ["powershell", ["-Command", "Start-Sleep 1"]],
+      ["cmd", ["/c", "timeout /t 1"]],
+      ["sh", ["-c", "echo ready\nsleep 1"]],
+      ["sh", ["-c", "eval 'node test.js'"]],
+      ["sh", ["-c", "sh -c 'node test.js'"]],
+      ["sh", ["-c", "node <<EOF\ninput\nEOF"]],
+      ["bash", ["script.sh", "-i"]],
+      ["powershell", ["-File", "script.ps1", "-EncodedCommand"]],
+    ] as const) assert.equal(inspectExplicitShellInvocation(program, args)?.valid, true);
     assert.match(
       inspectExplicitShellInvocation("powershell", [
         "-Command",
@@ -240,10 +259,7 @@ describe("command runtime", () => {
       ])?.reason ?? "",
       /synchronous run_command/u,
     );
-    assert.match(
-      inspectExplicitShellInvocation("powershell", ["-Command", "& 'node' test.js"])?.reason ?? "",
-      /call\/background/iu,
-    );
+    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "& 'node' test.js"])?.valid, true);
     for (const command of [
       "start node",
       "saps node",
@@ -255,10 +271,7 @@ describe("command runtime", () => {
         /synchronous run_command/u,
       );
     }
-    assert.match(
-      inspectExplicitShellInvocation("powershell", ["-Command", "iex 'Start-Process node'"])?.reason ?? "",
-      /expression dispatch/iu,
-    );
+    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "iex 'Write-Output ok'"])?.valid, true);
     assert.match(
       inspectExplicitShellInvocation("powershell", [
         "-Command",
@@ -266,12 +279,12 @@ describe("command runtime", () => {
       ])?.reason ?? "",
       /-AsJob/iu,
     );
-    assert.match(
+    assert.equal(
       inspectExplicitShellInvocation("powershell", [
         "-Command",
-        "pwsh -Command 'Start-Process node'",
-      ])?.reason ?? "",
-      /nested shell/iu,
+        "pwsh -Command 'Write-Output ok'",
+      ])?.valid,
+      true,
     );
     assert.match(
       inspectExplicitShellInvocation("cmd", ["/c", "echo ready\r\nstart /b node"])?.reason ?? "",
@@ -339,7 +352,7 @@ describe("command runtime", () => {
       assert.equal(result.ok, true);
       assert.equal(approvals.length, 1);
       assert.match(approvals[0]?.description ?? "", /exact approval=/u);
-      assert.equal(approvals[0]?.risk, "destructive");
+      assert.equal(approvals[0]?.risk, "workspace");
       assert.equal(path.isAbsolute(approvals[0]?.commandPrefix ?? ""), true);
       const output = result.data as {
         stdout: { text: string };
@@ -469,7 +482,7 @@ describe("command runtime", () => {
     });
   });
 
-  it("rejects interpreter inline code and unsafe cwd before execution", async () => {
+  it("requires approval for inline code and rejects unsafe cwd before execution", async () => {
     await withWorkspace(async (root, manager) => {
       const tool = new RunCommandTool(manager);
       const inline = await tool.execute(
@@ -485,9 +498,9 @@ describe("command runtime", () => {
       assert.deepEqual(
         (inline.data as { failure: { kind: string; code: string } }).failure,
         {
-          kind: "policy",
-          code: "deny.interpreter_eval",
-          message: "Interpreter inline-code flags are disabled",
+          kind: "approval",
+          code: "approval_not_granted",
+          message: "Executes inline interpreter code inside the OS sandbox; approval was not granted",
           processStarted: false,
           retryable: false,
         },
@@ -509,13 +522,14 @@ describe("command runtime", () => {
     });
   });
 
-  it("classifies direct network policy denials separately from approval", async () => {
+  it("classifies Benchmark network denials separately from approval", async () => {
     await withWorkspace(async (root, manager) => {
       const executable = path.join(root, "curl");
       await writeFile(executable, "fixture\n", "utf8");
       await chmod(executable, 0o755);
       const approvals: ApprovalRequest[] = [];
-      const result = await new RunCommandTool(manager).execute(
+      const runtime = new CommandRuntime(manager, undefined, undefined, undefined, { networkProfile: "benchmark" });
+      const result = await new ProductionRunCommandTool(manager, runtime).execute(
         { program: "./curl", args: ["https://example.invalid"], intent: "run" },
         context(root, { approve: true, approvals }),
       );
@@ -526,78 +540,25 @@ describe("command runtime", () => {
         policyDecision: { matchedRule: string };
         failure: { kind: string; code: string; processStarted: boolean };
       };
-      assert.equal(output.policyDecision.matchedRule, "deny.external");
+      assert.equal(output.policyDecision.matchedRule, "deny.benchmark_network");
       assert.equal(output.failure.kind, "policy");
-      assert.equal(output.failure.code, "deny.external");
+      assert.equal(output.failure.code, "deny.benchmark_network");
       assert.equal(output.failure.processStarted, false);
     });
   });
 
-  it("bypasses every command policy and approval rule in unrestricted mode", async () => {
+  it("keeps Plan and host path boundaries in no-prompt mode", async () => {
     await withWorkspace(async (root, manager) => {
-      const hostCwd = await mkdtemp(path.join(os.tmpdir(), "easy-code-host-command-"));
-      const canonicalHostCwd = path.normalize(await realpath(hostCwd));
-      const approvals: ApprovalRequest[] = [];
       const tool = new RunCommandTool(manager);
-      const environmentName = "EASY_CODE_DANGER_ENV_TEST";
-      const previousEnvironment = process.env[environmentName];
-      process.env[environmentName] = "inherited-host-value";
-      try {
-        const result = await tool.execute(
-          {
-            program: process.execPath,
-            args: [
-              "-e",
-              "require('node:fs').writeFileSync('outside.txt', process.env.EASY_CODE_DANGER_ENV_TEST); process.stdout.write('unrestricted-ok')",
-            ],
-            cwd: hostCwd,
-            intent: "run",
-          },
-          context(root, {
-            mode: "plan",
-            approvalPolicy: "never",
-            commandExecutionMode: "unrestricted",
-            approvals,
-          }),
-        );
-
-        assert.equal(result.ok, true);
+      for (const input of [
+        { program: process.execPath, args: ["-e", "console.log('not a Plan recipe')"], intent: "inspect" as const },
+        { program: "node", args: ["--version"], cwd: "../", intent: "inspect" as const },
+        explicitShellInput("echo must-not-run"),
+      ]) {
+        const approvals: ApprovalRequest[] = [];
+        const result = await tool.execute(input, context(root, { mode: "plan", commandExecutionMode: "unrestricted", approvals }));
+        assert.equal(result.ok, false);
         assert.equal(approvals.length, 0);
-        const output = result.data as {
-          stdout: { text: string };
-          policyDecision: { effect: string; matchedRule: string };
-          sandbox: { backend: string; enforced: boolean; filesystem: string; network: string };
-          executed: { cwd: string };
-        };
-        assert.equal(output.stdout.text, "unrestricted-ok");
-        assert.equal(output.policyDecision.effect, "allow");
-        assert.equal(output.policyDecision.matchedRule, "allow.unrestricted");
-        assert.deepEqual(output.sandbox, {
-          backend: "host-unrestricted",
-          enforced: false,
-          filesystem: "host",
-          network: "host",
-        });
-        assert.equal(output.executed.cwd, canonicalHostCwd);
-        assert.equal(
-          await readFile(path.join(hostCwd, "outside.txt"), "utf8"),
-          "inherited-host-value",
-        );
-
-        const relativeEscape = await tool.execute(
-          { program: "node", args: ["--version"], cwd: "../", intent: "run" },
-          context(root, {
-            mode: "code",
-            approvalPolicy: "never",
-            commandExecutionMode: "unrestricted",
-          }),
-        );
-        assert.equal(relativeEscape.ok, false);
-        assert.match(relativeEscape.error ?? "", /absolute path/iu);
-      } finally {
-        if (previousEnvironment === undefined) delete process.env[environmentName];
-        else process.env[environmentName] = previousEnvironment;
-        await rm(hostCwd, { recursive: true, force: true });
       }
     });
   });
@@ -1046,7 +1007,7 @@ describe("command runtime", () => {
     });
     assert.equal(environment.EASY_CODE_VSCODE_BRIDGE_ENDPOINT, undefined);
     assert.equal(environment.EASY_CODE_VSCODE_BRIDGE_TOKEN, undefined);
-    assert.equal(environment.CUSTOM_TOOLCHAIN_SETTING, "preserved");
+    assert.equal(environment.CUSTOM_TOOLCHAIN_SETTING, undefined);
   });
 
   it("strictly validates local npm installs and adds safe defaults", () => {

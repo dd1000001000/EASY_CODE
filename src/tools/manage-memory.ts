@@ -57,7 +57,7 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
 }
 
 export const manageMemoryInputSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("recall"), evidenceId: z.string().regex(/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+)$/u),
+  z.object({ action: z.literal("recall"), evidenceId: z.string().regex(/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$/u),
     offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(16000).optional() }).strict(),
   z
     .object({
@@ -125,7 +125,7 @@ export class ManageMemoryTool implements AgentTool {
             maxLength: MAX_MEMORY_SEARCH_CHARS,
           },
           limit: { type: "integer", minimum: 1, maximum: 16000 },
-          evidenceId: { type: "string", pattern: "^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+)$" },
+          evidenceId: { type: "string", pattern: "^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$" },
           scope: { type: "string", enum: ["long_term", "history"] },
           sourceRefs: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } },
           offset: { type: "integer", minimum: 0 },

@@ -66,8 +66,22 @@ export const progressReviewReportSchema = z
     experiment: boundedReviewText(MAX_REVIEW_DETAIL_CHARS),
     expectedSignal: boundedReviewText(MAX_REVIEW_SIGNAL_CHARS),
     falsifyingSignal: boundedReviewText(MAX_REVIEW_SIGNAL_CHARS),
+    // Optional only when reading pre-contract Journal records. Fresh reports
+    // are required to provide these fields by parseReviewResponse below.
+    experimentProgram: z.string().max(1024).optional(),
+    experimentArgsJson: z.string().max(8000).optional(),
+    experimentCwd: z.string().max(1024).optional(),
   })
-  .strict();
+  .strict().superRefine((report, context) => {
+    if (report.recommendation !== "run_experiment" || report.experimentProgram === undefined) return;
+    let args: unknown;
+    try { args = JSON.parse(report.experimentArgsJson ?? ""); } catch { /* Invalid contract below. */ }
+    if (!report.experimentProgram.trim() || /[\x00-\x1f]/u.test(report.experimentProgram) ||
+        report.experimentCwd === undefined || !Array.isArray(args) || args.length > 256 ||
+        args.some(arg => typeof arg !== "string" || arg.includes("\0") || arg.length > 16384)) {
+      context.addIssue({ code: "custom", message: "Experiment requires a program, JSON string array of args, and cwd." });
+    }
+  });
 
 export type ProgressReviewReport = z.infer<typeof progressReviewReportSchema>;
 
@@ -222,6 +236,9 @@ export function progressReviewToolDefinition(): ToolDefinition {
           diagnosis: { type: "string", minLength: 1, maxLength: MAX_REVIEW_DETAIL_CHARS },
           evidence: { type: "string", minLength: 1, maxLength: MAX_REVIEW_DETAIL_CHARS },
           experiment: { type: "string", minLength: 1, maxLength: MAX_REVIEW_DETAIL_CHARS },
+          experimentProgram: { type: "string", maxLength: 1024 },
+          experimentArgsJson: { type: "string", maxLength: 8000 },
+          experimentCwd: { type: "string", maxLength: 1024 },
           expectedSignal: {
             type: "string",
             minLength: 1,
@@ -239,6 +256,7 @@ export function progressReviewToolDefinition(): ToolDefinition {
           "diagnosis",
           "evidence",
           "experiment",
+          "experimentProgram", "experimentArgsJson", "experimentCwd",
           "expectedSignal",
           "falsifyingSignal",
         ],
@@ -469,6 +487,9 @@ function parseReviewResponse(response: Readonly<ProviderResponse>): ParsedReview
     const report = progressReviewReportSchema.parse(
       safeJsonParse(call.function.arguments),
     );
+    if (report.recommendation === "run_experiment" && report.experimentProgram === undefined) {
+      return { error: "Supply experimentProgram, experimentArgsJson (JSON array of strings), and experimentCwd to bind a real command. Otherwise choose insufficient_evidence." };
+    }
     return { report };
   } catch (error) {
     return { error: errorText(error) };

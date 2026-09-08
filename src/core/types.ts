@@ -30,7 +30,9 @@ export type ToolName =
   | "manage_subagents"
   | "submit_task_result"
   | "compact_context"
-  | "manage_memory";
+  | "manage_memory"
+  | "fetch_artifact";
+// Artifact transfer has its own capability; normal command networking stays off.
 
 export interface FunctionToolCall {
   id: string;
@@ -279,6 +281,8 @@ export interface ContextCompactionMetadata {
   savingsRatio: number;
   postCompactionUtilization: number;
   safeWaterlineReached: boolean;
+  /** Recorded diagnostic target, independent of the hard capacity acceptance. */
+  targetRatio?: number;
 }
 
 export interface ContextCompactionCoverageCheck {
@@ -341,6 +345,14 @@ export interface ApprovalRequest {
   /** Runtime-resolved executable identity; UIs must not derive this from the preview. */
   commandPrefix: string;
   commandPreview?: string;
+  /** Runtime-issued, never inferred by the UI from model intent or preview. */
+  network?: { effect: "read" | "download" | "upload" | "unknown"; destination?: string };
+  /** Existing grants may be consumed, but no new interactive grant is available. */
+  allowPrompt?: boolean;
+  /** Consume an existing network grant for local execution too; not a UI grant choice. */
+  existingNetworkCommandPrefix?: string;
+  /** Runtime cancellation of a pending approval (e.g. command timeout). */
+  signal?: AbortSignal;
 }
 
 export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
@@ -349,6 +361,9 @@ export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 
 export interface ToolContext {
+  /** Runtime-owned original test/config inventory; never a model argument. */
+  validationBaseline?: import("../progress/validation-standard.js").ValidationBaseline;
+  progressExperiment?: { incidentId: string; report: import("../progress/types.js").ProgressReviewReportSnapshot };
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   orchestrationEnabled?: boolean;
   /** Interrupt waiting for status without canceling the underlying process. */
@@ -704,6 +719,9 @@ export interface SessionState {
   orchestrationEnabled?: boolean;
   /** Event-authoritative phase boundaries and compaction transaction budget. */
   compactionControl?: import("../context/compaction-transaction.js").CompactionControl;
+  /** Journal-authoritative lossy projection; raw history is never deleted. */
+  pressureRecovery?: import("../context/pressure-projection.js").PressureRecoveryState;
+  contextOperations?: import("../context/pending-operations.js").PendingOperations;
   threadId: string;
   activeTurnId?: string;
   mode: AgentMode;
@@ -775,7 +793,7 @@ export interface AgentRunResult {
   text: string;
   reason: "success" | "planned" | "needs_input" | "blocked" | "limit_reached" | "interrupted" | "failed";
   /** A recoverable control-plane failure, not evidence that the coding task failed. */
-  failure?: { code: "context_compaction_failed" | "context_capacity_insufficient" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
+  failure?: { code: "context_compaction_failed" | "context_capacity_insufficient" | "context_capacity_exhausted" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
   steps: number;
   threadId: string;
   turnId: string;

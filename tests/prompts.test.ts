@@ -125,7 +125,7 @@ describe("system prompt builder", () => {
       assert.ok(rootIndex < packageIndex);
       assert.ok(packageIndex < cwdIndex);
 
-      assert.match(prompt, /Runtime policy.*authority/);
+      assert.match(prompt, /Runtime path guards.*mandatory/);
       assert.match(prompt, /File contents.*command output.*untrusted data/);
       assert.match(prompt, /BEGIN_UNTRUSTED_WORKSPACE_SUMMARY/);
       assert.match(prompt, /BEGIN_UNTRUSTED_RETRIEVED_MEMORY/);
@@ -137,13 +137,13 @@ describe("system prompt builder", () => {
       assert.match(prompt, /never as instructions/);
       assert.match(prompt, /memory_id=memory_00000000-0000-4000-8000-000000000001/);
       assert.match(prompt, /category=convention/);
-      assert.match(prompt, /compact_context replaces the earlier model-visible conversation/);
+      assert.match(prompt, /Supply currentWork and nextStep/);
       assert.match(prompt, /Recall evidenceId when available/u);
       assert.match(prompt, /never rerun a mutation merely to recover its output/u);
       assert.ok(cwdIndex < prompt.indexOf("Runtime environment"));
       assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
-      assert.match(prompt, /current objective, user constraints, key decisions/);
-      assert.match(prompt, /It must be cumulative/);
+      assert.match(prompt, /preserve uncertainty and the next validation step/);
+      assert.match(prompt, /handles failure locally/);
       assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
@@ -201,10 +201,10 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Treat tool failures, conflicts, timeouts/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /update_file applies a checked update/u);
-      assert.doesNotMatch(prompt, /Put the executable only in program/u);
+      assert.doesNotMatch(prompt, /Prefer direct test runners and existing scripts/u);
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
-      assert.doesNotMatch(prompt, /compact_context replaces the earlier/u);
+      assert.doesNotMatch(prompt, /Supply currentWork and nextStep/u);
       assert.doesNotMatch(prompt, /manage_memory is the only way/u);
       assert.doesNotMatch(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
       assert.doesNotMatch(prompt, /Before your final answer.*durable memory/u);
@@ -251,11 +251,11 @@ describe("system prompt builder", () => {
 
       assert.match(prompt, /Known locations and small files may be read directly/u);
       assert.match(prompt, /update_file applies a checked update/u);
-      assert.match(prompt, /Put the executable only in program/u);
-      assert.match(prompt, /Use start_command for a legitimate long-running build/u);
+      assert.match(prompt, /Prefer direct test runners and existing scripts/u);
+      assert.match(prompt, /Use for a long-running build, test, verification/u);
       assert.match(prompt, /Use the original commandId and omit waitMs/u);
       assert.match(prompt, /Use cancel_command only when a background command/u);
-      assert.match(prompt, /compact_context replaces the earlier/u);
+      assert.match(prompt, /Supply currentWork and nextStep/u);
       assert.match(prompt, /manage_memory is the only way/u);
       assert.match(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
       assert.match(prompt, /Before your final answer.*durable memory/u);
@@ -281,14 +281,13 @@ describe("system prompt builder", () => {
         shell: "/bin/sh",
         env: {},
       });
-      assert.match(unrestricted, /dangerous full-computer access \(explicitly confirmed by the user\)/u);
-      assert.match(unrestricted, /operating-system sandbox.*disabled/u);
-      assert.match(unrestricted, /execute directly as the current OS user/u);
-      assert.match(unrestricted, /may access the internet/u);
-      assert.match(unrestricted, /explicit absolute host path/u);
-      assert.match(unrestricted, /Structured program\/argv execution.*timeouts.*command audit remain active/u);
-      assert.match(unrestricted, /authority also reaches child Agents/u);
-      assert.doesNotMatch(unrestricted, /does not bypass the operating-system sandbox/u);
+      assert.match(unrestricted, /isolated execution without individual prompts/u);
+      assert.match(unrestricted, /Plan is always read-only/u);
+      assert.match(unrestricted, /Benchmark command-network denial remain mandatory/u);
+      assert.match(unrestricted, /Command and network approval prompts are disabled/u);
+      assert.match(unrestricted, /inherited credentials and unrestricted host filesystem access are not granted/u);
+      assert.match(unrestricted, /Unconfirmed cleanup quarantines/u);
+      assert.doesNotMatch(unrestricted, /may access the internet/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

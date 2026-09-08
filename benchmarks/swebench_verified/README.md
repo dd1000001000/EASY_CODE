@@ -186,15 +186,20 @@ its declared evaluation dependencies. During model-controlled EASY CODE
 execution, Harbor temporarily switches the container to an outbound allowlist
 containing only the pinned provider host (`open.bigmodel.cn`). Direct access to
 GitHub, package registries, and other public hosts is blocked for the evaluated
-agent. After the agent exits, Harbor restores the exact baseline policy that was
-active before the allowlist was applied; for the published SWE-bench tasks this
-is public networking required by the trusted verifier.
+agent. The inner command sandbox also denies all command networking, including
+the provider host. Setup installs bubblewrap/socat/ripgrep and must pass
+`easy-code sandbox doctor`; unsupported nested namespaces fail closed, never
+falling back to host execution. Do not grant privileged Docker or host networking.
+After a returned agent process, the adapter restores the verifier baseline only
+when no command lease or cleanup quarantine remains. Timeout or unknown cleanup
+keeps egress restricted. Prefer dependencies preinstalled in trusted setup;
+missing agent-side dependencies never open an unrestricted networking exception.
 
 EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `/testbed` and inside the Harbor job artifacts.
 `EASY_CODE_OUTER_SANDBOX=harbor` tells EASY CODE that the disposable Harbor
-container is the outer isolation boundary. Do not set that variable for normal
-host use.
+container is the outer isolation boundary; it does not disable the inner
+command sandbox. Do not set that variable for normal host use.
 
 The launcher-managed checkpoint and embedding-model paths are not added to the
 Agent process environment inside the container. They do remain in Harbor's host

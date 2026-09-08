@@ -44,6 +44,7 @@ export interface MenuSelectorNavigation {
 }
 
 export interface MenuSelectorOptions {
+  readonly signal?: AbortSignal;
   readonly input: MenuSelectorInput;
   readonly output: MenuSelectorOutput;
   readonly color?: boolean;
@@ -156,6 +157,7 @@ export function selectMenuIndex(
       escapeTimer = undefined;
     };
     const cleanup = (): void => {
+      options.signal?.removeEventListener("abort", onAbort);
       clearEscapeTimer();
       try {
         releaseNavigation?.();
@@ -383,6 +385,7 @@ export function selectMenuIndex(
     };
     const onEnd = (): void => finish(undefined);
     const onClose = (): void => finish(undefined);
+    const onAbort = (): void => finish(undefined);
     const onError = (): void => finish(undefined, new Error("Unable to read the interactive selection."));
 
     try {
@@ -401,6 +404,8 @@ export function selectMenuIndex(
       input.on("data", guardedOnData);
       input.once("end", onEnd);
       input.once("close", onClose);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted) { finish(undefined); return; }
       input.once("error", onError);
       input.resume();
       // An out-of-band host may invoke its listener synchronously while it is

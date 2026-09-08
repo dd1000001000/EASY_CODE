@@ -1,10 +1,5 @@
 import path from "node:path";
 
-const PRIVATE_HOST_ENVIRONMENT_KEYS = new Set([
-  "EASY_CODE_VSCODE_BRIDGE_ENDPOINT",
-  "EASY_CODE_VSCODE_BRIDGE_TOKEN",
-]);
-
 const SAFE_ENVIRONMENT_KEYS = new Set([
   "PATH",
   "PATHEXT",
@@ -45,25 +40,9 @@ export function buildCommandEnvironment(source: NodeJS.ProcessEnv = process.env)
   return environment;
 }
 
-/**
- * Dangerous mode intentionally runs as the current OS user. Preserve the host
- * environment so proxy, certificate, toolchain, and platform configuration
- * behave exactly as they do in the user's terminal. The enable warning makes
- * clear that child processes can therefore access inherited secrets.
- */
+/** Legacy export: no posture may inherit the user's credential environment. */
 export function buildUnrestrictedCommandEnvironment(
   source: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (
-      value !== undefined &&
-      !PRIVATE_HOST_ENVIRONMENT_KEYS.has(key.toUpperCase())
-    ) {
-      environment[key] = value;
-    }
-  }
-  environment.NO_COLOR = "1";
-  environment.FORCE_COLOR = "0";
-  return environment;
+  return buildCommandEnvironment(source);
 }

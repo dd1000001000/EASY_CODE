@@ -1,4 +1,5 @@
 import type { ApprovalDecision } from "../core/types.js";
+import { canGrantCommandPrefix, commandPrefixApprovalLabel } from "../command/approval.js";
 import {
   renderMenu,
   selectMenuIndex,
@@ -23,7 +24,7 @@ export function renderApprovalSelector(
     "Approve command execution",
     [
       "Yes, allow execute one time",
-      `Yes, don't ask me again with prefix ${JSON.stringify([commandPrefix])}`,
+      ...(canGrantCommandPrefix(commandPrefix) ? [commandPrefixApprovalLabel(commandPrefix)] : []),
       "Reject",
     ],
     selectedIndex,
@@ -38,8 +39,9 @@ export async function selectApproval(
   options: ApprovalSelectorOptions,
 ): Promise<ApprovalDecision> {
   const callerGuard = options.canConfirm;
+  const decisions = canGrantCommandPrefix(commandPrefix) ? APPROVAL_DECISIONS : ["allow_once", "reject"] as const;
   const index = await selectMenuIndex(
-    APPROVAL_DECISIONS.length,
+    decisions.length,
     0,
     (selectedIndex) =>
       renderApprovalSelector(commandPrefix, selectedIndex, options.color ?? true),
@@ -53,7 +55,7 @@ export async function selectApproval(
   );
   return index === undefined
     ? "reject"
-    : APPROVAL_DECISIONS[index] ?? "reject";
+    : decisions[index] ?? "reject";
 }
 
 function hasSafeApprovalHeight(rows: number | undefined): boolean {

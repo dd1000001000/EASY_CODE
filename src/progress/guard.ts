@@ -61,6 +61,7 @@ export function cloneProgressGuardState(
 ): ProgressGuardState {
   return {
     ...state,
+    ...(state.investigations ? { investigations: structuredClone(state.investigations) } : {}),
     lastObservedResponseOrdinal: state.lastObservedResponseOrdinal ?? 0,
     seenSourceEventIds: [...state.seenSourceEventIds],
     seenTerminalCommandIds: [...state.seenTerminalCommandIds],
@@ -218,9 +219,14 @@ function applyExperimentObservation(
       candidate.phase === "experiment_required",
   );
   if (!incident) return;
+  // Historical reports without a contract may only bind their original target.
+  // Modern contracts are matched before execution and carried by commandId.
+  if (incident.reviewReport?.experimentProgram
+    ? observation.experimentIncidentId !== incident.incidentId
+    : observation.targetKey !== incident.targetKey) return;
   const sameVerificationTarget = observation.targetKey === incident.targetKey;
   const verifiedImprovement =
-    sameVerificationTarget && observation.outcomeClass === "passed";
+    sameVerificationTarget && observation.outcomeClass === "passed" && comparableStandard(observation, incident.baselineDigest);
   const newEvidence = verifiedImprovement ||
     !sameVerificationTarget ||
     observation.outcomeClass !== incident.outcomeClass ||
@@ -252,6 +258,7 @@ function failureSignature(observation: Readonly<ProgressObservation>): string {
     observation.verificationKind ?? "custom",
     observation.outcomeClass,
     observation.outcomeKey,
+    observation.baselineDigest,
   ]))}`;
 }
 
@@ -285,6 +292,94 @@ function applyRead(state: ProgressGuardState, observation: Readonly<ProgressObse
   coverage.uniqueTargets = increment(coverage.uniqueTargets);
 }
 
+function comparableStandard(observation: Readonly<ProgressObservation>, baseline: string | undefined): boolean {
+  return observation.standardStatus !== "changed" && observation.standardStatus !== "unknown" && observation.baselineDigest === baseline;
+}
+
+function newEvidenceIncident(state: ProgressGuardState, observation: Readonly<ProgressObservation>,
+  reason: "investigation_stalled" | "validation_standard_changed"): ProgressIncident | undefined {
+  const key = `sha256:${sha256(JSON.stringify([observation.scopeKey, reason, reason === "validation_standard_changed" ? observation.baselineDigest : "investigation"]))}`;
+  const previous = state.incidents.find(incident => incident.signature === key);
+  if (previous) return previous;
+  if (state.incidents.length >= MAX_PROGRESS_INCIDENTS) { state.saturated = true; return undefined; }
+  const incident: ProgressIncident = {
+    incidentId: stableIncidentId(key, observation.sourceEventId), signature: key, reason,
+    scopeKey: observation.scopeKey, targetKey: reason === "investigation_stalled" ? key : observation.targetKey!,
+    outcomeKey: observation.outcomeKey ?? key, outcomeClass: "unknown", baselineDigest: observation.baselineDigest,
+    triggerSourceEventId: observation.sourceEventId, triggerResponseOrdinal: observation.responseOrdinal,
+    verificationCycleIds: [], phase: reason === "investigation_stalled" ? "investigation_suspected" : "review_pending",
+    reviewAttempts: 0, validReviews: 0, reviewModelRequests: 0, reviewInputTokens: 0, reviewOutputTokens: 0,
+    reviewTotalTokens: 0, reviewCachedInputTokens: 0, reviewReasoningTokens: 0, reviewDurationMs: 0,
+    reviewStartedRequestOrdinals: [], reviewFinishedRequestOrdinals: [],
+  };
+  state.incidents.push(incident);
+  return incident;
+}
+
+function observeValidationStandard(state: ProgressGuardState, observation: Readonly<ProgressObservation>): void {
+  if (observation.kind === "verification_terminal" && observation.standardStatus === "changed") {
+    newEvidenceIncident(state, observation, "validation_standard_changed");
+  }
+}
+
+/** Two non-overlapping response windows. Novel ranges/results interrupt exact
+ * repetition, but never certify improvement or reset the incident/review budget. */
+function observeInvestigation(state: ProgressGuardState, observation: Readonly<ProgressObservation>): void {
+  const policy = observation.investigationPolicy;
+  if (!policy) return;
+  const isRead = observation.kind === "read" && observation.readRange && observation.outcomeKey;
+  const isSearch = observation.tool === "search_files" && observation.searchRepeatLimit !== undefined && observation.outcomeKey;
+  const isInspection = observation.kind === "investigation_terminal";
+  if (!isRead && !isSearch && !isInspection) {
+    if (observation.kind === "verification_terminal" && observation.confidence === "high") {
+      const tracker = state.investigations?.find(item => item.scopeKey === observation.scopeKey);
+      if (tracker) { tracker.samples = []; tracker.after = observation.responseOrdinal; }
+      const incident = state.incidents.find(item => item.scopeKey === observation.scopeKey && item.phase === "investigation_suspected");
+      if (incident) incident.phase = "strategy_adjustment"; // An actual experiment, not proof of completion.
+    }
+    return;
+  }
+  state.investigations ??= [];
+  let tracker = state.investigations.find(item => item.scopeKey === observation.scopeKey);
+  if (!tracker) {
+    if (state.investigations.length >= 64) return;
+    tracker = { scopeKey: observation.scopeKey, after: observation.responseOrdinal - 1, samples: [], sources: [], searches: [] };
+    state.investigations.push(tracker);
+  }
+  if (observation.responseOrdinal <= tracker.after) return;
+  let repeated = false;
+  if (isRead) {
+    const range = observation.readRange!;
+    let source = tracker.sources.find(item => item.key === range.fileKey && item.hash === observation.outcomeKey);
+    if (!source && tracker.sources.length < 128) {
+      source = { key: range.fileKey, hash: observation.outcomeKey!, ranges: [] }; tracker.sources.push(source);
+    }
+    if (source) {
+      repeated = source.ranges.some(([start, end]) => start <= range.start && end >= range.end);
+      if (!repeated && source.ranges.length < 64) {
+        const ordered = [...source.ranges, [range.start, range.end] as [number, number]].sort((a, b) => a[0] - b[0]);
+        source.ranges = [];
+        for (const next of ordered) {
+          const last = source.ranges.at(-1);
+          if (last && next[0] <= last[1] + 1) last[1] = Math.max(last[1], next[1]); else source.ranges.push(next);
+        }
+      }
+    }
+  } else {
+    repeated = tracker.searches.includes(observation.outcomeKey!);
+    if (!repeated && tracker.searches.length < 128) tracker.searches.push(observation.outcomeKey!);
+  }
+  tracker.samples = [...tracker.samples.filter(item => item.ordinal > observation.responseOrdinal - policy.window),
+    { ordinal: observation.responseOrdinal, repeated }].slice(-128);
+  if (tracker.samples.length < policy.minimum || observation.responseOrdinal - tracker.after < policy.window ||
+      tracker.samples.filter(item => item.repeated).length / tracker.samples.length <= policy.ratio) return;
+  const existing = state.incidents.find(item => item.scopeKey === observation.scopeKey && item.reason === "investigation_stalled");
+  if (!existing) newEvidenceIncident(state, observation, "investigation_stalled");
+  else if (existing.phase === "investigation_suspected" && policy.review) existing.phase = "review_pending";
+  tracker.after = observation.responseOrdinal;
+  tracker.samples = [];
+}
+
 function clearResolvedFailures(
   state: ProgressGuardState,
   observation: Readonly<ProgressObservation>,
@@ -292,18 +387,25 @@ function clearResolvedFailures(
   if (
     observation.kind !== "verification_terminal" ||
     observation.outcomeClass !== "passed" ||
-    !observation.targetKey
+    observation.confidence !== "high" ||
+    !observation.targetKey || !comparableStandard(observation, observation.baselineDigest)
   ) {
     return;
   }
   state.failureRuns = state.failureRuns.filter(
-    (run) => run.scopeKey !== observation.scopeKey || run.targetKey !== observation.targetKey,
+    (run) => run.scopeKey !== observation.scopeKey || run.targetKey !== observation.targetKey ||
+      !comparableStandard(observation, run.baselineDigest) || state.incidents.some(incident =>
+        incident.scopeKey === run.scopeKey && incident.targetKey === run.targetKey &&
+        incident.phase === "experiment_required" && incident.reviewReport?.experimentProgram &&
+        observation.experimentIncidentId !== incident.incidentId),
   );
   for (const incident of state.incidents) {
     if (
       incident.scopeKey === observation.scopeKey &&
       incident.targetKey === observation.targetKey &&
-      incident.phase !== "resolved"
+      incident.phase !== "resolved" && comparableStandard(observation, incident.baselineDigest) &&
+      (incident.phase !== "experiment_required" || !incident.reviewReport?.experimentProgram || observation.experimentIncidentId === incident.incidentId) &&
+      incident.reason !== "validation_standard_changed"
     ) {
       incident.phase = "resolved";
     }
@@ -331,6 +433,7 @@ function applyFailure(
       return { duplicateCycle: false, saturated: true };
     }
     state.failureRuns.push({
+      ...(observation.baselineDigest ? { baselineDigest: observation.baselineDigest } : {}),
       signature,
       scopeKey: observation.scopeKey,
       targetKey: observation.targetKey,
@@ -378,6 +481,8 @@ function applyFailure(
       return { duplicateCycle: false, saturated: true };
     }
     state.incidents.push({
+      reason: "repeated_verified_failure",
+      ...(observation.baselineDigest ? { baselineDigest: observation.baselineDigest } : {}),
       incidentId: stableIncidentId(signature, observation.sourceEventId),
       signature,
       scopeKey: observation.scopeKey,
@@ -470,6 +575,8 @@ export function foldProgressObservation(
   }
 
   state.acceptedObservations = increment(state.acceptedObservations);
+  observeValidationStandard(state, observation);
+  observeInvestigation(state, observation);
   applyRead(state, observation);
   updateSearchWindow(state, observation);
   const readTrigger = updateReadWindow(state, observation);
