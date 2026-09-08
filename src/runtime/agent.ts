@@ -720,6 +720,7 @@ export interface AgentUserInput {
 
 export interface AgentRunOptions {
   orchestrationEnabled?: boolean;
+  isOrchestrationEnabled?: () => boolean;
   maxContextTokens?: number;
   maxSteps: number;
   maxContextChars: number;
@@ -774,6 +775,12 @@ function availableTools(
       tool.name === "search_files" ||
       tool.name === "read_image" ||
       tool.name === "run_command" ||
+      tool.name === "start_command" ||
+      tool.name === "poll_command" ||
+      tool.name === "cancel_command" ||
+      tool.name === "create_file" ||
+      tool.name === "update_file" ||
+      tool.name === "delete_file" ||
       tool.name === "propose_plan" ||
       tool.name === "compact_context" ||
       tool.name === "manage_memory",
@@ -3113,6 +3120,7 @@ export class AgentRuntime {
               resultCharBudget: Math.max(0, this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
                 JSON.stringify(projectionHistory).length - estimateToolDefinitionsChars(ordinaryToolDefinitions) - 1024),
               orchestrationEnabled: options.orchestrationEnabled,
+              isOrchestrationEnabled: options.isOrchestrationEnabled,
               workspaceRoot: state.workspaceRoot,
               validationBaseline: state.progressGuard?.validationBaseline,
               ...(progressExperimentAtCall?.reviewReport ? { progressExperiment: {

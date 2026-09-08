@@ -20,7 +20,7 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     if (["execution_dispatched", "cleanup_complete", "cleanup_requested"].includes(String(type))) return value as SandboxWorkerControl;
     if (type === "execution_exited" && Number.isSafeInteger((value as { exitCode?: unknown }).exitCode)) return value as SandboxWorkerControl;
     if (type === "cleanup_error" && typeof (value as { message?: unknown }).message === "string") return value as SandboxWorkerControl;
-    if (type === "ready" && ["anthropic-srt-linux","anthropic-srt-windows","anthropic-srt-macos","harbor-landlock"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
+    if (type === "ready" && ["anthropic-srt-linux","anthropic-srt-windows","anthropic-srt-macos","harbor-landlock","benchmark-container"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
     if (type === "stage" && ["worker_started","runtime_loaded","initialize_start","initialize_complete","wrap_start","wrap_complete"].includes(String((value as {stage?:unknown}).stage))) return value as SandboxWorkerControl;
     if (type === "sandbox_error" || type === "target_spawn_error") {
       if (typeof (value as {message?:unknown}).message === "string") return value as SandboxWorkerControl;

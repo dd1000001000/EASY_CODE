@@ -2,6 +2,8 @@
 # Generate the current defaults with: easy-code config defaults
 # Keys inside [limits] use camelCase. Unknown/legacy limit keys are errors.
 orchestrationEnabled = false
+# Optional approvalModel belongs in USER config only; defaults to the active model.
+# approvalModel = "glm-5.3-flash"
 
 [limits]
 maxContextChars = 250000
@@ -61,6 +63,10 @@ toolProtocolAttempts = 3
 # Reviewer remains enabled and independently restricted to its read-only profile.
 reviewerModelRequests = 2
 reviewerOutputTokens = 6144
+# Independent command approval agent: one bounded, tool-free request.
+approvalInputChars = 24000
+approvalOutputTokens = 1024
+approvalTimeoutMs = 60000
 validationBaselineMaxFiles = 8000
 validationScanMaxEntries = 50000
 validationScanMaxBytes = 67108864

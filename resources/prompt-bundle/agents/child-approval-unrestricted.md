@@ -1,1 +1,1 @@
-- Background commands and networking do not request individual approval in this posture, including downloads/uploads. Workspace confinement, Plan read-only, Benchmark offline execution and cleanup supervision remain mandatory.
+- Full access executes commands without individual approval. In ordinary CLI this uses the host account; in Benchmark the boundary is the task container and external networking remains disabled. Runtime retains timeout, cancellation and cleanup supervision.

@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getEasyCodeHome } from "../prompt-bundle/paths.js";
-import { sandboxGitArgs, sandboxGitEnvironment } from "./git-policy.js";
+import { sandboxGitEnvironment } from "./git-policy.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import type {
   CommandExecutionBackend,
@@ -312,7 +312,7 @@ function sandboxMetadata(request: SandboxExecutionRequest): SandboxExecutionMeta
         ? "anthropic-srt-macos"
         : "anthropic-srt-linux",
     enforced: true,
-    filesystem: request.context.mode === "plan" ? "workspace-read" : "workspace-write",
+    filesystem: "workspace-write",
     network,
   };
 }
@@ -1102,12 +1102,6 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     this.assertEnvironmentSafe();
-    // Inherited Windows DENY ACEs do not override every pre-existing explicit
-    // child ACE. Until a mandatory read-only token is available, even an
-    // accidentally classified inspection must not spawn under Plan.
-    if (this.platform === "win32" && request.context.mode === "plan") {
-      throw new Error("Windows Plan is file-tools-only: this ACL backend cannot guarantee read-only command execution for every existing file");
-    }
     if (this.platform !== "win32" && this.platform !== "linux") {
       throw new Error("Strict command supervision currently requires Windows Job Objects or Linux PID namespaces; no weaker process-group fallback is permitted");
     }
@@ -1201,7 +1195,7 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
         bridgePath: stagedBridgePath,
         target: {
           executablePath: request.command.executablePath,
-          args: sandboxGitArgs(request.command.executablePath, request.command.args),
+          args: [...request.command.args],
           cwdAbsolute: request.command.cwdAbsolute,
           environment: targetEnvironment,
         },
@@ -1219,15 +1213,14 @@ export class AnthropicSandboxBackend implements CommandExecutionBackend {
           // need duplicate read ACEs. External executables are granted as
           // canonical files, never as Program Files or NVM directory trees.
           allowRead: uniquePaths([...executableReadPaths,
-            ...(request.context.mode === "plan" ? [this.workspace.root] : [])]),
+            ]),
           allowWrite: uniquePaths([
-            ...(request.context.mode === "plan" ? [] : [this.workspace.root]),
+            this.workspace.root,
             ...(this.platform === "win32" ? [] : [scratchRoot]),
           ]),
           // Paths outside allowWrite are already immutable to the sandbox user.
           // Only workspace metadata needs an explicit deny carve-out.
           denyWrite: uniquePaths([
-            ...(request.context.mode === "plan" ? [this.workspace.root] : []),
             ...protectedMetadata,
             ...(this.platform === "win32" ? [scratchMarkerPath, payloadPath] : []),
           ]),

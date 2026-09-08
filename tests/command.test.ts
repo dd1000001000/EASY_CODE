@@ -27,6 +27,7 @@ import {
 } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
+import { decodeCommandGrant } from "../src/command/command-grant.js";
 import { captureValidationBaseline } from "../src/progress/validation-standard.js";
 
 class HostCommandBackend implements CommandExecutionBackend {
@@ -153,6 +154,7 @@ function context(
     approvalPolicy: options.approvalPolicy ?? "safe",
     commandExecutionMode: options.commandExecutionMode,
     requestApproval: async (request) => {
+      if (request.allowPrompt === false) throw new Error("No interactive approval");
       options.approvals?.push(request);
       return options.approve ?? false;
     },
@@ -314,13 +316,13 @@ describe("command runtime", () => {
       const tool = new RunCommandTool(manager);
       const result = await tool.execute(
         { program: "node", args: ["--version"], intent: "inspect" },
-        context(root, { mode: "plan", audit }),
+        context(root, { mode: "plan", approve: true, audit }),
       );
 
       assert.equal(result.ok, true);
       const output = result.data as { stdout: { text: string }; policyDecision: { capability: string } };
       assert.match(output.stdout.text, /^v\d+/u);
-      assert.equal(output.policyDecision.capability, "safe_inspect");
+      assert.equal(output.policyDecision.capability, "workspace_exec");
       assert.equal(audit.length, 1);
       assert.equal(audit[0]?.status, "exited");
     });
@@ -331,7 +333,7 @@ describe("command runtime", () => {
       const tool = new RunCommandTool(manager);
       const result = await tool.execute(
         { program: "npm", args: ["--version"], intent: "inspect" },
-        context(root, { mode: "plan" }),
+        context(root, { mode: "plan", approve: true }),
       );
       assert.equal(result.ok, true);
       const output = result.data as { stdout: { text: string }; executed: { program: string } };
@@ -353,7 +355,7 @@ describe("command runtime", () => {
       assert.equal(approvals.length, 1);
       assert.match(approvals[0]?.description ?? "", /exact approval=/u);
       assert.equal(approvals[0]?.risk, "workspace");
-      assert.equal(path.isAbsolute(approvals[0]?.commandPrefix ?? ""), true);
+      assert.equal(path.isAbsolute(decodeCommandGrant(approvals[0]!.commandPrefix).executable), true);
       const output = result.data as {
         stdout: { text: string };
         policyDecision: { capability: string; effect: string; matchedRule: string };
@@ -361,10 +363,10 @@ describe("command runtime", () => {
       };
       assert.match(output.stdout.text, /easy-code-shell-ok/u);
       assert.equal(output.policyDecision.capability, "shell_exec");
-      assert.equal(output.policyDecision.effect, "ask");
-      assert.equal(output.policyDecision.matchedRule, "ask.shell_exec");
+      assert.equal(output.policyDecision.effect, "allow");
+      assert.equal(output.policyDecision.matchedRule, "approved.workspace");
       if (process.platform === "win32") {
-        assert.equal(output.executed.args[0]?.toLowerCase(), "/d");
+        assert.equal(output.executed.args[0]?.toLowerCase(), "/s");
       }
     });
   });
@@ -385,28 +387,14 @@ describe("command runtime", () => {
     });
   });
 
-  it("keeps explicit shells out of plan mode and disabled approval sessions", async () => {
+  it("allows approved Plan commands but fails closed when no approval authority is available", async () => {
     await withWorkspace(async (root, manager) => {
       const tool = new RunCommandTool(manager);
       const planApprovals: ApprovalRequest[] = [];
-      const plan = await tool.execute(
-        explicitShellInput("echo must-not-run"),
-        context(root, { mode: "plan", approve: true, approvals: planApprovals }),
-      );
-      assert.equal(plan.ok, false);
-      assert.equal(planApprovals.length, 0);
-      assert.equal(
-        (plan.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
-        "mode.plan",
-      );
-      assert.equal(
-        (plan.data as { failure: { kind: string; code: string } }).failure.kind,
-        "policy",
-      );
-      assert.equal(
-        (plan.data as { failure: { code: string } }).failure.code,
-        "mode.plan",
-      );
+      const plan = await tool.execute(explicitShellInput("echo approved-plan"),
+        context(root, { mode: "plan", approve: true, approvals: planApprovals }));
+      assert.equal(plan.ok, true);
+      assert.equal(planApprovals.length, 1);
 
       const neverApprovals: ApprovalRequest[] = [];
       const never = await tool.execute(
@@ -422,7 +410,7 @@ describe("command runtime", () => {
       assert.equal(neverApprovals.length, 0);
       assert.match(
         (never.data as { policyDecision: { reason: string } }).policyDecision.reason,
-        /approval prompts are disabled/u,
+        /approval could not be obtained/u,
       );
       assert.equal(
         (never.data as { failure: { kind: string; code: string } }).failure.kind,
@@ -435,19 +423,9 @@ describe("command runtime", () => {
     });
   });
 
-  it("rejects interactive shell protocols and redacts secrets from approval previews", async () => {
+  it("approves shell invocations without protocol rewriting and redacts previews", async () => {
     await withWorkspace(async (root, manager) => {
       const tool = new RunCommandTool(manager);
-      const invalid = process.platform === "win32"
-        ? { program: "cmd", args: ["/k"], intent: "run" as const }
-        : { program: "sh", args: ["-i"], intent: "run" as const };
-      const invalidResult = await tool.execute(invalid, context(root, { approve: true }));
-      assert.equal(invalidResult.ok, false);
-      assert.equal(
-        (invalidResult.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
-        "input.shell_protocol",
-      );
-
       const secret = "shell-preview-secret-value";
       const bidi = "\u202E";
       const approvals: ApprovalRequest[] = [];
@@ -500,7 +478,7 @@ describe("command runtime", () => {
         {
           kind: "approval",
           code: "approval_not_granted",
-          message: "Executes inline interpreter code inside the OS sandbox; approval was not granted",
+          message: "Command requires authorization; approval was not granted",
           processStarted: false,
           retryable: false,
         },
@@ -522,32 +500,21 @@ describe("command runtime", () => {
     });
   });
 
-  it("classifies Benchmark network denials separately from approval", async () => {
+  it("sends Benchmark commands to its fixed container backend without approvals", async () => {
     await withWorkspace(async (root, manager) => {
-      const executable = path.join(root, "curl");
-      await writeFile(executable, "fixture\n", "utf8");
-      await chmod(executable, 0o755);
+      let seen = false;
+      const backend: CommandExecutionBackend = { describe: () => ({ backend: "benchmark-container", enforced: true, filesystem: "container", network: "denied" }),
+        prepare: async request => { seen = true; assert.equal(request.command.executablePath, "curl"); throw new Error("offline fixture"); } };
       const approvals: ApprovalRequest[] = [];
-      const runtime = new CommandRuntime(manager, undefined, undefined, undefined, { networkProfile: "benchmark" });
-      const result = await new ProductionRunCommandTool(manager, runtime).execute(
-        { program: "./curl", args: ["https://example.invalid"], intent: "run" },
-        context(root, { approve: true, approvals }),
-      );
-
-      assert.equal(result.ok, false);
-      assert.equal(approvals.length, 0);
-      const output = result.data as {
-        policyDecision: { matchedRule: string };
-        failure: { kind: string; code: string; processStarted: boolean };
-      };
-      assert.equal(output.policyDecision.matchedRule, "deny.benchmark_network");
-      assert.equal(output.failure.kind, "policy");
-      assert.equal(output.failure.code, "deny.benchmark_network");
-      assert.equal(output.failure.processStarted, false);
+      const runtime = new CommandRuntime(manager, undefined, backend, undefined, { networkProfile: "benchmark" });
+      const result = await runtime.run({ program: "curl", args: ["https://example.invalid"], intent: "run", executionScope: "host" }, context(root, { approvals, commandExecutionMode: "unrestricted" }));
+      assert.equal(seen, true); assert.equal(approvals.length, 0);
+      assert.equal(result.failure?.kind, "sandbox");
+      assert.equal(result.sandbox.backend, "benchmark-container");
     });
   });
 
-  it("keeps Plan and host path boundaries in no-prompt mode", async () => {
+  it("allows Plan commands and host cwd in full access without approvals", async () => {
     await withWorkspace(async (root, manager) => {
       const tool = new RunCommandTool(manager);
       for (const input of [
@@ -557,7 +524,7 @@ describe("command runtime", () => {
       ]) {
         const approvals: ApprovalRequest[] = [];
         const result = await tool.execute(input, context(root, { mode: "plan", commandExecutionMode: "unrestricted", approvals }));
-        assert.equal(result.ok, false);
+        assert.equal(result.ok, true, JSON.stringify(result));
         assert.equal(approvals.length, 0);
       }
     });

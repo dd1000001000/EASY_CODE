@@ -83,7 +83,7 @@ A normal turn:
 | Auto | A tool-less structured controller chooses direct response, Plan, or Code; routing is not keyword-based. |
 | Code | Direct answers, implementation, and verification under normal capability and security gates. |
 
-Agent mode and command posture are independent. Manual asks for all networking; Auto permits proven read-only networking but asks for downloads/uploads/unknown behavior; dangerous `unrestricted` never asks for command/network approval. Explicit network prefixes bind executable bytes and structured argv, survive Resume and can be revoked. Legacy executable grants do not acquire network authority. All postures retain the OS sandbox, read-only Plan and Benchmark command-network denial. See [command security](COMMAND_SECURITY.md).
+Agent mode, approval authority and execution environment are independent. Manual asks for every new command; Approve for me uses an independent tool-free approval agent with user fallback; Full access executes on the host without a sandbox. Scoped prefix grants survive Resume and extend only to children of the same thread. Plan discourages direct editing but permits approved command writes. Benchmark uses a fixed offline worker container. See [command permissions](COMMAND_SECURITY.md).
 
 The composer remains active during work. Mid-turn adjustments are journaled in FIFO order and delivered at safe model-step boundaries. Steering can redirect work but cannot silently change mode, security posture, task owner, or child identity. Unstarted calls from a superseded provider response are discarded.
 
@@ -107,11 +107,11 @@ Non-Git workspaces retain complete filesystem snapshots. If Git becomes unavaila
 
 ### Commands and sandboxing
 
-Commands are a resolved executable, argument vector, working directory, intent, and timeout; task text is not implicitly evaluated as a shell. Three gates apply: current capability, command policy/approval, then OS sandbox startup. Approval grants bind to canonical executable identity and the Thread; children may consume an existing grant but cannot prompt for or mint one.
+Commands are a resolved executable, argument vector, working directory, intent, and timeout; task text is not implicitly evaluated as a shell. Three gates apply: current capability, command policy/approval, then OS sandbox startup. Approval grants bind to canonical executable identity, structured prefix, scope and the Thread; children share the parent approval queue and existing grants.
 
 Long-running commands return a Thread/Agent-scoped handle and require terminal polling or cancellation evidence before completion. Failures are classified as parameter, policy, approval, sandbox, exit, timeout, or Runtime lifecycle failures. One explicitly retryable Windows sandbox-start failure permits one exact retry; a repeat pauses command starts for the turn without blocking safe file work.
 
-All approval postures use Anthropic Sandbox Runtime, workspace-scoped files and a filtered environment. Command networking has no shell/npm exception. Approved downloads use a separate Runtime broker. Unknown execution and cleanup failure never imply safe automatic retry.
+Manual/agent-approved commands default to Anthropic Sandbox Runtime. Explicit host escalation is reviewed per command; Full access bypasses the command sandbox. File tools stay workspace scoped. Benchmark runs commands in a separate offline Docker worker. Unknown execution or cleanup never implies safe automatic retry.
 
 | Platform | Protected boundary |
 | --- | --- |
@@ -125,9 +125,9 @@ Shared Windows and Program Files executables rely on existing ordinary-user read
 
 Readiness is established before work. Windows verifies sandbox identity and network fencing, then uses a bounded out-of-process probe to exercise real initialization, wrapping, execution, cleanup, and reset. The probe uses the canonical System32 command shell, no explicit read allowlist, and an isolated scratch ACL transition. On timeout, the parent terminates the process tree and waits for confirmed closure before the ACL lease can be released.
 
-Private worker control records preserve dispatch, launcher exit and cleanup independently of display truncation. Windows Job Objects quiesce descendants before ACL reset; Linux uses PID namespaces. Durable unfinished leases/quarantine block further mutations across Resume. See [mandatory command isolation](COMMAND_SECURITY.md) for artifact authorization, limits, compatibility changes, and operator recovery.
+Private worker control records preserve dispatch, launcher exit and cleanup independently of display truncation. Windows Job Objects quiesce descendants before ACL reset; Linux uses PID namespaces. Durable unfinished leases/quarantine block further mutations across Resume. See [command permissions](COMMAND_SECURITY.md) for artifact authorization, limits, compatibility changes, and operator recovery.
 
-Command requests use one Runtime metadata normalizer: missing verification categories do not block execution. Paths use canonical workspace boundaries and argv stays literal; scripts and synchronous shell forms do not gain a read-only exemption. Auto approval permits routine local work but asks for explicit high-risk/system or unclassified effects. Streaming framework evidence is recorded before display clipping as a separate `validation` verdict. A pipeline exit of zero is not a test pass; ambiguous results remain unknown, and ProgressGuard only clears stagnation with high-confidence pass evidence. See [command usability and validation](COMMAND_SECURITY.md#command-usability-and-validation-evidence) for the detailed contract and read-only benchmark request replay.
+Command requests use one Runtime metadata normalizer: missing verification categories do not block execution. Paths use canonical workspace boundaries and argv stays literal; shell syntax is not a security boundary. Every new command goes through the chosen authority; static risk labels no longer auto-allow it. Streaming framework evidence is recorded before display clipping as a separate `validation` verdict. A pipeline exit of zero is not a test pass; ambiguous results remain unknown, and ProgressGuard only clears stagnation with high-confidence pass evidence. See [command usability and validation](COMMAND_SECURITY.md#evidence-and-failures) for the detailed contract and read-only benchmark request replay.
 
 Credentials live in the OS credential store or provider-specific environment variables, never workspace configuration. Standard GLM and GLM Coding Plan have separate key identities with no cross-channel fallback. Persisted/model-facing text is secret- and terminal-control-filtered.
 
@@ -370,7 +370,7 @@ The reproducible development target is **SWE-bench Verified Mini (HAL, 50)**: 25
 
 One manifest pins the ordered instance IDs, community and official dataset revisions, digests, evaluator, Harbor, task repository, and EASY CODE profile. Every ID is verified against the official dataset; exact filters and range checks prevent accidental unfiltered or partial runs.
 
-The supported harness uses Windows, Docker Desktop Linux containers, and Harbor's repository-specific grading boundary. The current EASY CODE build is packed as an exact npm archive for each Trial. The Agent runs in the task checkout with safe Auto approval, fixed Coding Plan endpoint/model/effort, and no standard-GLM fallback.
+The supported harness uses Windows, Docker Desktop Linux containers, and Harbor's repository-specific grading boundary. The current EASY CODE build is packed as an exact npm archive for each Trial. The Agent runs in the task checkout with fixed offline-container full access, fixed Coding Plan endpoint/model/effort, and no standard-GLM fallback.
 
 The dedicated key is staged through ACL-protected one-shot files and removed before the tool loop; Harbor receives a path rather than the value. Pinned multilingual ONNX assets are host-verified, copied to a disposable Trial cache, and reverified, so semantic retrieval is part of the measured profile without Trial downloads.
 

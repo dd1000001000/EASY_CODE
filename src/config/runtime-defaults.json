@@ -1,5 +1,8 @@
 {
   "steps": { "none": 40, "low": 40, "medium": 40, "high": 80 },
+  "approvalInputChars": 24000,
+  "approvalOutputTokens": 1024,
+  "approvalTimeoutMs": 60000,
   "maxContextChars": 250000,
   "maxActiveContextChars": 250000,
   "maxContextTokens": 0,

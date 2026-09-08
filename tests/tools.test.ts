@@ -384,13 +384,16 @@ describe("workspace file tools", () => {
     });
   });
 
-  it("enforces plan mode mutations and path traversal in code", async () => {
+  it("treats Plan editing as a preference while retaining path boundaries in both modes", async () => {
     await withWorkspace(async (root, manager) => {
       const create = new CreateFileTool(manager);
-      const planResult = await create.execute({ path: "blocked.txt", content: "no" }, context(root, "plan"));
-      const traversal = await create.execute({ path: "../escape.txt", content: "no" }, context(root));
-      assert.equal(planResult.ok, false);
-      assert.equal(traversal.ok, false);
+      const planResult = await create.execute({ path: "plan-note.txt", content: "note" }, context(root, "plan"));
+      assert.equal(planResult.ok, true);
+      assert.equal(await readFile(path.join(root, "plan-note.txt"), "utf8"), "note");
+      for (const mode of ["plan", "code"] as const) {
+        const traversal = await create.execute({ path: "../escape.txt", content: "no" }, context(root, mode));
+        assert.equal(traversal.ok, false);
+      }
     });
   });
 

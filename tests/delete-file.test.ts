@@ -138,7 +138,7 @@ describe("delete_file tool", () => {
     });
   });
 
-  it("denies deletion in plan mode before changing the file", async () => {
+  it("uses the same exact-version file guard in Plan; avoiding edits is a planning instruction", async () => {
     await withWorkspace(async (root, manager) => {
       const filename = path.join(root, "planned.txt");
       await writeFile(filename, "plan only\n", "utf8");
@@ -153,10 +153,9 @@ describe("delete_file tool", () => {
         context(root, "plan"),
       );
 
-      assert.equal(result.ok, false);
-      assert.match(result.error ?? "", /disabled in plan mode/iu);
-      assert.equal(await readFile(filename, "utf8"), "plan only\n");
-      assert.equal(manager.getChangeSet().length, 0);
+      assert.equal(result.ok, true);
+      assert.equal(await doesNotExist(filename), true);
+      assert.equal(manager.getChangeSet().length, 1);
     });
   });
 

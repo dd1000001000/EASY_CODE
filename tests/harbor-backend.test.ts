@@ -2,11 +2,22 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { harborPathRules, assertHarborHelper } from "../src/sandbox/harbor-backend.js";
+import { harborPathRules, assertHarborHelper, validateHarborShmMount, HARBOR_SHM_ACCESS } from "../src/sandbox/harbor-backend.js";
 import { SandboxControlStream, encodeSandboxControl } from "../src/sandbox/control.js";
 import { describe, it } from "./harness.js";
 
 describe("Harbor sandbox handoff", () => {
+  it("accepts only a dedicated hardened shared-memory tmpfs", () => {
+    const valid = "91 90 0:85 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs shm rw,size=65536k\n";
+    assert.doesNotThrow(() => validateHarborShmMount(valid));
+    for (const invalid of ["", valid + valid, valid.replace("noexec,", ""), valid.replace("nodev,", ""),
+      valid.replace("nosuid,", ""), valid.replace(" tmpfs ", " ext4 "), valid.replace(" / /dev/shm ", " /shared /dev/shm "),
+      valid.replace("rw,nosuid", "ro,nosuid"), valid + valid.replace("/dev/shm ", "/dev/shm/nested ")]) {
+      assert.throws(() => validateHarborShmMount(invalid), /dedicated/u);
+    }
+    assert.equal(HARBOR_SHM_ACCESS & (1 | 16 | 64 | 128 | 512 | 1024 | 2048 | 4096), 0);
+  });
+
   it("does not activate on a normal host, even with a forged Harbor variable", async () => {
     if (process.platform === "linux") return; // Linux/Docker behavior is exercised by the real smoke.
     const old = process.env.EASY_CODE_OUTER_SANDBOX;

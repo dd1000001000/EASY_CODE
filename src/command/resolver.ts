@@ -65,16 +65,29 @@ async function isExecutable(filename: string): Promise<boolean> {
 export class CommandResolver {
   constructor(private readonly workspace: WorkspaceManager) {}
 
+  /** Resolve filesystem/PATH in Docker at dispatch, never on the controller.
+   * A worker may create /tmp scripts or install an executable which does not
+   * exist in the controller. No approval grants are issued for this profile. */
+  resolveContainer(input: RunCommandInput): ResolvedCommand {
+    this.validateRequest(input);
+    const cwdAbsolute = path.posix.resolve(this.workspace.root, input.cwd ?? ".");
+    const environment = buildCommandEnvironment();
+    return { program: input.program, executablePath: input.program, args: [...(input.args ?? [])],
+      cwdAbsolute, cwdRelative: path.posix.relative(this.workspace.root, cwdAbsolute) || ".",
+      executableInsideWorkspace: false, trustedExecutable: false, environment,
+      environmentKeys: Object.keys(environment).sort() };
+  }
+
   async resolve(
     input: RunCommandInput,
     options: { unrestrictedHostAccess?: boolean; unrestrictedCommands?: boolean; networkEnabled?: boolean } = {},
   ): Promise<ResolvedCommand> {
-    // Legacy dangerous posture no longer bypasses path/environment isolation.
+    // Structural validation applies even to explicitly authorized host execution.
     this.validateRequest(input);
     const environment = buildCommandEnvironment();
-    let cwdAbsolute = await this.resolveCwd(input.cwd);
+    let cwdAbsolute = await this.resolveCwd(input.cwd, options.unrestrictedHostAccess);
     const executablePath = await this.resolveExecutable(
-      input.program,
+      options.unrestrictedHostAccess && /[\\/]/u.test(input.program) ? path.resolve(cwdAbsolute, input.program) : input.program,
       cwdAbsolute,
       environment,
     );
@@ -95,14 +108,14 @@ export class CommandResolver {
         if (directory === undefined) throw new Error("git -C requires a directory");
         if (directory) {
           const target = await resolveLocalCommandPath(directory, cwdAbsolute);
-          cwdAbsolute = await this.resolveCwd(target);
+          cwdAbsolute = await this.resolveCwd(target, options.unrestrictedHostAccess);
         }
         args.splice(index, option === "-C" ? 2 : 1);
       }
     }
     const cwdRelative = this.displayCwd(cwdAbsolute);
     let approvalMaterialHash: string | undefined;
-    if (this.basename(executablePath) === "npm") {
+    if (this.basename(executablePath) === "npm" && !options.unrestrictedCommands) {
       const install = analyzeNpmInstall(args);
       if (install.isInstall && install.valid && !options.unrestrictedCommands) {
         args = options.networkEnabled && !(input.args ?? []).includes("--offline") ? install.normalizedArgs.filter(a => a !== "--offline") : install.normalizedArgs;
@@ -165,8 +178,13 @@ export class CommandResolver {
     }
   }
 
-  private async resolveCwd(requested: string | undefined): Promise<string> {
+  private async resolveCwd(requested: string | undefined, unrestricted = false): Promise<string> {
     if (!requested || requested === ".") return this.workspace.root;
+    if (unrestricted) {
+      const resolved = await realpath(path.resolve(this.workspace.root, requested));
+      if (!(await lstat(resolved)).isDirectory()) throw new Error("cwd must be a directory");
+      return resolved;
+    }
     const cwdKey = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
     try {
       if (/^(?:\\\\|\/\/)/u.test(requested)) throw new Error("Network working directories are not accepted");

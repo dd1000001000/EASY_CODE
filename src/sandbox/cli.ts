@@ -1,6 +1,6 @@
 import type { Command } from "commander";
 import { resolveHarborOuterSandbox } from "../benchmarks/swebench.js";
-import { inspectHarborSandbox } from "./harbor-backend.js";
+import { inspectBenchmarkBridge } from "./benchmark-backend.js";
 
 import {
   DefaultSandboxStartupService,
@@ -51,7 +51,7 @@ export function registerSandboxCommands(
     .description("check whether the OS sandbox can enforce command boundaries")
     .action(async () => {
       if (!options.service && resolveHarborOuterSandbox() === "harbor") {
-        try { writeLine(await inspectHarborSandbox()); }
+        try { writeLine(await inspectBenchmarkBridge()); }
         catch (error) { writeLine(`Harbor sandbox unavailable: ${String(error)}`); setExitCode(2); }
         return;
       }

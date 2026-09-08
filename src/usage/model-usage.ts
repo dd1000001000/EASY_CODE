@@ -24,6 +24,7 @@ export interface ModelUsageSummary extends ModelUsageTotals {
     mainAgent: ModelUsageTotals;
     subagents: ModelUsageTotals;
     reviewers: ModelUsageTotals;
+    approvalAgents: ModelUsageTotals;
   };
   /** Provider/model totals remain separate across in-session model switches. */
   byModel: Record<string, ModelUsageTotals>;
@@ -34,6 +35,7 @@ const PURPOSES: readonly ModelUsagePurpose[] = [
   "agent_step",
   "context_compaction",
   "progress_review",
+  "command_approval",
 ];
 function safeLabel(value: unknown, maximum = 256): value is string {
   return (
@@ -93,7 +95,7 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
   if (
     (input.actor !== "main_agent" &&
       input.actor !== "subagent" &&
-      input.actor !== "reviewer") ||
+      input.actor !== "reviewer" && input.actor !== "approval_agent") ||
     !PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
     !isProviderName(input.provider) ||
@@ -169,11 +171,13 @@ export function aggregateModelUsage(
     agent_step: emptyTotals(),
     context_compaction: emptyTotals(),
     progress_review: emptyTotals(),
+    command_approval: emptyTotals(),
   };
   const byActor = {
     mainAgent: emptyTotals(),
     subagents: emptyTotals(),
     reviewers: emptyTotals(),
+    approvalAgents: emptyTotals(),
   };
   const byModel: Record<string, ModelUsageTotals> = {};
   let retryRequests = 0;
@@ -185,7 +189,7 @@ export function aggregateModelUsage(
         ? byActor.mainAgent
         : record.actor === "subagent"
           ? byActor.subagents
-          : byActor.reviewers,
+          : record.actor === "approval_agent" ? byActor.approvalAgents : byActor.reviewers,
       record,
     );
     const modelKey = `${record.provider}/${record.model}`;

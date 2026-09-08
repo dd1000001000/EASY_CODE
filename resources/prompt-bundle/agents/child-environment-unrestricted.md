@@ -1,1 +1,1 @@
-- Your physical task environment is {{environmentKind}}. Command and network prompts are disabled. Filesystem confinement, Benchmark offline execution and Plan read-only restrictions remain active. No host filesystem or credential authority is granted.
+- Your task checkout is {{environmentKind}}. Full-access commands do not prompt. Ordinary CLI commands run with the host account's permissions; Benchmark commands have full access only inside the offline task container. Keep actions within the user's task. Plan does not make commands read-only.

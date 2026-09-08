@@ -5,6 +5,7 @@ import type {
 } from "../command/types.js";
 
 export type SandboxBackendName =
+  | "benchmark-container"
   | "harbor-landlock"
   | "anthropic-srt-macos"
   | "anthropic-srt-linux"
@@ -15,7 +16,7 @@ export type SandboxBackendName =
 export interface SandboxExecutionMetadata {
   backend: SandboxBackendName;
   enforced: boolean;
-  filesystem: "workspace-write" | "workspace-read" | "host";
+  filesystem: "workspace-write" | "workspace-read" | "host" | "container";
   network: "denied" | "registry-only" | "allowed" | "host" | "brokered";
 }
 
@@ -40,6 +41,8 @@ export interface SandboxExecutionRequest {
   commandPreview: string;
   /** Runtime-issued per-command capability; never copied into target environment. */
   networkProxyURL?: string;
+  /** Set only by Runtime after explicit host permission; never a tool field. */
+  hostExecutionAuthorized?: boolean;
 }
 
 export interface CommandExecutionBackend {

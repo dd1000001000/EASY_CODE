@@ -21,23 +21,16 @@ import { describe, it } from "./harness.js";
 function context(root: string): ToolContext { return { workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn", approvalPolicy: "safe", requestApproval: async () => true, commandExecutionMode: "auto_approve", commandTimeoutMs: 10000, maxOutputChars: 256 }; }
 
 describe("command security floor", () => {
-  it("refuses Windows Plan commands before sandbox effects even if policy says allow", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-readonly-test-"));
+  it("Plan and Code share the same command sandbox permission metadata", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-plan-permissions-"));
     try {
       const workspace = await WorkspaceManager.create(root);
-      const before = await readdir(root);
       const backend = new AnthropicSandboxBackend(workspace, { platform: "win32" });
-      const command: ResolvedCommand = { program: "node", executablePath: process.execPath,
-        args: ["--version"], cwdAbsolute: root, cwdRelative: ".", executableInsideWorkspace: false,
-        trustedExecutable: true, environment: {}, environmentKeys: [] };
-      await assert.rejects(() => backend.prepare({ commandId: "plan-must-not-start", command,
-        context: { ...context(root), mode: "plan", commandExecutionMode: "unrestricted" },
-        commandPreview: "node --version", policyDecision: {
-          ...new CommandPolicy().classify({ program: "node", intent: "inspect" }, command, "plan"),
-          effect: "allow", reason: "test classifier",
-        } }),
-      /file-tools-only/u);
-      assert.deepEqual(await readdir(root), before);
+      const command: ResolvedCommand = { program: "node", executablePath: process.execPath, args: ["--version"],
+        cwdAbsolute: root, cwdRelative: ".", executableInsideWorkspace: false, environment: {}, environmentKeys: [] };
+      const request = { commandId: "plan", command, context: { ...context(root), mode: "plan" as const }, commandPreview: "node",
+        policyDecision: new CommandPolicy().classify({ program: "node", intent: "inspect" }, command, "plan") };
+      assert.equal(backend.describe(request).filesystem, "workspace-write");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("keeps redaction placeholders stable across repeated audit/render passes", () => {
@@ -62,9 +55,9 @@ describe("command security floor", () => {
   it("does not classify a workspace git shim or mutating branch command as Plan inspection", () => {
     const base: ResolvedCommand = { program: "git", executablePath: path.resolve("git.exe"), args: ["status"], cwdAbsolute: process.cwd(), cwdRelative: ".", executableInsideWorkspace: true, trustedExecutable: true, environment: {}, environmentKeys: [] };
     const policy = new CommandPolicy();
-    assert.equal(policy.classify({ program: "git", intent: "inspect" }, base, "plan").effect, "deny");
-    assert.equal(policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false, args: ["branch", "-D", "topic"] }, "plan").effect, "deny");
-    assert.equal(policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false }, "plan").effect, "allow");
+    assert.equal(policy.classify({ program: "git", intent: "inspect" }, base, "plan").effect, "ask");
+    assert.equal(policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false, args: ["branch", "-D", "topic"] }, "plan").effect, "ask");
+    assert.equal(policy.classify({ program: "git", intent: "inspect" }, { ...base, executableInsideWorkspace: false }, "plan").effect, "ask");
   });
 
   it("uses a bounded, monotonic control stream independent of display text", () => {

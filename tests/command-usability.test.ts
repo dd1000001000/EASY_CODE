@@ -57,7 +57,7 @@ describe("command usability and boundaries", () => {
     const resolver = new CommandResolver(manager);
     const resolved = await resolver.resolve({ program: "./node" + (process.platform === "win32" ? ".exe" : ""), args: ["-e", "console.log(1)"], cwd: "tests", intent: "run" });
     assert.equal(resolved.executablePath, await realpath(process.execPath));
-    assert.equal(new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved, "plan").effect, "deny");
+    assert.equal(new CommandPolicy().classify({ program: "node", intent: "inspect" }, resolved, "plan").effect, "ask");
     await assert.rejects(() => resolveLocalCommandPath("\\\\server\\share\\node.exe", root), /Network/u);
   }));
 
@@ -66,18 +66,18 @@ describe("command usability and boundaries", () => {
     const command = await resolver.resolve({ program: "git", args: ["--no-pager", "-C", "tests", "-C", "..", "diff"], intent: "inspect" });
     assert.equal(command.cwdAbsolute, root);
     assert.deepEqual(command.args, ["--no-pager", "diff"]);
-    assert.notEqual(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "deny");
+    assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" }, command, "code").effect, "ask");
     for (const args of [["diff", "-p"], ["log", "-p", "-1"], ["show", "-p", "HEAD"]]) {
       assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
-        { ...command, args }, "plan").effect, "allow");
+        { ...command, args }, "plan").effect, "ask");
     }
     for (const args of [["-p", "diff"], ["--paginate", "log"], ["diff", "--ext-diff"], ["show", "--textconv"]]) {
       assert.equal(new CommandPolicy().classify({ program: "git", intent: "inspect" },
-        { ...command, args }, "code").effect, "deny");
+        { ...command, args }, "code").effect, "ask");
     }
     await assert.rejects(() => resolver.resolve({ program: "git", args: ["-C", "..", "diff"], intent: "inspect" }), /boundary/u);
     for (const args of [["-c", "core.pager=evil", "diff"], ["reset", "--hard"]]) {
-      assert.equal(new CommandPolicy().classify({ program: "git", intent: "run" }, { ...command, trustedExecutable: true, args }, "code").effect, "deny");
+      assert.equal(new CommandPolicy().classify({ program: "git", intent: "run" }, { ...command, trustedExecutable: true, args }, "code").effect, "ask");
     }
   }));
 
@@ -85,17 +85,17 @@ describe("command usability and boundaries", () => {
     const base: ResolvedCommand = { program: "rg", executablePath: "/usr/bin/rg", args: ["|", "a"], cwdAbsolute: process.cwd(), cwdRelative: ".", executableInsideWorkspace: false, environment: {}, environmentKeys: [] };
     const policy = new CommandPolicy();
     for (const [program, args, risk] of [
-      ["rg", ["|", "file"], "workspace"], ["rm", ["generated.tmp"], "workspace"],
+      ["rg", ["|", "file"], "workspace"], ["rm", ["generated.tmp"], "destructive"],
       ["rm", ["-rf", "build"], "destructive"], ["mv", ["a", "b"], "workspace"],
-      ["sh", ["-c", "rm -rf build"], "destructive"], ["sh", ["-c", "echo ok | cat"], "workspace"],
-      ["sudo", ["anything"], "system"], ["unknown-admin-tool", [], "destructive"],
+      ["sh", ["-c", "rm -rf build"], "workspace"], ["sh", ["-c", "echo ok | cat"], "workspace"],
+      ["sudo", ["anything"], "system"], ["unknown-admin-tool", [], "workspace"],
     ] as const) {
       const command = { ...base, executablePath: `/usr/bin/${program}`, args: [...args] };
       const decision = policy.classify({ program, intent: "run" }, command, "code");
       assert.equal(decision.risk, risk, program + args.join(" "));
       assert.equal(decision.effect, "ask");
-      assert.equal(autoApproveLocal("auto_approve", decision.risk), risk === "workspace");
-      assert.equal(policy.classify({ program, intent: "inspect" }, command, "plan").effect, "deny");
+      assert.equal(autoApproveLocal("auto_approve", decision.risk), false);
+      assert.equal(policy.classify({ program, intent: "inspect" }, command, "plan").effect, "ask");
     }
   });
 

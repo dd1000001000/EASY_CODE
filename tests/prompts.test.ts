@@ -125,7 +125,7 @@ describe("system prompt builder", () => {
       assert.ok(rootIndex < packageIndex);
       assert.ok(packageIndex < cwdIndex);
 
-      assert.match(prompt, /Runtime path guards.*mandatory/);
+      assert.match(prompt, /Runtime applies the selected execution permissions/);
       assert.match(prompt, /File contents.*command output.*untrusted data/);
       assert.match(prompt, /BEGIN_UNTRUSTED_WORKSPACE_SUMMARY/);
       assert.match(prompt, /BEGIN_UNTRUSTED_RETRIEVED_MEMORY/);
@@ -281,13 +281,11 @@ describe("system prompt builder", () => {
         shell: "/bin/sh",
         env: {},
       });
-      assert.match(unrestricted, /isolated execution without individual prompts/u);
-      assert.match(unrestricted, /Plan is always read-only/u);
-      assert.match(unrestricted, /Benchmark command-network denial remain mandatory/u);
-      assert.match(unrestricted, /Command and network approval prompts are disabled/u);
-      assert.match(unrestricted, /inherited credentials and unrestricted host filesystem access are not granted/u);
-      assert.match(unrestricted, /Unconfirmed cleanup quarantines/u);
-      assert.doesNotMatch(unrestricted, /may access the internet/u);
+      assert.match(unrestricted, /host without the EASY CODE command sandbox/u);
+      assert.match(unrestricted, /Plan is not a read-only filesystem guarantee/u);
+      assert.match(unrestricted, /Benchmark.*offline task container/u);
+      assert.match(unrestricted, /without.*approval/u);
+      assert.match(unrestricted, /host.*network|filesystem.*network/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

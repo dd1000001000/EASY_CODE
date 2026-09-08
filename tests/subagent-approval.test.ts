@@ -61,9 +61,12 @@ function approvalHarness(
   const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
   Object.defineProperties(app, {
     assumeYes: { value: assumeYes },
+    commandExecutionMode: { value: assumeYes ? "auto_approve" : "manual" },
+    reviewApproval: { value: async () => ({ decision: "allow_once", reason: "fixture" }) },
+    threadStore: { value: { appendEvent: () => undefined } },
     terminal: { value: terminal },
     state: {
-      value: { commandApprovalPrefixes: [...commandApprovalPrefixes] },
+      value: { threadId: "parent-thread", commandApprovalPrefixes: [...commandApprovalPrefixes] },
       writable: true,
     },
   });
@@ -97,12 +100,12 @@ function commandAudit(): CommandAuditEntry {
 }
 
 describe("background subagent approvals", () => {
-  it("fails closed without opening or repainting the shared terminal", async () => {
+  it("routes a child request to the serialized parent approval UI", async () => {
     const harness = approvalHarness(false);
     try {
-      assert.equal(await harness.request(approvalRequest()), false);
-      assert.equal(harness.terminal.approvalCalls, 0);
-      assert.equal(harness.terminal.infoCalls, 0);
+      assert.equal(await harness.request(approvalRequest()), true);
+      assert.equal(harness.terminal.approvalCalls, 1);
+      assert.ok(harness.terminal.infoCalls >= 1);
     } finally {
       harness.terminal.close();
     }
@@ -113,7 +116,7 @@ describe("background subagent approvals", () => {
     try {
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.approvalCalls, 0);
-      assert.equal(harness.terminal.infoCalls, 0);
+      assert.ok(harness.terminal.infoCalls >= 1);
     } finally {
       harness.terminal.close();
     }
@@ -127,14 +130,14 @@ describe("background subagent approvals", () => {
     try {
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.approvalCalls, 0);
-      assert.equal(harness.terminal.infoCalls, 0);
+      assert.ok(harness.terminal.infoCalls >= 1);
 
       const different = {
         ...approvalRequest(),
         commandPrefix: path.join(path.dirname(path.join(path.dirname(process.execPath), "git.exe")), "different-executable"),
       };
-      assert.equal(await harness.request(different), false);
-      assert.equal(harness.terminal.approvalCalls, 0);
+      assert.equal(await harness.request(different), true);
+      assert.equal(harness.terminal.approvalCalls, 1);
     } finally {
       harness.terminal.close();
     }

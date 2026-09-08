@@ -7,6 +7,7 @@ places the GLM Coding Plan key in a shell command or log message.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -14,6 +15,7 @@ import re
 import shlex
 import shutil
 import sqlite3
+import subprocess
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
@@ -28,6 +30,7 @@ from harbor.environments.base import BaseEnvironment
 from harbor.environments.docker.docker import DockerEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.task.config import NetworkMode, NetworkPolicy
+from benchmarks.swebench_verified.split_environment import SplitBenchmarkEnvironment
 
 
 _REMOTE_PACKAGE = "/tmp/easy-code-agent.tgz"
@@ -182,6 +185,22 @@ def _benchmark_agent_network_policy() -> NetworkPolicy:
     )
 
 
+def _validate_private_ipc(info: dict[str, Any]) -> None:
+    """The container, not an individual command, owns the bounded IPC pool."""
+    size = info.get("shmBytes")
+    if (info.get("ipc") != "private" or info.get("privileged") is not False
+            or type(size) is not int or not 0 < size <= 256 * 1024 * 1024
+            or not isinstance(info.get("mounts"), list)):
+        raise RuntimeError("Harbor requires private Docker IPC, non-privileged mode and bounded /dev/shm (at most 256 MiB).")
+    for mount in info["mounts"]:
+        destination = mount.get("Destination") if isinstance(mount, dict) else None
+        if not isinstance(destination, str):
+            raise RuntimeError("Unable to verify Harbor shared-memory mounts.")
+        destination = destination.rstrip("/") or "/"
+        if destination in ("/", "/dev", "/dev/shm") or destination.startswith("/dev/shm/"):
+            raise RuntimeError("Harbor forbids external or nested /dev/shm mounts.")
+
+
 class EasyCodeBenchmarkDockerEnvironment(DockerEnvironment):
     """Prepare Harbor's egress controller for restricted agent execution.
 
@@ -192,6 +211,18 @@ class EasyCodeBenchmarkDockerEnvironment(DockerEnvironment):
     runs and restores Harbor's trusted baseline policy when that code exits so
     the verifier can install its declared dependencies.
     """
+
+    async def assert_private_ipc(self) -> None:
+        result = await self._run_docker_compose_command(["ps", "-q", "main"], timeout_sec=30)
+        container_id = str(result.stdout or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
+            raise RuntimeError("Unable to identify the Harbor main container for IPC verification.")
+        projection = ('{"ipc":{{json .HostConfig.IpcMode}},"shmBytes":{{json .HostConfig.ShmSize}},'
+                      '"privileged":{{json .HostConfig.Privileged}},"mounts":{{json .Mounts}}}')
+        inspected = await asyncio.to_thread(subprocess.run,
+            ["docker", "inspect", "--format", projection, container_id],
+            capture_output=True, text=True, timeout=30, check=True)
+        _validate_private_ipc(json.loads(inspected.stdout))
 
     def __init__(
         self,
@@ -298,6 +329,7 @@ class EasyCodeAgent(BaseInstalledAgent):
 
         if not isinstance(environment, EasyCodeBenchmarkDockerEnvironment):
             raise RuntimeError("EASY CODE requires the trusted Harbor Docker environment with managed egress.")
+        await environment.assert_private_ipc()
 
         # Harbor 0.16.1 does not expose a system-dependency helper. Keep this
         # distro-aware bootstrap aligned with its built-in installed agents.
@@ -348,13 +380,10 @@ node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if
 npm install --global --ignore-scripts {shlex.quote(_REMOTE_PACKAGE)}
 export EASY_CODE_CACHE_DIR={shlex.quote(_REMOTE_CACHE_DIR)}
 global_root="$(npm root --global)"
-install -d -m 755 /opt/easy-code-harbor
-cc -O2 -Wall -Wextra -Werror "$global_root/easy-code-agent/scripts/harbor-sandbox.c" -o /opt/easy-code-harbor/harbor-sandbox
-chmod 755 /opt/easy-code-harbor/harbor-sandbox
+test -f "$global_root/easy-code-agent/dist/sandbox/benchmark-backend.js" || {{ echo "This adapter requires the split-container EASY CODE build; rebuild and repack the supplied npm archive." >&2; exit 78; }}
 node "$global_root/easy-code-agent/scripts/embedding-model.cjs" verify
 easy-code --version
-export EASY_CODE_OUTER_SANDBOX=harbor
-easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no host execution fallback or privileged Docker is permitted." >&2; exit 78; }}
+echo 'EASY CODE controller installed; offline task container isolation is verified by the host adapter before execution.'
 """.strip()
 
         result = await self.exec_as_root(
@@ -387,6 +416,11 @@ easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no ho
             )
         if restored:
             await self._restore_workspace(environment)
+
+        original_environment = environment
+        split_environment = await SplitBenchmarkEnvironment.create(environment)
+        environment = split_environment
+        workspace_exported = False
 
         command_parts = [
             "easy-code",
@@ -453,6 +487,7 @@ easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no ho
                             "EASY_CODE_ORCHESTRATION_ENABLED": str(
                                 _BENCHMARK_ORCHESTRATION_ENABLED
                             ).lower(),
+                            "EASY_CODE_SUBAGENT_ISOLATION": "shared",
                             "CI": "1",
                             "NO_COLOR": "1",
                         },
@@ -466,6 +501,8 @@ easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no ho
                         exit_code = getattr(result, "return_code", getattr(result, "exit_code", None))
                         if not isinstance(exit_code, int):
                             raise RuntimeError("Agent exit is unknown; verifier networking stays restricted.")
+                        await split_environment.export_workspace()
+                        workspace_exported = True
                         await self._restore_network_after_clean_exit(
                             environment, baseline_network_policy
                         )
@@ -479,8 +516,11 @@ easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no ho
                 self._require_success("EASY CODE benchmark run", result)
             finally:
                 try:
+                    if not workspace_exported:
+                        await split_environment.export_workspace()
+                        workspace_exported = True
                     await self._capture_workspace(
-                        environment, workspace_base_commit
+                        original_environment, workspace_base_commit
                     )
                     capture_succeeded = True
                 except Exception as capture_error:
@@ -548,6 +588,7 @@ easy-code sandbox doctor || {{ echo "Harbor command isolation unavailable; no ho
                 )
             finally:
                 self._api_key = ""
+                await split_environment.close()
 
     def _trial_binding(
         self, instruction: str, workspace_base_commit: str
@@ -1128,8 +1169,8 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
     async def _stage_api_key(self, environment: BaseEnvironment) -> None:
         """Upload an owner-only one-shot key without putting it in a command."""
 
-        # The trusted supervisor is root; model-controlled descendants drop all
-        # capabilities and receive neither this file nor its environment value.
+        # This file is staged in the trusted controller only. Model commands
+        # run in a separate offline worker without the controller's secret mount.
         owner = "root"
         ownership = ""
         if owner is not None:

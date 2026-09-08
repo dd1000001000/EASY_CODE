@@ -296,6 +296,10 @@ export function renderComposerFooter(
 
   if (session) {
     metadata.push(palette.cyan(safeInline(session.mode) || "auto"));
+    if (session.commandExecutionMode) {
+      metadata.push(palette.gray(`approval:${session.commandExecutionMode === "auto_approve" ? "agent" : session.commandExecutionMode === "unrestricted" ? "none" : "manual"}`));
+      metadata.push(palette.gray(`env:${session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox")}`));
+    }
     metadata.push(palette.bold(formatProviderModel(session, false)));
     metadata.push(safeInline(session.thinkingEffort) || "none");
     metadata.push(palette.gray(`DAG/agents ${session.orchestrationEnabled ? "on" : "off"}`));
@@ -336,7 +340,7 @@ export function renderDangerStatusLabel(
   options: RenderViewOptions = {},
 ): string {
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
-  return viewPalette(options).red.bold("! EASY CODE ISOLATED NO-PROMPT");
+  return viewPalette(options).red.bold(state.header.session?.commandEnvironment === "container" ? "! CONTAINER FULL ACCESS / OFFLINE" : "! EASY CODE HOST FULL ACCESS");
 }
 
 function renderDangerIndicator(
@@ -346,7 +350,7 @@ function renderDangerIndicator(
   if (state.header.session?.commandExecutionMode !== "unrestricted") return "";
   const palette = viewPalette(options);
   return truncateToWidth(
-    palette.red.bold("! EASY CODE ISOLATED NO-PROMPT — NETWORK NO-PROMPT; PLAN READ-ONLY"),
+    palette.red.bold(state.header.session?.commandEnvironment === "container" ? "! CONTAINER FULL ACCESS — EXTERNAL NETWORK OFF" : "! HOST FULL ACCESS — NO SANDBOX / NO APPROVAL"),
     viewColumns(options),
     { preserveAnsi: viewColor(options) },
   );

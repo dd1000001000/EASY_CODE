@@ -74,6 +74,29 @@ class Smoke(SimpleTestCase):
 result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(Smoke))
 assert result.testsRun==2 and result.wasSuccessful()
 `);
+  await run('multiprocessing SemLock, shared Value, Queue and 12-process Pool', `
+import multiprocessing as mp, os
+from pathlib import Path
+ctx=mp.get_context('fork')
+lock=ctx.Lock(); sem=ctx.Semaphore(1); value=ctx.Value('i',0); queue=ctx.Queue()
+def worker():
+    with sem:
+        with value.get_lock(): value.value+=1
+    queue.put(os.getpid())
+processes=[ctx.Process(target=worker) for _ in range(12)]
+for p in processes: p.start()
+pids={queue.get(timeout=10) for _ in processes}
+for p in processes:
+    p.join(10); assert p.exitcode==0
+assert value.value==12 and len(pids)==12
+queue.close(); queue.join_thread()
+with ctx.Pool(12) as pool: assert pool.map(abs,range(-12,0))==list(range(12,0,-1))
+for create in (lambda: os.symlink('/etc/passwd','/dev/shm/forbidden-link'),lambda: os.mkdir('/dev/shm/forbidden-dir')):
+    try: create()
+    except PermissionError: pass
+    else: raise AssertionError('non-regular IPC object allowed')
+print('12-process synchronization, Queue and Pool OK')
+`);
   const probes = `
 import socket, os, errno
 from pathlib import Path

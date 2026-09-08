@@ -48,7 +48,7 @@ describe("network authorization", () => {
   it("applies the mode/effect matrix without treating downloads as reads", () => {
     for (const mode of ["manual", "auto_approve", "unrestricted"] as const) {
       for (const effect of ["read", "download", "upload", "unknown"] as const) {
-        assert.equal(autoApproveNetwork(mode, effect), mode === "unrestricted" || mode === "auto_approve" && effect === "read");
+        assert.equal(autoApproveNetwork(mode, effect), mode === "unrestricted");
       }
     }
   });
@@ -69,7 +69,7 @@ describe("network authorization", () => {
     assert.equal(inspectNetworkOperation(command("python", ["-m", "pip", "install", "thing"]))?.effect, "download");
     assert.equal(inspectNetworkOperation(command("node", ["script.js"])), undefined);
     assert.equal(inspectNetworkOperation(command("curl", ["-q", "--version"])), undefined);
-    assert.equal(new CommandPolicy().classify({ program: "curl", intent: "inspect" }, command("curl", ["-q", "--version"]), "plan", true).effect, "allow");
+    assert.equal(new CommandPolicy().classify({ program: "curl", intent: "inspect" }, command("curl", ["-q", "--version"]), "plan", true).effect, "ask");
     assert.equal(inspectNetworkOperation(command("wget", ["--post-data=fixture", "https://example.invalid"]))?.effect, "upload");
   });
 
@@ -187,20 +187,20 @@ describe("network authorization", () => {
           const before = starts, prompts = requestCount;
           const context: ToolContext = { workspaceRoot: root, mode: "code", threadId: "network", turnId: "turn", commandExecutionMode: mode,
             approvalPolicy: "safe", requestApproval: async (r: ApprovalRequest) => { requestCount++; assert.ok(r.network); return false; }, commandTimeoutMs: 1000, maxOutputChars: 1000 };
-          const output = await new CommandRuntime(workspace, undefined, backend).run({ program: "curl", args, intent: "inspect" }, context);
-          const allowed = mode === "unrestricted" || mode === "auto_approve" && args.length === 1;
+          const output = await new CommandRuntime(workspace, undefined, backend, backend).run({ program: "curl", args, intent: "inspect" }, context);
+          const allowed = mode === "unrestricted";
           assert.equal(output.status, allowed ? "exited" : "policy_denied");
           assert.equal(starts - before, allowed ? 1 : 0); assert.equal(requestCount - prompts, allowed ? 0 : 1);
         }
       }
       const dangerous: ToolContext = { workspaceRoot: root, mode: "code", threadId: "network", turnId: "turn", commandExecutionMode: "unrestricted", approvalPolicy: "ask",
         requestApproval: async () => { throw new Error("Dangerous mode must not prompt"); }, commandTimeoutMs: 1000, maxOutputChars: 1000 };
-      assert.equal((await new CommandRuntime(workspace, undefined, backend, undefined, { networkProfile: "benchmark" }).run({ program: "curl", args: ["https://example.invalid"], intent: "run" }, dangerous)).status, "policy_denied");
-      assert.equal((await new CommandRuntime(workspace, undefined, backend).run({ program: process.execPath, args: ["-e", "let a = 1;\nconsole.log(a)"], cwd: root, intent: "run" }, dangerous)).status, "exited");
+      assert.equal((await new CommandRuntime(workspace, undefined, backend, undefined, { networkProfile: "benchmark" }).run({ program: "curl", args: ["https://example.invalid"], intent: "run" }, dangerous)).status, "exited");
+      assert.equal((await new CommandRuntime(workspace, undefined, backend, backend).run({ program: process.execPath, args: ["-e", "let a = 1;\nconsole.log(a)"], cwd: root, intent: "run" }, dangerous)).status, "exited");
       // The backend intentionally substitutes node --version; never launch a
       // detached or encoded target on the test host. Test only Runtime routing.
       const shell = process.platform === "win32" ? { program: "powershell", args: ["-EncodedCommand", "fixture"] } : { program: "sh", args: ["-lc", "echo fixture"] };
-      assert.equal((await new CommandRuntime(workspace, undefined, backend).run({ ...shell, intent: "run" }, dangerous)).status, "exited");
+      assert.equal((await new CommandRuntime(workspace, undefined, backend, backend).run({ ...shell, intent: "run" }, dangerous)).status, "exited");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -216,8 +216,8 @@ describe("network authorization", () => {
         return { executablePath: process.execPath, args: ["--version"], cwdAbsolute: root, environment: { ...process.env }, metadata, cleanup: async () => {} };
       } };
       const context: ToolContext = { workspaceRoot: root, mode: "code", threadId: "network", turnId: "turn", commandExecutionMode: "auto_approve", approvalPolicy: "safe",
-        requestApproval: async r => { assert.equal(r.network?.effect, "unknown"); prompts++; return false; }, commandTimeoutMs: 1000, maxOutputChars: 1000 };
-      await new CommandRuntime(workspace, undefined, backend).run({ program: "node", args: ["--version"], intent: "inspect" }, context);
+        requestApproval: async r => { if (!r.network) return true; assert.equal(r.network.effect, "unknown"); prompts++; return false; }, commandTimeoutMs: 1000, maxOutputChars: 1000 };
+      await new CommandRuntime(workspace, undefined, backend, backend).run({ program: "node", args: ["--version"], intent: "inspect" }, context);
       assert.equal(prompts, 1);
       await assert.rejects(() => proxyRequest(observed[0]!.networkProxyURL!, "http://127.0.0.1/"));
     } finally { await rm(root, { recursive: true, force: true }); }

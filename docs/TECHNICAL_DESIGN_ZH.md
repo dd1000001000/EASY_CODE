@@ -80,7 +80,7 @@ flowchart TB
 
 | 模式 | 语义 |
 | --- | --- |
-| `plan` | 只读调查并提交正式可审核 Plan；普通文本不能替代方案。 |
+| `plan` | 以调查和正式可审核方案为主，尽量避免直接文件编辑；命令遵循审批、可以写入，普通文本不能替代方案。 |
 | `auto` | 受限控制器选择直接回答、Plan 或 Code；控制器没有工作区工具。 |
 | `code` | 直接实现与验证，但文件和命令仍受全部安全边界约束。 |
 
@@ -108,9 +108,9 @@ Runtime 每次调用都会依据模式、主/子 Agent 角色、Plan/DAG 阶段�
 | macOS | 等待内核级后代进程监督实现，严格命令暂时拒绝；文件工具可用。 |
 | Linux | bubblewrap，依赖 `bubblewrap`、`socat`、`ripgrep` 和可用的非特权用户命名空间。 |
 
-手动模式审批所有联网；自动模式放行明确只读联网，下载/上传/未知行为仍需审批；危险 `unrestricted` 不再请求任何命令或联网审批。显式联网前缀绑定可执行文件内容及结构化参数，支持 Resume 和撤销，历史普通程序授权不会升级为网络权限。所有模式保留 OS 沙箱、Plan 只读、Benchmark 命令禁网和进程清理监督。详见[命令安全说明](COMMAND_SECURITY_ZH.md)。Git Worktree 只隔离源码状态，不是安全沙箱。
+工作模式、审批主体和环境相互独立。手动模式审批每条新命令；帮我批准由无工具的独立审批 Agent 判断，拒绝/失败转用户；完全访问使用宿主机、不加命令沙箱。带范围的前缀权限支持 Resume 和子 Agent 共享。Plan 尽量避免直接编辑，命令获批可以写入。Benchmark 固定离线容器内完全访问。详见[命令权限](COMMAND_SECURITY_ZH.md)。
 
-本地命令使用统一 Runtime 元数据规范化：缺少验证分类不再阻止执行。路径按工作区真实边界校验、argv 按字面传递，脚本和同步 Shell 写法不获得 Plan 只读豁免。自动模式允许常规本地工作，对明确高风险/系统影响及未分类工具请求审批。输出展示裁剪前生成独立 `validation` 证据；管道返回 0 不等于测试通过，无法判断时记未知。ProgressGuard 仅以高置信通过清除停滞，失败签名跨独立验证周期计数，轮询去重。Windows 取消/超时先结束后代，再保留可信 worker 恢复 ACL，最后关闭 Job。详细合约和只读历史请求回放见[命令易用性与验证证据](COMMAND_SECURITY_ZH.md#命令易用性与验证证据)。
+本地命令使用统一 Runtime 元数据规范化：缺少验证分类不再阻止执行。路径按工作区真实边界校验、argv 按字面传递，不再以 Shell 写法判断安全性，每条新命令走所选审批主体，不靠静态风险标签自动放行。输出展示裁剪前生成独立 `validation` 证据；管道返回 0 不等于测试通过，无法判断时记未知。ProgressGuard 仅以高置信通过清除停滞，失败签名跨独立验证周期计数，轮询去重。Windows 取消/超时先结束后代，再保留可信 worker 恢复 ACL，最后关闭 Job。详细合约见[命令易用性与验证证据](COMMAND_SECURITY_ZH.md#证据恢复与测试)。
 
 Key 位于操作系统凭据存储或显式环境变量中，项目配置不能保存或重定向它们。标准 GLM 与 GLM Coding Plan 使用不同凭据和端点，绝不互相回退。受保护命令默认不继承供应商 Key；模型错误、日志、Checkpoint、Summary、检索和记忆都会脱敏并过滤终端控制字符。
 
@@ -335,7 +335,7 @@ Thinking 与可见回答分开保存并按真实事件顺序展示。默认只�
 
 Harbor 适配器评测公开 HAL/MariusHobbhahn 50 题集合（Django 25、Sphinx 25），不是官方完整 500 题轨道。`subset-50.json` 固定有序 Instance ID、社区修订 `b316c349…`、官方 Verified 修订 `78f471bf…`、Harbor 摘要 `sha256:b934b0…`、任务提交 `3d07b464…`，以及 `harbor==0.16.1`、`swebench==5.0.2`；完整哈希由 Manifest 保存并在运行前验证。
 
-固定 Profile 为 `glm-coding-plan / glm-5.3-flash / code / high`，端点为 `https://open.bigmodel.cn/api/coding/paas/v4`，审批为 safe auto-approved。它只读取 Coding Plan 专用 Key，不读取标准 GLM Key。当前构建先打包为 npm Archive，每题在独立 Linux Trial 的 `/testbed` 中运行并评分。
+固定 Profile 为 `glm-coding-plan / glm-5.3-flash / code / high`，端点为 `https://open.bigmodel.cn/api/coding/paas/v4`，命令固定在离线容器内完全访问、免审批。它只读取 Coding Plan 专用 Key，不读取标准 GLM Key。当前构建先打包为 npm Archive，每题在独立 Linux Trial 的 `/testbed` 中运行并评分；控制端持有模型凭据，离线执行容器不持有这些凭据，原始容器负责干净评测。
 
 Harbor 容器是可信的一次性外层隔离；专用标志不再跳过内层命令沙箱。安装阶段须通过严格沙箱预检；命令租约或清理状态不确定时不会恢复评测器公共网络。普通主机运行不得设置该标志。Key 在主机和 Trial 中依次通过随机 owner-only 临时文件传递、消费并删除，不进入模型命令环境。固定多语言 ONNX 资产从 Benchmark 根复制到每个 Trial 并二次校验，使被测配置实际运行混合 RAG，且无需容器联网下载。
 

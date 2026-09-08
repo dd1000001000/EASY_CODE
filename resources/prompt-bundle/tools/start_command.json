@@ -3,6 +3,7 @@
   "contractVersion": "1.1.0",
   "description": "Start one structured program/argv command under Runtime supervision and return a command handle after policy, approval, and sandbox initialization succeed. Use this for commands that may outlast one tool call.",
   "propertyDescriptions": {
+    "executionScope": "Default workspace sandbox. Request host only for an explicit per-command host escalation approved with this invocation. Benchmark remains container-confined.",
     "program": "Executable name, path relative to cwd, or absolute local executable. Same resolution and isolation as run_command.",
     "args": "Literal structured argv, including multiline code. For cmd /c the complete command must be one argument; no automatic shell-string joining.",
     "cwd": "Existing absolute or workspace-relative directory whose normalized real path stays inside the workspace.",

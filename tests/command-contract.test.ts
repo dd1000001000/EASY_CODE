@@ -143,56 +143,18 @@ describe("run_command model contract", () => {
     });
   });
 
-  it("keeps direct detach rejection outside dangerous mode", async () => {
+  it("uses approval, not shell syntax, as the command authorization boundary", async () => {
     await withTool(async (root, tool, backend) => {
-      const result = await tool.execute(
-        { program: "nohup", args: ["node", "--version"], intent: "run" },
-        {
-          ...context(root),
-          commandExecutionMode: "manual",
-          isUnrestrictedHostAccessActive: () => true,
-        },
-      );
-
-      assert.equal(result.ok, false);
-      assert.equal(backend.prepareCalls, 0);
-      assert.equal(
-        (result.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
-        "input.async_workaround",
-      );
-      assert.match(result.error ?? "", /real executable directly/iu);
-      assert.match(result.error ?? "", /timeoutMs/u);
-    });
-  });
-
-  it("keeps explicit-shell protocol checks outside dangerous mode", async () => {
-    await withTool(async (root, tool, backend) => {
-      for (const input of [
-        {
-          program: "sh",
-          args: ["-i"],
-          intent: "run" as const,
-        },
-        {
-          program: "powershell",
-          args: ["-Command", "saps node -ArgumentList '--version'"],
-          intent: "run" as const,
-        },
-      ]) {
-        const result = await tool.execute(input, {
-          ...context(root),
-          commandExecutionMode: "manual",
-          isUnrestrictedHostAccessActive: () => true,
-        });
-
-        assert.equal(result.ok, false);
-        assert.equal(
-          (result.data as { policyDecision: { matchedRule: string } }).policyDecision.matchedRule,
-          "input.shell_protocol",
-        );
-        assert.match(result.error ?? "", /process was not started/iu);
-      }
-      assert.equal(backend.prepareCalls, 0);
+      const command = process.platform === "win32"
+        ? { program: "powershell", args: ["-NoProfile", "-Command", "Write-Output 'shell-approved'"], intent: "run" as const }
+        : { program: "sh", args: ["-c", "printf shell-approved"], intent: "run" as const };
+      const result = await tool.execute(command, { ...context(root), commandExecutionMode: "manual" });
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(backend.prepareCalls, 1);
+      const denied = await tool.execute(command, { ...context(root), requestApproval: async () => false });
+      assert.equal(denied.ok, false);
+      assert.equal(backend.prepareCalls, 1);
+      assert.equal((denied.data as { failure: { kind: string } }).failure.kind, "approval");
     });
   });
 
@@ -219,14 +181,14 @@ describe("run_command model contract", () => {
       };
       assert.deepEqual(output.timeout, {
         requestedMs: 30 * 60_000,
-        effectiveMs: 60_000,
+        effectiveMs: 120_000,
         configuredLimitMs: 2 * 60_000,
-        capabilityLimitMs: 60_000,
+        capabilityLimitMs: 900_000,
       });
       assert.match(result.summary, /requested=1800000ms/u);
-      assert.match(result.summary, /effective=60000ms/u);
+      assert.match(result.summary, /effective=120000ms/u);
       assert.match(result.summary, /configured limit=120000ms/u);
-      assert.match(result.summary, /capability limit=60000ms/u);
+      assert.match(result.summary, /capability limit=900000ms/u);
     });
   });
 

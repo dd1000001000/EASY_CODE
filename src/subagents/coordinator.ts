@@ -119,6 +119,8 @@ export interface SubagentCoordinatorOptions {
   readonly now?: () => Date;
   readonly createAgentId?: () => string;
   readonly defaultIsolation?: SubagentIsolationMode;
+  /** Trusted offline-container profile has one shared task volume. */
+  readonly forceSharedIsolation?: boolean;
   readonly onWaitStart?: (text: string) => unknown;
   readonly onWaitEnd?: (activityToken: unknown) => void;
   readonly handoff?: (
@@ -164,6 +166,7 @@ export class SubagentCoordinator implements SubagentControl {
   private readonly now: () => Date;
   private readonly createAgentId: () => string;
   private readonly defaultIsolation: SubagentIsolationMode;
+  private readonly forceSharedIsolation: boolean;
   private readonly onWaitStart: ((text: string) => unknown) | undefined;
   private readonly onWaitEnd: ((activityToken: unknown) => void) | undefined;
   private readonly handoffResult: SubagentCoordinatorOptions["handoff"];
@@ -182,6 +185,7 @@ export class SubagentCoordinator implements SubagentControl {
     this.now = options.now ?? (() => new Date());
     this.createAgentId = options.createAgentId ?? (() => createId("subagent"));
     this.defaultIsolation = options.defaultIsolation ?? "auto";
+    this.forceSharedIsolation = options.forceSharedIsolation ?? false;
     this.onWaitStart = options.onWaitStart;
     this.onWaitEnd = options.onWaitEnd;
     this.handoffResult = options.handoff;
@@ -203,7 +207,7 @@ export class SubagentCoordinator implements SubagentControl {
     request: SpawnSubagentRequest,
     context: ToolContext,
   ): Promise<ToolExecutionResult> {
-    if (context.orchestrationEnabled === false) throw new Error("Subagent creation is disabled. The user can enable it with /orchestration.");
+    if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("Subagent creation requires orchestration and at least independent approval. Enable with /orchestration.");
     if (context.limits && this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >= context.limits.maxSubagentsPerTurn) {
       throw new Error(`The ${context.limits.maxSubagentsPerTurn}-subagent turn budget is exhausted`);
     }
@@ -275,7 +279,7 @@ export class SubagentCoordinator implements SubagentControl {
       provider: context.provider as NonNullable<ToolContext["provider"]>,
       model: context.model as string,
       thinkingEffort: context.thinkingEffort as ThinkingEffort,
-      requestedIsolation: request.isolation ?? this.defaultIsolation,
+      requestedIsolation: this.forceSharedIsolation ? "shared" : request.isolation ?? this.defaultIsolation,
       status: "running",
       revision: 1,
       instructions: sanitizeSubagentText(request.instructions),
@@ -814,6 +818,10 @@ export class SubagentCoordinator implements SubagentControl {
   }
 
   /** Start a fully validated batch of durable restores as one control-plane commit. */
+  activatePrepared(threadId: string): void {
+    this.activateRestored([...this.jobs.values()].filter(job => job.preparedRestore && job.record.parentThreadId === threadId).map(job => job.record.id));
+  }
+
   activateRestored(agentIds: readonly string[]): void {
     const jobs = agentIds.map((agentId) => {
       const job = this.jobs.get(agentId);

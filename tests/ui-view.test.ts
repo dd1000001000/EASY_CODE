@@ -203,7 +203,7 @@ describe("pure terminal UI views", () => {
     const footer = renderComposerFooter(state, { columns: 80, color: true });
     assert.match(stripAnsi(header), /^╭─ EASY CODE /u);
     assert.doesNotMatch(stripAnsi(header), /Unrestricted command execution/u);
-    assert.match(stripAnsi(footer), /^! EASY CODE ISOLATED NO-PROMPT  code/u);
+    assert.match(stripAnsi(footer), /^! EASY CODE HOST FULL ACCESS  code/u);
     assert.doesNotMatch(header, /\u001B\[31m/u);
     assert.match(footer, /\u001B\[31m/u);
   });
@@ -235,7 +235,7 @@ describe("pure terminal UI views", () => {
 
     const rendered = renderLiveRegion(state, 0, { columns: 100, color: true });
     assert.match(stripAnsi(rendered), /Select model/u);
-    assert.match(stripAnsi(rendered), /! EASY CODE ISOLATED NO-PROMPT/u);
+    assert.match(stripAnsi(rendered), /! HOST FULL ACCESS/u);
     assert.match(rendered, /\u001B\[31m/u);
   });
 

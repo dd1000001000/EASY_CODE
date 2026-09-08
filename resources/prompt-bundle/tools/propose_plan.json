@@ -10,5 +10,5 @@
     "steps[].description": "The concrete work that this step will perform.",
     "steps[].verification": "The specific check that will demonstrate this step was completed correctly."
   },
-  "guidance": "propose_plan is the only valid way to submit a Plan-mode proposal for user review. Investigate first with read-only tools as needed, then call propose_plan by itself with a concise title, an overview, ordered implementation steps, and a concrete verification statement for every step. Do not put implementation work in the proposal, do not call write tools, and do not return a plain-text plan instead of this tool. Runtime assigns the plan ID and revision, persists it, and ends the turn for user review."
+  "guidance": "propose_plan is the only valid way to submit a Plan-mode proposal for user review. Investigate first, preferring read-only file tools, then call propose_plan by itself with a concise title, an overview, ordered implementation steps, and a concrete verification statement for every step. Avoid direct file edits while planning. Commands follow the selected approval mode and may write when authorized. Do not return a plain-text plan instead of this tool. Runtime assigns the plan ID and revision, persists it, and ends the turn for user review."
 }

@@ -357,12 +357,12 @@ describe("sandbox command execution boundary", () => {
     });
   });
 
-  it("refuses the removed host backend in every approval posture", async () => {
+  it("requires a Runtime-issued host permit even when caller labels the context unrestricted", async () => {
     await withWorkspace(async (root) => {
       const request = sandboxRequest(root);
       const host = new UnrestrictedHostBackend();
       for (const commandExecutionMode of ["manual", "auto_approve", "unrestricted"] as const) {
-        await assert.rejects(() => host.prepare({ ...request, context: { ...request.context, commandExecutionMode } }), /removed|mandatory/iu);
+        await assert.rejects(() => host.prepare({ ...request, context: { ...request.context, commandExecutionMode } }), /not authorized/iu);
       }
     });
   });
@@ -397,7 +397,7 @@ describe("sandbox command execution boundary", () => {
     assert.equal(extracted.digest.truncated, false);
   });
 
-  it("uses the shared Git policy in the ordinary sandbox payload", async () => {
+  it("preserves approved Git arguments while removing inherited Git environment injections", async () => {
     await withWorkspace(async (root, manager) => {
       const backend = new AnthropicSandboxBackend(manager, {
         windowsAclPreflight: { check: async () => undefined },
@@ -406,10 +406,10 @@ describe("sandbox command execution boundary", () => {
       const git = (await execFileAsync(process.platform === "win32" ? "where" : "which", ["git"])).stdout.trim().split(/\r?\n/u)[0]!;
       const original = sandboxRequest(root);
       const prepared = await backend.prepare({ ...original, command: { ...original.command,
-        program: "git", executablePath: git, args: ["diff", "--", "a b.txt"] } });
+        program: "git", executablePath: git, args: ["diff", "--ext-diff", "--textconv", "--", "a b.txt"] } });
       try {
         const payload = JSON.parse(await readFile(prepared.args[1]!, "utf8")) as SandboxWorkerPayload;
-        assert.deepEqual(payload.target.args.slice(-5), ["diff", "--no-ext-diff", "--no-textconv", "--", "a b.txt"]);
+        assert.deepEqual(payload.target.args, ["diff", "--ext-diff", "--textconv", "--", "a b.txt"]);
         assert.ok(!payload.target.args.includes("diff.external="));
         assert.equal(payload.target.environment.GIT_EXTERNAL_DIFF, undefined);
       } finally { await prepared.cleanup(); }

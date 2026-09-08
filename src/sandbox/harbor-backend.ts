@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { execa } from "execa";
 import { resolveHarborOuterSandbox } from "../benchmarks/swebench.js";
@@ -11,6 +11,22 @@ import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionMetadata
 export const HARBOR_SANDBOX_HELPER = "/opt/easy-code-harbor/harbor-sandbox";
 const PRIVATE_ROOT = "/opt/easy-code-harbor/commands";
 const READ = 13, WRITE = 32754, REMOVE = 48;
+// Only regular IPC files: no execute, directories, devices, sockets or symlinks.
+export const HARBOR_SHM_ACCESS = 2 | 4 | 8 | 32 | 256 | 8192 | 16384;
+
+export function validateHarborShmMount(mountinfo: string): void {
+  const mounts = mountinfo.trim().split("\n").map(line => line.split(" "));
+  const matches = mounts.filter(fields => fields[4] === "/dev/shm");
+  const fields = matches[0];
+  const separator = fields?.indexOf("-") ?? -1;
+  const options = new Set(fields?.[5]?.split(","));
+  if (matches.length !== 1 || !fields || fields[3] !== "/" || separator < 6 ||
+      fields[separator + 1] !== "tmpfs" ||
+      !["rw", "nosuid", "nodev", "noexec"].every(option => options.has(option)) ||
+      mounts.some(entry => entry[4]?.startsWith("/dev/shm/"))) {
+    throw new Error("Harbor requires a dedicated rw,nosuid,nodev,noexec /dev/shm tmpfs without nested mounts");
+  }
+}
 const inside = (parent: string, child: string): boolean => {
   const relative = path.relative(parent, child);
   return !relative || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
@@ -84,6 +100,10 @@ export class HarborSandboxBackend implements CommandExecutionBackend {
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     await assertHarborHelper();
+    validateHarborShmMount(await readFile("/proc/self/mountinfo", "utf8"));
+    if ((await realpath("/dev/shm")) !== "/dev/shm" ||
+        this.sensitivePaths.some(item => inside(path.resolve(item), "/dev/shm") || inside("/dev/shm", path.resolve(item))))
+      throw new Error("Harbor shared memory overlaps a protected or redirected path");
     if (request.networkProxyURL) throw new Error("Harbor command networking cannot be enabled");
     await mkdir(PRIVATE_ROOT, { recursive: true, mode: 0o700 });
     const privateStat = await lstat(PRIVATE_ROOT);
@@ -113,6 +133,7 @@ export class HarborSandboxBackend implements CommandExecutionBackend {
         throw new Error("Harbor workspace overlaps protected Runtime data");
       for (const item of protectedPaths.filter(item => inside(workspace, item))) await sealProtectedTree(item);
       const rules = [...readRules,
+        [HARBOR_SHM_ACCESS, "/dev/shm"] as [number, string],
         ...await harborPathRules(workspace, this.sensitivePaths, READ),
         ...await harborPathRules(scratch, [], READ | WRITE),
         ...(request.context.mode === "plan" ? [] : await harborPathRules(workspace, protectedPaths, WRITE))];

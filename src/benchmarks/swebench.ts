@@ -167,9 +167,9 @@ export const SWE_BENCH_VERIFIED_50 = Object.freeze({
 export type TrustedOuterSandbox = "harbor";
 
 /**
- * Select the dedicated Landlock/seccomp backend (not unconfined execution)
- * only when Harbor explicitly requests it inside a Linux Docker container.
- * The backend additionally verifies its root-owned helper and kernel support.
+ * Select the host-brokered offline worker profile only when Harbor explicitly
+ * requests it inside a Linux controller container. The command backend also
+ * requires the host-mounted bridge; the marker alone cannot execute commands.
  * This opt-in is environment-only, not a general CLI flag.
  */
 export function resolveHarborOuterSandbox(

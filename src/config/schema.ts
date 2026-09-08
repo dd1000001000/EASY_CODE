@@ -27,6 +27,7 @@ export const providerConfigSchema = z.object({
 });
 
 export const easyCodeConfigSchema = z.object({
+  approvalModel: nonEmptyString.optional(),
   provider: z.enum(PROVIDER_NAMES),
   mode: z.enum(["plan", "auto", "code"]),
   thinkingEffort: z.enum(THINKING_EFFORTS),

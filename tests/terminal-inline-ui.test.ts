@@ -468,12 +468,12 @@ describe("Terminal retained inline shell", () => {
         const dangerOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "unrestricted" }));
         const dangerFrame = stripAnsi(captured().slice(dangerOffset));
-        assert.match(dangerFrame, /! EASY CODE ISOLATED NO-PROMPT/u);
+        assert.match(dangerFrame, /! EASY CODE HOST FULL ACCESS/u);
 
         const safeOffset = captured().length;
         terminal.setSessionInfo(session({ commandExecutionMode: "auto_approve" }));
         const safeFrame = stripAnsi(captured().slice(safeOffset));
-        assert.doesNotMatch(safeFrame, /! EASY CODE ISOLATED NO-PROMPT/u);
+        assert.doesNotMatch(safeFrame, /! EASY CODE HOST FULL ACCESS/u);
         assert.equal(
           (stripAnsi(captured()).match(/╭─ EASY CODE /gu) ?? []).length,
           1,
@@ -1207,6 +1207,32 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("preserves an idle prompt draft while a child requests parent approval", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const prompt = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("draft ");
+        await settlePromptInput();
+        const approval = terminal.approve({ id: "idle-child", title: "Child command", description: "Inspect the workspace",
+          risk: "read", commandPrefix: "git", source: { agentId: "child", taskId: "inspect" } });
+        await settlePromptInput();
+        input.write("\r");
+        assert.equal(await approval, "allow_once");
+        await settlePromptInput();
+        input.write("continued\r");
+        assert.equal((await prompt)?.text, "draft continued");
+        const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("next\r");
+        assert.equal((await next)?.text, "next");
+      } finally { terminal.close(); }
+    });
+  });
+
   it("keeps one busy steering editor across submissions and modal approval", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
@@ -1874,7 +1900,7 @@ describe("Terminal retained inline shell", () => {
           .filter((row) => row.region === "footer")
           .map((row) => row.text)
           .join("\n"));
-        assert.match(dangerFooter, /! EASY CODE ISOLATED NO-PROMPT/u);
+        assert.match(dangerFooter, /! EASY CODE HOST FULL ACCESS/u);
         const completeTurn = nodes.map(disclosureNodeText);
         const completeDocument = completeTurn.join("\n");
         const orderedMarkers = [
