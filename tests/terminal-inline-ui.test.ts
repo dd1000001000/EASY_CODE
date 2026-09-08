@@ -1084,7 +1084,7 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("clears and repaints through FullScreenWriter without resetting the terminal", async () => {
+  it("clears displayed output without resetting the terminal or replaying the old transcript", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -1109,7 +1109,7 @@ describe("Terminal retained inline shell", () => {
           viewerBefore,
         );
         assert.match(disclosureRegionText(terminal, "header"), /EASY CODE/u);
-        assert.match(
+        assert.doesNotMatch(
           disclosureNodes(terminal).map(disclosureNodeText).join("\n"),
           /CLEAR-SCREEN-SENTINEL/u,
         );
@@ -1119,6 +1119,91 @@ describe("Terminal retained inline shell", () => {
       } finally {
         terminal.close();
       }
+    });
+  });
+
+  it("accepts the next prompt after submitting /clear following a long answer", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        terminal.beginShell(session());
+        terminal.setCurrentRequest("Explain the project");
+        terminal.write("OLD-ANSWER-LINE\n".repeat(3000));
+        terminal.clearCurrentRequest();
+        const clear = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("/clear\r");
+        assert.equal((await clear)?.text, "/clear");
+        const before = captured().length;
+        terminal.clearScreen();
+        assert.equal(disclosureNodes(terminal).length, 0);
+        assert.doesNotMatch(captured().slice(before), /OLD-ANSWER-LINE/u);
+        const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("next request\r");
+        assert.equal((await next)?.text, "next request");
+        terminal.write("NEW-ANSWER\n");
+        assert.match(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /NEW-ANSWER/u);
+        assert.doesNotMatch(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /OLD-ANSWER-LINE/u);
+        const interrupted = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("\u0003");
+        assert.equal(await interrupted, null);
+        terminal.close();
+        assert.doesNotMatch(captured().slice(before), /OLD-ANSWER-LINE/u, "closing must not replay cleared deferred commits");
+      } finally { terminal.close(); }
+    });
+  });
+
+  it("preserves an active draft and its input owner across clear and resize", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        terminal.beginShell(session());
+        terminal.write("OLD-DRAFT-OUTPUT\n");
+        const prompt = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("draft");
+        await settlePromptInput();
+        const owner = (terminal as unknown as { disclosureViewer?: object }).disclosureViewer;
+        terminal.clearScreen();
+        assert.equal((terminal as unknown as { disclosureViewer?: object }).disclosureViewer, owner);
+        assert.equal(terminalState(terminal).composer.text, "draft");
+        assert.equal(input.isRaw, true);
+        assert.equal(input.readableFlowing, true);
+        output.columns = 60;
+        output.emit("resize");
+        input.write("!\r");
+        assert.equal((await prompt)?.text, "draft!");
+        assert.doesNotMatch(disclosureNodes(terminal).map(disclosureNodeText).join("\n"), /OLD-DRAFT-OUTPUT/u);
+      } finally { terminal.close(); }
+    });
+  });
+
+  it("clears a short-terminal fallback without RIS and keeps the next editor responsive", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.rows = 8;
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        terminal.beginShell(session());
+        terminal.write("SHORT-TERMINAL-OUTPUT\n");
+        const clear = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("/clear\r");
+        assert.equal((await clear)?.text, "/clear");
+        const before = captured().length;
+        terminal.clearScreen();
+        assert.doesNotMatch(captured().slice(before), /\u001Bc/u);
+        assert.match(captured().slice(before), /\u001B\[3J/u);
+        assert.equal(terminalState(terminal).transcript.length, 0);
+        const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
+        input.write("still works\r");
+        assert.equal((await next)?.text, "still works");
+      } finally { terminal.close(); }
     });
   });
 

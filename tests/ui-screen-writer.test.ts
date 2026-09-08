@@ -27,6 +27,24 @@ function capture(output: CapturedOutput): { read: () => string } {
 }
 
 describe("ScreenWriter", () => {
+  it("clears scrollback and live-row accounting without resetting input modes", () => {
+    const output = new CapturedOutput(true);
+    const transcript = capture(output);
+    const writer = new ScreenWriter(output);
+    writer.commit("old answer\n");
+    writer.renderLive("old prompt\nold footer", { row: 1, column: 3 });
+    const before = transcript.read().length;
+    writer.clearScreen();
+    assert.equal(transcript.read().slice(before), "\u001B[3J\u001B[2J\u001B[H");
+    writer.commit("new answer\n");
+    writer.renderLive("new prompt");
+    assert.doesNotMatch(transcript.read().slice(before), /old answer|old prompt|old footer|\u001Bc/u);
+    writer.close();
+    const plain = new CapturedOutput(false);
+    const captured = capture(plain);
+    new ScreenWriter(plain).clearScreen();
+    assert.equal(captured.read(), "");
+  });
   it("commits sanitized stable output without letting text move the cursor", () => {
     const output = new CapturedOutput(true);
     const transcript = capture(output);

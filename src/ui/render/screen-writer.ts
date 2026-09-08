@@ -165,6 +165,15 @@ export class ScreenWriter {
     this.resetLiveState();
   }
 
+  /** Clear pixels/scrollback without RIS, which would reset modes owned by input. */
+  clearScreen(): void {
+    if (this.closed) return;
+    this.resetLiveState();
+    this.atLineStart = true;
+    this.plainLastLive = "";
+    if (this.tty) this.write("\u001B[3J\u001B[2J\u001B[H");
+  }
+
   /**
    * Clear transient TTY output and release internal state. stdout is deliberately
    * not ended or destroyed because ScreenWriter does not own the stream itself.

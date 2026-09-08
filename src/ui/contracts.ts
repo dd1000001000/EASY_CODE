@@ -47,8 +47,8 @@ export type UITranscriptKind =
   | "raw";
 
 /**
- * One completed scrollback item. Items are append-only and remain available to
- * the managed terminal viewport for the lifetime of this UI state.
+ * One completed scrollback item. Items remain in the local display until an
+ * explicit screen clear or thread switch; model history is stored separately.
  */
 export interface UITranscriptEntry {
   readonly kind: UITranscriptKind;
