@@ -270,9 +270,12 @@ export class Terminal {
   private steeringAdmissionPaused = false;
   private readonly reasoning = new ReasoningRegistry();
   private readonly adjustments = new AdjustmentRegistry();
+  /** Visible Thinking controls outlive a model turn, but not a display/thread reset.
+   * Keep the existing immutable bodies by reference; do not duplicate history. */
+  private readonly retainedReasoningDisclosures = new Map<string, Readonly<ReasoningBlock>>();
   /**
-   * Foldable disclosures from the most recent turn remain redrawable until
-   * the next request is submitted. Ordinary transcript rows are committed
+   * Ownership metadata for the most recent turn. Thinking interactivity is
+   * retained separately across later inputs. Ordinary rows are committed
    * directly to scrollback so a long answer can never be clipped merely to
    * keep these controls interactive.
    */
@@ -401,7 +404,7 @@ export class Terminal {
     const pendingStart = this.pendingRequestTranscriptStart;
     // A completed turn remains interactive while its idle Request editor is
     // visible. Starting the next busy turn is the ownership boundary at which
-    // that prior tail becomes immutable scrollback.
+    // the current expansion closes. Retained Thinking can still be reopened.
     if (!this.uiState.composer.busy) this.freezeCurrentTurnDisclosures();
     const pendingEntry = pendingStart === undefined
       ? undefined
@@ -630,6 +633,7 @@ export class Terminal {
     // rebuilding the virtual document, so /clear cannot reflow it all again.
     this.uiState = { ...this.uiState, transcript: [], live: { ...this.uiState.live, thinking: null } };
     this.currentTurnDisclosures = [];
+    this.retainedReasoningDisclosures.clear();
     this.currentTurnTranscriptStart = this.uiState.composer.busy ? 0 : undefined;
     this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
@@ -674,6 +678,7 @@ export class Terminal {
     this.progressSequence = 0;
     this.agentConcurrencyLimit = undefined;
     this.clearCurrentTurnDisclosures();
+    this.retainedReasoningDisclosures.clear();
     this.currentTurnTranscriptStart = undefined;
     this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
@@ -991,9 +996,8 @@ export class Terminal {
       });
       if (result === null) this.closed = true;
       if (this.inlineShellActive && result !== null) {
-        // readPrompt has erased its dynamic prefix at this point. Freeze the
-        // previous completed turn before printing the newly submitted request,
-        // so the old Thinking marker cannot move below the new user message.
+        // Close the previous expansion before printing the new input, without
+        // revoking retained Thinking links or moving their transcript entries.
         this.freezeCurrentTurnDisclosures();
         this.pendingRequestTranscriptStart = this.uiState.transcript.length;
         this.uiState = applyEvent(this.uiState, {
@@ -1622,6 +1626,7 @@ export class Terminal {
   /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
   restoreReasoning(texts: readonly string[]): number {
     this.closeDisclosureViewer();
+    this.retainedReasoningDisclosures.clear();
     this.clearCurrentTurnDisclosures();
     const count = this.reasoning.rebuild(texts);
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
@@ -1650,6 +1655,7 @@ export class Terminal {
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
     this.closeDisclosureViewer();
+    this.retainedReasoningDisclosures.clear();
     this.freezeCurrentTurnDisclosures();
     this.reasoning.clear();
     this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
@@ -2885,9 +2891,8 @@ export class Terminal {
       ? this.reasoning.get(id)
       : this.adjustments.get(id);
     if (!retained) return false;
-    return this.currentTurnDisclosures.some((segment) => kind === "thinking"
-      ? segment.reasoning?.id === id
-      : segment.adjustment?.id === id);
+    if (kind === "thinking") return this.retainedReasoningDisclosures.has(`thinking_${id}`);
+    return this.currentTurnDisclosures.some((segment) => segment.adjustment?.id === id);
   }
 
   private disclosureTarget(kind: DisclosureKind, id: number): DisclosureViewTarget {
@@ -2916,14 +2921,9 @@ export class Terminal {
     // The alternate buffer is a lossless projection of the complete session.
     // Thinking markers are committed at event time, so walking the transcript
     // preserves the exact order visible in primary scrollback. The mutable
-    // collection only supplies bodies for current-turn markers; it is not a
-    // second visual tail. Only the selected marker changes shape in place.
-    const reasoningByEntryId = new Map<string, Readonly<ReasoningBlock>>();
-    for (const segment of this.currentTurnDisclosures) {
-      if (segment.entry.id && segment.reasoning) {
-        reasoningByEntryId.set(segment.entry.id, segment.reasoning);
-      }
-    }
+    // retained registry supplies bodies for visible markers from any turn; it
+    // is not a second visual tail. Only the selected marker changes in place.
+    const reasoningByEntryId = this.retainedReasoningDisclosures;
     const start = 0;
     const end = this.uiState.transcript.length;
     for (let index = start; index < end; index += 1) {
@@ -3317,6 +3317,7 @@ export class Terminal {
     // Register the disclosure body before committing its marker. A viewer can
     // be open while the model emits another Thinking block; commitTranscript
     // refreshes that viewer immediately and must be able to resolve the body.
+    if (reasoning && entry.id) this.retainedReasoningDisclosures.set(entry.id, reasoning);
     this.currentTurnDisclosures.push({
       entry: { ...entry },
       ...(reasoning ? { reasoning: { ...reasoning } } : {}),
@@ -3329,8 +3330,8 @@ export class Terminal {
   private freezeCurrentTurnDisclosures(): void {
     if (this.currentTurnDisclosures.length === 0) return;
     // Markers were already committed once at event time. The ownership
-    // boundary only revokes current-turn interactivity; replaying them here
-    // would duplicate Thinking in scrollback and change chronological order.
+    // boundary closes the current expansion, but retained Thinking controls
+    // remain usable. Replaying markers would duplicate/reorder scrollback.
     this.clearCurrentTurnDisclosures();
   }
 
