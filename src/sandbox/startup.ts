@@ -1136,8 +1136,8 @@ export async function runSandboxStartupGuide(
     if (!selected || selected === "exit") return false;
     if (selected === "continue") {
       terminal.warning(
-        "Continuing without a ready OS sandbox. Manual and auto-approved commands remain fail-closed. " +
-          "No approval posture bypasses OS isolation; command execution remains unavailable until the sandbox is repaired.",
+        "Continuing without a ready OS sandbox. Workspace-sandbox commands remain fail-closed. " +
+          "Host execution requires an explicit host-scoped approval or confirmation through /approval > Full access; it is never an automatic fallback.",
       );
       return true;
     }

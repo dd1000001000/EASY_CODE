@@ -12,7 +12,7 @@ const HOST_METADATA: SandboxExecutionMetadata = {
   network: "host",
 };
 
-/** Legacy import/audit compatibility only. No authorization enables host execution. */
+/** Only selected by Runtime after full-access activation or exact host approval. */
 export class UnrestrictedHostBackend implements CommandExecutionBackend {
   describe(request?: SandboxExecutionRequest): SandboxExecutionMetadata {
     // Metadata is safe to produce for denied/resolution-failure audit records;
@@ -22,7 +22,9 @@ export class UnrestrictedHostBackend implements CommandExecutionBackend {
   }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
-    void request;
-    throw new Error("Unrestricted host execution was removed: model commands require OS isolation and Runtime-mediated networking");
+    if (!request.hostExecutionAuthorized || request.context.signal?.aborted || request.policyDecision.effect !== "allow") throw new Error("Host execution is not authorized");
+    const command = request.command;
+    return { executablePath: command.executablePath, args: [...command.args], cwdAbsolute: command.cwdAbsolute,
+      environment: { ...command.environment }, metadata: { ...HOST_METADATA }, cleanup: async () => undefined };
   }
 }

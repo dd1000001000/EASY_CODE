@@ -1129,6 +1129,25 @@ export class Terminal {
 
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
     if (request.signal?.aborted) return "reject";
+    // Background approvals share the parent's UI even when the main agent has
+    // returned to its editable prompt. Preserve its draft and transfer stdin.
+    while (!this.closed && this.guardedInputActive && !request.signal?.aborted) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (this.closed || request.signal?.aborted) return "reject";
+    const idleSession = request.source && !this.busyPromptSession ? this.activePromptSession : undefined;
+    if (idleSession && idleSession.suspendInput()) {
+      this.activePromptSession = undefined;
+      this.promptActive = false;
+      try { return await this.approve(request); }
+      finally {
+        if (!this.closed) {
+          this.activePromptSession = idleSession;
+          this.promptActive = true;
+          idleSession.resumeInput({ discardLeadingModalControls: true });
+        }
+      }
+    }
     const title = redactSensitiveInformation(sanitizeCommandOutput(request.title))
       .replace(/\s+/gu, " ")
       .trim();

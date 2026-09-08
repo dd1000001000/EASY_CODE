@@ -17,7 +17,7 @@ EASY CODE 是一个跨平台 CLI 编程 Agent。进入项目目录后，用自�
 - 支持图片输入、Thinking 展示，以及 VS Code 终端增强。
 - 自动保存 Thread，可恢复对话、Plan、任务和子 Agent 工作。
 - 可把复杂目标拆成任务，并交给共享工作区或 Git Worktree 中的子 Agent。
-- 提供命令审批与强制工作区沙箱：手动模式审批所有联网；自动模式放行明确只读联网，下载/上传/未知联网仍审批；危险模式免所有命令与联网审批。支持 Thread 联网前缀授权，`/permissions` 查看、`/permissions revoke <序号>` 撤销。Plan 始终只读，Benchmark 命令仍禁网。详见[命令安全说明](docs/COMMAND_SECURITY_ZH.md)。
+- 命令审批分为请求批准、独立审批 Agent、宿主完全访问；前缀授权由 Thread 和子 Agent 共享。Plan 尽量避免直接文件编辑，命令遵循审批；Benchmark 固定离线容器内完全访问。详见[命令权限说明](docs/COMMAND_SECURITY_ZH.md)。
 - 保存项目上下文与记忆，并提供用量查看命令。
 
 ## 环境要求
@@ -165,7 +165,7 @@ easy-code --workspace ./my-project --mode code run "修复登录报错并运行�
 
 | 模式 | 用途 |
 | --- | --- |
-| `plan` | 调查项目并给出可审核方案，不修改项目文件。 |
+| `plan` | 调查并给出可审核方案，尽量避免直接文件编辑；命令仍遵循审批、可以写入。 |
 | `auto` | 由 Agent 决定直接回答、提出方案或开始实现；这是默认模式。 |
 | `code` | 直接实现并验证请求。 |
 
@@ -185,20 +185,20 @@ easy-code --workspace ./my-project --mode code run "修复登录报错并运行�
 
 运行 `/approval` 可选择：
 
-- 手动审批：只在需要时询问。
-- 自动审批：自动允许策略许可的命令，永久禁止规则仍然有效。
-- 隔离下免逐条审批：取消逐条提示，仍保留强制沙箱、断网和 Plan 只读。
+- 请求批准：每条新命令都询问用户；已授权前缀可复用。
+- 帮我批准：独立审批 Agent 选择此次允许、允许前缀或拒绝；拒绝/失败后交给用户。
+- 完全访问：使用宿主机当前用户权限，不加命令沙箱、不逐条批准；Benchmark 例外，仅在离线容器内完全访问。
 
-旧 `unrestricted` ID 不再提供宿主机完全访问。下载授权和清理失败恢复见[命令安全说明](docs/COMMAND_SECURITY_ZH.md)。
+`unrestricted` 现在是真正的宿主完全访问。空闲时切到手动审批会关闭 DAG/子 Agent；有未完成工作时禁止切换。Plan 命令不强制只读。详见[命令安全说明](docs/COMMAND_SECURITY_ZH.md)。
 
 启动参数：
 
 | 参数 | 行为 |
 | --- | --- |
-| `--approval safe` | 按内置策略审批，这是默认值。 |
-| `--approval ask` | 对所有策略允许的命令请求审批。 |
-| `--approval never` | 不显示审批提示；需要审批的命令会被拒绝。 |
-| `-y, --yes` | 自动同意策略允许的命令。 |
+| `--approval safe` | 允许用户审批提示，这是默认值；不自动放行低风险命令。 |
+| `--approval ask` | 与 `safe` 一样允许提示；如同时传入 `-y`，仍选择独立审批 Agent。 |
+| `--approval never` | 不显示用户审批提示；只复用已有权限或审批 Agent 的允许结论，否则返回审批不可用。 |
+| `-y, --yes` | 启用独立审批 Agent，并保留默认工作区沙箱；不是全部同意，也不是完全访问。 |
 
 ## Thread 与 Resume
 

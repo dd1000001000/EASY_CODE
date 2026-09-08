@@ -186,11 +186,10 @@ its declared evaluation dependencies. During model-controlled EASY CODE
 execution, Harbor temporarily switches the container to an outbound allowlist
 containing only the pinned provider host (`open.bigmodel.cn`). Direct access to
 GitHub, package registries, and other public hosts is blocked for the evaluated
-agent. The Harbor Landlock/seccomp command backend also denies all command
-networking, including the provider host. Setup compiles the trusted supervisor
-and must pass the Harbor-specific `easy-code sandbox doctor`; unsupported kernel
-enforcement fails closed without requiring nested namespaces. Do not grant
-privileged Docker or host networking.
+agent. Model commands run in a separate offline Docker worker, including denial
+of access to the provider host. The controller retains the provider-only namespace;
+the worker has no route, credential, Docker socket or controller bridge.
+Do not grant privileged Docker or host networking.
 After a returned agent process, the adapter restores the verifier baseline only
 when no command lease or cleanup quarantine remains. Timeout or unknown cleanup
 keeps egress restricted. Prefer dependencies preinstalled in trusted setup;
@@ -199,8 +198,8 @@ missing agent-side dependencies never open an unrestricted networking exception.
 EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `/testbed` and inside the Harbor job artifacts.
 `EASY_CODE_OUTER_SANDBOX=harbor` tells EASY CODE that the disposable Harbor
-container is the outer isolation boundary and selects the dedicated, still
-kernel-enforced command backend. Do not set that variable for normal host use.
+controller uses the offline-worker command backend, which additionally requires
+the host-mounted control bridge. Do not set that variable for normal host use.
 
 The launcher-managed checkpoint and embedding-model paths are not added to the
 Agent process environment inside the container. They do remain in Harbor's host
@@ -314,61 +313,58 @@ a different directory on F:.
 
 ### Harbor command isolation
 
-The trusted adapter installs and compiles `scripts/harbor-sandbox.c` as the
-root-owned `/opt/easy-code-harbor/harbor-sandbox`. It sets
-`EASY_CODE_OUTER_SANDBOX=harbor` **before** `sandbox doctor`; the same opt-in
-selects `HarborSandboxBackend` during command execution. An ordinary CLI does
-not use this backend. A bare Docker marker does not activate it.
+The adapter now separates control from execution; it does not compile or require
+the legacy `harbor-sandbox.c` nested Landlock/seccomp backend.
 
-This is not a host-execution fallback. Docker remains the outer boundary;
-Landlock ABI 6 or later enforces filesystem and signal isolation without nested
-namespaces, and seccomp denies network socket creation (including DNS, TCP,
-UDP, IPv6 and named Unix sockets), io_uring, capability changes and namespace creation.
-Anonymous `AF_UNIX` socketpairs (stream/datagram/seqpacket, protocol 0) and sends
-without a destination are permitted for local IPC and asyncio self-pipe wakeups.
-Ancillary `sendmsg`/`recvmsg` operations remain denied; Runtime descriptors are
-closed before target exec. Doctor checks both usable local IPC and blocked sockets.
-No Docker privileged mode or added `SYS_ADMIN` capability is required. Missing
-kernel support or an untrusted helper fails the installation before model use.
+Use a freshly built npm archive with this adapter. Installation checks for the
+split-container backend and rejects older `0.1.0` archives before any model call;
+the version number alone does not prove the installed execution profile.
 
-Only the trusted Runtime can use Harbor's pinned provider-host allowlist. Model
-commands cannot use even that endpoint, including in dangerous approval mode.
-Plan remains read-only. Trusted installation and final verifier dependency setup
-are separate phases; public verifier networking is restored only after clean
-command leases and no quarantine have been confirmed.
+- Harbor's original main container is retained as the clean verifier.
+- A trusted controller runs EASY CODE with the provider-only outbound allowlist.
+  Credentials, logs and the command bridge are accessible only there.
+- A separate worker runs all model commands with container-wide file access,
+  Docker `--network none`, private IPC and ordinary 64 MiB `/dev/shm`.
+  No privileged mode, host networking/PID/IPC, extra capabilities, host bind mounts
+  or Docker socket are passed to the worker.
 
-The supervisor drops target capabilities, closes inherited descriptors and uses
-a private control pipe. As a subreaper it kills and reaps remaining descendants,
-including double-fork/setsid processes, on normal exit, timeout or cancellation.
-Unconfirmed cleanup quarantines execution and prevents network restoration.
+Only the task volume is shared. The controller has a private nested Git volume:
+worker modifications to its own `.git/config` or hooks cannot execute code in the
+controller. All child agents use the shared task checkout; approval and requested
+`executionScope=host` never change the fixed offline-container boundary.
+Catalogue downloads are not exposed during Benchmark. Required dependencies
+must be preinstalled in trusted setup or available offline.
 
-Limitations: commands cannot create local test servers or connect to named Unix
-services (including Docker); multiprocessing requiring those or descriptor
-passing remains unsupported. Anonymous local socketpairs are supported.
-Metadata-changing chmod/chown/xattr syscalls are denied.
-Protected Git/Runtime metadata in the disposable workspace is made non-writable
-to capability-less targets; the trusted root Runtime can still update it.
-Removal/rename of direct entries at protected ancestor directories is restricted;
-ordinary in-place source writes and operations inside unprotected subdirectories
-remain available. These are explicit isolation tradeoffs, not model/API errors.
+The host-side `split_environment.py` broker alone can call Docker. Commands are
+serialized; waiting is cancelable and is not charged to command execution time.
+After each command Docker restarts the worker to kill all descendants, including
+detached children. Files persist, processes do not. Local server/client checks
+must run in one supervised command. Local sockets, asyncio and multiprocessing
+are no longer blocked by EASY CODE's former inner syscall restrictions.
+The bridge caps per-command output at 32 MiB and bounds exported file inventories.
 
-The no-model integration test is `scripts/smoke-harbor-sandbox.mjs`, run inside a
-disposable Docker container with the compiled helper, Node, Python and Git.
-`scripts/harbor-smoke.Dockerfile` supplies the test dependencies, including Django.
-Build the project first, mount it read-only at `/source`, compile the helper to
-`/opt/easy-code-harbor/harbor-sandbox`, then run the script with `--network none`.
-The smoke covers asyncio wakeups, Django setup/tests, Git diff/show/log and hostile
-diff configuration, plus the existing denial, Plan and process-cleanup checks.
+Before scoring, stop the worker and export only regular task files and unchanged
+baseline symlinks into the original main container, preserving pristine Git and
+external verifier material. Worker root-filesystem installs, new symlinks/devices,
+`.git` and Runtime directories are not exported/checkpointed.
+Restore verifier networking only after all command leases close without quarantine.
+Windows copies use tar streams, so Windows symlink privileges are not required.
 
-Both sandbox backends share Git argument/environment preparation. Direct diff
-commands use `--no-ext-diff --no-textconv`, never `-c diff.external=`. Global
-hardening follows caller global settings; diff flags immediately follow the
-subcommand so option values/path separators cannot swallow them. Explicit helper-
-enabling options are rejected consistently with the command policy.
-All targets receive sanitized Git environment variables, also inherited by shell
-and interpreter children. This is not an unbypassable Git wrapper: arbitrary
-child code can change its environment or run programs itself, still confined by
-the OS filesystem/network policy. Repository configuration is not rewritten.
+The adapter creates this boundary before staging the API key. Changing just an
+environment variable is insufficient: Runtime also requires the host-mounted
+bridge. Use a fresh job/package identity for this profile; do not mix scores from
+the previous inner-sandbox implementation. Each active trial now needs two extra
+containers, task/Git volumes and a temporary local image, all removed on cleanup.
+
+Offline validation: build the project and run `python scripts/smoke-split-benchmark.py`.
+Its local `easy-code-harbor-django-smoke:shm` fixture is built using
+`scripts/harbor-django-smoke.Dockerfile` and an existing Django 11815 trial image.
+The test checks controller/worker/host separation, network denial, local IPC,
+12-process Pool, worker-only programs, private Git, detached cleanup, timeout,
+clean verifier export and all 46 `migrations.test_writer` tests.
+It spends no model tokens and produces no SWE-bench score.
+The old helper smoke scripts remain legacy regression fixtures, not the active
+Benchmark execution path. See [command permissions](../../docs/COMMAND_SECURITY.md).
 
 Harbor's task names include an organization prefix. A valid exact filter is:
 

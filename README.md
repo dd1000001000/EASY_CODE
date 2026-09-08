@@ -15,7 +15,7 @@ EASY CODE is a cross-platform CLI coding agent for Alibaba Qwen, DeepSeek, Zhipu
 - Image input with supported vision models.
 - Resumable Threads with context and project memory.
 - Task planning and child Agents for larger jobs.
-- Manual approval, auto approval, and sandboxed command execution.
+- Manual approval, an independent approval agent, and explicit unsandboxed host full access.
 - Optional Git Worktree isolation for child Agents.
 
 For architecture, context compression and retrieval, persistence, security boundaries, and other implementation details, see the [Technical Design](./docs/TECHNICAL_DESIGN.md).
@@ -136,7 +136,7 @@ Run `easy-code --help` for all CLI options.
 
 | Mode | Use it when you want EASY CODE to... |
 | --- | --- |
-| `plan` | Inspect the project and propose a plan without changing project files. |
+| `plan` | Inspect and propose a plan; avoid direct file edits. Commands still follow approval and may write. |
 | `auto` | Decide whether to answer, propose a plan, or implement. This is the default. |
 | `code` | Implement and verify the request immediately. |
 
@@ -152,21 +152,21 @@ When Auto produces a plan, approve it, reject it, or enter feedback to revise it
 
 ## Command approval and sandbox
 
-Protected command execution uses the workspace sandbox. The startup `--approval` option controls prompts:
+Protected command execution uses the workspace sandbox. Startup is Manual unless `-y` selects the independent approval agent. The retained `--approval` option controls whether user prompts are available:
 
 | Value | Behavior |
 | --- | --- |
-| `safe` | Use the normal policy and ask for eligible higher-risk commands. This is the default. |
-| `ask` | Ask before every policy-allowed command. |
-| `never` | Refuse commands that require approval. |
+| `safe` | User prompts are available. This is the default; it does not auto-allow low-risk commands. |
+| `ask` | User prompts are available, like `safe`; `-y` still selects the approval agent. |
+| `never` | Do not prompt; reuse saved grants or the approval agent's decision, otherwise stop with approval unavailable. |
 
-Use `-y` to auto-approve policy-allowed prompts while keeping permanent denials and the sandbox active:
+Use `-y` to enable the independent approval agent with the workspace sandbox. This is not blanket permission or Full access:
 
 ```bash
 easy-code --workspace ./my-project --mode code -y
 ```
 
-Run `/approval` to select Manual (all networking asks), Auto (proven read-only networking is automatic; downloads/uploads/unknown networking ask), or dangerous no-prompt execution (no command/network approvals). Saved network prefixes bypass repeated prompts; inspect/revoke them with `/permissions`. Every posture keeps the workspace sandbox, read-only Plan and Benchmark command-network restrictions. See [command security](docs/COMMAND_SECURITY.md).
+Run `/approval` to select Manual (every new command asks), Approve for me (an independent agent reviews; rejection escalates to you), or Full access (host commands without a sandbox or approval). Saved scoped prefixes are shared by the thread and its children; `/permissions` lists/revokes them. Plan discourages direct edits but commands follow approval. Selecting Manual disables orchestration when idle and is prohibited while DAG/child work remains. Benchmark always runs commands in a separate offline container. See [command permissions](docs/COMMAND_SECURITY.md).
 
 Useful checks:
 

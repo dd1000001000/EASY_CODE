@@ -1,124 +1,117 @@
-# 命令执行的强制隔离
+# 命令审批与执行环境
 
-本安全底线与 provider、thinking、DAG 和审批模式无关。威胁范围是模型控制的进程，不包含已经被攻破的宿主管理员或内核。
+本方案把工作模式、审批主体和执行环境分开，替代此前“所有模式都强制内层沙箱”的设计。
 
-## 四批改动
+## 工作模式
 
-1. 所有命令统一走 OS 沙箱。Plan 始终只读；旧 ID `unrestricted` 现在仅表示“隔离下免逐条审批”，不再提供宿主机完全访问。工作区同名 Git/Node/npm 不享受可信只读豁免；审批后重新校验可执行文件内容和 npm 策略材料。
-2. 独立 worker 管道传递有界生命周期事件，不再从裁剪后的输出推断执行状态。派发、启动器退出、清理分开记录。Windows 用 kill-on-close Job Object 管住进程树，确认后代结束后才恢复 ACL，确认 Job 为空后才释放资源；普通 Linux 使用沙箱 PID namespace，Harbor 使用下述专用内核隔离与 subreaper 后端。
-3. Runtime 清单下载代理只接受已授权 artifact ID。开发模式另外提供逐命令联网代理，按下述审批规则授权；Benchmark 命令在清单下载期间仍完全离线。
-4. Harbor 外层保留模型端点白名单，命令改用 Landlock/seccomp 后端，不再要求嵌套 namespace。安装阶段编译受信任的 supervisor，预检与执行选择同一后端。只有 Agent 根进程已返回，且没有未结束命令租约和清理隔离标记，才恢复可信评测器的网络。
+Code 执行实现；Plan 以调查和提交计划为目标，通过提示约束尽量避免直接文件编辑，
+不再保证文件系统只读。Plan 命令与 Code 使用同一审批流程，获得授权后可以写文件。
+文件工具在所有模式下仍保持工作区相对路径、先读后改、版本哈希和 Runtime 资源保护。
 
-## 审批和文件边界
+## 三种审批模式
 
-本地自动审批由主 Agent 与子 Agent 共用判断：常规工作区读取、构建、测试、项目代码自动允许；明确高风险/系统影响和未分类工具请求审批。点名的本地文件删除、移动不再一律禁止；递归或影响范围不明的操作仍审批。这只是风险提醒，不声称任意项目代码无法删除工作区文件。子 Agent 不打开终端审批，缺少授权时报告主 Agent；危险模式仍免命令审批，不解除隔离。
-
-手动模式审批符合策略的本地命令和所有联网；自动模式允许本地命令与明确只读联网，下载/上传/未知联网仍审批；危险模式不再请求任何命令或联网审批，并解除 Code 的命令分类拒绝。OS 隔离、Plan 只读、资源上限和 Benchmark 禁网仍保留。历史普通 Shell/解释器/包管理器授权仍不生效；用户可以另外授予显式联网前缀权限，授权前会说明其包含上传等广泛能力。
-
-文件工具在所有模式下都只接受工作区相对路径。目录穿越、网络/设备工作区根、重定向工作区根，以及文件工具沿符号链接/Junction 的访问均被拒绝。Runtime 配置、凭据、缓存、日志和正在执行的资源必须位于命令可写边界之外或显式受保护。在支持 Plan 命令的 Linux 上，除了策略只允许调查命令，还在 OS 层将工作区设为只读；即使分类器误判，也不能获得项目写权限。临时 scratch 写入不等于项目写权限。
-
-严格命令后端当前支持 Windows 和 Linux。macOS 的进程组终止不足以证明所有后代已结束，因此这一严格方案暂时拒绝 macOS 命令执行，文件工具仍可使用。预检失败不得通过弱隔离、privileged Docker、host network 或宿主执行绕过。
-
-Windows Plan 当前**仅提供只读文件工具**：真实烟测表明，目录继承的 deny-write ACL 无法可靠覆盖此前由沙箱创建文件的显式权限。因此 Plan 隐藏命令工具，后端也拒绝 Plan 启动，即使分类器被绕过也不执行。Linux 保留内核文件系统隔离下的只读命令。这是主动限制能力，不是宣称 ACL 保证已成立。
-
-## 开发模式联网规则
-
-| 操作 | 手动模式 | 自动模式 | 危险模式 |
+| 模式 | 新命令 | 已保存前缀 | 默认环境 |
 | --- | --- | --- | --- |
-| 明确只读联网 | 审批 | 自动允许 | 允许 |
-| 下载文件/依赖 | 审批 | 审批 | 允许 |
-| 上传/修改远端 | 审批 | 审批 | 允许 |
-| 未知脚本联网 | 审批 | 审批 | 允许 |
+| 请求批准 / manual | 用户选择此次允许、允许前缀、拒绝 | 命中则复用 | 工作区 OS 沙箱 |
+| 帮我批准 / auto_approve | 独立审批 Agent 判断；拒绝、错误、超时交给用户 | 命中则复用 | 工作区 OS 沙箱 |
+| 完全访问 / unrestricted | 不需要批准 | 不需要 | 宿主机，无 EASY CODE 沙箱 |
+| Benchmark 固定模式 | 不需要批准 | 不需要 | 仅离线任务容器完全访问 |
 
-命中显式联网前缀后，手动/自动模式不再重复询问。前缀绑定规范化程序路径、可执行文件内容哈希和结构化 argv：`git fetch` 不匹配 `git push`。只选择程序、不限定子命令的广泛联网前缀确实包含上传和远端修改；旧普通程序授权不会自动升级为网络授权。`/permissions` 查看，`/permissions revoke <序号>` 撤销并写入 Journal，Resume 后继续生效；撤销前须结束/取消运行中的命令。撤销前缀不会关闭危险模式。
+手动模式包括只读调查命令，不再靠静态风险标签自动放行。
+审批 Agent 是独立、无工具的一次模型请求，不是普通工作子 Agent，也不是防停滞 reviewer。
+输入包含用户任务、结构化命令、权限范围和 Runtime 生成的前缀；输出严格限制为三个结论和理由。
+不执行命令、不写文件、不管理 DAG、不自行扩大权限。拒绝后用户仍可选择三个结论中的任意一个。
+失败不再循环要求修正，直接转用户。所有请求和 Token 计入共享任务预算。
 
-分类来自实际解析的命令，不信任模型的 `intent`。初版自动只读配方为可信 `curl`、禁用默认配置（`-q`）、限定 GET/HEAD 参数。写文件算下载；自定义请求头、正文、配置文件、未知参数、Git helper 和任意脚本按未知联网审批。只读是操作分类，不保证远端 GET 绝无副作用或查询参数绝无敏感信息。批准安装命令也包含其子进程；普通 npm install/ci 默认禁用生命周期脚本，危险模式保留模型提交的参数。
+默认 limits：approvalInputChars=24000、approvalOutputTokens=1024、approvalTimeoutMs=60000。
+用户配置可选 approvalModel，使用当前 provider 下的指定模型；不设置则沿用当前模型。
+工作区配置不能设置审批模型。审批和原始任务模型不采用 provider 特有的安全规则。
 
-沙箱 HTTP/SOCKS 代理串联到带逐命令能力令牌的 Runtime 网关。先审批，再解析公共 IPv4 地址并固定实际连接目标，防止 DNS 重绑定。内网、回环、元数据地址和 IPv6 当前均不开放，危险模式也不例外。不使用代理的原始 TCP/UDP 客户端仍可能被沙箱拒绝；免审批不等于切到宿主机网络。HTTPS 使用 CONNECT，不解密，因此任意脚本不能声明自己只有只读权限。已识别联网命令启动前审批，未知脚本第一次实际代理请求时审批；批准和拒绝都只缓存到本次命令，避免循环弹窗。超时/取消会关闭审批等待及全部连接；Runtime 不自动重试上传。
+主 Agent 和子 Agent 的审批统一在主界面排队，不存在两个 stdin 所有者。
+等待时取消、切换任务或修改模式会使旧决定失效。
+非交互模式不能询问用户时，返回 approval_unavailable，不默认批准。
+重启不会恢复“此次允许”，也不会自动重放付费审批调用。
 
-单命令网关上限为 2,048 次连接/请求、512 MiB、16 KiB 请求头，DNS 等待最多 10 秒，连接有空闲超时。`network.authorization` / `network.connection` 只记录类型、主机/端口、结果，不写请求正文、URL 查询或代理口令。后台子 Agent 不争抢终端审批，只能使用父 Thread 已有前缀或自动只读授权，否则向主 Agent 报告；危险模式子 Agent 也免审批。
+## 前缀权限
 
-Benchmark 使用可信环境 profile，不是模型可改参数：所有授权模式均不下发命令网关。清单下载不能作为检索答案的例外，仍受审批及外层防火墙限制。非交互/禁用提示时，除已有前缀或模式已允许外，联网默认拒绝。
+command:v2 绑定规范化可执行文件路径和内容哈希、子命令前缀或精确 argv 哈希、
+cwd、工作区/宿主/容器范围和联网权限。工作区 cwd 使用相对位置，允许根任务与对应子任务共享授权；
+宿主/容器 cwd 使用绝对路径。授权不跨无关 Thread。
 
-## 清单下载使用方式
+普通程序可得到类似 git status 的子命令前缀；解释器、Shell、包管理器和非子命令形式采用精确 argv。
+持久化的是精确参数哈希，不包含 inline 脚本或密钥明文。
+脚本文件和仓库 hook 仍可能改变，因此前缀是“重复运行这个调用”的授权，不保证未来副作用完全相同；
+审批 Agent 被要求在这类情形优先选择此次允许。审批后再次检查程序身份及解析材料。
+/permissions 查看权限，/permissions revoke <序号> 持久化撤销；Journal 是事实来源，压缩和 Resume 不增加权限。
 
-用户在工作区外的可信 EASY CODE 配置目录放置 `artifact-catalog.json`。完整 JSON 示例见 [English contract](COMMAND_SECURITY.md)。条目包含：固定 ID、类型、工作区、HTTPS URL、SHA-256/SHA-512 完整性值、文件名、最大字节数和精确重定向列表。类型为 `file`、`npm`（`.tgz`）或 `wheel`（`.whl`）。模型不能通过工具修改此清单。“允许下载文件”不等于允许检索答案、网页搜索或上传数据，必要文件仍需明确授权。
+## DAG / 子 Agent 联动
 
-初始 `package-lock.json` v2/v3 还可以授权固定 `registry.npmjs.org` tarball，但必须带完整性值。初始清单哈希和 artifact ID 按 Thread 持久化；模型修改 lock、压缩上下文、Resume 都不会获得新包的下载权限。无效或不支持的 lock 不提供隐式权限。Python wheel 和其他文件须显式登记；当前不是通用依赖解析器。
+- 手动模式开启编排时，必须明确确认同时开启“帮我批准”。
+- 有未完成 DAG、活动子 Agent、待收集结果或活动命令时，禁止切到手动审批。
+  不停止、不取消、不偷偷改变现有工作，提示完成后再次切换。
+- 空闲时切换手动审批，原子地关闭 DAG/子 Agent 开关并保存。
+- 手动模式恢复任务时，不自行启动未完成子 Agent；需要用户先选足够的审批等级。
+- 切回自动审批不会自动重新开启已关闭的编排。
+- 防停滞 reviewer 继续默认启用、严格只读。子 Agent 并发仍为 none/low=2、medium=4、high=8。
 
-主 Agent 的 Code 模式可用 `fetch_artifact` 的 `list`/`fetch`。输出固定为 `vendor/downloads/<id>/<filename>`，不覆盖已被修改的文件。下载代理只做 HTTPS GET，验证公共 IPv4 DNS 并固定连接地址、验证证书、仅接受精确授权重定向（最多 3 次），不携带 Cookie/代理凭据；限制大小与时间，完整性校验后才写入独立缓存和工作区。IPv6 暂时保守拒绝。逐 Thread 下载额度账本跨 Resume 保留，损坏/未完成账本不会重置额度。
+## 执行环境与网络
 
-安全上限：单文件 256 MiB，隐式 npm 包 64 MiB；每 Thread 512 MiB，每次传输 60 秒。失败保留已预留的额度；这些安全上限不能由模型修改。
+普通命令默认使用 Windows/Linux 工作区 OS 沙箱；Plan 与 Code 一样允许工作区写入。
+敏感 Runtime 文件、凭据和受保护 Git 元数据仍在默认可写边界之外。
+失败不会自动切到宿主机；macOS 严格沙箱的已有限制仍然存在。
+命令可显式请求 executionScope=host，把宿主文件和网络权限与该命令一起审批。
+完全访问直接采用宿主后端，不是防恶意命令的安全边界，也不提升用户的 OS 权限。
+Runtime 不主动将 provider 密钥传入子进程环境，但完全访问命令仍可读取当前用户有权限的宿主文件。
 
-清单产物可以单独离线安装：npm 将校验过的 tarball 加入工作区缓存，再用 `npm ci --offline --ignore-scripts --cache <工作区缓存>`；wheel 使用 `python -m pip install --no-index --find-links vendor/downloads/... <包名>`。清单代理不解压、不执行安装脚本。开发模式也可批准普通安装命令联网；Benchmark 缺少传递依赖不会自动开放联网。
+不再把 Shell 写法当作安全证明：支持多行参数、脚本、管道、重定向、login/编码 Shell 和正常安装参数。
+缺少 program、参数类型错误、NUL、不支持的远端程序路径、无效 cwd 仍返回输入/路径错误。
+工作区 cwd 仍检查边界，获批宿主 cwd 可在工作区外。intent 不是权限；缺少验证分类降为 custom。
 
-Benchmark 优先在可信镜像/安装阶段预置依赖；其外层白名单也可能拒绝代理下载，不会为此临时向 Agent 开放公共网络。
+工作区联网使用逐命令 HTTP/SOCKS 网关：已知联网在启动前审批，
+未知脚本第一次连接时补充联网审批。同一次命令缓存结果，避免反复询问。
+网关继续限制内网、元数据地址及不支持的原始 UDP/IPv6；需要这些能力时应明确申请宿主执行。
+完全访问使用宿主网络，不经过该网关。Benchmark 没有命令联网或依赖下载例外，也不提供清单下载工具。
+开发模式的清单下载仍限定可信清单和完整性校验，不等同任意 Web 搜索。
 
-## 失败证据与恢复
+## Benchmark 三个角色
 
-`command.preparing`、worker 生命周期事件和 `command.finished` 写入所属 Thread Journal。`<dataDir>/command-leases/<workspaceId>/` 保存未结束命令租约；`<dataDir>/command-quarantine/` 保存清理隔离标记。它们不能由模型修改，也不会因压缩或 Resume 被清空。
+1. Harbor 原始任务容器保留为干净评测器。
+2. 控制容器运行 EASY CODE，保留密钥、日志、桥接文件，只允许模型端点外连。
+3. 离线 worker 执行所有模型命令：容器内文件系统完全访问，Docker network=none。
 
-Windows 还在 `<OS temp>/easy-code-srt-runtime/windows-acl-quarantine.json` 隔离共享沙箱身份，不会自动夺取陈旧的共享 ACL 锁，防止另一工作区复用未知状态。清理时直接检查 revoke/restore 的逐路径结果，因为底层 SDK 的 `reset()` 可能仅记录 ACL 错误但仍正常返回。
+控制端和 worker 只共享任务卷；不向 worker 挂载宿主目录、Docker socket、密钥或控制日志。
+控制端 .git 使用额外私有卷，worker 修改自身 Git 配置不会影响控制端的 Git helper 执行。
+子 Agent 固定使用同一个共享任务卷。只有宿主 Python broker 能控制 Docker。
 
-退出码是沙箱启动器的终态结果，不证明目标的所有副作用均成功。已经派发后缺少终态只能标为“未知”，不能说成“未启动，可以重试”。清理失败保留原退出码和输出，不重复命令，并禁止该环境继续执行命令或文件修改；只读诊断保留。结束状态无法持久化或审计失败时也采取保守处理。只有确认派发前失败且清理完成，才可能给出一次可重试初始化失败。
+worker 使用 private IPC 和普通 64 MiB /dev/shm，支持本地 socket、asyncio 和 Python 多进程。
+不再叠加原来的 Landlock/seccomp 限制；不启用 privileged、宿主 PID/IPC/network 或额外 capabilities。
+容器命令串行执行，每次终态后由 Docker 重启 worker，清掉包括 detached 在内的所有后代，
+保留文件系统但不保留进程。因此需要服务器与客户端协同时，应放在同一受监督命令里。
+排队不计入命令执行超时且可取消。桥接输出单命令上限 32 MiB，归档传输/导出也有容量上限。
 
-不要为了继续任务直接删除租约。操作人员应确认相关进程已结束，运行 `easy-code sandbox doctor`，必要时使用现有先 dry-run 的 Windows 工作区修复流程，确认 ACL 状态后才归档具体陈旧记录。没有提供模型可调用的“清空隔离标记”绕过。一次性 benchmark 应保留日志并重建出问题的环境，不把清理状态未知的环境恢复到公共网络。
+评测前先停 worker，再把普通项目文件和未改变的基线符号链接导出到原始 checkout。
+不导出 worker .git、Runtime 目录、新符号链接、设备或 hardlink。
+干净评测器保留原始 Git 和工作区外测试材料。
+命令租约全部关闭且无清理隔离标记时才恢复评测器网络。
+worker 根文件系统的临时安装不纳入 checkpoint，保留的是项目改动和控制端状态。
+详见 [Benchmark 说明](../benchmarks/swebench_verified/README.md#harbor-command-isolation)。
 
-## 验证范围
+## 证据、恢复与测试
 
-### 命令易用性与验证证据
+审批 review/decision、前缀授权/撤销、模式切换进入 Journal。
+模型用量单独记为 purpose=command_approval、actor=approval_agent，不混入进展 reviewer。
+错误区分参数、策略边界、审批不可用/拒绝、沙箱/基础设施、超时/取消、进程退出。
+未启动拒绝不算测试失败；派发后状态未知不能自动重跑。
 
-Windows 命令派发后取消/超时，先结束目标后代，保留可信 worker 完成 ACL 恢复，再关闭已清空的 Job。并发清理请求只复用正在进行的操作，不复用旧 `QUIET` 回执；清理超过有界期限仍强制终止并隔离未知状态。`smoke-command-usability.mjs` 在真实 OS 后端验证脚本、多行/字面 argv、管道掩盖失败、子进程取消与超时。
+独立控制管道记录派发、终态、清理，不从裁剪输出推断。
+Windows 沙箱 Job 和 Linux 隔离负责后代管理；宿主完全访问仅有尽力而为的进程监督，不提供同等隔离保证。
+清理未知保留租约并隔离环境，压缩不会删除这些记录。
 
-Code 模式 PowerShell `-File` 默认规范化为该子进程的 `-NoProfile -NonInteractive -ExecutionPolicy Bypass`，与已经允许的 inline-code 能力一致；显式指定的执行策略保持原样。Runtime 不调用 `Set-ExecutionPolicy`，不修改用户/机器全局策略，仍受 OS 沙箱和组织策略约束。
+测试结果独立于外层退出码：识别出的 unittest/Django、pytest、Jest、Node 失败覆盖管道返回 0；
+冲突或不完整证据记 unknown，不清空停滞。ProgressGuard 读取原始结构化证据。
 
-`normalizeCommandRequest` 由 run/start 和 Runtime 共用。verify/test 缺少分类补为 `custom`，build 补为 `build`；无效或不适用的验证元数据记有界警告，不再要求模型重发命令。缺少 program、执行参数类型错误和 NUL 仍拒绝。规范化元数据保留在 Journal、模型投影和后续轮询中；intent 不是授权依据。
-
-直接 argv 按字面传递，支持多行 Python/Node 和标点参数；相对程序路径以 cwd 为基准。cwd 接受工作区内绝对/相对路径以及归一化后仍在工作区的父目录片段。先检查本地链接目标再遍历，拒绝网络/设备链接；经校验的本地系统解释器链接不扩大文件访问权限。Git `-C` 在工作区内规范化；配置覆盖和 `.git` 写入仍受限。
-
-支持一次性脚本（`bash script.sh`、`pwsh -File`）、heredoc/here-string、管道、重定向、同步嵌套调用、PowerShell `&`、短暂 sleep 和 timeout 包装。显式脱离进程的写法仍引导使用 Runtime 后台句柄；危险模式以外不支持交互/login/编码命令协议。脚本是不透明的项目代码，安全靠 OS 隔离和后代清理，不靠完整 Shell 静态证明。不自动拼接错误 cmd 参数、不加 `set -e`、不偷偷改管道语义。
-
-`validation` 与执行退出码/状态分开。有界流式收集器在**展示裁剪前**识别匹配的 unittest/Django、pytest、Jest、Node 测试终态。框架失败覆盖外层退出 0；只有 Shell/过滤器退出码、多目标/多终态、成功摘要与非零退出冲突、证据不完整，均记 `unknown`。只有失败数量而没有具体错误证据时可信度低，不单凭数量触发 reviewer。失败行保留完整哈希，展示片段之后的断言差异也不会被合并。直接声明的 custom/build 命令可使用进程退出证据；这不是需求正确性证明，也不防伪造测试输出。
-
-ProgressGuard 使用 Runtime 结论和失败签名，不使用展示摘要：三个独立周期的相同高置信失败可以触发审查；轮询去重；未知/低置信结果不清空停滞状态。Resume 回放 Journal Observation，不从裁剪后的历史输出重建框架证据。`unknown` 不代表要求自动重跑。
-
-`node scripts/replay-command-requests.mjs <job绝对目录>` 只回放参数格式和参考策略，不启动历史命令、不在宿主解析容器程序、不调用模型、不改 job。新增 `command-usability`、`command-verification` 测试；隔离保证仍须真实 OS 烟测。
-
-回归覆盖联网授权、命令、安全底线、审批、沙箱、下载、生命周期和 benchmark 接入。构建后，`node scripts/smoke-command-isolation.mjs` 检查 OS 隔离和清理；`node scripts/smoke-command-network.mjs` 用真实 curl 检查 SRT 与授权网关链路，测试专用可信解析器仅把固定测试域名映射到本地服务。两项均不调用模型 API 或公共互联网；失败时保留精确目录用于诊断。
-
-单元测试不能代替部署机的内核/防火墙预检。Linux/Docker 命名空间策略、Windows WFP/ACL 初始化仍须在真实运行环境中验证。
-## Harbor Benchmark 专用后端（2026-09）
-
-Harbor 适配器在安装阶段编译受信任的 `scripts/harbor-sandbox.c`，并在
-`sandbox doctor` 前设置 `EASY_CODE_OUTER_SANDBOX=harbor`。预检和 Runtime
-均选择 `HarborSandboxBackend`；普通 CLI 仍使用原 OS 沙箱后端。
-
-这不是裸执行回退：Docker 提供外层隔离，Landlock ABI 6+ 提供文件访问与信号
-隔离，seccomp 禁止模型命令创建网络 socket、使用 io_uring、提升能力或创建
-namespace。不要求 Docker 特权模式；缺少内核能力或受信任 helper 时仍失败关闭。
-
-主 Runtime 仅能通过 Harbor 的白名单调用固定模型服务。模型命令即使处于危险模式
-也不能联网，包括访问模型服务、DNS、TCP、UDP、IPv6 和具名 Unix socket 服务。
-仅放行协议为 0 的匿名 AF_UNIX socketpair（stream/datagram/seqpacket，支持
-NONBLOCK/CLOEXEC），及无目的地址的发送，用于本地 IPC 和 asyncio 唤醒。
-sendmsg/recvmsg 仍被禁止，避免文件描述符传递；目标启动前关闭继承的 Runtime 描述符。
-doctor 同时检查本地 IPC 可用与网络拒绝，而不是只验证禁止项。
-可信安装／评测依赖准备与模型执行分阶段处理；清理未确认时不恢复 verifier 网络。
-
-命令使用无 capability 的子进程、独立控制管道和 subreaper 监督；普通退出、超时、
-取消均清理包括 setsid／双重 fork 在内的后代。Plan 的工作区仍为内核只读。
-
-兼容性边界：本地监听服务、具名 Unix socket 连接和依赖描述符传递的多进程功能
-仍不可用；匿名 socketpair 可用。chmod、
-chown、xattr 操作禁止。容器内 Git／Runtime 元数据移除写权限，可信 root Runtime
-仍可维护；保护目录的祖先下直接条目的删除／重命名受限，普通源码原地写入正常。
-这些限制不会放宽为不受监督的宿主机命令。可用 `scripts/smoke-harbor-sandbox.mjs`
-在一次性 Docker 容器里验证，无须调用模型。
-
-两个沙箱后端共用 Git 参数／环境处理：直接 diff 类命令使用
-`--no-ext-diff --no-textconv`，不再注入错误的 `diff.external=` 空值。
-参数按子命令区分，全局保护配置位于调用者全局设置之后，diff 保护选项紧随子命令，
-避免被其他选项当成参数值；显式启用外部 helper 的选项与命令策略一致地拒绝。
-不修改仓库配置。
-Shell/Python 子进程继承清理后的 Git 环境，但任意代码仍可自行设置环境或执行程序；
-这不是覆盖所有间接调用的 Git 拦截器，底层文件／网络边界仍由 OS 沙箱保证。
+npm run build:test 和测试 runner 覆盖审批、权限范围、前缀恢复、状态切换、Plan、网络、生命周期。
+scripts/smoke-split-benchmark.py 不调用模型，仅用临时本地 Docker 容器验证：
+密钥/宿主隔离、外网不可达、本地 IPC、12 进程 Pool、worker 独有程序、控制端 Git 隔离、
+detached 清理、超时、干净导出和 Django 46 个 writer 测试。
+这是兼容性/隔离烟测，不是正式 SWE-bench 分数。

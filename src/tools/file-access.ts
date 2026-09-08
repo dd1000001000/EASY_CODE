@@ -76,6 +76,5 @@ export async function acquireHostFileMutationLock(target: FileToolTarget, signal
 
 export function assertHostFileMutationStillAllowed(context: ToolContext, target: FileToolTarget): void {
   workspacePath(target);
-  if (context.mode === "plan") throw new Error("Plan mode is read-only");
   if (context.signal?.aborted) throw new Error("File mutation was canceled before it committed");
 }

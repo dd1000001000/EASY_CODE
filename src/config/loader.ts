@@ -36,6 +36,7 @@ interface ProviderConfigLayer extends UnknownRecord {
 }
 
 interface EasyCodeConfigLayer {
+  approvalModel?: unknown;
   provider?: unknown;
   mode?: unknown;
   thinkingEffort?: unknown;
@@ -143,6 +144,7 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
 
   return compact({
     provider: value.provider,
+    approvalModel: field(value, "approvalModel", "approval_model"),
     mode: value.mode,
     thinkingEffort: field(value, "thinkingEffort", "thinking_effort"),
     approvalPolicy: field(value, "approvalPolicy", "approval_policy"),
@@ -205,6 +207,7 @@ function applyLayer(
     mode: layer.mode,
     thinkingEffort: layer.thinkingEffort,
     approvalPolicy: layer.approvalPolicy,
+    approvalModel: layer.approvalModel,
     dataDir: layer.dataDir,
     configDir: layer.configDir,
     cacheDir: layer.cacheDir,
@@ -269,6 +272,7 @@ function assertSafeWorkspaceLayer(
   configPath: string,
 ): void {
   const forbidden: string[] = [];
+  if (layer.approvalModel !== undefined) forbidden.push("approval_model");
   if (layer.qwen?.apiKey !== undefined) forbidden.push("qwen.api_key");
   if (layer.deepseek?.apiKey !== undefined) {
     forbidden.push("deepseek.api_key");

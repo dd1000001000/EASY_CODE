@@ -32,6 +32,7 @@ const commandInvocationSchema = z
     verificationKind: z.unknown().optional(),
     timeoutMs: z.number().int().positive().optional(),
     reason: z.string().max(2_000).optional(),
+    executionScope: z.enum(["workspace", "host"]).optional(),
   })
   .strict()
   .transform(normalizeCommandRequest);
@@ -64,6 +65,7 @@ function commandInvocationDefinition(): Record<string, unknown> {
       verificationKind: { type: "string", enum: [...VERIFICATION_KINDS] },
       timeoutMs: { type: "integer", minimum: 1 },
       reason: { type: "string", maxLength: 2_000 },
+      executionScope: { type: "string", enum: ["workspace", "host"], description: "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined." },
     },
     required: ["program", "intent"],
   };

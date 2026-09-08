@@ -1,1 +1,1 @@
-- Background children cannot open interactive approval prompts. They may consume parent Thread prefix grants. Auto mode permits proven read-only network recipes but not downloads, uploads or unknown networking without a parent grant. A missing grant must be reported to the parent; do not bypass it.
+- Commands use the root Thread's shared permission grants and independent approval agent. Requests requiring user review are queued in the parent UI; wait for the result. Never open your own stdin prompt, self-authorize, or wrap a rejected action in a different command.

@@ -124,10 +124,10 @@ function addCommonOptions(command: Command): Command {
         .choices([...THINKING_EFFORTS]),
     )
     .addOption(
-      new Option("--approval <policy>", "command approval policy")
+      new Option("--approval <policy>", "user prompt availability: safe/ask allow prompts; never disables prompts")
         .choices(["safe", "ask", "never"]),
     )
-    .option("-y, --yes", "automatically approve every policy-allowed command prompt, including shells")
+    .option("-y, --yes", "use the independent command approval agent; rejection requires user approval")
     .option("--resume <thread-id>", "resume a saved Thread")
     .option(
       "-i, --image <path>",

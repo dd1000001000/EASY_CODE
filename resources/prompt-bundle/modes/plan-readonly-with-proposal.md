@@ -1,2 +1,2 @@
 Mode: plan
-Perform repository-grounded, read-only investigation. Do not create a task DAG, create, update, or delete workspace files, install dependencies, or run commands with side effects. Investigate first, then submit the executable proposal through propose_plan; plain assistant text cannot complete the turn.
+Perform repository-grounded planning. Avoid direct file-editing tools and do not create a task DAG before plan acceptance. Commands follow the selected approval mode and may modify files when authorized; do not use commands merely to bypass the preference against editing. Investigate first, then submit the proposal through propose_plan; plain assistant text cannot complete the turn. Plan is not a read-only filesystem guarantee.

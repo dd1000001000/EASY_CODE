@@ -28,8 +28,9 @@ import { inspectNetworkOperation } from "./network-policy.js";
 import { createCommandNetworkGate } from "./network-gate.js";
 import { networkCommandApprovalPrefix } from "./approval.js";
 import { requestNetworkApproval } from "./network-approval.js";
+import { commandGrantPrefix } from "./command-grant.js";
+import { UnrestrictedHostBackend } from "../sandbox/unrestricted-host-backend.js";
 import {
-  validateCommandRequest,
   type CommandRequestValidationFailure,
 } from "./request-validation.js";
 import { CommandPolicyBoundaryError, CommandResolver } from "./resolver.js";
@@ -157,8 +158,8 @@ export class CommandRuntime {
   private quarantineReason?: string;
   private readonly executionJournal: ExecutionJournal;
 
-  assertEnvironmentSafe(): void {
-    this.executionBackend.assertEnvironmentSafe?.();
+  assertEnvironmentSafe(backend: CommandExecutionBackend = this.executionBackend): void {
+    backend.assertEnvironmentSafe?.();
     this.executionJournal.assertRecovered();
     if (this.quarantineReason || (this.options.quarantinePath && existsSync(this.options.quarantinePath))) {
       throw new Error(`Command environment quarantined; inspect cleanup before resuming mutations: ${this.quarantineReason ?? this.options.quarantinePath}`);
@@ -179,15 +180,13 @@ export class CommandRuntime {
     private readonly workspace: WorkspaceManager,
     policy = new CommandPolicy(),
     executionBackend?: CommandExecutionBackend,
-    unrestrictedExecutionBackend?: CommandExecutionBackend,
+    private readonly unrestrictedExecutionBackend: CommandExecutionBackend = new UnrestrictedHostBackend(),
     private readonly options: CommandRuntimeOptions = {},
   ) {
     this.executionJournal = new ExecutionJournal(options.lifecycleDirectory);
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
     this.executionBackend = executionBackend ?? new AnthropicSandboxBackend(workspace);
-    // Retain the constructor slot for integrations; it can no longer grant a host backend.
-    void unrestrictedExecutionBackend;
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
@@ -380,30 +379,18 @@ export class CommandRuntime {
   ): Promise<RunCommandOutput> {
     const commandId = createId("command");
     const startedAt = Date.now();
-    this.assertEnvironmentSafe();
     this.options.recordLifecycle?.(context, commandId, "command.request_normalized", commandRequestMetadata(input));
     const unrestricted = context.commandExecutionMode === "unrestricted" &&
       (context.isUnrestrictedHostAccessActive?.() ?? true);
-    const executionBackend = this.executionBackend;
-    const validation = validateCommandRequest(input);
-    const validationFailure = unrestricted && context.mode !== "plan" &&
-      (validation?.matchedRule === "input.async_workaround" || validation?.matchedRule === "input.shell_protocol") ? undefined : validation;
-    if (validationFailure) {
-      return this.resolutionFailure(
-        commandId,
-        startedAt,
-        input,
-        validationFailure.reason,
-        context,
-        executionBackend,
-        validationFailure,
-      );
-    }
+    const benchmark = this.options.networkProfile === "benchmark";
+    const hostAccess = !benchmark && (unrestricted || input.executionScope === "host");
+    const executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
+    this.assertEnvironmentSafe(executionBackend);
     let resolved: ResolvedCommand;
-    const networkEnabled = this.options.networkProfile !== "benchmark";
-    const resolverOptions = { unrestrictedHostAccess: false, unrestrictedCommands: unrestricted && context.mode !== "plan", networkEnabled };
+    const networkEnabled = !benchmark;
+    const resolverOptions = { unrestrictedHostAccess: hostAccess || benchmark, unrestrictedCommands: true, networkEnabled };
     try {
-      resolved = await this.resolver.resolve(input, resolverOptions);
+      resolved = benchmark ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     } catch (error) {
       return this.resolutionFailure(
         commandId,
@@ -415,20 +402,10 @@ export class CommandRuntime {
       );
     }
     const networkOperation = inspectNetworkOperation(resolved);
-    let policyDecision = this.policy.classify(input, resolved, context.mode, networkEnabled);
-    if (unrestricted && context.mode !== "plan") {
-      policyDecision = {
-        ...policyDecision,
-        id: createId("policy"),
-        effect: "allow",
-        reason:
-          "User enabled no-prompt execution; environment isolation remains active",
-        matchedRule: "allow.unrestricted",
-      };
-    }
-    if (!networkEnabled && networkOperation) {
-      policyDecision = { ...policyDecision, effect: "deny", reason: "Benchmark command networking is disabled, including dangerous mode", matchedRule: "deny.benchmark_network" };
-    }
+    let policyDecision = this.policy.classify(input, resolved, "code", networkEnabled);
+    const scope = benchmark ? "container" : hostAccess ? "host" : "workspace";
+    const commandNetwork = hostAccess || Boolean(networkOperation) && networkEnabled;
+    const prefix = benchmark ? "benchmark:no-grant" : commandGrantPrefix(resolved, scope, commandNetwork);
     const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
 
     // A single approval authorizes this invocation, not the entire Thread.
@@ -438,8 +415,8 @@ export class CommandRuntime {
     const networkSignal = context.signal ? AbortSignal.any([context.signal, networkApprovalController.signal]) : networkApprovalController.signal;
     const approveNetwork = (destination?: string): Promise<boolean> => networkApproval ??= (async () => {
       const effect = networkOperation?.effect ?? "unknown";
-      if (!networkEnabled || context.mode === "plan" && effect !== "read") return false;
-      const prefix = networkCommandApprovalPrefix(resolved.executablePath, networkOperation?.prefixArgs ?? [], resolved.executableHash!);
+      if (!networkEnabled) return false;
+      const prefix = commandGrantPrefix(resolved, scope, true);
       let granted = false;
       try {
         granted = await requestNetworkApproval({ ...context, signal: networkSignal }, {
@@ -447,52 +424,31 @@ export class CommandRuntime {
           description: `${networkOperation?.description ?? "Unclassified program requests network access"}. This approval covers this command and its children. Downloads/uploads may expose data or change remote state.`,
           risk: effect === "read" ? "read" : "external", commandPrefix: prefix,
           commandPreview: commandPreview(resolved), network: { effect, ...(destination ? { destination } : {}) },
+          command: { executable: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute, scope, network: true },
         });
         this.options.recordLifecycle?.(context, commandId, "network.authorization", { effect, granted, ...(destination ? { destination } : {}) });
       } catch { granted = false; }
       return granted && !networkSignal.aborted;
     })();
 
-    const shouldAsk = !unrestricted && !networkOperation &&
-      (policyDecision.effect === "ask" || context.approvalPolicy === "ask");
-    if (policyDecision.effect === "deny") {
-      return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
-    }
-    if (networkOperation && !await approveNetwork()) {
-      policyDecision = { ...policyDecision, effect: "deny", reason: "Network approval was not granted", matchedRule: "deny.network_approval" };
-      return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend, "approval", "approval_not_granted");
-    }
+    const shouldAsk = !unrestricted && !benchmark;
     if (shouldAsk) {
-      if (context.approvalPolicy === "never") {
-        policyDecision = {
-          ...policyDecision,
-          effect: "deny",
-          reason: `${policyDecision.reason}; approval prompts are disabled`,
-        };
-        return this.denied(
-          commandId,
-          startedAt,
-          resolved,
-          policyDecision,
-          context,
-          executionBackend,
-          "approval",
-          "approval_unavailable",
-        );
-      }
       let approved = false;
       let approvalUnavailable = false;
       try {
         approved = await context.requestApproval({
           id: fingerprint,
+          signal: context.signal,
           title: `Run ${resolved.program}`,
-          description: `${policyDecision.reason}. cwd=${resolved.cwdRelative}; exact approval=${fingerprint}`,
-          risk: policyDecision.risk,
+          description: `${input.reason ?? "Execute requested command"}. Environment=${scope}; network=${commandNetwork}; cwd=${resolved.cwdAbsolute}; exact approval=${fingerprint}`,
+          risk: hostAccess ? "system" : policyDecision.risk,
           // This value is produced by CommandResolver after PATH lookup and
           // realpath canonicalization. The UI must never derive a reusable
           // grant by parsing the redacted human-readable preview below.
-          commandPrefix: resolved.executablePath,
-          ...(networkEnabled ? { existingNetworkCommandPrefix: networkCommandApprovalPrefix(resolved.executablePath, [], resolved.executableHash!) } : {}),
+          commandPrefix: prefix,
+          allowPrompt: context.approvalPolicy !== "never",
+          command: { executable: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute, scope, network: commandNetwork },
+          ...(commandNetwork ? { network: { effect: networkOperation?.effect ?? "unknown" } } : {}),
           commandPreview: commandPreview(resolved),
         });
       } catch {
@@ -516,13 +472,15 @@ export class CommandRuntime {
           approvalUnavailable ? "approval_unavailable" : "approval_not_granted",
         );
       }
+      if (commandNetwork) networkApproval = Promise.resolve(true);
     }
+    policyDecision = { ...policyDecision, effect: "allow", reason: benchmark ? "Container execution; external network boundary remains" : unrestricted ? "Full access" : "Command and requested permissions approved", matchedRule: `approved.${scope}` };
 
     if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
       policyDecision = {
         ...policyDecision,
         effect: "deny",
-        reason: "Isolated no-prompt authorization was revoked before the command started",
+        reason: "Host full-access authorization was revoked before the command started",
         matchedRule: "deny.unrestricted_revoked",
       };
       return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
@@ -534,6 +492,7 @@ export class CommandRuntime {
       policyDecision,
       context,
       commandPreview: commandPreview(resolved),
+      hostExecutionAuthorized: hostAccess,
     };
     if (context.signal?.aborted) {
       return this.canceledBeforeStart(
@@ -548,11 +507,11 @@ export class CommandRuntime {
 
     // Re-resolve after an approval wait. Changed executable/npm material needs a
     // fresh invocation and cannot silently reuse the old approval.
-    const fresh = await this.resolver.resolve(input, resolverOptions);
+    const fresh = benchmark ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
       throw new Error("Command material changed while awaiting approval; request again");
     }
-    const networkGate = networkEnabled && (context.mode !== "plan" || networkOperation?.effect === "read")
+    const networkGate = networkEnabled && !hostAccess
       ? await createCommandNetworkGate({
           signal: networkSignal,
           authorize: async (host, port) => {
@@ -593,7 +552,7 @@ export class CommandRuntime {
         executionBackend,
       );
     }
-    if (context.signal?.aborted) {
+    if (context.signal?.aborted || unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
       try {
         await prepared.cleanup();
         this.executionJournal.complete(commandId);

@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
 import { HarborSandboxBackend } from "./sandbox/harbor-backend.js";
+import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
 
 import chalk from "chalk";
 
@@ -31,6 +32,8 @@ import {
 } from "./command/approval.js";
 import { autoApproveNetwork } from "./command/network-approval.js";
 import { autoApproveLocal } from "./command/local-approval.js";
+import { ApprovalQueue, reviewCommandApproval } from "./command/approval-agent.js";
+import { canGrantCommandPrefix } from "./command/approval.js";
 import { CommandRuntime } from "./command/runtime.js";
 import {
   ContextArtifactIndex,
@@ -506,6 +509,7 @@ export class EasyCodeApp {
   private dirty = false;
   private commandExecutionMode: CommandExecutionMode;
   private hostAccessEpoch = 0;
+  private approvalQueue = new ApprovalQueue();
   private lastProviderContext: ProviderContextSnapshot | undefined;
 
   private constructor(
@@ -526,9 +530,9 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.state = state;
     this.threadLease = threadLease;
-    this.commandExecutionMode = assumeYes || trustedOuterSandbox === "harbor"
-        ? "auto_approve"
-      : "manual";
+    this.commandExecutionMode = trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
+    // Startup/Resume never silently raises user authority to enable orchestration.
+    if (this.commandExecutionMode === "manual") this.state.orchestrationEnabled = false;
     // Use the already resolved trusted cache root so normal launches and the
     // Harbor adapter consume the exact model prepared for this installation.
     const embeddingModel = new LocalEmbeddingModel({
@@ -578,6 +582,7 @@ export class EasyCodeApp {
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
       defaultIsolation: config.subagentIsolation,
+      forceSharedIsolation: this.trustedOuterSandbox === "harbor",
       onWaitStart: (text) => this.terminal.startActivity(text, "waiting"),
       onWaitEnd: (activityToken) => {
         if (typeof activityToken === "string") {
@@ -1077,9 +1082,21 @@ export class EasyCodeApp {
             { id: "on", label: "On — allow orchestration", detail: "Allow DAGs and subagents within configured budgets." },
           ], this.orchestrationEnabled() ? "on" : "off");
         if (!selected) { this.terminal.info("Orchestration selection canceled."); return false; }
+        if (selected === "on" && this.commandExecutionMode === "manual") {
+          const confirmed = await this.terminal.selectChoice("Enable orchestration and independent command approvals?", [
+            { id: "cancel", label: "Cancel", detail: "Keep manual approval and orchestration off" },
+            { id: "enable", label: "Enable both", detail: "Approval agent reviews new commands; denied requests come to you" },
+          ], "cancel");
+          if (confirmed !== "enable") return false;
+        }
+        const nextMode = selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
+        this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" } });
+        if (nextMode !== this.commandExecutionMode) this.config.approvalPolicy = "safe";
+        this.commandExecutionMode = nextMode;
         this.state.orchestrationEnabled = selected === "on";
         this.dirty = true;
         this.save();
+        if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
         this.syncTerminalView();
         this.terminal.success(`DAG/subagent creation ${selected}; reviewer remains enabled.`);
         return false;
@@ -1485,6 +1502,9 @@ export class EasyCodeApp {
     presentReasoning = false,
     runtimeOptions: ExecutePromptOptions = {},
   ): Promise<AgentRunResult> {
+    if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
+      throw new Error("This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.");
+    }
     await this.drainPendingSubagentArtifacts(this.state.threadId);
     this.requireProviderApiKey(this.state.provider);
     if (images.length) this.requireCurrentModelVision();
@@ -1616,6 +1636,7 @@ export class EasyCodeApp {
       const result = await runtime.run(this.state, { text: userInput, images }, {
         maxSteps: this.activeStepLimit(),
         orchestrationEnabled: this.orchestrationEnabled(),
+        isOrchestrationEnabled: () => this.orchestrationEnabled(),
         maxContextChars: this.activeContextCharLimit(),
         maxContextTokens: this.config.limits.maxContextTokens || undefined,
         maxOutputChars: this.config.limits.maxOutputChars,
@@ -1678,10 +1699,8 @@ export class EasyCodeApp {
       createDefaultTools(this.workspace, this.memoryManager, {
         subagentControl: this.subagentCoordinator,
         commandRuntime,
-        downloadBroker,
-      }).filter((tool) => (tool.name !== "read_image" || visionCapable) &&
-        !(process.platform === "win32" && this.state.mode === "plan" &&
-          (tool.name === "run_command" || tool.name === "start_command"))),
+        downloadBroker: this.trustedOuterSandbox ? undefined : downloadBroker,
+      }).filter((tool) => tool.name !== "read_image" || visionCapable),
       this.workspaceMutationLock,
     );
 
@@ -2725,7 +2744,16 @@ export class EasyCodeApp {
   }
 
   private async requestToolApproval(request: ApprovalRequest): Promise<boolean> {
+    const threadId = this.state.threadId;
+    return (this.approvalQueue ??= new ApprovalQueue()).run(async () => {
+      if (threadId !== this.state.threadId || request.signal?.aborted) return false;
+      return this.resolveToolApproval(request);
+    });
+  }
+
+  private async resolveToolApproval(request: ApprovalRequest): Promise<boolean> {
     if (request.signal?.aborted) return false;
+    const threadId = this.state.threadId;
     const mode = this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual");
     if (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk)) {
       this.terminal.info(`Approved automatically: ${request.title}`);
@@ -2744,10 +2772,27 @@ export class EasyCodeApp {
       return true;
     }
 
-    if (request.allowPrompt === false) return false;
-
-    const decision = await this.terminal.approve(request);
-    if (request.signal?.aborted) return false;
+    let decision: import("./core/types.js").ApprovalDecision | undefined;
+    if (mode === "auto_approve") {
+      this.terminal.info(`Independent approval review: ${request.title}`);
+      const review = await this.reviewApproval(request);
+      this.threadStore.appendEvent(threadId, { type: "approval.reviewed", payload: { id: request.id, source: request.source, ...review } });
+      if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
+      if (review.decision !== "reject" && (review.decision !== "allow_prefix" || canGrantCommandPrefix(request.commandPrefix))) decision = review.decision;
+      else {
+        this.terminal.info(`Approval agent requires user decision: ${review.reason}`);
+        request = { ...request, description: `${request.description}\nApproval agent: ${review.reason}` };
+      }
+    }
+    if (!decision) {
+      if (request.allowPrompt === false) {
+        this.threadStore.appendEvent(this.state.threadId, { type: "approval.user_required", payload: { id: request.id, source: request.source } });
+        throw new Error("User approval is required but interactive approval is unavailable");
+      }
+      decision = await this.terminal.approve(request);
+    }
+    if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
+    this.threadStore.appendEvent(threadId, { type: "approval.decided", payload: { id: request.id, decision, source: request.source } });
     if (decision === "reject") {
       this.terminal.info("Command execution rejected.");
       return false;
@@ -2779,26 +2824,26 @@ export class EasyCodeApp {
 
   private requestSubagentApproval(
     request: ApprovalRequest,
-    _source: { agentId: string; taskId: string },
+    source: { agentId: string; taskId: string },
   ): Promise<boolean> {
-    if (request.signal?.aborted) return Promise.resolve(false);
-    // A background worker must never acquire stdin or stop/repaint the main
-    // terminal's activity line. It may consume a grant already made by the
-    // user for this parent Thread, but it cannot create or widen one. Even with
-    // --yes never gives a background child authority to manufacture a fresh
-    // high-risk grant. The OS sandbox is an additional boundary rather than a
-    // replacement for parent-owned approval authority.
-    return Promise.resolve(
-      this.commandExecutionMode === "unrestricted" ||
-      isCommandApprovalPrefixGranted(
-        this.state.commandApprovalPrefixes,
-        request.commandPrefix,
-      ) ||
-      (request.existingNetworkCommandPrefix !== undefined && isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.existingNetworkCommandPrefix)) ||
-      (request.network
-        ? autoApproveNetwork(this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual"), request.network.effect)
-        : autoApproveLocal(this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual"), request.risk)),
-    );
+    return this.requestToolApproval({ ...request, source, title: `[${source.agentId}] ${request.title}` });
+  }
+
+  private async reviewApproval(request: ApprovalRequest): Promise<import("./command/approval-agent.js").ApprovalReview> {
+    try {
+      const threadId = this.state.threadId;
+      const turnId = this.state.activeTurnId;
+      const provider = createProvider(this.effectiveConfig(), this.state.provider, this.config.approvalModel ?? this.state.model);
+      const task = this.state.messages.filter(message => message.role === "user").slice(-3).map(message => message.content).join("\n");
+      return await reviewCommandApproval(request, task, {
+        provider, budget: this.sharedTaskBudget(threadId), maxInputChars: this.config.limits.approvalInputChars,
+        maxOutputTokens: this.config.limits.approvalOutputTokens, timeoutMs: this.config.limits.approvalTimeoutMs,
+        onUsage: usage => this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
+          actor: "approval_agent", purpose: "command_approval", provider: provider.name, model: provider.model,
+          turnId, retry: false, usage,
+        } }),
+      });
+    } catch (error) { return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true }; }
   }
 
   private requireCurrentModelVision(): void {
@@ -2931,17 +2976,17 @@ export class EasyCodeApp {
         {
           id: "manual",
           label: "Manual approval",
-          detail: "Ask for every network operation and eligible local commands; saved prefixes apply",
+          detail: "Every new command asks you; thread permission prefixes apply. Disables orchestration when idle.",
         },
         {
           id: "auto_approve",
-          label: "Auto approve",
-          detail: "Auto-approve local commands and proven network reads; downloads/uploads/unknown networking ask",
+          label: "Approve for me",
+          detail: "Independent approval agent; rejected or unavailable reviews come to you",
         },
         {
           id: "unrestricted",
-          label: "No-prompt isolated execution",
-          detail: "Dangerous: no command or network approvals; environment isolation and Plan read-only remain",
+          label: "Full access",
+          detail: "No command sandbox or approval prompts; commands run with your system account permissions",
         },
       ],
       this.commandExecutionMode,
@@ -2951,13 +2996,21 @@ export class EasyCodeApp {
       return;
     }
 
+    if (this.trustedOuterSandbox === "harbor") {
+      this.terminal.info("Benchmark permissions are fixed: container full access, external networking disabled.");
+      return;
+    }
+    if (selected === "manual" && this.hasActiveOrchestration()) {
+      this.terminal.info("DAG/subagents have not finished. Manual approval cannot be selected until all work has ended; nothing was changed.");
+      return;
+    }
+
     if (selected === "unrestricted") {
       this.terminal.warning(
-        "Commands may change workspace files without individual prompts. Plan stays read-only, " +
-          "downloads, uploads and remote changes need no approval. Plan read-only, OS isolation and Benchmark network restrictions remain active.",
+        "FULL ACCESS: commands can read/write host files and use networking with your account privileges, without individual approval. Plan does not make commands read-only.",
       );
       const confirmed = await this.terminal.selectChoice(
-        "Enable no-prompt isolated execution?",
+        "Enable host full access without a command sandbox?",
         [
           {
             id: "cancel",
@@ -2967,25 +3020,35 @@ export class EasyCodeApp {
           {
             id: "confirm",
             label: "Yes, execute without individual prompts",
-            detail: "Workspace changes remain sandboxed but will not ask individually",
+            detail: "Host files and network become accessible; this is not sandboxed execution",
           },
         ],
         "cancel",
       );
       if (confirmed !== "confirm") {
-        this.terminal.info("No-prompt isolated execution was not enabled.");
+        this.terminal.info("Full access was not enabled.");
         return;
       }
     }
 
     const previousMode = this.commandExecutionMode;
+    // No await between recheck and commit: dispatch sees either old or new state.
+    if (selected === "manual" && this.hasActiveOrchestration()) {
+      this.terminal.info("DAG/subagents have not finished; wait until they finish before selecting manual approval.");
+      return;
+    }
     if ((previousMode === "unrestricted") !== (selected === "unrestricted")) {
       this.hostAccessEpoch += 1;
     }
+    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode, selected, orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled ?? this.config.orchestrationEnabled } });
     this.commandExecutionMode = selected;
+    if (selected === "manual") this.state.orchestrationEnabled = false;
+    this.dirty = true;
+    this.save();
     // An explicit interactive selection supersedes a startup --approval=ask|never
     // posture for this process. Mandatory boundaries apply in every mode.
     this.config.approvalPolicy = "safe";
+    if (selected !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
     // The session card is durable scrollback. Re-announcing it for an
     // in-process policy change leaves both the previous and new cards visible.
     // Update only the redrawable live UI; its danger footer reflects the new
@@ -2994,18 +3057,18 @@ export class EasyCodeApp {
     if (selected === "manual") {
       this.terminal.success(
         previousMode === "unrestricted"
-          ? "Individual command approval restored. Mandatory isolation remains active."
-          : "Command execution mode switched to manual approval.",
+          ? "Manual approval restored; orchestration disabled."
+          : "Manual approval enabled; orchestration disabled.",
       );
     } else if (selected === "auto_approve") {
       this.terminal.success(
         previousMode === "unrestricted"
-          ? "Auto approval is active inside permanent policy and workspace sandbox protections."
-          : "Command execution mode switched to auto approval. Permanent command denials remain active.",
+          ? "Independent approval agent enabled; default workspace sandbox restored."
+          : "Independent approval agent enabled; rejected actions will require your decision.",
       );
     } else {
       this.terminal.warning(
-        "ISOLATED NO-PROMPT: commands and networking run without approval, including uploads. Plan is read-only; Benchmark stays offline. Use /approval to change this posture.",
+        "FULL ACCESS: host command execution without sandbox or approvals. Plan commands may write files. Use /approval to change this mode.",
       );
     }
   }
@@ -3288,7 +3351,7 @@ export class EasyCodeApp {
       }
       throw error;
     }
-    this.subagentCoordinator.activateRestored(preparedAgentIds);
+    if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activateRestored(preparedAgentIds);
     return restored;
   }
 
@@ -3334,7 +3397,10 @@ export class EasyCodeApp {
     }
     if (recovery.recoveredStandaloneSubagents > 0) {
       this.terminal.info(
-        `Recovered ${recovery.recoveredStandaloneSubagents} child session(s) or durable result(s); active children continue from their persisted thread and environment.`,
+        `Recovered ${recovery.recoveredStandaloneSubagents} child session(s) or durable result(s); ` +
+          (this.commandExecutionMode === "manual"
+            ? "unfinished children remain paused. Use /approval to select independent approval or full access before continuing."
+            : "active children continue from their persisted thread and environment."),
       );
     }
     if (recovery.interruptedTurnRepaired) {
@@ -3353,7 +3419,13 @@ export class EasyCodeApp {
   }
 
   private orchestrationEnabled(): boolean {
-    return this.state.orchestrationEnabled ?? this.config.orchestrationEnabled;
+    return this.commandExecutionMode !== "manual" && (this.state.orchestrationEnabled ?? this.config.orchestrationEnabled);
+  }
+
+  private hasActiveOrchestration(): boolean {
+    return Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") ||
+      this.subagentCoordinator.hasUnfinished(this.state.threadId) || this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
+      this.hasRunningCommands();
   }
 
   private sharedTaskBudget(threadId: string): TaskBudget {
@@ -3694,6 +3766,7 @@ export class EasyCodeApp {
       thinkingEffort: this.state.thinkingEffort,
       approvalPolicy: this.config.approvalPolicy,
       commandExecutionMode: this.commandExecutionMode,
+      commandEnvironment: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "sandbox",
       contextTokens: this.contextManager.estimateShortTermTokens(this.state),
     };
   }
@@ -3789,7 +3862,7 @@ export class EasyCodeApp {
         workspace: this.workspace.root,
         approvalPolicy: this.config.approvalPolicy,
         commandExecutionMode: this.commandExecutionMode,
-        autoApprovePrompts: this.commandExecutionMode === "auto_approve",
+        independentApprovalAgent: this.commandExecutionMode === "auto_approve",
         unrestrictedCommands: this.commandExecutionMode === "unrestricted",
         database: this.storage.databasePath,
       })}\n`,
@@ -3833,7 +3906,7 @@ export class EasyCodeApp {
           tool.name === "read_file" ||
           tool.name === "read_image" ||
           tool.name === "search_files" ||
-          (tool.name === "run_command" && process.platform === "linux") ||
+          ["run_command", "start_command", "poll_command", "cancel_command", "create_file", "update_file", "delete_file"].includes(tool.name) ||
           tool.name === "compact_context" ||
           tool.name === "manage_memory";
       return {
@@ -3859,7 +3932,7 @@ export class EasyCodeApp {
       workspace,
       undefined,
       this.trustedOuterSandbox === "harbor"
-        ? new HarborSandboxBackend(workspace, [this.config.configDir, this.config.dataDir, this.config.cacheDir])
+        ? new BenchmarkContainerBackend()
         : new AnthropicSandboxBackend(workspace, {
         sensitiveReadPaths: [
           this.config.configDir,
@@ -3907,23 +3980,23 @@ export class EasyCodeApp {
         mode: this.state.mode,
         approvalPolicy: this.config.approvalPolicy,
         commandExecutionMode: this.commandExecutionMode,
-        autoApproveLocalAndReadNetwork: this.commandExecutionMode === "auto_approve",
-        noPromptIsolatedExecution: this.commandExecutionMode === "unrestricted",
+        independentApprovalAgent: this.commandExecutionMode === "auto_approve",
+        fullAccess: this.commandExecutionMode === "unrestricted",
         threadExecutableGrants: this.state.commandApprovalPrefixes.map((prefix, index) => ({ index: index + 1, prefix: formatCommandApprovalPrefix(prefix) })),
         osSandbox: {
-          enabled: true,
+          enabled: Boolean(this.trustedOuterSandbox) || this.commandExecutionMode !== "unrestricted",
           failClosed: true,
-          backend: this.trustedOuterSandbox === "harbor" ? "harbor-landlock-seccomp" : process.platform === "win32"
+          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : process.platform === "win32"
               ? "anthropic-srt-windows-alpha"
               : process.platform === "darwin"
                 ? "anthropic-srt-macos-seatbelt"
                 : "anthropic-srt-linux-bubblewrap",
-          filesystem: this.state.mode === "plan" ? "workspace-read" : "workspace-write",
-          network: this.trustedOuterSandbox === "harbor" ? "benchmark deny-all; catalog artifact broker only" : "per-command broker; manual asks for all; auto asks for download/upload/unknown; dangerous never asks",
+          filesystem: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "workspace-write",
+          network: this.trustedOuterSandbox ? "offline worker: no external networking" : this.commandExecutionMode === "unrestricted" ? "host network, no approval" : "per-command approval and network gate; explicit host escalation uses host networking",
           setup: "easy-code sandbox doctor | easy-code sandbox setup",
         },
-        commandBoundary: "structured argv; mandatory OS sandbox; Plan read-only; explicit network prefix grants bind executable bytes and argv tokens; uncertain cleanup quarantines the workspace",
-        npmInstall: "downloads require approval or a network prefix grant except in dangerous mode; standard npm installs disable lifecycle scripts",
+        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; workspace defaults to OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark always stays container-confined",
+        npmInstall: "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
         subagents:
           "main agent only; Code mode; DAG-bound or standalone isolated tasks; parent effort limits none/low=2, medium=4, high=8; no nested children; shared mutations serialized",
         note: "File tools remain workspace-scoped in every mode. Failed isolation never falls back to host execution.",
@@ -4003,9 +4076,9 @@ export class EasyCodeApp {
 
   private prompt(): string {
     const shortTermTokens = this.contextManager.estimateShortTermTokens(this.state);
-    const text = `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE ISOLATED NO-PROMPT " : "EASY CODE "}` +
+    const text = `${this.commandExecutionMode === "unrestricted" ? "! EASY CODE FULL ACCESS " : "EASY CODE "}` +
       `[${this.state.mode} ${this.state.provider}/${this.state.model} ` +
-      `thinking:${this.state.thinkingEffort} DAG/agents:${this.orchestrationEnabled() ? "on" : "off"} context:${formatTokenCount(shortTermTokens)}] > `;
+      `thinking:${this.state.thinkingEffort} approval:${this.commandExecutionMode === "auto_approve" ? "agent" : this.commandExecutionMode} env:${this.trustedOuterSandbox ? "container/offline" : this.commandExecutionMode === "unrestricted" ? "host" : "sandbox"} DAG/agents:${this.orchestrationEnabled() ? "on" : "off"} context:${formatTokenCount(shortTermTokens)}] > `;
     return this.commandExecutionMode === "unrestricted"
       ? chalk.bold.red(text)
       : chalk.bold.cyan(text);

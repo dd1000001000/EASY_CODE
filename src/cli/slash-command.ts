@@ -76,7 +76,7 @@ EASY CODE commands
   /model <model>             Switch the current provider's model
   /model ${PROVIDER_USAGE} <id>
                               Switch both provider and model
-  /approval                 Select manual, auto-approved, or isolated no-prompt execution
+  /approval                 Select user approval, independent approval agent, or full host access
   /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
   /status                    Show current status
   /workspace                 Show workspace summary

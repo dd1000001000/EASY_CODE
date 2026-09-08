@@ -148,7 +148,7 @@ export class ManageTasksTool implements AgentTool {
     try {
       const parsed = this.inputSchema.parse(input);
       if (parsed.action === "create") {
-        if (context.orchestrationEnabled === false) throw new Error("DAG creation is disabled. The user can enable it with /orchestration.");
+        if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("DAG creation requires orchestration and at least independent approval. Enable with /orchestration.");
         if (context.limits && parsed.tasks.length > context.limits.maxDagNodes) {
           throw new Error(`DAG exceeds the configured ${context.limits.maxDagNodes}-node limit`);
         }

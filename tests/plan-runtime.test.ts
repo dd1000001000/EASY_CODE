@@ -425,7 +425,7 @@ describe("model-controlled plan flow", () => {
     ).run(current, "Please decide how to handle this feature", options());
 
     assert.equal(requests, 2);
-    assert.deepEqual(mainTools, ["propose_plan"]);
+    assert.deepEqual(mainTools, ["propose_plan", "create_file"]);
     assert.deepEqual(modes, ["auto", "plan"]);
     assert.equal(current.mode, "auto");
     assert.equal(result.reason, "planned");

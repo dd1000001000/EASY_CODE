@@ -44,6 +44,7 @@ interface ApprovalHarness {
   readonly state: SessionState;
   request(request: ApprovalRequest): Promise<boolean>;
   setMode(mode: CommandExecutionMode): void;
+  setReview(decision: ApprovalDecision): void;
   close(): void;
 }
 
@@ -78,6 +79,7 @@ function approvalHarness(threadId: string): ApprovalHarness {
     threadStore: { value: threads },
     dirty: { value: false, writable: true },
     commandExecutionMode: { value: "manual", writable: true },
+    reviewApproval: { value: async () => ({ decision: "allow_once", reason: "Test approval agent" }), writable: true },
   });
   const internal = app as unknown as {
     requestToolApproval(request: ApprovalRequest): Promise<boolean>;
@@ -90,6 +92,7 @@ function approvalHarness(threadId: string): ApprovalHarness {
     state,
     request: (request) => internal.requestToolApproval(request),
     setMode: (mode) => { Object.defineProperty(app, "commandExecutionMode", { value: mode }); },
+    setReview: (decision) => { Object.defineProperty(app, "reviewApproval", { value: async () => ({ decision, reason: "Test approval agent" }) }); },
     close: () => {
       terminal.close();
       storage.close();
@@ -99,13 +102,13 @@ function approvalHarness(threadId: string): ApprovalHarness {
 }
 
 describe("application command approval decisions", () => {
-  it("automatically approves routine local work but prompts for high-risk local effects", async () => {
+  it("routes all new commands through the selected approval authority regardless of static risk", async () => {
     const harness = approvalHarness("local_risk_modes");
     try {
       for (const mode of ["manual", "auto_approve", "unrestricted"] as const) {
         harness.setMode(mode);
         for (const risk of ["read", "workspace", "install", "system", "destructive", "external"] as const) {
-          const automatic = mode === "unrestricted" || mode === "auto_approve" && ["read", "workspace", "install"].includes(risk);
+          const automatic = mode !== "manual";
           const before = harness.terminal.requests.length;
           assert.equal(await harness.request({ ...approvalRequest(), risk }), automatic, `${mode}/${risk}`);
           assert.equal(harness.terminal.requests.length - before, automatic ? 0 : 1);
@@ -113,7 +116,7 @@ describe("application command approval decisions", () => {
       }
     } finally { harness.close(); }
   });
-  it("does not let Auto/--yes bypass network writes and lets dangerous mode bypass every approval", async () => {
+  it("uses the independent approval outcome for every network effect and bypasses it in full access", async () => {
     const harness = approvalHarness("network_mode_app");
     try {
       const prefix = networkCommandApprovalPrefix(process.execPath, [], "a".repeat(64));
@@ -121,7 +124,7 @@ describe("application command approval decisions", () => {
         harness.setMode(mode);
         for (const effect of ["read", "download", "upload", "unknown"] as const) {
           const before = harness.terminal.requests.length;
-          const automatic = mode === "unrestricted" || mode === "auto_approve" && effect === "read";
+          const automatic = mode !== "manual";
           assert.equal(await harness.request({ ...approvalRequest(prefix), network: { effect } }), automatic);
           assert.equal(harness.terminal.requests.length - before, automatic ? 0 : 1);
         }
@@ -135,7 +138,7 @@ describe("application command approval decisions", () => {
     try {
       const prefix = networkCommandApprovalPrefix(process.execPath, [], "a".repeat(64));
       const request: ApprovalRequest = { ...approvalRequest(prefix), network: { effect: "download" } };
-      assert.equal(await harness.request({ ...request, allowPrompt: false }), false);
+      await assert.rejects(() => harness.request({ ...request, allowPrompt: false }), /interactive approval is unavailable/);
       assert.equal(harness.terminal.requests.length, 0);
       harness.terminal.decisions.push("allow_prefix");
       assert.equal(await harness.request(request), true);
@@ -143,6 +146,19 @@ describe("application command approval decisions", () => {
       assert.equal(await harness.request({ ...approvalRequest(process.execPath), existingNetworkCommandPrefix: prefix }), true);
       assert.equal(harness.terminal.requests.length, 1);
       assert.deepEqual(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes, [prefix]);
+    } finally { harness.close(); }
+  });
+  it("escalates an independent rejection to the user and journals the override", async () => {
+    const harness = approvalHarness("agent_reject_override");
+    try {
+      harness.setMode("auto_approve"); harness.setReview("reject");
+      harness.terminal.decisions.push("allow_prefix");
+      assert.equal(await harness.request(approvalRequest()), true);
+      assert.equal(harness.terminal.requests.length, 1);
+      assert.match(harness.terminal.requests[0]!.description, /Test approval agent/);
+      assert.equal(await harness.request(approvalRequest()), true);
+      assert.equal(harness.terminal.requests.length, 1);
+      assert.equal(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes.length, 1);
     } finally { harness.close(); }
   });
   it("allows once without remembering and asks again next time", async () => {

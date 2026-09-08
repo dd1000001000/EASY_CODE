@@ -13,6 +13,7 @@
 #include <linux/seccomp.h>
 #include <linux/securebits.h>
 #include <signal.h>
+#include <semaphore.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,8 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/vfs.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -44,6 +47,7 @@
 #define WRITE_ACCESS ((1ULL << 1) | (0x3ffULL << 4) | (1ULL << 14))
 #define FILE_ACCESS ((1ULL << 0) | (1ULL << 1) | (1ULL << 2) | (1ULL << 14))
 #define MAX_FIELDS 32768
+#define SHM_ACCESS ((1ULL << 1) | (1ULL << 2) | (1ULL << 3) | (1ULL << 5) | (1ULL << 8) | (1ULL << 13) | (1ULL << 14))
 struct ruleset_attr { uint64_t fs, net, scoped; };
 struct path_attr { uint64_t access; int32_t parent_fd; } __attribute__((packed));
 static volatile sig_atomic_t stopping;
@@ -73,6 +77,14 @@ static void check_kernel(void) {
     if (geteuid() != 0 || access("/.dockerenv", F_OK)) { errno = EPERM; die("Harbor requires root inside Docker"); }
     int abi = syscall(SYS_landlock_create_ruleset, NULL, 0, 1);
     if (abi < 6) { errno = ENOTSUP; die("Harbor requires Landlock ABI 6 (including signal scoping)"); }
+    struct stat st; struct statfs fs; struct statvfs vfs;
+    if (lstat("/dev/shm", &st) || !S_ISDIR(st.st_mode) || statfs("/dev/shm", &fs) ||
+        fs.f_type != 0x01021994 || statvfs("/dev/shm", &vfs) ||
+        !(vfs.f_flag & ST_NOSUID) || !(vfs.f_flag & ST_NODEV) || !(vfs.f_flag & ST_NOEXEC) ||
+        (vfs.f_flag & ST_RDONLY) || !vfs.f_frsize || !vfs.f_blocks ||
+        vfs.f_blocks > (256ULL * 1024 * 1024) / vfs.f_frsize) {
+        errno = EPERM; die("Harbor requires bounded noexec,nodev,nosuid shared-memory tmpfs (at most 256 MiB)");
+    }
 }
 
 static int ruleset(void) {
@@ -217,7 +229,8 @@ static int doctor(void) {
     check_kernel();
     pid_t child = fork(); if (child < 0) die("doctor fork");
     if (!child) {
-        int fd = ruleset(); /* Empty filesystem allowlist, and no network. */
+        int fd = ruleset(); /* Only regular shared-memory IPC files, no network. */
+        rule(fd, "/dev/shm", SHM_ACCESS);
         confine(fd);
         if (socket(AF_INET, SOCK_STREAM, 0) != -1 || errno != EPERM) _exit(1);
         if (socket(AF_INET6, SOCK_DGRAM, 0) != -1 || errno != EPERM) _exit(2);
@@ -230,10 +243,14 @@ static int doctor(void) {
         close(pair[0]); close(pair[1]);
         if (socketpair(AF_INET, SOCK_STREAM, 0, pair) != -1 || errno != EPERM) _exit(8);
         if (socketpair(AF_UNIX, SOCK_STREAM, 1, pair) != -1 || errno != EPERM) _exit(9);
+        char name[96]; snprintf(name, sizeof(name), "/easy-code-doctor-%d-%ld", getpid(), (long)time(NULL));
+        sem_t *sem = sem_open(name, O_CREAT | O_EXCL, 0600, 0);
+        if (sem == SEM_FAILED) { perror("Harbor POSIX semaphore probe"); _exit(10); }
+        if (sem_unlink(name) || sem_post(sem) || sem_wait(sem) || sem_close(sem)) _exit(11);
         _exit(0);
     }
     int s; if (waitpid(child, &s, 0) != child || !WIFEXITED(s) || WEXITSTATUS(s)) return 78;
-    puts("Harbor sandbox ready: Landlock filesystem/signal isolation; local AF_UNIX socketpairs allowed, network sockets denied; no nested namespaces.");
+    puts("Harbor sandbox ready: Landlock filesystem/signal isolation; local AF_UNIX socketpairs and bounded shared-memory IPC allowed, network sockets denied; no nested namespaces.");
     return 0;
 }
 

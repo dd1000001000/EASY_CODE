@@ -57,6 +57,8 @@ export interface RunCommandInput {
   normalizationWarnings?: string[];
   timeoutMs?: number;
   reason?: string;
+  /** Explicit per-command escalation, reviewed together with the exact argv. */
+  executionScope?: "workspace" | "host";
 }
 
 /** Canonical flat input for a bounded background-command status poll. */

@@ -1,5 +1,5 @@
-Runtime command posture: isolated execution without individual prompts (legacy ID: unrestricted).
-- Command and network approval prompts are disabled, including downloads, uploads and unknown programs. Code-mode command policy denials are lifted; this does not expand the user's task or authorize unrelated destructive actions.
-- Plan is always read-only. Filesystem confinement, environment filtering, process supervision and Benchmark command-network denial remain mandatory. A failed sandbox never falls back to host execution.
-- File tools and command working directories remain workspace-scoped. Absolute executable paths are accepted; inherited credentials and unrestricted host filesystem access are not granted.
-- Supervised background work, bounded output, cancellation, and process cleanup remain mandatory. Unconfirmed cleanup quarantines further mutations; preserve the execution outcome and do not rerun a possibly executed command.
+Runtime command mode: full access.
+- In ordinary CLI, commands run on the host without the EASY CODE command sandbox or individual approval. Use only permissions needed for the user's task. Plan commands may write files; direct file-editing tools should still be avoided while planning.
+- In Benchmark, full access is ONLY inside the task container. External networking is disabled and Runtime/credentials live outside that container. No command can enable host access by requesting executionScope=host.
+- Benchmark commands serialize across all agents; after each terminal result all remaining processes are stopped, while files persist. Put server/client experiments in one command; do not keep a server running while waiting to dispatch another command.
+- Timeouts, bounded output, cancellation and process cleanup still apply. Do not rerun a command with unknown execution or cleanup status.

@@ -4,7 +4,7 @@ export type { PromptBundleBinding } from "../prompt-bundle/types.js";
 
 export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
-export type ModelUsageActor = AgentRole | "reviewer";
+export type ModelUsageActor = AgentRole | "reviewer" | "approval_agent";
 export type ProviderName = "qwen" | "deepseek" | "glm" | "glm-coding-plan";
 export type ApprovalPolicyName = "safe" | "ask" | "never";
 /** Process-local command posture selected by the user from /approval. */
@@ -101,7 +101,8 @@ export type ModelUsagePurpose =
   | "auto_route"
   | "agent_step"
   | "context_compaction"
-  | "progress_review";
+  | "progress_review"
+  | "command_approval";
 
 /** Durable accounting metadata for one completed provider response. */
 export interface ModelUsageRecord {
@@ -174,6 +175,7 @@ export interface ProviderConfig {
 }
 
 export interface EasyCodeConfig {
+  approvalModel?: string;
   provider: ProviderName;
   mode: AgentMode;
   thinkingEffort: ThinkingEffort;
@@ -353,6 +355,8 @@ export interface ApprovalRequest {
   existingNetworkCommandPrefix?: string;
   /** Runtime cancellation of a pending approval (e.g. command timeout). */
   signal?: AbortSignal;
+  source?: { agentId?: string; taskId?: string };
+  command?: { executable: string; args: string[]; cwd: string; scope: "workspace" | "host" | "container"; network: boolean };
 }
 
 export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
@@ -366,6 +370,7 @@ export interface ToolContext {
   progressExperiment?: { incidentId: string; report: import("../progress/types.js").ProgressReviewReportSnapshot };
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   orchestrationEnabled?: boolean;
+  isOrchestrationEnabled?: () => boolean;
   /** Interrupt waiting for status without canceling the underlying process. */
   waitSignal?: AbortSignal;
   /** Remaining model-facing tool payload capacity, issued by Runtime. */

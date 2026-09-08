@@ -2,7 +2,8 @@ import type { ApprovalRequest, CommandExecutionMode, ToolContext } from "../core
 
 /** One policy shared by command Runtime, file-download tool and approval UI. */
 export function autoApproveNetwork(mode: CommandExecutionMode | undefined, effect: NonNullable<ApprovalRequest["network"]>["effect"]): boolean {
-  return mode === "unrestricted" || mode === "auto_approve" && effect === "read";
+  void effect;
+  return mode === "unrestricted";
 }
 
 export async function requestNetworkApproval(context: ToolContext, request: ApprovalRequest): Promise<boolean> {

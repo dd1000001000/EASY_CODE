@@ -225,7 +225,7 @@ describe("/orchestration", () => {
   it("uses the standard picker, keeps reviewer enabled and persists the selection", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     const choicesSeen: string[][] = [];
-    const selections: Array<string | undefined> = ["on", undefined, "off"];
+    const selections: Array<string | undefined> = ["on", "enable", undefined, "off"];
     const displayed: Array<boolean | undefined> = [];
     fixture.terminal.selectChoice = async (_title, choices) => {
       choicesSeen.push(choices.map((choice) => choice.id));
@@ -240,7 +240,7 @@ describe("/orchestration", () => {
       assert.match(fixture.output(), /"orchestrationEnabled": true/u);
       assert.match(fixture.output(), /"reviewerEnabled": true/u);
       await fixture.app.handleSlashCommand("/orchestration");
-      assert.deepEqual(choicesSeen, [["off", "on"], ["off", "on"], ["off", "on"]]);
+      assert.deepEqual(choicesSeen, [["off", "on"], ["cancel", "enable"], ["off", "on"], ["off", "on"]]);
       assert.ok(displayed.includes(true));
       assert.equal(displayed.at(-1), false);
       await assert.rejects(fixture.app.handleSlashCommand("/orchestration invalid"), /Usage/u);
@@ -295,14 +295,13 @@ describe("/approval", () => {
       assert.deepEqual(choiceIds[1], ["cancel", "confirm"]);
       assert.deepEqual(choiceIds[3], ["cancel", "confirm"]);
       assert.equal(
-        titles.filter((title) => title === "Enable no-prompt isolated execution?").length,
+        titles.filter((title) => title === "Enable host full access without a command sandbox?").length,
         2,
       );
-      assert.match(fixture.output(), /Commands may change workspace files/u);
-      assert.match(fixture.output(), /OS isolation and Benchmark network restrictions remain active/u);
-      assert.match(fixture.output(), /uploads and remote changes need no approval/u);
-      assert.match(fixture.output(), /ISOLATED NO-PROMPT/u);
-      assert.match(fixture.output(), /Auto approval is active inside permanent policy/u);
+      assert.match(fixture.output(), /commands can read\/write host files/u);
+      assert.match(fixture.output(), /without sandbox or approvals/u);
+      assert.match(fixture.output(), /FULL ACCESS/u);
+      assert.match(fixture.output(), /Independent approval agent enabled/u);
       assert.deepEqual(sessionAnnouncements, [false, false, false]);
       await assert.rejects(
         fixture.app.handleSlashCommand("/approval unrestricted"),
@@ -1058,7 +1057,7 @@ describe("thread leases", () => {
       assert.equal(pauseCalls, 1);
       assert.equal(discardCalls, 1);
       assert.deepEqual(restored, [assignment.agentId]);
-      assert.deepEqual(activated, [[assignment.agentId]]);
+      assert.deepEqual(activated, []); // Manual startup preserves pending children without execution.
     } finally {
       internals.threadStore.releaseThreadLease = originalRelease as never;
       Object.defineProperty(fixture.app, "subagentCoordinator", {

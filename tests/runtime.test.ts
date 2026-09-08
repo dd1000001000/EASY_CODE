@@ -762,7 +762,7 @@ describe("AgentRuntime", () => {
     assert.doesNotMatch(secondRequestToolContent, new RegExp(uiOnlyMarker, "u"));
   });
 
-  it("exposes only plan-safe tools and automatic memory maintenance in plan mode", async () => {
+  it("exposes planning/file/command tools without DAG creation in Plan mode", async () => {
     let seenToolNames: string[] = [];
     const provider: ModelProvider = {
       name: "qwen",
@@ -846,7 +846,8 @@ describe("AgentRuntime", () => {
     assert.deepEqual(seenToolNames, [
       "read_file",
       "read_image",
-      "run_command",
+      "create_file", "update_file", "delete_file",
+      "run_command", "start_command", "poll_command", "cancel_command",
       "propose_plan",
       "manage_memory",
     ]);

@@ -25,6 +25,7 @@ export interface UISessionInfo {
   readonly thinkingEffort: ThinkingEffort;
   readonly approvalPolicy?: ApprovalPolicyName;
   readonly commandExecutionMode?: CommandExecutionMode;
+  readonly commandEnvironment?: "sandbox" | "host" | "container";
   /** Current context size when the provider exposes token accounting. */
   readonly contextTokens?: number;
   /** Model context limit when it is known. */

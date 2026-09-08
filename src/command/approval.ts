@@ -1,9 +1,11 @@
 import path from "node:path";
 import { reusableExecutableGrant } from "./security.js";
+import { isCommandGrant, decodeCommandGrant, commandGrantMatches } from "./command-grant.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
 
 /** Keep Thread checkpoints and approval prompts bounded even in long sessions. */
 export const MAX_COMMAND_APPROVAL_PREFIXES = 128;
-export const MAX_COMMAND_APPROVAL_PREFIX_CHARS = 4_096;
+export const MAX_COMMAND_APPROVAL_PREFIX_CHARS = 16_384;
 
 const UNSAFE_PREFIX_CHARACTERS =
   /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u;
@@ -29,6 +31,7 @@ export function networkCommandApprovalPrefix(executable: string, args: string[],
 }
 
 export function canGrantCommandPrefix(prefix: string): boolean {
+  if (isCommandGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
   // Legacy UI labels may be noncanonical; the application validates before
   // persisting any actual grant. Encoded network capabilities must parse here.
   if (!prefix.startsWith(NETWORK_PREFIX)) return reusableExecutableGrant(prefix);
@@ -37,12 +40,14 @@ export function canGrantCommandPrefix(prefix: string): boolean {
 }
 
 export function formatCommandApprovalPrefix(prefix: string): string {
+  if (isCommandGrant(prefix)) { const v = decodeCommandGrant(prefix); return redactSensitiveInformation(`${JSON.stringify([v.executable, ...(v.exact ? [] : v.args)])} (${v.exact ? `exact argv SHA256=${v.args[0]}` : "argv prefix"}; ${v.scope}; cwd=${JSON.stringify(v.cwd)}; network=${v.network}; script contents may change)`); }
   if (!prefix.startsWith(NETWORK_PREFIX)) return JSON.stringify([prefix]);
   const decoded = decodeNetworkPrefix(prefix, process.platform);
   return `${JSON.stringify([decoded.executable, ...decoded.args])} (network prefix: includes downloads, uploads and remote changes; same executable bytes)`;
 }
 
 export function commandPrefixApprovalLabel(prefix: string): string {
+  if (isCommandGrant(prefix)) return `Yes, allow this permission prefix for this Thread and its children: ${formatCommandApprovalPrefix(prefix)}`;
   return prefix.startsWith(NETWORK_PREFIX)
     ? `Yes, authorize this network prefix for the Thread: ${formatCommandApprovalPrefix(prefix)}`
     : `Yes, authorize this exact executable for the Thread: ${formatCommandApprovalPrefix(prefix)}`;
@@ -77,6 +82,7 @@ export function normalizeCommandApprovalPrefix(
   }
 
   const selected = approvalPlatform(platform);
+  if (isCommandGrant(value)) { decodeCommandGrant(value); return value; }
   if (value.startsWith(NETWORK_PREFIX)) {
     const normalized = NETWORK_PREFIX + Buffer.from(JSON.stringify(decodeNetworkPrefix(value, platform))).toString("base64url");
     if (normalized.length > MAX_COMMAND_APPROVAL_PREFIX_CHARS) throw new Error("Network approval prefix is too long");
@@ -133,6 +139,7 @@ export function isCommandApprovalPrefixGranted(
 ): boolean {
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
+  if (isCommandGrant(candidate)) return approved.filter(isCommandGrant).some(p => commandGrantMatches(p, candidate));
   if (candidate.startsWith(NETWORK_PREFIX)) {
     const requested = decodeNetworkPrefix(candidate, platform);
     return approved.filter(p => p.startsWith(NETWORK_PREFIX)).some(p => {
@@ -152,7 +159,7 @@ export function grantCommandApprovalPrefix(
 ): string[] {
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
-  if (!candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
+  if (!isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
   if (approved.some((prefix) => prefix === candidate)) return approved;
   if (approved.length >= MAX_COMMAND_APPROVAL_PREFIXES) {
     throw new Error(`Command approval prefix limit is ${MAX_COMMAND_APPROVAL_PREFIXES}`);
