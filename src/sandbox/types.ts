@@ -5,6 +5,7 @@ import type {
 } from "../command/types.js";
 
 export type SandboxBackendName =
+  | "harbor-landlock"
   | "anthropic-srt-macos"
   | "anthropic-srt-linux"
   | "anthropic-srt-windows"
@@ -26,6 +27,8 @@ export interface PreparedCommand {
   metadata: SandboxExecutionMetadata;
   /** Private fd 3, not inherited by model-controlled target processes. */
   controlPipe?: boolean;
+  /** Linux trusted subreaper handles SIGTERM before Runtime's hard deadline. */
+  cooperativeTermination?: boolean;
   cleanup(): Promise<void>;
 }
 

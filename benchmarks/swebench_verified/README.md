@@ -186,10 +186,11 @@ its declared evaluation dependencies. During model-controlled EASY CODE
 execution, Harbor temporarily switches the container to an outbound allowlist
 containing only the pinned provider host (`open.bigmodel.cn`). Direct access to
 GitHub, package registries, and other public hosts is blocked for the evaluated
-agent. The inner command sandbox also denies all command networking, including
-the provider host. Setup installs bubblewrap/socat/ripgrep and must pass
-`easy-code sandbox doctor`; unsupported nested namespaces fail closed, never
-falling back to host execution. Do not grant privileged Docker or host networking.
+agent. The Harbor Landlock/seccomp command backend also denies all command
+networking, including the provider host. Setup compiles the trusted supervisor
+and must pass the Harbor-specific `easy-code sandbox doctor`; unsupported kernel
+enforcement fails closed without requiring nested namespaces. Do not grant
+privileged Docker or host networking.
 After a returned agent process, the adapter restores the verifier baseline only
 when no command lease or cleanup quarantine remains. Timeout or unknown cleanup
 keeps egress restricted. Prefer dependencies preinstalled in trusted setup;
@@ -198,8 +199,8 @@ missing agent-side dependencies never open an unrestricted networking exception.
 EASY CODE's per-task data directory is `/logs/agent/easy-code-data`, outside
 `/testbed` and inside the Harbor job artifacts.
 `EASY_CODE_OUTER_SANDBOX=harbor` tells EASY CODE that the disposable Harbor
-container is the outer isolation boundary; it does not disable the inner
-command sandbox. Do not set that variable for normal host use.
+container is the outer isolation boundary and selects the dedicated, still
+kernel-enforced command backend. Do not set that variable for normal host use.
 
 The launcher-managed checkpoint and embedding-model paths are not added to the
 Agent process environment inside the container. They do remain in Harbor's host
@@ -310,6 +311,43 @@ with the lower-level script or `--root` with the integrated command to choose
 a different directory on F:.
 
 ## Filtering and reproducibility
+
+### Harbor command isolation
+
+The trusted adapter installs and compiles `scripts/harbor-sandbox.c` as the
+root-owned `/opt/easy-code-harbor/harbor-sandbox`. It sets
+`EASY_CODE_OUTER_SANDBOX=harbor` **before** `sandbox doctor`; the same opt-in
+selects `HarborSandboxBackend` during command execution. An ordinary CLI does
+not use this backend. A bare Docker marker does not activate it.
+
+This is not a host-execution fallback. Docker remains the outer boundary;
+Landlock ABI 6 or later enforces filesystem and signal isolation without nested
+namespaces, and a seccomp filter denies all target sockets (including DNS, TCP,
+UDP, IPv6 and Unix sockets), io_uring, capability changes and namespace creation.
+No Docker privileged mode or added `SYS_ADMIN` capability is required. Missing
+kernel support or an untrusted helper fails the installation before model use.
+
+Only the trusted Runtime can use Harbor's pinned provider-host allowlist. Model
+commands cannot use even that endpoint, including in dangerous approval mode.
+Plan remains read-only. Trusted installation and final verifier dependency setup
+are separate phases; public verifier networking is restored only after clean
+command leases and no quarantine have been confirmed.
+
+The supervisor drops target capabilities, closes inherited descriptors and uses
+a private control pipe. As a subreaper it kills and reaps remaining descendants,
+including double-fork/setsid processes, on normal exit, timeout or cancellation.
+Unconfirmed cleanup quarantines execution and prevents network restoration.
+
+Limitations: commands cannot use sockets even for local test servers or socket-
+based multiprocessing. Metadata-changing chmod/chown/xattr syscalls are denied.
+Protected Git/Runtime metadata in the disposable workspace is made non-writable
+to capability-less targets; the trusted root Runtime can still update it.
+Removal/rename of direct entries at protected ancestor directories is restricted;
+ordinary in-place source writes and operations inside unprotected subdirectories
+remain available. These are explicit isolation tradeoffs, not model/API errors.
+
+The no-model integration test is `scripts/smoke-harbor-sandbox.mjs`, run inside a
+disposable Docker container with the compiled helper, Node, Python and Git.
 
 Harbor's task names include an organization prefix. A valid exact filter is:
 

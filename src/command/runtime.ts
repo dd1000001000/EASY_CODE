@@ -664,6 +664,13 @@ export class CommandRuntime {
             forceTermination();
           });
         }
+      } else if (prepared.cooperativeTermination && process.platform === "linux" && !protocolError) {
+        if (!cooperativeStop) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          cleanupDeadline = setTimeout(forceTermination, 15000);
+          cooperativeStop = Promise.resolve();
+          if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
+        }
       } else forceTermination();
     };
     let timeoutTimer: NodeJS.Timeout | undefined;

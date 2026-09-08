@@ -167,9 +167,10 @@ export const SWE_BENCH_VERIFIED_50 = Object.freeze({
 export type TrustedOuterSandbox = "harbor";
 
 /**
- * The benchmark may skip EASY CODE's nested OS sandbox only when Harbor
- * explicitly requests it from inside a Linux Docker container. The opt-in is
- * intentionally environment-only and is not exposed as a general CLI flag.
+ * Select the dedicated Landlock/seccomp backend (not unconfined execution)
+ * only when Harbor explicitly requests it inside a Linux Docker container.
+ * The backend additionally verifies its root-owned helper and kernel support.
+ * This opt-in is environment-only, not a general CLI flag.
  */
 export function resolveHarborOuterSandbox(
   env: Readonly<Record<string, string | undefined>> = process.env,

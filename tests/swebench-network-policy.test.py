@@ -15,6 +15,45 @@ exec(compile(ast.Module(body=[method], type_ignores=[]), str(SOURCE), "exec"), n
 restore = namespace[method.name]
 
 
+class DockerFixture:
+    async def upload_file(self, *args):
+        pass
+
+    async def upload_dir(self, *args):
+        pass
+
+
+install_node = next(node for node in agent.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "install")
+install_namespace = {"BaseEnvironment": object, "EasyCodeBenchmarkDockerEnvironment": DockerFixture, "shlex": shlex,
+                     "_REMOTE_PACKAGE": "/tmp/package.tgz", "_REMOTE_MODEL_DIR": "/tmp/model", "_REMOTE_CACHE_DIR": "/tmp/cache"}
+exec(compile(ast.Module(body=[install_node], type_ignores=[]), str(SOURCE), "exec"), install_namespace)
+install = install_namespace["install"]
+
+
+class InstallationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rejects_non_managed_environment_before_any_execution(self):
+        with self.assertRaisesRegex(RuntimeError, "trusted Harbor Docker"):
+            await install(SimpleNamespace(), object())
+
+    async def test_install_selects_same_harbor_preflight_as_runtime(self):
+        commands = []
+
+        async def execute(*args, **kwargs):
+            commands.append(kwargs["command"])
+            return SimpleNamespace(return_code=0)
+
+        owner = SimpleNamespace(exec_as_root=execute, _package_path="package", _model_directory="model",
+                                _bash=lambda script: script, _record_output=lambda *args: None,
+                                _require_success=lambda *args: None)
+        await install(owner, DockerFixture())
+        script = commands[-1]
+        self.assertIn("harbor-sandbox.c", script)
+        self.assertIn("-Wall -Wextra -Werror", script)
+        self.assertLess(script.index("export EASY_CODE_OUTER_SANDBOX=harbor"), script.index("easy-code sandbox doctor"))
+        self.assertNotIn("Mandatory inner sandbox", script)
+        self.assertNotIn("--privileged", script)
+
+
 class NetworkRestorationTests(unittest.IsolatedAsyncioTestCase):
     async def check(self, result, error=None):
         calls = []
@@ -23,6 +62,7 @@ class NetworkRestorationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("command-leases", kwargs["command"])
             self.assertIn("command-quarantine", kwargs["command"])
             self.assertEqual(kwargs["timeout_sec"], 30)
+            self.assertEqual(kwargs["user"], "root")
             if error:
                 raise error
             return result
