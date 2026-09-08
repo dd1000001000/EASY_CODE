@@ -321,6 +321,10 @@ function envInteger(
 }
 
 function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
+  const orchestrationValue = envValue(env, "EASY_CODE_ORCHESTRATION_ENABLED");
+  if (orchestrationValue !== undefined && orchestrationValue !== "true" && orchestrationValue !== "false") {
+    throw new EasyCodeConfigError("EASY_CODE_ORCHESTRATION_ENABLED must be true or false");
+  }
   const oldLimits = ["EASY_CODE_MAX_STEPS", "EASY_CODE_MAX_CONTEXT_CHARS", "EASY_CODE_MAX_CONTEXT_TOKENS",
     "EASY_CODE_MAX_OUTPUT_CHARS", "EASY_CODE_COMMAND_TIMEOUT_MS", "EASY_CODE_MAX_MANAGED_WORKTREES"];
   if (oldLimits.some((key) => env[key] !== undefined)) {
@@ -352,6 +356,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     mode: envValue(env, "EASY_CODE_MODE"),
     thinkingEffort: envValue(env, "EASY_CODE_THINKING_EFFORT"),
     approvalPolicy: envValue(env, "EASY_CODE_APPROVAL_POLICY"),
+    orchestrationEnabled: orchestrationValue === undefined ? undefined : orchestrationValue === "true",
     dataDir: envValue(env, "EASY_CODE_DATA_DIR"),
     configDir: envValue(env, "EASY_CODE_CONFIG_DIR"),
     cacheDir: envValue(env, "EASY_CODE_CACHE_DIR"),

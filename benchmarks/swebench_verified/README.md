@@ -32,6 +32,13 @@ dataset.
 
 ## Requirements
 
+The adapter explicitly enables DAG and subagent creation inside each task
+container via `EASY_CODE_ORCHESTRATION_ENABLED=true`. This does not change the
+ordinary CLI default. Existing configured step, concurrency and shared token/
+request budgets still apply; the isolated stagnation reviewer remains enabled.
+Orchestration is included in checkpoint identity; use a new job for this profile
+instead of resuming results from a different package/profile.
+
 - Windows 10/11 with Docker Desktop using the WSL 2 Linux-container backend.
 - An x86-64 host. SWE-bench images are not uniformly portable to ARM.
 - At least 16 GB RAM and 8 CPU cores are recommended.

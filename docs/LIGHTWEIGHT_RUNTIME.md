@@ -47,6 +47,12 @@ Runtime/tool boundaries. No child is canceled or DAG silently completed by the
 switch. The isolated read-only stagnation reviewer stays enabled, with its
 existing evidence, one-review-per-scope and experiment requirements.
 
+Headless launchers can explicitly select the configuration with
+`EASY_CODE_ORCHESTRATION_ENABLED=true|false` (strict boolean text, overriding
+TOML). The SWE-bench adapter sends `true` into each task container and binds that
+setting into checkpoint identity. Ordinary CLI defaults remain off. Existing
+thread-level selections still take precedence when resuming a thread.
+
 ## Commands, output and cache
 
 Short commands use synchronous execution. An omitted `poll_command.waitMs`

@@ -358,6 +358,9 @@ describe("SWE-bench Verified integration", () => {
       /result = await environment\.exec\([\s\S]*?env=\{([\s\S]*?)\},\s*timeout_sec=3600/u,
     )?.[1];
     assert.ok(modelExecEnvironment);
+    assert.match(source, /_BENCHMARK_ORCHESTRATION_ENABLED = True/u);
+    assert.match(modelExecEnvironment, /"EASY_CODE_ORCHESTRATION_ENABLED": str\(\s*_BENCHMARK_ORCHESTRATION_ENABLED\s*\)\.lower\(\)/u);
+    assert.match(source, /"orchestrationEnabled": _BENCHMARK_ORCHESTRATION_ENABLED/u);
     assert.doesNotMatch(modelExecEnvironment, /BENCHMARK_CHECKPOINT_ROOT/u);
     assert.doesNotMatch(source, /ensure_system_dependencies/u);
     assert.doesNotMatch(source, /installed\.node_install/u);

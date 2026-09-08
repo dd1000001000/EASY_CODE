@@ -43,6 +43,7 @@ _TESTBED = "/testbed"
 _CHECKPOINT_ROOT_ENV = "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT"
 _MODEL_DIRECTORY_ENV = "EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR"
 _CHECKPOINT_SCHEMA_VERSION = 1
+_BENCHMARK_ORCHESTRATION_ENABLED = True
 _MAX_CHECKPOINT_GENERATIONS = 3
 _BENCHMARK_DATASET_REF = (
     "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341"
@@ -437,6 +438,9 @@ easy-code --version
                             "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
                             "EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR,
                             "EASY_CODE_OUTER_SANDBOX": "harbor",
+                            "EASY_CODE_ORCHESTRATION_ENABLED": str(
+                                _BENCHMARK_ORCHESTRATION_ENABLED
+                            ).lower(),
                             "CI": "1",
                             "NO_COLOR": "1",
                         },
@@ -543,6 +547,7 @@ easy-code --version
             "model": _BENCHMARK_MODEL,
             "mode": _BENCHMARK_MODE,
             "thinkingEffort": _BENCHMARK_THINKING_EFFORT,
+            "orchestrationEnabled": _BENCHMARK_ORCHESTRATION_ENABLED,
             "endpointSha256": self._sha256_text(_BENCHMARK_BASE_URL),
         }
         canonical = json.dumps(
