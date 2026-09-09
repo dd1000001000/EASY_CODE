@@ -116,7 +116,7 @@ describe("bounded context degradation", () => {
   });
 
   it("uses three malformed summary attempts then local recovery", async () => {
-    const f = fixture(6, false, false, 1000, 10000);
+    const f = fixture(6, false, false, 1000, 8000);
     try {
       let requests = 0;
       const result = await f.run({ nextRequest: largeEnvelope, complete: async () => {
@@ -136,7 +136,7 @@ describe("bounded context degradation", () => {
   });
 
   it("auxiliary provider errors fall back locally instead of failing the agent", async () => {
-    const f = fixture(6, false, false, 1000, 10000);
+    const f = fixture(6, false, false, 1000, 8000);
     try {
       let requests = 0;
       const result = await f.run({ nextRequest: largeEnvelope, complete: async () => {
@@ -160,7 +160,7 @@ describe("bounded context degradation", () => {
   });
 
   it("a durable dispatched attempt cannot be spent again after a crash", async () => {
-    const f = fixture(6, false, false, 1000, 10000);
+    const f = fixture(6, false, false, 1000, 8000);
     try {
       await assert.rejects(f.run({ nextRequest: largeEnvelope, append: async (event) => {
         await f.append(event);
@@ -177,7 +177,7 @@ describe("bounded context degradation", () => {
   });
 
   it("accepts a safe summary above the soft target and never resummarizes unchanged history", async () => {
-    const f = fixture(6, false, false, 100, 8500);
+    const f = fixture(6, false, false, 100, 6500);
     try {
       const nextRequest = { systemPrompt: "s".repeat(40000), runtimeContext: "", tools: [] };
       const result = await f.run({ nextRequest });
@@ -202,7 +202,9 @@ describe("bounded context degradation", () => {
   });
 
   it("does not pay for another summary after tiny growth above the soft trigger", async () => {
-    const f = fixture(6, false, false, 100, 8500);
+    // Leave room for the full normal system plus the handoff tail, while the
+    // retained post-summary history still remains above the soft trigger.
+    const f = fixture(6, false, false, 100, 5000);
     try {
       const nextRequest = { systemPrompt: "s".repeat(50000), runtimeContext: "", tools: [] };
       assert.equal((await f.run({ nextRequest })).requests, 1);
@@ -214,7 +216,7 @@ describe("bounded context degradation", () => {
   });
 
   it("discards a stale summary when user steering arrives without a second summary call", async () => {
-    const f = fixture(6, false, false, 1000, 10000);
+    const f = fixture(6, false, false, 1000, 8000);
     try {
       const result = await f.run({ nextRequest: largeEnvelope, complete: async () => {
         f.message({ role: "user", content: "Preserve the public API while fixing the parser" });

@@ -2239,7 +2239,7 @@ export class AgentRuntime {
         : [...toolMap.values()].filter((tool) =>
             tool.name !== "compact_context"
           );
-      const fixedRuntimeInstructions = [
+      const runtimeNextActions = [
         this.dependencies.hasOpenCommandHandles?.()
           ? backgroundCommandFinalizationInstruction()
           : "",
@@ -2267,11 +2267,12 @@ export class AgentRuntime {
             memories: selected.memories.map((memory) => ({ id: memory.id, category: memory.category,
               content: memory.content, status: memory.status })),
             retrievedThreadEvidence: context.evidence ? renderRetrievedContext(selected.evidence)
-              : optionalAllowance > 0 ? context.retrievedThreadEvidence ?? "" : "" });
+              : optionalAllowance > 0 ? context.retrievedThreadEvidence ?? "" : "" }) +
+          (runtimeNextActions.length ? "\n\nRUNTIME_NEXT_ACTION (current reminders; normal permissions still apply):\n" +
+            runtimeNextActions.join("\n\n") : "");
       const buildStepSystemPrompt = async (
         context: typeof layeredContext,
         exposedTools: readonly AgentTool[],
-        runtimeInstructions: readonly string[],
       ): Promise<string> => {
         const selected = selectMemoryContext({ state, memories,
           evidence: context.evidence ?? [], tokenBudget: optionalAllowance, limits: memoryLimits,
@@ -2281,15 +2282,12 @@ export class AgentRuntime {
           (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
         memorySelectionInfo = { estimatedTokens: selected.estimatedTokens, dropped: selected.dropped };
         stepRuntimeContext = renderStepMemory(selected, context);
-        const base = await this.dependencies.buildSystemPrompt({
+        return this.dependencies.buildSystemPrompt({
           mode: effectiveMode,
           workspaceSummary: "Current workspace and task state are provided in Runtime context after the conversation.",
           memories: [],
           toolNames: exposedTools.map((tool) => tool.name),
         });
-        return runtimeInstructions.length
-          ? `${base}\n\n${runtimeInstructions.join("\n\n")}`
-          : base;
       };
 
       // Reserve room with the complete ordinary capability surface before
@@ -2299,7 +2297,6 @@ export class AgentRuntime {
       const selectionSystemPrompt = await buildStepSystemPrompt(
         layeredContext,
         ordinaryEnabledTools,
-        fixedRuntimeInstructions,
       );
       const ordinaryToolDefinitions = ordinaryEnabledTools.map((tool) => tool.definition);
       const reservedSystemPromptChars = selectionSystemPrompt.length + 32 +
@@ -2346,7 +2343,6 @@ export class AgentRuntime {
         ? await buildStepSystemPrompt(
             layeredContext,
             ordinaryEnabledTools,
-            fixedRuntimeInstructions,
           )
         : selectionSystemPrompt;
       let enabledTools = ordinaryEnabledTools;
@@ -2370,7 +2366,7 @@ export class AgentRuntime {
       // First remove optional memory as whole records, then reassess pressure.
       if (selectedOptionalCount > 0 && contextPressure !== "normal") {
         optionalAllowance = 0;
-        systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools, fixedRuntimeInstructions);
+        systemPrompt = await buildStepSystemPrompt(layeredContext, ordinaryEnabledTools);
         messages = this.dependencies.contextManager.build({ systemPrompt, runtimeContext: stepRuntimeContext,
           state, maxContextChars: options.maxContextChars, reservedSystemPromptChars });
         requestInspection = this.dependencies.contextManager.inspectProviderRequest({ state,
@@ -3580,17 +3576,17 @@ export class AgentRuntime {
       maxContextChars: options.maxContextChars, required, maxRequests, nextRequest,
       tool: compactTool?.definition,
       append: (event) => this.dependencies.appendEvent(event),
-      complete: async (messages, attempt) => {
+      complete: async (messages, attempt, tools) => {
         if (!compactTool) return undefined;
         const inspection = this.dependencies.contextManager.inspectProviderRequest({ state,
-          maxContextChars: options.maxContextChars, messages, tools: [compactTool.definition] });
+          maxContextChars: options.maxContextChars, messages, tools });
         this.observeProviderContext({ state, turnId, purpose: "context_compaction", attempt, messages,
-          tools: [compactTool.definition], enforcedPressure: required ? "require" : "suggest",
+          tools, enforcedPressure: required ? "require" : "suggest",
           enforcedUtilization: inspection.utilization, maxContextChars: options.maxContextChars, actualRequest: inspection });
         this.dependencies.onStatus?.("Context maintenance: complete response, local summary projection; length overflow needs no model retry.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
           "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
-            tools: [compactTool.definition], signal, thinkingEffort: "none",
+            tools, signal, thinkingEffort: "none",
             currentTurnImageIds: images.map((image) => image.id) })));
         if (attempted.kind === "steering_interrupted") {
           return undefined;

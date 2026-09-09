@@ -9,7 +9,7 @@ import { TokenCalibration } from "../src/context/token-calibration.js";
 import { requestTokens, tokenBudget, budgetedRequest, estimatedTokens } from "../src/context/token-budget.js";
 import { completeExchange, eligiblePhaseEnd, foldCompactionControl, prefixHash,
   runCompactionTransaction } from "../src/context/compaction-transaction.js";
-import { exactContext } from "../src/context/context-request.js";
+import { exactContext, type NormalRequestEnvelope } from "../src/context/context-request.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { prepareToolInput, protocolToolFailure } from "../src/tools/errors.js";
 import { toolFailure } from "../src/tools/base.js";
@@ -83,6 +83,58 @@ function fixture() {
 }
 
 describe("completed-phase compaction transactions", () => {
+  it("preserves the complete normal prefix and schema order across summary corrections without dispatching tools", async () => {
+    const f = fixture();
+    const normal: NormalRequestEnvelope = { ...envelope, tools: (["run_command", "read_file"] as const).map(name => ({
+      type: "function" as const, function: { name, description: name, parameters: { type: "object" } },
+    })) };
+    const original = exactContext(f.state, normal);
+    const history = JSON.stringify(f.state.messages);
+    let calls = 0, executions = 0;
+    try {
+      const result = await f.run({ nextRequest: normal, execute: async () => {
+        executions++; throw new Error("Summary tools must never be dispatched");
+      }, complete: async (messages, attempt, tools) => {
+        calls++;
+        assert.equal(attempt, calls);
+        assert.deepEqual(messages.slice(0, -1), original);
+        assert.deepEqual(tools, normal.tools);
+        assert.equal(messages[0]?.content, normal.systemPrompt);
+        assert.match(messages.at(-1)?.content ?? "", /^RUNTIME_CONTEXT_HANDOFF:/u);
+        assert.match(messages.at(-1)?.content ?? "", /No tool calls are permitted/u);
+        if (calls === 2) assert.match(messages.at(-1)?.content ?? "", /RUNTIME_SUMMARY_CORRECTION/u);
+        return { role: "assistant", content: calls === 1 ? null :
+          "<analysis>DISPOSABLE_SCRATCH</analysis><summary>Work remains unverified. Reproduce the parser failure.</summary>",
+          tool_calls: [{ id: "forbidden_summary_command", type: "function", function: {
+            name: "run_command", arguments: '{"program":"node","args":["-e","throw 1"]}',
+          } }] };
+      } });
+      assert.equal(result.committed, true);
+      assert.equal(calls, 2);
+      assert.equal(executions, 0);
+      assert.equal(JSON.stringify(f.state.messages), history);
+      assert.doesNotMatch(f.state.workingSummary, /DISPOSABLE_SCRATCH|forbidden_summary_command/);
+      assert.doesNotMatch(JSON.stringify(f.state.messages), /RUNTIME_CONTEXT_HANDOFF|RUNTIME_SUMMARY_CORRECTION/);
+    } finally { f.dispose(); }
+  });
+
+  it("recovers locally when the retained schemas make the summary request too large", async () => {
+    const f = fixture();
+    const normal: NormalRequestEnvelope = { ...envelope, tools: [{ type: "function" as const, function: {
+      name: "read_file", description: "s".repeat(50_000), parameters: { type: "object" },
+    } }] };
+    let calls = 0;
+    const history = JSON.stringify(f.state.messages);
+    try {
+      const result = await f.run({ nextRequest: normal, complete: async () => { calls++; return candidate(); } });
+      assert.equal(calls, 0);
+      assert.equal(result.requests, 0);
+      assert.equal(result.committed, true);
+      assert.equal(JSON.stringify(f.state.messages), history);
+      assert.ok(f.events.some(e => e.type === "context.history.evicted"));
+    } finally { f.dispose(); }
+  });
+
   it("keeps the earlier body when a later correction response is empty or transport fails", async () => {
     for (const failedApi of [false, true]) {
       const f = fixture(); let calls = 0;
@@ -390,7 +442,8 @@ describe("completed-phase compaction transactions", () => {
       const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async (request) => {
         requests += 1;
         if (requests === 1) {
-          assert.deepEqual(request.tools?.map((tool) => tool.function.name), ["compact_context"]);
+          assert.deepEqual(request.tools, []);
+          assert.match(request.messages.at(-1)?.content ?? "", /^RUNTIME_CONTEXT_HANDOFF:/u);
           return { message: candidate(5, "Answer directly") };
         }
         assert.ok(request.tools?.some((tool) => String(tool.function.name) === "respond_directly"));
@@ -436,7 +489,7 @@ describe("completed-phase compaction transactions", () => {
     } finally { f.dispose(); }
   });
 
-  it("shares the main model-request budget and switches back to the normal capability envelope", async () => {
+  it("shares the main model-request budget and keeps the normal capability envelope during handoff", async () => {
     const f = fixture();
     try {
       let requests = 0;
@@ -444,7 +497,9 @@ describe("completed-phase compaction transactions", () => {
       const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async (request) => {
         requests += 1;
         if (requests === 1) {
-          assert.deepEqual(request.tools?.map((t) => t.function.name), ["compact_context"]);
+          assert.deepEqual(request.tools, []);
+          assert.equal(request.messages[0]?.content, "rules");
+          assert.match(request.messages.at(-1)?.content ?? "", /^RUNTIME_CONTEXT_HANDOFF:/u);
           return { message: candidate(5, "Continue safely") };
         }
         assert.equal(request.tools?.some((t) => t.function.name === "compact_context"), false);

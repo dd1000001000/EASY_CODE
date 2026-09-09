@@ -338,6 +338,10 @@
       "sha256": "sha256:0400369612ec6aeb15e374b51fa1f22179750108ad352156f93b1f7a17e5e9a5",
       "bytes": 406
     },
+    "system/runtime-control.md": {
+      "sha256": "sha256:891f20ef464ab3f8e6eb88aafb80b0efb0ed47c4b8426ce73dee7f0815070cfe",
+      "bytes": 1294
+    },
     "system/security.md": {
       "sha256": "sha256:237b4e60f84228c9d73fee53a65442fc4c03dad0ae131db12eac92bb8293566e",
       "bytes": 1177
@@ -534,5 +538,5 @@
       "contentHash": "sha256:e05da57356f474f29d757cb79ec943ec4e46dcee02b77c7a7be0f5e4ec2f6cf0"
     }
   },
-  "bundleHash": "sha256:4daedfd406c609f87b9bc6fa92726b66a61c25aecdcbb2de761fd083c6805a45"
+  "bundleHash": "sha256:c2a4687514736f9c5004391ac8dcd651dbe203eaf0525cc7cecd7968c1b85648"
 }

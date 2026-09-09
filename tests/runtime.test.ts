@@ -24,6 +24,7 @@ import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
+import { createProgressGuardState } from "../src/progress/guard.js";
 
 function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   const now = new Date().toISOString();
@@ -102,6 +103,46 @@ function contextRuntime(provider: ModelProvider, tools: AgentTool[],
 }
 
 describe("AgentRuntime", () => {
+  it("keeps the system and history prefix stable as background and progress reminders change", async () => {
+    const current = state();
+    let reads = 0;
+    const captured: Array<{ request: Parameters<ModelProvider["complete"]>[0]; prefixLength: number }> = [];
+    const read: AgentTool = { name: "read_file", mutating: false, definition: { type: "function", function: {
+      name: "read_file", description: "read", parameters: { type: "object" },
+    } }, execute: async () => { reads++; return { ok: true, summary: `read ${reads}` }; } };
+    const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async request => {
+      captured.push({ request: structuredClone(request), prefixLength: current.messages.length + 1 });
+      if (reads === 2) return { message: { role: "assistant", content: "done" } };
+      return { message: { role: "assistant", content: null, reasoning_content: "Keep reasoning byte-identical",
+        tool_calls: [{ id: `read_${reads}`, type: "function", function: { name: "read_file", arguments: "{}" } }] } };
+    } }, tools: [read], contextManager: new ContextManager(), buildSystemPrompt: async () => "fixed policy",
+      hasOpenCommandHandles: () => reads === 1,
+      getWorkspaceSummary: async () => {
+        current.progressGuard ??= createProgressGuardState();
+        current.progressGuard.searchWarning = reads === 1 ? {
+          scopeKey: `thread:${current.threadId}/turn:${current.activeTurnId}`, sourceEventId: "warning", count: 4,
+        } : undefined;
+        return "workspace";
+      }, searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+    });
+    const result = await runtime.run(current, "Inspect the source", { ...degradationOptions, maxSteps: 3 });
+    assert.equal(result.reason, "success", result.text);
+    assert.equal(captured.length, 3);
+    for (const { request } of captured) assert.equal(request.messages[0]?.content, "fixed policy");
+    const reminder = captured[1]!.request.messages.at(-1)?.content ?? "";
+    assert.match(reminder, /RUNTIME_NEXT_ACTION/u);
+    assert.match(reminder, /command/i);
+    assert.match(reminder, /search/i);
+    assert.doesNotMatch(captured[2]!.request.messages.at(-1)?.content ?? "", /RUNTIME_NEXT_ACTION/u);
+    for (let i = 1; i < captured.length; i++) {
+      const previous = captured[i - 1]!;
+      assert.deepEqual(captured[i]!.request.messages.slice(0, previous.prefixLength),
+        previous.request.messages.slice(0, previous.prefixLength));
+      assert.deepEqual(captured[i]!.request.tools, previous.request.tools);
+    }
+    assert.ok(!current.messages.some(m => m.content?.includes("RUNTIME_NEXT_ACTION")));
+  });
+
   it("injects layered context before the model request and checkpoints the final state", async () => {
     const currentState = state();
     currentState.goal = "Keep the release migration safe";
@@ -2095,7 +2136,7 @@ describe("AgentRuntime", () => {
   });
 
 
-  it("uses one isolated summary at the token trigger then restores ordinary tools", async () => {
+  it("uses one isolated summary at the token trigger with unchanged ordinary tool schemas", async () => {
     const current = investigationState();
     const originalHistory = JSON.stringify(current.messages);
     const requests: Parameters<ModelProvider["complete"]>[0][] = [];
@@ -2115,7 +2156,7 @@ describe("AgentRuntime", () => {
     assert.equal(result.reason, "success", result.text);
     assert.equal(requests.length, 2);
     assert.deepEqual(requests.map((request) => request.tools?.map((tool) => tool.function.name)),
-      [["compact_context"], ["read_file"]]);
+      [["read_file"], ["read_file"]]);
     assert.equal(requests[0]?.thinkingEffort, "none");
     assert.equal("maxTokens" in requests[0]!, false);
     assert.ok(requests[0]?.outputReserveTokens);
@@ -2179,7 +2220,9 @@ describe("AgentRuntime", () => {
       assert.equal(result.reason, "success", result.text);
       assert.equal(writes, 0);
       assert.equal(requests.length, 4);
-      assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["compact_context"]);
+      assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["create_file"]);
+      assert.equal(requests[0]?.messages[0]?.content, requests[3]?.messages[0]?.content);
+      assert.match(requests[0]?.messages.at(-1)?.content ?? "", /^RUNTIME_CONTEXT_HANDOFF:/u);
       assert.deepEqual(requests[3]?.tools?.map((tool) => tool.function.name), ["create_file"]);
       assert.equal(current.compactionControl?.transaction?.attempts, 3);
       assert.equal(JSON.parse(current.workingSummary).mode, "text_prefix");

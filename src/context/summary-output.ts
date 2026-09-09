@@ -130,7 +130,7 @@ export function projectSummary(content: string, sourceRef: string, maxTokens = 2
 export function summaryInstructions(compactContextAvailable = false): string {
   return "Produce a concise formal handoff. Optional <analysis> is disposable scratch, never retained; " +
   "do not duplicate native thinking. Put the final handoff in one complete outer <summary> block" +
-  (compactContextAvailable ? ", OR submit one valid compact_context tool call instead of XML. " : ". No tools are available for this summary. ") +
+  (compactContextAvailable ? ", OR submit one valid compact_context tool call instead of XML. " : ". No tool calls are permitted for this summary. ") +
   "Cover relevant sections only: user intent, technical concepts, files/changes, errors/fixes, solved/open problems, " +
   "user corrections, pending tasks, current work, next step. Cite evidence instead of copying large source/output. " +
   "Distinguish observations, unverified hypotheses and rejected approaches. Do not self-certify completion. " +
