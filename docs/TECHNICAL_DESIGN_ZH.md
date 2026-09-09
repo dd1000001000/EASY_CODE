@@ -1,395 +1,374 @@
 # EASY CODE 技术设计
 
-验证目标标识、测试/配置基线、reviewer 实验绑定、调查停滞窗口和压缩字段局部修复的当前机制见[进展与上下文可靠性](./PROGRESS_RELIABILITY_ZH.md)。这些机制与 Provider 无关，不修改命令授权或 Benchmark 联网策略。
+[English](TECHNICAL_DESIGN.md) · [快速开始](../README_zh.md) · [配置示例](config.example.toml)
 
-[English](./TECHNICAL_DESIGN.md) | 简体中文 | [返回 README](../README_zh.md)
+本文描述当前仓库中的实现，不是待实施的路线图。默认数值来自 [runtime-defaults.json](../src/config/runtime-defaults.json)，由 [runtime-limits.ts](../src/config/runtime-limits.ts) 校验，并可通过配置覆盖。各节的源码链接用于定位实际实现。
 
-本文描述 EASY CODE 当前实现的稳定边界，而不是源码函数或行号索引。安装、配置和命令用法见 [README](../README_zh.md)。
+## 1. 总体架构与职责边界
 
-当前跨 Agent 记忆、五轮审查和双份独立摘要机制见[统一记忆与有界审查](./UNIFIED_MEMORY_ZH.md)。
+EASY CODE 是使用 TypeScript / Node.js 实现的本地 CLI 编程 Agent。它请求模型供应商 API，在用户电脑或指定执行环境内运行工具，并持久化会话和控制状态，以支持中断恢复。
 
-## 1. 目标与原则
-
-EASY CODE 把模型视为规划与代码生成组件，而不是权限、状态或完成条件的裁决者。模型只提出结构化意图；是否允许、如何执行、何时持久化以及能否视为完成，都由本地 Runtime 决定。
-
-系统遵守以下原则：
-
-1. **数据不能授予权限。** 文件、模型输出、命令输出、图片、检索结果、记忆、任务文字和 Artifact 都是不可信数据。
-2. **先校验，后产生副作用。** 每个动作先经过模式、角色、Schema、工作区、策略和状态校验。
-3. **先持久化，后激活。** 关键转换先形成权威记录，UI、父 Agent 或恢复流程才可观察到它。
-4. **隔离层职责分开。** 私有 Thread 隔离上下文，Git Worktree 隔离源码状态，操作系统沙箱隔离进程。
-5. **派生状态不能覆盖权威状态。** SQLite 投影、Working Checkpoint、向量索引和 TUI 都可重建，Thread Journal 才是恢复依据。
-6. **恢复不猜测成功。** 中断、超时或缺少完成证据的操作不会被静默重放或标记完成。
-
-EASY CODE 是本地优先而非完全离线：项目操作和状态保存在本机，推理请求仍发送到用户选择的供应商。权限、身份、沙箱或恢复状态不明确时一律安全失败。
-
-## 2. 架构与技术栈
+核心边界是：**模型提出建议，Runtime 掌握执行权威。** 模型生成工具调用、摘要、计划和审查结论；Runtime 校验参数、实施权限、管理进程和预算、保存证据，并判断任务是否具备结束条件。
 
 ```mermaid
-flowchart TB
-    User[用户] --> UI[CLI / TUI]
-    UI --> Runtime[可信 Agent Runtime]
-    Runtime --> Context[上下文与记忆]
-    Runtime --> Provider[Provider 网关]
-    Runtime --> Tools[文件与命令边界]
-    Runtime --> Flow[Plan / DAG / 子 Agent]
-    Runtime --> State[持久状态]
-    Provider --> APIs[Qwen / DeepSeek / GLM / Coding Plan]
-    Tools --> Sandbox[策略 / 审批 / OS 沙箱]
-    Flow --> Children[私有子 Thread]
-    Children --> Env[共享工作区 / Git Worktree]
-    Env --> Artifacts[Result Artifact / Handoff]
-    State --> Journal[追加式 JSONL Journal]
-    State --> DB[SQLite 投影]
-    State --> Files[图片 / Checkpoint / Artifact]
-    Context --> DB
+flowchart TD
+    U[CLI / VS Code 终端集成] --> A[应用组装入口]
+    A --> R[Agent Runtime]
+    R --> P[供应商适配与 HTTP 传输]
+    R --> T[工具注册与能力过滤]
+    T --> F[工作区与文件操作]
+    T --> C[命令审批与执行后端]
+    R --> M[上下文与记忆控制]
+    M --> J[Thread Journal 与 Checkpoint]
+    M --> DB[SQLite 证据、记忆与检索索引]
+    R --> O[DAG 与子 Agent 协调器]
+    O --> R
+    R --> G[进展观测与审查会话]
+    G --> J
+    C --> J
 ```
 
-各层责任按以下方向收敛：
-
-- UI 只提交用户动作并展示状态，不决定权限或完成条件。
-- Provider 只完成模型协议转换，不直接获得工作区能力。
-- 工具和编排层提交经过校验的结果，不能自行改写 Thread 历史。
-- 持久层保存权威事件，派生索引和界面都从这些事件恢复。
-
-| 领域 | 主要技术 | 责任 |
+| 层次 | 主要源码 | 职责 |
 | --- | --- | --- |
-| Runtime | TypeScript、Node.js 20+ | 控制流、状态和工具执行。 |
-| CLI/TUI | Commander、Chalk、Node 终端 API | 命令、常驻界面和非 TTY 降级。 |
-| 契约 | JSON Schema、Zod、TypeScript 类型 | 校验工具、配置和持久数据。 |
-| Provider | OpenAI-compatible Chat Completions | 统一消息、工具、Thinking、图片、重试和用量。 |
-| 持久化 | JSONL、SQLite WASM | 权威事件、查询投影、记忆与审计。 |
-| 检索 | FTS5、ONNX Runtime、Orama | 关键词与语义混合检索。 |
-| 执行隔离 | Anthropic Sandbox Runtime、Git Worktree | 进程边界与源码状态隔离。 |
-| 分发/集成 | npm、Prompt Bundle、VS Code 扩展 | 可信资源安装和终端增强。 |
+| 入口与组装 | [index.ts](../src/index.ts)、[app.ts](../src/app.ts) | CLI 解析；创建服务；连接 UI、状态、权限和审查回调 |
+| Agent 执行 | [runtime/](../src/runtime) | 模型—工具循环、模式路由、预算、错误分类和交付门槛 |
+| 工具与工作区 | [tools/](../src/tools)、[workspace/](../src/workspace) | 能力校验、文件版本、Git 变更与工作区隔离 |
+| 命令控制 | [command/](../src/command)、[sandbox/](../src/sandbox)、[downloads/](../src/downloads) | 审批、进程监督、网络代理、执行后端与制品下载 |
+| 持久化 | [threads/](../src/threads)、[storage/](../src/storage) | 追加式事件、恢复、SQLite 仓储与检查点 |
+| 记忆与容量 | [context/](../src/context)、[memory/](../src/memory) | 活跃上下文、证据引用、摘要、项目记忆和混合检索 |
+| 协作 | [plans/](../src/plans)、[tasks/](../src/tasks)、[subagents/](../src/subagents) | 用户计划、任务 DAG、子线程和结果交接 |
+| 可靠性与审查 | [progress/](../src/progress)、[review/](../src/review) | 基于证据的进展检测、隔离讨论与交付检查 |
+| 展示 | [cli/](../src/cli)、[ui/](../src/ui)、[images/](../src/images) | 终端交互、渲染、图片处理和编辑器桥接 |
+| 评测 | [src/benchmarks/](../src/benchmarks)、[Benchmark 适配器](../benchmarks/swebench_verified) | SWE-bench / Harbor 编排与隔离 Worker 执行 |
 
-模型不能直接访问文件系统、进程、数据库或 Git，只能调用本次请求公开的结构化能力。系统规则、模式说明和工具描述位于版本化 Prompt Bundle 中；Manifest 绑定资源版本与内容，启动时校验并加载为只读视图。Prompt 文本只解释能力，真正的 Schema、权限与状态转换编译在 Runtime 中。
+`app.ts` 是应用的依赖组装入口，`runtime/agent.ts` 是执行协调中心。这两个模块仍然较大；项目是模块化单体应用，不是独立部署的微服务集合。
 
-配置按默认值、可信用户配置、安全项目配置、环境变量和显式 CLI 参数合并。项目配置不能重定向凭据、Provider 地址、应用数据根或托管 Worktree 根；`EASYCODE.md` 只能提供低信任项目指导。
+## 2. 技术栈及用途
 
-## 3. 请求生命周期与工作模式
-
-一次主回合的高层流程是：
-
-1. 校验 Prompt Bundle、配置和凭据，加载项目规则并取得 Thread Lease。
-2. 绑定规范化工作区，先持久化用户消息与图片引用。
-3. Auto 模式用受限控制请求选择直接回答、Plan 或 Code。
-4. 组装 Working Checkpoint、近期消息、检索证据、长期记忆和本步系统 Prompt。
-5. 按模式、角色、Plan/DAG、上下文压力和执行权限裁剪工具。
-6. 调用 Provider，校验普通文本、Thinking 和结构化动作，再执行允许的副作用。
-7. 保存模型请求、工具结果、用量和状态转换，循环至审核、成功、阻塞、限制或中断。
-8. 只有到达允许的成功边界，才提交本回合暂存的长期记忆。
-
-| 模式 | 语义 |
+| 技术 | 在项目中的用途 |
 | --- | --- |
-| `plan` | 以调查和正式可审核方案为主，尽量避免直接文件编辑；命令遵循审批、可以写入，普通文本不能替代方案。 |
-| `auto` | 受限控制器选择直接回答、Plan 或 Code；控制器没有工作区工具。 |
-| `code` | 直接实现与验证，但文件和命令仍受全部安全边界约束。 |
+| TypeScript、Node.js ≥ 20.11、ESM | 严格类型、NodeNext 模块解析；编译到 `dist/` 的 CLI |
+| Commander、TOML、Zod | 命令行解析、配置读取、运行时 Schema 与工具参数校验 |
+| Node HTTP / HTTPS | 模型传输、取消、时间和大小限制、受控代理连接 |
+| execa、sandbox-runtime | 进程启动和平台沙箱集成；项目另行管理审批和生命周期 |
+| node-sqlite3-wasm、SQLite FTS5 | 持久化仓储、全文检索和数据库迁移，避免 Node SQLite ABI 编译依赖 |
+| ONNX Runtime、Hugging Face tokenizers | 本地文本向量生成 |
+| Orama | 派生的向量检索缓存，不是长期记忆的权威存储 |
+| env-paths、系统 Keyring | 跨平台配置目录、数据目录和供应商凭据存储 |
+| Node TTY / readline、chalk、diff | 自研终端 UI、文本样式与文件差异展示 |
+| VS Code Extension API | 终端菜单、图片附件与 Thinking 链接集成 |
+| Python、Harbor、Docker | Benchmark 适配、控制器/执行器分离和官方验证 |
 
-Auto 使用结构化选择而非关键词匹配。只有无需工作区、工具和副作用的有界请求才能直接回答。Plan 的同意、拒绝和反馈都是持久转换；已批准但尚未被执行 DAG 接管的 Plan 若中断，会回到审核。
+精确版本和构建命令见 [package.json](../package.json)。Agent 循环没有依赖 LangChain 或 LangGraph；终端 UI 不是 React / Ink。SQLite 使用 WebAssembly 绑定，但 ONNX Runtime、Keyring 等仍有平台组件，不能将整个项目描述成“纯 JS、没有原生依赖”。
 
-执行中调整按 FIFO 独立持久化，在模型前后、工具之间或最终回答前的安全边界封存一个待处理前缀。调整能改变方向，但不能改变权限、沙箱、任务所有权或 Agent 身份；过期响应中尚未启动的工具不会执行。
+## 3. 一次请求的执行流程与工作模式
 
-`none/low/medium/high` 默认分别为 40/40/40/80 步，子 Agent 默认并发上限分别为 2/2/4/8 个，由 `[limits.maxConcurrentSubagents]` 配置，并随父 Agent 当前 thinking 强度切换。运行预算使用 `[limits]` 配置，详见 [完整配置示例](config.example.toml) 和 [轻量 Runtime 说明](LIGHTWEIGHT_RUNTIME.md)。`/orchestration` 控制 DAG/子 Agent 新建，默认关闭，reviewer 独立保持开启。所有强度共用同一个上下文预算和压缩阈值。尚未观察终态的后台命令、活跃 DAG 或未收集子 Agent 会阻止普通最终回答。上下文压力由 Runtime 维护流程处理；必需输入仍放不下时返回可恢复容量限制，不再要求模型反复修复压缩 Schema。
+一次普通任务按以下顺序推进：
 
-## 4. 信任、安全与沙箱
+1. 加载配置、解析凭据和模型元数据，创建或恢复 Thread。
+2. 持久化用户输入、附件及相关状态变更。
+3. Auto 模式通过受限路由请求，选择直接回答、Plan 或 Code。
+4. 按稳定系统前缀、活跃历史、新增 Runtime 信息及检索材料组装请求。
+5. 检查共享预算和上下文容量，再调用供应商。
+6. 校验返回内容和完整工具参数，仅执行该角色、模式拥有的能力。
+7. 保存结果与原始证据，更新工作区和进展状态，继续模型—工具循环。
+8. 结束前检查后台命令、DAG / 子 Agent、提交合约，以及适用的交付审查。
 
-指令优先级为 Runtime 强制策略与基础契约、当前用户请求、最近的工作区 `EASYCODE.md`、父目录规则、用户级规则。项目内容、依赖元数据、检索证据和命令输出只能作为数据，不能增加能力。
+源码：[agent.ts](../src/runtime/agent.ts)、[auto-router.ts](../src/runtime/auto-router.ts)、[公共类型](../src/core/types.ts)。
 
-Runtime 每次调用都会依据模式、主/子 Agent 角色、Plan/DAG 阶段、未收集结果、上下文压力、模型能力、审批状态和沙箱可用性重新生成工具集合。未知工具、错误 Schema 或非法转换在执行前被拒绝。
+工作模式、批准模式和执行环境是三个独立维度：
 
-受保护文件工具只接受工作区相对路径，同时校验词法路径和真实路径；绝对路径、父目录穿越、符号链接/Junction 逃逸、Git 控制目录和 Runtime 私有目录均被拒绝。创建不覆盖已有目标，更新和删除需要先读取并在写前比对内容身份；并发变化报告冲突，成功修改产生持久 Diff。共享子 Agent 写入还会串行化。
+- **Auto** 是受限的模型路由阶段，不是单纯关键词匹配。
+- **Plan** 以分析和结构化 `propose_plan` 提案为主。当前代码仍开放文件编辑和命令工具，因此“尽量避免直接编辑”属于提示层约束，**不是强制只读安全边界**。命令遵循当前审批规则；本模式不开放 DAG / 子 Agent 创建。
+- **Code** 执行修改和验证，只有启用编排后才开放相关协作工具。
+- 子 Agent 使用独立的受限工具集合，通过结构化结果提交完成；不能递归创建子 Agent，也不能管理项目长期记忆。
 
-命令使用已解析可执行程序、参数数组、受限工作目录、环境、超时和输出上限，而不是默认执行任务中的 Shell 字符串。受保护执行依次经过：能力判断、命令策略与审批、OS 沙箱。永久拒绝规则先于用户批准；Thread 可授权同一规范化可执行程序，但授权不跨 Thread。后台子 Agent 不能弹出审批或创建新授权。
+HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。只有 thinking、`finishReason = length` 表示输出不完整、工具参数非法等情况，都不能直接视为成功交付。
 
-短命令同步返回；长命令使用分离的启动、轮询和取消协议，并绑定发起 Thread/Agent。任务结束前必须观察命令终态；超时、取消或退出会回收进程树，输出保留有界头尾摘要。
+## 4. 配置、提示词与凭据
 
-| 平台 | 沙箱边界 |
-| --- | --- |
-| Windows | 随包 Anthropic Sandbox Runtime 后端，目前为 alpha，可能需要一次 UAC 初始化。 |
-| macOS | 等待内核级后代进程监督实现，严格命令暂时拒绝；文件工具可用。 |
-| Linux | bubblewrap，依赖 `bubblewrap`、`socat`、`ripgrep` 和可用的非特权用户命名空间。 |
+[loader.ts](../src/config/loader.ts) 合并默认值、用户配置、安全的项目配置、凭据/环境变量及 CLI 覆盖。用户配置位于平台对应的 EASY CODE 配置目录；项目覆盖使用 `.easycode/config.toml`。环境变量和 CLI 可覆盖保存的设置。
 
-工作模式、审批主体和环境相互独立。手动模式审批每条新命令；帮我批准由无工具的独立审批 Agent 判断，拒绝/失败转用户；完全访问使用宿主机、不加命令沙箱。带范围的前缀权限支持 Resume 和子 Agent 共享。Plan 尽量避免直接编辑，命令获批可以写入。Benchmark 固定离线容器内完全访问。详见[命令权限](COMMAND_SECURITY_ZH.md)。
+项目配置有单独的安全限制，不能悄悄提供凭据、重定向 Runtime 私有存储或覆盖其他受保护设置。运行预算统一放在 `[limits]` 下，包括按 thinking effort 区分的步数、并发和超时子表。未知或过时的限制字段会报错，不会静默忽略。
 
-本地命令使用统一 Runtime 元数据规范化：缺少验证分类不再阻止执行。路径按工作区真实边界校验、argv 按字面传递，不再以 Shell 写法判断安全性，每条新命令走所选审批主体，不靠静态风险标签自动放行。输出展示裁剪前生成独立 `validation` 证据；管道返回 0 不等于测试通过，无法判断时记未知。ProgressGuard 仅以高置信通过清除停滞，失败签名跨独立验证周期计数，轮询去重。Windows 取消/超时先结束后代，再保留可信 worker 恢复 ACL，最后关闭 Job。详细合约见[命令易用性与验证证据](COMMAND_SECURITY_ZH.md#证据恢复与测试)。
+部分运行默认值如下，其余模块预算在对应章节说明：
 
-Key 位于操作系统凭据存储或显式环境变量中，项目配置不能保存或重定向它们。标准 GLM 与 GLM Coding Plan 使用不同凭据和端点，绝不互相回退。受保护命令默认不继承供应商 Key；模型错误、日志、Checkpoint、Summary、检索和记忆都会脱敏并过滤终端控制字符。
-
-## 5. 持久状态与 Resume
-
-每个 Thread 有独立的追加式 JSONL Journal，事件具有连续序号、唯一身份、时间、阶段和结构化载荷，并在追加后刷新到磁盘。Thread 执行状态以 Journal 为权威来源；SQLite 保存会话/用量投影、Working Checkpoint、检索材料，以及长期记忆。长期记忆记录、来源和修订表本身是 SQLite 中的主数据，不能当作可随意丢弃的向量缓存。Thread 投影失败不能撤销已追加的事件，过期投影可通过回放修复。图片字节、子 Agent 结果和 Worktree 描述保存在私有文件中，Journal 保存引用与完整性信息。
-
-增量 Checkpoint 减少长 Thread 的重复写入。Delta 绑定精确 Journal 基准，只允许追加消息、更新设置/文件观察、追加变更/命令，以及让压缩状态前移；Plan、DAG、审批和执行中调整仍由事件决定。Schema、大小或基准不匹配会拒绝提交，旧版全量快照仍可恢复。
-
-持久状态包括消息与工具结果、模式/模型/Bundle 身份、工作摘要与意图账本、压缩事务和降级预算、Plan/DAG、文件观察与 Diff、命令与 Thread 授权、待处理调整、子 Agent/环境/Artifact 绑定，以及 Provider 上报用量。模型上下文中的 Working Checkpoint 是确定性、有界、可重建的 SQLite 投影，不是 Thread 恢复 Checkpoint，也不是权威状态来源。
-
-Resume 先取得 Thread Lease 并校验工作区与 Bundle，再从兼容 Checkpoint 开始按 Journal 顺序回放，修复 SQLite 投影，追平检索索引，并重新验证文件、授权和托管环境。中断请求和命令不盲目重放；无完成证据的任务不变成成功；未接管的已批准 Plan 回到审核；缺失 Worktree 只有在身份与快照可验证时重建。
-
-只有末尾不完整的 Journal 记录可在确认后截断；中部损坏、重复 ID、序号断裂或持续并发变化会停止恢复，而不是跳过证据。
-
-## 6. 统一记忆管理与上下文恢复
-
-本节描述当前 provider 无关实现，覆盖短期上下文、thinking、摘要、长期记忆、历史检索和容量降级。历史 Summary V2 读取器和 MicroCompaction 辅助函数不代表当前每轮请求策略。更细的恢复约束见 [Runtime 上下文维护契约](semantic-compaction-v3.md) 和 [上下文可靠性说明](CONTEXT_RELIABILITY.md)。
-
-### 6.1 分层、权威来源与隔离范围
-
-以下是逻辑职责，不是六套独立数据库：
-
-| 层 | 内容与权威来源 | 范围 / 模型可见性 |
+| 配置键 | 默认值 | 含义 |
 | --- | --- | --- |
-| 活跃对话 | 持久 `messages` 在 `compactedMessageCount` 之后的投影；当前用户文字、模型正文/thinking、工具调用及结果。 | Thread 私有；发送活跃投影，不发送全部存储历史。 |
-| 工作摘要 | `workingSummary`：已接受的语义交接，或确定性的未完成/未验证降级说明。 | Thread 私有；属于历史解释，不是验证证据或权限。 |
-| Runtime 连续性状态 | 用户要求、约束、意图账本、Plan/DAG、变更、待处理工作、失败、reviewer/实验状态。 | 从权威状态恢复并独立注入，不依赖摘要是否完整。 |
-| 历史证据 / RAG | 脱敏后的消息材料、工具证据、已接受摘要快照、关键词索引和可选向量。 | 精确工作区 + Thread；按需取回有界片段。 |
-| 长期记忆 | 原子化偏好、约定、架构、决策、环境事实；SQLite 保存来源与修订。 | 同一逻辑工作区内跨 Thread 共享，不是所有对话的归档。 |
-| Journal / 恢复存储 | 追加式 Thread 事件、兼容恢复 Checkpoint、私有证据和附件。 | 用于本地持久化和回放；存储不等于自动注入 Prompt。 |
+| `steps` | none/low/medium：40；high：80 | Agent 逻辑步数预算 |
+| `maxModelRequests` | 120 | 共享模型请求次数上限 |
+| `maxTaskTokens` | 0 | 不单独限制累计 Token；其他预算仍生效 |
+| `providerTimeoutMs` | 300,000 / 300,000 / 450,000 / 600,000 | none/low/medium/high 请求超时，毫秒 |
+| `providerResponseMaxBytes` | 16 MiB | 本地 HTTP 响应大小保护 |
+| `commandTimeoutMs` | 120,000 | 默认命令超时，毫秒 |
+| `maxManagedWorktrees` | 15 | 受管理 Worktree 数量上限 |
 
-工作区身份由规范化的绝对工作区根路径生成，Windows 下统一大小写。父子 Thread 的对话与历史检索互相隔离；子 Agent 接收有界任务材料并返回有界报告，不把完整 thinking 交给父 Agent。子 Agent 可以接收所属逻辑工作区的精选记忆，但没有主 Agent 的长期记忆修改能力。
+运行 `easy-code config defaults` 可查看完整 TOML。字符、Token、字节、时间和次数是不同单位，不能相互替代。
 
-### 6.2 一次普通请求：短期上下文与 thinking
+[凭据模块](../src/config/credentials.ts) 通常通过系统 Keyring 和隐藏输入保存 API Key。密钥不应进入项目 TOML、提示词、会话日志或 Benchmark 任务卷。
 
-普通请求按以下顺序组装消息：
+[Prompt Bundle](../resources/prompt-bundle) 将系统规则、模式提示、工具描述和模型元数据与可执行代码分离。构建生成资源和目录数据；安装通过 Manifest、哈希及兼容性检查后激活。提示词或工具说明 JSON 本身不能授予 Runtime 未开放的权限。
 
-```text
-稳定系统指令                                      （工具 Schema 单独提供）
-→ workingSummary（如果存在）
-→ compactedMessageCount 之后的活跃消息              （包含保持原样的近期 thinking）
-→ RUNTIME_CONTINUITY_STATE                         （必需控制事实）
-→ RUNTIME_CONTEXT_DATA                             （工作区补充 + 精选记忆/证据）
+[instructions.ts](../src/prompts/instructions.ts) 加载项目 `EASYCODE.md` 指导。它用于表达项目约定，不是覆盖 Runtime 安全策略的授权渠道。
+
+## 5. 模型适配、请求与用量统计
+
+[providers/](../src/providers) 基于共享的 OpenAI-compatible 适配器接入 Qwen、DeepSeek、GLM 和 GLM Coding Plan。[模型目录](../resources/prompt-bundle/models/catalog.json) 保存模型 ID、端点相关元数据、视觉/thinking 支持和上下文窗口。
+
+当前传输明确使用 **`stream: false`**：接收有大小上限的完整 JSON 响应，再统一处理正文、原生 reasoning、工具调用、结束原因和用量。终端显示“正在思考”不代表底层使用 SSE 或逐 Token 流式响应。
+
+供应商特有代码只负责 thinking 参数、GLM 工具 Schema 兼容等协议差异。记忆策略、容量恢复和重试计数保持供应商无关。本地输出/存储上限**不会转换成发送给服务端的 `max_tokens` 或 `max_completion_tokens`**。为保护本地进程，HTTP 响应仍有独立的字节上限。
+
+[model-retry.ts](../src/runtime/model-retry.ts) 集中控制模型重试，适配器不再叠加另一层重试循环。[task-budget.ts](../src/runtime/task-budget.ts) 对主 Agent、子 Agent、审查和辅助请求统一预留、结算请求数及 Token 预算；Resume 不会补回已消耗额度。
+
+[usage/](../src/usage) 按请求用途、角色、供应商/模型记录耗时和可获得的 Token / 缓存指标。供应商没有返回用量不等于消耗为零；缓存输入和 reasoning 子项不能再次叠加到总 Token 中。
+
+## 6. 文件工具、工作区状态与 Git
+
+[工具注册表](../src/tools/registry.ts) 创建工具，Runtime 再按角色和模式过滤。工具同时包含模型可见的 JSON Schema、本地 Zod 校验和结构化结果/错误协议。
+
+文件操作使用规范化路径、受保护路径规则及源码哈希。搜索结果只证明文件位置，不代表模型已读过文件，更不授权直接覆盖它。
+
+- `read_file` 默认读取 100 行，单次最多 1,000 行，同时受到 24,000 Token 结果预算限制。
+- `search_files` 限制遍历、字节和匹配数量，并按规则避开依赖、缓存等目录；它搜索本地文件，不执行联网搜索。
+- `update_file` 要求此前读取过对应版本，并校验预期 SHA-256。旧文本/新文本按字面量替换，区分歧义匹配和显式全部替换。
+- 创建、更新、删除操作在修改前检查前置条件；版本冲突必须返回错误，不能覆盖并发变更。
+- 展示裁剪不能把不完整的文件修改参数变成可执行操作。
+
+源码：[tools/](../src/tools)、[workspace/](../src/workspace)。
+
+Git 感知的变更追踪处理相关已跟踪、暂存、未暂存及未跟踪文件；非 Git 工作区使用快照退化方案。受管理的子 Agent Worktree 可以从包含本地变更的当前快照启动，交接结果前检查基线及冲突。
+
+Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问围绕工作区边界；显式宿主机/完全访问能力是另一种权限，不能与普通工作区权限混为一谈。
+
+## 7. 命令系统：审批、执行和网络边界
+
+### 7.1 审批决策
+
+[command/approval.ts](../src/command/approval.ts) 与应用回调区分用户审批和独立命令审批 Agent。
+
+| 批准模式 | 行为 |
+| --- | --- |
+| 请求批准 | 每个新命令需要用户批准；已有适用的 Thread 前缀授权可以复用 |
+| 帮我批准 | 独立、无工具的模型请求给出“此次允许 / 允许此前缀 / 拒绝”；拒绝或失败时，在允许交互的环境里转交用户 |
+| 完全访问 | 不要求命令审批，不启用宿主机 OS 沙箱；以当前系统用户权限运行 |
+
+`-y` 选择自动审批，不等于完全访问。CLI 的 `--approval safe|ask|never` 还控制交互提示行为，不能简单等同于这三种权限模式。
+
+前缀授权经过校验，限定于当前 Thread 及其后代，并绑定命令身份和执行范围。Shell / 解释器参数不能仅按可执行文件名粗略匹配。前缀授权不是全局永久允许所有“看起来相似”的命令。
+
+空闲时切换到手动审批会关闭 DAG / 子 Agent 编排；还有未完成的 DAG / 子 Agent 时禁止切换。审查会话使用独立审批流程，不继承主 Agent 的完全访问权限。
+
+### 7.2 生命周期与结果返回
+
+命令流程为：规范化 → 可执行文件/Shell 解析 → 策略与审批 → 受监督启动 → 终态结果和清理。结构化 `program`、`args`、`cwd` 支持相对或工作区内绝对目录，以及合法的多行解释器参数。不完整参数返回错误，不猜测、不截断执行。
+
+`run_command` 对 Agent 表现为同步调用。`start_command`、`poll_command`、`cancel_command` 通过命令 ID 管理长时间任务。超时、取消、进程树清理、执行状态不明由 Runtime 处理；完全访问也不取消这些正确性约束。
+
+命令输出分成多层表示：
+
+- 有界验证收集器独立观察执行输出，不依赖模型最终看到的短摘录。
+- 首尾收集器限制内存中的实时输出。
+- 磁盘归档在单命令、单 Thread 配额内保存已捕获输出。
+- 模型接收精简投影，包括诊断摘录和可用的召回引用。
+
+默认每个流捕获 256,000 字符，单命令归档 32 MiB，单 Thread 归档 256 MiB；成功/失败命令的模型摘录通常为 2,000 / 16,000 字符。这些是不同预算，不是同一个截断阈值。归档耗尽或捕获不完整需要明确标记。
+
+管道最外层返回零**不能证明测试通过**。[verification.ts](../src/command/verification.ts) 和进展观测单独解释能可靠识别的测试终态。输出超限与清理失败也分开处理；只有清理/安全状态确实无法确认时才应隔离执行环境。
+
+### 7.3 执行后端与网络访问
+
+[sandbox/](../src/sandbox) 选择平台受限执行、宿主机不受限执行或受信任的 Benchmark 容器后端。受限执行包含平台设置、预检、路径保护、命令租约和清理；不能将“沙箱不可用”悄悄当作“隔离正常”。
+
+普通 CLI 联网行为遵循执行环境和批准模式，**不是所有模式统一禁网**。[network-gate.ts](../src/command/network-gate.ts) 对代理连接实施授权与目标检查，避免批准前解析/连接目标。HTTPS CONNECT 是隧道而非 TLS 解密代理，不能证明加密请求在业务语义上只读。
+
+[下载 Broker](../src/downloads) 是另一条受控制品下载路径，通过目录、URL、哈希、大小和重定向检查约束下载。它不是通用搜索接口，也不能让完全访问的宿主机命令自动变安全。
+
+Benchmark Worker 另外实施网络隔离；供应商 API 请求属于控制器，不属于执行器。普通 CLI 的完全访问有意保留很强的能力，只适合用户信任的任务。
+
+## 8. 持久化、恢复与事实来源
+
+[threads/](../src/threads) 以追加式 JSONL 保存事件序号、身份和控制记录，并执行持久化追加。事件折叠恢复会话/控制状态；租约与回合所有权防止竞争写入。恢复会保守处理损坏尾记录，而不是随意忽略日志中间的损坏。
+
+[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、版本迁移、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。仓储包括线程索引/检查点、项目记忆、来源记录、证据、摘要快照和检索状态。
+
+不同存储的数据地位不同：
+
+| 数据 | 定位 |
+| --- | --- |
+| Thread 事件 Journal | 会话与控制状态重放的权威事件历史 |
+| 项目记忆、原始工具证据 | SQLite 中的持久化主数据，并非都能从较短的会话 Journal 重建 |
+| Checkpoint、事件查询索引 | 恢复和查询加速结构，必须与权威事件一致 |
+| FTS、Embedding、Orama 索引 | 可以从保留的源数据重建的派生检索结构 |
+| 工作区文件、图片制品、命令归档 | 独立持久化制品，各自有生命周期和配额 |
+
+清空活跃上下文不会删除这些数据。`/clear` 只清理终端展示；`/new` 开始新的私有会话历史，仍能访问项目长期记忆；`/resume` 恢复线程状态。删除 Benchmark Job 目录并不等于清空 EASY CODE 的全部数据。
+
+## 9. 统一记忆与检索
+
+### 9.1 短期上下文与角色隔离
+
+[ContextManager](../src/context/manager.ts) 和 [memory-controller.ts](../src/context/memory-controller.ts) 区分模型的活跃上下文、原始事件及留存证据。主 Agent、子 Agent、审查参与者复用上下文/检索机制，但各自拥有私有历史。
+
+| 角色 | 私有短期历史 | 项目长期记忆 |
+| --- | --- | --- |
+| 主 Agent | 自己的 Thread | 读取；经暂存、校验后写入 |
+| 子 Agent | 自己的任务、工具交互和结果 | 只读 |
+| 审查 Author / Reviewer | 自己的审查 Thread 和显式共享材料 | 只读 |
+| 命令审批 Agent | 有界的一次性审批材料包 | 不开放普通记忆管理工具 |
+
+子 Agent 不能隐式搜索父 Agent 的私有会话。任务说明、结果提交和审查材料包是显式交接边界。
+
+请求按稳定系统前缀、活跃历史、新增材料组织，不将可选检索结果反复插入未变化的历史前方。这有利于前缀复用，但不保证供应商缓存命中或总成本降低。
+
+近期原生 reasoning 在需要时随完整交互保留；较早交互可以整体退出活跃上下文，正常策略不反复改写单个 thinking 片段。检索索引排除私有 thinking，但获得权限的历史召回仍可读取保留的原始记录。
+
+### 9.2 证据引用与召回
+
+[EvidenceStore](../src/context/evidence-store.ts) 在生成模型投影之前捕获工具证据。压力升高时，较早的大结果可以替换为描述和稳定证据引用。引用指向历史内容，不等于确认当前文件未变或当前测试仍然通过。
+
+`search_context` 查找相关留存记录；`recall_context` 读取证据、索引制品、Journal 消息/摘要、审查材料或命令归档分页。引用需要校验身份、范围，并支持有界分页。缺失、截断、过期材料必须如实标记，不能补写成事实。
+
+近期召回证据会暂时受到保护，避免刚展开又被折叠。Journal、证据库和命令归档各有边界，“保留”不代表无限容量，也不保证任何结果都完整保存了全部字节。
+
+### 9.3 项目长期记忆与 RAG
+
+[memory/](../src/memory) 保存项目级的小型事实，分为偏好、约定、架构、决策和环境。主 Agent 的写入先暂存，再校验来源；明确用户要求或版本化源码证据用于支持持久化更新。源文件变化后，相关记忆可以被标为待验证并停止自动注入。工作摘要和 Reviewer 猜测不会自动升级为已验证长期事实。
+
+本地检索流程：
+
+1. 对符合条件的消息、工具材料和已接受摘要建立带来源 ID、偏移和哈希的索引。
+2. 分批切块保留覆盖范围，不只索引大材料的开头与结尾。
+3. 使用 SQLite FTS5 词法检索及多语言/CJK 处理。
+4. 可选地使用 Hugging Face tokenizers 和 ONNX Runtime，在本地生成 384 维 MiniLM 向量，执行池化与归一化。
+5. 融合词法/语义排序、去重、检查相关性，再按共享记忆预算注入。
+
+固定版本的 `Xenova/paraphrase-multilingual-MiniLM-L12-v2` 有较短的单窗口输入限制，长文本通过窗口/切块处理，而不是整段会话一次嵌入。Orama 加速派生向量查询；向量缺失或生成失败退化为词法检索，不直接中止任务。
+
+默认自动注入 2,000 Token，扩展召回 12,000 Token，最多选择六项；单条持久化事实受 1,200 字符和 400 估算 Token 限制。RAG 提供背景，不是统计“同一失败出现几次”的权威来源。
+
+## 10. 上下文容量、压缩与降级
+
+### 10.1 容量模型
+
+默认配置窗口为 1,000,000 Token，并受模型元数据上限约束。有效输入额度还要扣除回答、工具结果和安全预留。按当前默认预留，1M 窗口约有 **851,696 输入 Token**，并非能直接放入一百万 Token 的历史。
+
+Token 计数使用保守本地估算、图片计量和供应商用量校准，不是所有模型的精确分词器。旧的 250,000 字符配置用于字符模式退化路径；启用 Token 模式时，它不是额外的 25 万字符硬上限。
+
+压力比例相对于有效容量计算：
+
+| 压力 | 行为 |
+| --- | --- |
+| 80% | 撤掉可选记忆/RAG 注入，将符合条件的旧大工具结果引用化，目标降至 60% |
+| 90% | 引用化后视冷却、预算等条件进入语义压缩 |
+| 95% | 标记强压力，跳过适用的冷却/增长检查，不跳过证据完整性和总预算检查 |
+| 100% | 普通请求前必须恢复容量；有界降级仍放不下必要内容才可恢复地暂停 |
+
+源码：[token-budget.ts](../src/context/token-budget.ts)、[compaction-policy.ts](../src/context/compaction-policy.ts)、[pressure-recovery.ts](../src/context/pressure-recovery.ts)。
+
+### 10.2 草稿纸与摘要事务
+
+压缩请求使用可选的临时 `<analysis>` 块和最外层 `<summary>` 块。提取成功后丢弃草稿，只把正式摘要放回活跃上下文。供应商独立返回的原生 reasoning 不会拼进摘要正文。
+
+提取器检查完整、无歧义的摘要边界。格式/内容错误默认最多纠正两次；仍失败时，可使用非空正文作为明确标注“未经验证”的降级材料。降级正文可能保留 XML 草稿文字，不能等同于干净的正式摘要。合法的结构化 `compact_context` 提交仍被支持。
+
+只有长度超限时直接本地裁剪，不再请求模型重写。当前默认摘要预算为 8,192 Token，另有 64,000 字符保护和语义字段 4,000 字符限制。这是存储/投影预算；可执行工具参数仍严格校验。
+
+压缩事务绑定来源快照与完整工具调用/结果边界，保护最近五个有效交互，不把中性轮询当成五轮新推理。准备/应用事件支持幂等恢复，不能通过 Resume 重新获得纠正额度。
+
+### 10.3 最终降级
+
+恢复依次使用引用化、有界摘要、确定性历史淘汰/重建，以及只保留需求的重置。服务端容量拒绝后，必须实际减小请求，不能只凭本地估算再次判定“恢复成功”。
+
+最终重置删除的是模型历史上下文，保留真实用户需求以及系统、工具、权限基础。它**不会删除**文件、事件历史、命令句柄、子 Agent / DAG 状态、已消耗预算和交付要求。继续修改前需核对现场；必要内容仍放不下时返回可恢复失败，而不是无限循环或伪造完成。
+
+## 11. Plan、DAG、子 Agent 与审查
+
+[plans/](../src/plans) 管理面向用户的提案及修订；[tasks/](../src/tasks) 管理独立的无环依赖图，检查节点所有权、就绪/领取条件和完成状态。Plan 不会天然变成正在运行的 DAG。
+
+[subagents/coordinator.ts](../src/subagents/coordinator.ts) 创建独立子线程，通过结构化任务说明和结果协作。none / low / medium / high 默认并发为 2 / 2 / 4 / 8，每回合最多创建八个子 Agent，DAG 最多 16 个节点。编排默认关闭，启用需至少“帮我批准”。子 Agent 失败只通知父 Agent，不自动重跑，也不标记完成。
+
+### 11.1 进展证据
+
+[observation.ts](../src/progress/observation.ts) 从原始工具结果生成有界观测，先记录事件，再更新 [guard.ts](../src/progress/guard.ts)。它不从压缩摘要或 RAG 推断失败次数。
+
+不同验证周期中的相同高置信度失败可以触发介入。目标/结果签名区分验证意图、失败用例和易变输出。新增证据与已验证改善不同；无法解释的命令成功不能当作测试通过。
+
+调查检测还观察窗口内的重复读取/搜索；只有“很久没修改文件”不足以证明停滞。测试基线变化单独记录：Agent 修改过的测试可以补充证据，但不能单独证明同一 Agent 的补丁正确。
+
+### 11.2 隔离审查讨论
+
+正常应用将 [runWorkspaceReview](../src/review/application.ts) 接入 Runtime，用于停滞和交付审查。Progress 模块还保留在未提供此回调时使用的有界结构化审查路径；二者都不是命令审批 Agent。
+
+准备稳定快照和审查期间暂停主线程修改。独立的 Author / Reviewer 获取显式简报、证据、各自私有历史和独立工作副本。双方可以读取、搜索、运行经批准的命令，但不开放普通编辑工具、DAG、子 Agent 管理或长期记忆写入。命令可能改变一次性审查副本，不代表允许修改主 Agent 的实时工作区。
+
+提案及投票绑定需求版本和工作区指纹。双方同意不自动成为事实：Runtime 还要检查证据、未解决事项、独立实验和交付条件。快照变化会使旧结论失效。
+
+默认最多讨论五轮，另受 32 次模型请求、20 次工具调用和十分钟上限约束。未达成有效共识时，双方分别输出摘要，由有界交接材料将分歧和不确定性返回主 Agent。完整讨论保留供召回，不整段注入主上下文。
+
+简报、单方摘要、交接材料默认分别为 6,144 / 4,096 / 12,288 Token。收尾请求占用预留的共享预算，不拥有无限额外预算。审查通过 discussing、closing、decided、applied 等状态持久化，避免 Resume 时重新讨论或重复应用。
+
+## 12. 重试与截断规则
+
+| 错误类型 | 默认自动处理 |
+| --- | --- |
+| 可重试的模型 API / 网络 / 限流错误 | 重试五次，总共六次尝试，有界退避 |
+| 模型内容缺失或不合法 | 纠正两次，总共三次尝试，再按协议降级或失败 |
+| 明确的上下文容量拒绝 | 恢复后以更小上下文重试一次 |
+| 命令非零退出、超时、取消、是否执行不明 | 不自动重放命令 |
+| 临时沙箱初始化故障 | 给模型一次重发机会；第二次失败明确报告环境不可用 |
+| 子 Agent 失败 | 通知父 Agent，不自动重启 |
+| 不满足条件的提前结束 | 返回原因，不自动重试结束操作 |
+| 展示/存储内容超长 | 按对应预算本地裁剪，不因长度单独触发格式纠正 |
+
+认证失败、取消不属于通用临时 API 错误。内容纠正也是一次实际模型请求，计入共享预算。模型请求重试、内容纠正、模型主动选择新的诊断命令是不同计数，不能混在一起。
+
+展示摘要和留存文本允许裁剪；命令、文件修改、审批、任务完成合约等可执行或权威结构必须完整校验，绝不能执行半截命令。
+
+## 13. 终端、图片与编辑器集成
+
+[ui/](../src/ui) 实现消息状态、布局、视口虚拟化和差量终端写入。不可变消息节点与布局缓存减少重复渲染；宽字符、ANSI 序列、非交互输出分别处理。Thinking 展开/折叠属于展示状态，不是删除模型历史。
+
+[cli/](../src/cli) 处理输入、菜单、审批和排队的用户补充指令。应用协调安全中断点，区分正在等待的模型请求和已启动的受监督命令。
+
+[images/](../src/images) 检查图片字节、尺寸和请求边界，保存按内容寻址的制品并记录附件来源。只有兼容模型才能收到图片；图片标签或路径本身不是任意文件读取授权。
+
+[VS Code 扩展](../vscode-extension) 通过经过认证、消息大小受限的本地回环桥接，与绑定的终端交换菜单、附件和 Thinking 链接操作。它是编辑器/UI 通道，不是另一套不受约束的命令执行接口。
+
+## 14. Benchmark 隔离
+
+[SWE-bench 指南](../benchmarks/swebench_verified/README.md) 提供准备和运行方式。TypeScript CLI 选择用例并启动 Python Harbor 适配器。
+
+当前分离式环境包含：
+
+- **Controller：** 访问模型 API，持有 Runtime 状态，通过宿主机拥有的桥接程序编排。
+- **Worker：** 执行模型命令；完全访问只限任务容器内部，使用离线网络、私有 IPC 和有界共享内存。
+- **官方 Verifier：** Agent 交接后由 Harbor 评测，独立于本地测试和模型结论。
+
+Worker 不获得供应商密钥、Docker Socket 或宿主机桥接程序。共享任务文件与控制器受保护的 Git 元数据分离；审查使用隔离副本/离线 Worker。依赖准备、安装发生在模型离线命令阶段之外。
+
+[split_environment.py](../benchmarks/swebench_verified/split_environment.py) 管理 Docker 监督和恢复，[benchmark-worker.ts](../src/sandbox/benchmark-worker.ts) 将命令事件转换为 Runtime 结果。执行失败、输出超限、清理失败分别记录，不需要开启特权 Docker 来强行支持嵌套 OS 沙箱。
+
+离线执行减少外部查找渠道，但不证明补丁正确，也不能消除模型已有知识。本地测试通过、Reviewer 同意和官方分数必须分别报告。
+
+## 15. 构建、验证与扩展方式
+
+```bash
+npm install
+npm run typecheck
+npm test
+npm run build
+npm pack
 ```
 
-动态检索材料不放入稳定系统前缀，以利于前缀复用；这不是 Provider 缓存命中的保证。消息构建器不会为了凑容量而悄悄修改持久消息或截断 thinking。当前通用消息/thinking 投影是非破坏性的；大工具正文由后文的独立有界投影处理。
+安装可能准备/下载固定版本的向量模型和编辑器集成。`build` 校验并构建 Prompt Bundle，再编译 TypeScript。测试使用仓库测试框架与 VS Code 扩展测试；真实供应商调用和 Benchmark 属于单独的集成评估。`prepack` 构建并校验捆绑的 VSIX 后生成 npm 制品。
 
-Thinking 以 `reasoning_content` 保存，不逐段改写，也不在下一次模型响应后立即删除。较早的完整交互可以整体退出活跃上下文；紧急最小重建也可整体移出最新一组**已闭合**交互及其 thinking。普通 RAG 不索引 thinking；必要时可通过精确历史消息引用读回序列化消息。UI 折叠或展开 thinking 不改变此策略。
+扩展项目时：
 
-`RUNTIME_CONTINUITY_STATE` 保留已退出活跃消息的普通用户要求原文并脱敏，不只保留意图账本摘录。它还携带目标/约束、Plan/DAG 所有权与要求、最新文件变更、待处理调整、命令与子 Agent 句柄、未解决命令结果、停滞事件、review 预算和未验证 review/实验状态。无关命令成功不能抹去先前失败；摘要不能完成任务、解决失败或重置执行/reviewer 预算。
+- 新工具需要同时补齐实现、Schema、提示元数据、注册、角色能力过滤和校验/安全测试。
+- 新模型/供应商通过目录元数据和适配器规范化接入，不把共享记忆或重试策略塞进供应商特有代码。
+- 新持久化状态应同时提供事件校验、状态折叠、检查点/重放及中断测试。
+- 新运行预算应同步默认值、Schema、配置示例和测试；不能悄悄把安全不变量变成软预算。
+- 重点测试命令失败不重放、文本裁剪与可执行参数的区别、过期审查快照、预算恢复和只保留需求的重置。
 
-工作区补充中的 Working Checkpoint 是近期文件/变更/命令和任务状态的确定性、有界恢复地图，不需要调用摘要模型，并避免重复注入已有连续性数据。它既不是 Thread 恢复 Checkpoint，也不能取代权威 Runtime 事实。
-
-### 6.3 长期记忆生命周期
-
-`manage_memory` 按当前能力配置提供 `search`、`recall`、`remember`、`revise` 和 `forget`。历史回读与长期存储是不同动作；摘要和 RAG 命中不会自动成为持久项目事实。
-
-1. 提出五种类别之一的单条原子事实，默认最多 1,200 字符（仍须为单条原子事实，并受 400 个估算 Token 限制）。Runtime 拒绝敏感信息、猜测和明显的任务流水账；这些检查不是通用的真假判定器。
-2. 对 `remember`/`revise`，应用 Runtime 要求 `sourceRefs`。`user` 必须对应用户明确表达的长期偏好/约定或决策；项目/环境事实目前要求同一工作区、同一 Thread 内成功、未截断且包含文件版本的 `read_file` 证据。证据身份只校验来源，不保证任意自然语言结论都能由它推出。
-3. 校验后暂存变更。工具返回“已暂存”不等于已写入数据库。`revise`/`forget` 必须使用本回合搜索返回的记忆 ID；`forget` 不要求新的事实来源证据。
-4. 只有允许的 `turn.completed` 结果才提交已验证批次：`success`，或用户有明确持久意图、且仅写入 preference/convention 的 `planned`。失败、中断和触及上限的回合不提交提案。每回合最多八次记忆变更。
-5. SQLite 事务提交记忆和修订历史；向量属于派生数据，其失败不撤销有效记忆提交。同类别、规范化内容完全相同的 `remember` 是 no-op，不刷新时间戳或置信度。
-6. 自动检索重新校验来源文件路径和哈希。来源变化、缺失、路径不安全，以及缺少依据的旧版项目事实，会变为 `needs_verification` 并停止自动注入。显式审计/搜索仍可查看不能自动使用的记录。
-
-同一工作区的新 Thread 保留长期记忆及修订。长期记忆仍只是有来源的陈述，不能授权跳过当前文件读取、版本校验或任务验证。
-
-### 6.4 历史 RAG 与统一回忆预算
-
-Thread 索引增量处理新持久化的用户文字、模型公开正文/工具名、有用工具结果及已接受的语义摘要快照；不索引系统指令和 thinking。缺少语义快照元数据的紧急降级说明不会自动成为语义摘要索引条目；先前摘要文本仍可通过 Journal 引用恢复。
-
-已捕获的来源按可配置的 96,000 字符批次处理，不再在分块前丢掉中间内容；上游采集已经截断的内容无法由索引恢复，并明确标记。分块配置变化会重建派生索引。分块保存来源偏移、哈希，以及可用的文件路径/版本/行号元数据。固定本地 `paraphrase-multilingual-MiniLM-L12-v2` 模型产生 384 维向量，每个分词窗口最多 128 Token，包含特殊 Token；分词器不可用时退回 1,400 字符窗口、160 字符重叠。较长 Embedding 输入聚合多个窗口，不默默丢掉尾部。Embedding 的 Token 单位与聊天上下文估算不是同一回事。
-
-SQLite 提供关键词搜索及适合中日韩文本的回退；可选本地向量和可丢弃的 Orama 缓存提供语义候选。Thread 关键词/向量排名融合后去重。后台补齐向量期间仍可使用关键词检索，向量失败退回词法搜索；查询 Embedding 本身仍有本地计算成本。检索使用本地数据与推理，不调用外部网页搜索或聊天模型 API；准备缺失模型资源时可能另行下载。
-
-每次普通请求前，记忆控制器：
-
-1. 根据当前任务/用户要求、命令结果和相关路径生成最多三个有界查询；查询/状态签名变化时更新缓存候选。
-2. 搜索工作区长期记忆与私有 Thread 历史。普通自动历史检索仅覆盖 `compactedMessageCount` 之前；显式历史搜索可查看当前 Thread 中超出这一自动边界的已有消息。
-3. 排除非活跃/临时记忆、不相关命中、完全重复、已经可见/覆盖的证据，以及已知过期文件版本。相似度不代表相关性或时效性。
-4. 两种来源共用**一份预算**：通常 2,000 个估算 Token；压缩边界/DAG 节点变化，或最新命令尚不是已观察到的零退出结果时，上限可扩展到 12,000，总计最多六项。后一条件也包含运行中的命令。Token 模式额外受模型窗口 8% 限制；只有旧字符模式使用 `floor(maxContextChars / 24)`。
-5. 请求有压力时先移除可选回忆，再考虑移出活跃历史。检索是补充信息；Runtime 不会为了塞入更多 RAG 命中而牺牲必需任务状态。
-
-### 6.5 工具输出、证据捕获与精确回读
-
-Runtime 在面向模型的裁剪之前，按工作区 / Thread 保存不可变、已脱敏的结构化工具证据。保存的是工具实际**捕获**的数据，不承诺无限原始输出。命令新增头尾截取前的 stdout/stderr 磁盘归档：`commandArchiveMaxBytes=33554432`（单命令两路合计 32 MiB）、`commandThreadArchiveMaxBytes=268435456`（单 Thread 256 MiB）。采用 UTF-16LE 便于按字符偏移读取有界页面。配额耗尽或归档 I/O 失败会明确标记缺失后缀、不完整状态，不重试命令，也不把原本成功的命令变成失败。归档不自动删除；内存采集器每路最多保留 `maxOutputChars=256000` 字符。
-
-| 面向模型的内容 | 可配置默认值 |
-| --- | --- |
-| 命令调查 / 成功 / 失败输出 | `commandQueryChars=24000` / `commandSuccessChars=2000` / `commandFailureChars=16000`；`commandMaxDiagnostics=16` |
-| 文件定位 / 显式读取 | `defaultReadLines=100` / `maxReadLines=1000`；`maxReadResultTokens=24000` |
-| 文件搜索 | `searchMaxResultTokens=6000` |
-| 普通工具外壳 / 单批工具正文 | `maxToolResultChars=64000` / `contextToolBatchTokens=65536` |
-| 证据回读页面 | `evidenceRecallDefaultChars=8000`，`evidenceRecallMaxChars=32000` |
-
-裁剪优先保留有用诊断、完整搜索项和完整代码行，最后才退回证据 ID；预算包含 JSON 元数据和转义。实际命令参数、工具参数及验证证据不会靠截断变成“合法”。重复轮询仍返回增量或变化后的终态。
-
-`recall_context` 与具备权限的记忆回读可使用精确引用：`evidence_…`（结构化工具证据）、`context_…`（历史索引片段）、`command_output_…`（进程输出）、`ev_…`（Runtime 证据目录）、`journal_message_<index>`（原消息）、`journal_summary_<sha256>`（旧摘要）。`artifact:<哈希前缀>` 必须唯一匹配；`review:<id>:author|reviewer|briefing|evidence` 对应明确共享的审查材料。历史回读不授权访问任意其他 Thread，也不能证明当前代码通过验证。
-
-### 6.6 容量统计与配置
-
-上述及下表中的运行容量、内容预算统一从 `src/config/runtime-defaults.json` 加载，由 `src/config/runtime-limits.ts` 校验；`docs/config.example.toml` 提供 `[limits]` 覆盖示例。阈值顺序、目标与触发点、回读页面上限、磁盘配额和审查交接余量存在交叉校验。协议身份、参数类型、权限以及有限安全边界仍严格保留。
-
-默认 `maxContextTokens=1000000` 是**模型窗口**，不是可用输入额度，也不是精确分词器计数。已知模型按目录中的官方窗口取较小值；用户设置更小的窗口仍生效。Provider 无关估算包含系统规则、普通工具 Schema、thinking、工具参数/结果和图片。主 Runtime 利用真实 prompt usage 保守校准；消息估算缓存避免反复扫描未变化的大文本，正文、thinking、嵌套参数或图片变化时失效。
-
-```text
-可用输入 = W
- - min(maxResponseTokens, floor(W × contextOutputReserveRatio))
- - min(contextToolReserveTokens, floor(W × contextToolReserveRatio))
- - max(contextSafetyReserveTokens, ceil(W × contextSafetyReserveRatio))
-
-W=1,000,000 时的默认值：
-1,000,000 - 32,768 - 65,536 - 50,000 = 851,696 Token
-```
-
-预留量仅用于本地容量管理，**不向服务端发送 max_tokens**。压力百分比相对于可用输入，而不是原始 1M 窗口。`maxContextTokens=0` 才显式使用旧字符模式（`maxContextChars=maxActiveContextChars=250000`）；Token 模式不会再叠加 250k 字符的第二道窗口，工具结果余量同样如此。
-
-| 阶段 / 内容 | 可配置默认值 |
-| --- | --- |
-| 压力 / 引用化触发与目标 | `contextReferenceTriggerRatio=0.8`，`contextReferenceTargetRatio=0.6` |
-| 摘要触发与目标 | `contextCompactionTriggerRatio=0.9`，`contextCompactionTargetRatio=0.6` |
-| 高压力 / 恢复可选记忆 | `contextForceRatio=0.95`，`contextMemoryResumeRatio=0.6` |
-| 近期交互 / 刚回读的证据保护 | `compactionRetainRecentExchanges=5`，`contextRecallProtectionExchanges=2` |
-| 压缩增长冷却 | `contextCompactionMinGrowthRatio=0.1`，由 `contextCompactionMaxGrowthTokens=32768` 封顶 |
-| 自愿压缩最小新增 / 节省 / 比例 | `contextCompactionMinNewTokens=8192`，`contextCompactionMinSavedTokens=8192`，`contextCompactionMinSavingsRatio=0.1` |
-| 压缩摘要 / 字符保护 / 语义字段 | `contextSummaryMaxTokens=8192`，`contextSummaryMaxChars=64000`，`contextSemanticFieldMaxChars=4000` |
-| 审查开场 / 每人结尾摘要 / 合并交接 | `reviewBriefingMaxTokens=6144`，`reviewSummaryMaxTokens=4096`，`reviewHandoffMaxTokens=12288` |
-| 每位参与者结尾请求的输入预留 | `reviewClosingInputReserveTokens=100000`，另加输出预留；实际请求仍全额计费，不以预留量截断 |
-| 子 Agent 指令 / 追问 / 结果摘要 | `subagentInstructionsMaxChars=12000`，`subagentFollowUpMaxChars=8000`，`subagentSummaryMaxChars=12000` |
-| 自动 / 扩展共享回忆预算 | `memoryAutoTokens=2000`，`memoryRecallTokens=12000`；最多六项、三个查询 |
-| 长期原子事实 | `memoryContentMaxChars=1200` 与 `maxDurableMemoryTokens=400` |
-| 索引处理批次 / 回退分块 / 重叠 | `artifactIndexBatchChars=96000`，`artifactChunkChars=1400`，`artifactChunkOverlapChars=160` |
-
-只增加选定的内容预算；简短成功输出、自动记忆注入、读取行数、审查五轮、并发数量（none/low 两个、medium 四个、high 八个）、审批、网络隔离和重试次数均不扩大。子 Agent 与 reviewer 仍使用私有历史，只有主 Agent 能管理项目长期记忆。审查交接优先保留 Runtime 决策状态和原始提案，过大的证据与限制条件提供分页回读；文字裁剪或双方同意都不能自行产生交付批准。
-
-### 6.7 分级恢复：保留工作，减少活跃历史
-
-1. **80%**：移除可选记忆 / RAG，将较早的大工具结果替换为引用，目标 60%。保护近期五个有效交互及刚召回的证据，中性轮询不占有效交互计数。只改变派生投影，不覆盖原始证据。之后重新测量实际下一次请求，不能用引用化之前的旧压力值多买一次摘要。
-2. **90%**：引用化后仍有压力，且预算与冷却允许时，只摘要足够释放空间的最小**旧连续前缀**，保留近期完整交互。不要求先有成功测试或模型认定的“阶段结束”；调查未完成、结论未验证必须保留。**95%** 的 force 跳过增长冷却，不跳过证据一致性、完整工具调用边界或共享请求预算。
-3. 使用可选 `<analysis>` 草稿和唯一完整外层 `<summary>`。成功提取后删除草稿，不把 provider 原生 thinking 当摘要；合法的旧式结构化 `compact_context` 仍兼容。格式 / 内容错误按 `modelContentRetries=2` 纠正（总计三次），长度超限本地按字段与摘要预算裁剪，不重试。真正要执行的参数、必需类型与证据身份继续严格校验。
-4. 提交必须满足来源 / Runtime 事实快照未变化、完整交互边界向前推进、实际缩小且**下一次普通请求**能装下。60% 是优先争取的余量，不因达不到软目标就拒绝有用摘要；高压力时冷却不能阻断恢复。
-5. 摘要缺失 / 无效或空间不足时，进入确定性整组交互与旧摘要淘汰、原有的有限最小重建。格式纠正耗尽后可保留最后一份非空、非原生 thinking 的正文，但明确标记未经验证。原生 thinking 不逐段改写。
-6. **100%**：恢复容量前不发普通请求。最终按用户需求重建模型历史，但文件、Journal、命令 / 子 Agent / DAG 状态、权限和已用预算留在 Runtime。服务端明确拒绝容量时共用有限重置机制，不额外调用摘要模型，不自动重放命令。
-7. 如果必要规则、Schema 和用户要求经过各级恢复仍放不下，返回可恢复的 `context_capacity_exhausted`，绝不假装完成。API 重试五次、内容纠正两次、容量重发一次、命令重放零次维持不变；子 Agent 失败仅通知父 Agent。取消、凭据、日志损坏及真实清理故障保持独立分类。
-
-稳定系统前缀、普通历史在前，最新 Runtime 数据在后。压力切换、引用化和已接受摘要会合理地改变前缀；更大窗口可能减少破坏缓存的压缩次数，但**不保证**缓存命中率、效果或总成本一定改善，仍需长任务对照评测。
-
-### 6.8 回放、用户指令与验证边界
-
-`context.compaction.*` 与 `context.compacted` 记录摘要尝试/提交；`context.history.evicted` 记录工具引用、整体历史退出或最小重建，包含来源/事实身份和精确恢复引用；`context.maintenance.checked` 记录已评估历史、请求身份、大小及容量暂停。事件回放恢复边界和已消耗的摘要/重建预算；过期 Checkpoint 不能推进边界或重置额度。恢复后待处理命令/子 Agent ID 与 reviewer 实验仍可继续操作。
-
-`/memory short [limit]` 查看短期状态；`/memory long [id]` 查看工作区记忆及审计状态，两者均只读。`/clear` 清除终端显示，不清模型上下文或持久记忆。`/new` 创建新 Thread，但保留工作区长期记忆；`/resume` 恢复已有 Thread，不是从空对话开始。也不能假定清理独立的 benchmark Job 目录会同时删除其他 EASY CODE 数据根或恢复存储。
-
-本地测试覆盖请求容量、坏摘要、交互边界、退出消息的无损存储、有界有损重建、待处理工作、记忆选择和回放；不证明 benchmark 准确率或 Token 节省已经改善。保留 thinking、本地 Embedding、精确回读和较大的固定事实都有成本，有损退出可能导致重新阅读。应在受控长任务上比较总输入/缓存 Token、每个成功任务 Token、重复验证、耗时、容量暂停比例与 Resume 行为。
-
-主要代码入口：
-
-| 职责 | 源码 |
-| --- | --- |
-| 请求投影与必需状态 | [manager.ts](../src/context/manager.ts)、[context-request.ts](../src/context/context-request.ts)、[runtime-state.ts](../src/context/runtime-state.ts) |
-| 选择、历史索引、精确捕获 | [memory-controller.ts](../src/context/memory-controller.ts)、[artifact-index.ts](../src/context/artifact-index.ts)、[evidence-store.ts](../src/context/evidence-store.ts) |
-| 持久事实与工具接口 | [memory-manager.ts](../src/memory/memory-manager.ts)、[manage-memory.ts](../src/tools/manage-memory.ts) |
-| 容量与校准 | [capacity.ts](../src/context/capacity.ts)、[token-budget.ts](../src/context/token-budget.ts)、[token-calibration.ts](../src/context/token-calibration.ts) |
-| 摘要与本地降级 | [compaction-transaction.ts](../src/context/compaction-transaction.ts)、[pressure-projection.ts](../src/context/pressure-projection.ts)、[pressure-recovery.ts](../src/context/pressure-recovery.ts)、[exchange-boundary.ts](../src/context/exchange-boundary.ts) |
-| Runtime 接入与回放 | [agent.ts](../src/runtime/agent.ts)、[thread-store.ts](../src/threads/thread-store.ts) |
-
-### 6.9 证据驱动的进展控制
-
-Runtime 在工具输出被裁剪前，从权威结果中提取有界进展证据。版本相同的重复读取只产生弱提醒；只有跨不同验证周期、重复出现的高置信验证失败才会建立停滞事件。扁平命令协议保留原有测试与构建意图，并新增显式验证意图，可区分单元、集成、构建、类型、Lint、格式、冒烟、Benchmark 和自定义验证；验证类别进入持久化失败身份，避免把无关检查合并成同一事件。网络、权限、取消、沙箱和其他基础设施失败单独分类，不能成为“代码策略错误”的证据。
-
-每个任务最多自动启动一次隔离审查。Reviewer 只接收不可变、已脱敏的材料包，仅能提交一种严格结构化报告，不能修改工作区、执行 Shell、拥有 DAG、写记忆或控制子 Agent。有效报告必须提出一个能以终态命令结果验证的反证实验；父 Agent 得到真实实验结果前暂停普通修改。执行实验只解除门禁，只有匹配目标的已验证改善才会关闭停滞事件。Observation、请求开始/终态、用量、审查状态和实验证据均由 Journal 决定并可随 Resume 恢复；快照不完整或版本过期时失败关闭。
-
-## 7. Plan、任务 DAG、子 Agent、Worktree 与 Handoff
-
-Plan 用于实现前审核方向，DAG 用于执行中约束依赖、所有权、完成证据和结果链。任务包含目的、依赖、输入、预期产物、检查、失败处理、所有者和状态；Runtime 校验图无环且依赖有效。只有依赖完成的节点可开始，一个节点只有一个活跃所有者，完成必须为每条检查提供证据。活跃 DAG 会阻止过早最终回答并随 Resume 恢复。
-
-只有主 Agent 能创建和控制子 Agent。每个子 Agent 绑定单个任务、私有 Code-mode Thread 和执行环境，只接收有界任务、检查、必要上下文和依赖引用；它不能再创建子 Agent、管理父 DAG、写长期记忆或扩大命令权限，必须提交结构化完成或阻塞结果。父 Agent 可追加指导、等待、停止和收集结果；身份与结果先持久化再影响 DAG。
-
-| 环境 | 设计 |
-| --- | --- |
-| 共享工作区 | 与父 Agent 使用同一目录，写入串行并做版本校验。 |
-| 托管 Worktree | 独立 Git Checkout，保存基线、执行快照和结果提交。 |
-
-`auto` 在有效 Git 项目优先 Worktree，非 Git 项目使用共享工作区；显式要求 Worktree 但校验失败时不会回退。基线可来自干净起点、本地 `HEAD` 或当前本地改动快照，创建后不与父目录实时同步。托管根必须与仓库不重叠，恢复和清理均验证 Worktree 仍属于预期仓库。
-
-完成结果形成不可变 Result Artifact，记录 Agent/Task/环境、基线、结果、变更文件和依赖链；完整 Manifest 留在私有存储，父上下文只接收有界引用。后继任务只消费状态和血缘均有效的 Artifact，依赖集成冲突会保留环境并标记 `conflicted`。
-
-Handoff 是显式交付：本地 Handoff 在冲突检查后应用累计结果；分支 Handoff 创建或验证本地分支，不推送远端。已包含同一结果时可安全重试，分叉、分支占用或补丁冲突时保留 Artifact，不覆盖用户 Checkout。共享结果不能伪造为独立分支提交。
-
-## 8. TUI 与多模态
-
-TUI 是结构化状态投影：一次性会话标题、追加式对话、可重绘实时区、常驻输入框/状态栏，以及模型、审批、Plan 和 Resume 菜单。已完成内容只写入 Scrollback 一次；任一时刻只有一个组件拥有输入，菜单结束后恢复草稿、附件、光标和终端模式。非 TTY 环境降级为只追加文本。
-
-Thinking 与可见回答分开保存并按真实事件顺序展示。默认只显示短预览；VS Code 扩展通过经过认证的本地桥接在原位置展开完整内容。展开状态只属于 UI，不进入模型上下文、检索或记忆。
-
-图片先在本地解码为 PNG/JPEG/WebP/GIF 并校验，再复制到私有 Thread 存储。Journal 只保存稳定标签、媒体元数据、存储键和 SHA-256，不保存 Base64。Provider 边界再次检查哈希、数量、总字节/像素和模型视觉能力；当前图片无效会失败，不兼容历史图片可在切换模型后从请求投影省略。VS Code 扩展区分图片和多行文本；GLM Coding Plan 当前不发送直接图片 Payload。
-
-## 9. Provider 与模型目录
-
-`resources/prompt-bundle/models/catalog.json` 是 Provider、模型和能力的单一声明源，定义供应商/适配器、可信默认端点、默认模型、凭据环境变量、视觉、Thinking Profile 和 Benchmark Profile。构建时校验并绑定 Prompt Bundle 哈希；安装副本是 Runtime 托管资源，直接修改会被检测和修复。CLI、配置、Provider、图片、Thinking 和评测都消费同一目录。
-
-| 通道 | 默认端点 / 默认模型 | 当前模型（`*` 支持图片） |
-| --- | --- | --- |
-| DeepSeek | `https://api.deepseek.com` / `deepseek-v4-pro` | `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp*` |
-| Alibaba Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` / `qwen3.7-max` | `qwen3.7-max`、`qwen3.7-plus*`、`qwen3.6-plus*`、`qwen3.5-plus*`、`qwen3.5-flash*` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` / `glm-5.3` | `glm-5.3-flash*`、`glm-5.3`、`glm-5.2` |
-| GLM Coding Plan | `https://open.bigmodel.cn/api/coding/paas/v4` / `glm-5.3` | `glm-5.3-flash`、`glm-5.3`、`glm-5.2` |
-
-标准 GLM 与 Coding Plan 即使模型 ID 相同也保持端点、Key、配置、Thread 身份、用量和评测隔离。用户级配置或受支持环境变量可明确覆盖普通通道，项目配置不能；Benchmark Profile 固定 Coding Plan 端点与专用 Key，不回退。
-
-2026-09-09 核对后，目录移除四个不足 1M 上下文的 Qwen 选项：`qwen3.6-max`（官方 ID 为 `qwen3.6-max-preview`）与 `qwen3-max` 在[官方文本模型总览](https://help.aliyun.com/zh/model-studio/text-generation-model)中标注为 256K；[Qwen3-VL-Plus](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus) 与 [Qwen3-VL-Flash](https://help.aliyun.com/zh/model-studio/qwen3-vl-flash) 均为 262,144 Token。保留 14 个通道/模型选项、11 个唯一模型 ID。本次筛选不增加 Runtime 上下文预算，也不自动迁移已保存配置或 Thread 的模型选择；若此前使用已移除模型，建议通过 `/model` 重新选择保留的模型。
-
-未知模型不会被推定支持图片或可控 Thinking。Qwen 非 `none` 映射显式预算；DeepSeek `medium` 按兼容行为映射为 `high`；GLM-5.3 的强制 Profile 不用 `none` 发送未支持的关闭字段；GLM-5.2 可显式开关。Provider 网关统一取消、超时和有限重试。用量只采用供应商实际上报值，并按通道、模型、主/子角色、用途和重试区分。
-
-## 10. SWE-bench Verified Mini 评测
-
-Harbor 适配器评测公开 HAL/MariusHobbhahn 50 题集合（Django 25、Sphinx 25），不是官方完整 500 题轨道。`subset-50.json` 固定有序 Instance ID、社区修订 `b316c349…`、官方 Verified 修订 `78f471bf…`、Harbor 摘要 `sha256:b934b0…`、任务提交 `3d07b464…`，以及 `harbor==0.16.1`、`swebench==5.0.2`；完整哈希由 Manifest 保存并在运行前验证。
-
-固定 Profile 为 `glm-coding-plan / glm-5.3-flash / code / high`，端点为 `https://open.bigmodel.cn/api/coding/paas/v4`，命令固定在离线容器内完全访问、免审批。它只读取 Coding Plan 专用 Key，不读取标准 GLM Key。当前构建先打包为 npm Archive，每题在独立 Linux Trial 的 `/testbed` 中运行并评分；控制端持有模型凭据，离线执行容器不持有这些凭据，原始容器负责干净评测。
-
-Harbor 容器是可信的一次性外层隔离；专用标志不再跳过内层命令沙箱。安装阶段须通过严格沙箱预检；命令租约或清理状态不确定时不会恢复评测器公共网络。普通主机运行不得设置该标志。Key 在主机和 Trial 中依次通过随机 owner-only 临时文件传递、消费并删除，不进入模型命令环境。固定多语言 ONNX 资产从 Benchmark 根复制到每个 Trial 并二次校验，使被测配置实际运行混合 RAG，且无需容器联网下载。
-
-评测保持 `n-attempts=1`；仅 `agent.run` 前的环境启动或安装超时可自动重试，Agent 超时和非零退出不获得新预算。Agent 启动后会在清理路径捕获数据目录、Git Patch 和普通未跟踪文件为原子 Generation。恢复只允许同一 Job/Trial，绑定题目、基础提交、Archive/Embedding 哈希、端点、模型、模式和强度；任一不匹配、父 Thread 歧义、链接/特殊文件或 Manifest 损坏都拒绝，Generation 不能跨题复用，最多保留三个。
-
-每题输出上下文指标，覆盖 Trial/Checkpoint 身份、是否恢复、Journal 事件、上下文 Chunk/Embedding、Working Checkpoint、检索后端、模型请求和 Provider Token。完整 50 题需显式费用确认；`offset + limit` 必须形成合法不重叠切片并使用不同 Run ID。运行方法和完整固定值见 [评测指南](../benchmarks/swebench_verified/README.md)。
-
-## 11. 数据生命周期、失败模式与权衡
-
-| 数据 | 位置与生命周期 |
-| --- | --- |
-| Prompt Bundle | 固定用户级 `~/.easy_code`；安装、校验、修复，数据卸载可删除。 |
-| Journal、SQLite、附件、Artifact | 平台应用数据目录；跨会话持久，验证归属后可清理。 |
-| 用户配置 / API Key | 平台配置目录 / OS 凭据存储；卸载默认保留。 |
-| Embedding 资源 | 平台缓存目录；可重建，卸载默认保留。 |
-| 项目配置、Worktree、Handoff 分支 | 用户工作区或托管 Git 位置；可能含代码，卸载默认保留。 |
-| SWE-bench 数据 | 用户选择的 Benchmark 根；不随普通 CLI 卸载删除。 |
-
-数据根带产品归属标记；清理只处理规范化且验证归属的真实目录，不跟随链接。数据库占用、根归属不明或可能存在未交付代码时安全停止或保留。
-
-主要失败策略是：模型工具或 Schema 无效则拒绝；文件版本变化则冲突；策略、审批或沙箱失败则不执行；Provider 仅对明确暂时错误有限重试；Journal 只修复损坏尾部；可重建 Thread 投影按主数据恢复，不把长期记忆/证据主数据当缓存丢弃；无效/低收益摘要不提交语义候选，改走 Journal 引用支持的本地退出/重建；必需上下文仍过大则返回可恢复的 `limit_reached` / `context_capacity_exhausted`，保留待处理工作和已花预算；Embedding/Orama 失败退回 FTS5；子 Agent 无证据不完成；Worktree/Handoff 冲突保留 Artifact；高级 TUI 不可用则降级普通 CLI。终端日志只是视图，`/changes`、`/commands`、`/permissions`、`/tasks`、`/agents`、`/context`、`/memory` 和 `/usage` 都读取 Runtime 状态。
-
-主要权衡包括：本地优先仍依赖远程推理；配置容量使用保守估算而非原生精确分词；保留近期 thinking 占用空间，整体历史退出和最小重建可能丢失活跃细节；工具证据存储有界，恢复引用可能需要显式回读；混合 RAG 增加本地计算与资产但保留 FTS5 回退；共享子 Agent 兼容非 Git 项目但写入串行；Worktree 改善源码隔离却不能替代 OS 沙箱；非流式主请求简化持久步骤边界，但 TUI 更依赖耗时状态和执行中调整。
-
-只要继续保持权限、身份、持久化和恢复不变量，系统可以扩展新的 Provider、模型、检索后端、子 Agent 角色或执行环境。源码采用 [MIT License](../LICENSE)，第三方组件见[第三方开源声明](../THIRD_PARTY_NOTICES.md)。
-
-
-### 统一重试策略
-
-[limits] 是所有角色唯一的重试次数来源，主 Agent、子 Agent、审批、Reviewer、Auto 和压缩共用：
-
-| 分类 | 配置 | 默认重试次数（不含首次） |
-| --- | --- | --- |
-| 可重试 API/网络/429/5xx | `maxProviderRetries` | 5（共 6 次） |
-| 模型内容/格式/参数 | `modelContentRetries` | 2（共 3 次），耗尽后按能力降级 |
-| 服务端上下文长度拒绝 | `contextMaxCapacityRetries` | 1，先清空历史投影、保留需求 |
-| 明确未启动的临时沙箱故障 | `sandboxInitializationRetries` | 1，仅允许模型重发，不自动执行 |
-| 命令非零、超时、取消、执行未知 | `commandExecutionRetries` | 0 |
-| 子 Agent 失败 | `subagentFailureRetries` | 0，仅通知父 Agent |
-| 收尾条件未满足 | `prematureFinishRetries` | 0，直接失败并说明原因 |
-
-三个非重放配置只接受 0。认证/非法 API 配置等永久错误、用户取消不重试。API 每次物理请求单独扣共享预算，Provider 适配器内部重试固定为 0，避免层叠放大；旧 Provider 的 maxRetries 不控制 Agent 重试。次数是上限，剩余预算和既有超时仍可提前停止。
-
-内容重试不执行半截命令，不自动重做已执行工具。摘要存储溢出直接裁剪至既有上限；纠正耗尽后使用原正文或确定性恢复。审批耗尽交给用户，Reviewer 耗尽关闭讨论并保留双方未验证摘要；普通工具参数持续无效则失败，不伪造完成。既有本地历史淘汰/rebase 次数、Benchmark 环境/安装重试策略保持不变。
-
-### 持久化摘要与最终容量断路器
-
-- 摘要提示词使用可选 `<analysis>` 和唯一完整外层 `<summary>`。压缩仍兼容合法的旧式结构化 `compact_context` 候选，但新交接请求要求 XML，即使保留普通工具定义也不授权任何工具执行。不拼接原生 thinking。提取成功后先删除草稿再持久化候选；两次内容纠正仍失败，则保留最后一份非空正文，明确为未验证交接材料。配置的摘要 Token 预算和字段长度超限在本地裁剪，不重试、不放宽可执行参数校验。
-- 压缩事务和独立审查摘要均记录尝试次数、最后非空正文、提取错误及降级状态。后续空响应不能抹掉之前正文；临时 API 重试耗尽可保留该正文。取消、认证、预算、持久化错误不是内容纠正机会。Resume 可以处理已保存候选，不能重发只有请求记录、没有响应记录的调用。
-- 引用化、摘要、淘汰、rebase 仍无法满足容量时，追加一次“仅保留需求”的最终重置。服务端明确拒绝容量则直接重置，不再请求摘要。本地和远端共用按需求绑定的持久化额度，Resume 不补充次数；已是相同或没有缩小的请求不再重发。
-- 需求索引来自真实用户、steering 和明确绑定的任务委派事件，不根据任意 user 角色文本或 RAG 猜测。保留原始需求、后续修正和附件，保留系统规则与工具定义；这些必要信息仍超限时，明确暂停，不通过删需求制造容量合格。
-- 清空的只是模型历史投影。日志、文件、执行句柄、权限、共享预算、DAG/子 Agent、验证失败和交付义务仍在 Runtime 中保留。核对阶段抑制自动历史检索注入；允许读源码及查询原命令/子任务/DAG，未完成状态核对前拦截编辑、新命令及交付。仍可显式有界召回历史证据。
-- Benchmark bridge v2 将执行结果、清理结果及工作容器恢复分开。输出超过 32 MiB 是执行失败，即使外层退出码为 0 也不能判通过。仅在子进程清理与离线容器恢复均确认后允许下一条命令；清理失败或不确定则隔离。未改变 Benchmark 安装重试或容器禁网边界。
-
-### 缓存友好的请求结构
-
-- 主 Agent 和子 Agent 的普通请求依次包含固定系统规则、未改写的活跃历史、最新 Runtime 状态及检索数据。后台命令、停滞和实验提醒作为临时 `RUNTIME_NEXT_ACTION` 放在尾部，不再拼入 system，也不写入正式对话历史。固定的交付条件仍在公共系统合约中，Runtime 继续强制拦截提前完成。
-- 自动压缩保留当前角色普通请求的原 system 和有序工具定义，在历史及状态之后追加 `RUNTIME_CONTEXT_HANDOFF`，携带待退出的历史范围、证据和格式纠正信息。Reviewer 私有历史压缩使用相同机制，但不会获得主 Agent 私有历史。
-- 交接是独立执行阶段，不是普通 Agent 步骤。工具定义可见不代表允许执行：摘要响应中的工作区调用从不进入执行器，摘要不代表任务完成，降级正文仍是未验证材料。文件、输出和记忆中的同名标签不能选择 Runtime 阶段。开场、收尾摘要保持原有独立无工具路径。
-- 容量预检、上下文诊断和实际摘要 API 请求使用同一份完整工具定义。完整交接请求放不下时，进入既有确定性恢复，不通过偷偷删除工具定义或证据制造容量合格。重试次数、配置的摘要 Token 预算 摘要裁剪、thinking 处理及最终断路额度不变。
-- 此调整改善可复用前缀，不保证服务端命中。提交压缩必然替换旧历史，模型设置、角色切换和每轮时间变化仍可能影响复用。本次未调整时间戳和缓存诊断的持久化方式。
+上下文更大不保证准确率更高、成本更低或缓存必然命中。应联合比较官方通过率、实际/缓存输入 Token、耗时、干预质量和错误暂停率。本地证据与项目记忆也会占用磁盘并可能包含敏感源码；它们是持久化数据，不能统称为可随意删除的缓存。
