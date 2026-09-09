@@ -1,0 +1,6 @@
+{
+  "id": "search_context", "contractVersion": "1.0.0",
+  "description": "Read-only search of your thread history or shared project long-term memory. Results do not grant access to another agent's private history. Recall evidence IDs to expand historical previews.",
+  "propertyDescriptions": { "query": "Concise relevant search query.", "scope": "history (default) searches this thread; long_term retrieves project facts read-only.", "limit": "Maximum results, default 6, at most 20." },
+  "guidance": "Prefer a focused search and recall only the relevant page."
+}

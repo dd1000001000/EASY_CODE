@@ -67,7 +67,8 @@ export class CommandResolver {
 
   /** Resolve filesystem/PATH in Docker at dispatch, never on the controller.
    * A worker may create /tmp scripts or install an executable which does not
-   * exist in the controller. No approval grants are issued for this profile. */
+   * exist in the controller. Main benchmark bypasses approval; reviewers still
+   * require exact permission within their immutable private image/copy scope. */
   resolveContainer(input: RunCommandInput): ResolvedCommand {
     this.validateRequest(input);
     const cwdAbsolute = path.posix.resolve(this.workspace.root, input.cwd ?? ".");

@@ -2,6 +2,7 @@ export * from "./base.js";
 export * from "./fetch-artifact.js";
 export * from "./errors.js";
 export * from "./compact-context.js";
+export * from "./context-read.js";
 export * from "./create-file.js";
 export * from "./delete-file.js";
 export * from "./manage-memory.js";

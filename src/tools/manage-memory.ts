@@ -171,6 +171,10 @@ export class ManageMemoryTool implements AgentTool {
       await assertMatchingWorkspace(this.workspace, context);
       this.beginTurn(context.turnId);
       const parsed = this.inputSchema.parse(input);
+      if (context.agentRole && context.agentRole !== "main_agent" &&
+          parsed.action !== "search" && parsed.action !== "recall") {
+        throw new Error("Only the main agent may propose long-term memory mutations");
+      }
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
       if (parsed.action === "remember" || parsed.action === "revise") {
         const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;

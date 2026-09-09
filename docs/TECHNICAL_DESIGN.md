@@ -4,6 +4,9 @@ English | [简体中文](./TECHNICAL_DESIGN_ZH.md) | [Back to README](../README.
 
 This document describes EASY CODE's current architecture and stable engineering contracts. It intentionally avoids function-level implementation detail. Installation and command usage belong in the [README](../README.md).
 
+The current cross-agent memory, five-round review and independent dual-summary
+contracts are specified in [Unified memory and bounded review](./UNIFIED_MEMORY.md).
+
 The current validation identity, test/configuration baseline, bound reviewer experiment,
 investigation-stagnation windows and length-only compaction repair contracts are documented
 in [Progress and context reliability](./PROGRESS_RELIABILITY.md). These Runtime mechanisms
@@ -109,7 +112,7 @@ Non-Git workspaces retain complete filesystem snapshots. If Git becomes unavaila
 
 Commands are a resolved executable, argument vector, working directory, intent, and timeout; task text is not implicitly evaluated as a shell. Three gates apply: current capability, command policy/approval, then OS sandbox startup. Approval grants bind to canonical executable identity, structured prefix, scope and the Thread; children share the parent approval queue and existing grants.
 
-Long-running commands return a Thread/Agent-scoped handle and require terminal polling or cancellation evidence before completion. Failures are classified as parameter, policy, approval, sandbox, exit, timeout, or Runtime lifecycle failures. One explicitly retryable Windows sandbox-start failure permits one exact retry; a repeat pauses command starts for the turn without blocking safe file work.
+Long-running commands return a Thread/Agent-scoped handle and require terminal polling or cancellation evidence before completion. Failures are classified as parameter, policy, approval, sandbox, exit, timeout, or Runtime lifecycle failures. One explicitly retryable, proven-not-started sandbox failure permits one model-authored resubmission of the exact command. A repeat blocks that command, not unrelated command capabilities; Runtime never automatically replays command effects.
 
 Manual/agent-approved commands default to Anthropic Sandbox Runtime. Explicit host escalation is reviewed per command; Full access bypasses the command sandbox. File tools stay workspace scoped. Benchmark runs commands in a separate offline Docker worker. Unknown execution or cleanup never implies safe automatic retry.
 
@@ -254,8 +257,8 @@ W - min(maxResponseTokens, floor(W × 0.20))  [output reserve; maxResponseTokens
 | `contextCompactionTriggerRatio` | `0.8` | Start maintenance against usable input capacity. |
 | `contextCompactionTargetRatio` | `0.55` | Preferred headroom, not a mandatory acceptance threshold. |
 | `contextCompactionMinGrowthRatio` | `0.1` | Growth hysteresis to avoid repeated paid summaries after tiny changes. |
-| `compactionRetainRecentExchanges` | `2` | Preferred recent complete exchange tail; reducible during recovery. |
-| `compactionAttempts` | `2` | Historical replay limit; new transactions repair length locally without a second request. |
+| `compactionRetainRecentExchanges` | `5` | Preferred recent complete exchange tail; reducible during recovery. |
+| `modelContentRetries` | `2` | Two corrections (three total attempts), shared by all agents and auxiliary model protocols; length-only overflow is clipped without retry. |
 | `contextSummaryMaxTokens` | `2048` | Retained summary estimate including JSON wrapper, not a server generation cap; the 12,000-character ceiling also remains. |
 | `providerResponseMaxBytes` | `16777216` | Independent HTTP safety ceiling (16 MiB), not derived from tool display length. |
 | `contextToolBatchTokens` / `contextToolReferenceMinChars` | `16000` / `4096` | Aggregate tool-body allowance / old-body reference threshold. |
@@ -279,12 +282,12 @@ Measure next ordinary request
 ```
 
 1. Perform cheap reclamation first. Choose a prefix of complete assistant/tool exchanges, preferably retaining two recent exchanges, then a smaller tail if necessary. Every assistant tool call must have its matching result; a pending tool exchange is never split. Plain assistant exchanges and completed read/write/command exchanges are eligible. A semantic phase or successful test is **not** required: an unfinished investigation may be archived while explicitly remaining unfinished/unverified.
-2. Make at most one isolated summary request within the shared budget; a parent submission already supplies the candidate. Clip overlong text fields/items locally to 1200 characters without model correction. Retain at most an estimated 2048 tokens including the wrapper, with no server generation-token cap. Accept complete `compact_context` arguments or unverified non-thinking prose; thinking alone cannot supply a summary. Runtime supplies facts and the evidence catalogue independently.
+2. Use the shared model-content allowance: two corrections after the initial summary (three total attempts); a parent submission counts as attempt one. Clip overlong text fields/items locally to 1200 characters without model correction. Retain at most an estimated 2048 tokens including the wrapper, with no server generation-token cap. Accept complete `compact_context` arguments or a unique complete outer `<summary>` envelope. Missing envelopes get the configured corrections, then the last nonempty non-thinking body is retained as an unverified raw fallback; thinking alone cannot supply a summary. Runtime supplies facts and the evidence catalogue independently.
 3. Salvage valid semantic sections where possible. Unknown/unbound evidence claims become unverified hypotheses. Accept only with unchanged source/fact snapshots, a forward boundary, actual size reduction, and a fitting **next ordinary request**. A safe result above 55%, or even above the 80% trigger, may proceed; the target and growth cooldown prevent unnecessary repeated paid maintenance, not all possible future pressure.
 4. Malformed/missing summaries, unavailable summary capabilities, auxiliary provider failures, or insufficient savings after local projection go to deterministic recovery, not a schema-correction loop. Older whole exchanges and an oversized prior summary can leave active context with precise references and explicit incomplete/unverified status. This can advance the durable retired boundary without a semantic-summary commit; original messages remain stored.
 5. If necessary, archive the newest **closed** exchange whole as a minimal rebase, retaining actionable pinned state. This is lossy context retirement, not a new task, process restart, workspace rollback, or permission to restart pending commands/children. Commit only when it actually reduces size and fits. Rebase consumption is journaled per durable user-request scope: Resume does not reset it; a new explicit user request starts a new scope.
 6. If mandatory instructions, schemas, Runtime facts or unresolved protocol data still cannot fit, return `reason=limit_reached`, `failure.code=context_capacity_exhausted`, `recoverable=true`. Preserve files, history, pending work and budgets. This neither completes the DAG nor declares an external blocker; it is not a guarantee that every task can continue indefinitely.
-7. A narrowly classified context-length rejection from an ordinary provider request permits a bounded smaller local retry, without another summarizer and without resetting the shared request budget. Authentication errors, 429s and generic timeouts are not capacity errors. User cancellation and storage/Journal corruption remain real stop conditions, not successful degradation.
+7. A narrowly classified server context-length rejection permits one resend after retiring historical context and restoring user requirements. The Journal, execution facts, permissions and shared budgets remain intact; no second summarizer is invoked. Authentication errors, 429s and generic timeouts are not capacity errors. User cancellation and storage/Journal corruption remain real stop conditions, not successful degradation.
 
 ### 6.8 Replay, user commands, and verification limits
 
@@ -411,3 +414,31 @@ Cleanup validates owned real directories, refuses redirected roots, never recurs
 Key trade-offs are explicit: local-first is not offline; configured capacity uses conservative estimates rather than an exact native tokenizer; recent thinking continuity consumes space, while whole-exchange retirement and minimal rebase can lose active detail; stored tool evidence is bounded and recovery references may require explicit recall; semantic retrieval costs local compute but has lexical fallback; incremental Git auditing needs full Checkpoint/final reconciliation; shared children trade isolation for non-Git compatibility; Worktrees are not security sandboxes; non-streaming provider steps simplify durability but favor elapsed activity over token streaming; and cross-platform sandbox implementations differ beneath one fail-closed contract.
 
 New providers, retrieval backends, child roles, or execution environments are acceptable only when they preserve the same authority, durability, isolation, integrity, and recovery invariants.
+
+
+### Unified retry policy
+
+The [limits] configuration is the only retry-count source for the main agent, children, approval, reviewer, Auto routing and compaction:
+
+| Class | Setting | Default retries (excluding initial attempt) |
+| --- | --- | --- |
+| Transient API/network/429/5xx | `maxProviderRetries` | 5 (6 attempts) |
+| Model content/schema/arguments | `modelContentRetries` | 2 (3 attempts), then capability-specific fallback |
+| Server context-length rejection | `contextMaxCapacityRetries` | 1 after history reset retaining user requirements |
+| Proven-not-started transient sandbox failure | `sandboxInitializationRetries` | 1 model-authored resubmission, no automatic execution |
+| Command nonzero/timeout/cancel/unknown execution | `commandExecutionRetries` | 0 |
+| Child failure | `subagentFailureRetries` | 0, notify parent only |
+| Unsatisfied finalization prerequisites | `prematureFinishRetries` | 0, fail with the reason |
+
+The three no-replay settings only accept 0. Permanent authentication/configuration errors and user cancellation do not retry. Every physical API attempt debits the shared budget; adapter-internal retries are disabled to prevent multiplication. Legacy provider maxRetries no longer controls agent retries. Existing request/time budgets may stop before the configured maximum.
+
+Content correction never executes partial commands or replays executed tools. Summary storage overflow clips locally; exhausted formatting correction uses raw body or deterministic recovery. Approval exhaustion escalates to the user; reviewer exhaustion closes discussion with independent unverified summaries. Repeated invalid ordinary tool arguments fail explicitly, never fabricate completion. Existing local eviction/rebase counts and Benchmark infrastructure retry policy are unchanged.
+
+### Durable summaries and final capacity circuit breaker
+
+- Summary prompts match capabilities: tool-free briefing/closure uses optional `<analysis>` plus one outer `<summary>`; compaction may alternatively accept a valid `compact_context`. Native reasoning never becomes a summary. Successful extraction removes scratch before candidate persistence. After two content corrections, keep the last nonempty body as unverified handoff; local 2048-estimated-token and field clipping never retries or weakens executable schemas.
+- Candidate attempt, last nonempty body, extraction error and raw/formal completion are journal-backed for compaction and independent review summaries. An empty later answer cannot erase earlier usable prose. Exhausted transient API recovery may salvage that prose; cancellation, authentication, budget and persistence errors are not content corrections. Resume may process saved candidates but never redispatch an unanswered attempt.
+- If existing reference/summary/eviction/rebase recovery cannot fit, use one requirements-only reset. A remote capacity rejection goes directly to this reset; no summarizer is called. Local and remote paths share a stable, requirement-bound incident allowance across Resume. Identical or non-smaller rejected requests are not resent.
+- Requirement indices come from user, steering and explicitly bound assignment events, not arbitrary `role=user` text or RAG. Original requests, subsequent corrections and attachments remain verbatim. System/tool rules remain. Oversized mandatory input pauses without deleting intent or claiming completion.
+- Only model-history projection is cleared. Journal, files, execution leases, permission grants, shared budgets, DAG/child state, verification failures and delivery obligations remain authoritative. Automatic historical context injection is suppressed during reconciliation. Runtime permits source inspection and queries for original command/child/DAG identities, but gates edits, new execution and completion until current state has been observed. Explicit bounded recall remains available.
+- Benchmark bridge result v2 separates execution outcome from cleanup and worker restoration. Output above 32 MiB is an execution failure, never a pass—even if the outer exit code is zero. Later commands are allowed only after descendant cleanup and offline worker restoration are confirmed. Failure or uncertainty quarantines the environment. This does not change Benchmark setup retries or the no-network container boundary.

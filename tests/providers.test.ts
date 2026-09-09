@@ -260,7 +260,8 @@ timeout_ms = 41000
       assert.equal(config["glm-coding-plan"].baseUrl, DEFAULT_GLM_CODING_PLAN_BASE_URL);
       assert.equal(config["glm-coding-plan"].model, DEFAULT_GLM_CODING_PLAN_MODEL);
       assert.equal(config["glm-coding-plan"].timeoutMs, undefined);
-      assert.equal(config["glm-coding-plan"].maxRetries, 2);
+      assert.equal(config["glm-coding-plan"].maxRetries, config.limits.maxProviderRetries);
+      assert.equal(config.limits.maxProviderRetries, 5);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

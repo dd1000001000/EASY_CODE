@@ -11,6 +11,7 @@ const UNSAFE_PREFIX_CHARACTERS =
   /[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/u;
 
 const NETWORK_PREFIX = "network:v1:";
+const ONCE_PREFIX = "once:v1:";
 interface NetworkPrefix { executable: string; args: string[]; digest: string }
 
 function decodeNetworkPrefix(value: string, platform: NodeJS.Platform): NetworkPrefix {
@@ -31,6 +32,7 @@ export function networkCommandApprovalPrefix(executable: string, args: string[],
 }
 
 export function canGrantCommandPrefix(prefix: string): boolean {
+  if (prefix.startsWith(ONCE_PREFIX)) return false;
   if (isCommandGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
   // Legacy UI labels may be noncanonical; the application validates before
   // persisting any actual grant. Encoded network capabilities must parse here.
@@ -40,6 +42,7 @@ export function canGrantCommandPrefix(prefix: string): boolean {
 }
 
 export function formatCommandApprovalPrefix(prefix: string): string {
+  if (prefix.startsWith(ONCE_PREFIX)) return "one invocation only (worker executable identity is not available for a reusable grant)";
   if (isCommandGrant(prefix)) { const v = decodeCommandGrant(prefix); return redactSensitiveInformation(`${JSON.stringify([v.executable, ...(v.exact ? [] : v.args)])} (${v.exact ? `exact argv SHA256=${v.args[0]}` : "argv prefix"}; ${v.scope}; cwd=${JSON.stringify(v.cwd)}; network=${v.network}; script contents may change)`); }
   if (!prefix.startsWith(NETWORK_PREFIX)) return JSON.stringify([prefix]);
   const decoded = decodeNetworkPrefix(prefix, process.platform);
@@ -82,6 +85,10 @@ export function normalizeCommandApprovalPrefix(
   }
 
   const selected = approvalPlatform(platform);
+  if (value.startsWith(ONCE_PREFIX)) {
+    if (!/^once:v1:[a-f0-9]{64}$/u.test(value)) throw new Error("Invalid one-shot approval identity");
+    return value;
+  }
   if (isCommandGrant(value)) { decodeCommandGrant(value); return value; }
   if (value.startsWith(NETWORK_PREFIX)) {
     const normalized = NETWORK_PREFIX + Buffer.from(JSON.stringify(decodeNetworkPrefix(value, platform))).toString("base64url");
@@ -139,6 +146,7 @@ export function isCommandApprovalPrefixGranted(
 ): boolean {
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
+  if (candidate.startsWith(ONCE_PREFIX)) return false;
   if (isCommandGrant(candidate)) return approved.filter(isCommandGrant).some(p => commandGrantMatches(p, candidate));
   if (candidate.startsWith(NETWORK_PREFIX)) {
     const requested = decodeNetworkPrefix(candidate, platform);
@@ -159,6 +167,7 @@ export function grantCommandApprovalPrefix(
 ): string[] {
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
+  if (candidate.startsWith(ONCE_PREFIX)) throw new Error("This command allows one-shot approval only");
   if (!isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
   if (approved.some((prefix) => prefix === candidate)) return approved;
   if (approved.length >= MAX_COMMAND_APPROVAL_PREFIXES) {

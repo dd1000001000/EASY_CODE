@@ -18,6 +18,8 @@ import tarfile
 import time
 from types import SimpleNamespace
 import uuid
+import hashlib
+import posixpath
 
 
 class SplitBenchmarkEnvironment:
@@ -37,6 +39,8 @@ class SplitBenchmarkEnvironment:
         self.stopping = False
         self.broker = None
         self.stopped = False
+        self.review_workers = {}
+        self.review_images = {}
 
     @staticmethod
     async def docker(*args, timeout=120, check=True):
@@ -134,9 +138,87 @@ class SplitBenchmarkEnvironment:
                 await self.execute_worker(directory)
             await asyncio.sleep(0.05)
 
+    @staticmethod
+    def validate_review(value):
+        if (not isinstance(value, dict) or set(value) != {"id", "actor", "root"} or
+                not all(isinstance(value.get(key), str) for key in ("id", "actor", "root")) or
+                not re.fullmatch(r"review_[a-f0-9-]{36}", value.get("id", "")) or
+                value.get("actor") not in ("author", "reviewer") or
+                value.get("root") != f'/tmp/easy-code-{value["id"]}/{value["actor"]}'):
+            raise RuntimeError("Invalid review copy binding")
+        return value["id"] + "-" + value["actor"]
+
+    async def review_worker(self, review):
+        key = self.validate_review(review)
+        existing = self.review_workers.get(key)
+        if existing:
+            if existing["root"] != review["root"] or existing.get("failed"):
+                raise RuntimeError("Review worker unavailable or binding changed")
+            return existing
+        if len(self.review_workers) >= 20:
+            raise RuntimeError("Review container budget exhausted")
+        name = self.name + "-" + key
+        item = {"name": name, "volume": name + "-workspace", "root": review["root"],
+                "initial": self.root / (key + "-initial.tar")}
+        self.review_workers[key] = item  # Cleanup also covers partial setup.
+        resolved = await self.docker("exec", self.controller, "realpath", "-e", review["root"])
+        if resolved.stdout.strip() != review["root"]:
+            raise RuntimeError("Redirected review copy")
+        await asyncio.to_thread(self.copy_archive_out, self.controller, item["initial"], review["root"])
+        # Snapshot the credential-free execution worker, NEVER the controller.
+        # Both participants use one environment revision even across later calls.
+        environment = self.review_images.get(review["id"])
+        if environment is None:
+            info = json.loads((await self.docker("inspect", self.worker_id)).stdout)[0]
+            self.validate_worker(info, self.volume)
+            for entry in info.get("Config", {}).get("Env", []):
+                key, _, value = entry.partition("=")
+                if value and re.search(r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", key, re.I):
+                    raise RuntimeError("Refusing a credential-bearing review environment")
+            environment = {"image": self.name + ":" + review["id"],
+                           "dependencies": self.root / (review["id"] + "-dependencies.tar")}
+            self.review_images[review["id"]] = environment
+            await self.docker("commit", self.worker_id, environment["image"], timeout=300)
+            volume_archive = self.root / (review["id"] + "-worker-volume.tar")
+            await asyncio.to_thread(self.copy_archive_out, self.worker_id, volume_archive)
+            await asyncio.to_thread(self.dependency_archive, volume_archive, environment["dependencies"])
+            environment["digest"] = self.dependency_digest(environment["dependencies"])
+        item["dependency_digest"] = environment["digest"]
+        await self.docker("volume", "create", item["volume"])
+        await self.docker("create", "--name", name, "--network", "none", "--ipc", "private", "--shm-size", "64m",
+            "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev", "--tmpfs", "/run:rw,nosuid,nodev",
+            "--security-opt", "no-new-privileges:true", "--mount", f'type=volume,source={item["volume"]},target=/testbed',
+            "--entrypoint", "/bin/sh", environment["image"], "-c", "while :; do sleep 3600; done")
+        await self.docker("start", name)
+        await asyncio.to_thread(self.copy_archive_in, name, environment["dependencies"])
+        await asyncio.to_thread(self.copy_archive_in, name, item["initial"])
+        info = json.loads((await self.docker("inspect", name)).stdout)[0]
+        self.validate_worker(info, item["volume"])
+        item["id"] = info["Id"]
+        return item
+
+    async def sync_review(self, item):
+        # Only regular files may return to the exact Runtime-created disposable
+        # copy. The worker never sees controller data, its bridge or /testbed.
+        candidate = self.root / (item["name"] + "-result.tar")
+        filtered = self.root / (item["name"] + "-filtered.tar")
+        await asyncio.to_thread(self.copy_archive_out, item["id"], candidate)
+        item["environment_unchanged"] = self.dependency_digest(candidate) == item["dependency_digest"]
+        await asyncio.to_thread(self.filter_archive, item["initial"], candidate, filtered, True)
+        script = ('import os,re,shutil,sys\np=sys.argv[1]\n'
+            'if not re.fullmatch(r"/tmp/easy-code-review_[a-f0-9-]{36}/(?:author|reviewer)",p): raise RuntimeError("Invalid review root")\n'
+            'if os.path.realpath(p)!=p or os.path.islink(p): raise RuntimeError("Redirected review root")\n'
+            'shutil.rmtree(p)\nos.mkdir(p,0o700)')
+        await self.docker("exec", self.controller, "python", "-c", script, item["root"])
+        await asyncio.to_thread(self.copy_archive_in, self.controller, filtered, item["root"])
+
     async def execute_worker(self, directory):
-        result = {"exitCode": 125}
+        result = {"version": 2, "exitCode": 125, "outcome": "unknown",
+                  "cleanup": "unknown", "workerRestored": False}
         proc = None
+        review = None
+        is_review = False
+        worker_id = self.worker_id
         try:
             data = json.loads((directory / "request.json").read_text(encoding="utf-8"))
             if (data.get("version") != 1 or not isinstance(data.get("args"), list) or
@@ -146,9 +228,20 @@ class SplitBenchmarkEnvironment:
                 raise RuntimeError("Malformed controller command")
             if self.stopped or self.stopping:
                 raise RuntimeError("Benchmark worker has stopped")
+            if "review" in data:
+                is_review = True
+                review = await self.review_worker(data["review"])
+                worker_id = review["id"]
+                # Both file tools and commands name the private controller copy;
+                # the isolated worker only has its own /testbed volume.
+                root = review["root"]
+                data["program"] = data["program"].replace(root, "/testbed")
+                data["cwd"] = data["cwd"].replace(root, "/testbed")
+                data["args"] = [arg.replace(root, "/testbed") for arg in data["args"]]
+                data["environment"] = {k: v.replace(root, "/testbed") for k, v in data.get("environment", {}).items()}
             # Clear image-level Git helper/credential env too, not just the
             # controller's environment. Docker otherwise inherits image ENV.
-            argv = ["docker", "exec", "--workdir", data["cwd"], self.worker_id, "/usr/bin/env", "-i"]
+            argv = ["docker", "exec", "--workdir", data["cwd"], worker_id, "/usr/bin/env", "-i"]
             for key, value in data.get("environment", {}).items():
                 if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or not isinstance(value, str):
                     raise RuntimeError("Invalid command environment")
@@ -160,20 +253,45 @@ class SplitBenchmarkEnvironment:
                 while proc.poll() is None:
                     oversized = stdout.tell() + stderr.tell() > 32 * 1024 * 1024
                     if self.stopping or (directory / "cancel").exists() or time.monotonic() > deadline or oversized:
-                        await self.docker("stop", "--time", "0", self.worker_id)
+                        await self.docker("stop", "--time", "0", worker_id)
+                        result["outcome"] = "output_limit" if oversized else (
+                            "canceled" if self.stopping or (directory / "cancel").exists() else "timed_out")
                         if oversized:
-                            result["error"] = "Command output exceeded the 32 MiB bridge limit"
+                            result["executionError"] = "Command output exceeded the 32 MiB bridge limit; do not automatically replay it"
                         break
                     await asyncio.sleep(0.05)
                 result["exitCode"] = await asyncio.to_thread(proc.wait, 15)
+                if stdout.tell() + stderr.tell() > 32 * 1024 * 1024:
+                    result["outcome"] = "output_limit"
+                    result["executionError"] = "Command output exceeded the 32 MiB bridge limit; do not automatically replay it"
+                elif result["outcome"] == "unknown":
+                    result["outcome"] = "exited"
             # Docker owns the cgroup: restarting kills even detached descendants.
             # The writable layer and /testbed persist; process state does not.
             if not self.stopping:
-                await self.docker("restart", "--time", "0", self.worker_id, timeout=30)
+                await self.docker("restart", "--time", "0", worker_id, timeout=30)
+                restored = json.loads((await self.docker("inspect", worker_id)).stdout)[0]
+                self.validate_worker(restored, review["volume"] if review else self.volume)
+                if (restored.get("State", {}).get("Running") is not True or
+                        restored.get("State", {}).get("Paused") or restored.get("State", {}).get("Restarting")):
+                    raise RuntimeError("Worker restoration was not confirmed")
+                if review:
+                    await self.sync_review(review)
+                    result["reviewEnvironmentUnchanged"] = review["environment_unchanged"]
+                result["cleanup"] = "confirmed"
+                result["workerRestored"] = True
         except Exception as error:
-            result["error"] = str(error)
-            self.stopped = True
-            await self.docker("stop", "--time", "0", self.worker, check=False)
+            result["cleanupError"] = str(error)
+            result["cleanup"] = "failed"
+            if proc is None:
+                result["outcome"] = "spawn_failed"
+            if is_review:
+                if review:
+                    review["failed"] = True
+            else:
+                self.stopped = True
+            if not is_review or review:
+                await self.docker("stop", "--time", "0", worker_id, check=False)
             if proc and proc.poll() is None:
                 proc.kill()
                 await asyncio.to_thread(proc.wait)
@@ -206,10 +324,10 @@ class SplitBenchmarkEnvironment:
         await asyncio.to_thread(self.copy_archive_in, self.main, clean)
 
     @staticmethod
-    def copy_archive_out(container, target):
+    def copy_archive_out(container, target, root="/testbed"):
         # Preserve Unix symlinks inside a tar stream; Windows need not create them.
         with target.open("wb") as out, tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(["docker", "cp", f"{container}:/testbed/.", "-"], stdout=out, stderr=err)
+            proc = subprocess.Popen(["docker", "cp", f"{container}:{root}/.", "-"], stdout=out, stderr=err)
             deadline = time.monotonic() + 300
             try:
                 while proc.poll() is None:
@@ -224,12 +342,53 @@ class SplitBenchmarkEnvironment:
                     proc.wait()
 
     @staticmethod
-    def copy_archive_in(container, source):
+    def copy_archive_in(container, source, root="/testbed"):
         with source.open("rb") as stream:
-            subprocess.run(["docker", "cp", "-", f"{container}:/testbed"], stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300, check=True)
+            subprocess.run(["docker", "cp", "-", f"{container}:{root}"], stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300, check=True)
 
     @staticmethod
-    def filter_archive(initial, candidate, target):
+    def dependency_member(member):
+        return any(p in ("node_modules", ".venv", "venv", "dist", "build") for p in Path(member.name).parts)
+
+    @staticmethod
+    def dependency_digest(source):
+        values = []
+        with tarfile.open(source) as archive:
+            for member in archive:
+                if not SplitBenchmarkEnvironment.dependency_member(member) or member.isdir():
+                    continue
+                stream = archive.extractfile(member) if member.isfile() else None
+                digest = hashlib.sha256()
+                if stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                values.append((member.name, member.linkname, digest.hexdigest()))
+        return hashlib.sha256(json.dumps(sorted(values)).encode()).hexdigest()
+
+    @staticmethod
+    def dependency_archive(source, target):
+        count, size = 0, 0
+        with tarfile.open(source) as archive, tarfile.open(target, "w") as out:
+            for member in archive:
+                if not SplitBenchmarkEnvironment.dependency_member(member):
+                    continue
+                if member.name.startswith("/") or ".." in member.name.split("/") or "\\" in member.name:
+                    raise RuntimeError("Unsafe dependency archive path")
+                if member.issym():
+                    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(member.name), member.linkname))
+                    system_python = re.fullmatch(r"/(?:usr/bin|usr/local/bin)/python[\d.]*", member.linkname)
+                    if (resolved.startswith("../") or resolved.startswith("/")) and not system_python:
+                        raise RuntimeError("Dependency link escapes review environment")
+                elif not member.isfile() and not member.isdir():
+                    raise RuntimeError("Unsupported dependency archive entry")
+                count += 1
+                size += member.size
+                if count > 100000 or size > 1024 * 1024 * 1024:
+                    raise RuntimeError("Review dependency archive exceeds budget")
+                out.addfile(member, archive.extractfile(member) if member.isfile() else None)
+
+    @staticmethod
+    def filter_archive(initial, candidate, target, exclude_dependencies=False):
         from pathlib import PurePosixPath
         with tarfile.open(initial) as baseline:
             links = {m.name: m.linkname for m in baseline if m.issym()}
@@ -242,6 +401,10 @@ class SplitBenchmarkEnvironment:
                 if member.name.startswith("/") or ".." in parts or "\\" in member.name:
                     raise RuntimeError("Unsafe workspace archive path")
                 if any(p in (".git", ".easycode", ".easy-code-srt-runtime") for p in parts):
+                    continue
+                # Dependencies stay in the private worker; never copy their links
+                # or large contents back into the controller's source snapshot.
+                if exclude_dependencies and SplitBenchmarkEnvironment.dependency_member(member):
                     continue
                 if member.issym():
                     # Only unchanged, trusted baseline links may reach the verifier.
@@ -271,6 +434,8 @@ class SplitBenchmarkEnvironment:
                 errors.append(f"{args[0]} {args[-1]}: {error}")
 
         await remove("rm", "--force", self.worker)
+        for item in self.review_workers.values():
+            await remove("rm", "--force", item["name"])
         if self.broker:
             try:
                 await self.broker
@@ -279,6 +444,10 @@ class SplitBenchmarkEnvironment:
         await remove("rm", "--force", self.controller)
         await remove("volume", "rm", self.volume)
         await remove("volume", "rm", self.git_volume)
+        for item in self.review_workers.values():
+            await remove("volume", "rm", item["volume"])
+        for environment in self.review_images.values():
+            await remove("image", "rm", environment["image"])
         await remove("image", "rm", self.image)
         if errors:
             raise RuntimeError("Benchmark cleanup was not confirmed: " + "; ".join(errors))

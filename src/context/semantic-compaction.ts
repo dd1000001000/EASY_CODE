@@ -203,11 +203,11 @@ export function conservativeDocument(state: Readonly<SessionState>, snapshot: Co
 
 /** Preserve valid JSON at the storage boundary, never an executable partial object. */
 export function boundedSummaryDocument(document: string, snapshot: CompactionSnapshot,
-  maxTokens: number, maxChars: number, prose = false): string {
+  maxTokens: number, maxChars: number, prose = false, sourceRef = "context.compaction.candidate"): string {
   if (!prose && document.length <= maxChars && estimatedTokens(document) <= maxTokens) return document;
   const wrap = (content: string) => JSON.stringify({ formatVersion: 3, mode: "text_prefix",
     lossy: true, unverified: true, snapshotDigest: snapshot.digest,
-    sourceRef: "context.compaction.candidate", content,
+    sourceRef, content,
     note: "Incomplete handoff. Recover original Journal before relying on omitted qualifications. Runtime facts remain pinned." });
   const clean = redactSensitiveInformation(document);
   const result = projectText(clean, maxTokens, text => {

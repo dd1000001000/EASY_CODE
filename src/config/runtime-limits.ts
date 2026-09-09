@@ -26,6 +26,13 @@ export const runtimeLimitsSchema = z.object({
   providerTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
     medium: integer(1000, 3600000), high: integer(1000, 3600000) }).strict(),
   maxProviderRetries: integer(0, 10),
+  // Retry counts exclude the initial attempt. Shared by every agent role.
+  modelContentRetries: integer(0, 2),
+  sandboxInitializationRetries: integer(0, 1),
+  // Replaying effects or treating unfinished work as complete is never a recovery.
+  commandExecutionRetries: z.literal(0),
+  subagentFailureRetries: z.literal(0),
+  prematureFinishRetries: z.literal(0),
   providerRetryWaitMs: integer(0, 60000),
   defaultReadLines: integer(1, 10000),
   maxReadLines: integer(1, 10000),
@@ -50,19 +57,29 @@ export const runtimeLimitsSchema = z.object({
   commandSuccessChars: integer(256, 1000000),
   commandFailureChars: integer(256, 1000000),
   commandPollWaitMs: integer(0, 1200000),
-  // Legacy transaction replay limit. Length overflow is repaired without a request.
-  compactionAttempts: integer(1, 3),
   compactionRetainRecentExchanges: integer(1, 64),
+  contextReferenceTriggerRatio: z.number().min(0.5).max(0.9),
+  contextReferenceTargetRatio: z.number().min(0.2).max(0.8),
+  contextRecallProtectionExchanges: integer(1, 10),
+  reviewMaxRounds: integer(1, 5),
+  reviewMaxRequests: integer(4, 200),
+  reviewMaxToolCalls: integer(0, 100),
+  reviewTimeoutMs: integer(1000, 3600000),
+  reviewSummaryTimeoutMs: integer(1000, 300000),
+  reviewSnapshotMaxBytes: integer(1024, 1073741824),
+  reviewDependencyMaxBytes: integer(1024, 4294967296),
+  reviewDependencyMaxFiles: integer(100, 1000000),
+  reviewPreparationTimeoutMs: integer(1000, 1200000),
+  reviewSummaryMaxTokens: integer(256, 2048),
+  reviewMaxSessionsPerTask: integer(1, 10),
   contextCompactionTriggerRatio: z.number().min(0.5).max(0.9),
   contextCompactionTargetRatio: z.number().min(0.2).max(0.8),
   contextCompactionMinGrowthRatio: z.number().min(0.01).max(0.3),
   contextMaxRebasesPerRequest: integer(0, 1),
-  contextMaxCapacityRetries: integer(0, 2),
-  contextSummaryMaxTokens: integer(256, 12000),
+  contextMaxCapacityRetries: integer(0, 1),
+  contextSummaryMaxTokens: integer(256, 2048),
   contextToolBatchTokens: integer(512, 100000),
   contextToolReferenceMinChars: integer(512, 1000000),
-  toolProtocolAttempts: integer(1, 3),
-  reviewerModelRequests: z.union([z.literal(1), z.literal(2)]),
   reviewerOutputTokens: integer(256, 6144),
   approvalInputChars: integer(2048, 128000),
   approvalOutputTokens: integer(256, 4096),
@@ -80,6 +97,8 @@ export const runtimeLimitsSchema = z.object({
   contextSafetyReserveTokens: integer(128, 131072),
   contextSafetyReserveRatio: z.number().min(0.01).max(0.2),
 }).strict().superRefine((value, context) => {
+  if (value.contextReferenceTargetRatio >= value.contextReferenceTriggerRatio) context.addIssue({
+    code: "custom", path: ["contextReferenceTargetRatio"], message: "Reference target must be below trigger" });
   if (value.contextCompactionTargetRatio >= value.contextCompactionTriggerRatio) context.addIssue({
     code: "custom", path: ["contextCompactionTargetRatio"], message: "Compaction target must be below trigger" });
   if (value.memoryRecallTokens < value.memoryAutoTokens) context.addIssue({ code: "custom",

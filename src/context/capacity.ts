@@ -3,6 +3,7 @@ import type { ContextManager } from "./manager.js";
 import { exactContext, type NormalRequestEnvelope } from "./context-request.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { sha256 } from "../utils/hash.js";
+import { requirementScope } from "./user-requirements.js";
 
 /** All recovery paths assess the NEXT NORMAL request, including its tools. */
 export function assessCapacity(manager: ContextManager, state: SessionState, maxContextChars: number,
@@ -29,17 +30,14 @@ export function contextHistoryHash(state: Readonly<SessionState>): string {
 export function contextRequestKey(manager: ContextManager, maxContextChars: number, envelope: NormalRequestEnvelope,
   limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): string {
   return sha256(JSON.stringify([envelope, manager.tokenCapacity, maxContextChars,
-    limits.contextCompactionTriggerRatio, limits.contextCompactionTargetRatio, limits.contextMaxRebasesPerRequest]));
+    limits.contextCompactionTriggerRatio, limits.contextCompactionTargetRatio, limits.contextMaxRebasesPerRequest,
+    limits.contextReferenceTriggerRatio, limits.contextReferenceTargetRatio, limits.contextRecallProtectionExchanges,
+    limits.compactionRetainRecentExchanges, limits.contextToolReferenceMinChars, limits.contextToolBatchTokens]));
 }
 
 /** Stable across Resume and synthetic status messages; new user instructions reset it. */
 export function recoveryScope(state: Readonly<SessionState>): string {
-  for (let index = state.messages.length - 1; index >= 0; index--) {
-    const message = state.messages[index];
-    if (message?.role === "user" && !message.content.trimStart().startsWith("RUNTIME_"))
-      return sha256(JSON.stringify([index, message]));
-  }
-  return "no-user-request";
+  return requirementScope(state);
 }
 
 export interface CapacityPause {

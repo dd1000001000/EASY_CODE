@@ -1,4 +1,5 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { StringDecoder } from "node:string_decoder";
 import { sanitizeCommandOutput, stripTerminalControls } from "./output-stream.js";
 import { explicitShellKind, shellCommandWords, literalPipelineCommands } from "./shell.js";
@@ -14,6 +15,7 @@ export interface CommandValidation {
   evidenceKey?: string;
   evidence?: string[];
   targetKey?: string;
+  checkKey?: string;
   standard?: { status: "unchanged" | "changed" | "unknown"; baselineDigest: string; changedPaths: string[] };
 }
 
@@ -48,6 +50,28 @@ function framework(words: readonly string[]): Framework | undefined {
   return undefined;
 }
 
+/** Only literal, single-runner package scripts are attributed. No shell is executed here. */
+export async function packageScriptRunner(command: Command, cwd: string): Promise<string[] | undefined> {
+  if (!["npm", "yarn", "pnpm"].includes(basename(command.program))) return undefined;
+  const name = command.args[0] === "run" ? command.args[1] : command.args[0];
+  if (!name || name.startsWith("-")) return undefined;
+  try {
+    const text = await readFile(path.join(cwd, "package.json"), "utf8");
+    if (text.length > 1024 * 1024) return undefined;
+    const scripts = JSON.parse(text).scripts;
+    if (typeof scripts?.[name] !== "string" || scripts[`pre${name}`] || scripts[`post${name}`]) return undefined;
+    const commands = literalPipelineCommands("sh", ["-c", scripts[name]]);
+    return commands?.length === 1 && framework(commands[0]!) ? commands[0] : undefined;
+  } catch { return undefined; }
+}
+
+/** Portable logical check identity; environment/version provenance is kept separately. */
+export function validationCheckKey(command: Command, workspaceRoot: string): string {
+  const normalize = (value: string) => value.replaceAll(workspaceRoot, "<workspace>").replaceAll("\\", "/");
+  return verificationTargetKey({ program: normalize(command.program), args: command.args.map(normalize),
+    cwd: normalize(command.cwd ?? ".") });
+}
+
 function opaque(command: Command): boolean {
   const name = basename(command.program);
   // Pipeline/filter/wrapper exit status alone never proves the target check passed.
@@ -73,10 +97,10 @@ export class CommandVerificationCollector {
   private nodePass?: number;
   private nodeFail?: number;
 
-  constructor(command: Command) {
+  constructor(command: Command, packageRunner?: string[]) {
     this.targetKey = verificationTargetKey(command);
     this.opaque = opaque(command);
-    const direct = framework([command.program, ...command.args]);
+    const direct = framework(packageRunner ?? [command.program, ...command.args]);
     const runners = direct ? [direct] : shellCommandWords(command.program, command.args).map(framework).filter((value): value is Framework => value !== undefined);
     if (runners.length === 1) this.selected = runners[0];
     else if (runners.length > 1) this.ambiguous = true;

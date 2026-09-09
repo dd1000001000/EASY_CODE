@@ -517,16 +517,10 @@ describe("AgentRuntime subagent boundaries", () => {
       },
     }).run(collectionState, "Use a child", options(3));
 
-    assert.equal(request, 3);
-    assert.equal(result.reason, "success");
-    assert.match(result.text, /Collected safely/u);
-    assert.equal(
-      collectionState.messages.some(
-        (message) => message.role === "user" &&
-          message.content.includes("RUNTIME_SUBAGENT_COLLECTION_REQUIRED"),
-      ),
-      true,
-    );
+    assert.equal(request, 1);
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /collect all outstanding child/);
+    assert.equal(outstanding, true);
   });
 
   it("gives a child only its Code-mode worker tools and hides parent controls and memory", async () => {
@@ -560,7 +554,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(visibleTools.includes("read_image"), false);
   });
 
-  it("corrects a plain child final and returns the eventual structured report", async () => {
+  it("fails a plain child final and reports the unmet protocol without retry", async () => {
     const taskId = "child_plain_final";
     const currentState = state("high", "plain_final");
     let requests = 0;
@@ -593,21 +587,12 @@ describe("AgentRuntime subagent boundaries", () => {
       },
     }).run(currentState, "Complete the assigned task", options(2));
 
-    assert.equal(requests, 2);
-    assert.equal(correctionWasVisible, true);
-    assert.equal(result.reason, "success");
-    assert.equal(result.steps, 2);
-    assert.deepEqual(
-      result.subagentTaskReport,
-      completionReport(taskId, "Verified child result."),
-    );
-    assert.equal(
-      currentState.messages.some(
-        (message) => message.role === "user" &&
-          message.content.includes("RUNTIME_SUBAGENT_RESULT_PROTOCOL"),
-      ),
-      true,
-    );
+    assert.equal(requests, 1);
+    assert.equal(correctionWasVisible, false);
+    assert.equal(result.reason, "failed");
+    assert.equal(result.steps, 1);
+    assert.equal(result.subagentTaskReport, undefined);
+    assert.match(result.text, /without submit_task_result/);
   });
 
   it("rejects submit_task_result until the child's command is terminal", async () => {
@@ -675,14 +660,13 @@ describe("AgentRuntime subagent boundaries", () => {
       hasOpenCommandHandles: () => running,
     }).run(currentState, "Complete the assigned task", options(3));
 
-    assert.equal(requests, 3);
-    assert.equal(submitExecutions, 1);
-    assert.equal(sawRuntimeRejection, true);
-    assert.equal(result.reason, "success");
-    assert.deepEqual(
-      result.subagentTaskReport,
-      completionReport(taskId, "Verified after command completion."),
-    );
+    assert.equal(requests, 1);
+    assert.equal(submitExecutions, 0);
+    assert.equal(sawRuntimeRejection, false);
+    assert.equal(result.reason, "failed");
+    assert.equal(result.subagentTaskReport, undefined);
+    assert.equal(running, true);
+    assert.match(result.text, /BACKGROUND_COMMAND_FINALIZATION_REQUIRED/);
   });
 
   it("rejects a forged structured result before accepting the bound task report", async () => {

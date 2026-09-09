@@ -149,6 +149,7 @@ export interface RunCommandOutput {
   validation?: CommandValidation;
   requestMetadata?: CommandRequestMetadata;
   lifecycle?: {
+    outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown";
     execution: "not_started" | "unknown" | "started" | "exited";
     cleanup: "not_required" | "confirmed" | "failed" | "unconfirmed";
     cleanupError?: string;

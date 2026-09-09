@@ -1,3 +1,4 @@
+import { foldDelivery, newDelivery, pendingDelivery } from "../review/delivery.js";
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
@@ -31,6 +32,12 @@ import {
 } from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { TaskBudgetExceeded } from "./task-budget.js";
+import { completeWithApiRetries, markRetryManaged, isContextCapacityError, incompleteModelOutput } from "./model-retry.js";
+import { resetServerContext, resetRequestHistory, resetStateRequest } from "../context/server-reset.js";
+import { recordUserRequirement } from "../context/user-requirements.js";
+import { reconciliationPending, reconciliationGate, reconciliationObservation } from "../context/reconciliation.js";
+import { failureCategory } from "./failure-policy.js";
+import { CommandRetryTracker } from "./command-retry.js";
 import { ProviderError } from "../providers/errors.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { projectToolResult } from "../tools/output-projection.js";
@@ -42,6 +49,7 @@ import { runCompactionTransaction, foldCompactionControl, completeExchange, inve
 import type { NormalRequestEnvelope } from "../context/context-request.js";
 import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
 import { parseSemanticRequestPatch, recallCompactionEvidence } from "../context/semantic-compaction.js";
+import { recallThreadContext } from "../context/recall.js";
 import { captureValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
 import { RequestPrefixTracker } from "../context/request-prefix.js";
@@ -125,11 +133,12 @@ import {
   normalizeToolFailure, prepareToolInput, protocolToolFailure, toolResultForModel,
 } from "../tools/errors.js";
 import {
-  MAX_TOOL_CORRECTION_STEPS,
   ToolRecoveryBudget, ToolProtocolExhausted,
 } from "./tool-recovery.js";
 
 const PROGRESS_EXPERIMENT_TOOLS = new Set<ToolName>([
+  "recall_context",
+  "search_context",
   "read_file",
   "read_image",
   "run_command",
@@ -161,16 +170,6 @@ function contextCapacityFailure(error: unknown, state: Readonly<SessionState>): 
   return isContextCapacityError(error)
     ? { code: "context_capacity_exhausted", tool: "runtime",
       attempts: state.compactionControl?.transaction?.attempts ?? 0, recoverable: true } : undefined;
-}
-
-/** Provider-neutral, narrow classification: timeouts/429/auth errors are not capacity errors. */
-function isContextCapacityError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  if (error.message.startsWith("context_capacity_insufficient:")) return true;
-  if (!(error instanceof ProviderError) || (error.statusCode !== undefined &&
-      ![400, 413, 422].includes(error.statusCode))) return false;
-  return /context_length_exceeded|context_window_exceeded|maximum context length|context (?:window|length).*(?:exceed|limit)|prompt (?:is )?too long|input (?:is )?too long/i
-    .test(`${error.code} ${error.message}`);
 }
 
 export interface ProviderContextSnapshot {
@@ -579,7 +578,6 @@ const CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS = 1_024;
 export interface AgentRuntimeDependencies {
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   taskBudget?: import("./task-budget.js").TaskBudget;
-  providerRetryLimit?: number;
   tokenCalibration?: TokenCalibration;
   provider: ModelProvider;
   tools: AgentTool[];
@@ -619,6 +617,7 @@ export interface AgentRuntimeDependencies {
   checkpointContext?: (state: Readonly<SessionState>) => Promise<void>;
   captureToolEvidence?: (state: Readonly<SessionState>, callId: string, tool: string,
     result: ToolExecutionResult) => string;
+  readToolEvidence?: (state: Readonly<SessionState>, id: string, offset: number, limit: number) => object;
   validateMemorySources?: (state: Readonly<SessionState>, turnId: string, userInput: string,
     mutation: MemoryMutationRequest) => void;
   commitMemoryMutations?: (input: {
@@ -637,6 +636,9 @@ export interface AgentRuntimeDependencies {
   ) => Promise<void>;
   /** Fresh workspace identity used to reject stale reviewer advice. */
   getProgressWorkspaceFingerprint?: () => Promise<string>;
+  captureValidationBaseline?: () => Promise<import("../progress/validation-standard.js").ValidationBaseline>;
+  runReviewSession?: (input: import("../review/application.js").WorkspaceReviewRequest) =>
+    Promise<import("../review/application.js").WorkspaceReviewResult>;
   requestApproval: ApprovalHandler;
   recordCommand?: (turnId: string, entry: CommandAuditEntry) => void;
   onToolCompleted?: (
@@ -759,6 +761,7 @@ function availableTools(
       tool.name === "cancel_command" ||
       tool.name === "compact_context" ||
       tool.name === "submit_task_result"
+      || tool.name === "search_context" || tool.name === "recall_context"
     );
   }
   if (mode !== "plan") {
@@ -783,7 +786,7 @@ function availableTools(
       tool.name === "delete_file" ||
       tool.name === "propose_plan" ||
       tool.name === "compact_context" ||
-      tool.name === "manage_memory",
+      tool.name === "manage_memory" || tool.name === "search_context" || tool.name === "recall_context",
   );
 }
 
@@ -902,6 +905,7 @@ function updateLatestRequestLedger(
   sourceMessageIndex: number,
   content: string,
 ): void {
+  recordUserRequirement(state, sourceMessageIndex);
   const previous = state.contextIntentLedger;
   state.contextIntentLedger = {
     latestRequest: {
@@ -919,6 +923,7 @@ function appendSteeringLedgerEntry(
   sourceMessageIndex: number,
   content: string,
 ): void {
+  recordUserRequirement(state, sourceMessageIndex);
   const quote = {
     sourceMessageIndex,
     text: boundedIntentQuote(content),
@@ -975,6 +980,7 @@ export class AgentRuntime {
       (this.dependencies.getOutstandingSubagents?.().length ?? 0) > 0;
   }
   private remainingRequests = Infinity;
+  private retryContext?: { state: SessionState; turnId: string };
   private readonly requestPrefixTracker = new RequestPrefixTracker();
   constructor(private readonly dependencies: AgentRuntimeDependencies) {
     const provider = dependencies.provider;
@@ -989,30 +995,29 @@ export class AgentRuntime {
         const limits = dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
         const sent = budgetedRequest({ ...request, outputReserveTokens: request.outputReserveTokens ?? dependencies.contextManager.tokenCapacity?.outputReserve ?? limits.maxResponseTokens }, dependencies.contextManager.tokenCapacity,
           dependencies.contextManager.estimateRequestTokens);
-        const retries = Math.min(request.maxRetries ?? limits.maxProviderRetries,
-          dependencies.providerRetryLimit ?? limits.maxProviderRetries, limits.maxProviderRetries);
-        for (let attempt = 0; ; attempt += 1) {
-          if (request.signal?.aborted) throw request.signal.reason ?? new Error("Request aborted");
-          const settle = dependencies.taskBudget?.reserve(sent, dependencies.contextManager.estimateRequestTokens);
-          if (attempt === 0) this.remainingRequests -= 1;
-          let retryWait = 0;
-          try {
-            // Runtime owns retries so every actual attempt uses the shared budget.
-            const response = await provider.complete({ ...sent, maxRetries: 0 });
-            settle?.(response.usage);
-            try { dependencies.tokenCalibration?.observe(sent.messages, sent.tools ?? [], response.usage); }
-            catch { /* Calibration persistence must not replace a successful response. */ }
-            return response;
-          } catch (error) {
-            if (!(error instanceof ProviderError) || !error.retryable || attempt >= retries) throw error;
-            retryWait = error.retryAfterMs ?? 500 * 2 ** attempt;
-            // Never retry earlier than the server requested.
-            if (retryWait > limits.providerRetryWaitMs) throw error;
-          } finally { settle?.(); }
-          await delay(retryWait, undefined, { signal: request.signal });
-        }
+        this.remainingRequests -= 1; // Logical model step, not physical API attempts.
+        let actualRequest = sent;
+        const response = await completeWithApiRetries(provider, sent, {
+          limits,
+          reserve: value => { actualRequest = value; return dependencies.taskBudget?.reserve(value, dependencies.contextManager.estimateRequestTokens) ?? (() => undefined); },
+          onSettled: async attempt => {
+            if (this.retryContext) await dependencies.appendEvent({ threadId: this.retryContext.state.threadId,
+              turnId: this.retryContext.turnId, type: "model.api_attempt", phase: attempt.outcome, payload: attempt });
+          },
+          resetContext: async rejected => {
+            const active = this.retryContext;
+            if (!active) return resetRequestHistory(rejected);
+            await resetServerContext(active.state, active.turnId, dependencies.appendEvent);
+            dependencies.onStatus?.("Server rejected context capacity. Historical context cleared; retrying once with user requirements. Files, budgets and execution state are unchanged.");
+            return resetStateRequest(rejected, active.state);
+          },
+        });
+        try { dependencies.tokenCalibration?.observe(actualRequest.messages, actualRequest.tools ?? [], response.usage); }
+        catch { /* Calibration persistence must not replace a successful response. */ }
+        return response;
       },
     } };
+    markRetryManaged(this.dependencies.provider);
     const steeringConfigured = Boolean(
       dependencies.takeSteering ||
       dependencies.sealSteering ||
@@ -1115,6 +1120,16 @@ export class AgentRuntime {
     const { state, turnId } = input;
     state.progressGuard ??= createProgressGuardState();
     const currentScopeKey = progressScopeKey(state, turnId);
+    if (this.dependencies.runReviewSession) {
+      const pending = state.progressGuard.incidents.find(incident => incident.scopeKey === currentScopeKey &&
+        incident.phase === "review_pending" && incident.reason !== "validation_standard_changed");
+      const unfinished = state.reviewSessions?.find(s => s.status !== "applied" && s.purpose === "stagnation");
+      if (!pending && !unfinished) return 0;
+      const result = await this.dependencies.runReviewSession({ ...input, purpose: "stagnation",
+        maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
+        incidentId: pending?.incidentId ?? unfinished?.incidentId });
+      return result.requests;
+    }
 
     // Crash recovery is global, not current-turn scoped. Otherwise a standalone
     // review started in the interrupted turn becomes permanently unreachable
@@ -1369,13 +1384,13 @@ export class AgentRuntime {
           binding,
           packet,
           thinkingEffort: state.thinkingEffort,
-          maxModelRequests: input.remainingModelRequests >= 3
-            ? (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).reviewerModelRequests : 1,
+          maxModelRequests: Math.min(Math.max(1, input.remainingModelRequests - 1), (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1),
           maxOutputTokens: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).reviewerOutputTokens,
           signal: input.signal,
         },
         {
           provider: this.dependencies.provider,
+          limits: this.dependencies.limits,
           onRequestStarted: async (request) => {
             await this.appendProgressReviewEvent(
               state,
@@ -1666,6 +1681,7 @@ export class AgentRuntime {
     validateImageAttachmentCollection(inputImages);
     validateProviderImageAttachments(this.dependencies.provider.name, inputImages);
     const turnId = createId("turn");
+    this.retryContext = { state, turnId };
     const turnImages = [...inputImages];
     this.dependencies.steeringNotifier?.consume(state.steeringWatermark ?? 0);
     const agentIdentity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
@@ -1686,8 +1702,8 @@ export class AgentRuntime {
       ...(inputImages.length ? { images: inputImages } : {}),
     };
     const turnHistoryStart = state.messages.length;
+    const turnChangeStart = state.changes.length;
     let phaseCompactionRequestsUsed = 0;
-    let contextCapacityRetries = 0;
     state.messages.push(userMessage);
     updateLatestRequestLedger(state, turnHistoryStart, userMessage.content);
 
@@ -1980,6 +1996,7 @@ export class AgentRuntime {
                       actualRequest: inspection,
                     });
                   },
+                  this.dependencies.limits,
                 ),
               ),
             );
@@ -2024,6 +2041,8 @@ export class AgentRuntime {
             continue;
           }
           if (decision.kind === "direct_response") {
+            if (reconciliationPending(state)) return this.finish(state, turnId,
+              "Cannot finish directly after context reset before reconciling workspace and pending operations. No completion retry.", "failed", 0, memoryContext);
             if (await this.takeAndApplySteering(
               state,
               turnId,
@@ -2124,19 +2143,11 @@ export class AgentRuntime {
 
     const stepLimit = options.maxSteps;
     let taskDagFinalizationOnly = false;
-    const toolRecovery = new ToolRecoveryBudget(this.dependencies.limits?.toolProtocolAttempts);
-    let toolCorrectionStepsUsed = 0;
+    const toolRecovery = new ToolRecoveryBudget((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1);
+    let invalidOutputAttempts = 0;
+    const commandRetries = new CommandRetryTracker((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries);
     let lastContextPressureLevel: ContextPressureLevel = "normal";
-    let subagentCollectionReminderIssued = false;
-    let subagentCollectionAllowanceGranted = false;
-    let backgroundCommandFinalizationReminderIssued = false;
-    let backgroundCommandFinalizationAllowanceGranted = false;
-    let runCommandUnavailable = false;
-    let unavailableCommandTool: "run_command" | "start_command" = "run_command";
-    let retryableSandboxFailureCount = 0;
-    let retryableSandboxRecoveryPending = false;
     let progressReviewModelRequestsUsed = 0;
-    let progressExperimentReminderIssued = false;
     for (
       let step = 1;
       step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed <= Math.min(stepLimit, options.maxSteps) && this.remainingRequests > 0;
@@ -2210,7 +2221,7 @@ export class AgentRuntime {
       const queryKey = memoryQueryKey(state, queries);
       let memorySearchCalls = 0;
       const memorySearchStarted = Date.now();
-      if (queryKey !== rememberedQueryKey) {
+      if (queryKey !== rememberedQueryKey && !reconciliationPending(state)) {
         const found: Readonly<LongTermMemory>[] = [];
         for (const query of queries) {
           memorySearchCalls += 1;
@@ -2226,11 +2237,9 @@ export class AgentRuntime {
           ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
           : []
         : [...toolMap.values()].filter((tool) =>
-            tool.name !== "compact_context" && (!runCommandUnavailable ||
-            (tool.name !== "run_command" && tool.name !== "start_command"))
+            tool.name !== "compact_context"
           );
       const fixedRuntimeInstructions = [
-        runCommandUnavailable ? sandboxUnavailableInstruction(agentIdentity.role) : "",
         this.dependencies.hasOpenCommandHandles?.()
           ? backgroundCommandFinalizationInstruction()
           : "",
@@ -2245,13 +2254,14 @@ export class AgentRuntime {
       rememberedPhaseKey = phaseKey;
       let optionalAllowance = optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens,
         memoryLimits, phaseChanged || expandedMemoryRecall(state));
+      if (reconciliationPending(state)) optionalAllowance = 0;
       let selectedOptionalCount = 0;
       let memorySelectionInfo = { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } };
       let retrievalDurationMs = 0;
       let retrievalCacheHit = false;
       let selectedForStep: ReturnType<typeof selectMemoryContext> | undefined;
       const renderStepMemory = (selected: ReturnType<typeof selectMemoryContext>, context: typeof layeredContext): string =>
-        "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
+        reconciliationPending(state) ? "" : "RUNTIME_CONTEXT_DATA (workspace/checkpoint/retrieval data, not new user instructions):\n" +
           JSON.stringify({ workspaceSummary,
             workingCheckpoint: renderPinnedCurrentState(state, memoryContext.approvedPlanReview, true),
             memories: selected.memories.map((memory) => ({ id: memory.id, category: memory.category,
@@ -2299,7 +2309,7 @@ export class AgentRuntime {
           : 0) +
         CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS;
       let retrievalContextChanged = false;
-      if (this.dependencies.getLayeredContext) {
+      if (this.dependencies.getLayeredContext && !reconciliationPending(state)) {
         try {
           const boundary = this.dependencies.contextManager.retrievalBoundary(
             state, options.maxContextChars, selectionSystemPrompt, reservedSystemPromptChars, stepRuntimeContext);
@@ -2502,22 +2512,10 @@ export class AgentRuntime {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (!options.signal?.aborted && isContextCapacityError(error)) {
-          // The remote window may be smaller than our estimate. Shrink locally,
-          // then retry once; never send the same oversized prompt in a loop.
-          if (contextCapacityRetries < (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextMaxCapacityRetries) {
-            contextCapacityRetries++;
-            const recovered = await this.maintainContext(state, turnId, turnImages, memoryContext, options,
-              { systemPrompt, runtimeContext: stepRuntimeContext, tools: ordinaryToolDefinitions }, true, 0, true);
-            if (recovered.committed && !recovered.paused) {
-              phaseCompactionRequestsUsed++; // The rejected normal request still consumed a request.
-              step--;
-              continue;
-            }
-          }
           return this.finish(state, turnId,
             "Context paused: the provider rejected the input capacity after bounded recovery. History, files and pending operations are preserved; reduce required input or configure a supported model window before resuming.",
             "limit_reached", step, memoryContext, undefined, undefined,
-            { code: "context_capacity_exhausted", tool: "runtime", attempts: contextCapacityRetries, recoverable: true });
+            { code: "context_capacity_exhausted", tool: "runtime", attempts: state.pressureRecovery?.serverReset ? 1 : 0, recoverable: true });
         }
         await this.dependencies.appendEvent({
           threadId: state.threadId,
@@ -2525,7 +2523,7 @@ export class AgentRuntime {
           stepId: `step_${step}`,
           type: "model.error",
           phase: "failed",
-          payload: { message }
+          payload: { message, category: failureCategory(error, options.signal), commandReplay: false }
         });
         const interrupted = Boolean(options.signal?.aborted);
         return this.finish(
@@ -2623,36 +2621,29 @@ export class AgentRuntime {
 
       // Execute original arguments; the complete sanitized candidate remains
       // in history until an accepted compaction retires it.
+      const invalidOutput = incompleteModelOutput(response);
+      if (invalidOutput) {
+        invalidOutputAttempts++;
+        for (const call of executionToolCalls ?? []) {
+          const rejected: ChatMessage = { role: "tool", name: call.function.name, tool_call_id: call.id,
+            content: JSON.stringify({ ok: false, error: invalidOutput, executed: false }) };
+          state.messages.push(rejected);
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "tool.result", phase: "failed",
+            payload: { callId: call.id, tool: call.function.name, message: rejected, result: { ok: false, executed: false, error: invalidOutput } } });
+        }
+        const feedback: ChatMessage = { role: "user", content: "RUNTIME_MODEL_CONTENT_ERROR: " + invalidOutput };
+        state.messages.push(feedback);
+        await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "message.user.synthetic", payload: feedback });
+        if (invalidOutputAttempts <= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries) continue;
+        return this.finish(state, turnId, invalidOutput + " Content correction budget exhausted; work is unverified and retained.", "failed", step, memoryContext);
+      }
+      invalidOutputAttempts = 0;
       const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
+        if (reconciliationPending(state)) return this.finish(state, turnId,
+          "Cannot finish before context-reset reconciliation. Inspect the current workspace and query original pending operations; no completion retry.", "failed", step, memoryContext);
         if (this.dependencies.hasOpenCommandHandles?.()) {
           const instruction = backgroundCommandFinalizationInstruction();
-          if (!backgroundCommandFinalizationReminderIssued) {
-            backgroundCommandFinalizationReminderIssued = true;
-            const reminder: Extract<ChatMessage, { role: "user" }> = {
-              role: "user",
-              content: instruction,
-            };
-            state.messages.push(reminder);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: reminder,
-            });
-            if (
-              step === stepLimit &&
-              !backgroundCommandFinalizationAllowanceGranted
-            ) {
-              backgroundCommandFinalizationAllowanceGranted = true;
-            }
-            this.dependencies.onStatus?.(
-              "The model attempted to finish with a running command; requesting command finalization.",
-            );
-            continue;
-          }
           return this.finish(
             state,
             turnId,
@@ -2673,31 +2664,11 @@ export class AgentRuntime {
             state,
             pendingExperiment.scopeKey,
           );
-          if (!progressExperimentReminderIssued) {
-            progressExperimentReminderIssued = true;
-            const reminder: Extract<ChatMessage, { role: "user" }> = {
-              role: "user",
-              content: instruction,
-            };
-            state.messages.push(reminder);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: reminder,
-            });
-            this.dependencies.onStatus?.(
-              "The model attempted to finish before running the required progress experiment; requesting one correction.",
-            );
-            continue;
-          }
           return this.finish(
             state,
             turnId,
-            "The required progress experiment was not executed with a real terminal verification result.",
-            "blocked",
+            "The required progress experiment was not executed with a real terminal verification result. No automatic completion retry.",
+            "failed",
             step,
             memoryContext,
           );
@@ -2706,68 +2677,10 @@ export class AgentRuntime {
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
         if (agentIdentity.role === "subagent") {
-          const recovery = toolRecovery.fail("submit_task_result");
-          if (recovery.remaining > 0) {
-            const reminder: Extract<ChatMessage, { role: "user" }> = {
-              role: "user",
-              content: runtimePromptText(
-                "runtime/subagent-result-required.md",
-              ),
-            };
-            state.messages.push(reminder);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: reminder,
-            });
-            if (step === stepLimit && toolCorrectionStepsUsed < MAX_TOOL_CORRECTION_STEPS) {
-              toolCorrectionStepsUsed += 1;
-            }
-            this.dependencies.onStatus?.(
-              "The child attempted to finish without submit_task_result; requesting one correction.",
-            );
-            continue;
-          }
-          throw new ToolProtocolExhausted("submit_task_result", recovery.attempt, step);
+          return this.finish(state, turnId, "The child tried to finish without submit_task_result. No automatic retry; parent must decide how to continue.", "failed", step, memoryContext);
         }
         const outstandingSubagents = this.dependencies.getOutstandingSubagents?.() ?? [];
         if (outstandingSubagents.length > 0) {
-          if (!subagentCollectionReminderIssued) {
-            subagentCollectionReminderIssued = true;
-            const targets = outstandingSubagents
-              .slice(0, 8)
-              .map(
-                (agent) =>
-                  `${agent.id}=${agent.assignmentKind}:${agent.taskId} (${agent.status})`,
-              )
-              .join(", ");
-            const reminder: Extract<ChatMessage, { role: "user" }> = {
-              role: "user",
-              content: renderRuntimePrompt(
-                "runtime/subagent-collection-required.md",
-                { targets },
-              ),
-            };
-            state.messages.push(reminder);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: reminder,
-            });
-            if (step === stepLimit && !subagentCollectionAllowanceGranted) {
-              subagentCollectionAllowanceGranted = true;
-            }
-            this.dependencies.onStatus?.(
-              "The model attempted to finish with outstanding child work; requesting collection.",
-            );
-            continue;
-          }
           return this.finish(
             state,
             turnId,
@@ -2777,74 +2690,11 @@ export class AgentRuntime {
             memoryContext,
           );
         }
-        if (state.taskGraph?.status === "active" && runCommandUnavailable) {
-          const pausedText = sandboxPauseText(text);
-          if (await this.takeAndApplySteering(
-            state,
-            turnId,
-            "before_final",
-            turnImages,
-            true,
-            memoryContext,
-          )) {
-            continue;
-          }
-          this.dependencies.onText?.(pausedText);
-          return this.finish(
-            state,
-            turnId,
-            pausedText,
-            "blocked",
-            step,
-            memoryContext,
-          );
-        }
         if (state.taskGraph?.status === "active") {
-          const reminder: Extract<ChatMessage, { role: "user" }> = {
-            role: "user",
-            content: incompleteTaskGraphReminder(state.taskGraph),
-          };
-          state.messages.push(reminder);
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "message.user.synthetic",
-            phase: "completed",
-            payload: reminder,
-          });
-          this.dependencies.onStatus?.(
-            "The model attempted to finish while the task DAG was incomplete; continuing.",
-          );
-          continue;
+          return this.finish(state, turnId, "Cannot finish: the task DAG is incomplete. No automatic completion retry.", "failed", step, memoryContext);
         }
         if (effectiveMode === "plan") {
-          const recovery = toolRecovery.fail("propose_plan");
-          if (recovery.remaining > 0) {
-            const reminder: Extract<ChatMessage, { role: "user" }> = {
-              role: "user",
-              content: runtimePromptText(
-                "runtime/plan-submission-required.md",
-              ),
-            };
-            state.messages.push(reminder);
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "message.user.synthetic",
-              phase: "completed",
-              payload: reminder,
-            });
-            this.dependencies.onStatus?.(
-              "The model did not submit its plan with propose_plan; requesting one correction.",
-            );
-            if (step === stepLimit && toolCorrectionStepsUsed < MAX_TOOL_CORRECTION_STEPS) {
-              toolCorrectionStepsUsed += 1;
-            }
-            continue;
-          }
-          throw new ToolProtocolExhausted("propose_plan", recovery.attempt, step);
+          return this.finish(state, turnId, "Cannot finish Plan mode without a valid propose_plan submission. No automatic completion retry.", "failed", step, memoryContext);
         }
         if (await this.takeAndApplySteering(
           state,
@@ -2855,6 +2705,28 @@ export class AgentRuntime {
           memoryContext,
         )) {
           continue;
+        }
+        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && (state.changes.length > 0 || pendingDelivery(state)) &&
+            state.taskGraph?.status !== "blocked") {
+          if (!state.delivery || pendingDelivery(state) && state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied")) {
+            const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
+            await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
+            foldDelivery(state, obligation);
+          }
+          const review = await this.dependencies.runReviewSession({ state, turnId, userInput: state.delivery!.request,
+            maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
+            purpose: "delivery", remainingModelRequests: Math.max(0, stepLimit - step - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed),
+            signal: options.signal });
+          progressReviewModelRequestsUsed += review.requests;
+          if (!review.approved) {
+            if (review.decision === "unavailable" || review.decision === "interrupted") return this.finish(state, turnId,
+              `Review unavailable; work and the unverified delivery obligation are retained. ${review.reason ?? "No valid review could be completed."}`,
+              review.decision === "interrupted" ? "interrupted" : "blocked", step, memoryContext);
+            return this.finish(state, turnId,
+              `Delivery remains unapproved: ${review.reason ?? "unresolved review"}. Opinions and evidence are retained. No automatic completion retry.`,
+              "failed", step, memoryContext);
+          }
+          if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         }
         this.dependencies.onText?.(text);
         const reason = state.taskGraph?.status === "blocked"
@@ -2880,10 +2752,9 @@ export class AgentRuntime {
       const stepImageAttachments: ImageAttachment[] = [];
       let proposedPlan: PlanProposal | undefined;
       let submittedTaskReport: SubagentTaskReport | undefined;
-      let sandboxPauseRequested = false;
       let steeringAppliedBetweenTools = false;
-      let backgroundCommandFinalizationRejected = false;
       let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
+      let finishRejectedReason: string | undefined;
       let completedVerificationPhase = false;
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
@@ -2965,7 +2836,7 @@ export class AgentRuntime {
         // including arbitrary inspect commands and shared-workspace children.
         if (!state.progressGuard?.validationBaseline && tool &&
             (tool.mutating || ["run_command", "start_command", "manage_subagents"].includes(toolName))) {
-          const baseline = await captureValidationBaseline(state.workspaceRoot, this.dependencies.limits);
+          const baseline = await (this.dependencies.captureValidationBaseline?.() ?? captureValidationBaseline(state.workspaceRoot, this.dependencies.limits));
           await this.appendProgressReviewEvent(state, turnId, "progress.validation.baseline", "completed", { baseline });
         }
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
@@ -3001,15 +2872,23 @@ export class AgentRuntime {
         } else if (journalRecall) {
           result = journalRecall;
         } else if (toolName === "compact_context") {
+          result = { ok: false, summary: "No valid semantic compaction request was parsed." };
+          let patch: ReturnType<typeof parseSemanticRequestPatch> | undefined;
           try {
             if (!tool || !compactContextIsExclusive) throw new Error("compact_context must be available and called alone");
-            const patch = parseSemanticRequestPatch(JSON.parse(call.function.arguments));
+            patch = parseSemanticRequestPatch(prepareToolInput(tool, call.function.arguments));
+          } catch (error) {
+            const rejected = toolFailure(error, "Invalid semantic compaction request");
+            result = { ...rejected, failure: { ...rejected.failure!,
+              execution: "not_started", recovery: "correct_arguments" } };
+          }
+          if (patch) {
             const payload = { patch };
-            await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
-              type: "context.compaction.requested", payload });
+            // Journal failures are not model content errors and must not be retried as parameters.
+            await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "context.compaction.requested", payload });
             foldCompactionControl(state, "context.compaction.requested", payload);
             result = { ok: true, summary: "Compaction requested. Runtime will assess the candidate at the next complete tool-exchange boundary." };
-          } catch (error) { result = toolFailure(error, "Invalid semantic compaction request"); }
+          }
         } else if (
           progressExperimentAtCall &&
           !PROGRESS_EXPERIMENT_TOOLS.has(toolName)
@@ -3049,20 +2928,8 @@ export class AgentRuntime {
           result = {
             ok: false,
             summary: `Tool ${call.function.name} is not available in the current mode.`,
-            error: "tool_not_available"
-          };
-        } else if (
-          (toolName === "run_command" || toolName === "start_command") &&
-          runCommandUnavailable
-        ) {
-          result = {
-            ok: false,
-            summary:
-              `${toolName} is disabled for the rest of this turn because the OS sandbox ` +
-              "failed before a previous command started. Do not retry it or persistently " +
-              "block the current DAG task; continue with file tools or return a plain-text " +
-              "pause report. Runtime will re-enable commands next turn.",
-            error: "sandbox_unavailable_for_turn",
+            error: "tool_not_available",
+            failure: protocolToolFailure("tool_not_available", "Use only currently exposed tools. This call was not executed; permissions have not changed."),
           };
         } else {
           try {
@@ -3077,23 +2944,8 @@ export class AgentRuntime {
                   parsedOperation.action === "block") &&
                 this.dependencies.hasOpenCommandHandles?.()
               ) {
-                backgroundCommandFinalizationRejected = true;
-                throw new Error(backgroundCommandFinalizationInstruction());
-              }
-              if (
-                (runCommandUnavailable || retryableSandboxRecoveryPending) &&
-                parsedOperation.action === "block"
-              ) {
-                if (runCommandUnavailable) sandboxPauseRequested = true;
-                throw new Error(
-                  retryableSandboxRecoveryPending && !runCommandUnavailable
-                    ? "A first transient Windows SRT initialization failure cannot " +
-                      `persistently block a DAG task. Retry ${unavailableCommandTool} once; Runtime keeps ` +
-                      "the task in progress."
-                    : "A turn-scoped OS sandbox failure cannot persistently block a DAG task. " +
-                      "Return a plain-text pause report instead; Runtime keeps the task in " +
-                      "progress and re-enables command execution next turn.",
-                );
+                finishRejectedReason = backgroundCommandFinalizationInstruction();
+                throw new Error(finishRejectedReason);
               }
               if (
                 parsedOperation.action === "create" &&
@@ -3114,8 +2966,8 @@ export class AgentRuntime {
               toolName === "submit_task_result" &&
               this.dependencies.hasOpenCommandHandles?.()
             ) {
-              backgroundCommandFinalizationRejected = true;
-              throw new Error(backgroundCommandFinalizationInstruction());
+              finishRejectedReason = backgroundCommandFinalizationInstruction();
+              throw new Error(finishRejectedReason);
             }
             this.dependencies.onStatus?.(`Tool: ${tool.name}`);
             const toolContext = {
@@ -3154,6 +3006,10 @@ export class AgentRuntime {
               provider: state.provider,
               model: state.model,
               toolCallId: call.id,
+              searchProjectMemory: this.dependencies.searchMemories,
+              recallContext: async (input: { evidenceId: string; offset: number; limit: number }) => recallThreadContext(state, input,
+                this.dependencies.readToolEvidence ? (id, offset, limit) =>
+                  this.dependencies.readToolEvidence!(state, id, offset, limit) : undefined),
               ...(this.dependencies.getLayeredContext ? { searchHistory: async (query: string, limit: number) => {
                 const history = await this.dependencies.getLayeredContext!({ state, query, queries: [query],
                   beforeMessageIndex: state.messages.length });
@@ -3218,8 +3074,9 @@ export class AgentRuntime {
             };
             const waitAttempt = tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
             try {
-              result = await this.withToolExecutionActivity(tool.name,
+              result = reconciliationGate(state, tool.name, input) ?? commandRetries.before(tool.name, input) ?? await this.withToolExecutionActivity(tool.name,
                 () => tool.execute(input, { ...toolContext, waitSignal: waitAttempt?.signal }));
+              result = commandRetries.after(tool.name, input, result);
             } finally { waitAttempt?.dispose(); }
             preparedSubagentLifecycle = result.subagentLifecycle;
           } catch (error) {
@@ -3227,39 +3084,6 @@ export class AgentRuntime {
           }
         }
 
-        if (toolName === "run_command" || toolName === "start_command") {
-          const commandData = result.data && typeof result.data === "object"
-            ? result.data
-            : undefined;
-          const commandStatus = commandData && "status" in commandData
-            ? commandData.status
-            : undefined;
-          if (!result.ok && commandStatus === "sandbox_unavailable") {
-            unavailableCommandTool = toolName;
-            const sandboxFailure = commandData &&
-                "sandboxFailure" in commandData &&
-                commandData.sandboxFailure &&
-                typeof commandData.sandboxFailure === "object"
-              ? commandData.sandboxFailure as { retryable?: unknown }
-              : undefined;
-            if (
-              sandboxFailure?.retryable === true &&
-              retryableSandboxFailureCount === 0
-            ) {
-              retryableSandboxFailureCount = 1;
-              retryableSandboxRecoveryPending = true;
-            } else {
-              runCommandUnavailable = true;
-            }
-          } else if (commandStatus !== undefined || result.ok) {
-            // The bounded retry reached a real command outcome (including
-            // non-zero exit, timeout, denial, or spawn failure). Sandbox
-            // recovery is no longer pending, so later task decisions must be
-            // based on that outcome rather than the earlier transient failure.
-            retryableSandboxFailureCount = 0;
-            retryableSandboxRecoveryPending = false;
-          }
-        }
 
         if (
           toolName === "manage_memory" &&
@@ -3434,20 +3258,15 @@ export class AgentRuntime {
         result = normalizeToolFailure(result);
         if (result.ok) toolRecovery.succeed(toolName);
         // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
-        // Context maintenance is isolated and never uses this repair budget.
-        if (toolName !== "compact_context" && result.failure?.recovery === "correct_arguments") {
+        // Once accepted, context maintenance owns its own durable correction budget.
+        // Invalid public compact_context parameters still need bounded preflight correction.
+        if (result.failure?.recovery === "correct_arguments") {
           const recovery = toolRecovery.fail(toolName);
           result = { ...result, failure: { ...result.failure,
             instruction: `${result.failure.instruction} Correction attempts remaining: ${recovery.remaining}.`,
             ...(recovery.remaining === 0 ? { recovery: "none" as const } : {}),
           } };
-          if (recovery.remaining > 0 && step === stepLimit && toolCorrectionStepsUsed < MAX_TOOL_CORRECTION_STEPS) {
-            toolCorrectionStepsUsed += 1;
-          }
-          if (recovery.remaining === 0 && (
-            (toolName === "propose_plan" && effectiveMode === "plan") ||
-            (toolName === "submit_task_result" && agentIdentity.role === "subagent")
-          )) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
+          if (recovery.remaining === 0) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
         }
 
         if (this.dependencies.captureToolEvidence && toolName !== "compact_context" && toolName !== "manage_memory") {
@@ -3529,6 +3348,7 @@ export class AgentRuntime {
         };
         if (!result.ok) rollbackPreparedSubagent();
         const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
+        const contextReconciliation = reconciliationObservation(state, toolName, result);
         try {
           await this.dependencies.appendEvent({
             eventId: toolResultEventId,
@@ -3543,6 +3363,7 @@ export class AgentRuntime {
               message: toolMessage,
               progressObservation,
               ...(contextCommand ? { contextCommand } : {}),
+              ...(contextReconciliation ? { contextReconciliation } : {}),
               outputProjection: { capturedResultChars: JSON.stringify(result.data ?? null).length,
                 modelResultChars: toolMessage.content.length },
               ...(result.failure ? { failure: result.failure } : {}),
@@ -3572,7 +3393,7 @@ export class AgentRuntime {
           progressObservation,
         );
         state.progressGuard = progressFold.state;
-        foldPendingOperations(state, { tool: toolName, contextCommand,
+        foldPendingOperations(state, { tool: toolName, contextCommand, contextReconciliation,
           ...(result.ok ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment } : {}) });
         completedVerificationPhase ||= progressFold.accepted && progressObservation.kind === "verification_terminal";
         state.messages.push(toolMessage);
@@ -3592,6 +3413,12 @@ export class AgentRuntime {
           memoryContext.mutations.push(result.memoryMutation);
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && state.changes.length > turnChangeStart &&
+            (!state.delivery || state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied"))) {
+          const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
+          foldDelivery(state, obligation);
+        }
       }
 
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
@@ -3611,43 +3438,10 @@ export class AgentRuntime {
         continue;
       }
 
-      if (
-        backgroundCommandFinalizationRejected &&
-        step === stepLimit &&
-        !backgroundCommandFinalizationAllowanceGranted
-      ) {
-        backgroundCommandFinalizationAllowanceGranted = true;
-        this.dependencies.onStatus?.(
-          "Command finalization must fit within the remaining step budget.",
-        );
-      }
-
-      if (sandboxPauseRequested && state.taskGraph?.status === "active") {
-        const pausedText = sandboxPauseText();
-        if (await this.takeAndApplySteering(
-          state,
-          turnId,
-          "before_final",
-          turnImages,
-          true,
-          memoryContext,
-        )) {
-          continue;
-        }
-        this.dependencies.onText?.(pausedText);
-        return this.finish(
-          state,
-          turnId,
-          pausedText,
-          "blocked",
-          step,
-          memoryContext,
-        );
-      }
-
       if (requiredProtocolExhaustion) {
         throw new ToolProtocolExhausted(requiredProtocolExhaustion.tool, requiredProtocolExhaustion.attempt, step);
       }
+      if (finishRejectedReason) return this.finish(state, turnId, finishRejectedReason, "failed", step, memoryContext);
       if (submittedTaskReport) {
         const text = submittedTaskReport.summary;
         this.dependencies.onText?.(text);
@@ -3796,7 +3590,6 @@ export class AgentRuntime {
         this.dependencies.onStatus?.("Context maintenance: complete response, local summary projection; length overflow needs no model retry.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
           "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
-            maxRetries: 0,
             tools: [compactTool.definition], signal, thinkingEffort: "none",
             currentTurnImageIds: images.map((image) => image.id) })));
         if (attempted.kind === "steering_interrupted") {
@@ -3949,6 +3742,12 @@ export class AgentRuntime {
     subagentTaskReport?: SubagentTaskReport,
     failure?: AgentRunResult["failure"],
   ): Promise<AgentRunResult> {
+    // A last-line seal for every completion path, not only the normal text branch.
+    if (reason === "success" && this.dependencies.runReviewSession &&
+        (this.dependencies.agentIdentity?.role ?? "main_agent") === "main_agent" && pendingDelivery(state)) {
+      reason = "blocked";
+      text += "\nDelivery remains unverified; the persistent review obligation is not completed.";
+    }
     const returnOutcome: PlanExecutionReturnOutcome | undefined =
       reason === "failed" || reason === "interrupted" || reason === "limit_reached"
         ? reason

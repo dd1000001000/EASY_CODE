@@ -209,8 +209,8 @@ describe("central runtime limits", () => {
   it("honors a configured provider retry limit of zero within the shared budget", async () => {
     let calls = 0;
     const budget = new TaskBudget(10, 0);
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget,
-      providerRetryLimit: 0, tools: [], contextManager: new ContextManager(),
+    const runtime = new AgentRuntime({ limits: { ...defaultRuntimeLimits(), maxProviderRetries: 0 }, taskBudget: budget,
+      tools: [], contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
       searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async () => {

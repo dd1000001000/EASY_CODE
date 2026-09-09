@@ -20,6 +20,8 @@ export function createProvider(
 ): ModelProvider {
   const providerConfig = {
     ...config[providerName],
+    // Standalone adapters retain their cap; every agent call explicitly sends
+    // maxRetries=0 and uses the shared Runtime retry policy instead.
     maxRetries: Math.min(config[providerName].maxRetries, config.limits.maxProviderRetries),
     model: modelOverride?.trim() || config[providerName].model,
   };

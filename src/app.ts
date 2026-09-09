@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
 import { HarborSandboxBackend } from "./sandbox/harbor-backend.js";
 import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
+import { runWorkspaceReview } from "./review/application.js";
+import { ValidationBaselineStore } from "./review/baseline-store.js";
+import { captureValidationBaseline } from "./progress/validation-standard.js";
+import { sharedReviewEvidenceOwner } from "./context/recall.js";
 
 import chalk from "chalk";
 
@@ -1674,7 +1678,8 @@ export class EasyCodeApp {
     const promptStartedAt = new Date();
     const childrenRunning = this.subagentCoordinator.snapshot(this.state.threadId)
       .some((child) => child.status === "running" || child.status === "stopping");
-    const budget = childrenRunning ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
+    const reviewPending = this.state.reviewSessions?.some(session => session.status !== "applied");
+    const budget = childrenRunning || reviewPending ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
     this.taskBudgets.set(this.state.threadId, budget);
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
     const provider = createProvider(
@@ -1708,7 +1713,6 @@ export class EasyCodeApp {
       provider,
       limits: this.config.limits,
       taskBudget: budget,
-      providerRetryLimit: effectiveConfig[this.state.provider].maxRetries,
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
         effectiveConfig[provider.name].baseUrl]), this.storage),
       tools,
@@ -1738,6 +1742,8 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
+      captureValidationBaseline: () => captureValidationBaseline(this.workspace.root, this.config.limits,
+        (hash, bytes) => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).put(hash, bytes)),
       getProgressWorkspaceFingerprint: async () => {
         const snapshot = await this.workspace.captureSnapshot();
         if (snapshot.truncated) {
@@ -1754,6 +1760,8 @@ export class EasyCodeApp {
         { workspaceRoot: this.workspace.root, limit: this.config.limits.memorySearchLimit }),
       captureToolEvidence: (state, callId, tool, result) =>
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
+      readToolEvidence: (state, id, offset, limit) =>
+        this.memoryManager.evidenceStore.read(workspaceId, sharedReviewEvidenceOwner(state, id), id, offset, limit),
       validateMemorySources: (state, turnId, userInput, mutation) => this.memoryManager.validateSources({
         sourceState: state, workspaceId, threadId: state.threadId, turnId, userInput,
         outcome: "success", mutations: [mutation],
@@ -1893,6 +1901,36 @@ export class EasyCodeApp {
       requestApproval: async (request) => {
         return this.requestToolApproval(request);
       },
+      runReviewSession: async (input) => this.workspaceMutationLock.runExclusive(async () => {
+        // A background writer outlives its run_command lock; do not snapshot it.
+        if (this.hasRunningCommands()) return { approved: false, requests: 0, reused: true,
+          reason: "A supervised command is still running; observe its terminal result before review." };
+        return runWorkspaceReview(input, {
+          workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
+          readBaseline: hash => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).get(hash),
+          provider, budget, limits: this.config.limits,
+          sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir],
+          lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
+          status: text => this.terminal.status(text),
+          approve: async (context, request) => this.approvalQueue.run(async () => {
+            if (request.signal?.aborted || request.command?.scope === "host") return false;
+            const saved = this.threadStore.recover(context.threadId);
+            if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
+            // Review permissions do not inherit main-thread Full access.
+            const decision = await this.reviewApproval(request);
+            this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
+            let vote = decision.decision;
+            if (vote === "reject") {
+              if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
+              vote = await this.terminal.approve({ ...request, description: `${request.description}\nApproval reviewer: ${decision.reason}` });
+            }
+            if (request.signal?.aborted) return false;
+            if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
+              this.threadStore.recordCommandApprovalPrefixGrant(context.threadId, request.commandPrefix, context.turnId);
+            return vote !== "reject";
+          }),
+        });
+      }, input.signal),
       onStatus: (status) => this.terminal.status(status),
       onModelRequestStart: (text) => this.terminal.startActivity(text, "model"),
       onModelRequestEnd: (activityToken) => {
@@ -2179,7 +2217,7 @@ export class EasyCodeApp {
         tool.name === "start_command" ||
         tool.name === "poll_command" ||
         tool.name === "cancel_command" ||
-        tool.name === "compact_context"
+        tool.name === "compact_context" || tool.name === "search_context" || tool.name === "recall_context"
       );
       childTools.push(new SubmitTaskResultTool(request.task));
       const mutationLock = activeEnvironment.descriptor.kind === "shared"
@@ -2218,7 +2256,6 @@ export class EasyCodeApp {
         provider,
         limits: this.config.limits,
         taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
-        providerRetryLimit: childConfig[request.record.provider].maxRetries,
         tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
           childConfig[provider.name].baseUrl]), this.storage),
         tools,
@@ -2270,13 +2307,17 @@ export class EasyCodeApp {
           return `${base}\n\n${childContract}`;
         },
         getWorkspaceSummary: async () => json(childWorkspace?.getManifestSummary()),
+        captureValidationBaseline: () => captureValidationBaseline(childWorkspace!.root, this.config.limits,
+          (hash, bytes) => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).put(hash, bytes)),
         captureToolEvidence: (state, callId, tool, result) =>
           this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
+        readToolEvidence: (state, id, offset, limit) =>
+          this.memoryManager.evidenceStore.read(workspaceId, state.threadId, id, offset, limit),
         searchMemories: async (query) =>
           this.memoryManager.searchHybrid(
             workspaceId,
             `${request.task.title}\n${request.task.description}\n${query}`,
-            { workspaceRoot: childWorkspace?.root, limit: this.config.limits.memorySearchLimit },
+            { workspaceRoot: childWorkspace?.root, limit: this.config.limits.memorySearchLimit, readOnly: true },
           ),
         getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
           const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
@@ -2836,16 +2877,22 @@ export class EasyCodeApp {
       const provider = createProvider(this.effectiveConfig(), this.state.provider, this.config.approvalModel ?? this.state.model);
       const task = this.state.messages.filter(message => message.role === "user").slice(-3).map(message => message.content).join("\n");
       return await reviewCommandApproval(request, task, {
-        provider, budget: this.sharedTaskBudget(threadId), maxInputChars: this.config.limits.approvalInputChars,
+        provider, budget: this.sharedTaskBudget(threadId), limits: this.config.limits, maxInputChars: this.config.limits.approvalInputChars,
         maxOutputTokens: this.config.limits.approvalOutputTokens, timeoutMs: this.config.limits.approvalTimeoutMs,
         onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured", turnId,
           payload: { purpose: "command_approval", finishReason: response.finishReason ?? null,
             message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
               tool_calls: response.message.tool_calls }))) } }),
-        onUsage: usage => this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
-          actor: "approval_agent", purpose: "command_approval", provider: provider.name, model: provider.model,
-          turnId, retry: false, usage,
-        } }),
+        onUsage: (usage, attempt) => {
+          if (attempt) this.threadStore.appendEvent(threadId, { type: "model.api_attempt", turnId, phase: attempt.outcome,
+            payload: { ...attempt, actor: "approval_agent", purpose: "command_approval" } });
+          // A failed API attempt still completes an unreported usage record.
+          // model.usage has a completed-only journal protocol; its phase is not the API outcome.
+          this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
+            actor: "approval_agent", purpose: "command_approval", provider: provider.name, model: provider.model,
+            turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
+          } });
+        },
       });
     } catch (error) { return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true }; }
   }

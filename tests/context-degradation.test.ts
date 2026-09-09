@@ -21,6 +21,7 @@ import { ThreadStore } from "../src/threads/thread-store.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import type { AgentTool, ChatMessage, EventRecord } from "../src/core/types.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
+import { recordUserRequirement } from "../src/context/user-requirements.js";
 
 const semantic = { currentWork: "Investigation is unfinished", hypotheses: ["Parser may drop the value"],
   nextStep: "Reproduce the parser failure before changing code" };
@@ -45,6 +46,7 @@ function fixture(rounds = 6, tokens = true, recordBoundaries = true, resultChars
       turnId: "turn", payload: m.role === "user" ? { message: m } : m.role === "tool"
         ? { callId: m.tool_call_id, tool: m.name, message: m, ...extra } : m });
     state.messages.push(m);
+    if (m.role === "user") recordUserRequirement(state, state.messages.length - 1);
     if (m.role === "tool") foldPendingOperations(state, { tool: m.name, ...extra });
   }
   if (rounds) message({ role: "user", content: "Investigate and fix the parser" });
@@ -113,7 +115,7 @@ describe("bounded context degradation", () => {
     } finally { f.dispose(); }
   });
 
-  it("uses one malformed summary then local recovery, without a correction request", async () => {
+  it("uses three malformed summary attempts then local recovery", async () => {
     const f = fixture(6, false, false, 1000, 10000);
     try {
       let requests = 0;
@@ -121,11 +123,11 @@ describe("bounded context degradation", () => {
         requests++; return { role: "assistant", content: null, tool_calls: [{ id: "bad_summary", type: "function",
           function: { name: "compact_context", arguments: "{incomplete" } }] };
       } });
-      assert.equal(requests, 1);
+      assert.equal(requests, 3);
       assert.equal(result.committed, true);
       assert.equal(result.paused, undefined);
       assert.equal(JSON.parse(f.state.workingSummary).mode, "history_evicted");
-      assert.equal(f.state.compactionControl?.transaction?.attempts, 1);
+      assert.equal(f.state.compactionControl?.transaction?.attempts, 3);
       assert.equal(f.state.compactionControl?.transaction?.status, "superseded");
       const again = await f.run({ state: f.store.recover(f.state.threadId), nextRequest: largeEnvelope,
         complete: async () => { throw new Error("duplicate request"); } });
@@ -138,7 +140,7 @@ describe("bounded context degradation", () => {
     try {
       let requests = 0;
       const result = await f.run({ nextRequest: largeEnvelope, complete: async () => {
-        requests++; throw new ProviderError("busy", { provider: "deepseek", code: "429", statusCode: 429 });
+        requests++; throw new ProviderError("busy", { provider: "deepseek", code: "429", statusCode: 429, retryable: true });
       } });
       assert.equal(requests, 1);
       assert.equal(result.committed, true);
@@ -238,7 +240,8 @@ describe("bounded context degradation", () => {
       assert.equal(calls, 0);
       assert.equal(result.paused?.code, "context_capacity_exhausted");
       assert.ok(result.paused!.usage > result.paused!.capacity);
-      assert.equal(f.state.compactedMessageCount, 0);
+      assert.equal(f.state.compactedMessageCount, f.state.messages.length);
+      assert.ok(f.state.pressureRecovery?.serverReset);
     } finally { f.dispose(); }
   });
 
@@ -276,7 +279,8 @@ describe("bounded context degradation", () => {
       f.message({ role: "tool", name: "read_file", tool_call_id: "again", content: "small" });
       const raw = JSON.stringify(f.state.messages);
       const result = await f.run({ maxContextChars: 30000 });
-      assert.equal(result.paused?.code, "context_capacity_exhausted");
+      assert.equal(result.paused, undefined);
+      assert.ok(f.state.pressureRecovery?.serverReset);
       assert.deepEqual(f.state.pressureRecovery?.rebase, firstRebase);
       assert.equal(JSON.stringify(f.state.messages), raw);
       const resumed = f.store.recover(f.state.threadId);
@@ -311,7 +315,8 @@ describe("bounded context degradation", () => {
       assert.equal(result.paused?.code, "context_capacity_exhausted");
       assert.equal(result.requests, 0);
       assert.equal(f.state.messages[0]?.content, request);
-      assert.equal(f.state.compactedMessageCount, 0);
+      assert.equal(f.state.compactedMessageCount, f.state.messages.length);
+      assert.equal(f.state.pressureRecovery?.serverReset?.requirementIndices[0], 0);
     } finally { f.dispose(); }
   });
 
@@ -389,10 +394,13 @@ describe("bounded context degradation", () => {
         if (calls === 1) { firstSize = size; throw new ProviderError("maximum context length exceeded",
           { provider: "deepseek", code: "context_length_exceeded", statusCode: 400 }); }
         assert.ok(size < firstSize);
+        if (calls === 2) return { message: { role: "assistant", content: null, tool_calls: [{ id: "reconcile", type: "function",
+          function: { name: "read_file", arguments: "{}" } }] } };
         return { message: { role: "assistant", content: "Recovered" } };
-      }).run(f.state, "Continue parser investigation", options);
+      }, [{ name: "read_file", mutating: false, definition: { type: "function", function: { name: "read_file", description: "Read", parameters: {} } },
+        execute: async () => ({ ok: true, summary: "Current source inspected" }) }]).run(f.state, "Continue parser investigation", options);
       assert.equal(result.reason, "success", result.text);
-      assert.equal(calls, 2);
+      assert.equal(calls, 3);
       assert.equal(f.events.filter((e) => e.type === "context.compaction.attempt").length, 0);
     } finally { f.dispose(); }
   });
@@ -420,7 +428,7 @@ describe("bounded context degradation", () => {
       assert.equal(result.reason, "limit_reached", result.text);
       assert.equal(result.failure?.code, "context_capacity_exhausted");
       assert.doesNotMatch(result.text, /Agent run failed/);
-      assert.equal(calls, 1);
+      assert.equal(calls, 1); // already requirements-only: never resend an identical rejected request
     } finally { f.dispose(); }
   });
 

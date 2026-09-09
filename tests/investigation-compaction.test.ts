@@ -21,6 +21,9 @@ import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 const semantic = { currentWork: "Investigation is unfinished", hypotheses: ["Parser may drop the value"],
   nextStep: "Reproduce the parser failure before changing code" };
 const tool = new CompactContextTool();
+// These fixtures exercise the configurable two-exchange policy. The new
+// five-exchange default is covered separately by unified-memory tests.
+const fixtureLimits = { ...defaultRuntimeLimits(), compactionRetainRecentExchanges: 2 };
 function candidate(): Extract<ChatMessage, { role: "assistant" }> {
   return { role: "assistant", content: null, tool_calls: [{ id: "summary", type: "function",
     function: { name: "compact_context", arguments: JSON.stringify(semantic) } }] };
@@ -56,9 +59,9 @@ function fixture(rounds = 6, tokens = true, recordBoundaries = true, resultChars
   }
   Object.assign(state, store.recover(state.threadId));
   const manager = new ContextManager();
-  manager.configureTokenBudget(tokens ? 64_000 : undefined);
+  manager.configureTokenBudget(tokens ? 64_000 : undefined, fixtureLimits);
   const run = (overrides: Partial<Parameters<typeof runCompactionTransaction>[0]> = {}) => runCompactionTransaction({
-    state, manager, turnId: "turn", maxContextChars: 100_000, required: true, handlesOpen: false,
+    state, manager, limits: fixtureLimits, turnId: "turn", maxContextChars: 100_000, required: true, handlesOpen: false,
     maxRequests: 3, nextRequest: { systemPrompt: "rules", runtimeContext: "workspace", tools: [] },
     tool: tool.definition, inventory: () => "", append, complete: async () => candidate(),
     execute: async () => ({ ok: true, summary: "semantic patch", contextCompaction: {
@@ -235,7 +238,7 @@ describe("unfinished investigation compaction", () => {
   it("uses raw complete exchanges without requiring historical phase events", async () => {
     const f = fixture(6, true, false);
     try {
-      assert.equal(eligiblePhaseEnd(f.state, false), 9);
+      assert.equal(eligiblePhaseEnd(f.state, false, 2), 9);
       const result = await f.run();
       assert.equal(result.committed, true);
       assert.equal(f.state.compactedMessageCount, 9);
@@ -247,7 +250,7 @@ describe("unfinished investigation compaction", () => {
     const f = fixture(6, tokens);
     try {
       assert.deepEqual(f.state.compactionControl?.phaseEnds, []);
-      assert.equal(eligiblePhaseEnd(f.state, false), 9);
+      assert.equal(eligiblePhaseEnd(f.state, false, 2), 9);
       const original = JSON.stringify(f.state.messages);
       const result = await f.run();
       assert.deepEqual(result, { committed: true, requests: 1 });
@@ -300,7 +303,7 @@ describe("unfinished investigation compaction", () => {
     try {
       assert.equal(eligiblePhaseEnd(f.state, false, 3), 7);
       assert.equal(eligiblePhaseEnd(f.state, false, 6), 3);
-      assert.equal(eligiblePhaseEnd(f.state, true), 9);
+      assert.equal(eligiblePhaseEnd(f.state, true, 2), 9);
       const recovered = f.store.recover(f.state.threadId);
       assert.equal(eligiblePhaseEnd(recovered, false, 3), 7);
     } finally { f.dispose(); }
@@ -315,7 +318,7 @@ describe("unfinished investigation compaction", () => {
       if (latest.role !== "assistant") throw new Error("fixture");
       latest.tool_calls![0]!.function.name = "update_file";
       assert.equal(investigationExchangeStart(f.state.messages), undefined);
-      assert.equal(eligiblePhaseEnd(f.state, false), 9);
+      assert.equal(eligiblePhaseEnd(f.state, false, 2), 9);
       assert.throws(() => foldCompactionControl(f.state, "context.phase.closed", {
         end: f.state.messages.length, kind: "investigation" }), /Invalid investigation/);
     } finally { f.dispose(); }
@@ -356,7 +359,7 @@ describe("unfinished investigation compaction", () => {
         reads += 1;
         return { message: { role: "assistant", content: null, reasoning_content: `${reads}:` + "r".repeat(16_000),
           tool_calls: [{ id: `read_${reads}`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: `${reads}.ts` }) } }] } };
-      } }, tools: [readTool, tool], contextManager: f.manager, appendEvent: f.append,
+      } }, limits: fixtureLimits, tools: [readTool, tool], contextManager: f.manager, appendEvent: f.append,
         buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
         searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Investigate the parser", { maxSteps: 12, maxContextChars: 100_000,

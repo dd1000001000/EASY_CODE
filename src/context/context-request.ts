@@ -1,6 +1,7 @@
 import type { ChatMessage, SessionState, ToolDefinition } from "../core/types.js";
 import { shortTermMessages } from "./manager.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
+import { reconciliationPending } from "./reconciliation.js";
 
 export interface NormalRequestEnvelope {
   systemPrompt: string; runtimeContext: string; tools: readonly ToolDefinition[]; reservedTokens?: number;
@@ -11,7 +12,7 @@ export function exactContext(state: Readonly<SessionState>, envelope: NormalRequ
   return [
     { role: "system", content: envelope.systemPrompt },
     ...shortTermMessages(state),
-    ...[runtimeContinuityMessage(state), envelope.runtimeContext].filter(Boolean)
+    ...[runtimeContinuityMessage(state), reconciliationPending(state) ? "" : envelope.runtimeContext].filter(Boolean)
       .map((content): ChatMessage => ({ role: "user", content })),
   ];
 }

@@ -9,6 +9,7 @@ import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { sha256 } from "../utils/hash.js";
 import { projectModelInputMessages } from "./micro-compaction.js";
 import { runtimeContinuityMessage } from "./runtime-state.js";
+import { reconciliationPending } from "./reconciliation.js";
 import { pressureProjectedMessages } from "./pressure-projection.js";
 import { requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
@@ -247,6 +248,7 @@ export function shortTermMessages(state: Readonly<SessionState>): ChatMessage[] 
   ));
   const persistentSummary = state.workingSummary.trim();
   return [
+    ...(state.pressureRecovery?.serverReset?.requirementIndices.map(i => state.messages[i]!).filter(Boolean) ?? []),
     ...(persistentSummary ? [summaryMessage(persistentSummary)] : []),
     ...activeMessages,
   ];
@@ -415,7 +417,7 @@ export class ContextManager {
   build(input: ContextBuildInput): ChatMessage[] {
     const budget = contextSystemBudget(input);
     const continuity = runtimeContinuityMessage(input.state);
-    const tail: ChatMessage[] = [continuity, input.runtimeContext ?? ""].filter(Boolean)
+    const tail: ChatMessage[] = [continuity, reconciliationPending(input.state) ? "" : input.runtimeContext ?? ""].filter(Boolean)
       .map((content) => ({ role: "user", content }));
     // History is retired only by a committed Runtime maintenance event.
     // Pressure inspection and the provider guard handle oversized requests;

@@ -28,6 +28,7 @@ import {
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 import { decodeCommandGrant } from "../src/command/command-grant.js";
+import { canGrantCommandPrefix, isCommandApprovalPrefixGranted, grantCommandApprovalPrefix } from "../src/command/approval.js";
 import { captureValidationBaseline } from "../src/progress/validation-standard.js";
 
 class HostCommandBackend implements CommandExecutionBackend {
@@ -510,6 +511,23 @@ describe("command runtime", () => {
       const result = await runtime.run({ program: "curl", args: ["https://example.invalid"], intent: "run", executionScope: "host" }, context(root, { approvals, commandExecutionMode: "unrestricted" }));
       assert.equal(seen, true); assert.equal(approvals.length, 0);
       assert.equal(result.failure?.kind, "sandbox");
+      assert.equal(result.sandbox.backend, "benchmark-container");
+    });
+  });
+
+  it("resolves reviewer-only programs in its offline worker but still requires approval", async () => {
+    await withWorkspace(async (root, manager) => {
+      let seen = false;
+      const backend: CommandExecutionBackend = { describe: () => ({ backend: "benchmark-container", enforced: true, filesystem: "container", network: "denied" }),
+        prepare: async request => { seen = true; assert.equal(request.command.executablePath, "worker-only-python"); throw new Error("offline fixture"); } };
+      const approvals: ApprovalRequest[] = [];
+      const runtime = new CommandRuntime(manager, undefined, backend, undefined, { networkProfile: "review_offline" });
+      const result = await runtime.run({ program: "worker-only-python", args: ["--version"], intent: "inspect" }, context(root, { approvals, approve: true }));
+      assert.equal(approvals.length, 1); assert.equal(seen, true);
+      const prefix = approvals[0]!.commandPrefix;
+      assert.equal(canGrantCommandPrefix(prefix), false);
+      assert.equal(isCommandApprovalPrefixGranted([], prefix), false);
+      assert.throws(() => grantCommandApprovalPrefix([], prefix), /one-shot/);
       assert.equal(result.sandbox.backend, "benchmark-container");
     });
   });

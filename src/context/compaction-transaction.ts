@@ -8,12 +8,16 @@ import { budgetedRequest, estimatedTokens } from "./token-budget.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { MAX_TOOL_PROTOCOL_ATTEMPTS } from "../runtime/tool-recovery.js";
+import { canSalvageAuxiliaryFailure, failureCategory } from "../runtime/failure-policy.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import { recoverContextPressure, referenceToolOutputs, foldContextMaintenance } from "./pressure-recovery.js";
+import { extractSummaryText, extractSummaryEnvelope, summaryInstructions } from "./summary-output.js";
 import { completeExchange, retirementBoundaries } from "./exchange-boundary.js";
 export { completeExchange } from "./exchange-boundary.js";
 import { assessCapacity, contextHistoryHash, contextRequestKey, type CapacityPause } from "./capacity.js";
+import { resetServerContext, capacityResetUsed } from "./server-reset.js";
+import { reconciliationPending } from "./reconciliation.js";
 import { compactionSnapshot, compactionSnapshotSchema, semanticPatchSchema, semanticSummarySchema,
   inspectSemanticPatch, parseSemanticRequestPatch, parseSemanticCandidatePatch, clipSemanticFields, semanticDocument, conservativeDocument, boundedSummaryDocument, runtimeIntent } from "./semantic-compaction.js";
 
@@ -35,6 +39,8 @@ export interface CompactionControl {
   lastVerificationTurnId?: string;
   transaction?: z.infer<typeof transactionSchema> & {
     candidate?: Extract<ChatMessage, { role: "assistant" }>;
+    candidateAttempt?: number;
+    lastBody?: string;
     feedback?: string;
     semantic?: unknown;
     fallback?: string;
@@ -148,8 +154,12 @@ export function foldCompactionControl(state: SessionState, type: string, payload
       throw new Error("Invalid compaction candidate event");
     }
     tx.candidate = structuredClone(candidate);
+    tx.candidateAttempt = tx.attempts;
+    if (candidate.content?.trim()) tx.lastBody = candidate.content;
+    const formal = extractSummaryText(candidate.content) ?? candidate.tool_calls?.map(c => c.function.arguments).join("\n");
+    if (formal) (state.pressureRecovery ??= { toolReferences: [], summaries: {} }).summaries[`journal_summary_${sha256(formal)}`] = formal;
     tx.feedback = undefined;
-  } else if (type === "context.compaction.rejected") {
+  } else if (type === "context.compaction.rejected" || type === "context.compaction.transport_failed") {
     if (!p.feedback) throw new Error("Missing compaction correction evidence");
     tx.feedback = p.feedback;
   } else if (type === "context.compaction.abandoned") {
@@ -211,6 +221,12 @@ export async function runCompactionTransaction(input: {
       if (pending?.status === "pending") await emit("context.compaction.abandoned", { id: pending.id });
       return finish();
     }
+    // Final local reset shares the remote allowance and preserves Runtime authority.
+    if (limits.contextMaxCapacityRetries > 0 && !capacityResetUsed(state)) {
+      await resetServerContext(state, input.turnId, input.append);
+      committed = true;
+      if (assess().fits) return finish();
+    }
     const capacity = assess();
     return finish({ code: "context_capacity_exhausted", reason: reason.slice(0, 2000),
       usage: capacity.usage, capacity: capacity.capacity, unit: capacity.unit });
@@ -221,13 +237,13 @@ export async function runCompactionTransaction(input: {
       usage: capacity.usage, capacity: capacity.capacity, unit: capacity.unit });
   }
   const previous = state.pressureRecovery?.maintenance;
-  if (!input.skipSummary && previous?.historyHash === contextHistoryHash(state) &&
+  if (!input.skipSummary && previous?.historyHash === contextHistoryHash(state) && previous.requestKey === requestKey &&
       !state.compactionControl?.requested && state.compactionControl?.transaction?.status !== "pending") {
     if (assess().fits) return { requests, committed };
     if (previous.paused && previous.requestKey === requestKey) return { requests, committed, paused: previous.paused };
     return recover("The same history no longer fits the current request envelope; recover without resummarizing it.");
   }
-  const underPressure = assess().utilization >= limits.contextCompactionTriggerRatio;
+  const underPressure = assess().utilization >= limits.contextReferenceTriggerRatio;
   committed = await referenceToolOutputs({ ...input, reason: "Bounded tool-output projection before summarization" }, underPressure);
   let tx = state.compactionControl?.transaction;
   const requested = state.compactionControl?.requested || tx?.status === "pending";
@@ -240,7 +256,7 @@ export async function runCompactionTransaction(input: {
   if (!input.forceRecovery && !requested && !input.required && assess().utilization < limits.contextCompactionTriggerRatio)
     return committed ? finish() : { requests, committed };
   if (committed && assess().targetReached && !requested) return finish();
-  if (input.skipSummary) return recover("Summary bypassed after capacity rejection; deterministic recovery required.");
+  if (input.skipSummary || reconciliationPending(state)) return recover("Summary bypassed during capacity recovery; deterministic recovery required.");
 
   // Pick a boundary BEFORE asking the model. An impossible empty-summary lower
   // bound advances locally; no model request is spent chasing an impossible target.
@@ -253,7 +269,7 @@ export async function runCompactionTransaction(input: {
   if (tx?.status !== "pending") {
     if (!state.compactionControl?.seed && (input.maxRequests <= 0 || !input.tool)) return recover("No summary request budget or summary tool is available.");
     await emit("context.compaction.started", { id: createId("compaction"), start: state.compactedMessageCount,
-      end, sourceHash: prefixHash(state, end), attempts: 0, maxAttempts: Math.min(2, limits.compactionAttempts, input.maxAttempts ?? 2),
+      end, sourceHash: prefixHash(state, end), attempts: 0, maxAttempts: Math.min(limits.modelContentRetries + 1, input.maxAttempts ?? limits.modelContentRetries + 1),
       status: "pending", snapshot: compactionSnapshot(state, end) });
     tx = state.compactionControl!.transaction!;
     if (state.compactionControl?.seed) {
@@ -266,6 +282,8 @@ export async function runCompactionTransaction(input: {
     }
   }
   const current = tx;
+  if (current.attempts > 0 && !current.candidate)
+    return recover("Interrupted summary request has no durable response; do not redispatch an unknown attempt.");
   if (current.sourceHash !== prefixHash(state, end) || current.start !== state.compactedMessageCount)
     return recover("Compaction source changed; stale summary was discarded.");
   let snapshot = compactionSnapshot(state, end);
@@ -274,21 +292,64 @@ export async function runCompactionTransaction(input: {
 
   let summary: string | undefined;
   const clippingDiagnostics: string[] = [];
-  // Includes restored length-only failures: repair locally, never spend a correction request.
-  if (!current.candidate && current.attempts === 0 && requests < input.maxRequests && input.tool) {
+  const maximum = Math.min(current.maxAttempts ?? limits.modelContentRetries + 1, limits.modelContentRetries + 1);
+  let lastBody = current.lastBody ?? (current.candidate?.content?.trim() || undefined);
+  // A durable dispatch without its response must not be silently re-issued on Resume.
+  let stopRequests = current.attempts > (current.candidateAttempt ?? current.attempts);
+  for (;;) {
+    if (current.candidate && !stopRequests) {
+      const calls = current.candidate.tool_calls ?? [];
+      let semantic: unknown;
+      let validSemantic = false;
+      let formal: string | undefined;
+      try {
+        formal = extractSummaryEnvelope(current.candidate.content);
+        if (calls.length === 1 && calls[0]!.function.name === "compact_context") {
+          const patch = parseSemanticCandidatePatch(JSON.parse(calls[0]!.function.arguments));
+          semantic = { ...(current.semantic as object ?? {}), ...(patch as object) };
+          semanticSummarySchema.parse(clipSemanticFields(semantic).patch);
+          validSemantic = true;
+        } else if (!formal) throw new Error("No unique complete outer <summary> envelope was found.");
+      } catch (error) {
+        // An invalid tool never authorizes execution. A separate valid formal body is usable.
+        formal = extractSummaryEnvelope(current.candidate.content);
+        if (!formal) await emit("context.compaction.rejected", { id: current.id,
+          feedback: `Invalid summary content: ${String(error).slice(0, 6500)}` });
+      }
+      if (validSemantic || formal) {
+        if (formal) {
+          semantic = { currentWork: formal, nextStep: "Recall original evidence and verify unfinished work before claiming completion." };
+          summary = boundedSummaryDocument(formal, snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS, true,
+            `journal_summary_${sha256(formal)}`);
+        }
+        await emit("context.compaction.prepared", { id: current.id, semantic });
+        break;
+      }
+    }
+    if (stopRequests || current.attempts >= maximum || requests >= input.maxRequests || !input.tool) {
+      if (!lastBody) return recover("Summary corrections exhausted without usable body text.");
+      // Last nonempty BODY only: native reasoning and malformed tool arguments are excluded.
+      await emit("context.compaction.prepared", { id: current.id,
+        semantic: { currentWork: lastBody, nextStep: "Raw unverified fallback: inspect current files and original evidence before acting." } });
+      summary = boundedSummaryDocument(lastBody, snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS, true,
+        `journal_summary_${sha256(lastBody)}`);
+      clippingDiagnostics.push("summary_envelope_unavailable: raw non-thinking body retained after bounded content corrections");
+      break;
+    }
     const messages = exactContext(state, { systemPrompt:
-      "Runtime context handoff. Call only compact_context once, with currentWork and nextStep; optional hypotheses/decisions/conclusions. " +
-      "Each text field/item must be at most 1200 characters. Keep it brief. No extended analysis, no coverage flags, no self-certification. " +
-      `Summarize the closed prefix [${current.start}, ${end}); newer exchanges remain verbatim. ` +
-      "An investigation boundary is NOT task completion. Unfinished work and unverified conclusions must stay explicit. " +
-      "Runtime pins user requirements, pending commands/children, errors and experiments. " +
-      "Evidence IDs are observations, not proof of arbitrary conclusions.\n" + JSON.stringify(snapshot.evidence),
-      runtimeContext: "", tools: [input.tool] });
+      "Runtime context handoff. " + summaryInstructions(true) + " Structured fields/items are limited to 1200 characters. " +
+      `Summarize the prefix [${current.start}, ${end}); unfinished investigation and conclusions remain unverified. ` +
+      "An investigation boundary is NOT task completion. " +
+      "Runtime owns requirements and execution facts.\n" + JSON.stringify(snapshot.evidence),
+      runtimeContext: current.feedback ? "RUNTIME_SUMMARY_CORRECTION: " + current.feedback +
+        "\nCorrect the summary format only. Submit a complete outer <summary> block; do not repeat tools or experiments." : "",
+      tools: [input.tool] });
     try {
       budgetedRequest({ messages, tools: [input.tool] }, manager.tokenCapacity, manager.estimateRequestTokens);
       if (!manager.tokenCapacity && manager.inspectProviderRequest({ state, messages, tools: [input.tool],
-        maxContextChars: input.maxContextChars }).utilization > 1) throw new Error("request too large");
-    } catch {
+        maxContextChars: input.maxContextChars }).utilization > 1) throw new Error("context_capacity_insufficient: summary request too large");
+    } catch (error) {
+      if (failureCategory(error, input.signal) !== "capacity") throw error;
       return recover("The summary request itself cannot fit.");
     }
     await emit("context.compaction.attempt", { id: current.id, attempt: current.attempts + 1 });
@@ -297,50 +358,34 @@ export async function runCompactionTransaction(input: {
     try { response = await input.complete(messages, current.attempts); }
     catch (error) {
       if (input.signal?.aborted) throw error;
-      // Provider/auth/network failures during an auxiliary summary are NOT code failures.
-      // Do not swallow Journal/commit failures: only the actual summary call is caught.
-      await emit("context.compaction.rejected", { id: current.id, feedback: "Summary request failed; use deterministic recovery." });
-      return recover("Summary request failed; no further summary calls will be made for this transaction.");
+      // Never disguise persistence, authentication or shared-budget failure as bad summary content.
+      if (failureCategory(error) === "capacity") return recover("Context capacity rejected during summary recovery.");
+      if (!canSalvageAuxiliaryFailure(error)) throw error;
+      if (current.status !== "pending") return finish();
+      await emit("context.compaction.transport_failed", { id: current.id, feedback: "Transient summary API recovery exhausted; salvage the last durable body. No additional content retry." });
+      stopRequests = true;
+      continue;
     }
     await input.afterComplete?.();
-    if (!response) return { requests, committed }; // Steering/cancellation boundary.
+    if (current.status !== "pending") return finish(); // Never resurrect a pre-reset summary.
+    if (!response) return { requests, committed };
     snapshot = compactionSnapshot(state, end);
-    if (current.snapshot?.digest !== snapshot.digest) {
-      await emit("context.compaction.rejected", { id: current.id, feedback: "Runtime facts changed during summary; response discarded." });
-      return recover("Runtime facts changed during summary.");
-    }
-    const candidate = { role: "assistant" as const, content: response.content, tool_calls: response.tool_calls };
+    if (current.snapshot?.digest !== snapshot.digest) return recover("Runtime facts changed during summary; stale candidate discarded.");
+    const body = response.content ?? null;
+    if (body?.trim()) lastBody = body;
+    const formal = extractSummaryEnvelope(body);
+    // Successfully extracted scratch is discarded, not installed into history/RAG.
+    const candidate = { role: "assistant" as const,
+      content: formal ? `<summary>${formal}</summary>` : body, tool_calls: response.tool_calls };
     await emit("context.compaction.candidate", { id: current.id, candidate });
-  }
-  if (current.candidate) {
-    const calls = current.candidate.tool_calls ?? [];
-    if (calls.length === 1 && calls[0]!.function.name === "compact_context") {
-      let semantic: unknown;
-      try {
-        const patch = parseSemanticCandidatePatch(JSON.parse(calls[0]!.function.arguments));
-        semantic = { ...(current.semantic as object ?? {}), ...(patch as object) };
-        // Check missing fields/types too. Length repair must never hide these.
-        semanticSummarySchema.parse(clipSemanticFields(semantic).patch);
-      } catch (error) {
-        await emit("context.compaction.rejected", { id: current.id,
-          feedback: `Invalid semantic candidate: ${String(error).slice(0, 7000)}` });
-        return recover("Semantic structure is invalid; deterministic recovery used.");
-      }
-      await emit("context.compaction.prepared", { id: current.id, semantic });
-    } else if (calls.length === 0 && current.candidate.content?.trim()) {
-      // Auxiliary prose is an unverified handoff, never a substitute executable tool call.
-      const prose = current.candidate.content.trim();
-      await emit("context.compaction.prepared", { id: current.id,
-        semantic: { currentWork: prose, nextStep: "Recover original Journal and validate unfinished work before claiming completion." } });
-      summary = boundedSummaryDocument(prose, snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS, true);
-    }
   }
   if (current.semantic) {
     const repaired = clipSemanticFields(current.semantic);
     clippingDiagnostics.push(...repaired.diagnostics);
     // The original candidate remains in Journal. Clipping never certifies claims.
     summary ??= boundedSummaryDocument(semanticDocument(semanticSummarySchema.parse(repaired.patch), snapshot, true, clippingDiagnostics),
-      snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS);
+      snapshot, limits.contextSummaryMaxTokens, MAX_CONTEXT_SUMMARY_CHARS, false,
+      `journal_summary_${sha256(extractSummaryText(current.candidate?.content) ?? current.candidate?.tool_calls?.map(c => c.function.arguments).join("\n") ?? "")}`);
   }
   if (summary && summary.length <= MAX_CONTEXT_SUMMARY_CHARS && estimatedTokens(summary) <= limits.contextSummaryMaxTokens) {
     const intentLedger = runtimeIntent(state);

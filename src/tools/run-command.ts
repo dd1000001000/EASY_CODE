@@ -93,7 +93,8 @@ function commandResult(
   context: ToolContext,
 ): ToolExecutionResult {
   const cleanupUnsafe = output.status !== "running" && (output.lifecycle?.cleanup === "failed" || output.lifecycle?.cleanup === "unconfirmed");
-  const successful = !cleanupUnsafe && (operation === "cancel"
+  const outputLimited = output.status !== "running" && output.lifecycle?.outcome === "output_limit";
+  const successful = !cleanupUnsafe && !outputLimited && (operation === "cancel"
     ? output.status === "canceled" || output.status === "exited" || output.status === "timed_out"
     : output.status === "running" || (output.status === "exited" && output.exitCode === 0 &&
         !(output.requestMetadata?.verificationKind && output.validation?.status === "failed")));
@@ -102,21 +103,14 @@ function commandResult(
     output.sandboxFailure?.retryable === true;
   const sandboxRecovery = retryableSandboxFailure
     ? (
-        "This appears to be a transient Windows SRT initialization/ACL failure. Retry " +
+        "This is a proven-not-started transient sandbox failure. You may resubmit " +
         `this exact ${operation === "start" ? "start_command" : "run_command"} once now; ` +
-        "Runtime permits only that bounded recovery attempt. Do not mark the task permanently " +
+        "Runtime applies the configured startup retry budget; it never repeats the command itself. Do not mark the task permanently " +
         "blocked after this first failure."
       )
-    : context.agentRole === "subagent"
-    ? (
-        "Do not retry a command-starting tool in this turn. Continue file work if possible; " +
-        "otherwise submit a blocked child result naming the transient sandbox condition so " +
-        "the parent can requeue the assignment."
-      )
     : (
-        "Do not retry a command-starting tool in this turn and do not persistently block a DAG " +
-        "task solely for this transient failure. Continue with file tools or return a plain-text " +
-        "pause report; Runtime re-enables commands next turn."
+        "Do not automatically replay this command. Report the sandbox failure and execution uncertainty; " +
+        "other independent work may continue. Child failure is reported to its parent without an automatic rerun."
       );
   const timeoutSummary = output.timeout
     ? `; ${formatCommandTimeoutBudget(output.timeout)}`
@@ -124,7 +118,8 @@ function commandResult(
   const policyRecovery = output.policyDecision.recommendation
     ? ` Recovery: ${output.policyDecision.recommendation}`
     : "";
-  const baseSummary = output.status === "running"
+  const baseSummary = outputLimited ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
+    : output.status === "running"
     ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
     : operation === "cancel" && output.status === "canceled"
       ? `Command ${output.commandId} canceled and its process tree terminated`
@@ -132,7 +127,7 @@ function commandResult(
       ? `Command denied: ${output.policyDecision.reason}${policyRecovery}`
     : output.status === "sandbox_unavailable"
       ? `Command blocked because the OS sandbox is unavailable: ${output.stderr.text}. ` +
-        `${output.failure?.processStarted ? "Execution may already have occurred; do not rerun automatically." : "The target process did not start."} ${sandboxRecovery} ` +
+        `${output.lifecycle?.execution === "not_started" ? "The target process did not start." : "Execution may already have occurred; do not rerun automatically."} ${sandboxRecovery} ` +
         (retryableSandboxFailure
           ? ""
           : "Run `easy-code sandbox doctor` outside the agent.")

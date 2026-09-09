@@ -63,6 +63,8 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "submit_task_result",
   "compact_context",
   "manage_memory",
+  "search_context",
+  "recall_context",
 ];
 
 const COMMAND_MODE_RESOURCE: Readonly<Record<CommandExecutionMode, string>> = {

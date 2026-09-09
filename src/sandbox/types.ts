@@ -14,6 +14,8 @@ export type SandboxBackendName =
   | "host-test-only";
 
 export interface SandboxExecutionMetadata {
+  /** Host-owned review worker attestation, not model-authored stdout. */
+  reviewEnvironmentUnchanged?: boolean;
   backend: SandboxBackendName;
   enforced: boolean;
   filesystem: "workspace-write" | "workspace-read" | "host" | "container";
@@ -82,7 +84,7 @@ export interface SandboxWorkerPayload {
 export type SandboxWorkerControl =
   | { type: "cleanup_requested" }
   | { type: "execution_dispatched" }
-  | { type: "execution_exited"; exitCode: number }
+  | { type: "execution_exited"; exitCode: number; outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown" }
   | { type: "cleanup_complete" }
   | { type: "cleanup_error"; message: string }
   | { type: "ready"; backend: SandboxBackendName }

@@ -5,14 +5,13 @@ import { sha256 } from "../utils/hash.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { isTransientMemory } from "../memory/admission.js";
+import { unresolvedCommands } from "./runtime-state.js";
 
 /** Separate bounded intents; never feed the entire conversation to embedding. */
 export function memoryQueries(state: Readonly<SessionState>, userInput: string): string[] {
   const task = state.taskGraph?.tasks.find((item) => item.status === "in_progress")
     ?? state.taskGraph?.tasks.find((item) => item.status === "blocked");
-  const lastCommand = state.commands.at(-1);
-  const failure = lastCommand &&
-    (lastCommand.status !== "exited" || lastCommand.exitCode !== 0) ? lastCommand : undefined;
+  const failure = unresolvedCommands(state).at(-1);
   const paths = state.changes.slice(-3).map((item) => item.path).join(" ");
   return [...new Set([
     task ? `${task.title} ${task.description}` : state.goal ?? userInput,
@@ -130,8 +129,7 @@ function relevantTerms(text: string): string[] {
 
 /** Bounded expansion after an observed failure, not after neutral status polls. */
 export function expandedMemoryRecall(state: Readonly<SessionState>): boolean {
-  const last = state.commands.at(-1);
-  return Boolean(last && (last.status !== "exited" || last.exitCode !== 0));
+  return unresolvedCommands(state).length > 0;
 }
 
 /** Only text actually present in this request, never old journal/RAG or hidden thinking. */

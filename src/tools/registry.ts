@@ -4,6 +4,7 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import type { SubagentControl } from "../subagents/types.js";
 import { CommandRuntime } from "../command/runtime.js";
 import { CompactContextTool } from "./compact-context.js";
+import { RecallContextTool, SearchContextTool } from "./context-read.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
 import { ReadFileTool } from "./read-file.js";
@@ -72,6 +73,8 @@ export function createDefaultTools(
       : []),
     new ProposePlanTool(),
     new CompactContextTool(),
+    new RecallContextTool(),
+    new SearchContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
   ].map((tool) => {
     if (tool.mutating) {
