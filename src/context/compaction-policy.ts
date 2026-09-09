@@ -6,6 +6,8 @@ import {
 import { projectModelInputMessages } from "./micro-compaction.js";
 import type { ToolDefinition } from "../core/types.js";
 import { assessCapacity } from "./capacity.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { requestTokens } from "./token-budget.js";
 
 /** A voluntary compaction must represent more than a nearly empty tool round. */
 export const COMPACTION_MIN_NEW_PROJECTED_CHARS = 8_192;
@@ -13,7 +15,7 @@ export const COMPACTION_MIN_NEW_PROJECTED_CHARS = 8_192;
 export const COMPACTION_MIN_SAVED_CHARS = 8_192;
 export const COMPACTION_MIN_SAVINGS_RATIO = 0.1;
 /** Target enough headroom to avoid another compaction a few tool calls later. */
-export const COMPACTION_SAFE_WATERLINE_RATIO = 0.55;
+export const COMPACTION_SAFE_WATERLINE_RATIO = DEFAULT_RUNTIME_LIMITS.contextCompactionTargetRatio;
 
 export type CompactionRejectionReason =
   | "invalid_boundary"
@@ -91,20 +93,23 @@ export function evaluateCompactionBenefit(
   const newProjectedChars = estimateMessagesChars(projectModelInputMessages(
     beforeState.messages.slice(input.state.compactedMessageCount)));
   const savedChars = beforeProjectedChars - afterProjectedChars;
-  const savingsRatio = beforeProjectedChars > 0 ? Math.max(0, savedChars / beforeProjectedChars) : 0;
+  const saved = before.usage - after.usage;
+  const savingsRatio = before.usage > 0 ? Math.max(0, saved / before.usage) : 0;
+  const limits = manager.runtimeLimits;
+  const newTokens = requestTokens(projectModelInputMessages(beforeState.messages.slice(input.state.compactedMessageCount)));
   const base = { beforeProjectedChars, afterProjectedChars, newProjectedChars, savedChars, savingsRatio,
     postCompactionUtilization: after.utilization, safeWaterlineReached: after.targetReached,
     targetRatio: manager.runtimeLimits.contextCompactionTargetRatio };
   if (!boundaryValid) return rejection(base, "invalid_boundary");
   if (!after.fits) return rejection(base, "unsafe_post_compaction_pressure");
-  if (!input.required && newProjectedChars < COMPACTION_MIN_NEW_PROJECTED_CHARS) {
+  if (!input.required && newTokens < limits.contextCompactionMinNewTokens) {
     return rejection(base, "compaction_cooldown_active");
   }
-  if (savedChars <= 0) return rejection(base, "no_compaction_benefit");
+  if (saved <= 0) return rejection(base, "no_compaction_benefit");
   if (
     !input.required &&
-    (savedChars < COMPACTION_MIN_SAVED_CHARS ||
-      savingsRatio < COMPACTION_MIN_SAVINGS_RATIO)
+    (saved < limits.contextCompactionMinSavedTokens * (manager.tokenCapacity ? 1 : 4) ||
+      savingsRatio < limits.contextCompactionMinSavingsRatio)
   ) {
     return rejection(base, "insufficient_compaction_benefit");
   }
@@ -114,10 +119,11 @@ export function evaluateCompactionBenefit(
 export function compactionCooldownSatisfied(
   state: Readonly<SessionState>,
   historyEndExclusive: number,
+  limits = DEFAULT_RUNTIME_LIMITS,
 ): boolean {
   const end = Math.min(Math.max(0, historyEndExclusive), state.messages.length);
   const projected = projectModelInputMessages(
     state.messages.slice(state.compactedMessageCount, end),
   );
-  return estimateMessagesChars(projected) >= COMPACTION_MIN_NEW_PROJECTED_CHARS;
+  return requestTokens(projected) >= limits.contextCompactionMinNewTokens;
 }

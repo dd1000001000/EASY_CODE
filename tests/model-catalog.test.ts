@@ -57,13 +57,9 @@ describe("model catalog", () => {
       [
         "qwen3.7-max",
         "qwen3.7-plus",
-        "qwen3.6-max",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "qwen3.5-flash",
-        "qwen3-max",
-        "qwen3-vl-plus",
-        "qwen3-vl-flash",
       ],
     );
     assert.deepEqual(
@@ -115,6 +111,26 @@ describe("model catalog", () => {
     assert.equal(new Set(ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES).size, 7);
   });
 
+  it("excludes the removed sub-1M Qwen models without adding a preview alias", () => {
+    const models = PROVIDER_CATALOG.flatMap((entry) => entry.models);
+    assert.equal(models.length, 14);
+    assert.equal(new Set(models.map((model) => model.id)).size, 11);
+    for (const model of [
+      "qwen3.6-max",
+      "qwen3.6-max-preview",
+      "qwen3-max",
+      "qwen3-vl-plus",
+      "qwen3-vl-flash",
+    ]) {
+      assert.equal(resolveCatalogModel("qwen", model), undefined);
+      assert.throws(
+        () => requireCatalogModel("qwen", model),
+        /not in the Alibaba Qwen catalog/u,
+      );
+      assert.equal(modelVisionSupport("qwen", model), "unknown");
+    }
+  });
+
   it("keeps every standard GLM environment setting isolated from Coding Plan", () => {
     const standard = providerEnvironment("glm");
     const plan = providerEnvironment("glm-coding-plan");
@@ -158,10 +174,9 @@ describe("model catalog", () => {
       "supported",
     );
     assert.equal(modelVisionSupport("deepseek", "deepseek-v4-pro"), "unsupported");
-    assert.equal(modelVisionSupport("qwen", "qwen3-vl-plus"), "supported");
-    assert.equal(modelVisionSupport("qwen", "qwen3-max"), "unsupported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.7-plus"), "supported");
     assert.equal(modelVisionSupport("qwen", "qwen3.7-max"), "unsupported");
-    assert.equal(modelVisionSupport("qwen", "qwen3.6-max"), "unsupported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.6-plus"), "supported");
     assert.equal(modelVisionSupport("glm", "glm-5.3-flash"), "supported");
     assert.equal(modelVisionSupport("glm", "glm-5.3"), "unsupported");
     assert.equal(modelVisionSupport("glm", "glm-5.2"), "unsupported");
@@ -181,7 +196,7 @@ describe("model catalog", () => {
       () => requireVisionModel("qwen", "qwen3.7-max"),
       /text-only/u,
     );
-    assert.doesNotThrow(() => requireVisionModel("qwen", "qwen3-vl-flash"));
+    assert.doesNotThrow(() => requireVisionModel("qwen", "qwen3.5-flash"));
     assert.doesNotThrow(() => requireVisionModel("glm", "GLM-5.3-Flash"));
     assert.throws(() => requireVisionModel("glm", "GLM-5.3"), /text-only/u);
     assert.throws(
@@ -240,7 +255,7 @@ describe("model catalog", () => {
     );
 
     assert.deepEqual(
-      thinkingRequestParameters("qwen", "qwen3.6-max", "high"),
+      thinkingRequestParameters("qwen", "unknown-model", "high"),
       {},
     );
     assert.deepEqual(
@@ -260,7 +275,7 @@ describe("model catalog", () => {
       true,
     );
     assert.equal(
-      thinkingEffortIsApplied("qwen", "qwen3.6-max", "high"),
+      thinkingEffortIsApplied("qwen", "unknown-model", "high"),
       false,
     );
   });
@@ -326,7 +341,7 @@ describe("model catalog", () => {
   });
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {
-    assert.equal(resolveCatalogModel("qwen", "Qwen3-VL-Flash")?.id, "qwen3-vl-flash");
+    assert.equal(resolveCatalogModel("qwen", "Qwen3.5-Flash")?.id, "qwen3.5-flash");
     assert.equal(requireCatalogModel("deepseek", "DEEPSEEK-V4-PRO").id, "deepseek-v4-pro");
     assert.equal(resolveCatalogModel("glm", "GLM-5.3-Flash")?.id, "glm-5.3-flash");
     assert.throws(
@@ -338,7 +353,7 @@ describe("model catalog", () => {
       /Supported models:/u,
     );
     assert.throws(
-      () => requireCatalogModel("glm", "qwen3-vl-plus"),
+      () => requireCatalogModel("glm", "qwen3.7-plus"),
       /not in the Zhipu GLM catalog/u,
     );
   });

@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { foldCompactionControl, prefixHash, completeExchange } from "../context/compaction-transaction.js";
 import { compactionSnapshot } from "../context/semantic-compaction.js";
 import { foldPendingOperations } from "../context/pending-operations.js";
-import { foldPressureRecovery, foldContextMaintenance } from "../context/pressure-recovery.js";
+import { foldPressureRecovery, foldContextMaintenance, foldMemoryGate } from "../context/pressure-recovery.js";
 import { foldServerContextReset } from "../context/server-reset.js";
 import { recordUserRequirement } from "../context/user-requirements.js";
 import { foldReconciliation } from "../context/reconciliation.js";
@@ -1342,7 +1342,7 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
-        if (input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.session.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+        if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.session.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
             (input.type === "context.compacted" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
@@ -2130,6 +2130,8 @@ export class ThreadStore {
         foldServerContextReset(state, payload);
       } else if (event.type === "context.reconciled") {
         foldReconciliation(state, String(payload?.tool), payload?.observation);
+      } else if (event.type === "context.memory.gated") {
+        foldMemoryGate(state, payload);
       } else if (event.type === "context.maintenance.checked") {
         foldContextMaintenance(state, payload);
       } else if (event.type === "context.history.evicted") {

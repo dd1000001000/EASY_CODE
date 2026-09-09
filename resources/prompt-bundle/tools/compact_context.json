@@ -3,14 +3,14 @@
   "contractVersion": "3.1.0",
   "description": "Request Runtime context maintenance with a brief handoff. Runtime owns capacity, retirement of complete exchanges, and deterministic recovery. It pins user requirements, pending operations, errors and experiments. This tool itself does not modify the workspace or history.",
   "propertyDescriptions": {
-    "currentWork": "Current investigation or implementation work, at most 1200 characters; no extended reasoning.",
+    "currentWork": "Current investigation or implementation work, within the configured field character limit; no extended reasoning.",
     "decisions": "Key decisions and their rationale, without chain-of-thought.",
     "conclusions": "Model interpretations of evidence, not self-certified facts.",
     "conclusions[].text": "A concise interpretation; Runtime does not treat citation existence as proof.",
     "conclusions[].evidenceIds": "Select exact ev_ IDs from the Runtime catalogue. Do not invent IDs. Without supporting evidence retain the claim as a hypothesis.",
     "hypotheses": "Unverified explanations, assumptions and candidate requirements; preserve uncertainty and the next validation step.",
     "failedApproaches": "Failed approaches and the changed conditions required before retrying.",
-    "nextStep": "One concrete next action or falsifiable experiment, at most 1200 characters."
+    "nextStep": "One concrete next action or falsifiable experiment, within the configured field character limit."
   },
-  "guidance": "Supply currentWork and nextStep, plus useful optional sections. Each text field/item is limited to 1200 characters; length overflow is clipped locally without retries. Invalid content uses Runtime's shared configured correction budget (default two retries, three total submissions), then deterministic recovery. Types, required fields and evidence identities remain checked. Never provide coverage flags, user quotes, message indices or invented evidence IDs. An unfinished investigation can be summarized; preserve uncertainty and the next validation step. Recent thinking stays whole; emergency recovery may archive a complete exchange rather than rewrite thinking. Model interpretations are not verified facts."
+  "guidance": "Supply currentWork and nextStep, plus useful optional sections. Each text field/item follows the configured schema character limit; length overflow is clipped locally without retries. Invalid content uses Runtime's shared configured correction budget (default two retries, three total submissions), then deterministic recovery. Types, required fields and evidence identities remain checked. Never provide coverage flags, user quotes, message indices or invented evidence IDs. An unfinished investigation can be summarized; preserve uncertainty and the next validation step. Recent thinking stays whole; emergency recovery may archive a complete exchange rather than rewrite thinking. Model interpretations are not verified facts."
 }

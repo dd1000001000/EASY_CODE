@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 import type {
   AgentTool,
@@ -30,11 +31,11 @@ function boundedAgentText(maximum: number): z.ZodPipeline<
     .pipe(z.string().min(1).max(maximum));
 }
 
-export const submitTaskResultInputSchema = z.discriminatedUnion("outcome", [
+export function createSubmitTaskResultInputSchema(limits = DEFAULT_RUNTIME_LIMITS) { return z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("completed"),
-      summary: displayTextSchema(MAX_SUBAGENT_SUMMARY_CHARS, sanitizeSubagentText),
+      summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
       evidence: z
         .array(boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS))
         .min(1)
@@ -44,11 +45,12 @@ export const submitTaskResultInputSchema = z.discriminatedUnion("outcome", [
   z
     .object({
       outcome: z.literal("blocked"),
-      summary: displayTextSchema(MAX_SUBAGENT_SUMMARY_CHARS, sanitizeSubagentText),
+      summary: displayTextSchema(limits.subagentSummaryMaxChars, sanitizeSubagentText),
       blocker: boundedAgentText(MAX_SUBAGENT_EVIDENCE_CHARS),
     })
     .strict(),
-]);
+]); }
+export const submitTaskResultInputSchema = createSubmitTaskResultInputSchema();
 
 export type SubmitTaskResultInput = z.infer<typeof submitTaskResultInputSchema>;
 
@@ -61,8 +63,8 @@ type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks">;
 export class SubmitTaskResultTool implements AgentTool {
   readonly name = "submit_task_result" as const;
   readonly mutating = true;
-  readonly inputSchema = submitTaskResultInputSchema;
-  readonly definition: ToolDefinition = {
+  get inputSchema() { return createSubmitTaskResultInputSchema(this.limits); }
+  get definition(): ToolDefinition { return {
     type: "function",
     function: {
       name: this.name,
@@ -78,7 +80,7 @@ export class SubmitTaskResultTool implements AgentTool {
           summary: {
             type: "string",
             minLength: 1,
-            maxLength: MAX_SUBAGENT_SUMMARY_CHARS,
+            maxLength: this.limits.subagentSummaryMaxChars,
           },
           evidence: {
             type: "array",
@@ -99,11 +101,11 @@ export class SubmitTaskResultTool implements AgentTool {
         required: ["outcome", "summary"],
       }),
     },
-  };
+  }; }
 
   private readonly task: BoundTask;
 
-  constructor(task: Readonly<TaskNode>) {
+  constructor(task: Readonly<TaskNode>, private readonly limits = DEFAULT_RUNTIME_LIMITS) {
     this.task = {
       id: task.id,
       status: task.status,

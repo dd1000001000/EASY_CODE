@@ -2,19 +2,22 @@ import { z } from "zod";
 import type { AgentTool, ToolContext, ToolDefinition } from "../core/types.js";
 import { toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
-export const recallContextSchema = z.object({ evidenceId: z.string().min(1).max(160),
-  offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(16000).default(8000),
+export const createRecallContextSchema = (limits = DEFAULT_RUNTIME_LIMITS) => z.object({ evidenceId: z.string().min(1).max(160),
+  offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(limits.evidenceRecallMaxChars).default(limits.evidenceRecallDefaultChars),
 }).strict();
+export const recallContextSchema = createRecallContextSchema();
 
 export class RecallContextTool implements AgentTool {
   readonly name = "recall_context" as const;
   readonly mutating = false;
-  readonly inputSchema = recallContextSchema;
-  readonly definition: ToolDefinition = { type: "function", function: { name: this.name,
+  constructor(private readonly limits = DEFAULT_RUNTIME_LIMITS) {}
+  get inputSchema() { return createRecallContextSchema(this.limits); }
+  get definition(): ToolDefinition { return { type: "function", function: { name: this.name,
     ...documentToolSchema(this.name, { type: "object", additionalProperties: false,
       properties: { evidenceId: { type: "string", minLength: 1, maxLength: 160 },
-        offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: 16000 } }, required: ["evidenceId"] }) } };
+        offset: { type: "integer", minimum: 0 }, limit: { type: "integer", minimum: 1, maximum: this.limits.evidenceRecallMaxChars } }, required: ["evidenceId"] }) } }; }
   async execute(input: unknown, context: ToolContext) {
     try {
       const value = this.inputSchema.parse(input);

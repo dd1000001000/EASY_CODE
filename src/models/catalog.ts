@@ -12,6 +12,8 @@ import {
 } from "./generated-catalog.js";
 
 export interface ModelCatalogEntry {
+  /** Conservative documented window; optional for older external catalogs. */
+  readonly contextWindowTokens?: number;
   readonly id: string;
   readonly label: string;
   /**
@@ -185,7 +187,9 @@ function parseEnvironment(
 
 function parseModel(value: unknown, source: string): ModelCatalogEntry {
   assertRecord(value, source);
-  assertExactKeys(value, ["id", "label", "vision", "thinking"], source);
+  assertExactKeys(value, ["id", "label", "vision", "thinking", ...(value.contextWindowTokens === undefined ? [] : ["contextWindowTokens"])], source);
+  if (value.contextWindowTokens !== undefined && (!Number.isSafeInteger(value.contextWindowTokens) || Number(value.contextWindowTokens) < 4096))
+    throw new Error(`${source}.contextWindowTokens must be a positive documented window`);
   const id = requireNonEmptyString(value.id, `${source}.id`);
   if (!MODEL_ID.test(id)) {
     throw new Error(`${source}.id must be a normalized model identifier`);
@@ -202,6 +206,7 @@ function parseModel(value: unknown, source: string): ModelCatalogEntry {
     label,
     vision: value.vision as VisionSupport,
     thinking: value.thinking as ThinkingProfile,
+    ...(value.contextWindowTokens === undefined ? {} : { contextWindowTokens: Number(value.contextWindowTokens) }),
   });
 }
 
@@ -460,6 +465,12 @@ export function resolveCatalogModel(
   return modelsForProvider(provider).find(
     (entry) => entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized,
   );
+}
+
+export function effectiveContextWindow(provider: ProviderName, model: string, configured?: number): number | undefined {
+  if (!configured) return undefined;
+  const documented = resolveCatalogModel(provider, model)?.contextWindowTokens;
+  return documented ? Math.min(configured, documented) : configured;
 }
 
 export function requireCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry {

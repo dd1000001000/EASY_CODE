@@ -115,8 +115,8 @@ export function optionalMemoryTokenBudget(maxContextChars: number, maxContextTok
   limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS, expanded = false): number {
   // This is an optional-data allowance, NOT a conversion of chars to a model window.
   const maximum = expanded ? limits.memoryRecallTokens : limits.memoryAutoTokens;
-  return Math.max(0, Math.min(maximum, Math.floor(maxContextChars / 24),
-    !maxContextTokens ? maximum : Math.floor(maxContextTokens * 0.08)));
+  return Math.max(0, Math.min(maximum, maxContextTokens
+    ? Math.floor(maxContextTokens * 0.08) : Math.floor(maxContextChars / 24)));
 }
 
 function relevantTerms(text: string): string[] {

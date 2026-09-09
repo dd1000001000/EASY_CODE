@@ -2,6 +2,52 @@ import { ZodError } from "zod";
 import type { AgentTool, ToolExecutionResult, ToolFailureInfo } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { jsonForModel } from "../utils/json.js";
+import { projectText } from "../utils/bounded-text.js";
+
+/** Projection only, after raw evidence has been archived. Never reuse this
+ * object as executable arguments, file-read authority or verification facts. */
+function projectResultData(data: unknown, budget: number): unknown {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const source = data as Record<string, any>;
+  const result: Record<string, any> = { ...source, truncated: true };
+  const prefix = (text: string, room: number) => projectText(text, Math.max(0, room)).text;
+  const headTail = (text: string, room: number) => {
+    if (text.length <= room) return text;
+    const marker = "\n[omitted; recall captured evidence]\n";
+    const half = Math.max(0, Math.floor((room - marker.length) / 2));
+    let tail = text.slice(-half);
+    if (half === 0) tail = "";
+    if (/^[\uDC00-\uDFFF]/u.test(tail)) tail = tail.slice(1);
+    return prefix(text, half) + marker + tail;
+  };
+  if (source.stdout && source.stderr && typeof source.stdout.text === "string" && typeof source.stderr.text === "string") {
+    const room = Math.floor(budget / 2);
+    result.stdout = { ...source.stdout, text: headTail(source.stdout.text, room), truncated: true };
+    result.stderr = { ...source.stderr, text: headTail(source.stderr.text, room), truncated: true };
+  } else if (typeof source.content === "string") {
+    const text = prefix(source.content, budget);
+    if (Number.isInteger(source.startLine) && Number.isInteger(source.endLine) && source.path) {
+      const fullLines = text.length === source.content.length ? text : text.slice(0, Math.max(0, text.lastIndexOf("\n")));
+      result.content = fullLines;
+      result.endLine = fullLines ? source.startLine + fullLines.split("\n").length - 1 : source.startLine - 1;
+      result.nextStartLine = result.endLine + 1;
+    } else {
+      result.content = text;
+      if (Number.isInteger(source.offset)) result.nextOffset = source.offset + text.length;
+    }
+  } else if (Array.isArray(source.matches)) {
+    const matches: unknown[] = [];
+    let chars = 2;
+    for (const match of source.matches) {
+      const cost = jsonForModel(match).length + 1;
+      if (chars + cost > budget) break;
+      matches.push(match); chars += cost;
+    }
+    result.matches = matches;
+    result.stopReason = "result_budget";
+  }
+  return result;
+}
 
 const MAX_ISSUES = 12;
 const EXCLUSIVE_PROTOCOL_ERRORS = new Set([
@@ -118,6 +164,13 @@ export function toolResultForModel(result: ToolExecutionResult, maximumChars: nu
   const encode = jsonForModel;
   const full = encode(payload);
   if (full.length <= maximumChars) return full;
+  // Spend the payload budget on useful whole records before falling back to
+  // identifiers. JSON escaping and the complete metadata are measured together.
+  for (let room = Math.floor(maximumChars * 0.75); room >= 128; room = Math.floor(room / 2)) {
+    const projected = encode({ ...payload, summary: projectText(result.summary, Math.min(room, 512)).text,
+      data: projectResultData(result.data, room) });
+    if (projected.length <= maximumChars) return projected;
+  }
   const failure = result.failure ? { ...result.failure, issues: [...result.failure.issues] } : undefined;
   if (failure) {
     while (true) {

@@ -23,6 +23,7 @@ import { ProposePlanTool } from "./propose-plan.js";
 import { UpdateFileTool } from "./update-file.js";
 import { FetchArtifactTool } from "./fetch-artifact.js";
 import type { DownloadBroker } from "../downloads/broker.js";
+import type { RuntimeLimits } from "../config/runtime-limits.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<ToolName, AgentTool>();
@@ -52,6 +53,7 @@ export function createDefaultTools(
     subagentControl?: SubagentControl;
     commandRuntime?: CommandRuntime;
     downloadBroker?: DownloadBroker;
+    limits?: Readonly<RuntimeLimits>;
   } = {},
 ): AgentTool[] {
   const commandRuntime = options.commandRuntime ?? new CommandRuntime(workspaceManager);
@@ -69,11 +71,11 @@ export function createDefaultTools(
     ...(options.downloadBroker ? [new FetchArtifactTool(options.downloadBroker)] : []),
     new ManageTasksTool(),
     ...(options.subagentControl
-      ? [new ManageSubagentsTool(options.subagentControl)]
+      ? [new ManageSubagentsTool(options.subagentControl, options.limits)]
       : []),
     new ProposePlanTool(),
-    new CompactContextTool(),
-    new RecallContextTool(),
+    new CompactContextTool(options.limits),
+    new RecallContextTool(options.limits),
     new SearchContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
   ].map((tool) => {

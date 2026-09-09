@@ -48,7 +48,8 @@ const data = (result: ToolExecutionResult) => result.data as Record<string, any>
 describe("lightweight optional memory", () => {
   it("starts with 2000 optional tokens and expands only within the configured capacity", () => {
     assert.equal(optionalMemoryTokenBudget(250000), 2000);
-    assert.equal(optionalMemoryTokenBudget(250000, undefined, limits, true), 6000);
+    assert.equal(optionalMemoryTokenBudget(250000, undefined, limits, true), Math.floor(250000 / 24));
+    assert.equal(optionalMemoryTokenBudget(250000, 1000000, limits, true), 12000);
     assert.equal(optionalMemoryTokenBudget(250000, 16000, limits, true), 1280);
     assert.equal(expandedMemoryRecall(state()), false);
   });

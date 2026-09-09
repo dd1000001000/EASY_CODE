@@ -23,7 +23,8 @@ const semantic = { currentWork: "Investigation is unfinished", hypotheses: ["Par
 const tool = new CompactContextTool();
 // These fixtures exercise the configurable two-exchange policy. The new
 // five-exchange default is covered separately by unified-memory tests.
-const fixtureLimits = { ...defaultRuntimeLimits(), compactionRetainRecentExchanges: 2 };
+const fixtureLimits = { ...defaultRuntimeLimits(), compactionRetainRecentExchanges: 2,
+  contextCompactionTriggerRatio: 0.8, contextSummaryMaxTokens: 2048, contextSummaryMaxChars: 12000 };
 function candidate(): Extract<ChatMessage, { role: "assistant" }> {
   return { role: "assistant", content: null, tool_calls: [{ id: "summary", type: "function",
     function: { name: "compact_context", arguments: JSON.stringify(semantic) } }] };
@@ -61,7 +62,9 @@ function fixture(rounds = 6, tokens = true, recordBoundaries = true, resultChars
   const manager = new ContextManager();
   manager.configureTokenBudget(tokens ? 64_000 : undefined, fixtureLimits);
   const run = (overrides: Partial<Parameters<typeof runCompactionTransaction>[0]> = {}) => runCompactionTransaction({
-    state, manager, limits: fixtureLimits, turnId: "turn", maxContextChars: 100_000, required: true, handlesOpen: false,
+    // Force a maintenance operation here to test recovery independently of
+    // whether first-stage references already lowered ordinary request pressure.
+    state, manager, limits: fixtureLimits, forceRecovery: true, turnId: "turn", maxContextChars: 100_000, required: true, handlesOpen: false,
     maxRequests: 3, nextRequest: { systemPrompt: "rules", runtimeContext: "workspace", tools: [] },
     tool: tool.definition, inventory: () => "", append, complete: async () => candidate(),
     execute: async () => ({ ok: true, summary: "semantic patch", contextCompaction: {
@@ -119,7 +122,7 @@ describe("unfinished investigation compaction", () => {
       const large = { ...semantic, decisions: Array.from({ length: 10 }, (_, n) => `${n}:` + "d".repeat(1000)) };
       const largeCandidate = candidate();
       largeCandidate.tool_calls![0]!.function.arguments = JSON.stringify(large);
-      await f.run({ limits: { ...defaultRuntimeLimits(), contextSummaryMaxTokens: 12000 }, complete: async () => largeCandidate, execute: async () => ({ ok: true, summary: "ok",
+      await f.run({ limits: { ...fixtureLimits, contextSummaryMaxTokens: 12000 }, complete: async () => largeCandidate, execute: async () => ({ ok: true, summary: "ok",
         contextCompaction: { formatVersion: 3, summary: JSON.stringify(large) } }) });
       const oldSummary = f.state.workingSummary;
       assert.ok(oldSummary.length > 10_000);
@@ -241,9 +244,9 @@ describe("unfinished investigation compaction", () => {
       assert.equal(eligiblePhaseEnd(f.state, false, 2), 9);
       const result = await f.run();
       assert.equal(result.committed, true);
-      assert.equal(f.state.compactedMessageCount, 9);
+      assert.equal(f.state.compactedMessageCount, 3); // Minimum sufficient old prefix, not every exchange outside the tail.
       assert.equal(f.events.filter((e) => e.type === "context.phase.closed").length, 0);
-      assert.equal(f.store.recover(f.state.threadId).compactedMessageCount, 9);
+      assert.equal(f.store.recover(f.state.threadId).compactedMessageCount, 3);
     } finally { f.dispose(); }
   });
   for (const tokens of [false, true]) it(`compacts six read-only rounds without tests (${tokens ? "token" : "character"} mode)`, async () => {
@@ -254,7 +257,7 @@ describe("unfinished investigation compaction", () => {
       const original = JSON.stringify(f.state.messages);
       const result = await f.run();
       assert.deepEqual(result, { committed: true, requests: 1 });
-      assert.equal(f.state.compactedMessageCount, 9);
+      assert.equal(f.state.compactedMessageCount, tokens ? 3 : 7);
       assert.equal(JSON.stringify(f.state.messages), original);
       const projected = f.manager.build({ state: f.state, maxContextChars: 100_000, systemPrompt: "rules" });
       for (const recent of f.state.messages.slice(9)) assert.ok(projected.some((m) => JSON.stringify(m) === JSON.stringify(recent)));
@@ -262,7 +265,7 @@ describe("unfinished investigation compaction", () => {
       assert.equal(summary.investigation, "unfinished_investigation_not_verified");
       assert.deepEqual(summary.semantic.hypotheses, semantic.hypotheses);
       const recovered = f.store.recover(f.state.threadId);
-      assert.equal(recovered.compactedMessageCount, 9);
+      assert.equal(recovered.compactedMessageCount, tokens ? 3 : 7);
       assert.deepEqual(recovered.compactionControl, f.state.compactionControl);
       assert.equal(JSON.stringify(recovered.messages), original);
     } finally { f.dispose(); }
@@ -278,7 +281,7 @@ describe("unfinished investigation compaction", () => {
       const resumed = f.store.recover(f.state.threadId);
       const result = await f.run({ state: resumed, complete: async () => { throw new Error("duplicate request"); } });
       assert.deepEqual(result, { committed: true, requests: 0 });
-      assert.equal(f.store.recover(f.state.threadId).compactedMessageCount, 9);
+      assert.equal(f.store.recover(f.state.threadId).compactedMessageCount, 3);
     } finally { f.dispose(); }
   });
 

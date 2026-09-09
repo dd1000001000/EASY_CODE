@@ -171,7 +171,9 @@ function validateModelCatalog(value, relativePath = "models/catalog.json") {
     const modelLabels = new Set();
     for (const [modelIndex, model] of provider.models.entries()) {
       const modelLabel = `${label}.models[${modelIndex}]`;
-      assertExactKeys(model, ["id", "label", "vision", "thinking"], modelLabel);
+      assertExactKeys(model, ["id", "label", "vision", "thinking", ...(model.contextWindowTokens === undefined ? [] : ["contextWindowTokens"])], modelLabel);
+      if (model.contextWindowTokens !== undefined && (!Number.isSafeInteger(model.contextWindowTokens) || model.contextWindowTokens < 4096))
+        throw new Error(`${modelLabel}.contextWindowTokens must be a positive documented window`);
       if (typeof model.id !== "string" || !MODEL_ID_PATTERN.test(model.id)) {
         throw new Error(`${modelLabel}.id must be a normalized model identifier`);
       }

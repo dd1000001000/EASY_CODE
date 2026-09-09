@@ -32,19 +32,22 @@
           "id": "deepseek-v4-flash",
           "label": "deepseek-v4-flash",
           "vision": "unsupported",
-          "thinking": "deepseek_effort"
+          "thinking": "deepseek_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "deepseek-v4-pro",
           "label": "deepseek-v4-pro",
           "vision": "unsupported",
-          "thinking": "deepseek_effort"
+          "thinking": "deepseek_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "deepseek-v4-flash-vision-exp",
           "label": "deepseek-v4-flash-vision-exp",
           "vision": "supported",
-          "thinking": "unsupported"
+          "thinking": "unsupported",
+          "contextWindowTokens": 1000000
         }
       ]
     },
@@ -81,55 +84,36 @@
           "id": "qwen3.7-max",
           "label": "Qwen3.7-Max",
           "vision": "unsupported",
-          "thinking": "qwen_budget"
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "qwen3.7-plus",
           "label": "Qwen3.7-Plus",
           "vision": "supported",
-          "thinking": "qwen_budget"
-        },
-        {
-          "id": "qwen3.6-max",
-          "label": "Qwen3.6-Max",
-          "vision": "unsupported",
-          "thinking": "unsupported"
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "qwen3.6-plus",
           "label": "Qwen3.6-Plus",
           "vision": "supported",
-          "thinking": "qwen_budget"
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "qwen3.5-plus",
           "label": "Qwen3.5-Plus",
           "vision": "supported",
-          "thinking": "qwen_budget"
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "qwen3.5-flash",
           "label": "Qwen3.5-Flash",
           "vision": "supported",
-          "thinking": "qwen_budget"
-        },
-        {
-          "id": "qwen3-max",
-          "label": "Qwen3-Max",
-          "vision": "unsupported",
-          "thinking": "qwen_budget"
-        },
-        {
-          "id": "qwen3-vl-plus",
-          "label": "Qwen3-VL-Plus",
-          "vision": "supported",
-          "thinking": "qwen_budget"
-        },
-        {
-          "id": "qwen3-vl-flash",
-          "label": "Qwen3-VL-Flash",
-          "vision": "supported",
-          "thinking": "qwen_budget"
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
         }
       ]
     },
@@ -168,19 +152,22 @@
           "id": "glm-5.3-flash",
           "label": "GLM-5.3-Flash",
           "vision": "supported",
-          "thinking": "glm_forced_effort"
+          "thinking": "glm_forced_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "glm-5.3",
           "label": "GLM-5.3",
           "vision": "unsupported",
-          "thinking": "glm_forced_effort"
+          "thinking": "glm_forced_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "glm-5.2",
           "label": "GLM-5.2",
           "vision": "unsupported",
-          "thinking": "glm_optional_effort"
+          "thinking": "glm_optional_effort",
+          "contextWindowTokens": 1000000
         }
       ]
     },
@@ -215,19 +202,22 @@
           "id": "glm-5.3-flash",
           "label": "GLM-5.3-Flash",
           "vision": "unsupported",
-          "thinking": "glm_forced_effort"
+          "thinking": "glm_forced_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "glm-5.3",
           "label": "GLM-5.3",
           "vision": "unsupported",
-          "thinking": "glm_forced_effort"
+          "thinking": "glm_forced_effort",
+          "contextWindowTokens": 1000000
         },
         {
           "id": "glm-5.2",
           "label": "GLM-5.2",
           "vision": "unsupported",
-          "thinking": "glm_optional_effort"
+          "thinking": "glm_optional_effort",
+          "contextWindowTokens": 1000000
         }
       ]
     }

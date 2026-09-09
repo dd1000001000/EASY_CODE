@@ -9,6 +9,7 @@ import type { EasyCodeStorage } from "../storage/database.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { createId } from "../utils/ids.js";
 import { EvidenceStore } from "../context/evidence-store.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { assertDurableMemory } from "./admission.js";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -57,6 +58,7 @@ export interface MemorySemanticSearchIndex {
 }
 
 export interface MemoryManagerOptions {
+  readonly limits?: Readonly<RuntimeLimits>;
   readonly vectorIndex?: MemorySemanticSearchIndex;
   readonly onVectorError?: (error: unknown) => void;
 }
@@ -71,7 +73,7 @@ export const MEMORY_CATEGORIES = [
 
 export const MIN_MEMORY_CONTENT_CHARS = 8;
 /** Keep one memory small enough to represent one independently retrievable fact. */
-export const MAX_MEMORY_CONTENT_CHARS = 120;
+export const MAX_MEMORY_CONTENT_CHARS = DEFAULT_RUNTIME_LIMITS.memoryContentMaxChars;
 export const MAX_MEMORY_REASON_CHARS = 500;
 export const MAX_MEMORY_SEARCH_CHARS = 500;
 
@@ -210,14 +212,14 @@ function assertCategory(category: LongTermMemory["category"]): LongTermMemory["c
   return category;
 }
 
-function memoryContent(value: string): string {
+function memoryContent(value: string, maximum = MAX_MEMORY_CONTENT_CHARS): string {
   const content = cleanSentence(value);
   if (
     content.length < MIN_MEMORY_CONTENT_CHARS ||
-    content.length > MAX_MEMORY_CONTENT_CHARS
+    content.length > maximum
   ) {
     throw new Error(
-      `Memory content must contain ${MIN_MEMORY_CONTENT_CHARS}-${MAX_MEMORY_CONTENT_CHARS} characters`,
+      `Memory content must contain ${MIN_MEMORY_CONTENT_CHARS}-${maximum} characters`,
     );
   }
   if (
@@ -383,6 +385,7 @@ function ftsExpression(query: string): string | undefined {
  */
 export class MemoryManager {
   readonly evidenceStore: EvidenceStore;
+  readonly limits: Readonly<RuntimeLimits>;
   close(): void { this.vectorIndex?.close?.(); }
   private readonly vectorIndex: MemorySemanticSearchIndex | undefined;
   private readonly onVectorError: ((error: unknown) => void) | undefined;
@@ -391,7 +394,8 @@ export class MemoryManager {
     private readonly storage: EasyCodeStorage,
     options: MemoryManagerOptions = {},
   ) {
-    this.evidenceStore = new EvidenceStore(storage);
+    this.limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
+    this.evidenceStore = new EvidenceStore(storage, this.limits);
     this.vectorIndex = options.vectorIndex;
     this.onVectorError = options.onVectorError;
   }
@@ -564,7 +568,7 @@ export class MemoryManager {
 
   private provenance(input: ApplyModelMemoryMutationsInput, mutation: MemoryMutationRequest): MemoryProvenance | undefined {
     if (!input.sourceState || mutation.action === "forget") return undefined;
-    assertDurableMemory(mutation.content);
+    assertDurableMemory(mutation.content, this.limits);
     const state = input.sourceState;
     if (state.threadId !== input.threadId) throw new Error("Memory evidence belongs to another thread");
     const refs = [...new Set(mutation.sourceRefs ?? [])];
@@ -769,7 +773,7 @@ export class MemoryManager {
     const workspaceId = input.workspaceId ?? (input.workspaceRoot ? workspaceIdFromRoot(input.workspaceRoot) : "");
     const contents = [...new Set(input.mutations.flatMap((mutation) => {
       if (mutation.action === "forget") return [];
-      const content = memoryContent(mutation.content);
+      const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
       if (mutation.action === "remember") {
         const existing = this.storage.db.prepare<[string, string], { status: string; category: string }>(
           "SELECT status, category FROM memories WHERE workspace_id = ? AND normalized_content = ?"
@@ -908,7 +912,7 @@ export class MemoryManager {
         if (mutation.action === "remember") {
           const category = assertCategory(mutation.category);
           assertOutcomeCategory(category);
-          const content = memoryContent(mutation.content);
+          const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
           const normalized = normalizeContent(content);
           const reason = memoryReason(mutation.reason);
           const existing = selectByContent.get(workspaceId, normalized);
@@ -1021,7 +1025,7 @@ export class MemoryManager {
         }
         const category = assertCategory(mutation.category);
         assertOutcomeCategory(category);
-        const content = memoryContent(mutation.content);
+        const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
         const normalized = normalizeContent(content);
         const reason = memoryReason(mutation.reason);
         const conflict = selectByContent.get(workspaceId, normalized);

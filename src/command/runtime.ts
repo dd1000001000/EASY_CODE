@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { containWindowsWorker, type WindowsCommandJob } from "./windows-job.js";
 import { ExecutionJournal } from "./execution-journal.js";
+import type { CommandOutputArchive } from "./output-archive.js";
 import type { ToolContext } from "../core/types.js";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
@@ -62,6 +63,7 @@ export interface CommandRuntimeOptions {
   sandboxStartupTimeoutMs?: number;
   quarantinePath?: string;
   lifecycleDirectory?: string;
+  createOutputArchive?: (commandId: string, context: ToolContext) => CommandOutputArchive;
   recordLifecycle?: (context: ToolContext, commandId: string, type: string, payload: unknown) => void;
 }
 
@@ -587,8 +589,9 @@ export class CommandRuntime {
       );
     }
     const maxOutputChars = Math.max(256, Math.min(context.maxOutputChars, 1_000_000));
-    const stdout = new OutputCollector(maxOutputChars);
-    const stderr = new OutputCollector(maxOutputChars);
+    const archive = this.options.createOutputArchive?.(commandId, context);
+    const stdout = new OutputCollector(maxOutputChars, text => archive?.push("stdout", text));
+    const stderr = new OutputCollector(maxOutputChars, text => archive?.push("stderr", text));
     const verification = new CommandVerificationCollector({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute,
       environmentDigest: sha256(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))) },
       await packageScriptRunner({ program: resolved.executablePath, args: resolved.args }, resolved.cwdAbsolute));
@@ -803,10 +806,13 @@ export class CommandRuntime {
 
     const stdoutDigest = stdout.finish();
     const rawStderr = stderr.finish();
+    archive?.finish();
+    if (archive) { stdoutDigest.archive = archive.reference("stdout"); rawStderr.archive = archive.reference("stderr"); }
     const extractedStderr = prepared.metadata.enforced
       ? extractSandboxControls(commandId, rawStderr)
       : { digest: rawStderr, controls: [] };
     const stderrDigest = extractedStderr.digest;
+    if (archive) stderrDigest.archive = archive.reference("stderr");
     const controls = prepared.controlPipe ? lifecycleEvents : [...lifecycleEvents, ...extractedStderr.controls];
     const sandboxError = controls.find((control) =>
       control.type === "sandbox_error"
@@ -841,6 +847,7 @@ export class CommandRuntime {
           return collector.finish();
         })()
       : stderrDigest;
+    if (archive) reportedStderr.archive = archive.reference("stderr");
     // A normal turn cancellation aborts an in-progress verification pass. If
     // cancellation stopped the command, still complete the workspace audit so
     // command-side changes are never left untracked.

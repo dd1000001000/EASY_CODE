@@ -251,7 +251,7 @@ describe("small model-facing tool results", () => {
     const original = JSON.stringify(result);
     const projected = projectToolResult(result);
     assert.equal(JSON.stringify(result), original);
-    assert.ok(JSON.stringify(projected).length < 9000);
+    assert.ok(JSON.stringify(projected).length < defaultRuntimeLimits().commandFailureChars + 1000);
     assert.match(JSON.stringify(projected), /assertion A|FAILED case_a/u);
     assert.match(JSON.stringify(projected), /stack tail/u);
     assert.equal((projected.data as { exitCode: number }).exitCode, 1);

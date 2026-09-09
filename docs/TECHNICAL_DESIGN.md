@@ -191,7 +191,7 @@ The Working Checkpoint in the workspace supplement is a deterministic, bounded r
 
 `manage_memory` exposes `search`, `recall`, `remember`, `revise`, and `forget`, subject to the current capability profile. Historical recall and long-term storage are different actions; summarization and RAG hits never automatically become durable project facts.
 
-1. Propose one atomic fact, normally 8–120 characters, in one of the five categories. Runtime rejects secrets, tentative statements and obvious task diaries; these checks are not a general truth classifier.
+1. Propose one atomic fact, up to the configured 1,200-character limit (still a single atomic fact, also capped at 400 estimated tokens), in one of the five categories. Runtime rejects secrets, tentative statements and obvious task diaries; these checks are not a general truth classifier.
 2. For `remember`/`revise`, the application Runtime requires `sourceRefs`. `user` must point to an explicit durable user preference/convention or decision; project/environment facts currently require successful, non-truncated, versioned `read_file` evidence in the same workspace and Thread. Evidence identity checks provenance, not whether arbitrary prose logically follows from it.
 3. Validate and stage the mutation. A staged success response is not a database commit. `revise`/`forget` must identify a memory returned by a search in the same turn; `forget` does not require new factual source evidence.
 4. Commit the validated batch only after an allowed `turn.completed` outcome: `success`, or `planned` with an explicit durable user cue and only preference/convention writes. Failed, interrupted, and limit-reached turns do not commit proposals. There are at most eight mutations per turn.
@@ -204,7 +204,7 @@ Memory state and revisions survive new Threads in the same workspace. Long-term 
 
 Thread indexing incrementally reads newly persisted user text, assistant public text/tool names, useful tool results, and accepted semantic summary snapshots. It excludes system instructions and thinking. An emergency fallback notice without semantic snapshot metadata is not automatically a semantic-summary index entry; its prior text remains accessible through Journal references.
 
-Sources are bounded to 96,000 characters with explicit head/tail omission metadata. Chunks retain source offsets, hashes, and available file path/version/line metadata. The pinned local `paraphrase-multilingual-MiniLM-L12-v2` embedding model uses 384-dimensional vectors and tokenizer windows of at most 128 tokens including special tokens. Without that tokenizer, chunking falls back to 1,400-character windows with 160-character overlap. Long embedding inputs aggregate windows instead of silently dropping the tail. Embedding token units are distinct from chat-context estimates.
+Captured sources are processed in configurable 96,000-character batches; indexing no longer discards the middle before chunking. Capture truncation remains explicit and cannot be undone by indexing. Budget-key changes rebuild derived chunks. Chunks retain source offsets, hashes, and available file path/version/line metadata. The pinned local `paraphrase-multilingual-MiniLM-L12-v2` embedding model uses 384-dimensional vectors and tokenizer windows of at most 128 tokens including special tokens. Without that tokenizer, chunking falls back to 1,400-character windows with 160-character overlap. Long embedding inputs aggregate windows instead of silently dropping the tail. Embedding token units are distinct from chat-context estimates.
 
 SQLite supplies lexical search, including CJK-friendly fallback; optional local vectors and a disposable Orama cache supply semantic candidates. Thread lexical/vector ranks are fused and deduplicated. Background vector backfill keeps lexical retrieval available; vector failure degrades to lexical search. Query embedding still has local compute cost. Retrieval uses local data and local inference, not external web search or the chat-model API; preparing missing model assets may separately require downloads.
 
@@ -213,81 +213,74 @@ Before each ordinary request, the memory controller:
 1. Builds at most three bounded queries from the current task/user request, command outcomes and relevant paths; cached candidates are refreshed when the query/state signature changes.
 2. Searches workspace memories and private Thread history. Normal automatic history recall is restricted to before `compactedMessageCount`; an explicit historical search can inspect existing messages in the current Thread beyond that automatic boundary.
 3. Filters inactive/transient memories, irrelevant hits, exact duplicates, already visible/covered evidence, and known obsolete file versions. Similarity alone does not make a hit relevant or current.
-4. Selects both sources under **one shared** allowance: normally 2,000 estimated tokens, expanded up to 6,000 after a compaction-boundary/DAG-node change or when the latest command is not an observed zero-exit result, with at most six items total. The latter condition also includes a running command. The allowance is additionally capped by `floor(maxContextChars / 24)` and, if enabled, 8% of `maxContextTokens`.
+4. Selects both sources under **one shared** allowance: normally 2,000 estimated tokens, expanded up to 12,000 after a compaction-boundary/DAG-node change or when the latest command is not an observed zero-exit result, with at most six items total. The latter condition also includes a running command. Token mode additionally caps this allowance at 8% of the model window; only legacy character mode uses `floor(maxContextChars / 24)`.
 5. Removes optional recall under request pressure before retiring active history. Retrieval is supplementary; the Runtime does not sacrifice required task state merely to fit more RAG hits.
 
 ### 6.5 Tool output, evidence capture, and exact recall
 
-Runtime captures sanitized structured tool data before model-facing shortening in an immutable, workspace/Thread-scoped evidence store, up to 1,000,000 characters. This is the result the tool produced: commands and reads may already be bounded. Neither this store nor Journal promises unlimited raw stdout. Truncation, captured-content hashes, and pagination remain explicit.
+Runtime stores sanitized structured tool data in immutable, workspace/Thread-scoped evidence before model-facing projection. It preserves the complete **captured** result, not unlimited process output. Commands additionally spool sanitized stdout/stderr before in-memory head/tail loss: `commandArchiveMaxBytes=33554432` (32 MiB per command, both streams combined) and `commandThreadArchiveMaxBytes=268435456` (256 MiB per Thread). UTF-16LE storage permits bounded character-page reads. Quota exhaustion or archive I/O failure marks missing suffixes and incomplete capture; it neither retries nor fails an otherwise completed command. Archives are not automatically pruned. The command collector retains up to `maxOutputChars=256000` characters per stream.
 
-Ordinary output projection returns relevant diagnostics and bounded head/tail text. Command inspection/success/failure defaults are 12,000/2,000/8,000 characters with at most eight diagnostics; repeated command polls return deltas or changed terminal state instead of repeatedly paying for the same body. File reads default to a 100-line location window and allow up to 1,000 lines, subject to the 12,000 estimated-token read-result limit.
-
-The aggregate tool-body budget is 16,000 estimated tokens per multi-call exchange, even without high pressure. Under pressure, older bodies of at least 4,096 characters may become references; an oversized batch can also reference smaller individual bodies. Call/result identity and protocol order remain intact. The projection does not overwrite canonical messages.
-
-When the current capability profile exposes `manage_memory`, `recall` supports bounded pages by exact ID:
-
-| Reference | Reads without re-executing work |
+| Model-facing content | Configurable default |
 | --- | --- |
-| `evidence_…` | Captured structured tool evidence. |
-| `context_…` | An indexed historical chunk, not unlimited original process output. |
-| `ev_…` | A matching tool message or command audit in the current Thread Journal. |
-| `journal_message_<index>` | The exact stored message, including reasoning if present. |
-| `journal_summary_<sha256>` | An archived recovery summary version. |
+| Command inspection / success / failure | `commandQueryChars=24000` / `commandSuccessChars=2000` / `commandFailureChars=16000`; `commandMaxDiagnostics=16` |
+| File location / explicit read | `defaultReadLines=100` / `maxReadLines=1000`; `maxReadResultTokens=24000` |
+| File search | `searchMaxResultTokens=6000` |
+| Generic tool envelope / aggregate tool bodies | `maxToolResultChars=64000` / `contextToolBatchTokens=65536` |
+| Evidence page | `evidenceRecallDefaultChars=8000`, `evidenceRecallMaxChars=32000` |
 
-Recall defaults to 8,000 characters per page and allows at most 16,000. References are scoped and secret-filtered, not permission to access another Thread. Historical code/results may be stale; a reference is not proof that the present checkout passes.
+Projection retains useful diagnostics, whole search records and whole file lines before falling back to an evidence ID. It measures the serialized JSON envelope, including escaping; executable arguments and verification evidence are never silently truncated into validity. Repeated polls still return deltas or changed terminal state.
+
+`recall_context` and permitted memory recall can recover exact scoped IDs: `evidence_…` (captured structured tool data), `context_…` (historical indexed chunk), `command_output_…` (captured process text), `ev_…` (Runtime catalogue), `journal_message_<index>` (stored message), and `journal_summary_<sha256>` (archived summary). `artifact:<hash-prefix>` requires an unambiguous match. `review:<id>:author|reviewer|briefing|evidence` addresses explicitly shared review materials. Historical reads do not authorize arbitrary peer-thread access or prove the current checkout passes.
 
 ### 6.6 Capacity accounting and configuration
 
-Operational settings are in `[limits]`; [runtime defaults](../src/config/runtime-defaults.json) and the [configuration example](config.example.toml) are the source of current values. Context policy is the same for all thinking efforts and providers. Defaults for steps are 40/40/40/80 for none/low/medium/high, with child concurrency caps of 2/2/4/8 configured in `[limits.maxConcurrentSubagents]`. Runtime and status displays resolve the current parent effort. Lowering effort does not cancel existing children, but rejects new spawns at the new cap. Context capacity, shared token/request budgets and total per-turn child creation limits do not increase with effort.
+All operational capacity/content budgets above and below load from `src/config/runtime-defaults.json`, validated by `src/config/runtime-limits.ts`; `docs/config.example.toml` documents `[limits]` overrides. Invalid relationships (target/trigger ordering, page maxima, disk quotas, review handoff room) fail configuration validation. Protocol identities, schema types, permissions and finite safety bounds remain strict.
 
-`maxContextTokens = 0` disables the model-token window. The default `maxContextChars = maxActiveContextChars = 250000` means **characters, not 250,000 model tokens**. Character-mode input capacity is `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`: 212,500 by default. The controller's 80% maintenance trigger is about 170,000 measured request characters, including instructions, schemas and Runtime state, not just the visible conversation.
+The default `maxContextTokens=1000000` is the configured **model window**, not usable input or an exact tokenizer count. Known model metadata caps it at the documented window; a smaller user override is respected. Provider-neutral estimates include system text, normal tool schemas, thinking, tool arguments/results and images. Main Runtime calibration uses observed provider prompt usage; cached per-message estimates avoid repeatedly scanning unchanged large strings and invalidate when content, thinking, nested arguments or images change.
 
-With a nonzero `maxContextTokens`, that window is the primary operational capacity. A provider-neutral estimate counts text, thinking, tool arguments/schemas, message overhead and image estimates; it is calibrated conservatively from recent actual prompt usage by endpoint/model/modality. Calibration stores ratios, not another transcript. It is not a native exact tokenizer and does not discover the provider window automatically.
-
-For a configured token window `W`, default input capacity is:
+For a window W:
 
 ```text
-W - min(maxResponseTokens, floor(W × 0.20))  [output reserve; maxResponseTokens = 16384]
-  - min(8192, floor(W × 0.10))              [future tool reserve]
-  - max(512, ceil(W × 0.05))                [safety reserve]
+inputCapacity = W
+ - min(maxResponseTokens, floor(W × contextOutputReserveRatio))
+ - min(contextToolReserveTokens, floor(W × contextToolReserveRatio))
+ - max(contextSafetyReserveTokens, ceil(W × contextSafetyReserveRatio))
+
+Defaults at W=1,000,000:
+1,000,000 - 32,768 - 65,536 - 50,000 = 851,696 usable input tokens
 ```
 
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `contextCompactionTriggerRatio` | `0.8` | Start maintenance against usable input capacity. |
-| `contextCompactionTargetRatio` | `0.55` | Preferred headroom, not a mandatory acceptance threshold. |
-| `contextCompactionMinGrowthRatio` | `0.1` | Growth hysteresis to avoid repeated paid summaries after tiny changes. |
-| `compactionRetainRecentExchanges` | `5` | Preferred recent complete exchange tail; reducible during recovery. |
-| `modelContentRetries` | `2` | Two corrections (three total attempts), shared by all agents and auxiliary model protocols; length-only overflow is clipped without retry. |
-| `contextSummaryMaxTokens` | `2048` | Retained summary estimate including JSON wrapper, not a server generation cap; the 12,000-character ceiling also remains. |
-| `providerResponseMaxBytes` | `16777216` | Independent HTTP safety ceiling (16 MiB), not derived from tool display length. |
-| `contextToolBatchTokens` / `contextToolReferenceMinChars` | `16000` / `4096` | Aggregate tool-body allowance / old-body reference threshold. |
-| `contextMaxRebasesPerRequest` | `1` | Emergency rebase allowance per durable user-request scope; `0` disables it. |
-| `contextMaxCapacityRetries` | `1` | Smaller ordinary-request retries for classified provider capacity rejection, bounded within the current run. |
-| `memoryAutoTokens` / `memoryRecallTokens` | `2000` / `6000` | Shared optional recall caps, not a quota for each source separately. |
-| `memoryMaxItems` / `memoryMaxQueries` | `6` / `3` | Shared selected items / generated queries. |
-| `maxDurableMemoryTokens` | `400` | Additional per-proposal estimate check, alongside the atomic-fact character bound. |
+Reserves are local accounting, **not** a server `max_tokens` parameter. Pressure is measured against usable input, not the raw 1M window. `maxContextTokens=0` explicitly selects the legacy character mode (`maxContextChars=maxActiveContextChars=250000`); character caps do not impose a second 250k ceiling in token mode, including tool-result room.
 
-Some storage/protocol guards remain code constants, such as atomic-fact length and maximum evidence capture; not every bound is a configuration field. Generic 60/80/90% context diagnostics are not the old mandatory model-correction state machine. Actual dispatch and recovery use the full next ordinary request envelope, including its normal tool schemas.
+| Stage / content | Configurable default |
+| --- | --- |
+| Pressure / reference trigger and target | `contextReferenceTriggerRatio=0.8`, `contextReferenceTargetRatio=0.6` |
+| Summary trigger and target | `contextCompactionTriggerRatio=0.9`, `contextCompactionTargetRatio=0.6` |
+| Force / optional-memory resumption | `contextForceRatio=0.95`, `contextMemoryResumeRatio=0.6` |
+| Recent exchanges / recalled-evidence protection | `compactionRetainRecentExchanges=5`, `contextRecallProtectionExchanges=2` |
+| Summary growth cooldown | `contextCompactionMinGrowthRatio=0.1`, capped by `contextCompactionMaxGrowthTokens=32768` |
+| Voluntary minimum new/saved content / savings | `contextCompactionMinNewTokens=8192`, `contextCompactionMinSavedTokens=8192`, `contextCompactionMinSavingsRatio=0.1` |
+| Compaction summary / character guard / semantic field | `contextSummaryMaxTokens=8192`, `contextSummaryMaxChars=64000`, `contextSemanticFieldMaxChars=4000` |
+| Review opening / each final summary / merged handoff | `reviewBriefingMaxTokens=6144`, `reviewSummaryMaxTokens=4096`, `reviewHandoffMaxTokens=12288` |
+| Closing input reservation (each participant) | `reviewClosingInputReserveTokens=100000`, plus output reserve; actual requests are fully charged, not capped by this hold |
+| Child instructions / follow-up / result summary | `subagentInstructionsMaxChars=12000`, `subagentFollowUpMaxChars=8000`, `subagentSummaryMaxChars=12000` |
+| Automatic / expanded shared recall | `memoryAutoTokens=2000`, `memoryRecallTokens=12000`; six items, three queries |
+| Durable atomic fact | `memoryContentMaxChars=1200` and `maxDurableMemoryTokens=400` |
+| Source indexing batch / fallback chunk / overlap | `artifactIndexBatchChars=96000`, `artifactChunkChars=1400`, `artifactChunkOverlapChars=160` |
+
+Only selected content budgets increase; short success results, automatic memory injection, read-line ceilings, review rounds (five), concurrency (none/low two, medium four, high eight), approvals, network isolation and retry counts do not increase. Child and review histories remain private; only the main agent can manage project long-term memory. Review handoffs preserve Runtime decision flags and exact proposals before prose, and retain pageable full evidence when qualifications do not fit. Neither clipped prose nor consensus grants delivery approval.
 
 ### 6.7 Graded recovery: preserve work, reduce active history
 
-```text
-Measure next ordinary request
-→ remove optional recall / reference oversized tool bodies
-→ at most one short semantic handoff
-→ local whole-exchange and old-summary eviction with Journal references
-→ at most one minimal rebase per user request
-→ continue the same task, or return a recoverable capacity pause
-```
+1. At 80% remove optional memory/RAG and reference old large tool results toward 60%. Protect the recent five effective exchanges and recently recalled evidence; neutral polls do not consume the protected exchange count. Commit references as a derived projection, never overwrite canonical evidence. Reassess the actual next request afterward: a stale pre-reclamation reading cannot buy an unnecessary summary.
+2. At 90%, when still necessary and budgets/cooldown permit, summarize only the smallest sufficient **old contiguous prefix**, retaining recent complete exchanges. Successful tests or model-declared semantic phases are not prerequisites. Preserve unfinished investigation and unverified hypotheses. At 95%, force bypasses growth cooldown, not evidence integrity, complete call/result boundaries or shared request budgets.
+3. Use optional `<analysis>` scratch followed by a unique complete outer `<summary>`. Discard scratch after successful extraction and never use native thinking as the summary. Valid legacy structured `compact_context` submissions remain supported. Content/format errors use `modelContentRetries=2` (three total attempts); overlength text is clipped locally to the configured field/summary budget without retry. Executable tool arguments, required types and evidence identities remain strict.
+4. Accept only unchanged source/fact snapshots, a forward complete-exchange boundary, real size reduction and a fitting **next ordinary request**. The 60% target is preferred headroom rather than a reason to reject a useful safe summary. At force pressure, cooldown cannot block recovery.
+5. Missing/malformed summaries or insufficient room proceed to deterministic whole-exchange/history-summary retirement and the existing bounded minimal rebase. After format corrections, the last nonempty non-thinking body may be retained as explicitly unverified material. Native thinking is never rewritten fragment by fragment.
+6. At 100% of usable input no ordinary request is sent until capacity recovers. Final requirements-only reconstruction retains user instructions while preserving files, Journal, command/child/DAG state, permissions and spent budgets outside the model history. A classified remote capacity rejection uses the same bounded reset, not another summarizer or blind command replay.
+7. If even mandatory rules, schemas and user requirements cannot fit after graded recovery, return recoverable `context_capacity_exhausted`; never falsely complete work. API retries remain five, model-content corrections two, capacity resend one, command replay zero; child failure only notifies its parent. Cancellation, credentials, persistence corruption and real cleanup failure remain separate errors.
 
-1. Perform cheap reclamation first. Choose a prefix of complete assistant/tool exchanges, preferably retaining two recent exchanges, then a smaller tail if necessary. Every assistant tool call must have its matching result; a pending tool exchange is never split. Plain assistant exchanges and completed read/write/command exchanges are eligible. A semantic phase or successful test is **not** required: an unfinished investigation may be archived while explicitly remaining unfinished/unverified.
-2. Use the shared model-content allowance: two corrections after the initial summary (three total attempts); a parent submission counts as attempt one. Clip overlong text fields/items locally to 1200 characters without model correction. Retain at most an estimated 2048 tokens including the wrapper, with no server generation-token cap. Accept complete `compact_context` arguments or a unique complete outer `<summary>` envelope. Missing envelopes get the configured corrections, then the last nonempty non-thinking body is retained as an unverified raw fallback; thinking alone cannot supply a summary. Runtime supplies facts and the evidence catalogue independently.
-3. Salvage valid semantic sections where possible. Unknown/unbound evidence claims become unverified hypotheses. Accept only with unchanged source/fact snapshots, a forward boundary, actual size reduction, and a fitting **next ordinary request**. A safe result above 55%, or even above the 80% trigger, may proceed; the target and growth cooldown prevent unnecessary repeated paid maintenance, not all possible future pressure.
-4. Malformed/missing summaries, unavailable summary capabilities, auxiliary provider failures, or insufficient savings after local projection go to deterministic recovery, not a schema-correction loop. Older whole exchanges and an oversized prior summary can leave active context with precise references and explicit incomplete/unverified status. This can advance the durable retired boundary without a semantic-summary commit; original messages remain stored.
-5. If necessary, archive the newest **closed** exchange whole as a minimal rebase, retaining actionable pinned state. This is lossy context retirement, not a new task, process restart, workspace rollback, or permission to restart pending commands/children. Commit only when it actually reduces size and fits. Rebase consumption is journaled per durable user-request scope: Resume does not reset it; a new explicit user request starts a new scope.
-6. If mandatory instructions, schemas, Runtime facts or unresolved protocol data still cannot fit, return `reason=limit_reached`, `failure.code=context_capacity_exhausted`, `recoverable=true`. Preserve files, history, pending work and budgets. This neither completes the DAG nor declares an external blocker; it is not a guarantee that every task can continue indefinitely.
-7. A narrowly classified server context-length rejection permits one resend after retiring historical context and restoring user requirements. The Journal, execution facts, permissions and shared budgets remain intact; no second summarizer is invoked. Authentication errors, 429s and generic timeouts are not capacity errors. User cancellation and storage/Journal corruption remain real stop conditions, not successful degradation.
+Stable system instructions and ordinary history precede the newest Runtime data. Pressure transitions, projection boundaries and accepted summaries legitimately change the prefix, so larger windows may reduce cache-invalidating compactions but do **not** guarantee higher cache hit rates, quality or lower cost. Controlled long-task comparisons must measure those outcomes.
 
 ### 6.8 Replay, user commands, and verification limits
 
@@ -358,11 +351,13 @@ The gateway normalizes messages, actions, reasoning, images, cancellation, retri
 | Channel | Default service root | Default and current catalog |
 | --- | --- | --- |
 | DeepSeek | `https://api.deepseek.com` | Default `deepseek-v4-pro`; Flash/Pro support effort without vision, Vision Experimental supports images without thinking control. |
-| Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Default `qwen3.7-max`; explicit 3.7, 3.6, 3.5, 3 Max, and 3 VL entries with per-model vision/thinking flags. |
+| Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` | Default `qwen3.7-max`; `qwen3.7-max`, `qwen3.7-plus`, `qwen3.6-plus`, `qwen3.5-plus`, and `qwen3.5-flash`, with per-model vision/thinking flags. |
 | Standard GLM | `https://open.bigmodel.cn/api/paas/v4` | Default `glm-5.3`; 5.3 Flash, 5.3, and 5.2, with channel-specific vision and forced/optional effort. |
 | GLM Coding Plan | `https://open.bigmodel.cn/api/coding/paas/v4` | Default `glm-5.3`; text-only 5.3 Flash, 5.3, and 5.2 through a separate entitlement. |
 
 Standard GLM and Coding Plan remain distinct even when model IDs overlap: endpoint, key, configuration, usage, and Thread identity never fall back across channels.
+
+The 2026-09-09 catalog review removes four sub-1M Qwen options: `qwen3.6-max` (official ID `qwen3.6-max-preview`) and `qwen3-max` are documented as 256K in the [official text-model overview](https://help.aliyun.com/zh/model-studio/text-generation-model); [Qwen3-VL-Plus](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus) and [Qwen3-VL-Flash](https://help.aliyun.com/zh/model-studio/qwen3-vl-flash) each have 262,144-token context. The remaining catalog has 14 channel/model entries and 11 unique model IDs. This selection change does not increase Runtime context budgets or migrate saved configuration/Thread model choices; users with a removed model selected should use `/model` to select a retained option.
 
 Unknown models are not assumed to support vision or controllable thinking. Adapters map none/low/medium/high only to controls declared for the exact model; some use Token budgets, some effort labels, and forced-thinking models cannot express explicit “off.” Selected effort remains durable even when a model cannot apply it.
 
@@ -436,7 +431,7 @@ Content correction never executes partial commands or replays executed tools. Su
 
 ### Durable summaries and final capacity circuit breaker
 
-- Summary prompts use optional `<analysis>` plus one outer `<summary>`. Compaction still accepts valid legacy structured `compact_context` candidates, but new handoff requests ask for XML and authorize no tool execution, even when normal tool schemas remain visible. Native reasoning never becomes a summary. Successful extraction removes scratch before candidate persistence. After two content corrections, keep the last nonempty body as unverified handoff; local 2048-estimated-token and field clipping never retries or weakens executable schemas.
+- Summary prompts use optional `<analysis>` plus one outer `<summary>`. Compaction still accepts valid legacy structured `compact_context` candidates, but new handoff requests ask for XML and authorize no tool execution, even when normal tool schemas remain visible. Native reasoning never becomes a summary. Successful extraction removes scratch before candidate persistence. After two content corrections, keep the last nonempty body as unverified handoff; configured summary-token and field clipping never retries or weakens executable schemas.
 - Candidate attempt, last nonempty body, extraction error and raw/formal completion are journal-backed for compaction and independent review summaries. An empty later answer cannot erase earlier usable prose. Exhausted transient API recovery may salvage that prose; cancellation, authentication, budget and persistence errors are not content corrections. Resume may process saved candidates but never redispatch an unanswered attempt.
 - If existing reference/summary/eviction/rebase recovery cannot fit, use one requirements-only reset. A remote capacity rejection goes directly to this reset; no summarizer is called. Local and remote paths share a stable, requirement-bound incident allowance across Resume. Identical or non-smaller rejected requests are not resent.
 - Requirement indices come from user, steering and explicitly bound assignment events, not arbitrary `role=user` text or RAG. Original requests, subsequent corrections and attachments remain verbatim. System/tool rules remain. Oversized mandatory input pauses without deleting intent or claiming completion.
@@ -448,5 +443,5 @@ Content correction never executes partial commands or replays executed tools. Su
 - Normal main/child requests keep fixed policy in the system message, then unchanged active history, then current Runtime state and retrieval data. Background-command and progress/experiment reminders appear in a transient `RUNTIME_NEXT_ACTION` tail, not in the system prompt or durable conversation. Static completion obligations remain in the shared system contract; Runtime still rejects premature completion.
 - Automatic compaction retains that role's exact normal system prompt and ordered tool definitions. It appends a `RUNTIME_CONTEXT_HANDOFF` request with the retirement range, evidence and any format feedback after the normal history/state. Reviewer private-history compaction uses the same mechanism without sharing main-agent private history.
 - Handoff is a separate execution phase, not an ordinary agent step. Visible schemas do not authorize execution: returned workspace calls are never dispatched, a summary does not complete a task, and raw recovery text is unverified. File/output/memory text cannot select a Runtime phase merely by imitating a label. Briefing and closing summaries keep their separate tool-free paths.
-- Capacity estimation, provider-context telemetry and the actual summary API call all use the same retained schemas. If the full handoff request cannot fit, use the existing deterministic recovery rather than silently removing tools or evidence to manufacture a fit. Retry counts, 2048-token summary clipping, thinking handling and final capacity-reset limits are unchanged.
+- Capacity estimation, provider-context telemetry and the actual summary API call all use the same retained schemas. If the full handoff request cannot fit, use the existing deterministic recovery rather than silently removing tools or evidence to manufacture a fit. Retry counts, thinking handling and final capacity-reset allowances are unchanged; summary/content budgets follow §6.6.
 - These changes improve prefix reuse opportunities, not guaranteed provider cache hits. Compaction commits necessarily replace old history; model settings, role changes and per-turn time changes can still affect reuse. This change does not alter timestamps or cache telemetry persistence.

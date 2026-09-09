@@ -37,6 +37,7 @@ import {
 } from "../src/tools/index.js";
 import type { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
@@ -50,7 +51,7 @@ function actualDefinitions() {
     new CreateFileTool(workspace).definition,
     new DeleteFileTool(workspace).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
-    new ManageMemoryTool({} as MemoryManager, workspace).definition,
+    new ManageMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
     new ManageTasksTool().definition,
     new ProposePlanTool().definition,

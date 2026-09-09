@@ -14,6 +14,7 @@ import type { EmbeddingProvider } from "../src/memory/vector-index.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 
 const WORKSPACE_ID = "workspace_context_index";
 
@@ -51,6 +52,26 @@ function createState(store: ThreadStore, threadId: string): SessionState {
 }
 
 describe("layered Thread context index", () => {
+  it("indexes the middle of large captured sources in bounded batches and rebuilds after chunk settings change", async () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const store = new ThreadStore(storage);
+      const state = createState(store, "thread_large_source");
+      state.messages.push({ role: "assistant", content: "prefix ".repeat(18000) +
+        "\nUNIQUE_MIDDLE_WITNESS rollback protocol\n" + "suffix ".repeat(18000) });
+      const limits = { ...defaultRuntimeLimits(), artifactIndexBatchChars: 12000, artifactChunkChars: 1000, artifactChunkOverlapChars: 80 };
+      const index = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, { limits, backgroundVectors: false });
+      const result = await index.checkpoint(WORKSPACE_ID, state);
+      assert.ok(result.indexedChunks > 200);
+      const hits = await index.search(WORKSPACE_ID, state.threadId, "UNIQUE_MIDDLE_WITNESS", { beforeMessageIndex: 1, limit: 6 });
+      assert.ok(hits.some(hit => hit.content.includes("UNIQUE_MIDDLE_WITNESS")), "Middle beyond the old 96k source cap remains searchable");
+      const changed = new ContextArtifactIndex(storage, new KeywordEmbeddingProvider(), undefined, { limits: { ...limits, artifactChunkChars: 1400 }, backgroundVectors: false });
+      const rebuilt = await changed.checkpoint(WORKSPACE_ID, state);
+      assert.equal(rebuilt.indexedMessages, 1);
+      assert.ok(rebuilt.indexedChunks < result.indexedChunks);
+    } finally { storage.close(); rmSync(dataDir, { recursive: true, force: true }); }
+  });
   it("indexes only the appended suffix and restores hybrid evidence after resume", async () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);

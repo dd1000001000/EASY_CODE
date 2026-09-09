@@ -113,13 +113,13 @@ describe("ContextManager", () => {
     assert.ok(contextChars(context) > maxContextChars);
   });
 
-  it("classifies the exact 60/80/90 percent context-pressure boundaries", () => {
-    assert.equal(contextPressureLevel(0.5999), "normal");
-    assert.equal(contextPressureLevel(0.6), "suggest");
-    assert.equal(contextPressureLevel(0.7999), "suggest");
-    assert.equal(contextPressureLevel(0.8), "require");
-    assert.equal(contextPressureLevel(0.8999), "require");
-    assert.equal(contextPressureLevel(0.9), "force");
+  it("classifies the exact 80/90/95 percent context-pressure boundaries", () => {
+    assert.equal(contextPressureLevel(0.7999), "normal");
+    assert.equal(contextPressureLevel(0.8), "suggest");
+    assert.equal(contextPressureLevel(0.8999), "suggest");
+    assert.equal(contextPressureLevel(0.9), "require");
+    assert.equal(contextPressureLevel(0.9499), "require");
+    assert.equal(contextPressureLevel(0.95), "force");
     assert.equal(contextPressureLevel(Number.POSITIVE_INFINITY), "force");
     assert.equal(contextPressureLevel(Number.NaN), "normal");
   });
@@ -137,7 +137,7 @@ describe("ContextManager", () => {
     const inspection = new ContextManager().inspect(current, 1_600_000);
     assert.equal(inspection.configuredBudgetChars, 1_600_000);
     assert.equal(inspection.budgetChars, MAX_ACTIVE_WORKING_SET_CHARS);
-    assert.equal(inspection.pressure, "require");
+    assert.equal(inspection.pressure, "suggest");
   });
 
   it("treats retrieval reservations as diagnostics, not actual provider occupancy", () => {

@@ -43,6 +43,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { projectToolResult } from "../tools/output-projection.js";
 import { renderPinnedCurrentState, renderRetrievedContext, type ContextSearchHit } from "../context/artifact-index.js";
 import { memoryQueries, memoryQueryKey, optionalMemoryTokenBudget, selectMemoryContext, expandedMemoryRecall, visibleMemoryText } from "../context/memory-controller.js";
+import { foldMemoryGate } from "../context/pressure-recovery.js";
 import { budgetedRequest, requestTokens } from "../context/token-budget.js";
 import type { TokenCalibration } from "../context/token-calibration.js";
 import { runCompactionTransaction, foldCompactionControl, completeExchange, investigationExchangeStart, type CompactionResult } from "../context/compaction-transaction.js";
@@ -68,7 +69,7 @@ import {
   nextThreadImageNumber,
 } from "../images/labels.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
-import { validateProviderImageAttachments } from "../models/catalog.js";
+import { validateProviderImageAttachments, effectiveContextWindow } from "../models/catalog.js";
 import {
   clonePlanReviewState,
   createPlanReviewState,
@@ -1675,7 +1676,7 @@ export class AgentRuntime {
     options: AgentRunOptions
   ): Promise<AgentRunResult> {
     this.remainingRequests = options.maxSteps;
-    this.dependencies.contextManager.configureTokenBudget(options.maxContextTokens, this.dependencies.limits);
+    this.dependencies.contextManager.configureTokenBudget(effectiveContextWindow(state.provider, state.model, options.maxContextTokens), this.dependencies.limits);
     const userInput = typeof input === "string" ? input : input.text;
     const inputImages = typeof input === "string" ? [] : [...(input.images ?? [])];
     validateImageAttachmentCollection(inputImages);
@@ -2254,6 +2255,7 @@ export class AgentRuntime {
       rememberedPhaseKey = phaseKey;
       let optionalAllowance = optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens,
         memoryLimits, phaseChanged || expandedMemoryRecall(state));
+      if (state.pressureRecovery?.optionalMemorySuppressed) optionalAllowance = 0;
       if (reconciliationPending(state)) optionalAllowance = 0;
       let selectedOptionalCount = 0;
       let memorySelectionInfo = { estimatedTokens: 0, dropped: { duplicate: 0, stale: 0, budget: 0 } };
@@ -2361,6 +2363,15 @@ export class AgentRuntime {
       });
       let contextPressure = requestInspection.pressure;
       let contextUtilization = requestInspection.utilization;
+      const setMemoryGate = async (suppressed: boolean) => {
+        if (Boolean(state.pressureRecovery?.optionalMemorySuppressed) === suppressed) return;
+        const payload = { suppressed };
+        await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+          type: "context.memory.gated", phase: "completed", payload });
+        foldMemoryGate(state, payload);
+      };
+      if (contextUtilization >= memoryLimits.contextReferenceTriggerRatio) await setMemoryGate(true);
+      else if (contextUtilization <= memoryLimits.contextMemoryResumeRatio) await setMemoryGate(false);
 
       // Optional recall must not force eviction of the live working chain.
       // First remove optional memory as whole records, then reassess pressure.
@@ -2860,7 +2871,7 @@ export class AgentRuntime {
         });
 
         const journalRecall = tool && toolName === "manage_memory"
-          ? recallCompactionEvidence(state, call.function.arguments) : undefined;
+          ? recallCompactionEvidence(state, call.function.arguments, this.dependencies.limits) : undefined;
         if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
           result = { ok: false, summary: "compact_context cannot be batched with workspace tools; no call in this batch was executed.",
             error: "context_compaction_must_be_exclusive",
@@ -2970,10 +2981,13 @@ export class AgentRuntime {
               limits: this.dependencies.limits,
               resultTokenBudget: this.dependencies.contextManager.tokenCapacity
                 ? Math.max(0, this.dependencies.contextManager.tokenCapacity.inputCapacity -
-                  this.dependencies.contextManager.estimateRequestTokens(projectionHistory, ordinaryToolDefinitions) - 512)
+                  this.dependencies.contextManager.estimateRequestTokens(projectionHistory, ordinaryToolDefinitions) -
+                  (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens)
                 : undefined,
-              resultCharBudget: Math.max(0, this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
-                JSON.stringify(projectionHistory).length - estimateToolDefinitionsChars(ordinaryToolDefinitions) - 1024),
+              resultCharBudget: this.dependencies.contextManager.tokenCapacity ? undefined
+                : Math.max(0, this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
+                  JSON.stringify(projectionHistory).length - estimateToolDefinitionsChars(ordinaryToolDefinitions) -
+                  (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens * 2),
               orchestrationEnabled: options.orchestrationEnabled,
               isOrchestrationEnabled: options.isOrchestrationEnabled,
               workspaceRoot: state.workspaceRoot,
@@ -3005,7 +3019,7 @@ export class AgentRuntime {
               searchProjectMemory: this.dependencies.searchMemories,
               recallContext: async (input: { evidenceId: string; offset: number; limit: number }) => recallThreadContext(state, input,
                 this.dependencies.readToolEvidence ? (id, offset, limit) =>
-                  this.dependencies.readToolEvidence!(state, id, offset, limit) : undefined),
+                  this.dependencies.readToolEvidence!(state, id, offset, limit) : undefined, this.dependencies.limits),
               ...(this.dependencies.getLayeredContext ? { searchHistory: async (query: string, limit: number) => {
                 const history = await this.dependencies.getLayeredContext!({ state, query, queries: [query],
                   beforeMessageIndex: state.messages.length });

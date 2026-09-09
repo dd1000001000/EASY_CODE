@@ -6,7 +6,7 @@
     "action": "search retrieves existing memories; remember proposes one deduplicated atomic fact; revise supersedes; forget expires; recall reads captured historical tool evidence in the current thread without rerunning the tool.",
     "query": "For search, use a concise keyword query or a memory ID.",
     "scope": "For search, long_term (default) returns durable facts; history returns short current-thread evidence previews. Use recall on a preview ID for the captured text.",
-    "limit": "For search, 1-20 memory results. For recall, 1-16000 characters per evidence page (default 8000).",
+    "limit": "For search, 1-20 memory results. For recall, a character page within the configured recall limit.",
     "evidenceId": "For recall, use an evidence_ or context_ ID from a result/history preview, an ev_ ID from the compaction catalogue, journal_message_<index> for historical messages, or journal_summary_<hash> from a context-recovery notice. All reads are restricted to the current thread. These references locate historical evidence or summaries, not proofs of claims.",
     "offset": "For recall, zero-based character offset; use nextOffset from the preceding page to continue.",
     "sourceRefs": "For remember/revise, cite 1-8 captured evidence IDs from read_file for versioned project facts, or user for an explicit durable user preference/convention. Runtime requires resolvable sources before committing; source presence is not proof of arbitrary claims. Other observations belong in task history.",

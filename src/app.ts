@@ -97,6 +97,7 @@ import {
   requireCatalogModel,
   requireVisionModel,
   resolveCatalogModel,
+  effectiveContextWindow,
   modelSupportsVision,
   validateProviderImageAttachments,
 } from "./models/catalog.js";
@@ -545,6 +546,7 @@ export class EasyCodeApp {
     const vectorIndex = new MemoryVectorIndex(storage, embeddingModel, { backgroundVectors: true });
     let reportedVectorFailure = false;
     this.memoryManager = new MemoryManager(storage, {
+      limits: config.limits,
       vectorIndex,
       onVectorError: (error) => {
         if (reportedVectorFailure) return;
@@ -569,7 +571,7 @@ export class EasyCodeApp {
           "EASY CODE is continuing with SQLite FTS5 retrieval.",
         );
       },
-      { backgroundVectors: true },
+      { backgroundVectors: true, limits: config.limits },
     );
     this.threadStore = new ThreadStore(storage);
     this.executionEnvironments = new ExecutionEnvironmentManager({
@@ -582,7 +584,7 @@ export class EasyCodeApp {
     });
     this.imageStore = new ImageStore(config.dataDir);
     this.pendingResumeRecovery = resumeRecovery;
-    this.contextManager.configureTokenBudget(config.limits.maxContextTokens || undefined, config.limits);
+    this.contextManager.configureTokenBudget(effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens), config.limits);
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
       defaultIsolation: config.subagentIsolation,
@@ -1176,6 +1178,11 @@ export class EasyCodeApp {
       }
       case "context":
         this.terminal.write(`${json({
+          configuredWindowTokens: this.config.limits.maxContextTokens,
+          effectiveTokenBudget: this.contextManager.tokenCapacity ?? null,
+          thresholds: { reference: this.config.limits.contextReferenceTriggerRatio,
+            summary: this.config.limits.contextCompactionTriggerRatio, force: this.config.limits.contextForceRatio,
+            target: this.config.limits.contextCompactionTargetRatio },
           ...this.contextManager.inspect(this.state, this.activeContextCharLimit()),
           lastProviderRequest:
             this.lastProviderContext?.threadId === this.state.threadId
@@ -1702,6 +1709,7 @@ export class EasyCodeApp {
     };
     const tools = wrapAgentToolsWithWorkspaceMutationLock(
       createDefaultTools(this.workspace, this.memoryManager, {
+        limits: this.config.limits,
         subagentControl: this.subagentCoordinator,
         commandRuntime,
         downloadBroker: this.trustedOuterSandbox ? undefined : downloadBroker,
@@ -2206,6 +2214,7 @@ export class EasyCodeApp {
       );
       const childCommandRuntime = this.createCommandRuntime(childWorkspace);
       const childTools = createDefaultTools(childWorkspace, undefined, {
+        limits: this.config.limits,
         commandRuntime: childCommandRuntime,
       }).filter((tool) =>
         tool.name === "read_file" ||
@@ -2219,7 +2228,7 @@ export class EasyCodeApp {
         tool.name === "cancel_command" ||
         tool.name === "compact_context" || tool.name === "search_context" || tool.name === "recall_context"
       );
-      childTools.push(new SubmitTaskResultTool(request.task));
+      childTools.push(new SubmitTaskResultTool(request.task, this.config.limits));
       const mutationLock = activeEnvironment.descriptor.kind === "shared"
         ? this.workspaceMutationLock
         : new WorkspaceMutationLock();
@@ -3949,6 +3958,7 @@ export class EasyCodeApp {
 
   private printTools(): void {
     const tools = createDefaultTools(this.workspace, this.memoryManager, {
+      limits: this.config.limits,
       subagentControl: this.subagentCoordinator,
     }).map((tool) => {
       const availableForMode = tool.name === "propose_plan"
@@ -3996,6 +4006,8 @@ export class EasyCodeApp {
         networkProfile: this.trustedOuterSandbox === "harbor" ? "benchmark" : "development",
         quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspaceIdFromRoot(workspace.root)}.json`),
         lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspaceIdFromRoot(workspace.root)),
+        createOutputArchive: (commandId, context) => this.memoryManager.evidenceStore.createCommandArchive(
+          workspaceIdFromRoot(this.workspace.root), context.threadId, commandId),
         recordLifecycle: (context, commandId, type, payload) => {
           this.threadStore.appendEvent(context.threadId, { type, turnId: context.turnId,
             phase: "completed", payload: { commandId, detail: payload } });

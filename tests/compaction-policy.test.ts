@@ -138,7 +138,7 @@ describe("context compaction acceptance policy", () => {
   it("accepts only a material reduction and reports the safe post-compaction waterline", () => {
     const state = makeState(Array.from({ length: 20 }, (_, index) => ({
       role: "assistant" as const,
-      content: `history-${index}-${"x".repeat(1_000)}`,
+      content: `history-${index}-${"x".repeat(3_000)}`,
     })));
     const candidateMessages: SessionState["messages"] = [
       ...state.messages,

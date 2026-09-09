@@ -1,6 +1,7 @@
 import type { SessionState, ToolExecutionResult } from "../core/types.js";
 import { recallCompactionEvidence } from "./semantic-compaction.js";
 import { sha256 } from "../utils/hash.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 /** Only a parent that owns this durable session can expand explicitly published
  * participant evidence. No arbitrary model-selected peer thread is accepted. */
@@ -15,14 +16,17 @@ export function sharedReviewEvidenceOwner(state: Readonly<SessionState>, id: str
 /** The caller supplies the actor's own state. No model-selected thread is accepted. */
 export function recallThreadContext(state: Readonly<SessionState>,
   input: { evidenceId: string; offset: number; limit: number },
-  external?: (id: string, offset: number, limit: number) => object): ToolExecutionResult {
+  external?: (id: string, offset: number, limit: number) => object,
+  limits = DEFAULT_RUNTIME_LIMITS): ToolExecutionResult {
   let id = input.evidenceId;
-  if (!Number.isSafeInteger(input.offset) || input.offset < 0 || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 16000)
+  if (!Number.isSafeInteger(input.offset) || input.offset < 0 || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > limits.evidenceRecallMaxChars)
     throw new Error("Invalid evidence page");
   if (id.startsWith("review:")) {
-    const match = /^review:([^:]+):(author|reviewer|briefing)$/u.exec(id);
+    const match = /^review:([^:]+):(author|reviewer|briefing|evidence)$/u.exec(id);
     const session = match && state.reviewSessions?.find(session => session.id === match[1]);
-    const summary = session && (match![2] === "briefing" ? session.briefing : session.summaries[match![2] as "author" | "reviewer"]);
+    const summary = session && (match![2] === "evidence" ? { full: JSON.stringify({ statements: session.statements,
+      experiments: session.experiments, requirements: session.requirements, blockingChecks: session.blockingChecks }) }
+      : match![2] === "briefing" ? session.briefing : session.summaries[match![2] as "author" | "reviewer"]);
     if (!summary) throw new Error("Review summary not found in this thread");
     if (input.offset > summary.full.length) throw new Error("Evidence offset exceeds captured content");
     return { ok: true, summary: "Independent historical review opinion, not a verified fact.", data: {
@@ -40,7 +44,7 @@ export function recallThreadContext(state: Readonly<SessionState>,
     if (!matches.length) throw new Error("Artifact not found in this thread");
     id = `journal_message_${matches[0]}`;
   }
-  const result = recallCompactionEvidence(state, JSON.stringify({ ...input, evidenceId: id, action: "recall" }));
+  const result = recallCompactionEvidence(state, JSON.stringify({ ...input, evidenceId: id, action: "recall" }), limits);
   if (result) return result;
   if (!external) throw new Error("Captured evidence reader unavailable");
   return { ok: true, summary: "Historical captured evidence, not current file or test state.",

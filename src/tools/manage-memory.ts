@@ -59,9 +59,9 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
   };
 }
 
-export const manageMemoryInputSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("recall"), evidenceId: z.string().regex(/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$/u),
-    offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(16000).optional() }).strict(),
+export function createManageMemoryInputSchema(limits = DEFAULT_RUNTIME_LIMITS) { return z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recall"), evidenceId: z.string().regex(/^(?:evidence_[a-f0-9]{64}|command_output_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$/u),
+    offset: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(limits.evidenceRecallMaxChars).optional() }).strict(),
   z
     .object({
       action: z.literal("search"),
@@ -97,7 +97,8 @@ export const manageMemoryInputSchema = z.discriminatedUnion("action", [
       reason: memoryReasonSchema,
     })
     .strict(),
-]);
+]); }
+export const manageMemoryInputSchema = createManageMemoryInputSchema();
 
 export type ManageMemoryInput = z.infer<typeof manageMemoryInputSchema>;
 
@@ -108,8 +109,8 @@ export type ManageMemoryInput = z.infer<typeof manageMemoryInputSchema>;
 export class ManageMemoryTool implements AgentTool {
   readonly name = "manage_memory" as const;
   readonly mutating = true;
-  readonly inputSchema = manageMemoryInputSchema;
-  readonly definition: ToolDefinition = {
+  get inputSchema() { return createManageMemoryInputSchema(this.manager.limits); }
+  get definition(): ToolDefinition { return {
     type: "function",
     function: {
       name: this.name,
@@ -127,8 +128,8 @@ export class ManageMemoryTool implements AgentTool {
             minLength: 1,
             maxLength: MAX_MEMORY_SEARCH_CHARS,
           },
-          limit: { type: "integer", minimum: 1, maximum: 16000 },
-          evidenceId: { type: "string", pattern: "^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$" },
+          limit: { type: "integer", minimum: 1, maximum: this.manager.limits.evidenceRecallMaxChars },
+          evidenceId: { type: "string", pattern: "^(?:evidence_[a-f0-9]{64}|command_output_[a-f0-9]{64}|context_[a-f0-9]{48}|ev_[a-f0-9]{24}|journal_message_[0-9]+|journal_summary_[a-f0-9]{64})$" },
           scope: { type: "string", enum: ["long_term", "history"] },
           sourceRefs: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } },
           offset: { type: "integer", minimum: 0 },
@@ -140,7 +141,7 @@ export class ManageMemoryTool implements AgentTool {
           content: {
             type: "string",
             minLength: MIN_MEMORY_CONTENT_CHARS,
-            maxLength: MAX_MEMORY_CONTENT_CHARS,
+            maxLength: this.manager.limits.memoryContentMaxChars,
           },
           category: {
             type: "string",
@@ -155,7 +156,7 @@ export class ManageMemoryTool implements AgentTool {
         required: ["action"],
       }),
     },
-  };
+  }; }
 
   constructor(
     private readonly manager: MemoryManager,
@@ -180,12 +181,12 @@ export class ManageMemoryTool implements AgentTool {
         const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
         // A prefix may omit qualifications: archive it as a historical preview,
         // not a durable fact or an applied revision. Do not ask the model to retry for length.
-        if (parsed.content.length > MAX_MEMORY_CONTENT_CHARS || estimatedTokens(parsed.content) > limits.maxDurableMemoryTokens) {
+        if (parsed.content.length > limits.memoryContentMaxChars || estimatedTokens(parsed.content) > limits.maxDurableMemoryTokens) {
           this.assertSafeWrite(parsed.content, parsed.reason);
           const sourceRef = this.manager.evidenceStore.capture(workspaceId, context.threadId,
             `memory-preview:${context.turnId}:${sha256(parsed.content)}`, "manage_memory",
             { ok: false, summary: "Uncommitted memory proposal; not a verified fact", data: { content: parsed.content } });
-          const preview = projectText(projectText(parsed.content, MAX_MEMORY_CONTENT_CHARS).text,
+          const preview = projectText(projectText(parsed.content, limits.memoryContentMaxChars).text,
             limits.maxDurableMemoryTokens, estimatedTokens);
           return toolSuccess("Length-only overflow archived as a lossy preview; no long-term fact or revision was committed. No retry is required.",
             { staged: false, committed: false, historical: true, truncated: true, sourceRef,
