@@ -9,7 +9,6 @@ import type {
 } from "../src/core/types.js";
 import {
   AutoRouteRequestError,
-  AutoRouteSelectionError,
   MAX_AUTO_DIRECT_RESPONSE_CHARS,
   MAX_AUTO_ROUTE_CONTEXT_CHARS,
   buildAutoRouteContext,
@@ -63,6 +62,17 @@ function selectionProvider(
       };
     },
   };
+}
+
+async function expectCodeFallback(pending: ReturnType<typeof determineAutoRoute>) {
+  const result = await pending;
+  assert.equal(result.kind, "route");
+  if (result.kind !== "route") assert.fail("Invalid output must never become a final answer");
+  assert.equal(result.mode, "code");
+  assert.match(result.reason, /unchanged command permissions/u);
+  assert.equal(result.attempts.length, 3);
+  assert.ok(result.attempts.every(a => a.outcome === "invalid"));
+  return result;
 }
 
 describe("tool-only Auto Router", () => {
@@ -268,9 +278,9 @@ describe("tool-only Auto Router", () => {
     assert.equal(requests, 2);
   });
 
-  it("throws after two missing or invalid tool selections without guessing from text", async () => {
+  it("downgrades after three invalid selections without treating text as a final answer", async () => {
     let requests = 0;
-    await assert.rejects(
+    await expectCodeFallback(
       determineAutoRoute(
         {
           name: "deepseek",
@@ -298,18 +308,8 @@ describe("tool-only Auto Router", () => {
         },
         "Fix and implement the code",
       ),
-      (error: unknown) => {
-        assert.ok(error instanceof AutoRouteSelectionError);
-        assert.equal(error.code, "auto_route_selection_failed");
-        assert.match(error.message, /select_mode or respond_directly tool call/iu);
-        assert.deepEqual(error.attempts.map(({ attempt, outcome }) => ({ attempt, outcome })), [
-          { attempt: 1, outcome: "invalid" },
-          { attempt: 2, outcome: "invalid" },
-        ]);
-        return true;
-      },
     );
-    assert.equal(requests, 2);
+    assert.equal(requests, 3);
   });
 
   it("rejects malformed, empty and extra-property direct responses", async () => {
@@ -330,7 +330,7 @@ describe("tool-only Auto Router", () => {
 
     for (const invalidCall of invalidCalls) {
       let requests = 0;
-      await assert.rejects(
+      await expectCodeFallback(
         determineAutoRoute(
           {
             name: "deepseek",
@@ -348,15 +348,14 @@ describe("tool-only Auto Router", () => {
           },
           "Answer without tools",
         ),
-        AutoRouteSelectionError,
       );
-      assert.equal(requests, 2);
+      assert.equal(requests, 3);
     }
   });
 
   it("never treats an ordinary-text answer as a direct response", async () => {
     let requests = 0;
-    await assert.rejects(
+    await expectCodeFallback(
       determineAutoRoute(
         {
           name: "deepseek",
@@ -380,16 +379,8 @@ describe("tool-only Auto Router", () => {
         },
         "What is two plus two?",
       ),
-      (error: unknown) => {
-        assert.ok(error instanceof AutoRouteSelectionError);
-        assert.deepEqual(error.attempts, [
-          { attempt: 1, outcome: "invalid", usage: { totalTokens: 10 } },
-          { attempt: 2, outcome: "invalid", usage: { totalTokens: 20 } },
-        ]);
-        return true;
-      },
     );
-    assert.equal(requests, 2);
+    assert.equal(requests, 3);
   });
 
   it("rejects wrong names, malformed arguments, extra properties, and invalid reasons", async () => {
@@ -417,7 +408,7 @@ describe("tool-only Auto Router", () => {
 
     for (const invalidCall of invalidCalls) {
       let requests = 0;
-      await assert.rejects(
+      await expectCodeFallback(
         determineAutoRoute(
           {
             name: "deepseek",
@@ -435,9 +426,8 @@ describe("tool-only Auto Router", () => {
           },
           "Implement it",
         ),
-        AutoRouteSelectionError,
       );
-      assert.equal(requests, 2);
+      assert.equal(requests, 3);
     }
   });
 

@@ -133,6 +133,8 @@ describe("workspace file tools", () => {
           "manage_tasks",
           "propose_plan",
           "compact_context",
+          "recall_context",
+          "search_context",
         ],
       );
     });

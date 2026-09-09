@@ -31,6 +31,8 @@ export type ToolName =
   | "submit_task_result"
   | "compact_context"
   | "manage_memory"
+  | "search_context"
+  | "recall_context"
   | "fetch_artifact";
 // Artifact transfer has its own capability; normal command networking stays off.
 
@@ -409,6 +411,8 @@ export interface ToolContext {
   searchHistory?: (query: string, limit: number) => Promise<ReadonlyArray<{
     id: string; title: string; preview: string; historical: true;
   }>>;
+  recallContext?: (input: { evidenceId: string; offset: number; limit: number }) => Promise<ToolExecutionResult>;
+  searchProjectMemory?: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
     absolutePath: string;
@@ -442,6 +446,9 @@ export interface FileChangeRecord {
 }
 
 export interface CommandAuditEntry {
+  /** Captured Runtime verdict, independent of the outer process exit status. */
+  validation?: import("../command/verification.js").CommandValidation;
+  verificationKind?: import("../command/types.js").VerificationKind;
   id: string;
   program: string;
   args: string[];
@@ -722,12 +729,17 @@ export type TurnSteeringBoundary =
   | "before_final";
 
 export interface SessionState {
+  /** Review events are authoritative; never reconstructed from a prose summary. */
+  reviewSessions?: import("../review/session.js").ReviewSession[];
+  delivery?: import("../review/delivery.js").DeliveryObligation;
   orchestrationEnabled?: boolean;
   /** Event-authoritative phase boundaries and compaction transaction budget. */
   compactionControl?: import("../context/compaction-transaction.js").CompactionControl;
   /** Journal-authoritative lossy projection; raw history is never deleted. */
   pressureRecovery?: import("../context/pressure-projection.js").PressureRecoveryState;
   contextOperations?: import("../context/pending-operations.js").PendingOperations;
+  /** Derived from user/steering/assignment events, never from role names or summary text. */
+  userMessageIndices?: number[];
   threadId: string;
   activeTurnId?: string;
   mode: AgentMode;

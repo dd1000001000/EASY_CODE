@@ -21,7 +21,7 @@ import type { SandboxWorkerControl } from "../sandbox/types.js";
 import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
 import { commandRequestMetadata, normalizeCommandRequest } from "./normalize-request.js";
-import { CommandVerificationCollector } from "./verification.js";
+import { CommandVerificationCollector, packageScriptRunner, validationCheckKey } from "./verification.js";
 import { captureValidationBaseline, compareValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
 import { inspectNetworkOperation } from "./network-policy.js";
@@ -58,7 +58,7 @@ interface ProcessResult {
 
 export interface CommandRuntimeOptions {
   /** Trusted host selection, never controlled by model arguments. */
-  networkProfile?: "development" | "benchmark";
+  networkProfile?: "development" | "benchmark" | "review_offline";
   sandboxStartupTimeoutMs?: number;
   quarantinePath?: string;
   lifecycleDirectory?: string;
@@ -357,10 +357,16 @@ export class CommandRuntime {
     const baseline = context.validationBaseline;
     const before = baseline && normalized.verificationKind ? await captureValidationBaseline(context.workspaceRoot, context.limits) : undefined;
     const requestMetadata = commandRequestMetadata(normalized);
+    // Publish one terminal audit only after the validation-standard comparison.
+    // Otherwise the journal permanently loses information added below.
+    const audits: import("../core/types.js").CommandAuditEntry[] = [];
     if (context.progressExperiment && matchesReviewExperiment(context.progressExperiment.report, normalized, context.workspaceRoot)) {
       requestMetadata.experimentIncidentId = context.progressExperiment.incidentId;
     }
-    const output = await this.executeNormalizedCommand(normalized, context, {
+    let output: RunCommandOutput | undefined;
+    let completeAudit = false;
+    try {
+    output = await this.executeNormalizedCommand(normalized, { ...context, recordCommand: entry => audits.push(entry) }, {
       ...hooks,
       ...(hooks.onStarted ? { onStarted: (snapshot: () => RunningCommandOutput) =>
         hooks.onStarted!(() => ({ ...snapshot(), requestMetadata })) } : {}),
@@ -369,7 +375,16 @@ export class CommandRuntime {
       output.validation.standard = compareValidationBaseline(baseline, before, await captureValidationBaseline(context.workspaceRoot, context.limits));
       this.options.recordLifecycle?.(context, output.commandId, "command.validation.standard", output.validation.standard);
     }
+    completeAudit = true;
     return { ...output, requestMetadata };
+    } finally {
+    // A post-execution comparison failure cannot erase that execution's audit.
+    for (const entry of audits) context.recordCommand?.({ ...entry,
+      ...(output?.validation ? { validation: { ...structuredClone(output.validation),
+        ...(!completeAudit ? { status: "unknown" as const, confidence: "low" as const,
+          reason: "Validation comparison did not complete; execution is recorded, not verified." } : {}) } } : {}),
+      ...(normalized.verificationKind ? { verificationKind: normalized.verificationKind } : {}) });
+    }
   }
 
   private async executeNormalizedCommand(
@@ -383,14 +398,15 @@ export class CommandRuntime {
     const unrestricted = context.commandExecutionMode === "unrestricted" &&
       (context.isUnrestrictedHostAccessActive?.() ?? true);
     const benchmark = this.options.networkProfile === "benchmark";
-    const hostAccess = !benchmark && (unrestricted || input.executionScope === "host");
+    const containerExecution = benchmark || this.options.networkProfile === "review_offline";
+    const hostAccess = !containerExecution && (unrestricted || input.executionScope === "host");
     const executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
     this.assertEnvironmentSafe(executionBackend);
     let resolved: ResolvedCommand;
-    const networkEnabled = !benchmark;
+    const networkEnabled = !benchmark && this.options.networkProfile !== "review_offline";
     const resolverOptions = { unrestrictedHostAccess: hostAccess || benchmark, unrestrictedCommands: true, networkEnabled };
     try {
-      resolved = benchmark ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
+      resolved = containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     } catch (error) {
       return this.resolutionFailure(
         commandId,
@@ -403,9 +419,11 @@ export class CommandRuntime {
     }
     const networkOperation = inspectNetworkOperation(resolved);
     let policyDecision = this.policy.classify(input, resolved, "code", networkEnabled);
-    const scope = benchmark ? "container" : hostAccess ? "host" : "workspace";
+    const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
     const commandNetwork = hostAccess || Boolean(networkOperation) && networkEnabled;
-    const prefix = benchmark ? "benchmark:no-grant" : commandGrantPrefix(resolved, scope, commandNetwork);
+    // PATH and executable bytes belong to the offline worker, not controller.
+    // Without host-attested bytes, use one-shot approval, never a fake digest.
+    const prefix = containerExecution ? `once:v1:${sha256(commandId)}` : commandGrantPrefix(resolved, scope, commandNetwork);
     const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
 
     // A single approval authorizes this invocation, not the entire Thread.
@@ -507,7 +525,7 @@ export class CommandRuntime {
 
     // Re-resolve after an approval wait. Changed executable/npm material needs a
     // fresh invocation and cannot silently reuse the old approval.
-    const fresh = benchmark ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
+    const fresh = containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
       throw new Error("Command material changed while awaiting approval; request again");
     }
@@ -572,7 +590,8 @@ export class CommandRuntime {
     const stdout = new OutputCollector(maxOutputChars);
     const stderr = new OutputCollector(maxOutputChars);
     const verification = new CommandVerificationCollector({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute,
-      environmentDigest: sha256(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))) });
+      environmentDigest: sha256(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))) },
+      await packageScriptRunner({ program: resolved.executablePath, args: resolved.args }, resolved.cwdAbsolute));
     const timeout = resolveCommandTimeoutBudget(
       input.timeoutMs,
       context.commandTimeoutMs,
@@ -648,6 +667,7 @@ export class CommandRuntime {
     let readyObserved = !prepared.metadata.enforced;
     let dispatched = !prepared.metadata.enforced;
     let targetExitCode: number | undefined;
+    let targetOutcome: Extract<SandboxWorkerControl, { type: "execution_exited" }>["outcome"];
     let cleanupConfirmed = !prepared.metadata.enforced;
     let cleanupError: string | undefined;
     let protocolError: string | undefined;
@@ -695,7 +715,7 @@ export class CommandRuntime {
       this.options.recordLifecycle?.(context, commandId, `command.${control.type}`, control);
       if (control.type === "ready") { readyObserved = true; armTimeout("command", timeoutMs); }
       if (control.type === "execution_dispatched") { dispatched = true; announceStarted(); }
-      if (control.type === "execution_exited") targetExitCode = control.exitCode;
+      if (control.type === "execution_exited") { targetExitCode = control.exitCode; targetOutcome = control.outcome; }
       if (control.type === "cleanup_complete") cleanupConfirmed = true;
       if (control.type === "cleanup_error") cleanupError = control.message;
       if (control.type === "cleanup_requested") {
@@ -834,18 +854,21 @@ export class CommandRuntime {
     }
 
     if (targetExitCode !== undefined) result.exitCode = targetExitCode;
-    const status: RunCommandOutput["status"] = canceled
+    const status: RunCommandOutput["status"] = canceled || targetOutcome === "canceled"
       ? "canceled"
       : sandboxUnavailableMessage
           ? "sandbox_unavailable"
-          : timeoutPhase === "command" || result.timedOut
+          : timeoutPhase === "command" || result.timedOut || targetOutcome === "timed_out"
             ? "timed_out"
-          : targetSpawnError
+          : targetSpawnError || targetOutcome === "spawn_failed" || targetOutcome === "unknown"
             ? "spawn_failed"
           : (targetExitCode ?? result.exitCode) === undefined
               ? "spawn_failed"
               : "exited";
-    const failure: RunCommandOutput["failure"] = status === "exited" && result.exitCode !== 0
+    const failure: RunCommandOutput["failure"] = targetOutcome === "output_limit" ? {
+      kind: "runtime", code: "command_output_limit", message: "Command exceeded the 32 MiB bridge output limit. Execution is incomplete; narrow output before a new call. No automatic replay.",
+      processStarted: true, retryable: false,
+    } : status === "exited" && result.exitCode !== 0
       ? {
           kind: "exit",
           code: "nonzero_exit",
@@ -890,12 +913,14 @@ export class CommandRuntime {
                 }
               : undefined;
     const output: RunCommandOutput = {
-      validation: { ...verification.finish(status, typeof result.exitCode === "number" ? result.exitCode : null, input.verificationKind), targetKey: verification.targetKey },
+      validation: { ...verification.finish(targetOutcome === "output_limit" ? "spawn_failed" : status, typeof result.exitCode === "number" ? result.exitCode : null, input.verificationKind), targetKey: verification.targetKey,
+        checkKey: validationCheckKey({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdRelative }, this.workspace.root) },
       commandId,
       status,
       exitCode: targetExitCode ?? (typeof result.exitCode === "number" ? result.exitCode : null),
       lifecycle: {
-        execution: targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
+        ...(targetOutcome ? { outcome: targetOutcome } : {}),
+        execution: targetOutcome === "unknown" || targetOutcome === "spawn_failed" ? "unknown" : targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
         cleanup: cleanupError ? "failed" : !prepared.metadata.enforced ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
         ...(cleanupError ? { cleanupError } : {}),
       },

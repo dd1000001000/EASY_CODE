@@ -286,7 +286,7 @@ export function foldProgressReviewEvent(
     if (
       incident.phase !== "reviewing" ||
       incident.reviewBinding?.reviewId !== reviewId ||
-      (ordinal !== 1 && ordinal !== 2) ||
+      (ordinal < 1 || ordinal > 3) ||
       incident.reviewStartedRequestOrdinals.includes(ordinal) ||
       ordinal !== incident.reviewStartedRequestOrdinals.length + 1
     ) {

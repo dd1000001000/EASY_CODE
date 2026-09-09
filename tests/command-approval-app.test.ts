@@ -3,6 +3,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { createServer } from "node:http";
+import { createDefaultEasyCodeConfig } from "../src/config/index.js";
+import { TaskBudget } from "../src/runtime/task-budget.js";
 
 import { EasyCodeApp } from "../src/app.js";
 import { Terminal } from "../src/cli/terminal.js";
@@ -100,6 +103,38 @@ function approvalHarness(threadId: string): ApprovalHarness {
     },
   };
 }
+
+describe("approval retry journal integration", () => {
+  it("records failed API attempts without aborting the configured five retries", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-approval-retry-"));
+    const storage = createStorage(directory); const threads = new ThreadStore(storage);
+    let calls = 0;
+    const server = createServer((req, res) => {
+      req.resume(); calls++;
+      res.setHeader("Content-Type", "application/json");
+      if (calls <= 5) { res.statusCode = 503; res.setHeader("Retry-After", "0"); res.end('{"error":{"message":"temporary mock failure"}}'); }
+      else res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: '{"decision":"allow_once","reason":"local read"}' }, finish_reason: "stop" }], usage: { total_tokens: 2 } }));
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address(); assert.ok(address && typeof address !== "string");
+      const config = createDefaultEasyCodeConfig(directory);
+      config.deepseek.apiKey = "mock-key"; config.deepseek.baseUrl = `http://127.0.0.1:${address.port}/v1`;
+      const state = threads.create({ threadId: "approval-retry", workspaceRoot: directory, mode: "code", provider: "deepseek", model: "mock" });
+      state.activeTurnId = "turn_approval_retry";
+      const budget = new TaskBudget(20, 0);
+      const app = Object.create(EasyCodeApp.prototype);
+      Object.defineProperties(app, { state: { value: state }, config: { value: config }, threadStore: { value: threads },
+        effectiveConfig: { value: () => config }, sharedTaskBudget: { value: () => budget } });
+      const result = await app.reviewApproval(approvalRequest());
+      assert.equal(result.decision, "allow_once", result.reason); assert.equal(calls, 6);
+      assert.equal(budget.snapshot().requests, 6);
+      const events = threads.journal(state.threadId).read();
+      assert.equal(events.filter(e => e.type === "model.usage" && e.phase === "completed").length, 6);
+      assert.equal(events.filter(e => e.type === "model.api_attempt" && e.phase === "failed").length, 5);
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); storage.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+});
 
 describe("application command approval decisions", () => {
   it("routes all new commands through the selected approval authority regardless of static risk", async () => {

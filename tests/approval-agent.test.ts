@@ -3,6 +3,8 @@ import path from "node:path";
 import { reviewCommandApproval, ApprovalQueue } from "../src/command/approval-agent.js";
 import { commandGrantPrefix, commandGrantMatches, decodeCommandGrant } from "../src/command/command-grant.js";
 import { TaskBudget } from "../src/runtime/task-budget.js";
+import { ProviderError } from "../src/providers/errors.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import type { ApprovalRequest, ModelProvider, ModelRequest } from "../src/core/types.js";
 import type { ResolvedCommand } from "../src/command/types.js";
 import { describe, it } from "./harness.js";
@@ -16,6 +18,27 @@ const request = (): ApprovalRequest => ({ id: "approval", title: "Run git status
 const provider = (complete: ModelProvider["complete"]): ModelProvider => ({ name: "deepseek", model: "test", complete });
 
 describe("independent approval agent", () => {
+  it("uses five API retries, two content corrections, and shared budget accounting", async () => {
+    let calls = 0;
+    const budget = new TaskBudget(20, 0);
+    const result = await reviewCommandApproval(request(), "Inspect", {
+      provider: provider(async () => {
+        if (++calls <= 5) throw new ProviderError("busy", { provider: "glm", code: "http_error", statusCode: 503, retryable: true, retryAfterMs: 0 });
+        return { message: { role: "assistant", content: calls <= 7 ? "bad json" : '{"decision":"allow_once","reason":"ordinary read"}' } };
+      }), budget, maxInputChars: 24000, maxOutputTokens: 512, timeoutMs: 2000,
+    });
+    assert.equal(calls, 8); assert.equal(budget.snapshot().requests, 8); assert.equal(result.decision, "allow_once");
+  });
+  it("downgrades invalid output after three attempts, or the configured smaller allowance", async () => {
+    for (const count of [0, 1, 2]) {
+      let calls = 0;
+      const result = await reviewCommandApproval(request(), "Inspect", {
+        provider: provider(async () => { calls++; return { message: { role: "assistant", content: "bad" } }; }),
+        limits: { ...defaultRuntimeLimits(), modelContentRetries: count }, budget: new TaskBudget(10, 0), maxInputChars: 24000, maxOutputTokens: 512, timeoutMs: 1000,
+      });
+      assert.equal(calls, count + 1); assert.equal(result.decision, "reject"); assert.equal(result.unavailable, true);
+    }
+  });
   it("clips oversized reasons without retry and ignores returned thinking", async () => {
     let calls = 0;
     let original = "";

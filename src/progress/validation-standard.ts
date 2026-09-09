@@ -29,7 +29,8 @@ function relevant(name: string): boolean {
 
 /** Bounded read-only inventory, captured before agent mutations. A partial scan
  * can never certify an unchanged testing standard. It is not a sandbox proof. */
-export async function captureValidationBaseline(root: string, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): Promise<ValidationBaseline> {
+export async function captureValidationBaseline(root: string, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+  archive?: (hash: string, bytes: Buffer) => Promise<void>): Promise<ValidationBaseline> {
   const files: ValidationBaseline["files"] = [];
   let guard: WorkspacePathGuard;
   try { guard = new WorkspacePathGuard(root); }
@@ -68,7 +69,9 @@ export async function captureValidationBaseline(root: string, limits: Readonly<R
           }
           const after = await handle.stat();
           if (read !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) { complete = false; continue; }
-          files.push({ path: relative, hash: sha256(buffer) });
+          const hash = sha256(buffer);
+          await archive?.(hash, buffer);
+          files.push({ path: relative, hash });
         } finally { await handle.close(); }
       } catch { complete = false; }
     }

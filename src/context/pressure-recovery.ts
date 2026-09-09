@@ -11,7 +11,7 @@ import { assessCapacity, contextHistoryHash, recoveryScope } from "./capacity.js
 import { estimatedTokens } from "./token-budget.js";
 import { pressureProjectedMessages, toolOutputReference } from "./pressure-projection.js";
 
-const schema = z.object({ version: z.literal(1), start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
+const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]), start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
   historyHash: z.string(), factsHash: z.string(), previousSummary: z.string(), toolReferences: z.array(z.number().int().nonnegative()),
   summary: z.string(), reason: z.string().max(2000),
   mode: z.enum(["tool_references", "history_evicted", "minimal_rebase"]).optional(),
@@ -19,7 +19,7 @@ const schema = z.object({ version: z.literal(1), start: z.number().int().nonnega
 }).strict();
 type Eviction = z.infer<typeof schema>;
 
-function evictionSummary(end: number, previousSummary: string, mode?: Eviction["mode"], state?: Readonly<SessionState>): string {
+function evictionSummary(end: number, previousSummary: string, mode?: Eviction["mode"], state?: Readonly<SessionState>, version = 1): string {
   if (mode === "tool_references") return previousSummary;
   const latest = mode === "minimal_rebase" ? state?.commands.at(-1) : undefined;
   const lastExchangeStart = state?.messages.map((message, index) => message.role === "assistant" ? index : -1)
@@ -31,7 +31,9 @@ function evictionSummary(end: number, previousSummary: string, mode?: Eviction["
     ...(mode === "minimal_rebase" ? { nextStep: "Continue the SAME task from pinned Runtime state. Recall the last exchange before repeating work. Prior thinking was archived whole, not rewritten.",
       lastExchangeRef: `journal_message_${lastExchangeStart}`,
       ...(latest ? { lastObservedCommand: { id: latest.id, status: latest.status, exitCode: latest.exitCode } } : {}) } : {}),
-    recovery: "Use manage_memory action=recall with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted.",
+    recovery: version === 1
+      ? "Use manage_memory action=recall with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted."
+      : "Use recall_context with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted.",
   });
 }
 
@@ -50,7 +52,7 @@ export function foldPressureRecovery(state: SessionState, raw: unknown): void {
       !completeExchange(state.messages) || !completeExchange(state.messages, event.end) ||
       event.historyHash !== contextHistoryHash(state) || event.previousSummary !== state.workingSummary ||
       event.factsHash !== sha256(runtimeContinuityMessage(state)) ||
-      event.summary !== evictionSummary(event.end, event.previousSummary, event.mode, state) ||
+      event.summary !== evictionSummary(event.end, event.previousSummary, event.mode, state, event.version) ||
       event.toolReferences.some((index) => index < event.end || state.messages[index]?.role !== "tool"))
     throw new Error("Invalid or stale context eviction event");
   const recovery = state.pressureRecovery ??= { toolReferences: [], summaries: {} };
@@ -93,11 +95,11 @@ export function foldContextMaintenance(state: SessionState, raw: unknown): void 
 
 function preview(input: RecoveryInput, end: number, references: number[], mode: NonNullable<Eviction["mode"]>) {
   const { state } = input;
-  const event: Eviction = { version: 1, start: state.compactedMessageCount, end,
+  const event: Eviction = { version: 2, start: state.compactedMessageCount, end,
     historyHash: contextHistoryHash(state), factsHash: sha256(runtimeContinuityMessage(state)),
     previousSummary: state.workingSummary, toolReferences: references, mode,
     ...(mode === "minimal_rebase" ? { scope: recoveryScope(state) } : {}),
-    summary: evictionSummary(end, state.workingSummary, mode, state), reason: input.reason.slice(0, 2000) };
+    summary: evictionSummary(end, state.workingSummary, mode, state, 2), reason: input.reason.slice(0, 2000) };
   const candidate = structuredClone(state);
   foldPressureRecovery(candidate, event);
   return { event, capacity: assessCapacity(input.manager, candidate, input.maxContextChars, input.nextRequest, input.limits) };
@@ -114,7 +116,20 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
   const { state } = input;
   if (!completeExchange(state.messages)) return false;
   const limits = input.limits ?? DEFAULT_RUNTIME_LIMITS;
-  const protectedStart = retirementBoundaries(state, limits.compactionRetainRecentExchanges)[0] ?? state.compactedMessageCount;
+  // Neutral command polls do not age useful evidence out of the protected tail.
+  const starts = state.messages.flatMap((message, index) => message.role === "assistant" &&
+    index >= state.compactedMessageCount && !(message.tool_calls?.length &&
+      message.tool_calls.every(call => call.function.name === "poll_command")) ? [index] : []);
+  const protectedStart = starts.length > limits.compactionRetainRecentExchanges
+    ? starts.at(-limits.compactionRetainRecentExchanges)! : state.compactedMessageCount;
+  const recalledStart = starts.at(-limits.contextRecallProtectionExchanges) ?? state.compactedMessageCount;
+  const recalled = new Set<string>();
+  for (const message of state.messages.slice(recalledStart)) {
+    if (message.role !== "assistant") continue;
+    for (const call of message.tool_calls ?? []) if (call.function.name === "recall_context" || call.function.name === "manage_memory") {
+      try { const value = JSON.parse(call.function.arguments); if (typeof value.evidenceId === "string") recalled.add(value.evidenceId); } catch { /* not a recall */ }
+    }
+  }
   const projected = pressureProjectedMessages(state);
   const references = new Set<number>();
   let batch: number[] = [];
@@ -123,10 +138,17 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
     for (const index of batch) {
       const message = projected[index]!;
       const size = estimatedTokens(message.content ?? "");
-      const oldLarge = underPressure && index < protectedStart && (message.content?.length ?? 0) >= limits.contextToolReferenceMinChars;
+      const protectedRecall = recalled.has(`journal_message_${index}`) || [...recalled].some(id =>
+        id.startsWith("artifact:") && sha256(message.content ?? "").startsWith(id.slice(9)));
+      const sourceTool = message.role === "tool" ? message.name : undefined;
+      const recovering = index >= recalledStart && (sourceTool === "recall_context" || sourceTool === "search_context");
+      const oldLarge = underPressure && index < protectedStart && !protectedRecall && !recovering &&
+        (message.content?.length ?? 0) >= limits.contextToolReferenceMinChars;
       const referenceTokens = message.role === "tool" ? estimatedTokens(toolOutputReference(message, index).content ?? "") : size;
       if ((oldLarge || tokens > limits.contextToolBatchTokens) && size > referenceTokens &&
           !state.pressureRecovery?.toolReferences.includes(index)) {
+        if (oldLarge && tokens <= limits.contextToolBatchTokens && references.size &&
+            preview(input, state.compactedMessageCount, [...references], "tool_references").capacity.utilization <= limits.contextReferenceTargetRatio) continue;
         references.add(index);
         tokens -= size - referenceTokens;
       }

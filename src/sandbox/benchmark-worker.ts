@@ -3,6 +3,7 @@ import { writeSync } from "node:fs";
 import path from "node:path";
 import { encodeSandboxControl } from "./control.js";
 import { BENCHMARK_BRIDGE_ROOT } from "./benchmark-backend.js";
+import { benchmarkResultControls, benchmarkResultSchema } from "./benchmark-result.js";
 
 const [directory, commandId] = process.argv.slice(2);
 if (!directory?.startsWith(`${BENCHMARK_BRIDGE_ROOT}/commands/request-`) || !/^command_[a-f0-9-]{36}$/u.test(commandId ?? "")) throw new Error("Invalid controller request");
@@ -31,12 +32,9 @@ try {
     await pump();
     const result = await readFile(path.join(directory, "result.json"), "utf8").catch(() => undefined);
     if (result) {
-      const terminal = JSON.parse(result);
+      const terminal = benchmarkResultSchema.parse(JSON.parse(result));
       await pump();
-      if (!Number.isInteger(terminal.exitCode)) throw new Error("Invalid Docker execution result");
-      await emit({ type: "execution_exited", exitCode: terminal.exitCode });
-      if (terminal.error) await emit({ type: "cleanup_error", message: terminal.error });
-      else await emit({ type: "cleanup_complete" });
+      for (const control of benchmarkResultControls(terminal)) emit(control);
       process.exitCode = canceled ? 130 : terminal.exitCode;
       break;
     }

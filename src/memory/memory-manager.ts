@@ -24,6 +24,7 @@ import type {
 } from "./vector-index.js";
 
 export interface MemorySearchOptions {
+  readonly readOnly?: boolean;
   readonly workspaceRoot?: string;
   readonly limit?: number;
   readonly minimumConfidence?: number;
@@ -444,8 +445,8 @@ export class MemoryManager {
     );
 
     if (!this.vectorIndex || !boundedQuery.trim()) {
-      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit);
-      this.touch(workspaceId, selected.map((memory) => memory.id));
+      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
+      if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
 
@@ -459,8 +460,8 @@ export class MemoryManager {
       });
     } catch (error) {
       this.reportVectorError(error);
-      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit);
-      this.touch(workspaceId, selected.map((memory) => memory.id));
+      const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
+      if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
 
@@ -510,13 +511,13 @@ export class MemoryManager {
         right.memory.updatedAt.localeCompare(left.memory.updatedAt),
       )
       .map((candidate) => candidate.memory);
-    const selected = await this.currentCandidates(workspaceId, ranked, resolvedOptions.workspaceRoot, limit);
-    this.touch(workspaceId, selected.map((memory) => memory.id));
+    const selected = await this.currentCandidates(workspaceId, ranked, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
+    if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
     return Object.freeze(selected);
   }
 
   private async currentCandidates(workspaceId: string, candidates: readonly Readonly<LongTermMemory>[],
-    root: string | undefined, limit: number): Promise<Readonly<LongTermMemory>[]> {
+    root: string | undefined, limit: number, readOnly = false): Promise<Readonly<LongTermMemory>[]> {
     if (!root) return candidates.slice(0, limit);
     const selected: Readonly<LongTermMemory>[] = [];
     for (const memory of candidates) {
@@ -532,6 +533,7 @@ export class MemoryManager {
         } catch { stale = true; }
       }
       if (stale && memory.status === "active") {
+        if (readOnly) continue;
         this.storage.db.transaction(() => {
           this.storage.db.prepare("UPDATE memories SET status = 'needs_verification', updated_at = ? WHERE id = ? AND workspace_id = ?")
             .run(new Date().toISOString(), memory.id, workspaceId);

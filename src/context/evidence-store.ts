@@ -3,7 +3,6 @@ import type { EasyCodeStorage } from "../storage/database.js";
 import { sha256 } from "../utils/hash.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 
-const MAX_EVIDENCE_CHARS = 1_000_000;
 export function toolEvidenceId(threadId: string, callId: string): string {
   return `evidence_${sha256(JSON.stringify([threadId, callId]))}`;
 }
@@ -17,7 +16,9 @@ export class EvidenceStore {
     result: ToolExecutionResult): string {
     const full = redactSensitiveInformation(JSON.stringify({ ok: result.ok, summary: result.summary,
       error: result.error, data: result.data }));
-    const content = full.slice(0, MAX_EVIDENCE_CHARS);
+    // Tool/process collectors already bound their capture. Archive that complete
+    // captured value; a second cut here would destroy recoverability and JSON.
+    const content = full;
     const contentHash = sha256(full);
     const id = toolEvidenceId(threadId, callId);
     const existing = this.storage.db.prepare<[string], { content_hash: string; workspace_id: string; tool: string }>(

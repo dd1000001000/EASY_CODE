@@ -85,14 +85,15 @@ export function normalizeToolFailure(result: ToolExecutionResult): ToolExecution
       "The batch was rejected before execution. Follow the tool exclusivity requirement and resubmit only the permitted call(s); do not claim any rejected action ran.") };
   }
   // Adapt the command subsystem's existing authoritative failure metadata.
-  const data = result.data as { failure?: { kind?: string; code?: string; processStarted?: boolean } } | undefined;
+  const data = result.data as { lifecycle?: { execution?: string }; failure?: { kind?: string; code?: string; processStarted?: boolean; executionState?: string } } | undefined;
   const command = data?.failure;
   if (command && typeof command.code === "string" && typeof command.processStarted === "boolean") {
-    const parameter = command.kind === "parameter" && !command.processStarted;
+    const execution = data?.lifecycle?.execution ?? command.executionState ?? (command.processStarted ? "unknown" : "not_started");
+    const parameter = command.kind === "parameter" && execution === "not_started";
     const denied = command.kind === "policy" || command.kind === "approval";
     return { ...result, failure: {
       version: 1, kind: parameter ? "validation" : "execution", code: safeText(command.code, 80),
-      execution: command.processStarted ? "unknown" : "not_started",
+      execution: execution === "not_started" ? "not_started" : "unknown",
       recovery: parameter ? "correct_arguments" : denied ? "none" : "inspect_state",
       issues: [], instruction: parameter
         ? "Correct command parameters according to the schema; the process did not start."

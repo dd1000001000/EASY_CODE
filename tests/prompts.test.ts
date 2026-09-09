@@ -143,7 +143,7 @@ describe("system prompt builder", () => {
       assert.ok(cwdIndex < prompt.indexOf("Runtime environment"));
       assert.doesNotMatch(prompt, /defaults to 320,000 characters/u);
       assert.match(prompt, /preserve uncertainty and the next validation step/);
-      assert.match(prompt, /handles failure locally/);
+      assert.match(prompt, /shared configured correction budget/);
       assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);

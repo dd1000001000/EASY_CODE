@@ -156,7 +156,7 @@ describe("model request loading indicator", () => {
     ]);
   });
 
-  it("times tool execution and disables run_command after sandbox initialization fails", async () => {
+  it("times execution and blocks the failed command without hiding unrelated command capabilities", async () => {
     let requestCount = 0;
     let executionCount = 0;
     let directResponse = false;
@@ -257,10 +257,10 @@ describe("model request loading indicator", () => {
     assert.equal(executionCount, 1);
     assert.equal(advertisedTools[0]?.includes("run_command"), true);
     assert.equal(advertisedTools[0]?.includes("start_command"), true);
-    assert.equal(advertisedTools[1]?.includes("run_command"), false);
-    assert.equal(advertisedTools[1]?.includes("start_command"), false);
-    assert.equal(advertisedTools[2]?.includes("run_command"), false);
-    assert.equal(advertisedTools[2]?.includes("start_command"), false);
+    assert.equal(advertisedTools[1]?.includes("run_command"), true);
+    assert.equal(advertisedTools[1]?.includes("start_command"), true);
+    assert.equal(advertisedTools[2]?.includes("run_command"), true);
+    assert.equal(advertisedTools[2]?.includes("start_command"), true);
     assert.deepEqual(lifecycle, [
       "tool-start:run_command",
       "tool-end:run_command:tool-token",
@@ -333,6 +333,7 @@ describe("model request loading indicator", () => {
             error: "sandbox unavailable",
             data: {
               status: "sandbox_unavailable",
+              lifecycle: { execution: "not_started", cleanup: "not_required" },
               sandboxFailure: { phase: "initialization", retryable: true },
             },
           };

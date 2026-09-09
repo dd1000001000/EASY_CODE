@@ -3,6 +3,9 @@ import { foldCompactionControl, prefixHash, completeExchange } from "../context/
 import { compactionSnapshot } from "../context/semantic-compaction.js";
 import { foldPendingOperations } from "../context/pending-operations.js";
 import { foldPressureRecovery, foldContextMaintenance } from "../context/pressure-recovery.js";
+import { foldServerContextReset } from "../context/server-reset.js";
+import { recordUserRequirement } from "../context/user-requirements.js";
+import { foldReconciliation } from "../context/reconciliation.js";
 
 import {
   DEFAULT_THINKING_EFFORT,
@@ -28,6 +31,8 @@ import {
 import type { EasyCodeStorage } from "../storage/database.js";
 import { isProviderName } from "../models/catalog.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
+import { foldReviewEvent } from "../review/session.js";
+import { foldDelivery } from "../review/delivery.js";
 import { createId } from "../utils/ids.js";
 import {
   aggregateModelUsage,
@@ -419,6 +424,7 @@ function updateRecoveredLatestRequest(
   sourceMessageIndex: number,
   content: string,
 ): void {
+  recordUserRequirement(state, sourceMessageIndex);
   const previous = state.contextIntentLedger;
   const text = redactSensitiveInformation(content).trim().slice(0, 400) ||
     "[User message contains attachments only]";
@@ -435,6 +441,7 @@ function appendRecoveredCorrection(
   sourceMessageIndex: number,
   content: string,
 ): void {
+  recordUserRequirement(state, sourceMessageIndex);
   const previous = state.contextIntentLedger;
   const quote = {
     sourceMessageIndex,
@@ -1335,7 +1342,7 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
-        if (input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+        if (input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.session.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
             (input.type === "context.compacted" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
@@ -1636,11 +1643,11 @@ export class ThreadStore {
     return event;
   }
 
-  recordMessage(threadId: string, message: ChatMessage, turnId?: string): EventRecord {
+  recordMessage(threadId: string, message: ChatMessage, turnId?: string, source?: "assignment"): EventRecord {
     if (!isChatMessage(message)) throw new Error("Invalid chat message");
     return this.appendEvent(threadId, {
       type: "chat_message",
-      payload: { message: cloneMessage(message) },
+      payload: { message: cloneMessage(message), ...(source ? { source } : {}) },
       turnId,
     });
   }
@@ -2018,6 +2025,8 @@ export class ThreadStore {
         }
         const checkpoint = deserializeSessionState(payload.state);
         const durableProgress = state?.progressGuard;
+        const durableReviews = state?.reviewSessions;
+        const durableDelivery = state?.delivery;
         const durableCompaction = state?.compactionControl;
         if (event.type === "thread_checkpoint" && state) {
           // Messages and the active-turn pointer advance through journal events.
@@ -2096,12 +2105,15 @@ export class ThreadStore {
         }
         // Progress evidence and reviewer budgets are event-authoritative. A
         // derived checkpoint can neither erase nor manufacture them.
+        checkpoint.reviewSessions = durableReviews;
+        checkpoint.delivery = durableDelivery;
         checkpoint.progressGuard = durableProgress
           ? structuredClone(durableProgress)
           : createProgressGuardState();
         checkpoint.compactionControl = durableCompaction ? structuredClone(durableCompaction) : { phaseEnds: [] };
         checkpoint.pressureRecovery = state?.pressureRecovery ? structuredClone(state.pressureRecovery) : undefined;
         checkpoint.contextOperations = state?.contextOperations ? structuredClone(state.contextOperations) : undefined;
+        checkpoint.userMessageIndices = [...(state?.userMessageIndices ?? [])];
         state = checkpoint;
         continue;
       }
@@ -2114,7 +2126,11 @@ export class ThreadStore {
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
 
-      if (event.type === "context.maintenance.checked") {
+      if (event.type === "context.server_reset") {
+        foldServerContextReset(state, payload);
+      } else if (event.type === "context.reconciled") {
+        foldReconciliation(state, String(payload?.tool), payload?.observation);
+      } else if (event.type === "context.maintenance.checked") {
         foldContextMaintenance(state, payload);
       } else if (event.type === "context.history.evicted") {
         foldPressureRecovery(state, payload);
@@ -2139,7 +2155,8 @@ export class ThreadStore {
         }
       } else if (event.type === "chat_message") {
         if (payload && isChatMessage(payload.message)) {
-          appendMessageIfNew(state, payload.message);
+          const index = appendMessageIfNew(state, payload.message);
+          if (payload.source === "assignment" && payload.message.role === "user") recordUserRequirement(state, index);
         }
       } else if (event.type === "message.user" && event.turnId) {
         state.steeringSealedTurnId = undefined;
@@ -2354,6 +2371,10 @@ export class ThreadStore {
         if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation event");
         const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
         state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(p => normalizeCommandApprovalPrefix(p) !== prefix);
+      } else if (event.type === "delivery.required") {
+        foldDelivery(state, event.payload);
+      } else if (event.type === "review.session.event") {
+        foldReviewEvent(state, event.payload);
       } else if (isProgressReviewEventType(event.type)) {
         state.progressGuard = foldProgressReviewEvent(
           state.progressGuard ?? createProgressGuardState(),

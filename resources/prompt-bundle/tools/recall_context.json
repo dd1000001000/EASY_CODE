@@ -1,0 +1,6 @@
+{
+  "id": "recall_context", "contractVersion": "1.0.0",
+  "description": "Recover historical evidence by ID and character page. Runtime restricts reads to your own thread and explicitly shared material. Historical file content is not the current file. Use nextOffset to continue; do not rerun a command merely to recover its output.",
+  "propertyDescriptions": { "evidenceId": "Exact historical reference or an unambiguous artifact: hash prefix.", "offset": "Zero-based character offset, default 0.", "limit": "Characters in this page, default 8000, at most 16000." },
+  "guidance": "Use exact references; do not infer current state from old evidence."
+}

@@ -91,7 +91,9 @@ describe("Runtime tool recovery", () => {
       let calls = 0;
       const events: Array<{ type: string; payload: unknown }> = [];
       const provider: ModelProvider = { name: "qwen", model: "mock", async complete() {
-        calls++; return { message: { role: "assistant", content: "done" } };
+        calls++;
+        if (calls === 1) return toolCall("read_file", { path: "README.md" }, 1);
+        return { message: { role: "assistant", content: "done" } };
       } };
       const result = await createRuntime(provider, [new CompactContextTool()], {
         appendEvent: async (event) => { events.push(event); },
@@ -100,17 +102,23 @@ describe("Runtime tool recovery", () => {
       assert.equal(result.reason, "limit_reached", result.text);
       assert.equal(result.failure?.code, "context_capacity_exhausted");
       assert.equal(result.failure?.recoverable, true);
-      assert.equal(current.compactedMessageCount, 0);
+      assert.equal(current.compactedMessageCount, 2);
+      assert.ok(current.pressureRecovery?.serverReset);
       assert.equal(current.activeTurnId, undefined);
       const final = [...events].reverse().find((event) => event.type === "turn.completed");
       assert.equal((final?.payload as { failure?: { code: string } }).failure?.code, "context_capacity_exhausted");
       const restored = deserializeSessionState(serializeSessionState(current));
+      // Like ThreadStore recovery: restore event-authoritative projections, not only the checkpoint.
+      restored.pressureRecovery = structuredClone(current.pressureRecovery);
+      restored.userMessageIndices = [...current.userMessageIndices!];
       assert.equal(restored.messages[0]?.content, original);
       restored.mode = "code";
-      const resumed = await createRuntime(provider, [new CompactContextTool()]).run(restored, requestText,
+      const read: AgentTool = { name: "read_file", mutating: false, definition: { type: "function", function: {
+        name: "read_file", description: "Inspect current workspace", parameters: {} } }, execute: async () => ({ ok: true, summary: "Current source inspected" }) };
+      const resumed = await createRuntime(provider, [new CompactContextTool(), read]).run(restored, requestText,
         { ...options, maxContextTokens: 256_000 });
       assert.equal(resumed.reason, "success", resumed.text);
-      assert.equal(calls, 1);
+      assert.equal(calls, 2);
       assert.equal(restored.messages[0]?.content, original);
     });
   }

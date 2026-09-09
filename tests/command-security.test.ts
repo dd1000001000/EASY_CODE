@@ -17,10 +17,41 @@ import { assertWindowsAclCleanup } from "../src/sandbox/windows-cleanup.js";
 import { AnthropicSandboxBackend } from "../src/sandbox/anthropic-backend.js";
 import { redactSensitiveInformation } from "../src/memory/sensitive.js";
 import { describe, it } from "./harness.js";
+import { RunCommandTool } from "../src/tools/run-command.js";
+import { benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
 
 function context(root: string): ToolContext { return { workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn", approvalPolicy: "safe", requestApproval: async () => true, commandExecutionMode: "auto_approve", commandTimeoutMs: 10000, maxOutputChars: 256 }; }
 
 describe("command security floor", () => {
+  it("returns an output-limit failure without poisoning a confirmed-clean worker or reporting a pass", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-output-limit-"));
+    try {
+      const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
+      const manager = await WorkspaceManager.create(workspaceRoot);
+      let calls = 0, cleanups = 0;
+      const metadata = { backend: "benchmark-container" as const, enforced: true, filesystem: "container" as const, network: "denied" as const };
+      const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
+        const outcome = ++calls === 1 ? "output_limit" : "exited";
+        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "benchmark-container" }, { type: "execution_dispatched" },
+          ...benchmarkResultControls({ version: 2, exitCode: 0, outcome, cleanup: "confirmed", workerRestored: true })];
+        const frames = events.map(e => encodeSandboxControl(request.commandId, e)).join("");
+        const script = `const fs=require('fs');const go=()=>{process.stdout.write('46 passed\\n');fs.writeSync(3,${JSON.stringify(frames)});process.exit(0)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
+        return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot, environment: { ...process.env },
+          metadata, controlPipe: true, cleanup: async () => { cleanups++; } };
+      } };
+      const runtime = new CommandRuntime(manager, undefined, backend, undefined, {
+        quarantinePath: path.join(root, "quarantine.json"), lifecycleDirectory: path.join(root, "leases") });
+      const tool = new RunCommandTool(manager, runtime);
+      const input = { program: "node", args: ["--version"], intent: "verify", verificationKind: "custom" };
+      const first = await tool.execute(input, context(workspaceRoot));
+      const data = first.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(first.ok, false); assert.equal(data.exitCode, 0);
+      assert.equal(data.failure?.code, "command_output_limit"); assert.equal(data.lifecycle?.cleanup, "confirmed");
+      assert.notEqual(data.validation?.status, "passed"); assert.equal(calls, 1);
+      const next = await tool.execute(input, context(workspaceRoot));
+      assert.equal(next.ok, true); assert.equal(calls, 2); assert.equal(cleanups, 2);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("Plan and Code share the same command sandbox permission metadata", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-plan-permissions-"));
     try {

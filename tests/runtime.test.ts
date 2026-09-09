@@ -989,36 +989,14 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
-    assert.equal(result.text, "DAG work is complete");
-    assert.equal(requestCount, 8);
-    assert.equal(readExecutions, 1);
-    assert.equal(sawRuntimeReminder, true);
-    assert.equal(currentState.taskGraph?.status, "completed");
-    assert.equal(currentState.taskGraph?.tasks[0]?.status, "completed");
-    assert.equal(promptGraphStatuses.includes("active"), true);
-    assert.equal(promptGraphStatuses.at(-1), "completed");
-    const graphEvents = events.filter((event) => {
-      if (event.type !== "tool.result" || !event.payload || typeof event.payload !== "object") {
-        return false;
-      }
-      return "taskGraph" in event.payload;
-    });
-    assert.equal(graphEvents.length, 3);
-    assert.equal(
-      currentState.messages.some(
-        (message) => message.role === "tool" &&
-          message.content.includes("Start one unblocked DAG task"),
-      ),
-      true,
-    );
-    assert.equal(
-      currentState.messages.some(
-        (message) => message.role === "tool" &&
-          message.content.includes("completed in this turn"),
-      ),
-      true,
-    );
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /DAG is incomplete/);
+    assert.equal(requestCount, 3);
+    assert.equal(readExecutions, 0);
+    assert.equal(sawRuntimeReminder, false);
+    assert.equal(currentState.taskGraph?.status, "active");
+    assert.equal(currentState.taskGraph?.tasks[0]?.status, "pending");
+    assert.equal(currentState.messages.some(m => m.role === "tool" && m.content.includes("Start one unblocked DAG task")), true);
   });
 
   it("refuses a plain final answer until the supervised command is terminal", async () => {
@@ -1098,10 +1076,11 @@ describe("AgentRuntime", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "success");
-    assert.equal(result.text, "Finished after status.");
-    assert.equal(requests, 3);
-    assert.equal(sawRuntimePrompt, true);
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /BACKGROUND_COMMAND_FINALIZATION_REQUIRED/);
+    assert.equal(requests, 1);
+    assert.equal(sawRuntimePrompt, false);
+    assert.equal(running, true);
   });
 
   it("rejects task-DAG complete and block transitions while a command is running", async () => {
@@ -1195,10 +1174,11 @@ describe("AgentRuntime", () => {
         approvalPolicy: "never",
       });
 
-      assert.equal(requests, 6);
-      assert.equal(sawRejection, true);
-      assert.equal(currentState.taskGraph?.status, terminalAction === "complete" ? "completed" : "blocked");
-      assert.equal(result.reason, terminalAction === "complete" ? "success" : "blocked");
+      assert.equal(requests, 3);
+      assert.equal(sawRejection, false);
+      assert.equal(currentState.taskGraph?.status, "active");
+      assert.equal(result.reason, "failed");
+      assert.match(result.text, /BACKGROUND_COMMAND_FINALIZATION_REQUIRED/);
     }
   });
 
@@ -1383,230 +1363,36 @@ describe("AgentRuntime", () => {
     assert.equal(currentState.taskGraph?.tasks[0]?.completionEvidence, undefined);
   });
 
-  it("pauses a DAG on transient sandbox failure and retries the in-progress task next turn", async () => {
-    let requestCount = 0;
-    let commandExecutions = 0;
-    let sawRetryToolAvailable = false;
-    let sawPauseInstruction = false;
-    let sawRunCommandRemoved = false;
-    const call = (
-      id: string,
-      name: "manage_tasks" | "run_command",
-      input: unknown,
-    ) => ({
-      id,
-      type: "function" as const,
-      function: { name, arguments: JSON.stringify(input) },
-    });
-    const responses: ProviderResponse[] = [
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("create", "manage_tasks", {
-            action: "create",
-            goal: "Verify one implementation with a command",
-            tasks: [{
-              id: "verify",
-              title: "Verify implementation",
-              description: "Run the project verification command",
-              dependencies: [],
-              inputs: ["Current workspace"],
-              expectedArtifacts: ["Command verification result"],
-              completionChecks: ["The verification command exits successfully"],
-              failureHandling: "Block only for a durable external condition",
-            }],
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("start", "manage_tasks", {
-            action: "start",
-            taskId: "verify",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("sandbox_failure", "run_command", {
-            program: "node",
-            args: ["--check", "src/app.ts"],
-            intent: "test",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("incorrect_block", "manage_tasks", {
-            action: "block",
-            taskId: "verify",
-            reason: "The OS sandbox is temporarily unavailable",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("retry_failure", "run_command", {
-            program: "node",
-            args: ["--check", "src/app.ts"],
-            intent: "test",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("second_incorrect_block", "manage_tasks", {
-            action: "block",
-            taskId: "verify",
-            reason: "The OS sandbox retry also failed temporarily",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("next_turn_command", "run_command", {
-            program: "node",
-            args: ["--check", "src/app.ts"],
-            intent: "test",
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [call("complete", "manage_tasks", {
-            action: "complete",
-            taskId: "verify",
-            evidence: ["The retried verification command exited successfully"],
-          })],
-        },
-      },
-      {
-        message: {
-          role: "assistant",
-          content: "Verification completed after the transient sandbox failure cleared.",
-          tool_calls: [],
-        },
-      },
-    ];
-    const provider: ModelProvider = {
-      name: "qwen",
-      model: "mock",
-      async complete(request) {
-        requestCount += 1;
-        if (requestCount === 4) {
-          sawRetryToolAvailable = (request.tools ?? []).some(
-            (tool) => tool.function.name === "run_command",
-          );
-        }
-        if (requestCount === 6) {
-          sawPauseInstruction = request.messages.some(
-            (message) =>
-              message.role === "system" &&
-              message.content.includes("RUNTIME_COMMAND_SANDBOX_PAUSED"),
-          );
-          sawRunCommandRemoved = !(request.tools ?? []).some(
-            (tool) => tool.function.name === "run_command",
-          );
-        }
-        const response = responses.shift();
-        if (!response) throw new Error("Unexpected model request");
-        return response;
-      },
-    };
-    const runCommandTool: AgentTool = {
-      name: "run_command",
-      mutating: true,
-      definition: {
-        type: "function",
-        function: {
-          name: "run_command",
-          description: "run",
-          parameters: { type: "object" },
-        },
-      },
-      async execute() {
-        commandExecutions += 1;
-        return commandExecutions <= 2
-          ? {
-              ok: false,
-              summary: "Sandbox unavailable before command start",
-              error: "sandbox unavailable",
-              data: {
-                status: "sandbox_unavailable",
-                sandboxFailure: { phase: "initialization", retryable: true },
-              },
-            }
-          : {
-              ok: true,
-              summary: "Command exited with code 0",
-              data: { status: "exited", exitCode: 0 },
-            };
-      },
-    };
-    const runtime = new AgentRuntime({
-      provider,
-      tools: [new ManageTasksTool(), runCommandTool],
-      contextManager: new ContextManager(),
-      buildSystemPrompt: async () => "system",
-      getWorkspaceSummary: async () => "workspace",
-      searchMemories: async () => [],
-      appendEvent: async () => undefined,
-      requestApproval: async () => false,
-    });
-    const currentState = state();
-    const first = await runtime.run(currentState, "Verify the implementation", {
-      maxSteps: 6,
-      maxContextChars: 30_000,
-      maxOutputChars: 8_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(first.reason, "blocked");
-    assert.match(first.text, /current DAG task remains in progress/iu);
-    assert.equal(commandExecutions, 2);
-    assert.equal(sawRetryToolAvailable, true);
-    assert.equal(sawPauseInstruction, true);
-    assert.equal(sawRunCommandRemoved, true);
-    assert.equal(currentState.taskGraph?.status, "active");
-    assert.equal(currentState.taskGraph?.tasks[0]?.status, "in_progress");
-    assert.equal(currentState.taskGraph?.tasks[0]?.blocker, undefined);
-    assert.equal(
-      currentState.messages.some(
-        (message) =>
-          message.role === "tool" &&
-          message.content.includes("cannot persistently block a DAG task"),
-      ),
-      true,
-    );
-
-    const second = await runtime.run(currentState, "Retry the paused verification", {
-      maxSteps: 3,
-      maxContextChars: 30_000,
-      maxOutputChars: 8_000,
-      commandTimeoutMs: 1_000,
-      approvalPolicy: "never",
-    });
-
-    assert.equal(second.reason, "success");
-    assert.equal(commandExecutions, 3);
-    assert.equal(currentState.taskGraph?.status, "completed");
-    assert.equal(currentState.taskGraph?.tasks[0]?.status, "completed");
+  it("blocks repeated sandbox startup for one command while preserving the DAG for explicit Resume", async () => {
+    const current = state();
+    const task = { id: "verify", title: "Verify", description: "Run tests", dependencies: [], inputs: ["workspace"],
+      expectedArtifacts: ["result"], completionChecks: ["Tests passed"], failureHandling: "Report environment failure" };
+    current.taskGraph = applyTaskGraphOperation(applyTaskGraphOperation(undefined,
+      { action: "create", goal: "Verify", tasks: [task] }, { turnId: "seed" }), { action: "start", taskId: "verify" }, { turnId: "seed" });
+    let calls = 0, executions = 0, resumed = false;
+    const model: ModelProvider = { name: "qwen", model: "mock", complete: async request => {
+      calls++;
+      assert.ok(request.tools?.some(t => t.function.name === "run_command"));
+      if (!resumed && calls <= 3 || resumed && calls === 1) return { message: { role: "assistant", content: null,
+        tool_calls: [{ id: `command_${calls}`, type: "function", function: { name: "run_command", arguments: '{"program":"node","intent":"test"}' } }] } };
+      if (resumed && calls === 2) return { message: { role: "assistant", content: null, tool_calls: [{ id: "complete", type: "function",
+        function: { name: "manage_tasks", arguments: JSON.stringify({ action: "complete", taskId: "verify", evidence: ["Tests passed"] }) } }] } };
+      return { message: { role: "assistant", content: "Finish" } };
+    } };
+    const runtime = new AgentRuntime({ provider: model, tools: [new ManageTasksTool(), {
+      name: "run_command", mutating: true, definition: { type: "function", function: { name: "run_command", description: "run", parameters: {} } },
+      execute: async () => { executions++; return resumed ? { ok: true, summary: "passed" } : {
+        ok: false, summary: "sandbox failed", data: { commandId: `h${executions}`, status: "sandbox_unavailable",
+          lifecycle: { execution: "not_started", cleanup: "not_required" }, sandboxFailure: { phase: "initialization", retryable: true } } }; }
+    }], contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "",
+      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false });
+    const opts = { maxSteps: 4, maxContextChars: 30000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
+    const first = await runtime.run(current, "Verify", opts);
+    assert.equal(first.reason, "failed"); assert.equal(executions, 2); assert.equal(current.taskGraph.status, "active");
+    assert.equal(current.messages.some(m => m.role === "tool" && m.content.includes("command_sandbox_unavailable")), true);
+    resumed = true; calls = 0;
+    const second = await runtime.run(current, "Explicitly retry after environment repair", opts);
+    assert.equal(second.reason, "success"); assert.equal(executions, 3); assert.equal(current.taskGraph.status, "completed");
   });
 
   it("clears transient sandbox recovery after a retry reaches a real command failure", async () => {
@@ -1703,6 +1489,7 @@ describe("AgentRuntime", () => {
                   error: "sandbox unavailable",
                   data: {
                     status: "sandbox_unavailable",
+                    lifecycle: { execution: "not_started", cleanup: "not_required" },
                     sandboxFailure: { phase: "initialization", retryable: true },
                   },
                 }
@@ -2227,8 +2014,10 @@ describe("AgentRuntime", () => {
     assert.equal(result.failure?.code, "context_capacity_exhausted");
     assert.equal(requests.length, 0);
     assert.equal(snapshots.length, 0);
-    assert.equal(currentState.compactedMessageCount, 0);
+    assert.equal(currentState.compactedMessageCount, 2);
+    assert.ok(currentState.pressureRecovery?.serverReset);
     assert.match(currentState.messages[0]?.content ?? "", /OMITTED_HISTORY_END/);
+    assert.equal(currentState.messages[1]?.content, input);
   });
 
   it("reports provider context snapshots from the exact captured request", async () => {
@@ -2389,11 +2178,11 @@ describe("AgentRuntime", () => {
       }, [new CompactContextTool(), create]).run(current, "Continue", degradationOptions);
       assert.equal(result.reason, "success", result.text);
       assert.equal(writes, 0);
-      assert.equal(requests.length, 2);
+      assert.equal(requests.length, 4);
       assert.deepEqual(requests[0]?.tools?.map((tool) => tool.function.name), ["compact_context"]);
-      assert.deepEqual(requests[1]?.tools?.map((tool) => tool.function.name), ["create_file"]);
-      assert.equal(current.compactionControl?.transaction?.attempts, 1);
-      assert.equal(JSON.parse(current.workingSummary).mode, "history_evicted");
+      assert.deepEqual(requests[3]?.tools?.map((tool) => tool.function.name), ["create_file"]);
+      assert.equal(current.compactionControl?.transaction?.attempts, 3);
+      assert.equal(JSON.parse(current.workingSummary).mode, "text_prefix");
       assert.equal(current.messages.some((message) => message.role === "tool" && message.name === "create_file"), false);
     }
   });

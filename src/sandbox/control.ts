@@ -18,7 +18,9 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     if (!value || typeof value !== "object" || !("type" in value)) return undefined;
     const type = (value as { type?: unknown }).type;
     if (["execution_dispatched", "cleanup_complete", "cleanup_requested"].includes(String(type))) return value as SandboxWorkerControl;
-    if (type === "execution_exited" && Number.isSafeInteger((value as { exitCode?: unknown }).exitCode)) return value as SandboxWorkerControl;
+    if (type === "execution_exited" && Number.isSafeInteger((value as { exitCode?: unknown }).exitCode) &&
+        ((value as { outcome?: unknown }).outcome === undefined ||
+          ["exited", "timed_out", "canceled", "output_limit", "spawn_failed", "unknown"].includes(String((value as { outcome?: unknown }).outcome)))) return value as SandboxWorkerControl;
     if (type === "cleanup_error" && typeof (value as { message?: unknown }).message === "string") return value as SandboxWorkerControl;
     if (type === "ready" && ["anthropic-srt-linux","anthropic-srt-windows","anthropic-srt-macos","harbor-landlock","benchmark-container"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
     if (type === "stage" && ["worker_started","runtime_loaded","initialize_start","initialize_complete","wrap_start","wrap_complete"].includes(String((value as {stage?:unknown}).stage))) return value as SandboxWorkerControl;

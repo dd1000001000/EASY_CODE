@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SessionState, ToolExecutionResult } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { foldReconciliation } from "./reconciliation.js";
 
 const commandSchema = z.object({ commandId: z.string().min(1),
   status: z.enum(["running", "exited", "timed_out", "canceled", "spawn_failed", "policy_denied", "sandbox_unavailable"]),
@@ -64,6 +65,7 @@ export function pendingCommandObservation(tool: string, result: ToolExecutionRes
 
 /** Called after tool-result commit in the live loop and from the same Journal event on Resume. */
 export function foldPendingOperations(state: SessionState, payload: Record<string, unknown>): void {
+  foldReconciliation(state, String(payload.tool), payload.contextReconciliation);
   if (payload.contextCommand !== undefined) {
     if (!["run_command", "start_command", "poll_command", "cancel_command"].includes(String(payload.tool)))
       throw new Error("Invalid command continuity source");

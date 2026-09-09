@@ -316,6 +316,14 @@ a different directory on F:.
 The adapter now separates control from execution; it does not compile or require
 the legacy `harbor-sandbox.c` nested Landlock/seccomp backend.
 
+Bounded reviewer discussions additionally allocate separate offline worker/volume
+pairs for the author representative and reviewer. They receive only their Runtime
+snapshot copies, not the main task volume or command bridge. Commands use independent
+auto-approval; full access is confined to each disposable container. Filtered experiment
+files are synchronized back to the corresponding controller copy, and all review
+workers/volumes are removed in the adapter's owned-resource teardown. See
+[Unified memory and bounded review](../../docs/UNIFIED_MEMORY.md).
+
 Use a freshly built npm archive with this adapter. Installation checks for the
 split-container backend and rejects older `0.1.0` archives before any model call;
 the version number alone does not prove the installed execution profile.
@@ -366,6 +374,13 @@ It spends no model tokens and produces no SWE-bench score.
 The old helper smoke scripts remain legacy regression fixtures, not the active
 Benchmark execution path. See [command permissions](../../docs/COMMAND_SECURITY.md).
 
+Reviewer environment regression (no model calls, image pulls or benchmark score):
+`python tests/review-docker-smoke.py --image easy-code-harbor-django-smoke:shm`.
+This checks current-worker environment inheritance, private dependency volumes,
+read-only image layers, offline networking, AF_UNIX/SemLock compatibility and
+dependency tamper detection. Each review image comes from the credential-free
+execution worker, never the controller; the host tears down only owned resources.
+
 Harbor's task names include an organization prefix. A valid exact filter is:
 
 ```text
@@ -384,3 +399,12 @@ model cost or tokens, wall-clock time, the hashes/versions pinned above, and the
 per-instance checkpoint/context metrics. In particular, retain the trial key,
 whether recovery occurred, any checkpoint or metrics warning, Thread event and
 context-artifact counts, Working Checkpoint sequence, and retrieval backend.
+
+The command bridge uses result protocol v2. The host adapter and packaged
+Runtime must be upgraded together; missing cleanup/restoration evidence in an
+older result is not accepted as success. `outcome` (exit/timeout/cancel/output
+limit/spawn failure/unknown), `cleanup`, and `workerRestored` are independent.
+Exceeding the 32 MiB bridge output limit does not quarantine a successfully
+restored worker, but the command is unsuccessful and is never automatically
+replayed. Restart success is checked with Docker inspection and the same
+offline/private-worker boundary validation before another command is allowed.

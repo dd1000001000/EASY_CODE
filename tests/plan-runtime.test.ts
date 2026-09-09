@@ -497,9 +497,10 @@ describe("model-controlled plan flow", () => {
       [new ProposePlanTool()],
     ).run(state("plan"), "Create a plan", options());
 
-    assert.equal(requests, 2);
-    assert.equal(sawReminder, true);
-    assert.equal(result.reason, "planned");
+    assert.equal(requests, 1);
+    assert.equal(sawReminder, false);
+    assert.equal(result.reason, "failed");
+    assert.match(result.text, /without a valid propose_plan/);
   });
 
   it("consumes an exact approved proposal only after the execution message is durable", async () => {

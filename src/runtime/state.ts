@@ -21,6 +21,7 @@ export function createSessionState(
     ...(promptBundle ? { promptBundle: { ...promptBundle } } : {}),
     constraints: [],
     messages: [],
+    userMessageIndices: [],
     filesRead: new Map(),
     changes: [],
     commands: [],
@@ -38,9 +39,12 @@ export function createSessionState(
 export function cloneSessionState(state: SessionState): SessionState {
   return {
     ...state,
+    ...(state.reviewSessions ? { reviewSessions: structuredClone(state.reviewSessions) } : {}),
+    ...(state.delivery ? { delivery: { ...state.delivery } } : {}),
     ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
     constraints: [...state.constraints],
     messages: [...state.messages],
+    ...(state.userMessageIndices ? { userMessageIndices: [...state.userMessageIndices] } : {}),
     filesRead: new Map(state.filesRead),
     changes: [...state.changes],
     commands: [...state.commands],

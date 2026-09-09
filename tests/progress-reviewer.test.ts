@@ -212,11 +212,11 @@ describe("isolated progress reviewer", () => {
     );
     assert.match(
       correctedRequest.messages.at(-1)?.content ?? "",
-      /only format-correction opportunity/u,
+      /RUNTIME_REVIEW_CONTENT_ERROR/u,
     );
   });
 
-  it("stops after a second invalid report and charges both model requests", async () => {
+  it("stops after three invalid reports and charges all three model requests", async () => {
     const provider = new ScriptedProvider([
       response(reportArguments({ unexpected: "field" }), {
         promptTokens: 8,
@@ -226,7 +226,7 @@ describe("isolated progress reviewer", () => {
         promptTokens: 12,
         completionTokens: 3,
       }),
-      response(reportArguments()),
+      response(reportArguments({ summary: "" }), { promptTokens: 4, completionTokens: 1 }),
     ]);
 
     const result = await runProgressReviewer({
@@ -239,12 +239,12 @@ describe("isolated progress reviewer", () => {
     if (result.status !== "unavailable") return;
     assert.equal(result.reason, "invalid_report");
     assert.equal(result.accounting.reviewAttempts, 1);
-    assert.equal(result.accounting.reviewModelRequests, 2);
+    assert.equal(result.accounting.reviewModelRequests, 3);
     assert.equal(result.accounting.validReviews, 0);
-    assert.equal(result.accounting.reportedModelRequests, 2);
-    assert.equal(result.accounting.reviewInputTokens, 20);
-    assert.equal(result.accounting.reviewOutputTokens, 5);
-    assert.equal(provider.requests.length, 2);
+    assert.equal(result.accounting.reportedModelRequests, 3);
+    assert.equal(result.accounting.reviewInputTokens, 24);
+    assert.equal(result.accounting.reviewOutputTokens, 6);
+    assert.equal(provider.requests.length, 3);
   });
 
   it("does not spend a format-correction request when the shared budget leaves one slot", async () => {

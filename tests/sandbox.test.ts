@@ -1013,7 +1013,7 @@ describe("sandbox first-interactive startup guide", () => {
     assert.equal(await runSandboxStartupGuide(service, continuing), true);
     assert.match(
       continuing.warningMessages.at(-1) ?? "",
-      /manual and auto-approved commands remain fail-closed/iu,
+      /Workspace-sandbox commands remain fail-closed/iu,
     );
 
     const exiting = new ScriptedSandboxTerminal(["exit"]);

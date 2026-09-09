@@ -16,6 +16,9 @@ import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { safeJsonParse } from "../utils/json.js";
 import { displayTextSchema, projectText } from "../utils/bounded-text.js";
 import { estimatedTokens } from "../context/token-budget.js";
+import { completeWithApiRetries, incompleteModelOutput } from "../runtime/model-retry.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import { resetRequestHistory } from "../context/server-reset.js";
 
 export const PROGRESS_REVIEW_TOOL_NAME = "submit_review_result";
 export const MAX_PROGRESS_REVIEW_PACKET_CHARS = 64_000;
@@ -106,12 +109,12 @@ export interface ProgressReviewRequest {
   readonly thinkingEffort: ThinkingEffort;
   readonly maxOutputTokens?: number;
   /** Shared task budget may leave room for only the initial request. */
-  readonly maxModelRequests?: 1 | 2;
+  readonly maxModelRequests?: number;
   readonly signal?: AbortSignal;
 }
 
 export interface ProgressReviewModelRequestRecord {
-  readonly ordinal: 1 | 2;
+  readonly ordinal: number;
   readonly kind: "initial" | "schema_correction";
   readonly status: "completed" | "failed";
   readonly durationMs: number;
@@ -120,7 +123,7 @@ export interface ProgressReviewModelRequestRecord {
 }
 
 export interface ProgressReviewModelRequestStart {
-  readonly ordinal: 1 | 2;
+  readonly ordinal: number;
   readonly kind: "initial" | "schema_correction";
 }
 
@@ -163,6 +166,7 @@ export type ProgressReviewExecutionResult =
     };
 
 export interface ProgressReviewerOptions {
+  readonly limits?: Readonly<RuntimeLimits>;
   readonly provider: ModelProvider;
   /** Archive complete non-thinking business output before local storage projection. */
   readonly onResponse?: (response: Readonly<ProviderResponse>) => Promise<void>;
@@ -306,94 +310,37 @@ export async function runProgressReviewer(
 
   const attemptStartedAt = safeNow(nowMs);
   const maxTokens = request.maxOutputTokens ?? MAX_PROGRESS_REVIEW_OUTPUT_TOKENS;
-  let first: ProviderResponse;
-  try {
-    first = await completeReviewRequest(
-      options,
-      request,
-      profile,
-      profile.messages,
-      1,
-      "initial",
-      accounting,
-      nowMs,
-    );
-  } catch (error) {
-    accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-    return unavailable(
-      request.binding,
-      request.signal?.aborted ? "interrupted" : "provider_failure",
-      providerFailureText(error),
-      accounting,
-    );
+  let capacityResetUsed = false;
+  const resetContext = async (value: ModelRequest) => {
+    if (capacityResetUsed) throw new Error("context_capacity_insufficient: reviewer context reset exhausted");
+    capacityResetUsed = true;
+    return resetRequestHistory(value);
+  };
+  const maximum = Math.min(request.maxModelRequests ?? Infinity, (options.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1);
+  let messages = profile.messages;
+  let detail = "Reviewer did not submit a valid structured report.";
+  for (let attempt = 1; attempt <= maximum; attempt++) {
+    let response: ProviderResponse;
+    try {
+      response = await completeReviewRequest(options, request, profile, messages, attempt,
+        attempt === 1 ? "initial" : "schema_correction", accounting, nowMs, resetContext);
+    } catch (error) {
+      accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
+      return unavailable(request.binding, request.signal?.aborted ? "interrupted" : "provider_failure",
+        providerFailureText(error), accounting);
+    }
+    const parsed = incompleteModelOutput(response) ? { error: incompleteModelOutput(response) } : parseReviewResponse(response, maxTokens);
+    if (parsed.report) {
+      accounting.validReviews = 1;
+      accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
+      return completed(request.binding, parsed.report, accounting);
+    }
+    detail = parsed.error ?? detail;
+    messages = correctedMessages(profile.messages, response, "RUNTIME_REVIEW_CONTENT_ERROR: " + detail +
+      " Submit one complete submit_review_result for the same immutable packet; do not invent evidence.");
   }
-
-  const firstParsed = parseReviewResponse(first, maxTokens);
-  if (firstParsed.report) {
-    accounting.validReviews = 1;
-    accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-    return completed(request.binding, firstParsed.report, accounting);
-  }
-
-  if (request.maxModelRequests === 1) {
-    accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-    return unavailable(
-      request.binding,
-      "invalid_report",
-      firstParsed.error ?? "Reviewer did not submit a valid structured report.",
-      accounting,
-    );
-  }
-
-  if (request.signal?.aborted) {
-    accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-    return unavailable(
-      request.binding,
-      "interrupted",
-      "Review was interrupted before its format correction.",
-      accounting,
-    );
-  }
-
-  const correctionMessages = correctedMessages(
-    profile.messages,
-    first,
-    profile.correction,
-  );
-  let corrected: ProviderResponse;
-  try {
-    corrected = await completeReviewRequest(
-      options,
-      request,
-      profile,
-      correctionMessages,
-      2,
-      "schema_correction",
-      accounting,
-      nowMs,
-    );
-  } catch (error) {
-    accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-    return unavailable(
-      request.binding,
-      request.signal?.aborted ? "interrupted" : "provider_failure",
-      providerFailureText(error),
-      accounting,
-    );
-  }
-
-  const correctedParsed = parseReviewResponse(corrected, maxTokens);
   accounting.reviewDurationMs = elapsed(attemptStartedAt, safeNow(nowMs));
-  if (!correctedParsed.report) {
-    return unavailable(
-      request.binding,
-      "invalid_report",
-      correctedParsed.error ?? "Reviewer did not submit a valid structured report.",
-      accounting,
-    );
-  }
-  accounting.validReviews = 1;
-  return completed(request.binding, correctedParsed.report, accounting);
+  return unavailable(request.binding, "invalid_report", detail + " Content corrections exhausted.", accounting);
 }
 
 function loadReviewerProfile(request: Readonly<ProgressReviewRequest>): ReviewerProfile {
@@ -423,10 +370,11 @@ async function completeReviewRequest(
   request: Readonly<ProgressReviewRequest>,
   profile: Readonly<ReviewerProfile>,
   messages: readonly ChatMessage[],
-  ordinal: 1 | 2,
+  ordinal: number,
   kind: ProgressReviewModelRequestRecord["kind"],
   accounting: MutableAccounting,
   nowMs: () => number,
+  resetContext: (request: ModelRequest) => Promise<ModelRequest>,
 ): Promise<ProviderResponse> {
   const startedAt = safeNow(nowMs);
   await options.onRequestStarted?.({ ordinal, kind });
@@ -442,7 +390,8 @@ async function completeReviewRequest(
     thinkingEffort: request.thinkingEffort,
   };
   try {
-    const response = await options.provider.complete(modelRequest);
+    const response = await completeWithApiRetries(options.provider, modelRequest, { limits: options.limits,
+      resetContext });
     const durationMs = elapsed(startedAt, safeNow(nowMs));
     addUsage(accounting, response.usage);
     const record: ProgressReviewModelRequestRecord = {
@@ -604,10 +553,9 @@ function validateRequest(request: Readonly<ProgressReviewRequest>): string | und
   }
   if (
     request.maxModelRequests !== undefined &&
-    request.maxModelRequests !== 1 &&
-    request.maxModelRequests !== 2
+    (!Number.isInteger(request.maxModelRequests) || request.maxModelRequests < 1 || request.maxModelRequests > 3)
   ) {
-    return "maxModelRequests must be 1 or 2.";
+    return "maxModelRequests must be between 1 and 3.";
   }
   return undefined;
 }

@@ -17,6 +17,7 @@ import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import type { ChatMessage, EventRecord, SessionState } from "../src/core/types.js";
+import { ProviderError } from "../src/providers/errors.js";
 
 const envelope = { systemPrompt: "Stable system rules", runtimeContext: "workspace state", tools: [] };
 const compactTool = new CompactContextTool();
@@ -82,13 +83,52 @@ function fixture() {
 }
 
 describe("completed-phase compaction transactions", () => {
-  it("retains non-thinking prose as a bounded handoff with one request and durable original", async () => {
+  it("keeps the earlier body when a later correction response is empty or transport fails", async () => {
+    for (const failedApi of [false, true]) {
+      const f = fixture(); let calls = 0;
+      try {
+        const result = await f.run({ complete: async () => {
+          calls++;
+          if (calls === 1) return { role: "assistant", content: "Earlier unverified handoff" };
+          if (failedApi) throw new ProviderError("busy", { provider: "deepseek", code: "503", retryable: true });
+          return { role: "assistant", content: "" };
+        } });
+        assert.equal(result.committed, true);
+        assert.match(f.state.workingSummary, /Earlier unverified handoff/);
+        assert.equal(calls, failedApi ? 2 : 3);
+        if (failedApi) assert.equal(f.events.filter(e => e.type === "context.compaction.rejected").length, 1);
+        assert.equal(f.store.recover(f.state.threadId).workingSummary, f.state.workingSummary);
+      } finally { f.dispose(); }
+    }
+  });
+  it("does not swallow persistence failure returned by the summary completion callback", async () => {
+    const f = fixture();
+    try {
+      await assert.rejects(f.run({ complete: async () => { throw new Error("journal callback failed"); } }), /journal callback failed/);
+      assert.equal(f.state.compactionControl?.transaction?.attempts, 1);
+      assert.equal(f.state.workingSummary, "");
+    } finally { f.dispose(); }
+  });
+  it("salvages a durable earlier body when a later correction was dispatched before a crash", async () => {
+    const f = fixture();
+    try {
+      await assert.rejects(f.run({ complete: async () => ({ role: "assistant", content: "Persisted raw body" }), append: async event => {
+        await f.append(event);
+        if (event.type === "context.compaction.attempt" && (event.payload as { attempt: number }).attempt === 2) throw new Error("crash");
+      } }), /crash/);
+      const resumed = f.store.recover(f.state.threadId);
+      const result = await f.run({ state: resumed, complete: async () => { throw new Error("No redispatch"); } });
+      assert.equal(result.requests, 0); assert.match(resumed.workingSummary, /Persisted raw body/);
+      assert.equal(resumed.compactionControl?.transaction?.attempts, 2);
+    } finally { f.dispose(); }
+  });
+  it("retains raw non-thinking prose after two format corrections and archives the original", async () => {
     const f = fixture();
     try {
       const prose = "中文😀 investigation unfinished; ".repeat(10000);
       const result = await f.run({ complete: async () => ({ role: "assistant", content: prose,
         reasoning_content: "PRIVATE_THINKING".repeat(10000) }) });
-      assert.equal(result.requests, 1);
+      assert.equal(result.requests, 3);
       assert.equal(result.committed, true);
       const document = JSON.parse(f.state.workingSummary);
       assert.equal(document.mode, "text_prefix");
@@ -115,14 +155,14 @@ describe("completed-phase compaction transactions", () => {
       assert.equal(JSON.parse(f.state.workingSummary).lossy, true);
     } finally { f.dispose(); }
   });
-  it("never promotes thinking-only output into a summary or spends a second request", async () => {
+  it("never promotes thinking-only output into a summary after three attempts", async () => {
     const f = fixture();
     try {
       const result = await f.run({ complete: async () => ({ role: "assistant", content: "", reasoning_content: "WRONG_SUMMARY".repeat(10000) }) });
-      assert.equal(result.requests, 1);
+      assert.equal(result.requests, 3);
       assert.equal(result.paused, undefined);
       assert.doesNotMatch(f.state.workingSummary, /WRONG_SUMMARY/u);
-      assert.ok(JSON.stringify(f.events).includes("empty_or_invalid_non_reasoning_output"));
+      assert.ok(JSON.stringify(f.events).includes("without usable body text"));
       assert.equal((await f.run({ complete: async () => { throw Error("no retry"); } })).requests, 0);
     } finally { f.dispose(); }
   });
@@ -165,7 +205,7 @@ describe("completed-phase compaction transactions", () => {
       const result = await f.run({ complete: async () => {
         const response = candidate(); response.tool_calls[0]!.function.arguments = JSON.stringify({ currentWork: "x".repeat(1300), nextStep: 42 }); return response;
       } });
-      assert.equal(result.requests, 1); assert.equal(result.paused, undefined);
+      assert.equal(result.requests, 3); assert.equal(result.paused, undefined);
       assert.ok(f.events.some(event => event.type === "context.compaction.rejected" && JSON.stringify(event.payload).includes("nextStep")));
     } finally { f.dispose(); }
   });
@@ -191,7 +231,7 @@ describe("completed-phase compaction transactions", () => {
     } finally { f.dispose(); }
   });
 
-  it("missing semantic fields use local recovery instead of model repair", async () => {
+  it("missing semantic fields use local recovery after bounded content repair", async () => {
     const f = fixture();
     try {
       let calls = 0;
@@ -202,9 +242,9 @@ describe("completed-phase compaction transactions", () => {
         broken.tool_calls[0]!.function.arguments = JSON.stringify({ currentWork: "Unfinished" });
         return broken;
       } });
-      assert.equal(calls, 1);
+      assert.equal(calls, 3);
       assert.equal(result.paused, undefined);
-      assert.equal(f.state.compactionControl?.transaction?.attempts, 1);
+      assert.equal(f.state.compactionControl?.transaction?.attempts, 3);
       assert.equal(JSON.stringify(f.state.messages), raw);
     } finally { f.dispose(); }
   });
@@ -232,10 +272,10 @@ describe("completed-phase compaction transactions", () => {
       assert.equal(result.paused, undefined);
       f.store.save(f.state);
       const resumed = f.store.recover(f.state.threadId);
-      assert.equal(resumed.compactionControl?.transaction?.attempts, 1);
+      assert.equal(resumed.compactionControl?.transaction?.attempts, 3);
       const retry = await f.run({ state: resumed, complete: async () => { throw new Error("budget reset"); } });
       assert.equal(retry.requests, 0);
-      assert.equal(f.events.filter((e) => e.type === "context.compaction.attempt").length, 1);
+      assert.equal(f.events.filter((e) => e.type === "context.compaction.attempt").length, 3);
     } finally { f.dispose(); }
   });
 
@@ -279,7 +319,7 @@ describe("completed-phase compaction transactions", () => {
       f.state.messages.push({ role: "assistant", content: "final" });
       foldCompactionControl(f.state, "context.phase.closed", { end: 6, kind: "turn", turnId: "same_turn" });
       assert.deepEqual(f.state.compactionControl.phaseEnds, [2, 5]);
-      assert.equal(eligiblePhaseEnd(f.state, false), 4);
+      assert.equal(eligiblePhaseEnd(f.state, false), 2); // Default five-exchange protection.
     } finally { f.dispose(); }
   });
 
@@ -295,14 +335,16 @@ describe("completed-phase compaction transactions", () => {
       assert.equal(result.reason, "limit_reached");
       assert.equal(result.failure?.code, "context_capacity_exhausted");
       assert.equal(result.failure?.attempts, 0);
-      assert.equal(f.state.compactedMessageCount, 0);
+      assert.equal(f.state.compactedMessageCount, f.state.messages.length - 1); // final pause message is new
+      assert.ok(f.state.pressureRecovery?.serverReset);
     } finally { f.dispose(); }
   });
 
   it("a lost summary response still consumes its single durable attempt", async () => {
     const f = fixture();
     try {
-      const result = await f.run({ complete: async () => { throw new Error("network disconnect"); } });
+      const result = await f.run({ complete: async () => { throw new ProviderError("network disconnect",
+        { provider: "deepseek", code: "network_error", retryable: true }); } });
       assert.equal(result.paused, undefined);
       const resumed = f.store.recover(f.state.threadId);
       assert.equal(resumed.compactionControl?.transaction?.attempts, 1);

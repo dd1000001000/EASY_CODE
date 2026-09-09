@@ -11,6 +11,8 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { documentToolSchema } from "../tools/metadata.js";
 import { boundedText } from "../utils/bounded-text.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import { completeWithApiRetries, incompleteModelOutput } from "./model-retry.js";
 
 export interface AutoModeSelection {
   readonly kind: "route";
@@ -48,7 +50,7 @@ const MAX_AUTO_ROUTE_SUMMARY_CHARS = 3_000;
 const MAX_AUTO_ROUTE_MESSAGE_CHARS = 3_500;
 const MAX_AUTO_ROUTE_MESSAGES = 10;
 const MAX_AUTO_ROUTE_REASON_CHARS = 300;
-const AUTO_ROUTE_ATTEMPTS = 2;
+const AUTO_ROUTE_ATTEMPTS = DEFAULT_RUNTIME_LIMITS.modelContentRetries + 1;
 const SELECT_MODE_TOOL_NAME = "select_mode";
 const RESPOND_DIRECTLY_TOOL_NAME = "respond_directly";
 
@@ -384,9 +386,10 @@ export async function determineAutoRoute(
   context?: AutoRouteContext,
   controllerPolicy?: string,
   onRequest?: AutoRouteRequestObserver,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
 ): Promise<AutoRouteDecision> {
   const attempts: AutoRouteAttempt[] = [];
-  for (let attempt = 0; attempt < AUTO_ROUTE_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt <= limits.modelContentRetries; attempt += 1) {
     let response: Awaited<ReturnType<ModelProvider["complete"]>>;
     try {
       const request: ModelRequest = {
@@ -407,18 +410,18 @@ export async function determineAutoRoute(
       } catch {
         // Request accounting is observational and must never break routing.
       }
-      response = await provider.complete(request);
+      response = await completeWithApiRetries(provider, request, { limits });
     } catch (error) {
       if (attempts.length > 0) {
         throw new AutoRouteRequestError(error, attempts);
       }
       throw error;
     }
-    const decision = parseAutoRouteDecision(response.message);
+    const decision = incompleteModelOutput(response) ? undefined : parseAutoRouteDecision(response.message);
     attempts.push(
       routeAttempt(attempt + 1, decision?.kind ?? "invalid", response),
     );
     if (decision) return { ...decision, attempts: [...attempts] };
   }
-  throw new AutoRouteSelectionError(attempts);
+  return { kind: "route", mode: "code", reason: "Auto routing content corrections exhausted; continue with ordinary Code workflow and unchanged command permissions.", attempts };
 }

@@ -1,1 +1,1 @@
-Your previous response did not satisfy the reviewer output schema. This is the only format-correction opportunity in the current review attempt. Re-evaluate nothing outside the same immutable packet and call submit_review_result exactly once with every required field and no additional fields.
+Your previous response did not satisfy the reviewer output schema. Runtime applies the shared configured content-correction budget. Re-evaluate nothing outside the same immutable packet and call submit_review_result exactly once with every required field and no additional fields.
