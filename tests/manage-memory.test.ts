@@ -183,7 +183,7 @@ describe("manage_memory model tool", () => {
         {
           action: "remember",
           category: "convention",
-          content: "x".repeat(121),
+          content: "x".repeat(1201),
           reason: "The user requested an oversized compound memory.",
         },
         toolContext,

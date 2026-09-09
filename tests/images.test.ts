@@ -477,7 +477,7 @@ describe("image attachments", () => {
         workspaceRoot: path.join(root, "workspace"),
         mode: "code",
         provider: "qwen",
-        model: "qwen3-vl-plus",
+        model: "qwen3.7-plus",
       });
       const store = new ImageStore(dataDir, { leaseId });
       const attachment = await store.importBuffer(
@@ -597,7 +597,7 @@ describe("image attachments", () => {
         workspaceRoot: path.join(root, "workspace"),
         mode: "code",
         provider: "qwen",
-        model: "qwen3-vl-plus",
+        model: "qwen3.7-plus",
       });
       const owner = new ImageStore(dataDir, {
         orphanGraceMs: 100,
@@ -754,7 +754,7 @@ describe("image attachments", () => {
         workspaceRoot: path.join(root, "workspace"),
         mode: "code",
         provider: "qwen",
-        model: "qwen3-vl-plus",
+        model: "qwen3.7-plus",
       });
       const message = {
         role: "user" as const,
@@ -819,7 +819,7 @@ describe("image attachments", () => {
     };
     const captured: JsonPostRequest[] = [];
     let loadCount = 0;
-    const provider = createProvider(config, "qwen", "qwen3-vl-plus", {
+    const provider = createProvider(config, "qwen", "qwen3.7-plus", {
       loadImage: async () => {
         loadCount += 1;
         return PNG_16X16;
@@ -864,7 +864,7 @@ describe("image attachments", () => {
       height: 16,
     }));
     let body = "";
-    const provider = createProvider(config, "qwen", "qwen3-vl-plus", {
+    const provider = createProvider(config, "qwen", "qwen3.7-plus", {
       loadImage: async () => PNG_16X16,
       transport: async (request) => {
         body = request.body;
@@ -1013,7 +1013,7 @@ describe("image attachments", () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.qwen.apiKey = "test-key";
     let loaded = false;
-    const provider = createProvider(config, "qwen", "qwen3-vl-plus", {
+    const provider = createProvider(config, "qwen", "qwen3.7-plus", {
       loadImage: async () => {
         loaded = true;
         return PNG_1X1;
@@ -1079,7 +1079,7 @@ describe("image attachments", () => {
     ];
     const loadedIds: string[] = [];
     let body = "";
-    const provider = createProvider(config, "qwen", "qwen3-vl-plus", {
+    const provider = createProvider(config, "qwen", "qwen3.7-plus", {
       loadImage: async (attachment) => {
         loadedIds.push(attachment.id);
         return PNG_16X16;
@@ -1173,7 +1173,7 @@ describe("image attachments", () => {
       height: 1,
     };
     let serialized = "";
-    const provider = createProvider(config, "qwen", "qwen3-max", {
+    const provider = createProvider(config, "qwen", "qwen3.7-max", {
       loadImage: async () => {
         throw new Error("text-only models must not load image bytes");
       },

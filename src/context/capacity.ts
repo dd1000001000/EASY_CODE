@@ -32,7 +32,9 @@ export function contextRequestKey(manager: ContextManager, maxContextChars: numb
   return sha256(JSON.stringify([envelope, manager.tokenCapacity, maxContextChars,
     limits.contextCompactionTriggerRatio, limits.contextCompactionTargetRatio, limits.contextMaxRebasesPerRequest,
     limits.contextReferenceTriggerRatio, limits.contextReferenceTargetRatio, limits.contextRecallProtectionExchanges,
-    limits.compactionRetainRecentExchanges, limits.contextToolReferenceMinChars, limits.contextToolBatchTokens]));
+    limits.compactionRetainRecentExchanges, limits.contextToolReferenceMinChars, limits.contextToolBatchTokens,
+    limits.contextForceRatio, limits.contextCompactionMaxGrowthTokens, limits.contextSummaryMaxTokens,
+    limits.contextSummaryMaxChars, limits.contextSemanticFieldMaxChars]));
 }
 
 /** Stable across Resume and synthetic status messages; new user instructions reset it. */

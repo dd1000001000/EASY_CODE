@@ -2,6 +2,9 @@ import type { ToolExecutionResult } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { sha256 } from "../utils/hash.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { CommandOutputArchive } from "../command/output-archive.js";
+import path from "node:path";
 
 export function toolEvidenceId(threadId: string, callId: string): string {
   return `evidence_${sha256(JSON.stringify([threadId, callId]))}`;
@@ -10,7 +13,10 @@ export function toolEvidenceId(threadId: string, callId: string): string {
 /** Captured before model-facing clipping, immutable and scope checked. This
  * stores captured tool data, not unlimited process output or private thinking. */
 export class EvidenceStore {
-  constructor(private readonly storage: EasyCodeStorage) {}
+  constructor(private readonly storage: EasyCodeStorage, readonly limits = DEFAULT_RUNTIME_LIMITS) {}
+  createCommandArchive(workspaceId: string, threadId: string, commandId: string): CommandOutputArchive {
+    return new CommandOutputArchive(path.join(this.storage.artifactsDir, "command-output"), workspaceId, threadId, commandId, this.limits);
+  }
 
   capture(workspaceId: string, threadId: string, callId: string, tool: string,
     result: ToolExecutionResult): string {
@@ -34,11 +40,12 @@ export class EvidenceStore {
     return id;
   }
 
-  read(workspaceId: string, threadId: string, id: string, offset = 0, limit = 8000): object {
-    if (!/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48})$/u.test(id)) throw new Error("Invalid evidence ID");
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 16000) {
+  read(workspaceId: string, threadId: string, id: string, offset = 0, limit = this.limits.evidenceRecallDefaultChars): object {
+    if (!/^(?:evidence_[a-f0-9]{64}|context_[a-f0-9]{48}|command_output_[a-f0-9]{64})$/u.test(id)) throw new Error("Invalid evidence ID");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > this.limits.evidenceRecallMaxChars) {
       throw new Error("Invalid evidence page");
     }
+    if (id.startsWith("command_output_")) return CommandOutputArchive.read(path.join(this.storage.artifactsDir, "command-output"), workspaceId, threadId, id, offset, limit);
     const row = id.startsWith("context_") ? this.storage.db.prepare<[string, string, string], {
       tool: string; content: string; content_hash: string; truncated: number;
     }>("SELECT source_type AS tool, content, content_hash, COALESCE(json_extract(metadata_json, '$.sourceTruncated'), 0) AS truncated FROM context_artifacts WHERE id = ? AND workspace_id = ? AND thread_id = ?")

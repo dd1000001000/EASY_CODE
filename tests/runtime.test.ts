@@ -25,6 +25,7 @@ import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { createProgressGuardState } from "../src/progress/guard.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   const now = new Date().toISOString();
@@ -94,6 +95,9 @@ function summaryResponse(currentWork = "Investigation unfinished; no fix verifie
 function contextRuntime(provider: ModelProvider, tools: AgentTool[],
   events: Array<{ type: string; payload: unknown }> = [], purposes: string[] = []) {
   return new AgentRuntime({
+    // These small-window protocol fixtures retain two exchanges deliberately.
+    // The default five-exchange policy is covered by large-context.test.ts.
+    limits: { ...DEFAULT_RUNTIME_LIMITS, compactionRetainRecentExchanges: 2, contextSummaryMaxTokens: 2048, contextCompactionTriggerRatio: 0.8 },
     provider, tools, contextManager: new ContextManager(), buildSystemPrompt: async () => "rules",
     getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
     appendEvent: async (event) => { events.push(event); },
@@ -558,7 +562,7 @@ describe("AgentRuntime", () => {
     let imageCommittedBeforeRouting = false;
     const provider: ModelProvider = {
       name: "qwen",
-      model: "qwen3-vl-plus",
+      model: "qwen3.7-plus",
       async complete(request) {
         requestCount += 1;
         assert.equal(request.thinkingEffort, "medium");

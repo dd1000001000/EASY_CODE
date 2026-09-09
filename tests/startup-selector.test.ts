@@ -480,7 +480,7 @@ describe("three-stage model selector", () => {
   it("shows all Alibaba Qwen models and does not rewrite an existing key", async () => {
     const terminal = new ScriptedStartupTerminal(
       "qwen",
-      "qwen3-vl-flash",
+      "qwen3.5-flash",
       "unused",
       "high",
     );
@@ -497,13 +497,9 @@ describe("three-stage model selector", () => {
       [
         "qwen3.7-max",
         "qwen3.7-plus",
-        "qwen3.6-max",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "qwen3.5-flash",
-        "qwen3-max",
-        "qwen3-vl-plus",
-        "qwen3-vl-flash",
       ],
     );
     assert.deepEqual(terminal.secretPrompts, []);
@@ -516,7 +512,7 @@ describe("three-stage model selector", () => {
     assert.ok(terminal.thinkingChoices.every((choice) => choice.applied));
     assert.match(
       terminal.transcript,
-      /Selected Alibaba Qwen \/ qwen3-vl-flash \/ thinking high/u,
+      /Selected Alibaba Qwen \/ qwen3.5-flash \/ thinking high/u,
     );
     assert.match(terminal.transcript, /"thinkingEffort": "high"/u);
     assert.match(terminal.transcript, /"thinkingApplied": true/u);

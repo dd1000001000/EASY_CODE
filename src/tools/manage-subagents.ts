@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 import type {
   AgentTool,
@@ -68,12 +69,12 @@ const standaloneTaskSchema = z
   })
   .strict();
 
-export const manageSubagentsInputSchema = z.union([
+export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS) { return z.union([
   z
     .object({
       action: z.literal("spawn"),
       taskId: taskIdSchema,
-      instructions: boundedAgentText(MAX_SUBAGENT_INSTRUCTIONS_CHARS),
+      instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
     })
     .strict(),
@@ -81,7 +82,7 @@ export const manageSubagentsInputSchema = z.union([
     .object({
       action: z.literal("spawn"),
       task: standaloneTaskSchema,
-      instructions: boundedAgentText(MAX_SUBAGENT_INSTRUCTIONS_CHARS),
+      instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
     })
     .strict(),
@@ -107,7 +108,7 @@ export const manageSubagentsInputSchema = z.union([
     .object({
       action: z.literal("follow_up"),
       agentId: subagentIdSchema,
-      message: boundedAgentText(MAX_SUBAGENT_FOLLOW_UP_CHARS),
+      message: boundedAgentText(limits.subagentFollowUpMaxChars),
     })
     .strict(),
   z
@@ -128,7 +129,8 @@ export const manageSubagentsInputSchema = z.union([
     .refine((value) => value.destination === "branch" || value.branchName === undefined, {
       message: "branchName is valid only for branch handoff",
     }),
-]);
+]); }
+export const manageSubagentsInputSchema = createManageSubagentsInputSchema();
 
 /**
  * Main-agent control surface. The injected controller is the authority for
@@ -138,8 +140,8 @@ export const manageSubagentsInputSchema = z.union([
 export class ManageSubagentsTool implements AgentTool {
   readonly name = "manage_subagents" as const;
   readonly mutating = true;
-  readonly inputSchema = manageSubagentsInputSchema;
-  readonly definition: ToolDefinition = {
+  get inputSchema() { return createManageSubagentsInputSchema(this.limits); }
+  get definition(): ToolDefinition { return {
     type: "function",
     function: {
       name: this.name,
@@ -186,7 +188,7 @@ export class ManageSubagentsTool implements AgentTool {
           instructions: {
             type: "string",
             minLength: 1,
-            maxLength: MAX_SUBAGENT_INSTRUCTIONS_CHARS,
+            maxLength: this.limits.subagentInstructionsMaxChars,
           },
           isolation: {
             type: "string",
@@ -211,7 +213,7 @@ export class ManageSubagentsTool implements AgentTool {
           message: {
             type: "string",
             minLength: 1,
-            maxLength: MAX_SUBAGENT_FOLLOW_UP_CHARS,
+            maxLength: this.limits.subagentFollowUpMaxChars,
           },
           reason: {
             type: "string",
@@ -230,9 +232,9 @@ export class ManageSubagentsTool implements AgentTool {
         required: ["action"],
       }),
     },
-  };
+  }; }
 
-  constructor(private readonly control: SubagentControl) {}
+  constructor(private readonly control: SubagentControl, private readonly limits = DEFAULT_RUNTIME_LIMITS) {}
 
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {

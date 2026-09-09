@@ -49,7 +49,7 @@ export class OutputCollector {
   private finished = false;
   private _totalBytes = 0;
 
-  constructor(private readonly maxChars: number) {
+  constructor(private readonly maxChars: number, private readonly archiveText?: (text: string) => void) {
     const bounded = Math.max(256, maxChars);
     this.headLimit = Math.ceil(bounded / 2);
     this.tailLimit = Math.floor(bounded / 2);
@@ -124,6 +124,7 @@ export class OutputCollector {
 
   private retain(value: string): void {
     if (!value) return;
+    this.archiveText?.(value);
     this.retainedChars += value.length;
 
     if (this.head.length < this.headLimit) {

@@ -4,6 +4,7 @@ import { sha256 } from "../utils/hash.js";
 export interface PressureRecoveryState {
   toolReferences: number[];
   summaries: Record<string, string>;
+  optionalMemorySuppressed?: boolean;
   serverReset?: import("./server-reset.js").ServerContextReset;
   reconciliation?: import("./reconciliation.js").ContextReconciliation;
   rebase?: { scope: string; count: number };

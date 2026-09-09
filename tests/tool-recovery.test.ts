@@ -11,6 +11,7 @@ import { normalizeToolFailure, prepareToolInput, toolResultForModel } from "../s
 import { deserializeSessionState, serializeSessionState } from "../src/threads/serialization.js";
 import { compactionV2Input } from "./compaction-fixture.js";
 import { describe, it } from "./harness.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 const requestText = "网页端插件和vscode插件具体是怎么通信的";
 const options = { maxSteps: 4, maxContextChars: 400_000, maxOutputChars: 1_024, commandTimeoutMs: 1_000, approvalPolicy: "never" as const };
@@ -70,7 +71,9 @@ describe("Runtime tool recovery", () => {
       delete (candidate as Partial<typeof candidate>).activeConstraints;
       return toolCall("compact_context", candidate, 1);
     } };
-    const result = await createRuntime(provider, [new CompactContextTool()]).run(current, requestText,
+    const result = await createRuntime(provider, [new CompactContextTool()], {
+      limits: { ...DEFAULT_RUNTIME_LIMITS, compactionRetainRecentExchanges: 2, contextSummaryMaxTokens: 2048, contextCompactionTriggerRatio: 0.8 },
+    }).run(current, requestText,
       { ...options, maxContextChars: 100_000, maxContextTokens: 34_000 });
     assert.equal(result.reason, "success", result.text);
     assert.equal(requests.length, 2);

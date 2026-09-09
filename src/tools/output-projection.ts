@@ -66,6 +66,7 @@ export function projectToolResult(result: ToolExecutionResult,
   const stderrLimit = maximum - stdoutLimit;
   const digest = (stream: Record<string, unknown>, text: string, limit: number) => ({
     text: excerpt(text, limit), totalBytes: stream.totalBytes,
+    ...(stream.archive ? { archive: stream.archive } : {}),
     truncated: stream.truncated === true || text.length > limit,
   });
   return { ...result, data: {

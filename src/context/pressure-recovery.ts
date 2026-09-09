@@ -76,6 +76,12 @@ export interface RecoveryInput {
   append: (event: Omit<EventRecord, "schemaVersion" | "sequence" | "timestamp" | "eventId">) => Promise<unknown>;
 }
 
+/** Persist the hysteresis gate independently of maintenance/retry counters. */
+export function foldMemoryGate(state: SessionState, raw: unknown): void {
+  const event = z.object({ suppressed: z.boolean() }).strict().parse(raw);
+  (state.pressureRecovery ??= { toolReferences: [], summaries: {} }).optionalMemorySuppressed = event.suppressed;
+}
+
 /** Records the decision, so re-entering the loop/Resume cannot compact the same input again. */
 export function foldContextMaintenance(state: SessionState, raw: unknown): void {
   const event = z.object({ historyHash: z.string(), requestKey: z.string(), usage: z.number().nonnegative().optional(),
@@ -131,6 +137,8 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
     }
   }
   const projected = pressureProjectedMessages(state);
+  const initialCapacity = assessCapacity(input.manager, state, input.maxContextChars, input.nextRequest, limits);
+  let projectedUsage = initialCapacity.usage;
   const references = new Set<number>();
   let batch: number[] = [];
   const flush = () => {
@@ -148,9 +156,11 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
       if ((oldLarge || tokens > limits.contextToolBatchTokens) && size > referenceTokens &&
           !state.pressureRecovery?.toolReferences.includes(index)) {
         if (oldLarge && tokens <= limits.contextToolBatchTokens && references.size &&
-            preview(input, state.compactedMessageCount, [...references], "tool_references").capacity.utilization <= limits.contextReferenceTargetRatio) continue;
+            projectedUsage / initialCapacity.capacity <= limits.contextReferenceTargetRatio) continue;
         references.add(index);
         tokens -= size - referenceTokens;
+        projectedUsage -= input.manager.tokenCapacity ? size - referenceTokens
+          : (message.content?.length ?? 0) - toolOutputReference(message as Extract<typeof message, { role: "tool" }>, index).content!.length;
       }
     }
     batch = [];

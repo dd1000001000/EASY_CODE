@@ -14,24 +14,24 @@ import { pressureProjectedMessages } from "./pressure-projection.js";
 import { requestTokens, tokenBudget, type TokenBudget } from "./token-budget.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
-export const MAX_CONTEXT_SUMMARY_CHARS = 12_000;
+export const MAX_CONTEXT_SUMMARY_CHARS = DEFAULT_RUNTIME_LIMITS.contextSummaryMaxChars;
 /**
  * Maximum projected recent conversation considered for a provider request.
  * Older evidence remains durable and is recovered through the Thread-private
  * index.
  */
 export const MAX_ACTIVE_WORKING_SET_CHARS = DEFAULT_RUNTIME_LIMITS.maxActiveContextChars;
-export const CONTEXT_COMPACTION_SUGGEST_RATIO = 0.6;
-export const CONTEXT_COMPACTION_REQUIRE_RATIO = 0.8;
-export const CONTEXT_COMPACTION_FORCE_RATIO = 0.9;
+export const CONTEXT_COMPACTION_SUGGEST_RATIO = DEFAULT_RUNTIME_LIMITS.contextReferenceTriggerRatio;
+export const CONTEXT_COMPACTION_REQUIRE_RATIO = DEFAULT_RUNTIME_LIMITS.contextCompactionTriggerRatio;
+export const CONTEXT_COMPACTION_FORCE_RATIO = DEFAULT_RUNTIME_LIMITS.contextForceRatio;
 
 export type ContextPressureLevel = "normal" | "suggest" | "require" | "force";
 
-export function contextPressureLevel(utilization: number): ContextPressureLevel {
+export function contextPressureLevel(utilization: number, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): ContextPressureLevel {
   const normalized = Number.isNaN(utilization) ? 0 : Math.max(0, utilization);
-  if (normalized >= CONTEXT_COMPACTION_FORCE_RATIO) return "force";
-  if (normalized >= CONTEXT_COMPACTION_REQUIRE_RATIO) return "require";
-  if (normalized >= CONTEXT_COMPACTION_SUGGEST_RATIO) return "suggest";
+  if (normalized >= limits.contextForceRatio) return "force";
+  if (normalized >= limits.contextCompactionTriggerRatio) return "require";
+  if (normalized >= limits.contextReferenceTriggerRatio) return "suggest";
   return "normal";
 }
 
@@ -356,8 +356,8 @@ export class ContextManager {
   ): { compactedMessageCount: number; summaryChars: number } {
     const normalized = redactSensitiveInformation(summary.trim());
     if (!normalized) throw new Error("Context summary must not be empty");
-    if (normalized.length > MAX_CONTEXT_SUMMARY_CHARS) {
-      throw new Error(`Context summary exceeds ${MAX_CONTEXT_SUMMARY_CHARS} characters`);
+    if (normalized.length > this.limits.contextSummaryMaxChars) {
+      throw new Error(`Context summary exceeds ${this.limits.contextSummaryMaxChars} characters`);
     }
     if (
       !Number.isInteger(compactedMessageCount) ||
@@ -479,7 +479,7 @@ export class ContextManager {
       estimatedShortTermChars,
       estimatedShortTermTokens: this.estimateShortTermTokens(state),
       utilization,
-      pressure: contextPressureLevel(utilization),
+      pressure: contextPressureLevel(utilization, this.limits),
     };
   }
 
@@ -514,7 +514,7 @@ export class ContextManager {
       ...(this.capacity ? { inputTokenCapacity: this.capacity.inputCapacity,
         outputTokenReserve: this.capacity.outputReserve } : {}),
       utilization,
-      pressure: contextPressureLevel(utilization),
+      pressure: contextPressureLevel(utilization, this.limits),
     };
   }
 }

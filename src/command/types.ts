@@ -110,6 +110,7 @@ export interface CommandPolicyDecision {
 }
 
 export interface OutputDigest {
+  archive?: import("./output-archive.js").OutputArchiveReference;
   head: string;
   tail: string;
   text: string;

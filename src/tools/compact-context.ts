@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
 import { MAX_CONTEXT_SUMMARY_CHARS } from "../context/manager.js";
 import type {
@@ -175,26 +176,27 @@ function copyCoverageCheck(
 export class CompactContextTool implements AgentTool {
   readonly name = "compact_context" as const;
   readonly mutating = false;
-  readonly inputSchema = z.unknown().transform(parseSemanticRequestPatch);
-  readonly definition: ToolDefinition = {
+  constructor(private readonly limits = DEFAULT_RUNTIME_LIMITS) {}
+  get inputSchema() { return z.unknown().transform(value => parseSemanticRequestPatch(value, this.limits.contextSemanticFieldMaxChars)); }
+  get definition(): ToolDefinition { return {
     type: "function",
     function: { name: this.name, ...documentToolSchema(this.name, {
   type: "object", additionalProperties: false,
   properties: {
-    currentWork: { type: "string", minLength: 1, maxLength: 1200 },
-    decisions: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
+    currentWork: { type: "string", minLength: 1, maxLength: this.limits.contextSemanticFieldMaxChars },
+    decisions: { type: "array", maxItems: 32, items: { type: "string", maxLength: this.limits.contextSemanticFieldMaxChars } },
     conclusions: { type: "array", maxItems: 32, items: {
       type: "object", additionalProperties: false, properties: {
-        text: { type: "string", minLength: 1, maxLength: 1200 },
+        text: { type: "string", minLength: 1, maxLength: this.limits.contextSemanticFieldMaxChars },
         evidenceIds: { type: "array", maxItems: 12, items: { type: "string", pattern: "^ev_[a-f0-9]{24}$" } },
       }, required: ["text"],
     } },
-    hypotheses: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
-    failedApproaches: { type: "array", maxItems: 32, items: { type: "string", maxLength: 1200 } },
-    nextStep: { type: "string", minLength: 1, maxLength: 1200 },
+    hypotheses: { type: "array", maxItems: 32, items: { type: "string", maxLength: this.limits.contextSemanticFieldMaxChars } },
+    failedApproaches: { type: "array", maxItems: 32, items: { type: "string", maxLength: this.limits.contextSemanticFieldMaxChars } },
+    nextStep: { type: "string", minLength: 1, maxLength: this.limits.contextSemanticFieldMaxChars },
   },
 }) },
-  };
+  }; }
   async execute(input: unknown, _context: ToolContext): Promise<ToolExecutionResult> {
     try {
       const patch = this.inputSchema.parse(input);

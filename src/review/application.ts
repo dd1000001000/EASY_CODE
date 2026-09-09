@@ -110,7 +110,8 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       actorThreads: { author: createId("thread"), reviewer: createId("thread") },
       maxRounds: deps.limits.reviewMaxRounds, maxRequests: Math.max(2, Math.min(deps.limits.reviewMaxRequests, input.remainingModelRequests)),
       maxTools: deps.limits.reviewMaxToolCalls, deadline: Date.now() + deps.limits.reviewTimeoutMs,
-      summaryTokens: deps.limits.reviewSummaryMaxTokens });
+      summaryTokens: deps.limits.reviewSummaryMaxTokens,
+      briefingTokens: deps.limits.reviewBriefingMaxTokens, handoffTokens: deps.limits.reviewHandoffMaxTokens });
     session = state.reviewSessions!.at(-1)!;
   } else if (session.directory) {
     try { copies = await restoreReviewCopies(session.directory, session.id, session.snapshotId); } catch (error) { setupError = error; }
@@ -182,11 +183,12 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       const runtime = new CommandRuntime(workspace, undefined, backend, undefined, {
         networkProfile: deps.offline ? "review_offline" : "development",
         lifecycleDirectory: path.join(deps.lifecycleDirectory, threadId),
+        createOutputArchive: commandId => deps.memory.evidenceStore.createCommandArchive(workspaceId, threadId, commandId),
         recordLifecycle: (context, commandId, type, payload) => durableReviewWrite(() => deps.store.appendEvent(threadId,
           { type, turnId: reviewId, payload: { commandId, detail: payload } })),
       });
       commands.push(runtime);
-      const tools = createDefaultTools(workspace, undefined, { commandRuntime: runtime }).filter(t =>
+      const tools = createDefaultTools(workspace, undefined, { commandRuntime: runtime, limits: deps.limits }).filter(t =>
         ["read_file", "search_files", "run_command", "search_context", "recall_context"].includes(t.name));
       const context: ToolContext = {
         workspaceRoot: root, mode: "code", threadId, turnId: reviewId, approvalPolicy: "ask",
@@ -205,7 +207,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
             const owner = get().experiments.find(e => e.id === id)?.actor ??
               get().statements.find(s => s.value.evidenceRefs.includes(id))?.actor;
             return deps.memory.evidenceStore.read(workspaceId, owner ? get().actorThreads![owner] : threadId, id, offset, limit);
-          }); } catch (error) { return { ok: false, summary: "Historical evidence unavailable", error: String(error) }; }
+          }, deps.limits); } catch (error) { return { ok: false, summary: "Historical evidence unavailable", error: String(error) }; }
         },
         searchHistory: async (query, limit) => {
           await deps.index.checkpoint(workspaceId, actorState!);

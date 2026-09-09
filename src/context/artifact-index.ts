@@ -15,6 +15,7 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import type { EmbeddingProvider } from "../memory/vector-index.js";
 import type { EasyCodeStorage } from "../storage/database.js";
 import { sha256 } from "../utils/hash.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
 export type ContextArtifactSource = "user" | "assistant" | "tool";
 
@@ -137,9 +138,6 @@ interface PreparedEmbedding {
   readonly bytes: Uint8Array;
 }
 
-const MAX_INDEXED_MESSAGE_CHARS = 96_000;
-const CHUNK_CHARS = 1_400;
-const CHUNK_OVERLAP_CHARS = 160;
 const MAX_CHECKPOINT_FILES = 240;
 const MAX_CHECKPOINT_CHANGES = 120;
 const MAX_CHECKPOINT_COMMANDS = 80;
@@ -342,16 +340,16 @@ function artifactText(message: ChatMessage, messageIndex: number): {
   return content ? { source: "tool", title, content, importance } : undefined;
 }
 
-function splitIntoChunks(value: string): string[] {
-  const text = boundedText(redactSensitiveInformation(value), MAX_INDEXED_MESSAGE_CHARS).trim();
+function splitIntoChunks(value: string, limits: Readonly<RuntimeLimits>): string[] {
+  const text = value.trim();
   if (!text) return [];
-  if (text.length <= CHUNK_CHARS) return [text];
+  if (text.length <= limits.artifactChunkChars) return [text];
   const chunks: string[] = [];
   let start = 0;
   while (start < text.length) {
-    let end = Math.min(text.length, start + CHUNK_CHARS);
+    let end = Math.min(text.length, start + limits.artifactChunkChars);
     if (end < text.length) {
-      const minimumSplit = start + Math.floor(CHUNK_CHARS * 0.6);
+      const minimumSplit = start + Math.floor(limits.artifactChunkChars * 0.6);
       const newline = text.lastIndexOf("\n", end);
       const space = text.lastIndexOf(" ", end);
       const split = Math.max(newline, space);
@@ -360,7 +358,7 @@ function splitIntoChunks(value: string): string[] {
     const chunk = text.slice(start, end).trim();
     if (chunk) chunks.push(chunk);
     if (end >= text.length) break;
-    const next = Math.max(start + 1, end - CHUNK_OVERLAP_CHARS);
+    const next = Math.max(start + 1, end - limits.artifactChunkOverlapChars);
     start = next;
   }
   return chunks;
@@ -371,29 +369,38 @@ async function artifactsForMessage(
   message: ChatMessage,
   messageIndex: number,
   provider: EmbeddingProvider,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
 ): Promise<PendingArtifact[]> {
   const document = artifactText(message, messageIndex);
   if (!document) return [];
-  const text = boundedText(redactSensitiveInformation(document.content), MAX_INDEXED_MESSAGE_CHARS);
-  let windows: readonly { text: string; start: number; end: number }[];
-  try {
-    windows = provider.splitText ? await provider.splitText(text) : [];
-  } catch {
-    // Missing tokenizer must not disable lexical retrieval.
-    windows = [];
-  }
-  if (!windows.length) {
-    let cursor = 0;
-    windows = splitIntoChunks(text).map((content) => {
-      const start = text.indexOf(content, cursor);
-      cursor = Math.max(start + 1, start + content.length - CHUNK_OVERLAP_CHARS);
-      return { text: content, start, end: start + content.length };
-    });
+  const text = redactSensitiveInformation(document.content);
+  const windows: { text: string; start: number; end: number }[] = [];
+  // Tokenizer work is bounded per batch, not by dropping the middle of a source.
+  for (let offset = 0; offset < text.length;) {
+    let end = Math.min(text.length, offset + limits.artifactIndexBatchChars);
+    if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end--;
+    const batch = text.slice(offset, end);
+    let parts: readonly { text: string; start: number; end: number }[] = [];
+    try { parts = provider.splitText ? await provider.splitText(batch) : []; } catch { /* lexical fallback */ }
+    if (!parts.length) {
+      let cursor = 0;
+      parts = splitIntoChunks(batch, limits).map(content => {
+        const start = batch.indexOf(content, cursor);
+        cursor = Math.max(start + 1, start + content.length - limits.artifactChunkOverlapChars);
+        return { text: content, start, end: start + content.length };
+      });
+    }
+    windows.push(...parts.map(part => ({ ...part, start: offset + part.start, end: offset + part.end })));
+    if (end === text.length) break;
+    offset = Math.max(offset + 1, end - limits.artifactChunkOverlapChars);
   }
   let file: Partial<ContextEvidenceMetadata> = {};
+  let sourceTruncated = false;
   if (message.role === "tool") {
     try {
-      const evidenceId = JSON.parse(message.content)?.evidenceId;
+      const payload = JSON.parse(message.content);
+      const evidenceId = payload?.evidenceId;
+      sourceTruncated = payload?.data?.truncated === true || payload?.data?.stdout?.truncated === true || payload?.data?.stderr?.truncated === true;
       if (typeof evidenceId === "string") file = { evidenceId };
     } catch { /* Legacy messages have no captured evidence locator. */ }
   }
@@ -421,7 +428,7 @@ async function artifactsForMessage(
       chunkIndex,
       importance: document.importance,
       metadata: { ...file, startOffset: window.start, endOffset: window.end,
-        sourceTruncated: document.content.length > MAX_INDEXED_MESSAGE_CHARS },
+        sourceTruncated },
     };
   });
 }
@@ -653,7 +660,7 @@ export class ContextArtifactIndex {
     private readonly storage: EasyCodeStorage,
     private readonly provider: EmbeddingProvider,
     private readonly onVectorError?: (error: unknown) => void,
-    private readonly options: { backgroundVectors?: boolean } = {},
+    private readonly options: { backgroundVectors?: boolean; limits?: Readonly<RuntimeLimits> } = {},
   ) {
     if (!Number.isInteger(provider.dimension) || provider.dimension <= 0) {
       throw new Error("Context embedding provider dimension is invalid");
@@ -661,6 +668,10 @@ export class ContextArtifactIndex {
   }
 
   close(): void { this.stopped = true; this.caches.clear(); }
+  private indexBudgetKey(): string {
+    const limits = this.options.limits ?? DEFAULT_RUNTIME_LIMITS;
+    return `${limits.artifactIndexBatchChars}:${limits.artifactChunkChars}:${limits.artifactChunkOverlapChars}`;
+  }
 
   private queueBackfill(threadId: string, boundary: number): void {
     if (this.stopped || this.backfills.has(threadId)) return;
@@ -685,14 +696,15 @@ export class ContextArtifactIndex {
       previous && (
         previous.workspace_id !== workspaceId ||
         previous.indexed_message_count > state.messages.length ||
-        JSON.parse(previous.payload_json).retrievalIndexVersion !== 2
+        JSON.parse(previous.payload_json).retrievalIndexVersion !== 3 ||
+        JSON.parse(previous.payload_json).indexBudgetKey !== this.indexBudgetKey()
       ),
     );
     const start = reset ? 0 : Math.min(previous?.indexed_message_count ?? 0, state.messages.length);
     const pending: PendingArtifact[] = [];
     for (let index = start; index < state.messages.length; index += 1) {
       const message = state.messages[index];
-      if (message) pending.push(...await artifactsForMessage(threadId, message, index, this.provider));
+      if (message) pending.push(...await artifactsForMessage(threadId, message, index, this.provider, this.options.limits));
     }
 
     const summaryHash = state.workingSummary ? sha256(state.workingSummary) : undefined;
@@ -701,7 +713,7 @@ export class ContextArtifactIndex {
     if (summaryChanged) {
       const metadata = state.contextCompactionMetadata!;
       const chunks = await artifactsForMessage(threadId, { role: "assistant", content: state.workingSummary },
-        Math.max(0, metadata.sourceEndMessageIndex - 1), this.provider);
+        Math.max(0, metadata.sourceEndMessageIndex - 1), this.provider, this.options.limits);
       for (const chunk of chunks) {
         const key = `summary:${summaryHash}:${chunk.chunkIndex}`;
         pending.push({ ...chunk, id: `context_${sha256(`${threadId}\n${key}`).slice(0, 48)}`,
@@ -711,7 +723,7 @@ export class ContextArtifactIndex {
     }
 
     const payload = { ...redactCheckpointValue(checkpointPayload(state)) as Record<string, unknown>,
-      retrievalIndexVersion: 2 };
+      retrievalIndexVersion: 3, indexBudgetKey: this.indexBudgetKey() };
     const payloadJson = JSON.stringify(payload);
     const stateHash = sha256(payloadJson);
     const checkpointChanged = !previous || reset || previous.state_hash !== stateHash ||

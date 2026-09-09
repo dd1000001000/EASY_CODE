@@ -343,6 +343,18 @@ describe("/model", () => {
         fixture.app.handleSlashCommand("/model unknown-model"),
         /Supported models:/u,
       );
+      for (const model of [
+        "qwen3.6-max",
+        "qwen3.6-max-preview",
+        "qwen3-max",
+        "qwen3-vl-plus",
+        "qwen3-vl-flash",
+      ]) {
+        await assert.rejects(
+          fixture.app.handleSlashCommand(`/model ${model}`),
+          /not in the Alibaba Qwen catalog/u,
+        );
+      }
 
       let offset = fixture.output().length;
       await fixture.app.handleSlashCommand("/status");
@@ -747,14 +759,14 @@ describe("/model", () => {
         /text-only/u,
       );
 
-      await fixture.app.handleSlashCommand("/model qwen3-vl-plus");
+      await fixture.app.handleSlashCommand("/model qwen3.7-plus");
       await fixture.app.handleSlashCommand('/image "screen shot.png"');
       await fixture.app.handleSlashCommand("/status");
       assert.match(fixture.output(), /Queued Image #1: 16x16 image\/png/u);
       assert.match(fixture.output(), /"pendingImages": \[\s*"Image #1"/u);
       assert.match(fixture.output(), /"vision": true/u);
 
-      await fixture.app.handleSlashCommand("/model qwen3-max");
+      await fixture.app.handleSlashCommand("/model qwen3.7-max");
       assert.match(fixture.output(), /queued image\(s\) remain attached/u);
     } finally {
       fixture.close();
@@ -1145,7 +1157,7 @@ describe("thread leases", () => {
         workspaceRoot: canonicalWorkspace,
         mode: "auto",
         provider: "qwen",
-        model: "qwen3-vl-plus",
+        model: "qwen3.7-plus",
       });
       threads.startTurn(target.threadId, "unfinished request", "turn_unfinished");
       const blocker = threads.acquireThreadLease(target.threadId);

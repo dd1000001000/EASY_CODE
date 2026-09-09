@@ -11,6 +11,8 @@ export const runtimeLimitsSchema = z.object({
   maxContextTokens: z.union([z.literal(0), integer(4096, 2000000)]),
   maxOutputChars: integer(1024, 1000000),
   maxToolResultChars: integer(1024, 1000000),
+  commandArchiveMaxBytes: integer(1024, 268435456),
+  commandThreadArchiveMaxBytes: integer(1024, 2147483648),
   commandTimeoutMs: integer(1, 1200000),
   maxManagedWorktrees: integer(1, 200),
   maxConcurrentSubagents: z.object({ none: integer(1, 16), low: integer(1, 16),
@@ -39,6 +41,15 @@ export const runtimeLimitsSchema = z.object({
   maxReadResultTokens: integer(256, 100000),
   memoryAutoTokens: integer(0, 32000),
   memoryRecallTokens: integer(0, 32000),
+  memoryContentMaxChars: integer(120, 16000),
+  evidenceRecallDefaultChars: integer(256, 100000),
+  evidenceRecallMaxChars: integer(256, 100000),
+  artifactIndexBatchChars: integer(4096, 1000000),
+  artifactChunkChars: integer(256, 8000),
+  artifactChunkOverlapChars: integer(0, 4000),
+  subagentInstructionsMaxChars: integer(1024, 64000),
+  subagentFollowUpMaxChars: integer(1024, 64000),
+  subagentSummaryMaxChars: integer(1024, 64000),
   memoryMaxItems: integer(0, 30),
   memoryMaxQueries: integer(1, 4),
   memorySearchLimit: integer(1, 20),
@@ -60,6 +71,8 @@ export const runtimeLimitsSchema = z.object({
   compactionRetainRecentExchanges: integer(1, 64),
   contextReferenceTriggerRatio: z.number().min(0.5).max(0.9),
   contextReferenceTargetRatio: z.number().min(0.2).max(0.8),
+  contextForceRatio: z.number().min(0.5).max(1),
+  contextMemoryResumeRatio: z.number().min(0.2).max(0.8),
   contextRecallProtectionExchanges: integer(1, 10),
   reviewMaxRounds: integer(1, 5),
   reviewMaxRequests: integer(4, 200),
@@ -70,14 +83,23 @@ export const runtimeLimitsSchema = z.object({
   reviewDependencyMaxBytes: integer(1024, 4294967296),
   reviewDependencyMaxFiles: integer(100, 1000000),
   reviewPreparationTimeoutMs: integer(1000, 1200000),
-  reviewSummaryMaxTokens: integer(256, 2048),
+  reviewSummaryMaxTokens: integer(256, 32768),
+  reviewBriefingMaxTokens: integer(256, 32768),
+  reviewHandoffMaxTokens: integer(1024, 65536),
+  reviewClosingInputReserveTokens: integer(1024, 2000000),
   reviewMaxSessionsPerTask: integer(1, 10),
   contextCompactionTriggerRatio: z.number().min(0.5).max(0.9),
   contextCompactionTargetRatio: z.number().min(0.2).max(0.8),
   contextCompactionMinGrowthRatio: z.number().min(0.01).max(0.3),
+  contextCompactionMaxGrowthTokens: integer(256, 131072),
+  contextCompactionMinNewTokens: integer(256, 131072),
+  contextCompactionMinSavedTokens: integer(256, 131072),
+  contextCompactionMinSavingsRatio: z.number().min(0).max(0.5),
   contextMaxRebasesPerRequest: integer(0, 1),
   contextMaxCapacityRetries: integer(0, 1),
-  contextSummaryMaxTokens: integer(256, 2048),
+  contextSummaryMaxTokens: integer(256, 32768),
+  contextSummaryMaxChars: integer(1024, 262144),
+  contextSemanticFieldMaxChars: integer(256, 16000),
   contextToolBatchTokens: integer(512, 100000),
   contextToolReferenceMinChars: integer(512, 1000000),
   reviewerOutputTokens: integer(256, 6144),
@@ -97,6 +119,17 @@ export const runtimeLimitsSchema = z.object({
   contextSafetyReserveTokens: integer(128, 131072),
   contextSafetyReserveRatio: z.number().min(0.01).max(0.2),
 }).strict().superRefine((value, context) => {
+  const check = (condition: boolean, path: string, message: string) => {
+    if (!condition) context.addIssue({ code: "custom", path: [path], message });
+  };
+  check(value.contextReferenceTriggerRatio <= value.contextCompactionTriggerRatio &&
+    value.contextCompactionTriggerRatio < value.contextForceRatio, "contextForceRatio", "Required order: reference <= compaction < force <= 1");
+  check(value.contextMemoryResumeRatio < value.contextReferenceTriggerRatio, "contextMemoryResumeRatio", "Resume must be below the pressure trigger");
+  check(value.evidenceRecallDefaultChars <= value.evidenceRecallMaxChars, "evidenceRecallDefaultChars", "Default page must not exceed maximum");
+  check(value.artifactChunkOverlapChars < value.artifactChunkChars, "artifactChunkOverlapChars", "Overlap must be smaller than chunk size");
+  check(value.artifactChunkChars <= value.artifactIndexBatchChars, "artifactIndexBatchChars", "Index batch must contain a complete chunk");
+  check(value.commandArchiveMaxBytes <= value.commandThreadArchiveMaxBytes, "commandThreadArchiveMaxBytes", "Thread quota must contain one command archive");
+  check(value.reviewHandoffMaxTokens >= value.reviewSummaryMaxTokens * 2 + 1024, "reviewHandoffMaxTokens", "Reserve both summaries and at least 1024 tokens of Runtime metadata");
   if (value.contextReferenceTargetRatio >= value.contextReferenceTriggerRatio) context.addIssue({
     code: "custom", path: ["contextReferenceTargetRatio"], message: "Reference target must be below trigger" });
   if (value.contextCompactionTargetRatio >= value.contextCompactionTriggerRatio) context.addIssue({

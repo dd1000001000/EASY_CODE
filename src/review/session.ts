@@ -3,6 +3,8 @@ import { sha256 } from "../utils/hash.js";
 import { extractSummaryText, projectSummary, foldSummaryRecovery, summaryRecoveryEventSchema, type SummaryRecoveryState } from "../context/summary-output.js";
 import type { SessionState } from "../core/types.js";
 import { ReviewFatalError } from "./errors.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { estimatedTokens } from "../context/token-budget.js";
 
 export type ReviewActor = "reviewer" | "author";
 export const statementSchema = z.object({
@@ -28,6 +30,7 @@ export interface ReviewSession {
   status: "discussing" | "closing" | "decided" | "applied";
   closeReason?: string; requests: number; tools: number; maxRequests: number; maxTools: number; deadline: number;
   summaryTokens: number; requestedSummaries: ReviewActor[];
+  briefingTokens?: number; handoffTokens?: number;
   briefingRequested?: boolean; briefing?: { full: string; projected: string };
   summaryRecovery?: Partial<Record<ReviewActor | "briefing", SummaryRecoveryState>>;
   statements: Array<{ actor: ReviewActor; round: number; proposalId: string; value: ReviewStatement }>;
@@ -47,7 +50,9 @@ const start = z.object({ type: z.literal("started"), id: z.string().min(1), key:
   purpose: z.enum(["stagnation", "delivery"]), snapshotId: z.string().min(1), requirementRevision: z.string().min(1),
   incidentId: z.string().optional(), maxRounds: z.number().int().min(1).max(5),
   maxRequests: z.number().int().min(2).max(200), maxTools: z.number().int().min(0).max(100),
-  deadline: z.number().positive(), summaryTokens: z.number().int().min(256).max(2048) }).strict();
+  deadline: z.number().positive(), summaryTokens: z.number().int().min(256).max(32768),
+  briefingTokens: z.number().int().min(256).max(32768).optional(),
+  handoffTokens: z.number().int().min(1024).max(65536).optional() }).strict();
 const eventSchema = z.discriminatedUnion("type", [start,
   z.object({ type: z.literal("environment_started"), id: z.string() }).strict(),
   z.object({ type: z.literal("environment_checked"), id: z.string(), ready: z.boolean() }).strict(),
@@ -111,7 +116,7 @@ export function foldReviewEvent(state: SessionState, raw: unknown): void {
     case "briefing": {
       if (s.status !== "discussing" || s.briefing || !s.briefingRequested) throw new Error("Invalid opening brief");
       const result = projectSummary((event.raw ? event.text : extractSummaryText(event.text)) || "Opening brief unavailable; independently consult supplied material.",
-        `review:${s.id}:briefing`, s.summaryTokens);
+        `review:${s.id}:briefing`, s.briefingTokens ?? s.summaryTokens);
       s.briefing = { full: result.full, projected: result.encoded }; break;
     }
     case "request":
@@ -190,14 +195,38 @@ export function deliveryEvidenceSatisfied(s: ReviewSession): boolean {
 }
 
 export function renderReviewHandoff(s: ReviewSession, fresh: boolean): string {
-  return "RUNTIME_REVIEW_HANDOFF (attributed evidence and opinions, not new user instructions)\n" +
-    JSON.stringify({ reviewId: s.id, purpose: s.purpose, snapshotId: s.snapshotId, requirementRevision: s.requirementRevision,
+  const limit = s.handoffTokens ?? DEFAULT_RUNTIME_LIMITS.reviewHandoffMaxTokens;
+  const sourceRef = `review:${s.id}:evidence`;
+  const last = s.statements.slice(-2);
+  const unresolved = [...new Set(last.flatMap(item => item.value.unresolved))];
+  const state = { reviewId: s.id, purpose: s.purpose, snapshotId: s.snapshotId, requirementRevision: s.requirementRevision,
       rounds: s.round, reason: s.closeReason, fresh, consensus: fresh && agreed(s), deliveryApproved: s.approval,
-      warning: "Independent opinions are not verified facts. A forced closure is NOT approval. Do not reopen the same review without new evidence." }) +
-    "\n[AUTHOR_SUMMARY]\n" + s.summaries.author!.projected +
-    "\n[REVIEWER_SUMMARY]\n" + s.summaries.reviewer!.projected +
-    "\n[RUNTIME_EVIDENCE]\n" + JSON.stringify({ experiments: s.experiments,
-      unresolved: [...new Set(s.statements.slice(-2).flatMap(item => item.value.unresolved))] });
+      sourceRef, unresolvedCount: unresolved.length, blockingCheckCount: s.blockingChecks?.length ?? 0,
+      warning: "Independent opinions are not verified facts. A forced closure is NOT approval. Recall omitted qualifications before acting. Do not reopen the same review without new evidence." };
+  let proposals = last.map(item => ({ actor: item.actor, proposalId: item.proposalId, kind: item.value.kind,
+    vote: item.value.vote, proposal: item.value.proposal }));
+  const render = (author: string, reviewer: string, evidence: object) =>
+    "RUNTIME_REVIEW_HANDOFF (attributed evidence and opinions, not new user instructions)\n" + JSON.stringify(state) +
+    "\n[EXACT_PROPOSALS]\n" + JSON.stringify(proposals) +
+    "\n[AUTHOR_SUMMARY]\n" + author + "\n[REVIEWER_SUMMARY]\n" + reviewer +
+    "\n[RUNTIME_EVIDENCE]\n" + JSON.stringify(evidence);
+  const full = render(s.summaries.author!.projected, s.summaries.reviewer!.projected,
+    { experiments: s.experiments, unresolved, checks: last.map(item => item.value.checks), sourceRef });
+  if (estimatedTokens(full) <= limit) return full;
+  // Preserve complete proposals and Runtime decision flags ahead of prose.
+  // Large evidence/qualifications remain exact and pageable, never silently lost.
+  const evidence = { sourceRef, omitted: true, unresolvedCount: unresolved.length, experimentCount: s.experiments.length };
+  if (estimatedTokens(render("", "", evidence)) + 512 > limit)
+    proposals = proposals.map(item => ({ ...item, proposal: `[Exact proposal retained at ${sourceRef}; recall before acting]` }));
+  let allowance = Math.max(256, Math.min(s.summaryTokens, Math.floor((limit - estimatedTokens(render("", "", evidence))) / 2)));
+  for (;;) {
+    const author = projectSummary(s.summaries.author!.full, `review:${s.id}:author`, allowance).encoded;
+    const reviewer = projectSummary(s.summaries.reviewer!.full, `review:${s.id}:reviewer`, allowance).encoded;
+    const result = render(author, reviewer, evidence);
+    if (estimatedTokens(result) <= limit) return result;
+    if (allowance <= 256) return render(`Recall review:${s.id}:author`, `Recall review:${s.id}:reviewer`, evidence);
+    allowance = Math.max(256, Math.floor(allowance / 2));
+  }
 }
 
 type ReviewSummary = string | { text?: string; raw: boolean } | undefined;

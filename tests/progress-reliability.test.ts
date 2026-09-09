@@ -138,7 +138,7 @@ describe("progress reliability contracts", () => {
   });
 
   it("clips UTF-16 safely and never admits structurally invalid patches", () => {
-    const clipped = clipSemanticFields({ currentWork: "x".repeat(1199) + "😀more", nextStep: "verify" });
+    const clipped = clipSemanticFields({ currentWork: "x".repeat(1199) + "😀more", nextStep: "verify" }, 1200);
     assert.equal((clipped.patch as { currentWork: string }).currentWork.length, 1199);
     assert.throws(() => parseSemanticRequestPatch({ currentWork: "x".repeat(1300), nextStep: false }));
   });

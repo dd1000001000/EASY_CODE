@@ -18,9 +18,14 @@ import { ThreadStore } from "../src/threads/thread-store.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import type { ChatMessage, EventRecord, SessionState } from "../src/core/types.js";
 import { ProviderError } from "../src/providers/errors.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 const envelope = { systemPrompt: "Stable system rules", runtimeContext: "workspace state", tools: [] };
-const compactTool = new CompactContextTool();
+// Explicit small-window settings keep these transaction/protocol fixtures
+// independent of the production 1M/five-recent-exchange defaults.
+const fixtureLimits = { ...DEFAULT_RUNTIME_LIMITS, compactionRetainRecentExchanges: 2,
+  contextCompactionTriggerRatio: 0.8, contextSummaryMaxTokens: 2048, contextSemanticFieldMaxChars: 1200 };
+const compactTool = new CompactContextTool(fixtureLimits);
 const options = { maxSteps: 4, maxContextChars: 100_000, maxContextTokens: 34_000,
   maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
 
@@ -63,7 +68,7 @@ function fixture() {
   // Use event-recovered intent rather than fabricate a checkpoint-only ledger.
   state = store.recover(state.threadId);
   const manager = new ContextManager();
-  manager.configureTokenBudget(options.maxContextTokens);
+  manager.configureTokenBudget(options.maxContextTokens, fixtureLimits);
   const execute = async (m: Extract<ChatMessage, { role: "assistant" }>) => {
     const call = m.tool_calls?.[0];
     if (!call) return { ok: false, summary: "Missing call", failure: protocolToolFailure("missing_call", "Call compact_context") };
@@ -83,6 +88,16 @@ function fixture() {
 }
 
 describe("completed-phase compaction transactions", () => {
+  it("replays the accepted field budget rather than clipping new summaries to legacy/default limits", async () => {
+    const f = fixture();
+    try {
+      const limits = { ...fixtureLimits, contextSemanticFieldMaxChars: 6000, contextSummaryMaxTokens: 8192 };
+      f.manager.configureTokenBudget(options.maxContextTokens, limits);
+      const result = await f.run({ limits, complete: async () => candidate(0, "x".repeat(4500)) });
+      assert.equal(result.committed, true);
+      assert.equal(JSON.parse(f.store.recover(f.state.threadId).workingSummary).semantic.currentWork.length, 4500);
+    } finally { f.dispose(); }
+  });
   it("preserves the complete normal prefix and schema order across summary corrections without dispatching tools", async () => {
     const f = fixture();
     const normal: NormalRequestEnvelope = { ...envelope, tools: (["run_command", "read_file"] as const).map(name => ({
@@ -378,7 +393,7 @@ describe("completed-phase compaction transactions", () => {
   it("reports capacity pauses separately from compaction-protocol or code failures", async () => {
     const f = fixture();
     try {
-      const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async () => {
+      const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async () => {
         throw new Error("must not request impossible input");
       } }, tools: [compactTool], contextManager: f.manager, appendEvent: async () => undefined,
         buildSystemPrompt: async () => "rules".repeat(30000), getWorkspaceSummary: async () => "",
@@ -422,7 +437,7 @@ describe("completed-phase compaction transactions", () => {
     const f = fixture();
     try {
       let requests = 0;
-      const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async () => {
+      const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async () => {
         requests += 1; return { message: candidate(5, "Continue safely") };
       } }, tools: [compactTool], contextManager: f.manager, appendEvent: f.append,
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
@@ -439,7 +454,7 @@ describe("completed-phase compaction transactions", () => {
     try {
       f.state.mode = "auto";
       let requests = 0;
-      const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async (request) => {
+      const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async (request) => {
         requests += 1;
         if (requests === 1) {
           assert.deepEqual(request.tools, []);
@@ -494,7 +509,7 @@ describe("completed-phase compaction transactions", () => {
     try {
       let requests = 0;
       const raw = JSON.stringify(f.state.messages.slice(2));
-      const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async (request) => {
+      const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async (request) => {
         requests += 1;
         if (requests === 1) {
           assert.deepEqual(request.tools, []);

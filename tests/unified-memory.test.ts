@@ -35,7 +35,7 @@ describe("unified memory and five-round review", () => {
   it("clips summaries independently, keeps valid JSON and includes metadata in 2048 tokens", () => {
     for (const who of ["author", "reviewer"]) {
       const text = `${who} 中文😀 `.repeat(8000);
-      const p = projectSummary(text, `review:r:${who}`);
+      const p = projectSummary(text, `review:r:${who}`, 2048);
       assert.ok(p.truncated); assert.ok(text.startsWith(p.text));
       assert.ok(estimatedTokens(p.encoded) <= 2048);
       assert.equal(JSON.parse(p.encoded).sourceRef, `review:r:${who}`);

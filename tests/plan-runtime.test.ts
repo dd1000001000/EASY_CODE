@@ -14,6 +14,7 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { describe, it } from "./harness.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 function state(mode: AgentMode = "auto"): SessionState {
   const now = new Date().toISOString();
@@ -150,8 +151,10 @@ function runtime(
   modes: AgentMode[] = [],
   usageRecords: ModelUsageRecord[] = [],
   reasoningTexts: string[] = [],
+  limits = DEFAULT_RUNTIME_LIMITS,
 ) {
   return new AgentRuntime({
+    limits,
     provider,
     tools,
     contextManager: new ContextManager(),
@@ -337,6 +340,7 @@ describe("model-controlled plan flow", () => {
       [new ProposePlanTool(), new CompactContextTool()],
       events,
       modes,
+      [], [], { ...DEFAULT_RUNTIME_LIMITS, compactionRetainRecentExchanges: 2, contextCompactionTriggerRatio: 0.8, contextSummaryMaxTokens: 2048 },
     ).run(current, input, {
       ...options(),
       maxSteps: 3,

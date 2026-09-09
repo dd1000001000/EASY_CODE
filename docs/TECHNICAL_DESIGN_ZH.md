@@ -171,7 +171,7 @@ Thinking 以 `reasoning_content` 保存，不逐段改写，也不在下一次�
 
 `manage_memory` 按当前能力配置提供 `search`、`recall`、`remember`、`revise` 和 `forget`。历史回读与长期存储是不同动作；摘要和 RAG 命中不会自动成为持久项目事实。
 
-1. 提出五种类别之一的单条原子事实，通常为 8–120 字符。Runtime 拒绝敏感信息、猜测和明显的任务流水账；这些检查不是通用的真假判定器。
+1. 提出五种类别之一的单条原子事实，默认最多 1,200 字符（仍须为单条原子事实，并受 400 个估算 Token 限制）。Runtime 拒绝敏感信息、猜测和明显的任务流水账；这些检查不是通用的真假判定器。
 2. 对 `remember`/`revise`，应用 Runtime 要求 `sourceRefs`。`user` 必须对应用户明确表达的长期偏好/约定或决策；项目/环境事实目前要求同一工作区、同一 Thread 内成功、未截断且包含文件版本的 `read_file` 证据。证据身份只校验来源，不保证任意自然语言结论都能由它推出。
 3. 校验后暂存变更。工具返回“已暂存”不等于已写入数据库。`revise`/`forget` 必须使用本回合搜索返回的记忆 ID；`forget` 不要求新的事实来源证据。
 4. 只有允许的 `turn.completed` 结果才提交已验证批次：`success`，或用户有明确持久意图、且仅写入 preference/convention 的 `planned`。失败、中断和触及上限的回合不提交提案。每回合最多八次记忆变更。
@@ -184,7 +184,7 @@ Thinking 以 `reasoning_content` 保存，不逐段改写，也不在下一次�
 
 Thread 索引增量处理新持久化的用户文字、模型公开正文/工具名、有用工具结果及已接受的语义摘要快照；不索引系统指令和 thinking。缺少语义快照元数据的紧急降级说明不会自动成为语义摘要索引条目；先前摘要文本仍可通过 Journal 引用恢复。
 
-单个索引来源最多保留 96,000 字符，并明确记录头尾保留与中间省略。分块保存来源偏移、哈希，以及可用的文件路径/版本/行号元数据。固定本地 `paraphrase-multilingual-MiniLM-L12-v2` 模型产生 384 维向量，每个分词窗口最多 128 Token，包含特殊 Token；分词器不可用时退回 1,400 字符窗口、160 字符重叠。较长 Embedding 输入聚合多个窗口，不默默丢掉尾部。Embedding 的 Token 单位与聊天上下文估算不是同一回事。
+已捕获的来源按可配置的 96,000 字符批次处理，不再在分块前丢掉中间内容；上游采集已经截断的内容无法由索引恢复，并明确标记。分块配置变化会重建派生索引。分块保存来源偏移、哈希，以及可用的文件路径/版本/行号元数据。固定本地 `paraphrase-multilingual-MiniLM-L12-v2` 模型产生 384 维向量，每个分词窗口最多 128 Token，包含特殊 Token；分词器不可用时退回 1,400 字符窗口、160 字符重叠。较长 Embedding 输入聚合多个窗口，不默默丢掉尾部。Embedding 的 Token 单位与聊天上下文估算不是同一回事。
 
 SQLite 提供关键词搜索及适合中日韩文本的回退；可选本地向量和可丢弃的 Orama 缓存提供语义候选。Thread 关键词/向量排名融合后去重。后台补齐向量期间仍可使用关键词检索，向量失败退回词法搜索；查询 Embedding 本身仍有本地计算成本。检索使用本地数据与推理，不调用外部网页搜索或聊天模型 API；准备缺失模型资源时可能另行下载。
 
@@ -193,81 +193,72 @@ SQLite 提供关键词搜索及适合中日韩文本的回退；可选本地向�
 1. 根据当前任务/用户要求、命令结果和相关路径生成最多三个有界查询；查询/状态签名变化时更新缓存候选。
 2. 搜索工作区长期记忆与私有 Thread 历史。普通自动历史检索仅覆盖 `compactedMessageCount` 之前；显式历史搜索可查看当前 Thread 中超出这一自动边界的已有消息。
 3. 排除非活跃/临时记忆、不相关命中、完全重复、已经可见/覆盖的证据，以及已知过期文件版本。相似度不代表相关性或时效性。
-4. 两种来源共用**一份预算**：通常 2,000 个估算 Token；压缩边界/DAG 节点变化，或最新命令尚不是已观察到的零退出结果时，上限可扩展到 6,000，总计最多六项。后一条件也包含运行中的命令。额度还受 `floor(maxContextChars / 24)` 和启用时 `maxContextTokens` 的 8% 限制。
+4. 两种来源共用**一份预算**：通常 2,000 个估算 Token；压缩边界/DAG 节点变化，或最新命令尚不是已观察到的零退出结果时，上限可扩展到 12,000，总计最多六项。后一条件也包含运行中的命令。Token 模式额外受模型窗口 8% 限制；只有旧字符模式使用 `floor(maxContextChars / 24)`。
 5. 请求有压力时先移除可选回忆，再考虑移出活跃历史。检索是补充信息；Runtime 不会为了塞入更多 RAG 命中而牺牲必需任务状态。
 
 ### 6.5 工具输出、证据捕获与精确回读
 
-Runtime 在面向模型的裁剪之前，将脱敏后的结构化工具数据捕获到不可变、工作区/Thread 隔离的证据存储，最多 1,000,000 字符。捕获对象是工具实际返回的数据：命令和文件读取可能已经有界。证据库与 Journal 都不承诺保存无限原始 stdout。截断状态、已捕获内容哈希和分页信息保持明确。
+Runtime 在面向模型的裁剪之前，按工作区 / Thread 保存不可变、已脱敏的结构化工具证据。保存的是工具实际**捕获**的数据，不承诺无限原始输出。命令新增头尾截取前的 stdout/stderr 磁盘归档：`commandArchiveMaxBytes=33554432`（单命令两路合计 32 MiB）、`commandThreadArchiveMaxBytes=268435456`（单 Thread 256 MiB）。采用 UTF-16LE 便于按字符偏移读取有界页面。配额耗尽或归档 I/O 失败会明确标记缺失后缀、不完整状态，不重试命令，也不把原本成功的命令变成失败。归档不自动删除；内存采集器每路最多保留 `maxOutputChars=256000` 字符。
 
-普通输出投影返回相关诊断与有界头尾文本。命令调查/成功/失败默认分别为 12,000/2,000/8,000 字符，最多八条诊断；重复轮询返回增量或变化后的终态，避免反复发送相同正文。文件定位默认 100 行，单次允许最多 1,000 行，同时受 12,000 个估算 Token 的读取结果上限约束。
-
-每组多工具交互的正文合计预算为 16,000 个估算 Token，即使没有高压力也会控制。压力下，至少 4,096 字符的较早正文可替换为引用；批次合计超额时也可能引用更小的单条正文。调用/结果身份与协议顺序保留，投影不覆盖规范持久消息。
-
-当前能力配置开放 `manage_memory` 时，`recall` 支持按精确 ID 分页：
-
-| 引用 | 无需重新执行即可读取的内容 |
+| 面向模型的内容 | 可配置默认值 |
 | --- | --- |
-| `evidence_…` | 捕获的结构化工具证据。 |
-| `context_…` | 一个已索引历史分块，不是无限原始进程输出。 |
-| `ev_…` | 当前 Thread Journal 中匹配的工具消息或命令审计。 |
-| `journal_message_<index>` | 精确存储的消息，存在 reasoning 时一并包含。 |
-| `journal_summary_<sha256>` | 已归档的恢复摘要版本。 |
+| 命令调查 / 成功 / 失败输出 | `commandQueryChars=24000` / `commandSuccessChars=2000` / `commandFailureChars=16000`；`commandMaxDiagnostics=16` |
+| 文件定位 / 显式读取 | `defaultReadLines=100` / `maxReadLines=1000`；`maxReadResultTokens=24000` |
+| 文件搜索 | `searchMaxResultTokens=6000` |
+| 普通工具外壳 / 单批工具正文 | `maxToolResultChars=64000` / `contextToolBatchTokens=65536` |
+| 证据回读页面 | `evidenceRecallDefaultChars=8000`，`evidenceRecallMaxChars=32000` |
 
-回读默认每页 8,000 字符，最多 16,000 字符。引用受范围和脱敏校验约束，不授予跨 Thread 权限。历史代码/结果可能过期，引用不证明当前 Checkout 通过验证。
+裁剪优先保留有用诊断、完整搜索项和完整代码行，最后才退回证据 ID；预算包含 JSON 元数据和转义。实际命令参数、工具参数及验证证据不会靠截断变成“合法”。重复轮询仍返回增量或变化后的终态。
 
-### 6.6 容量计量与配置
+`recall_context` 与具备权限的记忆回读可使用精确引用：`evidence_…`（结构化工具证据）、`context_…`（历史索引片段）、`command_output_…`（进程输出）、`ev_…`（Runtime 证据目录）、`journal_message_<index>`（原消息）、`journal_summary_<sha256>`（旧摘要）。`artifact:<哈希前缀>` 必须唯一匹配；`review:<id>:author|reviewer|briefing|evidence` 对应明确共享的审查材料。历史回读不授权访问任意其他 Thread，也不能证明当前代码通过验证。
 
-运行配置位于 `[limits]`，当前值以 [Runtime 默认配置](../src/config/runtime-defaults.json) 和 [配置示例](config.example.toml) 为准。上下文策略对所有 thinking 强度和 Provider 相同。none/low/medium/high 默认分别 40/40/40/80 步，子 Agent 并发上限为 2/2/4/8 个；上下文容量不随强度倍增。降低强度不会取消已有子 Agent，但达到新上限时拒绝新建。共享 Token、请求预算和每轮子 Agent 创建总数上限保持不变。
+### 6.6 容量统计与配置
 
-`maxContextTokens = 0` 表示未启用模型 Token 窗口。默认 `maxContextChars = maxActiveContextChars = 250000` 指**字符，不是 250,000 个模型 Token**。字符模式可用输入容量为 `min(maxContextChars, maxActiveContextChars) × (1 - toolReserveRatio - safetyReserveRatio)`，默认 212,500。控制器 80% 维护触发点约为 170,000 个请求字符，包含指令、Schema 和 Runtime 状态，不只是屏幕上的对话正文。
+上述及下表中的运行容量、内容预算统一从 `src/config/runtime-defaults.json` 加载，由 `src/config/runtime-limits.ts` 校验；`docs/config.example.toml` 提供 `[limits]` 覆盖示例。阈值顺序、目标与触发点、回读页面上限、磁盘配额和审查交接余量存在交叉校验。协议身份、参数类型、权限以及有限安全边界仍严格保留。
 
-当 `maxContextTokens` 非零时，该窗口成为主要运行容量。provider 无关估算统计文字、thinking、工具参数/Schema、消息开销和图片估算，并按端点/模型/模态，利用近期实际输入用量保守校准。校准保存比例，不再保存一份对话。它不是模型原生精确分词器，也不会自动发现 Provider 的真实窗口。
-
-配置 Token 窗口为 `W` 时，默认可用输入容量为：
+默认 `maxContextTokens=1000000` 是**模型窗口**，不是可用输入额度，也不是精确分词器计数。已知模型按目录中的官方窗口取较小值；用户设置更小的窗口仍生效。Provider 无关估算包含系统规则、普通工具 Schema、thinking、工具参数/结果和图片。主 Runtime 利用真实 prompt usage 保守校准；消息估算缓存避免反复扫描未变化的大文本，正文、thinking、嵌套参数或图片变化时失效。
 
 ```text
-W - min(maxResponseTokens, floor(W × 0.20))  [输出预留；maxResponseTokens = 16384]
-  - min(8192, floor(W × 0.10))              [后续工具预留]
-  - max(512, ceil(W × 0.05))                [安全余量]
+可用输入 = W
+ - min(maxResponseTokens, floor(W × contextOutputReserveRatio))
+ - min(contextToolReserveTokens, floor(W × contextToolReserveRatio))
+ - max(contextSafetyReserveTokens, ceil(W × contextSafetyReserveRatio))
+
+W=1,000,000 时的默认值：
+1,000,000 - 32,768 - 65,536 - 50,000 = 851,696 Token
 ```
 
-| 配置 | 默认值 | 含义 |
-| --- | --- | --- |
-| `contextCompactionTriggerRatio` | `0.8` | 相对于可用输入容量的维护触发点。 |
-| `contextCompactionTargetRatio` | `0.55` | 期望余量，不是强制验收阈值。 |
-| `contextCompactionMinGrowthRatio` | `0.1` | 增长冷却，避免微小变化后反复付费摘要。 |
-| `compactionRetainRecentExchanges` | `5` | 优先保留的近期完整交互数量；恢复时可减少。 |
-| `modelContentRetries` | `2` | 所有 Agent 和辅助模型协议统一纠正两次（共三次）；仅长度超限仍直接本地裁剪。 |
-| `contextSummaryMaxTokens` | `2048` | 含 JSON 包装的摘要存储估算上限，不是服务端生成上限；同时保留 12,000 字符存储限制。 |
-| `providerResponseMaxBytes` | `16777216` | 独立 HTTP 安全上限（16 MiB），不再由工具展示长度推导。 |
-| `contextToolBatchTokens` / `contextToolReferenceMinChars` | `16000` / `4096` | 工具正文合计预算 / 较早正文引用阈值。 |
-| `contextMaxRebasesPerRequest` | `1` | 每个持久用户请求范围的紧急重建额度；`0` 禁用。 |
-| `contextMaxCapacityRetries` | `1` | 已分类 Provider 容量拒绝后的较小普通请求重试次数，当前运行内有界。 |
-| `memoryAutoTokens` / `memoryRecallTokens` | `2000` / `6000` | 可选回忆共享上限，不是每种来源各有一份。 |
-| `memoryMaxItems` / `memoryMaxQueries` | `6` / `3` | 共享入选条目数 / 生成查询数。 |
-| `maxDurableMemoryTokens` | `400` | 原子事实字符限制之外，单条提案的估算检查。 |
+预留量仅用于本地容量管理，**不向服务端发送 max_tokens**。压力百分比相对于可用输入，而不是原始 1M 窗口。`maxContextTokens=0` 才显式使用旧字符模式（`maxContextChars=maxActiveContextChars=250000`）；Token 模式不会再叠加 250k 字符的第二道窗口，工具结果余量同样如此。
 
-部分存储/协议保护仍是代码常量，例如原子事实长度和证据捕获上限，并非每个限制都可配置。通用 60/80/90% 上下文诊断不等于旧的强制模型纠错状态机。真正发送与恢复都检查下一次完整普通请求，包括普通工具 Schema。
+| 阶段 / 内容 | 可配置默认值 |
+| --- | --- |
+| 压力 / 引用化触发与目标 | `contextReferenceTriggerRatio=0.8`，`contextReferenceTargetRatio=0.6` |
+| 摘要触发与目标 | `contextCompactionTriggerRatio=0.9`，`contextCompactionTargetRatio=0.6` |
+| 高压力 / 恢复可选记忆 | `contextForceRatio=0.95`，`contextMemoryResumeRatio=0.6` |
+| 近期交互 / 刚回读的证据保护 | `compactionRetainRecentExchanges=5`，`contextRecallProtectionExchanges=2` |
+| 压缩增长冷却 | `contextCompactionMinGrowthRatio=0.1`，由 `contextCompactionMaxGrowthTokens=32768` 封顶 |
+| 自愿压缩最小新增 / 节省 / 比例 | `contextCompactionMinNewTokens=8192`，`contextCompactionMinSavedTokens=8192`，`contextCompactionMinSavingsRatio=0.1` |
+| 压缩摘要 / 字符保护 / 语义字段 | `contextSummaryMaxTokens=8192`，`contextSummaryMaxChars=64000`，`contextSemanticFieldMaxChars=4000` |
+| 审查开场 / 每人结尾摘要 / 合并交接 | `reviewBriefingMaxTokens=6144`，`reviewSummaryMaxTokens=4096`，`reviewHandoffMaxTokens=12288` |
+| 每位参与者结尾请求的输入预留 | `reviewClosingInputReserveTokens=100000`，另加输出预留；实际请求仍全额计费，不以预留量截断 |
+| 子 Agent 指令 / 追问 / 结果摘要 | `subagentInstructionsMaxChars=12000`，`subagentFollowUpMaxChars=8000`，`subagentSummaryMaxChars=12000` |
+| 自动 / 扩展共享回忆预算 | `memoryAutoTokens=2000`，`memoryRecallTokens=12000`；最多六项、三个查询 |
+| 长期原子事实 | `memoryContentMaxChars=1200` 与 `maxDurableMemoryTokens=400` |
+| 索引处理批次 / 回退分块 / 重叠 | `artifactIndexBatchChars=96000`，`artifactChunkChars=1400`，`artifactChunkOverlapChars=160` |
 
-### 6.7 逐级降级：保留工作，缩小活跃历史
+只增加选定的内容预算；简短成功输出、自动记忆注入、读取行数、审查五轮、并发数量（none/low 两个、medium 四个、high 八个）、审批、网络隔离和重试次数均不扩大。子 Agent 与 reviewer 仍使用私有历史，只有主 Agent 能管理项目长期记忆。审查交接优先保留 Runtime 决策状态和原始提案，过大的证据与限制条件提供分页回读；文字裁剪或双方同意都不能自行产生交付批准。
 
-```text
-测量下一次普通请求
-→ 移除可选回忆 / 引用过大工具正文
-→ 至多一次短语义交接
-→ 本地整体移出旧交互和旧摘要，留下 Journal 引用
-→ 每个用户请求至多一次最小重建
-→ 继续同一任务，或返回可恢复容量暂停
-```
+### 6.7 分级恢复：保留工作，减少活跃历史
 
-1. 先做低成本回收。选择由完整模型/工具交互组成的历史前缀，优先保留最近两组，必要时缩小尾部。模型发出的每个工具调用必须有对应结果，未闭合交互不能拆开。普通模型交互和已完成读/写/命令交互均可进入前缀；**不要求**语义阶段结束或测试通过：调查未完成也能归档，但必须明确仍未完成、未验证。
-2. 在共享预算内，摘要使用统一内容纠正额度：首次失败后最多纠正两次（共三次）；主模型主动提交计为第一次。字段/条目超长立即保留前 1200 字符并注明有损，不请求模型纠正。含包装的摘要最多保留估算 2048 Token，不向服务端发送生成 Token 上限。完整 `compact_context` 参数或唯一完整最外层 `<summary>` 可提供交接；缺少标签时按配置纠正，耗尽后以最后非空的非思考正文作为未验证摘要，仅有 thinking 时使用本地降级。事实和证据目录由 Runtime 独立提供。
-3. 尽可能提取有效语义片段，未知/无绑定证据的陈述降为未验证假设。仅在来源/事实快照未变、边界单向前移、实际缩小且**下一次普通请求**放得下时接受。安全结果可以高于 55%，甚至高于 80% 触发点；目标与增长冷却用于避免不必要的重复付费维护，不保证未来永不再有容量压力。
-4. 格式错误、缺字段、摘要能力不可用、辅助 Provider 失败或本地裁剪后仍收益不足，进入确定性本地恢复，不进入 Schema 纠错循环。较早完整交互和过大的旧摘要可以退出活跃上下文，保留精确引用及明确的未完成/未验证状态。这可以在没有语义摘要提交的情况下推进持久退出边界；原始消息仍保存在本地。
-5. 必要时整体归档最新一组**已闭合**交互，进行最小重建，保留可继续操作的固定状态。这是有损上下文退出，不是新任务、进程重启、工作区回滚，也不授权重启待处理命令/子 Agent。只有实际缩小且放得下才提交。重建消耗按持久用户请求范围写入 Journal：Resume 不重置额度，新明确用户请求才建立新范围。
-6. 如果必需指令、Schema、Runtime 事实或未完成协议数据仍放不下，返回 `reason=limit_reached`、`failure.code=context_capacity_exhausted`、`recoverable=true`。保留文件、历史、待处理工作和预算，不完成 DAG，也不声明外部阻塞；这不是所有任务都能无限继续的承诺。
-7. 服务端明确拒绝上下文长度时，清除活跃历史投影并恢复用户需求，再重发一次；不删除 Journal、权限或执行事实，不再调用摘要模型，也不重置共享请求预算。认证错误、429 和普通超时不是容量错误。用户取消、存储/Journal 损坏仍是真正停止条件，不能伪装成降级成功。
+1. **80%**：移除可选记忆 / RAG，将较早的大工具结果替换为引用，目标 60%。保护近期五个有效交互及刚召回的证据，中性轮询不占有效交互计数。只改变派生投影，不覆盖原始证据。之后重新测量实际下一次请求，不能用引用化之前的旧压力值多买一次摘要。
+2. **90%**：引用化后仍有压力，且预算与冷却允许时，只摘要足够释放空间的最小**旧连续前缀**，保留近期完整交互。不要求先有成功测试或模型认定的“阶段结束”；调查未完成、结论未验证必须保留。**95%** 的 force 跳过增长冷却，不跳过证据一致性、完整工具调用边界或共享请求预算。
+3. 使用可选 `<analysis>` 草稿和唯一完整外层 `<summary>`。成功提取后删除草稿，不把 provider 原生 thinking 当摘要；合法的旧式结构化 `compact_context` 仍兼容。格式 / 内容错误按 `modelContentRetries=2` 纠正（总计三次），长度超限本地按字段与摘要预算裁剪，不重试。真正要执行的参数、必需类型与证据身份继续严格校验。
+4. 提交必须满足来源 / Runtime 事实快照未变化、完整交互边界向前推进、实际缩小且**下一次普通请求**能装下。60% 是优先争取的余量，不因达不到软目标就拒绝有用摘要；高压力时冷却不能阻断恢复。
+5. 摘要缺失 / 无效或空间不足时，进入确定性整组交互与旧摘要淘汰、原有的有限最小重建。格式纠正耗尽后可保留最后一份非空、非原生 thinking 的正文，但明确标记未经验证。原生 thinking 不逐段改写。
+6. **100%**：恢复容量前不发普通请求。最终按用户需求重建模型历史，但文件、Journal、命令 / 子 Agent / DAG 状态、权限和已用预算留在 Runtime。服务端明确拒绝容量时共用有限重置机制，不额外调用摘要模型，不自动重放命令。
+7. 如果必要规则、Schema 和用户要求经过各级恢复仍放不下，返回可恢复的 `context_capacity_exhausted`，绝不假装完成。API 重试五次、内容纠正两次、容量重发一次、命令重放零次维持不变；子 Agent 失败仅通知父 Agent。取消、凭据、日志损坏及真实清理故障保持独立分类。
+
+稳定系统前缀、普通历史在前，最新 Runtime 数据在后。压力切换、引用化和已接受摘要会合理地改变前缀；更大窗口可能减少破坏缓存的压缩次数，但**不保证**缓存命中率、效果或总成本一定改善，仍需长任务对照评测。
 
 ### 6.8 回放、用户指令与验证边界
 
@@ -326,11 +317,13 @@ Thinking 与可见回答分开保存并按真实事件顺序展示。默认只�
 | 通道 | 默认端点 / 默认模型 | 当前模型（`*` 支持图片） |
 | --- | --- | --- |
 | DeepSeek | `https://api.deepseek.com` / `deepseek-v4-pro` | `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-v4-flash-vision-exp*` |
-| Alibaba Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` / `qwen3.7-max` | `qwen3.7-max`、`qwen3.7-plus*`、`qwen3.6-max`、`qwen3.6-plus*`、`qwen3.5-plus*`、`qwen3.5-flash*`、`qwen3-max`、`qwen3-vl-plus*`、`qwen3-vl-flash*` |
+| Alibaba Qwen | `https://dashscope.aliyuncs.com/compatible-mode/v1` / `qwen3.7-max` | `qwen3.7-max`、`qwen3.7-plus*`、`qwen3.6-plus*`、`qwen3.5-plus*`、`qwen3.5-flash*` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` / `glm-5.3` | `glm-5.3-flash*`、`glm-5.3`、`glm-5.2` |
 | GLM Coding Plan | `https://open.bigmodel.cn/api/coding/paas/v4` / `glm-5.3` | `glm-5.3-flash`、`glm-5.3`、`glm-5.2` |
 
 标准 GLM 与 Coding Plan 即使模型 ID 相同也保持端点、Key、配置、Thread 身份、用量和评测隔离。用户级配置或受支持环境变量可明确覆盖普通通道，项目配置不能；Benchmark Profile 固定 Coding Plan 端点与专用 Key，不回退。
+
+2026-09-09 核对后，目录移除四个不足 1M 上下文的 Qwen 选项：`qwen3.6-max`（官方 ID 为 `qwen3.6-max-preview`）与 `qwen3-max` 在[官方文本模型总览](https://help.aliyun.com/zh/model-studio/text-generation-model)中标注为 256K；[Qwen3-VL-Plus](https://help.aliyun.com/zh/model-studio/qwen3-vl-plus) 与 [Qwen3-VL-Flash](https://help.aliyun.com/zh/model-studio/qwen3-vl-flash) 均为 262,144 Token。保留 14 个通道/模型选项、11 个唯一模型 ID。本次筛选不增加 Runtime 上下文预算，也不自动迁移已保存配置或 Thread 的模型选择；若此前使用已移除模型，建议通过 `/model` 重新选择保留的模型。
 
 未知模型不会被推定支持图片或可控 Thinking。Qwen 非 `none` 映射显式预算；DeepSeek `medium` 按兼容行为映射为 `high`；GLM-5.3 的强制 Profile 不用 `none` 发送未支持的关闭字段；GLM-5.2 可显式开关。Provider 网关统一取消、超时和有限重试。用量只采用供应商实际上报值，并按通道、模型、主/子角色、用途和重试区分。
 
@@ -386,7 +379,7 @@ Harbor 容器是可信的一次性外层隔离；专用标志不再跳过内层�
 
 ### 持久化摘要与最终容量断路器
 
-- 摘要提示词使用可选 `<analysis>` 和唯一完整外层 `<summary>`。压缩仍兼容合法的旧式结构化 `compact_context` 候选，但新交接请求要求 XML，即使保留普通工具定义也不授权任何工具执行。不拼接原生 thinking。提取成功后先删除草稿再持久化候选；两次内容纠正仍失败，则保留最后一份非空正文，明确为未验证交接材料。2048 估算 Token 和字段长度超限在本地裁剪，不重试、不放宽可执行参数校验。
+- 摘要提示词使用可选 `<analysis>` 和唯一完整外层 `<summary>`。压缩仍兼容合法的旧式结构化 `compact_context` 候选，但新交接请求要求 XML，即使保留普通工具定义也不授权任何工具执行。不拼接原生 thinking。提取成功后先删除草稿再持久化候选；两次内容纠正仍失败，则保留最后一份非空正文，明确为未验证交接材料。配置的摘要 Token 预算和字段长度超限在本地裁剪，不重试、不放宽可执行参数校验。
 - 压缩事务和独立审查摘要均记录尝试次数、最后非空正文、提取错误及降级状态。后续空响应不能抹掉之前正文；临时 API 重试耗尽可保留该正文。取消、认证、预算、持久化错误不是内容纠正机会。Resume 可以处理已保存候选，不能重发只有请求记录、没有响应记录的调用。
 - 引用化、摘要、淘汰、rebase 仍无法满足容量时，追加一次“仅保留需求”的最终重置。服务端明确拒绝容量则直接重置，不再请求摘要。本地和远端共用按需求绑定的持久化额度，Resume 不补充次数；已是相同或没有缩小的请求不再重发。
 - 需求索引来自真实用户、steering 和明确绑定的任务委派事件，不根据任意 user 角色文本或 RAG 猜测。保留原始需求、后续修正和附件，保留系统规则与工具定义；这些必要信息仍超限时，明确暂停，不通过删需求制造容量合格。
@@ -398,5 +391,5 @@ Harbor 容器是可信的一次性外层隔离；专用标志不再跳过内层�
 - 主 Agent 和子 Agent 的普通请求依次包含固定系统规则、未改写的活跃历史、最新 Runtime 状态及检索数据。后台命令、停滞和实验提醒作为临时 `RUNTIME_NEXT_ACTION` 放在尾部，不再拼入 system，也不写入正式对话历史。固定的交付条件仍在公共系统合约中，Runtime 继续强制拦截提前完成。
 - 自动压缩保留当前角色普通请求的原 system 和有序工具定义，在历史及状态之后追加 `RUNTIME_CONTEXT_HANDOFF`，携带待退出的历史范围、证据和格式纠正信息。Reviewer 私有历史压缩使用相同机制，但不会获得主 Agent 私有历史。
 - 交接是独立执行阶段，不是普通 Agent 步骤。工具定义可见不代表允许执行：摘要响应中的工作区调用从不进入执行器，摘要不代表任务完成，降级正文仍是未验证材料。文件、输出和记忆中的同名标签不能选择 Runtime 阶段。开场、收尾摘要保持原有独立无工具路径。
-- 容量预检、上下文诊断和实际摘要 API 请求使用同一份完整工具定义。完整交接请求放不下时，进入既有确定性恢复，不通过偷偷删除工具定义或证据制造容量合格。重试次数、2048 Token 摘要裁剪、thinking 处理及最终断路额度不变。
+- 容量预检、上下文诊断和实际摘要 API 请求使用同一份完整工具定义。完整交接请求放不下时，进入既有确定性恢复，不通过偷偷删除工具定义或证据制造容量合格。重试次数、配置的摘要 Token 预算 摘要裁剪、thinking 处理及最终断路额度不变。
 - 此调整改善可复用前缀，不保证服务端命中。提交压缩必然替换旧历史，模型设置、角色切换和每轮时间变化仍可能影响复用。本次未调整时间戳和缓存诊断的持久化方式。

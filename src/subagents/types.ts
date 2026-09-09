@@ -10,13 +10,14 @@ import type {
   ToolExecutionResult,
 } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 export type { SubagentTaskReport } from "../core/types.js";
 
-export const MAX_SUBAGENT_INSTRUCTIONS_CHARS = 6_000;
-export const MAX_SUBAGENT_FOLLOW_UP_CHARS = 4_000;
+export const MAX_SUBAGENT_INSTRUCTIONS_CHARS = DEFAULT_RUNTIME_LIMITS.subagentInstructionsMaxChars;
+export const MAX_SUBAGENT_FOLLOW_UP_CHARS = DEFAULT_RUNTIME_LIMITS.subagentFollowUpMaxChars;
 export const MAX_SUBAGENT_STOP_REASON_CHARS = 1_000;
-export const MAX_SUBAGENT_SUMMARY_CHARS = 6_000;
+export const MAX_SUBAGENT_SUMMARY_CHARS = DEFAULT_RUNTIME_LIMITS.subagentSummaryMaxChars;
 export const MAX_SUBAGENT_EVIDENCE_CHARS = 1_000;
 export const MAX_SUBAGENT_AGENT_IDS_PER_CALL = 8;
 export const MAX_SUBAGENT_WAIT_MS = 60_000;

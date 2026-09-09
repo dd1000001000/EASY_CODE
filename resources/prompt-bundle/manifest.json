@@ -131,8 +131,8 @@
       "bytes": 28
     },
     "models/catalog.json": {
-      "sha256": "sha256:a6a1a1ff880af10cc0a22ccff5f4c480fb5050957057a4af4dc1f612513d96b1",
-      "bytes": 5956
+      "sha256": "sha256:177d8e6161a48298efb3bcaa3a823d06f25bc83a0f8a38e63849e73571ffe502",
+      "bytes": 5914
     },
     "modes/auto-effective.md": {
       "sha256": "sha256:048f1f49696808e6831e57f8c7ba03fee5836d340840cfb97ccc4c797f7664e7",
@@ -351,8 +351,8 @@
       "bytes": 588
     },
     "tools/compact_context.json": {
-      "sha256": "sha256:39366d853fbb15014192f8751b1bf908d330dfdf5e35d06f2acf03b7349a4414",
-      "bytes": 2000
+      "sha256": "sha256:5173546168fe8731bb883357fb5612d651183d7b45d7b6fd1a04a2e42ad7ac53",
+      "bytes": 2056
     },
     "tools/create_file.json": {
       "sha256": "sha256:a6e39c9ce47c4caa3da8da5fddff27696b7cdaac063b25ddad66eb8656ce41ba",
@@ -367,7 +367,7 @@
       "bytes": 950
     },
     "tools/manage_memory.json": {
-      "sha256": "sha256:7c104c37155031f75354b55d653471516e15c5ee6e27c15919f232ca40dbbd33",
+      "sha256": "sha256:479a6e9515d2189958340598172a969cf8dbef22328cf0564993741bdd55a214",
       "bytes": 5159
     },
     "tools/manage_subagents.json": {
@@ -395,8 +395,8 @@
       "bytes": 647
     },
     "tools/recall_context.json": {
-      "sha256": "sha256:d40320aa67ff61e7cbe9363e68840f892a6fa8728896a373236562c568b7cde3",
-      "bytes": 655
+      "sha256": "sha256:fb8e51a1e9f339600fe4687bc3832c97c60128c9aeb32ada6135092a5906eaf5",
+      "bytes": 687
     },
     "tools/respond_directly.json": {
       "sha256": "sha256:95835d373e4b0d3ee274a58a7c30a00c5070a7c9cd06d20f8f703fdae77640b3",
@@ -440,7 +440,7 @@
     "compact_context": {
       "path": "tools/compact_context.json",
       "contractVersion": "3.1.0",
-      "contentHash": "sha256:39366d853fbb15014192f8751b1bf908d330dfdf5e35d06f2acf03b7349a4414"
+      "contentHash": "sha256:5173546168fe8731bb883357fb5612d651183d7b45d7b6fd1a04a2e42ad7ac53"
     },
     "create_file": {
       "path": "tools/create_file.json",
@@ -460,7 +460,7 @@
     "manage_memory": {
       "path": "tools/manage_memory.json",
       "contractVersion": "1.2.0",
-      "contentHash": "sha256:7c104c37155031f75354b55d653471516e15c5ee6e27c15919f232ca40dbbd33"
+      "contentHash": "sha256:479a6e9515d2189958340598172a969cf8dbef22328cf0564993741bdd55a214"
     },
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
@@ -495,7 +495,7 @@
     "recall_context": {
       "path": "tools/recall_context.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:d40320aa67ff61e7cbe9363e68840f892a6fa8728896a373236562c568b7cde3"
+      "contentHash": "sha256:fb8e51a1e9f339600fe4687bc3832c97c60128c9aeb32ada6135092a5906eaf5"
     },
     "respond_directly": {
       "path": "tools/respond_directly.json",
@@ -538,5 +538,5 @@
       "contentHash": "sha256:e05da57356f474f29d757cb79ec943ec4e46dcee02b77c7a7be0f5e4ec2f6cf0"
     }
   },
-  "bundleHash": "sha256:c2a4687514736f9c5004391ac8dcd651dbe203eaf0525cc7cecd7968c1b85648"
+  "bundleHash": "sha256:3cd5d8c9efb10a89e3f0969bd5b354f14e88d515f2f54a907d3eedcab81ae451"
 }

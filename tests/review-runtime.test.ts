@@ -24,7 +24,7 @@ import { ProviderError } from "../src/providers/errors.js";
 function state(threadId: string): SessionState { return { threadId, workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
   thinkingEffort: "none", messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [],
   workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" }; }
-function setup(provider: ModelProvider) {
+function setup(provider: ModelProvider, limits = defaultRuntimeLimits(), maxTaskTokens = 0) {
   const main = state("main"); main.messages.push({ role: "assistant", content: "PRIVATE_MAIN_CONTEXT" });
   foldReviewEvent(main, { type: "started", id: "r", key: "key", purpose: "delivery", snapshotId: "snap", requirementRevision: "req",
     maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 2048 });
@@ -39,13 +39,21 @@ function setup(provider: ModelProvider) {
     capture: () => "evidence_" + "a".repeat(64), unchanged: async () => true,
   });
   const participants = { author: participant("author"), reviewer: participant("reviewer") };
-  const budget = new TaskBudget(40, 0);
-  const driver = createReviewDriver({ participants, briefSource: main, provider, budget, limits: defaultRuntimeLimits(), get, emit,
+  const budget = new TaskBudget(40, maxTaskTokens);
+  const driver = createReviewDriver({ participants, briefSource: main, provider, budget, limits, get, emit,
     fresh: async () => true, usage: async () => {} });
   return { main, participants, budget, driver, get, emit, events, records };
 }
 
 describe("review runtime isolation and recovery", () => {
+  it("does not reserve two entire 1M windows merely to start a small review", () => {
+    const f = setup({ name: "glm", model: "mock", complete: async () => { throw new Error("Not called"); } }, defaultRuntimeLimits(), 1_000_000);
+    try {
+      assert.equal(f.budget.snapshot().heldRequests, 2);
+      assert.equal(f.budget.snapshot().heldTokens, 2 * (100000 + 32768));
+      assert.equal(f.budget.snapshot().requests, 0);
+    } finally { f.driver.release(); }
+  });
   it("compacts a reviewer's private history with the same role prefix and never dispatches summary tools", async () => {
     const requests: ModelRequest[] = [];
     let executions = 0;
@@ -57,7 +65,7 @@ describe("review runtime isolation and recovery", () => {
       }
       return { message: { role: "assistant", content: JSON.stringify({ proposal: "Verify the counterexample", kind: "next_action",
         vote: "needs_evidence", evidenceRefs: [], unresolved: ["Not independently verified"] }) } };
-    } });
+    } }, { ...defaultRuntimeLimits(), maxContextTokens: 0, contextCompactionTriggerRatio: 0.8 });
     const p = f.participants.reviewer;
     p.state.messages.push({ role: "user", content: "PRIVATE_REVIEW_REQUIREMENT" },
       { role: "assistant", content: "Earlier private investigation", reasoning_content: "r".repeat(180_000) },

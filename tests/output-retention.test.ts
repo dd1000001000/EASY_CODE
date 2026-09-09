@@ -7,6 +7,7 @@ import { progressReviewReportSchema } from "../src/progress/reviewer.js";
 import { proposePlanInputSchema } from "../src/tools/propose-plan.js";
 import { submitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
 import { TaskBudget } from "../src/runtime/task-budget.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 describe("storage-only output retention", () => {
   it("keeps Unicode-safe prefixes within character, byte and estimated-token budgets", () => {
@@ -27,9 +28,9 @@ describe("storage-only output retention", () => {
   it("clips semantic lists only after validating every item, keeping evidence IDs strict", () => {
     const input = { currentWork: "x".repeat(150000), nextStep: "Verify", hypotheses: Array(35).fill("y".repeat(1400)) };
     const normalized = semanticSummarySchema.parse(clipSemanticFields(parseSemanticCandidatePatch(input)).patch);
-    assert.equal(normalized.currentWork.length, 1200);
+    assert.equal(normalized.currentWork.length, DEFAULT_RUNTIME_LIMITS.contextSemanticFieldMaxChars);
     assert.equal(normalized.hypotheses.length, 32);
-    assert.equal(normalized.hypotheses[0]!.length, 1200);
+    assert.equal(normalized.hypotheses[0]!.length, 1400);
     assert.throws(() => parseSemanticCandidatePatch({ ...input, hypotheses: [...input.hypotheses, 42] }));
     assert.throws(() => parseSemanticCandidatePatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }));
   });
@@ -56,8 +57,8 @@ describe("storage-only output retention", () => {
     assert.ok(result.overview.length <= 4000);
     assert.deepEqual(result.steps, draft.steps);
     assert.throws(() => proposePlanInputSchema.parse({ ...draft, steps: [{ ...draft.steps[0], verification: "x".repeat(1001) }] }));
-    const submission = { outcome: "completed", summary: "s".repeat(8000), evidence: ["test passed"] };
-    assert.ok(submitTaskResultInputSchema.parse(submission).summary.length <= 6000);
+    const submission = { outcome: "completed", summary: "s".repeat(18000), evidence: ["test passed"] };
+    assert.ok(submitTaskResultInputSchema.parse(submission).summary.length <= DEFAULT_RUNTIME_LIMITS.subagentSummaryMaxChars);
     assert.throws(() => submitTaskResultInputSchema.parse({ ...submission, evidence: ["e".repeat(1001)] }));
     assert.throws(() => submitTaskResultInputSchema.parse({ outcome: "completed", summary: "done" }));
   });

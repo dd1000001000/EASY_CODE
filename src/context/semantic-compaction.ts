@@ -5,11 +5,13 @@ import { runtimeContinuityMessage } from "./runtime-state.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { projectText } from "../utils/bounded-text.js";
 import { estimatedTokens } from "./token-budget.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
-export const SEMANTIC_FIELD_MAX_CHARS = 1200;
-const text = z.string().trim().min(1).max(SEMANTIC_FIELD_MAX_CHARS);
+export const SEMANTIC_FIELD_MAX_CHARS = DEFAULT_RUNTIME_LIMITS.contextSemanticFieldMaxChars;
+export function createSemanticSummarySchema(maxChars = SEMANTIC_FIELD_MAX_CHARS) {
+const text = z.string().trim().min(1).max(maxChars);
 const strings = z.array(text).max(32);
-export const semanticSummarySchema = z.object({
+return z.object({
   currentWork: text,
   decisions: strings.default([]),
   conclusions: z.array(z.object({ text,
@@ -19,18 +21,20 @@ export const semanticSummarySchema = z.object({
   failedApproaches: strings.default([]),
   nextStep: text,
 }).strict();
+}
+export const semanticSummarySchema = createSemanticSummarySchema();
 // The same provider-neutral tool accepts a complete candidate or a field patch.
 // Omitted fields preserve the saved candidate; [] explicitly clears a section.
 export const semanticPatchSchema = semanticSummarySchema.partial();
 export type SemanticSummary = z.infer<typeof semanticSummarySchema>;
 
 /** Only length violations are repairable by clipping; types/evidence IDs stay strict. */
-export function inspectSemanticPatch(value: unknown): { issues: string[]; overflows: Array<{ path: (string | number)[]; actual: number; maximum: number }>; lengthOnly: boolean } {
-  const parsed = semanticPatchSchema.safeParse(value);
+export function inspectSemanticPatch(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): { issues: string[]; overflows: Array<{ path: (string | number)[]; actual: number; maximum: number }>; lengthOnly: boolean } {
+  const parsed = createSemanticSummarySchema(maxChars).partial().safeParse(value);
   if (parsed.success) return { issues: [], overflows: [], lengthOnly: false };
   const overflows: Array<{ path: (string | number)[]; actual: number; maximum: number }> = [];
   const issues = parsed.error.issues.map(issue => {
-    if (issue.code === "too_big" && ((issue.type === "string" && issue.maximum === SEMANTIC_FIELD_MAX_CHARS) ||
+    if (issue.code === "too_big" && ((issue.type === "string" && issue.maximum === maxChars) ||
       (issue.type === "array" && issue.maximum === 32 && issue.path.length === 1 &&
         ["decisions", "conclusions", "hypotheses", "failedApproaches"].includes(String(issue.path[0]))))) {
       let field: any = value;
@@ -46,25 +50,25 @@ export function inspectSemanticPatch(value: unknown): { issues: string[]; overfl
 }
 
 /** Stage overlong text for the isolated transaction, never discard required fields. */
-export function parseSemanticRequestPatch(value: unknown): unknown {
-  const parsed = semanticPatchSchema.safeParse(value);
+export function parseSemanticRequestPatch(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): unknown {
+  const parsed = createSemanticSummarySchema(maxChars).partial().safeParse(value);
   if (parsed.success) return parsed.data;
-  if (inspectSemanticPatch(value).lengthOnly) return value;
+  if (inspectSemanticPatch(value, maxChars).lengthOnly) return value;
   throw parsed.error;
 }
 
 /** Auxiliary historical handoffs only. The public tool continues to reject V2. */
-export function parseSemanticCandidatePatch(value: unknown): unknown {
+export function parseSemanticCandidatePatch(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): unknown {
   // Historical V2 responses carried Runtime-owned coverage/intent declarations.
   // Preserve only their semantic fields; never promote those old declarations.
   if (value && typeof value === "object" && !Array.isArray(value) && (value as { formatVersion?: unknown }).formatVersion === 2) {
     value = Object.fromEntries(Object.entries(value).filter(([key]) => Object.prototype.hasOwnProperty.call(semanticPatchSchema.shape, key)));
   }
-  return parseSemanticRequestPatch(value);
+  return parseSemanticRequestPatch(value, maxChars);
 }
 
-export function clipSemanticFields(value: unknown): { patch: unknown; diagnostics: string[] } {
-  const inspection = inspectSemanticPatch(value);
+export function clipSemanticFields(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): { patch: unknown; diagnostics: string[] } {
+  const inspection = inspectSemanticPatch(value, maxChars);
   const patch: any = structuredClone(value);
   // Repair items before dropping array tails, so nested paths remain addressable.
   for (const overflow of [...inspection.overflows].sort((a, b) => b.path.length - a.path.length)) {
@@ -165,8 +169,8 @@ export function semanticIssues(candidate: unknown, snapshot: CompactionSnapshot)
 
 /** Existence is not entailment: only Runtime observation fields are verified.
  * Model conclusions remain interpretations even when they cite successful tests. */
-export function semanticDocument(candidate: unknown, snapshot: CompactionSnapshot, degrade = false, truncatedFields: readonly string[] = []): string {
-  const parsed = semanticSummarySchema.parse(candidate);
+export function semanticDocument(candidate: unknown, snapshot: CompactionSnapshot, degrade = false, truncatedFields: readonly string[] = [], maxChars = SEMANTIC_FIELD_MAX_CHARS): string {
+  const parsed = createSemanticSummarySchema(maxChars).parse(candidate);
   const catalogue = new Map(snapshot.evidence.map((entry) => [entry.id, entry]));
   const used = new Set<string>();
   const hypotheses = [...parsed.hypotheses];
@@ -218,7 +222,7 @@ export function boundedSummaryDocument(document: string, snapshot: CompactionSna
 }
 
 /** Exact current-thread Journal projection; never RAG, subprocesses or file reads. */
-export function recallCompactionEvidence(state: Readonly<SessionState>, raw: string): ToolExecutionResult | undefined {
+export function recallCompactionEvidence(state: Readonly<SessionState>, raw: string, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): ToolExecutionResult | undefined {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return undefined; }
   const object = value as { action?: string; evidenceId?: string } | null;
@@ -226,7 +230,7 @@ export function recallCompactionEvidence(state: Readonly<SessionState>, raw: str
       !/^(ev_|journal_message_|journal_summary_)/u.test(object.evidenceId)) return undefined;
   const parsed = z.object({ action: z.literal("recall"),
     evidenceId: z.string().regex(/^(?:ev_[a-f0-9]{24}|journal_message_\d+|journal_summary_[a-f0-9]{64})$/u),
-    offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(16000).default(8000),
+    offset: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(limits.evidenceRecallMaxChars).default(limits.evidenceRecallDefaultChars),
   }).strict().safeParse(value);
   if (!parsed.success) return { ok: false, summary: "Invalid Journal recall parameters." };
   const { evidenceId, offset, limit } = parsed.data;
