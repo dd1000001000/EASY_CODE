@@ -122,7 +122,8 @@ describe("AgentRuntime progress intervention", () => {
           };
         }
         if (requestIndex === 2) {
-          assert.match(request.messages[0]?.content ?? "", /falsifiable experiment/u);
+          assert.doesNotMatch(request.messages[0]?.content ?? "", /falsifiable experiment/u);
+          assert.match(request.messages.at(-1)?.content ?? "", /RUNTIME_NEXT_ACTION[\s\S]*falsifiable experiment/u);
           return {
             message: {
               role: "assistant",

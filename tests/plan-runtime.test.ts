@@ -345,7 +345,9 @@ describe("model-controlled plan flow", () => {
     });
 
     assert.equal(result.reason, "planned", result.text);
-    assert.deepEqual(requestTools[0], ["compact_context"]);
+    // Pre-routing maintenance retains the Code capability envelope (empty in
+    // this fixture), not a new compact_context-only schema surface.
+    assert.deepEqual(requestTools[0], []);
     assert.deepEqual(requestTools[1], ["select_mode", "respond_directly"]);
     assert.deepEqual(requestTools[2], ["propose_plan"]);
     assert.deepEqual(modes, ["code", "auto", "plan"]);

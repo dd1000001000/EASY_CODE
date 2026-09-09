@@ -138,6 +138,7 @@ export async function buildSystemPrompt(
   const sections = [
     promptText(catalog, "system/base.md"),
     promptText(catalog, "system/security.md"),
+    promptText(catalog, "system/runtime-control.md"),
     formatModeRules(catalog, options.mode, options.availableTools),
     formatToolRules(catalog, options.availableTools),
     promptText(

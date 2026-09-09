@@ -17,6 +17,7 @@ import { statementSchema, type ReviewActor, type ReviewDriver, type ReviewEvent,
 import type { TaskBudget } from "../runtime/task-budget.js";
 import { ReviewFatalError, ReviewCleanupError } from "./errors.js";
 import path from "node:path";
+import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 
 export interface ReviewParticipant {
   state: SessionState;
@@ -105,7 +106,8 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
     "Commands operate only on your disposable experiment copy and require approval. Changes to that copy invalidate direct proof about the original snapshot. " +
     "Investigate requirement semantics, original and modified tests, and boundary counterexamples. Do not certify a patch solely because modified tests pass. " +
     "Use post_review alone to end your public speaking turn. At most five reviewer/author rounds; no need to agree. " +
-    "Use recall_context to expand evidence; read_file reads the experiment copy's current version.";
+    "Use recall_context to expand evidence; read_file reads the experiment copy's current version.\n\n" +
+    loadPromptBundleCatalog().readText("system/runtime-control.md").trimEnd();
   const build = async (who: ReviewActor, tools: ToolDefinition[], prompt = "", summary = false) => {
     const p = input.participants[who], manager = managers[who];
     const systemPrompt = system(who) + (summary ? "\n" + SUMMARY_INSTRUCTIONS : "");
@@ -118,7 +120,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       required: false, maxRequests: summary ? 0 : Math.max(0, input.get().maxRequests - input.get().requests - 2),
       skipSummary: summary, signal: input.signal, nextRequest, tool: new CompactContextTool().definition,
       append: async event => p.append(event.type, event.payload),
-      complete: async messages => (await request(who, { messages, tools: [new CompactContextTool().definition] })).message,
+      complete: async (messages, _attempt, summaryTools) => (await request(who, { messages, tools: summaryTools })).message,
     }).then(result => { if (result.paused) throw new Error(result.paused.reason); });
     return manager.build({ state: p.state, systemPrompt, runtimeContext: requestContext, maxContextChars: input.limits.maxContextChars });
   };

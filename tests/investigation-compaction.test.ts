@@ -350,9 +350,11 @@ describe("unfinished investigation compaction", () => {
         name: "read_file", description: "Read source", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
         execute: async () => ({ ok: true, summary: `source ${reads}`, data: "s".repeat(6000) }) };
       const runtime = new AgentRuntime({ provider: { name: "deepseek", model: "test", complete: async (request) => {
-        if (request.tools?.length === 1 && request.tools[0]!.function.name === "compact_context") {
+        if (request.messages.at(-1)?.content?.startsWith("RUNTIME_CONTEXT_HANDOFF:")) {
           summaries += 1;
-          assert.match(request.messages[0]!.content!, /investigation boundary is NOT task completion/i);
+          assert.equal(request.messages[0]?.content, "rules");
+          assert.deepEqual(request.tools?.map(t => t.function.name), ["read_file"]);
+          assert.match(request.messages.at(-1)!.content!, /investigation boundary is NOT task completion/i);
           return { message: candidate() };
         }
         if (reads >= 6) return { message: { role: "assistant", content: "Investigation remains unfinished; reproduce the failure next." } };

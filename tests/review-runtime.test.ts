@@ -46,6 +46,39 @@ function setup(provider: ModelProvider) {
 }
 
 describe("review runtime isolation and recovery", () => {
+  it("compacts a reviewer's private history with the same role prefix and never dispatches summary tools", async () => {
+    const requests: ModelRequest[] = [];
+    let executions = 0;
+    const f = setup({ name: "glm", model: "mock", complete: async request => {
+      requests.push(request);
+      if (request.messages.at(-1)?.content?.startsWith("RUNTIME_CONTEXT_HANDOFF:")) {
+        return { message: { role: "assistant", content: "<summary>Private investigation is unfinished. Verify the boundary condition.</summary>",
+          tool_calls: [{ id: "forbidden_review_command", type: "function", function: { name: "run_command", arguments: "{}" } }] } };
+      }
+      return { message: { role: "assistant", content: JSON.stringify({ proposal: "Verify the counterexample", kind: "next_action",
+        vote: "needs_evidence", evidenceRefs: [], unresolved: ["Not independently verified"] }) } };
+    } });
+    const p = f.participants.reviewer;
+    p.state.messages.push({ role: "user", content: "PRIVATE_REVIEW_REQUIREMENT" },
+      { role: "assistant", content: "Earlier private investigation", reasoning_content: "r".repeat(180_000) },
+      ...Array.from({ length: 6 }, (_, i) => ({ role: "assistant" as const, content: `Recent private evidence ${i}` })));
+    p.tools.push({ name: "run_command", mutating: false, definition: { type: "function", function: {
+      name: "run_command", description: "Execute an approved experiment", parameters: { type: "object" },
+    } }, execute: async () => { executions++; return { ok: true, summary: "Must not execute" }; } });
+    try {
+      const result = await f.driver.discuss("reviewer", f.get());
+      assert.equal(result.vote, "needs_evidence");
+      assert.equal(requests.length, 2);
+      assert.equal(executions, 0);
+      assert.match(requests[0]!.messages.at(-1)?.content ?? "", /^RUNTIME_CONTEXT_HANDOFF:/u);
+      assert.deepEqual(requests[0]!.messages[0], requests[1]!.messages[0]);
+      assert.deepEqual(requests[0]!.tools, requests[1]!.tools);
+      assert.match(requests[0]!.messages[0]?.content ?? "", /no tool execution is authorized/);
+      assert.doesNotMatch(JSON.stringify(requests), /PRIVATE_MAIN_CONTEXT/);
+      assert.ok(!p.state.messages.some(m => m.role === "tool" && m.tool_call_id === "forbidden_review_command"));
+    } finally { f.driver.release(); }
+  });
+
   it("retains fresh failed-read feedback during reset reconciliation without re-injecting old memory", async () => {
     let calls = 0, reads = 0;
     const f = setup({ name: "glm", model: "mock", complete: async request => {
