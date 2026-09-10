@@ -497,9 +497,15 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.modelChoices.map((choice) => choice.id),
       [
+        "qwen3.8-max",
+        "qwen3.8-flash",
         "qwen3.7-max",
         "qwen3.7-plus",
+        "qwen3.7-flash",
+        "qwen3-coder-plus",
+        "qwen3-coder-flash",
         "qwen3.6-plus",
+        "qwen3.6-flash",
         "qwen3.5-plus",
         "qwen3.5-flash",
       ],

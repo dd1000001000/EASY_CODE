@@ -67,6 +67,20 @@
       },
       "models": [
         {
+          "id": "qwen3.8-max",
+          "label": "Qwen3.8-Max",
+          "vision": "supported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
+          "id": "qwen3.8-flash",
+          "label": "Qwen3.8-Flash",
+          "vision": "supported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
           "id": "qwen3.7-max",
           "label": "Qwen3.7-Max",
           "vision": "unsupported",
@@ -81,8 +95,36 @@
           "contextWindowTokens": 1000000
         },
         {
+          "id": "qwen3.7-flash",
+          "label": "Qwen3.7-Flash",
+          "vision": "supported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
+          "id": "qwen3-coder-plus",
+          "label": "Qwen3-Coder-Plus",
+          "vision": "unsupported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
+          "id": "qwen3-coder-flash",
+          "label": "Qwen3-Coder-Flash",
+          "vision": "unsupported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
           "id": "qwen3.6-plus",
           "label": "Qwen3.6-Plus",
+          "vision": "supported",
+          "thinking": "qwen_budget",
+          "contextWindowTokens": 1000000
+        },
+        {
+          "id": "qwen3.6-flash",
+          "label": "Qwen3.6-Flash",
           "vision": "supported",
           "thinking": "qwen_budget",
           "contextWindowTokens": 1000000

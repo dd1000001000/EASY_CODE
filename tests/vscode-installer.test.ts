@@ -48,6 +48,18 @@ interface InstallerModule {
 }
 
 interface PostinstallModule {
+  installBundledPromptResources(options?: {
+    installContext?: {
+      env?: NodeJS.ProcessEnv;
+      packageRoot?: string;
+      existsSync?: (filename: string) => boolean;
+    };
+  }): Promise<{ deferred?: boolean; reason?: string }>;
+  shouldDeferLocalSourcePromptInstall(options?: {
+    env?: NodeJS.ProcessEnv;
+    packageRoot?: string;
+    existsSync?: (filename: string) => boolean;
+  }): boolean;
   runPostinstall(options?: {
     installPromptBundle?: () => Promise<{ deferred?: boolean }>;
     loadDatabase?: () => unknown;
@@ -96,6 +108,55 @@ const vsixVerifier = require(
 ) as VsixVerifierModule;
 
 describe("VS Code extension installer", () => {
+  it("defers Prompt Bundle activation only for the repository-local dependency install", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "easy-code-source-postinstall-"));
+    try {
+      mkdirSync(path.join(root, "src", "prompt-bundle"), { recursive: true });
+      mkdirSync(path.join(root, "scripts"), { recursive: true });
+      writeFileSync(path.join(root, "tsconfig.json"), "{}\n");
+      writeFileSync(path.join(root, "src", "prompt-bundle", "manager.ts"), "export {};\n");
+      writeFileSync(path.join(root, "scripts", "build-prompt-bundle.cjs"), "\n");
+
+      const sourceEnvironment = {
+        INIT_CWD: root,
+        npm_lifecycle_event: "postinstall",
+        npm_config_global: "false",
+      };
+      assert.equal(
+        postinstall.shouldDeferLocalSourcePromptInstall({
+          env: sourceEnvironment,
+          packageRoot: root,
+        }),
+        true,
+      );
+      assert.equal(
+        postinstall.shouldDeferLocalSourcePromptInstall({
+          env: { ...sourceEnvironment, npm_config_global: "true" },
+          packageRoot: root,
+        }),
+        false,
+        "a global install must verify the packaged Bundle",
+      );
+      assert.equal(
+        postinstall.shouldDeferLocalSourcePromptInstall({
+          env: { ...sourceEnvironment, INIT_CWD: path.join(root, "consumer") },
+          packageRoot: root,
+        }),
+        false,
+        "a local package consumer must not weaken packaged integrity checks",
+      );
+      const deferred = await postinstall.installBundledPromptResources({
+        installContext: { env: sourceEnvironment, packageRoot: root },
+      });
+      assert.deepEqual(deferred, {
+        deferred: true,
+        reason: "local-source-build-pending",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("stops postinstall before other setup when the Prompt Bundle cannot be installed", async () => {
     let databaseLoaded = false;
     let stderr = "";

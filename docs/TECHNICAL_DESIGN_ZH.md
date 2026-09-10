@@ -371,14 +371,14 @@ Worker 不获得供应商密钥、Docker Socket 或宿主机桥接程序。共�
 ## 15. 构建、验证与扩展方式
 
 ```bash
-npm install
+npm ci --ignore-scripts
+npm run build
 npm run typecheck
 npm test
-npm run build
 npm pack
 ```
 
-安装可能准备/下载固定版本的向量模型和编辑器集成。`build` 校验并构建 Prompt Bundle，再编译 TypeScript。测试使用仓库测试框架与 VS Code 扩展测试；真实供应商调用和 Benchmark 属于单独的集成评估。`prepack` 构建并校验捆绑的 VSIX 后生成 npm 制品。
+仓库依赖安装会先跳过生命周期初始化，等源码构建完成后再执行，避免被忽略但仍残留的旧 `dist` 用过期哈希校验新版 Prompt Bundle。正式制品和全局安装不享受这一例外：它们继续对 Manifest 与兼容性执行失败关闭校验，并可能准备/下载固定版本的向量模型和编辑器集成。npm 是否允许运行安装脚本只能由调用者授权，包本身不能绕过；`easy-code install doctor` 通过只读 PATH 检查发现多套 npm 或冲突的全局启动文件。`build` 校验并构建 Prompt Bundle，再编译 TypeScript。测试使用仓库测试框架与 VS Code 扩展测试；真实供应商调用和 Benchmark 属于单独的集成评估。`prepack` 构建并校验捆绑的 VSIX 后生成 npm 制品。
 
 扩展项目时：
 

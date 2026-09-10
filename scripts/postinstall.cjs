@@ -31,6 +31,40 @@ const { pathToFileURL } = require("node:url");
 const { prepareEmbeddingModel } = require("./embedding-model.cjs");
 const { installBundledVsCodeExtension } = require("./install-vscode-extension.cjs");
 
+function comparablePath(value) {
+  let resolved = path.resolve(value);
+  try {
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // A missing synthetic path cannot identify the live source checkout.
+  }
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/**
+ * `npm install` in a source checkout runs postinstall before the documented
+ * build step. A previously generated dist/ can therefore describe an older
+ * Prompt Bundle. Only defer that repository-local dependency-install case;
+ * installed packages and global installs must still verify fail-closed.
+ */
+function shouldDeferLocalSourcePromptInstall(options = {}) {
+  const env = options.env || process.env;
+  const packageRoot = path.resolve(options.packageRoot || path.join(__dirname, ".."));
+  const exists = options.existsSync || fs.existsSync;
+  const globalInstall = ["1", "true"].includes(
+    String(env.npm_config_global || "").trim().toLowerCase(),
+  );
+  if (env.npm_lifecycle_event !== "postinstall" || globalInstall || !env.INIT_CWD) {
+    return false;
+  }
+  if (comparablePath(env.INIT_CWD) !== comparablePath(packageRoot)) return false;
+  return (
+    exists(path.join(packageRoot, "tsconfig.json")) &&
+    exists(path.join(packageRoot, "src", "prompt-bundle", "manager.ts")) &&
+    exists(path.join(packageRoot, "scripts", "build-prompt-bundle.cjs"))
+  );
+}
+
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -42,6 +76,9 @@ function importedDefault(value) {
 }
 
 async function installBundledPromptResources(options = {}) {
+  if (shouldDeferLocalSourcePromptInstall(options.installContext)) {
+    return { deferred: true, reason: "local-source-build-pending" };
+  }
   const modulePath = path.join(__dirname, "..", "dist", "prompt-bundle", "index.js");
   if (!fs.existsSync(modulePath)) {
     return { deferred: true };
@@ -349,8 +386,10 @@ async function runPostinstall(options = {}) {
   try {
     const promptResult = await installPromptBundle();
     stdout.write(
-      promptResult && promptResult.deferred
-        ? "EASY CODE: Prompt Bundle installation is deferred until the first CLI launch.\n"
+      promptResult && promptResult.reason === "local-source-build-pending"
+        ? "EASY CODE: source dependency install detected; Prompt Bundle activation is deferred until after the source build.\n"
+        : promptResult && promptResult.deferred
+          ? "EASY CODE: Prompt Bundle installation is deferred until the first CLI launch.\n"
         : "EASY CODE: versioned Prompt Bundle is installed and verified.\n",
     );
   } catch (error) {
@@ -471,6 +510,7 @@ module.exports = {
   checkSandboxPrerequisites,
   installBundledPromptResources,
   runPostinstall,
+  shouldDeferLocalSourcePromptInstall,
   validateEmbeddingStack,
   validateOrama,
   validateTokenizerAndOnnx,
