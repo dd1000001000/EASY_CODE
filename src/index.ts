@@ -16,6 +16,7 @@ import {
   registerPromptBundleCommands,
 } from "./prompt-bundle/index.js";
 import { registerUninstallCommand } from "./uninstall/index.js";
+import { registerInstallCommands } from "./install/index.js";
 import {
   THINKING_EFFORTS,
   type AgentMode,
@@ -176,6 +177,7 @@ export async function main(argv = process.argv): Promise<void> {
   registerPromptBundleCommands(program);
   registerSandboxCommands(program);
   registerSweBenchCommands(program);
+  registerInstallCommands(program);
   registerUninstallCommand(program);
 
   await program.parseAsync(argv);
@@ -195,6 +197,7 @@ export * from "./config/index.js";
 export * from "./core/types.js";
 export * from "./memory/index.js";
 export * from "./images/index.js";
+export * from "./install/index.js";
 export * from "./models/index.js";
 export * from "./providers/index.js";
 export * from "./prompt-bundle/index.js";

@@ -43,6 +43,7 @@
     "test:vscode": "npm --prefix vscode-extension test",
     "build:test": "npm run bundle:build && tsc -p tsconfig.test.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "install:doctor": "node dist/index.js install doctor",
     "postinstall": "node scripts/postinstall.cjs",
     "memory:install": "node scripts/embedding-model.cjs prepare",
     "memory:verify": "node scripts/embedding-model.cjs verify",

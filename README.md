@@ -18,12 +18,12 @@ Requires Node.js **>=20.11.0**, npm and an API key for a supported provider. Run
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
 cd EASY_CODE
-npm install
+npm ci --ignore-scripts
 npm run build
-npm install --global .
+npm install --global --allow-scripts=easy-code-agent .
 ```
 
-Installation prepares the local retrieval model and integration resources and may download assets. Do not use `--ignore-scripts` for a normal installation.
+The final global install prepares the local retrieval model and integration resources and may download assets. If npm reports an existing `easy-code` launcher, run `npm run install:doctor`, uninstall the copies reported for the old npm prefixes, and reinstall without `--force`.
 
 ## Get started
 

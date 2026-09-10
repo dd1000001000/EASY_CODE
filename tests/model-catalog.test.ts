@@ -53,9 +53,15 @@ describe("model catalog", () => {
     assert.deepEqual(
       modelsForProvider("qwen").map((model) => model.id),
       [
+        "qwen3.8-max",
+        "qwen3.8-flash",
         "qwen3.7-max",
         "qwen3.7-plus",
+        "qwen3.7-flash",
+        "qwen3-coder-plus",
+        "qwen3-coder-flash",
         "qwen3.6-plus",
+        "qwen3.6-flash",
         "qwen3.5-plus",
         "qwen3.5-flash",
       ],
@@ -111,8 +117,8 @@ describe("model catalog", () => {
 
   it("excludes the removed sub-1M Qwen models without adding a preview alias", () => {
     const models = PROVIDER_CATALOG.flatMap((entry) => entry.models);
-    assert.equal(models.length, 12);
-    assert.equal(new Set(models.map((model) => model.id)).size, 9);
+    assert.equal(models.length, 18);
+    assert.equal(new Set(models.map((model) => model.id)).size, 15);
     for (const model of [
       "qwen3.6-max",
       "qwen3.6-max-preview",
@@ -179,7 +185,13 @@ describe("model catalog", () => {
     }
     assert.equal(modelVisionSupport("qwen", "qwen3.7-plus"), "supported");
     assert.equal(modelVisionSupport("qwen", "qwen3.7-max"), "unsupported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.8-max"), "supported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.8-flash"), "supported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.7-flash"), "supported");
+    assert.equal(modelVisionSupport("qwen", "qwen3-coder-plus"), "unsupported");
+    assert.equal(modelVisionSupport("qwen", "qwen3-coder-flash"), "unsupported");
     assert.equal(modelVisionSupport("qwen", "qwen3.6-plus"), "supported");
+    assert.equal(modelVisionSupport("qwen", "qwen3.6-flash"), "supported");
     assert.equal(modelVisionSupport("glm", "glm-5.3-flash"), "supported");
     assert.equal(modelVisionSupport("glm", "glm-5.3"), "unsupported");
     assert.equal(modelVisionSupport("glm", "glm-5.2"), "unsupported");

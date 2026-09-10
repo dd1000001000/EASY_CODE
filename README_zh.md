@@ -18,12 +18,12 @@ EASY CODE 是本地运行的 CLI 编程 Agent，支持 Qwen、DeepSeek、智谱 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
 cd EASY_CODE
-npm install
+npm ci --ignore-scripts
 npm run build
-npm install --global .
+npm install --global --allow-scripts=easy-code-agent .
 ```
 
-安装脚本会准备本地检索模型与集成资源，可能需要下载；正常安装不要使用 `--ignore-scripts`。
+最后一步全局安装会准备本地检索模型与集成资源，可能需要下载。如果 npm 报告已有 `easy-code` 启动文件，先运行 `npm run install:doctor`，按输出用旧 npm 卸载对应副本，再重新安装；不要使用 `--force`。
 
 ## 开始使用
 

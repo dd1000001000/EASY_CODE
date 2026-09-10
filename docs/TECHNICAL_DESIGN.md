@@ -371,14 +371,14 @@ Offline execution reduces external lookup channels; it does not prove patch corr
 ## 15. Build, verification and extension points
 
 ```bash
-npm install
+npm ci --ignore-scripts
+npm run build
 npm run typecheck
 npm test
-npm run build
 npm pack
 ```
 
-Installation may prepare/download the pinned embedding model and editor integration. `build` validates/builds the prompt bundle and compiles TypeScript. Tests use the repository harness plus VS Code extension tests; live provider/benchmark runs are separate integration evaluations. `prepack` builds and verifies the bundled VSIX before producing the npm artifact.
+Repository dependency installation deliberately skips lifecycle initialization until the source has been built, preventing a stale ignored `dist` tree from validating a newer Prompt Bundle. Packaged and global installs do not receive this exception: they verify the manifest and compatibility fail-closed and may prepare/download the pinned embedding model and editor integration. npm script permission must be granted by the caller; the package cannot bypass a blocked lifecycle. `easy-code install doctor` performs read-only PATH inspection for multiple npm installations or conflicting global launchers. `build` validates/builds the Prompt Bundle and compiles TypeScript. Tests use the repository harness plus VS Code extension tests; live provider/benchmark runs are separate integration evaluations. `prepack` builds and verifies the bundled VSIX before producing the npm artifact.
 
 When extending the project:
 
