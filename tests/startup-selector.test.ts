@@ -232,7 +232,7 @@ async function withStartupApp(
   process.env.EASY_CODE_PROVIDER = "qwen";
   delete process.env.EASY_CODE_THINKING_EFFORT;
   process.env.QWEN_MODEL = "qwen3.7-plus";
-  process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
+  process.env.DEEPSEEK_MODEL = "deepseek-flash";
   delete process.env.GLM_MODEL;
   delete process.env.GLM_CODING_PLAN_MODEL;
   delete process.env.QWEN_API_KEY;
@@ -422,7 +422,7 @@ describe("three-stage model selector", () => {
     const secret = "deepseek-startup-secret";
     const terminal = new ScriptedStartupTerminal(
       "deepseek",
-      "deepseek-v4-flash-vision-exp",
+      "deepseek-flash",
       secret,
     );
     const store = new MemoryCredentialStore();
@@ -442,25 +442,27 @@ describe("three-stage model selector", () => {
       ],
     );
     assert.equal(terminal.selectedProviderLabel, "DeepSeek");
-    assert.equal(terminal.initialModel, "deepseek-v4-pro");
+    assert.equal(terminal.initialModel, "deepseek-flash");
+    assert.deepEqual(
+      terminal.modelChoices.map(({ id, label, vision }) => ({ id, label, vision })),
+      [{ id: "deepseek-flash", label: "deepseek v4.1-flash", vision: "supported" }],
+    );
     assert.deepEqual(
       terminal.modelChoices.map((choice) => choice.id),
       [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
       ],
     );
     assert.equal(terminal.thinkingProviderLabel, "DeepSeek");
-    assert.equal(terminal.thinkingModel, "deepseek-v4-flash-vision-exp");
+    assert.equal(terminal.thinkingModel, "deepseek-flash");
     assert.equal(terminal.initialThinkingEffort, "medium");
     assert.deepEqual(
       terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
       [
-        { id: "none", applied: false },
-        { id: "low", applied: false },
-        { id: "medium", applied: false },
-        { id: "high", applied: false },
+        { id: "none", applied: true },
+        { id: "low", applied: true },
+        { id: "medium", applied: true },
+        { id: "high", applied: true },
       ],
     );
     assert.equal(store.values.get("deepseek"), secret);
@@ -470,10 +472,10 @@ describe("three-stage model selector", () => {
     assert.match(terminal.transcript, /Saved deepseek\.api-key/u);
     assert.match(
       terminal.transcript,
-      /Selected DeepSeek \/ deepseek-v4-flash-vision-exp \/ thinking medium \(saved, not applied\)/u,
+      /Selected DeepSeek \/ deepseek-flash \/ thinking medium/u,
     );
     assert.match(terminal.transcript, /"thinkingEffort": "medium"/u);
-    assert.match(terminal.transcript, /"thinkingApplied": false/u);
+    assert.match(terminal.transcript, /"thinkingApplied": true/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
   });
 

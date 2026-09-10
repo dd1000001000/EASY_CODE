@@ -47,9 +47,7 @@ describe("model catalog", () => {
     assert.deepEqual(
       modelsForProvider("deepseek").map((model) => model.id),
       [
-        "deepseek-v4-flash",
-        "deepseek-v4-pro",
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
       ],
     );
     assert.deepEqual(
@@ -72,7 +70,7 @@ describe("model catalog", () => {
     );
     assert.deepEqual(DEFAULT_MODEL_IDS, {
       qwen: "qwen3.7-max",
-      deepseek: "deepseek-v4-pro",
+      deepseek: "deepseek-flash",
       glm: "glm-5.3",
       "glm-coding-plan": "glm-5.3",
     });
@@ -113,8 +111,8 @@ describe("model catalog", () => {
 
   it("excludes the removed sub-1M Qwen models without adding a preview alias", () => {
     const models = PROVIDER_CATALOG.flatMap((entry) => entry.models);
-    assert.equal(models.length, 14);
-    assert.equal(new Set(models.map((model) => model.id)).size, 11);
+    assert.equal(models.length, 12);
+    assert.equal(new Set(models.map((model) => model.id)).size, 9);
     for (const model of [
       "qwen3.6-max",
       "qwen3.6-max-preview",
@@ -170,10 +168,15 @@ describe("model catalog", () => {
 
   it("uses an explicit conservative vision capability matrix", () => {
     assert.equal(
-      modelVisionSupport("deepseek", "deepseek-v4-flash-vision-exp"),
+      modelVisionSupport("deepseek", "deepseek-flash"),
       "supported",
     );
-    assert.equal(modelVisionSupport("deepseek", "deepseek-v4-pro"), "unsupported");
+    assert.equal(modelVisionSupport("deepseek", "deepseek-v4-pro"), "unknown");
+    assert.doesNotThrow(() => requireVisionModel("deepseek", "deepseek-flash"));
+    assert.equal(resolveCatalogModel("deepseek", "deepseek-flash")?.contextWindowTokens, 1_000_000);
+    for (const retired of ["deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]) {
+      assert.throws(() => requireCatalogModel("deepseek", retired), /not in the/u);
+    }
     assert.equal(modelVisionSupport("qwen", "qwen3.7-plus"), "supported");
     assert.equal(modelVisionSupport("qwen", "qwen3.7-max"), "unsupported");
     assert.equal(modelVisionSupport("qwen", "qwen3.6-plus"), "supported");
@@ -230,11 +233,11 @@ describe("model catalog", () => {
       ],
     );
     assert.deepEqual(
-      thinkingRequestParameters("deepseek", "deepseek-v4-pro", "medium"),
+      thinkingRequestParameters("deepseek", "deepseek-flash", "medium"),
       { thinking: { type: "enabled" }, reasoning_effort: "high" },
     );
     assert.deepEqual(
-      thinkingRequestParameters("deepseek", "deepseek-v4-flash", "none"),
+      thinkingRequestParameters("deepseek", "deepseek-flash", "none"),
       { thinking: { type: "disabled" } },
     );
     assert.deepEqual(
@@ -261,10 +264,10 @@ describe("model catalog", () => {
     assert.deepEqual(
       thinkingRequestParameters(
         "deepseek",
-        "deepseek-v4-flash-vision-exp",
+        "deepseek-flash",
         "high",
       ),
-      {},
+      { thinking: { type: "enabled" }, reasoning_effort: "high" },
     );
     assert.equal(
       thinkingEffortIsApplied("glm", "glm-5.3", "none"),
@@ -342,10 +345,11 @@ describe("model catalog", () => {
 
   it("canonicalizes labels and rejects cross-provider or unknown model IDs", () => {
     assert.equal(resolveCatalogModel("qwen", "Qwen3.5-Flash")?.id, "qwen3.5-flash");
-    assert.equal(requireCatalogModel("deepseek", "DEEPSEEK-V4-PRO").id, "deepseek-v4-pro");
+    assert.equal(requireCatalogModel("deepseek", "DEEPSEEK-FLASH").id, "deepseek-flash");
+    assert.equal(requireCatalogModel("deepseek", "deepseek v4.1-flash").id, "deepseek-flash");
     assert.equal(resolveCatalogModel("glm", "GLM-5.3-Flash")?.id, "glm-5.3-flash");
     assert.throws(
-      () => requireCatalogModel("qwen", "deepseek-v4-pro"),
+      () => requireCatalogModel("qwen", "deepseek-flash"),
       /not in the Alibaba Qwen catalog/u,
     );
     assert.throws(
