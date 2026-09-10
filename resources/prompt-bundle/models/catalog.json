@@ -9,7 +9,7 @@
       "credentialSlot": "deepseek",
       "configKey": "deepseek.api-key",
       "defaultBaseUrl": "https://api.deepseek.com",
-      "defaultModel": "deepseek-v4-pro",
+      "defaultModel": "deepseek-flash",
       "environment": {
         "apiKey": [
           "DEEPSEEK_API_KEY"
@@ -29,24 +29,10 @@
       },
       "models": [
         {
-          "id": "deepseek-v4-flash",
-          "label": "deepseek-v4-flash",
-          "vision": "unsupported",
-          "thinking": "deepseek_effort",
-          "contextWindowTokens": 1000000
-        },
-        {
-          "id": "deepseek-v4-pro",
-          "label": "deepseek-v4-pro",
-          "vision": "unsupported",
-          "thinking": "deepseek_effort",
-          "contextWindowTokens": 1000000
-        },
-        {
-          "id": "deepseek-v4-flash-vision-exp",
-          "label": "deepseek-v4-flash-vision-exp",
+          "id": "deepseek-flash",
+          "label": "deepseek v4.1-flash",
           "vision": "supported",
-          "thinking": "unsupported",
+          "thinking": "deepseek_effort",
           "contextWindowTokens": 1000000
         }
       ]

@@ -1,6 +1,12 @@
 # Copy desired settings to .easycode/config.toml or the user config.toml.
 # Generate the current defaults with: easy-code config defaults
 # Keys inside [limits] use camelCase. Unknown/legacy limit keys are errors.
+# Provider model lists, display labels, default endpoints and capabilities live in
+# resources/prompt-bundle/models/catalog.json (source configuration).
+# Edit that JSON and run npm run build; do not edit generated-catalog.ts or the
+# installed, hash-verified Prompt Bundle. Restart the CLI after rebuilding.
+# Model id is the API identifier; label is the human-readable selector name.
+# User config may override [provider].base_url; workspace config may not.
 orchestrationEnabled = false
 # Optional approvalModel belongs in USER config only; defaults to the active model.
 # approvalModel = "glm-5.3-flash"

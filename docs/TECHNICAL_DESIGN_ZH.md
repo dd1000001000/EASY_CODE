@@ -115,6 +115,23 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 
 [providers/](../src/providers) 基于共享的 OpenAI-compatible 适配器接入 Qwen、DeepSeek、GLM 和 GLM Coding Plan。[模型目录](../resources/prompt-bundle/models/catalog.json) 保存模型 ID、端点相关元数据、视觉/thinking 支持和上下文窗口。
 
+### 供应商配置的维护方式
+
+`resources/prompt-bundle/models/catalog.json` 是四家供应商模型菜单和默认端点的统一源配置，不要在 TypeScript 或用户 TOML 中重复维护模型列表。
+
+| JSON 字段 | 用途 |
+| --- | --- |
+| `providers[].defaultBaseUrl` | API 默认基础地址；共享适配器自动追加 `/chat/completions`。 |
+| `providers[].defaultModel` | 默认 API 模型 ID，必须存在于该供应商的 `models` 中。 |
+| `providers[].models` | 可选模型列表；每个数组元素对应一个菜单选项。 |
+| `models[].id` / `models[].label` | 实际 API 标识 / 菜单显示名称；改显示名称不会改变请求 ID。 |
+| `models[].vision`、`thinking`、`contextWindowTokens` | 图片能力、已有 thinking 参数映射类型、官方上下文窗口。 |
+| `providers[].environment` | 密钥、端点、模型等覆盖设置对应的环境变量名。 |
+
+DeepSeek 只有一个选项，显示为 `deepseek v4.1-flash`，实际 API ID 仍是 `deepseek-flash`。不要在目录中存储 API Key。GLM 普通 API 与 Coding Plan 的端点和密钥保持独立。
+
+修改源 JSON 后执行 `npm run build` 并重启 CLI；构建会重新生成内置目录及 Prompt Bundle 哈希。已分发的安装版本需要更新构建后的代码包，不支持直接编辑其经过哈希校验的 Bundle。**用户级**配置中的端点（例如 `[deepseek]` 下的 `base_url = "https://…"`）或对应环境变量会覆盖目录默认值；工作区配置不能覆盖端点。新增模型若复用已有适配器和 thinking 类型，只需修改目录；新增供应商协议仍需要适配代码。
+
 当前传输明确使用 **`stream: false`**：接收有大小上限的完整 JSON 响应，再统一处理正文、原生 reasoning、工具调用、结束原因和用量。终端显示“正在思考”不代表底层使用 SSE 或逐 Token 流式响应。
 
 供应商特有代码只负责 thinking 参数、GLM 工具 Schema 兼容等协议差异。记忆策略、容量恢复和重试计数保持供应商无关。本地输出/存储上限**不会转换成发送给服务端的 `max_tokens` 或 `max_completion_tokens`**。为保护本地进程，HTTP 响应仍有独立的字节上限。

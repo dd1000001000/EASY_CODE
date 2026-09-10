@@ -318,7 +318,7 @@ describe("/model", () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     try {
       await assert.rejects(
-        fixture.app.handleSlashCommand("/model deepseek deepseek-v4-pro"),
+        fixture.app.handleSlashCommand("/model deepseek deepseek-flash"),
         assertMissingKey("deepseek"),
       );
       await assert.rejects(
@@ -336,7 +336,7 @@ describe("/model", () => {
         assertMissingKey("glm-coding-plan"),
       );
       await assert.rejects(
-        fixture.app.handleSlashCommand("/model qwen deepseek-v4-pro"),
+        fixture.app.handleSlashCommand("/model qwen deepseek-flash"),
         /not in the Alibaba Qwen catalog/u,
       );
       await assert.rejects(
@@ -389,12 +389,12 @@ describe("/model", () => {
     });
     try {
       const offset = fixture.output().length;
-      await fixture.app.handleSlashCommand("/model deepseek deepseek-v4-flash");
+      await fixture.app.handleSlashCommand("/model deepseek deepseek-flash");
       await fixture.app.handleSlashCommand("/status");
       const result = fixture.output().slice(offset);
-      assert.match(result, /DeepSeek \/ deepseek-v4-flash/u);
+      assert.match(result, /DeepSeek \/ deepseek-flash/u);
       assert.match(result, /"provider": "deepseek"/u);
-      assert.match(result, /"model": "deepseek-v4-flash"/u);
+      assert.match(result, /"model": "deepseek-flash"/u);
     } finally {
       fixture.close();
     }
@@ -468,12 +468,12 @@ describe("/model", () => {
     }
   });
 
-  it("opens provider, model, and thinking menus and saves an unsupported effort choice", async () => {
+  it("opens the DeepSeek V4.1 Flash menu with supported thinking and vision", async () => {
     const fixture = await createAppFixture(
       { qwen: "qwen-test-key", deepseek: "deepseek-test-key" },
       {
         provider: "deepseek",
-        model: "deepseek-v4-flash-vision-exp",
+        model: "deepseek-flash",
         thinkingEffort: "high",
       },
     );
@@ -490,30 +490,28 @@ describe("/model", () => {
       assert.deepEqual(
         terminal.modelChoices.map((choice) => choice.id),
         [
-          "deepseek-v4-flash",
-          "deepseek-v4-pro",
-          "deepseek-v4-flash-vision-exp",
+          "deepseek-flash",
         ],
       );
       assert.equal(terminal.thinkingProviderLabel, "DeepSeek");
-      assert.equal(terminal.thinkingModel, "deepseek-v4-flash-vision-exp");
+      assert.equal(terminal.thinkingModel, "deepseek-flash");
       assert.equal(terminal.initialThinkingEffort, "medium");
       assert.deepEqual(
         terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
         [
-          { id: "none", applied: false },
-          { id: "low", applied: false },
-          { id: "medium", applied: false },
-          { id: "high", applied: false },
+          { id: "none", applied: true },
+          { id: "low", applied: true },
+          { id: "medium", applied: true },
+          { id: "high", applied: true },
         ],
       );
       assert.match(
         fixture.output(),
-        /DeepSeek \/ deepseek-v4-flash-vision-exp \/ thinking high \(saved, not applied\)/u,
+        /DeepSeek \/ deepseek-flash \/ thinking high/u,
       );
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
-      assert.match(fixture.output(), /"thinkingApplied": false/u);
+      assert.match(fixture.output(), /"thinkingApplied": true/u);
       assert.match(fixture.output(), /"steps":/u);
       assert.match(fixture.output(), /"stepLimit": 80/u);
       assert.match(fixture.output(), /"contextCharLimit": 250000/u);
@@ -550,7 +548,7 @@ describe("/model", () => {
       { qwen: "qwen-test-key", deepseek: "deepseek-test-key" },
       {
         provider: "deepseek",
-        model: "deepseek-v4-pro",
+        model: "deepseek-flash",
         thinkingEffort: undefined,
       },
     );
@@ -559,7 +557,7 @@ describe("/model", () => {
       await fixture.app.handleSlashCommand("/status");
 
       const terminal = fixture.terminal as ScriptedModelTerminal;
-      assert.equal(terminal.thinkingModel, "deepseek-v4-pro");
+      assert.equal(terminal.thinkingModel, "deepseek-flash");
       assert.deepEqual(
         terminal.thinkingChoices.map((choice) => choice.id),
         ["none", "low", "medium", "high"],

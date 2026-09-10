@@ -115,6 +115,23 @@ Project `EASYCODE.md` instructions are loaded by [instructions.ts](../src/prompt
 
 [providers/](../src/providers) implements Qwen, DeepSeek, GLM and GLM Coding Plan through a shared OpenAI-compatible adapter. The [model catalog](../resources/prompt-bundle/models/catalog.json) records model IDs, endpoint-related metadata, vision/thinking support and context windows.
 
+### Maintaining provider configuration
+
+`resources/prompt-bundle/models/catalog.json` is the single source configuration for all four providers' model menus and default base URLs. Do not duplicate these lists in TypeScript or the user TOML file.
+
+| JSON field | Meaning |
+| --- | --- |
+| `providers[].defaultBaseUrl` | Default API base URL; the shared adapter appends `/chat/completions`. |
+| `providers[].defaultModel` | Default API model ID; must occur in this provider's `models` list. |
+| `providers[].models` | Available model choices; one array entry produces one menu choice. |
+| `models[].id` / `models[].label` | Actual API identifier / human-readable menu name; changing the label does not change requests. |
+| `models[].vision`, `thinking`, `contextWindowTokens` | Image capability, existing thinking-parameter profile and documented context window. |
+| `providers[].environment` | Environment-variable names for credentials, endpoint and model overrides. |
+
+DeepSeek has one choice, labelled `deepseek v4.1-flash`, whose API ID remains `deepseek-flash`. API keys do not belong in this catalog. GLM and GLM Coding Plan keep separate endpoints and credentials.
+
+After editing the source JSON, run `npm run build` and restart the CLI. The build regenerates the embedded catalog and Prompt Bundle hashes. A distributed installation requires a rebuilt package; directly editing its verified bundle is not supported. An endpoint override in **user** configuration (`[deepseek] base_url = "https://…"`, for example) or the configured environment variable takes precedence over the catalog default; workspace configuration cannot override endpoints. New models using an existing adapter/profile only require catalog changes; a new provider protocol still requires adapter code.
+
 The current transport requests **`stream: false`**: it receives a bounded complete JSON response, then normalizes text, native reasoning, tool calls, finish reason and usage. Terminal activity indicators are not evidence of SSE/token streaming.
 
 Provider-specific code handles wire-format differences, such as thinking parameters and GLM's tool-schema compatibility. Memory policy, capacity recovery and retry accounting remain provider-independent. Local output/storage limits are **not sent as `max_tokens` or `max_completion_tokens`**. A local HTTP response-size bound still exists to protect the process.

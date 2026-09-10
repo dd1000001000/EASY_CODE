@@ -890,7 +890,7 @@ describe("image attachments", () => {
     );
   });
 
-  it("uses the multimodal Chat Completions shape for DeepSeek vision models", async () => {
+  it("sends images and thinking together to DeepSeek V4.1 Flash", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.deepseek.apiKey = "test-key";
     const attachment: ImageAttachment = {
@@ -908,7 +908,7 @@ describe("image attachments", () => {
     const provider = createProvider(
       config,
       "deepseek",
-      "deepseek-v4-flash-vision-exp",
+      "deepseek-flash",
       {
         loadImage: async () => PNG_1X1,
         transport: async (request) => {
@@ -920,7 +920,11 @@ describe("image attachments", () => {
 
     await provider.complete({
       messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
+      thinkingEffort: "high",
     });
+    assert.equal(JSON.parse(body).model, "deepseek-flash");
+    assert.deepEqual(JSON.parse(body).thinking, { type: "enabled" });
+    assert.equal(JSON.parse(body).reasoning_effort, "high");
     assert.match(body, /"type":"image_url"/u);
     assert.match(body, /data:image\/png;base64/u);
   });
@@ -1119,7 +1123,7 @@ describe("image attachments", () => {
   it("redacts image data URLs returned in model content and API errors", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.deepseek.apiKey = "test-key";
-    const success = createProvider(config, "deepseek", "deepseek-v4-pro", {
+    const success = createProvider(config, "deepseek", "deepseek-flash", {
       transport: async () => ({
         statusCode: 200,
         headers: {},
@@ -1138,7 +1142,7 @@ describe("image attachments", () => {
     });
     assert.equal(response.message.content, "echo [REDACTED_IMAGE_DATA_URL] end");
 
-    const failure = createProvider(config, "deepseek", "deepseek-v4-pro", {
+    const failure = createProvider(config, "deepseek", "deepseek-flash", {
       transport: async () => ({
         statusCode: 400,
         headers: {},

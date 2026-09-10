@@ -644,7 +644,7 @@ describe("OpenAI-compatible providers", () => {
   it("normalizes DeepSeek top-level cache usage and nullable detail objects", async () => {
     const providerConfig = createDefaultEasyCodeConfig(process.cwd());
     providerConfig.deepseek.apiKey = "test-deepseek-key";
-    providerConfig.deepseek.model = "deepseek-v4-flash";
+    providerConfig.deepseek.model = "deepseek-flash";
     const provider = createProvider(
       providerConfig,
       "deepseek",
@@ -695,14 +695,14 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.usage, undefined);
   });
 
-  it("omits thinking fields when the exact catalog model does not support them", async () => {
+  it("sends thinking fields for DeepSeek V4.1 Flash", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.deepseek.apiKey = "deepseek-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(
       config,
       "deepseek",
-      "deepseek-v4-flash-vision-exp",
+      "deepseek-flash",
       {
         transport: async (request) => {
           captured = request;
@@ -725,8 +725,9 @@ describe("OpenAI-compatible providers", () => {
     });
 
     const body = JSON.parse(captured?.body ?? "{}") as Record<string, unknown>;
-    assert.equal("thinking" in body, false);
-    assert.equal("reasoning_effort" in body, false);
+    assert.equal(body.model, "deepseek-flash");
+    assert.deepEqual(body.thinking, { type: "enabled" });
+    assert.equal(body.reasoning_effort, "high");
     assert.equal("enable_thinking" in body, false);
     assert.equal("thinking_budget" in body, false);
   });
