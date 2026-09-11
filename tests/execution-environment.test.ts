@@ -6,7 +6,11 @@ import path from "node:path";
 import { execa } from "execa";
 
 import { toResultArtifactRef } from "../src/subagents/coordinator.js";
-import { ExecutionEnvironmentManager } from "../src/workspace/execution-environment.js";
+import { sha256 } from "../src/utils/hash.js";
+import {
+  ExecutionEnvironmentManager,
+  runtimeGitConfigArgs,
+} from "../src/workspace/execution-environment.js";
 import { describe, it } from "./harness.js";
 
 interface GitFixture {
@@ -15,6 +19,18 @@ interface GitFixture {
 }
 
 describe("ExecutionEnvironmentManager", () => {
+  it("enables long paths only for Runtime-owned Git calls on Windows", () => {
+    assert.deepEqual(runtimeGitConfigArgs("win32"), [
+      "-c",
+      "core.hooksPath=NUL",
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.longpaths=true",
+    ]);
+    assert.equal(runtimeGitConfigArgs("linux").includes("core.longpaths=true"), false);
+  });
+
   it("falls back to a shared environment for auto isolation outside Git", async () => {
     await withTemporaryDirectory(async (root) => {
       const workspaceRoot = path.join(root, "workspace");
@@ -109,6 +125,40 @@ describe("ExecutionEnvironmentManager", () => {
     });
   });
 
+  it("rejects an unsafe Windows checkout path before creating a Worktree", async () => {
+    if (process.platform !== "win32") return;
+    await withGitFixture(async ({ root, dataDir }) => {
+      const relative = path.join(
+        "untracked",
+        "a".repeat(70),
+        "b".repeat(70),
+        "evidence.txt",
+      );
+      await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+      await writeFile(path.join(root, relative), "untracked snapshot evidence\n", "utf8");
+      const manager = createManager(root, dataDir);
+      const environmentId = "environment_path_preflight";
+
+      await assert.rejects(
+        manager.provision({
+          agentId: "subagent_path_preflight",
+          environmentId,
+          requestedIsolation: "worktree",
+        }),
+        /Worktree path preflight failed: predicted Windows path length/u,
+      );
+
+      const record = await readEnvironmentRecord(dataDir, environmentId);
+      assert.equal(record.environment.status, "failed");
+      assert.deepEqual(record.environment.provisioningCleanup, { status: "completed" });
+      assert.equal(await fileExists(record.environment.worktreeRoot!), false);
+      assert.doesNotMatch(
+        await git(root, ["worktree", "list", "--porcelain"]),
+        /environment_path_preflight/u,
+      );
+    });
+  });
+
   it("disables repository checkout hooks during Runtime-managed Git operations", async () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const hook = path.join(root, ".git", "hooks", "post-checkout");
@@ -150,6 +200,14 @@ describe("ExecutionEnvironmentManager", () => {
       });
 
       assert.equal(active.descriptor.kind, "worktree");
+      assert.equal(active.descriptor.pathLayoutVersion, 2);
+      const managedRelative = path.relative(
+        path.join(dataDir, "worktrees"),
+        active.descriptor.worktreeRoot!,
+      ).split(path.sep);
+      assert.equal(managedRelative.length, 2);
+      assert.match(managedRelative[0]!, /^r-[a-f0-9]{16}$/u);
+      assert.match(managedRelative[1]!, /^e-[a-f0-9]{20}$/u);
       assert.notEqual(active.workspace.root, path.resolve(root));
       assert.equal(
         await readFile(path.join(active.workspace.root, "tracked.txt"), "utf8"),
@@ -347,6 +405,54 @@ describe("ExecutionEnvironmentManager", () => {
         await readFile(path.join(restored.workspace.root, "in-progress.bin")),
         expectedBinary,
       );
+    });
+  });
+
+  it("loads and cleans legacy full-ID Worktree paths", async () => {
+    await withGitFixture(async ({ root, dataDir }) => {
+      const manager = createManager(root, dataDir);
+      await manager.initialize();
+      const repositoryRoot = path.normalize(await realpath(root));
+      const environmentId = "environment_legacy_layout";
+      const normalizedIdentity = path.resolve(repositoryRoot).replace(/\\/gu, "/");
+      const repositoryIdentity = process.platform === "win32"
+        ? normalizedIdentity.toLowerCase()
+        : normalizedIdentity;
+      const legacyRoot = path.join(
+        dataDir,
+        "worktrees",
+        sha256(repositoryIdentity).slice(0, 24),
+        environmentId,
+      );
+      await mkdir(path.dirname(legacyRoot), { recursive: true });
+      const baseCommit = (await git(repositoryRoot, ["rev-parse", "HEAD"])).trim();
+      await git(repositoryRoot, ["worktree", "add", "--detach", legacyRoot, baseCommit]);
+      const now = new Date().toISOString();
+      await writeEnvironmentRecord(dataDir, environmentId, {
+        schemaVersion: 1,
+        environment: {
+          id: environmentId,
+          agentId: "subagent_legacy_layout",
+          kind: "worktree",
+          status: "ready",
+          logicalWorkspaceRoot: repositoryRoot,
+          executionRoot: legacyRoot,
+          requestedIsolation: "worktree",
+          baseMode: "head",
+          repositoryRoot,
+          worktreeRoot: legacyRoot,
+          baseCommit,
+          baselineCommit: baseCommit,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const loaded = await manager.loadEnvironment(environmentId);
+      assert.equal(loaded.pathLayoutVersion, undefined);
+      assert.equal(loaded.worktreeRoot, legacyRoot);
+      assert.equal((await manager.cleanup(environmentId, true)).status, "removed");
+      assert.equal(await fileExists(legacyRoot), false);
     });
   });
 

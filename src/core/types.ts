@@ -596,6 +596,13 @@ export interface ExecutionEnvironmentSnapshot {
   baseMode: WorktreeBaseMode;
   repositoryRoot?: string;
   worktreeRoot?: string;
+  /** Worktree directory layout. Missing means the legacy full-ID layout. */
+  pathLayoutVersion?: 1 | 2;
+  /** Best-effort cleanup result retained when provisioning fails. */
+  provisioningCleanup?: {
+    status: "completed" | "failed";
+    error?: string;
+  };
   baseCommit?: string;
   baselineCommit?: string;
   /** Root snapshot used to deliver the complete accumulated DAG result. */

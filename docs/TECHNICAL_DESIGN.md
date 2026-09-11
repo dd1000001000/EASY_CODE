@@ -175,7 +175,7 @@ File operations use canonical-path checks, protected-path rules and source hashe
 
 Source: [tools/](../src/tools), [workspace/](../src/workspace).
 
-Git-aware change tracking records relevant tracked, staged, unstaged and untracked changes; non-Git workspaces have a snapshot fallback. Managed child worktrees can start from the current snapshot, including local changes. Result handoff checks the base and conflicts before applying changes.
+Git-aware change tracking records relevant tracked, staged, unstaged and untracked changes; non-Git workspaces have a snapshot fallback. Managed child worktrees can start from the current snapshot, including local changes. Result handoff checks the base and conflicts before applying changes. New worktrees use hashed short directory components while durable records retain the full environment identity; legacy full-ID paths remain restorable. On Windows, Runtime-owned Git calls explicitly enable long-path support and a preflight checks tracked, snapshot and configured include paths before checkout. Provisioning failures clean only the validated managed path and retain cleanup evidence instead of silently weakening isolation.
 
 Worktrees provide change isolation, **not OS sandboxing**. Default file access is workspace-scoped; explicit host/full-access capabilities are separate and must not be confused with ordinary workspace permissions.
 
