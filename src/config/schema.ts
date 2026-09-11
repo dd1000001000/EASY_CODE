@@ -4,7 +4,7 @@ import {
   THINKING_EFFORTS,
   type EasyCodeConfig,
 } from "../core/types.js";
-import { PROVIDER_NAMES } from "../models/catalog.js";
+import { isProviderName } from "../models/catalog.js";
 import { runtimeLimitsSchema } from "./runtime-limits.js";
 
 const nonEmptyString = z.string().trim().min(1);
@@ -28,7 +28,7 @@ export const providerConfigSchema = z.object({
 
 export const easyCodeConfigSchema = z.object({
   approvalModel: nonEmptyString.optional(),
-  provider: z.enum(PROVIDER_NAMES),
+  provider: nonEmptyString.refine(isProviderName, "is not present in ~/.easy_code/models.toml"),
   mode: z.enum(["plan", "auto", "code"]),
   thinkingEffort: z.enum(THINKING_EFFORTS),
   approvalPolicy: z.enum(["safe", "ask", "never"]),
@@ -41,8 +41,12 @@ export const easyCodeConfigSchema = z.object({
   subagentIsolation: z.enum(["auto", "shared", "worktree"]),
   worktreeBaseMode: z.enum(["fresh", "head", "current-snapshot"]),
   worktreeRoot: nonEmptyString,
+  providers: z.record(nonEmptyString, providerConfigSchema),
+  modelRegistryHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+  // Compatibility aliases remain during the persisted-config migration.
   qwen: providerConfigSchema,
   deepseek: providerConfigSchema,
+  kimi: providerConfigSchema,
   glm: providerConfigSchema,
   "glm-coding-plan": providerConfigSchema,
 });

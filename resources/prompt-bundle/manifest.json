@@ -130,10 +130,6 @@
       "sha256": "sha256:fd42c5692c7cca0edfca9b95c6771898246d8cc2588c1bf98dde21f74d92e6eb",
       "bytes": 28
     },
-    "models/catalog.json": {
-      "sha256": "sha256:32084ddde6e07647e403de705738693227c4a077d7b9be2cdb7c25dca4a3315a",
-      "bytes": 6688
-    },
     "modes/auto-effective.md": {
       "sha256": "sha256:048f1f49696808e6831e57f8c7ba03fee5836d340840cfb97ccc4c797f7664e7",
       "bytes": 91
@@ -538,5 +534,5 @@
       "contentHash": "sha256:e05da57356f474f29d757cb79ec943ec4e46dcee02b77c7a7be0f5e4ec2f6cf0"
     }
   },
-  "bundleHash": "sha256:28fb7c53f3695f1fe03ee99832d8cd6fa39dde0b7ba0254be61b3c430dd73054"
+  "bundleHash": "sha256:8a9a04cd346307b4bbd282a7585212c5ee77c9e708621d86bc3451495452dcbc"
 }

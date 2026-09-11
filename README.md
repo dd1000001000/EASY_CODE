@@ -2,7 +2,7 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local CLI coding agent for Qwen, DeepSeek, Zhipu GLM and GLM Coding Plan. Open a project and describe a task to inspect code, edit files, run commands and verify changes.
+EASY CODE is a local CLI coding agent. Its bundled model registry includes Qwen, DeepSeek, Kimi K3, Zhipu GLM and GLM Coding Plan, and you can add other OpenAI-compatible providers without changing the source code. Open a project and describe a task to inspect code, edit files, run commands and verify changes.
 
 ## Features
 
@@ -31,9 +31,11 @@ Configure only the provider you intend to use. The command prompts for the key w
 
 ```bash
 easy-code config set qwen.api-key
-# Alternatives: deepseek.api-key, glm.api-key, glm-coding-plan.api-key
+# Alternatives: deepseek.api-key, kimi.api-key, glm.api-key, glm-coding-plan.api-key
 easy-code --workspace /path/to/project
 ```
+
+The first installation creates `~/.easy_code/models.toml`. Edit that file to maintain provider endpoints, credential environment-variable names, wire protocol (`chat_completions` or `responses`), model IDs, context windows, vision/tool/reasoning capabilities and the benchmark profile. EASY CODE validates it at startup and never overwrites an existing copy. API keys remain in the OS credential store or the configured environment variable; do not put them in `models.toml`.
 
 Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
 

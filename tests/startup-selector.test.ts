@@ -38,10 +38,12 @@ const TEST_ENVIRONMENT = [
   "GLM_API_KEY",
   "ZHIPUAI_API_KEY",
   "GLM_CODING_PLAN_API_KEY",
+  "KIMI_API_KEY",
   "QWEN_MODEL",
   "DEEPSEEK_MODEL",
   "GLM_MODEL",
   "GLM_CODING_PLAN_MODEL",
+  "KIMI_MODEL",
 ] as const;
 
 const PROVIDER_CHOICES: readonly ProviderSelectorChoice[] = [
@@ -235,6 +237,7 @@ async function withStartupApp(
   process.env.DEEPSEEK_MODEL = "deepseek-flash";
   delete process.env.GLM_MODEL;
   delete process.env.GLM_CODING_PLAN_MODEL;
+  delete process.env.KIMI_MODEL;
   delete process.env.QWEN_API_KEY;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
@@ -242,6 +245,7 @@ async function withStartupApp(
   delete process.env.GLM_API_KEY;
   delete process.env.ZHIPUAI_API_KEY;
   delete process.env.GLM_CODING_PLAN_API_KEY;
+  delete process.env.KIMI_API_KEY;
 
   let app: EasyCodeApp | undefined;
   try {
@@ -435,8 +439,9 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.providerChoices.map(({ provider, label }) => ({ provider, label })),
       [
-        { provider: "deepseek", label: "DeepSeek" },
         { provider: "qwen", label: "Alibaba Qwen" },
+        { provider: "deepseek", label: "DeepSeek" },
+        { provider: "kimi", label: "Kimi Coding Plan" },
         { provider: "glm", label: "Zhipu GLM" },
         { provider: "glm-coding-plan", label: "GLM Coding Plan" },
       ],
@@ -445,7 +450,7 @@ describe("three-stage model selector", () => {
     assert.equal(terminal.initialModel, "deepseek-flash");
     assert.deepEqual(
       terminal.modelChoices.map(({ id, label, vision }) => ({ id, label, vision })),
-      [{ id: "deepseek-flash", label: "deepseek v4.1-flash", vision: "supported" }],
+      [{ id: "deepseek-flash", label: "DeepSeek v4.1 Flash", vision: "supported" }],
     );
     assert.deepEqual(
       terminal.modelChoices.map((choice) => choice.id),
@@ -459,10 +464,10 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
       [
-        { id: "none", applied: true },
-        { id: "low", applied: true },
-        { id: "medium", applied: true },
-        { id: "high", applied: true },
+        { id: "none", applied: false },
+        { id: "low", applied: false },
+        { id: "medium", applied: false },
+        { id: "high", applied: false },
       ],
     );
     assert.equal(store.values.get("deepseek"), secret);
@@ -475,7 +480,7 @@ describe("three-stage model selector", () => {
       /Selected DeepSeek \/ deepseek-flash \/ thinking medium/u,
     );
     assert.match(terminal.transcript, /"thinkingEffort": "medium"/u);
-    assert.match(terminal.transcript, /"thinkingApplied": true/u);
+    assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
   });
 
@@ -497,9 +502,9 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.modelChoices.map((choice) => choice.id),
       [
+        "qwen3.7-max",
         "qwen3.8-max",
         "qwen3.8-flash",
-        "qwen3.7-max",
         "qwen3.7-plus",
         "qwen3.7-flash",
         "qwen3-coder-plus",
@@ -517,14 +522,54 @@ describe("three-stage model selector", () => {
       terminal.thinkingChoices.map((choice) => choice.id),
       ["none", "low", "medium", "high"],
     );
-    assert.ok(terminal.thinkingChoices.every((choice) => choice.applied));
+    assert.ok(terminal.thinkingChoices.every((choice) => !choice.applied));
     assert.match(
       terminal.transcript,
       /Selected Alibaba Qwen \/ qwen3.5-flash \/ thinking high/u,
     );
     assert.match(terminal.transcript, /"thinkingEffort": "high"/u);
-    assert.match(terminal.transcript, /"thinkingApplied": true/u);
+    assert.match(terminal.transcript, /"thinkingApplied": false/u);
     assert.doesNotMatch(terminal.transcript, /configured-qwen-key/u);
+  });
+
+  it("shows Kimi K3 capabilities and stores its independent Coding Plan key", async () => {
+    const secret = "kimi-coding-plan-startup-secret";
+    const terminal = new ScriptedStartupTerminal(
+      "kimi",
+      "k3",
+      secret,
+      "none",
+    );
+    const store = new MemoryCredentialStore();
+
+    await withStartupApp(terminal, store, async (app) => {
+      await app.runInteractive();
+    });
+
+    assert.equal(terminal.selectedProviderLabel, "Kimi Coding Plan");
+    assert.equal(terminal.initialModel, "k3");
+    assert.deepEqual(
+      terminal.modelChoices.map(({ id, label, vision }) => ({ id, label, vision })),
+      [{ id: "k3", label: "Kimi K3", vision: "supported" }],
+    );
+    assert.deepEqual(
+      terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
+      [
+        { id: "none", applied: false },
+        { id: "low", applied: false },
+        { id: "medium", applied: false },
+        { id: "high", applied: false },
+      ],
+    );
+    assert.equal(store.values.get("kimi"), secret);
+    assert.deepEqual(store.writes, ["kimi"]);
+    assert.match(terminal.secretPrompts[0] ?? "", /Enter the Kimi Coding Plan API key/u);
+    assert.match(terminal.transcript, /Saved kimi\.api-key/u);
+    assert.match(
+      terminal.transcript,
+      /Selected Kimi Coding Plan \/ k3 \/ thinking none \(saved, not applied\)/u,
+    );
+    assert.doesNotMatch(terminal.transcript, new RegExp(secret, "u"));
   });
 
   it("shows only GLM models and stores a missing GLM key", async () => {
@@ -546,8 +591,8 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.modelChoices.map(({ id, vision }) => ({ id, vision })),
       [
-        { id: "glm-5.3-flash", vision: "supported" },
         { id: "glm-5.3", vision: "unsupported" },
+        { id: "glm-5.3-flash", vision: "supported" },
         { id: "glm-5.2", vision: "unsupported" },
       ],
     );
@@ -555,9 +600,9 @@ describe("three-stage model selector", () => {
       terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
       [
         { id: "none", applied: false },
-        { id: "low", applied: true },
-        { id: "medium", applied: true },
-        { id: "high", applied: true },
+        { id: "low", applied: false },
+        { id: "medium", applied: false },
+        { id: "high", applied: false },
       ],
     );
     assert.equal(store.values.get("glm"), secret);
@@ -594,8 +639,8 @@ describe("three-stage model selector", () => {
     assert.deepEqual(
       terminal.modelChoices.map(({ id, vision }) => ({ id, vision })),
       [
-        { id: "glm-5.3-flash", vision: "unsupported" },
         { id: "glm-5.3", vision: "unsupported" },
+        { id: "glm-5.3-flash", vision: "unsupported" },
         { id: "glm-5.2", vision: "unsupported" },
       ],
     );

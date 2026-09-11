@@ -301,6 +301,7 @@ describe("command runtime", () => {
     for (const assignment of [
       "GLM_API_KEY=glm-secret-value",
       "GLM_CODING_PLAN_API_KEY=glm-coding-plan-secret-value",
+      "KIMI_API_KEY=kimi-secret-value",
       "ZAI_API_KEY=zai-secret-value",
       "ZHIPUAI_API_KEY=zhipu-secret-value",
     ]) {
@@ -967,6 +968,7 @@ describe("command runtime", () => {
       DEEPSEEK_API_KEY: "secret",
       GLM_API_KEY: "secret",
       GLM_CODING_PLAN_API_KEY: "secret",
+      KIMI_API_KEY: "secret",
       ZAI_API_KEY: "secret",
       ZHIPUAI_API_KEY: "secret",
       NODE_OPTIONS: "--require bad.js",
@@ -976,6 +978,7 @@ describe("command runtime", () => {
     assert.equal(environment.DEEPSEEK_API_KEY, undefined);
     assert.equal(environment.GLM_API_KEY, undefined);
     assert.equal(environment.GLM_CODING_PLAN_API_KEY, undefined);
+    assert.equal(environment.KIMI_API_KEY, undefined);
     assert.equal(environment.ZAI_API_KEY, undefined);
     assert.equal(environment.ZHIPUAI_API_KEY, undefined);
     assert.equal(environment.NODE_OPTIONS, undefined);

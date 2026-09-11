@@ -61,6 +61,7 @@ interface PostinstallModule {
     existsSync?: (filename: string) => boolean;
   }): boolean;
   runPostinstall(options?: {
+    installModelRegistry?: () => { created: boolean; path: string };
     installPromptBundle?: () => Promise<{ deferred?: boolean }>;
     loadDatabase?: () => unknown;
     prepareModel?: () => Promise<{
@@ -161,6 +162,7 @@ describe("VS Code extension installer", () => {
     let databaseLoaded = false;
     let stderr = "";
     const result = await postinstall.runPostinstall({
+      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: async () => {
         throw new Error("prompt fixture failed");
       },
@@ -283,6 +285,7 @@ describe("VS Code extension installer", () => {
       ZAI_API_KEY: "glm-secret",
       GLM_API_KEY: "glm-alias-secret",
       GLM_CODING_PLAN_API_KEY: "glm-coding-plan-secret",
+      KIMI_API_KEY: "kimi-secret",
     }, "linux");
     assert.equal(environment.HOME, "/home/tester");
     assert.equal(environment.VSCODE_IPC_HOOK_CLI, "/tmp/vscode.sock");
@@ -291,6 +294,7 @@ describe("VS Code extension installer", () => {
     assert.equal(environment.ZAI_API_KEY, undefined);
     assert.equal(environment.GLM_API_KEY, undefined);
     assert.equal(environment.GLM_CODING_PLAN_API_KEY, undefined);
+    assert.equal(environment.KIMI_API_KEY, undefined);
   });
 
   it("rejects an explicit VS Code shim from the consuming workspace", () => {
@@ -325,6 +329,7 @@ describe("VS Code extension installer", () => {
     let extensionInstallCalled = false;
     let stderr = "";
     const result = await postinstall.runPostinstall({
+      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: installPromptBundleFixture,
       loadDatabase: () => {
         throw new Error("sqlite fixture failed");
@@ -356,6 +361,7 @@ describe("VS Code extension installer", () => {
     const order: string[] = [];
     let stdout = "";
     const result = await postinstall.runPostinstall({
+      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => {
         order.push("model");
@@ -395,6 +401,7 @@ describe("VS Code extension installer", () => {
     let extensionInstallCalled = false;
     let stderr = "";
     const preparationFailure = await postinstall.runPostinstall({
+      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => {
         throw new Error("model fixture failed");
@@ -417,6 +424,7 @@ describe("VS Code extension installer", () => {
 
     stderr = "";
     const runtimeFailure = await postinstall.runPostinstall({
+      installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: installPromptBundleFixture,
       prepareModel: async () => ({
         modelDirectory: path.join(tmpdir(), "embedding-model-fixture"),

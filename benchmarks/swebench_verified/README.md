@@ -96,12 +96,17 @@ easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
 ```
 
+The commands use `[profiles.swe_bench_verified_50]` from the active
+`~/.easy_code/models.toml`. The bundled profile selects GLM Coding Plan /
+GLM-5.3-Flash, but a deliberately edited registry can select another provider
+and model without changing benchmark code.
+
 `setup` installs `harbor==0.16.1` and `swebench==5.0.2` under the benchmark
 root and prepares the pinned multilingual ONNX embedding model (about 136 MB)
 under `cache\easy-code\models`. Existing verified files are reused. `doctor`
 checks every model asset by size and SHA-256 in addition to the Linux/x86-64
 Docker engine, Docker Compose v2, pinned tool versions, the exact dataset digest
-and 50-task manifest, F-drive storage, and the GLM Coding Plan credential without
+and 50-task manifest, F-drive storage, and the selected profile's credential without
 printing it. Docker Desktop itself
 must be installed separately. The runner keeps Docker Desktop's original CLI
 configuration path so its Compose plugin remains discoverable while Harbor,
@@ -109,31 +114,20 @@ Python, npm, and model caches stay on F:. Runs also apply a fixed `4x` Harbor
 Agent-setup timeout multiplier so a cold Node.js and EASY CODE installation is
 not cut off by the default setup deadline.
 
-## GLM Coding Plan credential handling
+## Provider credential handling
 
-The integrated runner accepts only `GLM_CODING_PLAN_API_KEY`; otherwise it
-reads the separate key already saved by
-`easy-code config set glm-coding-plan.api-key` from the operating-system
-credential store. It never reads `ZAI_API_KEY`, `GLM_API_KEY`,
-`ZHIPUAI_API_KEY`, or the `glm.api-key` credential. Standard GLM and GLM Coding
-Plan keys are intentionally not interchangeable.
+The integrated runner reads only the `env_key`/aliases and credential slot of
+the provider selected by the active benchmark profile. With the bundled
+profile this means `GLM_CODING_PLAN_API_KEY` or the separate key saved by
+`easy-code config set glm-coding-plan.api-key`; standard GLM and Coding Plan
+keys remain intentionally independent.
 Before Harbor starts, the launcher places the key in a random, ACL-protected
 file under the F-drive benchmark root. Harbor receives only that path, not the
 credential value. The temporary host file is removed when the run exits.
 
-The lower-level `run.ps1` helper is retained for people invoking Harbor
-directly. That helper accepts `GLM_CODING_PLAN_API_KEY` in its process
-environment and applies the same file-staging boundary before starting Harbor:
-
-```powershell
-$secureKey = Read-Host "GLM Coding Plan API key" -AsSecureString
-$keyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
-try {
-  $env:GLM_CODING_PLAN_API_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer)
-} finally {
-  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer)
-}
-```
+The retained `run.ps1` command is a thin compatibility wrapper around the
+integrated launcher. It does not parse a second catalog or implement separate
+credential, Docker and cleanup logic.
 
 For each disposable task container, the adapter uploads the key as an
 owner-only one-shot file. EASY CODE consumes and removes that file during
@@ -166,7 +160,7 @@ local transfer can add setup time, especially at high concurrency.
 Use `easy-code benchmark swe-bench prepare` only when you want to create the
 archive without starting a run.
 
-The adapter runs the following fixed EASY CODE profile in `/testbed`:
+With the bundled registry, the adapter runs this EASY CODE profile in `/testbed`:
 
 ```text
 provider: glm-coding-plan
@@ -177,8 +171,10 @@ thinking effort: high
 approval: safe, auto-approved
 ```
 
-The provider, endpoint, and credential source are fixed for this benchmark.
-There is no fallback to the standard GLM API or its key.
+At launch, the selected provider, endpoint, model, mode and effort are frozen
+from the active registry. The exact file is staged into the isolated controller,
+the endpoint host becomes the model-phase network allowlist, and there is no
+fallback to another provider or key.
 
 The Harbor environment keeps its trusted baseline network policy while the
 adapter installs runtime dependencies and while the verifier installs and runs
@@ -270,10 +266,10 @@ valid grader result:
 
 ```powershell
 easy-code benchmark swe-bench run --limit 50 --concurrency 1 `
-  --run-id glm-coding-plan-5.3-flash-verified-mini-50 --confirm-full-run
+  --run-id verified-mini-50 --confirm-full-run
 ```
 
-To spread the same pinned 50 tasks across five Coding Plan quota windows, use
+To spread the same pinned 50 tasks across five quota windows, use
 zero-based offsets with distinct job names:
 
 ```powershell
@@ -289,19 +285,12 @@ runner rejects offsets outside `0..49` and rejects a slice when
 `offset + limit > 50`, so a typo cannot silently produce a partial final
 batch. Keep each batch directory when reporting the combined 50-task result.
 
-The default concurrency is one. Increase it only after confirming your GLM
-Coding Plan rate limit and Docker capacity, for example `--concurrency 4`.
+The default concurrency is one. Increase it only after confirming the selected
+provider's rate limit and Docker capacity, for example `--concurrency 4`.
 Keep `--n-attempts 1` for benchmark reporting. The configured retry is limited
 to environment-start and Agent-setup timeouts, before a model request can run.
 Agent timeouts, non-zero exits, increased attempts, or silently rerunning whole
 tasks would change the evaluation protocol and are intentionally not retried.
-
-If you exported a temporary credential for the lower-level runner, remove it
-from the shell afterward:
-
-```powershell
-Remove-Item Env:GLM_CODING_PLAN_API_KEY
-```
 
 The explicit confirmation prevents an accidental 50-task spend. Job logs,
 patches, and grader results go to

@@ -29,6 +29,7 @@ import {
 } from "../config/credentials.js";
 import {
   PROVIDER_CATALOG,
+  USER_MODEL_REGISTRY_PATH,
   providerCatalogEntry,
   sweBenchVerified50Profile,
 } from "../models/catalog.js";
@@ -43,8 +44,10 @@ const HARBOR_ENVIRONMENT =
   "benchmarks.swebench_verified.easy_code_agent:EasyCodeBenchmarkDockerEnvironment";
 const HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER = "4";
 const HARBOR_MAX_RESUME_RETRIES = "1";
-export const HARBOR_GLM_CODING_PLAN_API_KEY_FILE =
-  "/tmp/easy-code-secrets/glm-coding-plan-api-key";
+export const HARBOR_PROVIDER_API_KEY_FILE =
+  "/tmp/easy-code-secrets/provider-api-key";
+/** @deprecated Use HARBOR_PROVIDER_API_KEY_FILE. */
+export const HARBOR_GLM_CODING_PLAN_API_KEY_FILE = HARBOR_PROVIDER_API_KEY_FILE;
 export const EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV =
   "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT";
 export const EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV =
@@ -54,19 +57,14 @@ const EMBEDDING_MODEL_DIRECTORY = "paraphrase-multilingual-MiniLM-L12-v2";
 const SWE_BENCH_MODEL_PROFILE = (() => {
   const profile = sweBenchVerified50Profile();
   const provider = providerCatalogEntry(profile.provider);
-  if (provider.provider !== "glm-coding-plan") {
-    throw new Error(
-      "The SWE-bench profile must use the dedicated GLM Coding Plan provider.",
-    );
-  }
   if (!provider.models.some((model) => model.id === profile.model)) {
     throw new Error(
       `The SWE-bench model ${JSON.stringify(profile.model)} is absent from provider ${JSON.stringify(provider.provider)}.`,
     );
   }
-  if (provider.environment.apiKey.length !== 1) {
+  if (provider.environment.apiKey.length < 1) {
     throw new Error(
-      "The SWE-bench provider must define one dedicated API-key environment name.",
+      "The SWE-bench provider must define an API-key environment name.",
     );
   }
   const endpoint = new URL(provider.defaultBaseUrl);
@@ -205,22 +203,22 @@ export function resolveHarborOuterSandbox(
  * `expectedPath` is injectable solely for filesystem-isolated unit tests. The
  * production call accepts only the fixed container path above.
  */
-export function consumeHarborGlmCodingPlanApiKeyFile(
+export function consumeHarborProviderApiKeyFile(
   trustedOuterSandbox: TrustedOuterSandbox | undefined,
   env: NodeJS.ProcessEnv = process.env,
-  expectedPath = HARBOR_GLM_CODING_PLAN_API_KEY_FILE,
+  expectedPath = HARBOR_PROVIDER_API_KEY_FILE,
 ): string | undefined {
-  const requestedPath = env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE?.trim();
+  const requestedPath = env.EASY_CODE_PROVIDER_API_KEY_FILE?.trim();
   if (!requestedPath) return undefined;
-  delete env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE;
+  delete env.EASY_CODE_PROVIDER_API_KEY_FILE;
   if (trustedOuterSandbox !== "harbor") {
     throw new Error(
-      "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE is accepted only from the trusted Harbor adapter.",
+      "EASY_CODE_PROVIDER_API_KEY_FILE is accepted only from the trusted Harbor adapter.",
     );
   }
   if (requestedPath !== expectedPath) {
     throw new Error(
-      "The Harbor GLM Coding Plan credential path does not match the pinned adapter path.",
+      "The Harbor provider credential path does not match the pinned adapter path.",
     );
   }
 
@@ -229,22 +227,22 @@ export function consumeHarborGlmCodingPlanApiKeyFile(
     const metadata = lstatSync(requestedPath);
     if (!metadata.isFile() || metadata.isSymbolicLink()) {
       throw new Error(
-        "The Harbor GLM Coding Plan credential must be a regular file.",
+        "The Harbor provider credential must be a regular file.",
       );
     }
     if (metadata.size <= 0 || metadata.size > 16_384) {
       throw new Error(
-        "The Harbor GLM Coding Plan credential file has an invalid size.",
+        "The Harbor provider credential file has an invalid size.",
       );
     }
     if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
       throw new Error(
-        "The Harbor GLM Coding Plan credential file must be owner-only (mode 0600).",
+        "The Harbor provider credential file must be owner-only (mode 0600).",
       );
     }
     const apiKey = readFileSync(requestedPath, "utf8").trim();
     if (!apiKey) {
-      throw new Error("The Harbor GLM Coding Plan credential file is empty.");
+      throw new Error("The Harbor provider credential file is empty.");
     }
     credentialRead = true;
     return apiKey;
@@ -254,11 +252,24 @@ export function consumeHarborGlmCodingPlanApiKeyFile(
     } catch {
       if (credentialRead) {
         throw new Error(
-          "Unable to remove the one-shot Harbor GLM Coding Plan credential; refusing to start the Agent.",
+          "Unable to remove the one-shot Harbor provider credential; refusing to start the Agent.",
         );
       }
     }
   }
+}
+
+/** Compatibility bridge for older Harbor adapters. */
+export function consumeHarborGlmCodingPlanApiKeyFile(
+  trustedOuterSandbox: TrustedOuterSandbox | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  expectedPath = HARBOR_PROVIDER_API_KEY_FILE,
+): string | undefined {
+  if (!env.EASY_CODE_PROVIDER_API_KEY_FILE && env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE) {
+    env.EASY_CODE_PROVIDER_API_KEY_FILE = env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE;
+    delete env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE;
+  }
+  return consumeHarborProviderApiKeyFile(trustedOuterSandbox, env, expectedPath);
 }
 
 export interface HarborRunOptions {
@@ -485,13 +496,13 @@ export async function stageBenchmarkCredential(
   const root = validateSweBenchRoot(rootValue, platform);
   const apiKey = apiKeyValue.trim();
   if (!apiKey || Buffer.byteLength(apiKey, "utf8") > 16_384) {
-    throw new Error("The GLM Coding Plan credential has an invalid size.");
+    throw new Error("The benchmark provider credential has an invalid size.");
   }
 
   const temporaryRoot = path.join(root, "tmp");
   mkdirSync(temporaryRoot, { recursive: true });
   const directory = mkdtempSync(
-    path.join(temporaryRoot, "glm-coding-plan-secret-"),
+    path.join(temporaryRoot, "provider-secret-"),
   );
   let cleaned = false;
   const cleanup = (): void => {
@@ -542,7 +553,7 @@ export async function stageBenchmarkCredential(
       chmodSync(directory, 0o700);
     }
 
-    const filename = path.join(directory, "glm-coding-plan-api-key");
+    const filename = path.join(directory, "provider-api-key");
     const noFollow = platform === "win32" ? 0 : constants.O_NOFOLLOW;
     const descriptor = openSync(
       filename,
@@ -939,7 +950,8 @@ export function registerSweBenchCommands(
         env,
       });
       const childEnv = benchmarkEnvironment(root, env, {
-        EASY_CODE_GLM_CODING_PLAN_KEY_FILE: stagedCredential.filename,
+        EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
+        EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
         [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
         [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
         EASY_CODE_PACKAGE_PATH: packagePath,
@@ -1097,12 +1109,17 @@ export function benchmarkEnvironment(
     ...PROVIDER_CONFIGURATION_ENVIRONMENT_NAMES,
     "EASY_CODE_GLM_API_KEY_FILE",
     "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE",
+    "EASY_CODE_PROVIDER_API_KEY_FILE",
   ]) {
     delete environment[name];
   }
   // Only the launcher's trusted staging step may add this host file path.
-  if (!("EASY_CODE_GLM_CODING_PLAN_KEY_FILE" in extra)) {
-    delete environment.EASY_CODE_GLM_CODING_PLAN_KEY_FILE;
+  if (!("EASY_CODE_PROVIDER_KEY_FILE" in extra)) {
+    delete environment.EASY_CODE_PROVIDER_KEY_FILE;
+  }
+  delete environment.EASY_CODE_GLM_CODING_PLAN_KEY_FILE;
+  if (!("EASY_CODE_MODEL_REGISTRY_PATH" in extra)) {
+    delete environment.EASY_CODE_MODEL_REGISTRY_PATH;
   }
   // The shared checkpoint root is trusted launcher state. It remains visible
   // to Harbor and its Docker Compose child while the pinned task definition is

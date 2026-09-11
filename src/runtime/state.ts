@@ -10,7 +10,8 @@ export function createSessionState(
   promptBundle?: PromptBundleBinding,
 ): SessionState {
   const now = new Date().toISOString();
-  const provider = config[config.provider];
+  const provider = config.providers[config.provider];
+  if (!provider) throw new Error(`Provider ${config.provider} is not configured`);
   return {
     threadId,
     mode: config.mode,
@@ -18,6 +19,7 @@ export function createSessionState(
     model: provider.model,
     thinkingEffort: config.thinkingEffort,
     workspaceRoot: config.workspaceRoot,
+    modelRegistryHash: config.modelRegistryHash,
     ...(promptBundle ? { promptBundle: { ...promptBundle } } : {}),
     constraints: [],
     messages: [],

@@ -52,6 +52,8 @@ describe("model usage accounting", () => {
       model: "glm-5.3-flash",
     });
     assert.deepEqual(parseModelUsageRecord(codingPlan), codingPlan);
+    const removedProvider = record({ provider: "retired-provider", model: "legacy-model" });
+    assert.deepEqual(parseModelUsageRecord(removedProvider), removedProvider);
     assert.deepEqual(
       parseModelUsageRecord(record({
         usage: {
@@ -68,7 +70,7 @@ describe("model usage accounting", () => {
       [],
       { ...valid, actor: "manager" },
       { ...valid, purpose: "tool_call" },
-      { ...valid, provider: "unknown" },
+      { ...valid, provider: "bad provider" },
       { ...valid, model: "bad\nmodel" },
       { ...valid, turnId: "" },
       { ...valid, retry: "false" },

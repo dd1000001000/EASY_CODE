@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import tomllib
 import os
 import re
 import shlex
@@ -41,7 +42,8 @@ _REMOTE_MODEL_DIR = (
 )
 _REMOTE_CHECKPOINT_STAGE = "/logs/agent/easy-code-checkpoint"
 _REMOTE_SECRETS_DIR = "/tmp/easy-code-secrets"
-_REMOTE_API_KEY_FILE = f"{_REMOTE_SECRETS_DIR}/glm-coding-plan-api-key"
+_REMOTE_API_KEY_FILE = f"{_REMOTE_SECRETS_DIR}/provider-api-key"
+_REMOTE_MODEL_REGISTRY = "/root/.easy_code/models.toml"
 _TESTBED = "/testbed"
 _CHECKPOINT_ROOT_ENV = "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT"
 _MODEL_DIRECTORY_ENV = "EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR"
@@ -60,106 +62,69 @@ _RESUME_INSTRUCTION = (
     "checkpoint. Reinspect the current workspace changes, finish the requested "
     "fix, and run the relevant verification."
 )
-_MODEL_CATALOG_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "resources"
-    / "prompt-bundle"
-    / "models"
-    / "catalog.json"
-)
+_MODEL_REGISTRY_PATH = Path(
+    os.environ.get(
+        "EASY_CODE_MODEL_REGISTRY_PATH",
+        str(Path(__file__).resolve().parents[2] / "resources" / "models.default.toml"),
+    )
+).expanduser().resolve()
 
 
 def _load_benchmark_profile() -> tuple[str, str, str, str, str, str]:
-    """Load the pinned benchmark profile from EASY CODE's model catalog."""
+    """Load the benchmark profile from the exact user model registry."""
 
     try:
-        catalog = json.loads(_MODEL_CATALOG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        catalog = tomllib.loads(_MODEL_REGISTRY_PATH.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
         raise RuntimeError(
-            f"Unable to load the EASY CODE model catalog at {_MODEL_CATALOG_PATH}."
+            f"Unable to load the EASY CODE model registry at {_MODEL_REGISTRY_PATH}."
         ) from error
 
-    profile = catalog.get("profiles", {}).get("sweBenchVerified50")
+    profile = catalog.get("profiles", {}).get("swe_bench_verified_50")
     if not isinstance(profile, dict):
         raise RuntimeError(
-            "The EASY CODE model catalog does not define profiles.sweBenchVerified50."
+            "The EASY CODE model registry does not define profiles.swe_bench_verified_50."
         )
 
-    required_profile_fields = ("provider", "model", "mode", "thinkingEffort")
+    required_profile_fields = ("model", "mode", "thinking_effort")
     if any(
         not isinstance(profile.get(field), str) or not profile[field].strip()
         for field in required_profile_fields
     ):
         raise RuntimeError("The SWE-bench model profile is incomplete.")
 
-    provider_id = profile["provider"].strip()
+    model_alias = profile["model"].strip()
+    model_entry = catalog.get("models", {}).get(model_alias)
+    if not isinstance(model_entry, dict):
+        raise RuntimeError(f"The SWE-bench model alias {model_alias!r} is absent from the model registry.")
+    provider_id = str(model_entry.get("provider", "")).strip()
     providers = catalog.get("providers")
-    if not isinstance(providers, list):
-        raise RuntimeError("The EASY CODE model catalog has no provider list.")
-    provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict) and entry.get("id") == provider_id
-        ),
-        None,
-    )
-    if provider is None:
+    if not isinstance(providers, dict):
+        raise RuntimeError("The EASY CODE model registry has no provider table.")
+    provider = providers.get(provider_id)
+    if not isinstance(provider, dict):
         raise RuntimeError(
-            f"The SWE-bench provider {provider_id!r} is absent from the model catalog."
+            f"The SWE-bench provider {provider_id!r} is absent from the model registry."
         )
-    # SWE-bench deliberately uses the separately billed Coding Plan account.
-    # Refuse catalog drift to the normal GLM platform rather than silently
-    # consuming a different credential or endpoint.
-    if provider_id != "glm-coding-plan":
-        raise RuntimeError(
-            "The SWE-bench profile must use the dedicated GLM Coding Plan provider."
-        )
+    model_id = str(model_entry.get("model", "")).strip()
+    if not model_id:
+        raise RuntimeError(f"The SWE-bench model alias {model_alias!r} has no wire model id.")
 
-    models = provider.get("models")
-    model_id = profile["model"].strip()
-    if not isinstance(models, list) or not any(
-        isinstance(model, dict) and model.get("id") == model_id for model in models
-    ):
-        raise RuntimeError(
-            f"The SWE-bench model {model_id!r} is absent from provider {provider_id!r}."
-        )
-
-    endpoint = provider.get("defaultBaseUrl")
-    environment = provider.get("environment")
-    base_url_names = environment.get("baseUrl") if isinstance(environment, dict) else None
-    api_key_names = environment.get("apiKey") if isinstance(environment, dict) else None
+    endpoint = provider.get("base_url")
     if not isinstance(endpoint, str) or not endpoint.strip():
         raise RuntimeError("The SWE-bench provider has no default endpoint.")
     endpoint_parts = urlsplit(endpoint.strip())
     if endpoint_parts.scheme != "https" or not endpoint_parts.hostname:
         raise RuntimeError("The SWE-bench provider must use a valid HTTPS endpoint.")
-    if (
-        not isinstance(base_url_names, list)
-        or len(base_url_names) != 1
-        or not isinstance(base_url_names[0], str)
-        or not base_url_names[0]
-    ):
-        raise RuntimeError(
-            "The SWE-bench provider must define one dedicated base-URL environment name."
-        )
-    if (
-        not isinstance(api_key_names, list)
-        or len(api_key_names) != 1
-        or not isinstance(api_key_names[0], str)
-        or not api_key_names[0]
-    ):
-        raise RuntimeError(
-            "The SWE-bench provider must define one dedicated API-key environment name."
-        )
+    base_url_env = f"EASY_CODE_{re.sub(r'[^A-Za-z0-9]+', '_', provider_id).upper()}_BASE_URL"
 
     return (
         provider_id,
         model_id,
         profile["mode"].strip(),
-        profile["thinkingEffort"].strip(),
+        profile["thinking_effort"].strip(),
         endpoint.strip(),
-        base_url_names[0],
+        base_url_env,
     )
 
 
@@ -267,25 +232,26 @@ class EasyCodeAgent(BaseInstalledAgent):
                 "EASY_CODE_PACKAGE_PATH must point to an existing npm .tgz package."
             )
 
-        api_key_file_value = os.environ.get(
-            "EASY_CODE_GLM_CODING_PLAN_KEY_FILE", ""
-        ).strip()
+        api_key_file_value = os.environ.get("EASY_CODE_PROVIDER_KEY_FILE", "").strip()
         if not api_key_file_value:
             raise RuntimeError(
-                "EASY_CODE_GLM_CODING_PLAN_KEY_FILE must identify the launcher's private key file."
+                "EASY_CODE_PROVIDER_KEY_FILE must identify the launcher's private key file."
             )
         api_key_file = Path(api_key_file_value).resolve()
         if not api_key_file.is_file():
             raise RuntimeError(
-                "The staged GLM Coding Plan credential file is unavailable."
+                "The staged provider credential file is unavailable."
             )
         api_key = api_key_file.read_text(encoding="utf-8").strip()
         if not api_key or len(api_key.encode("utf-8")) > 16_384:
             raise RuntimeError(
-                "The staged GLM Coding Plan credential has an invalid size."
+                "The staged provider credential has an invalid size."
             )
 
         self._package_path = package_path
+        if not _MODEL_REGISTRY_PATH.is_file():
+            raise RuntimeError("The frozen EASY CODE model registry is unavailable.")
+        self._model_registry_path = _MODEL_REGISTRY_PATH
         self._package_sha256 = self._sha256_file(package_path)
         model_directory_value = os.environ.get(_MODEL_DIRECTORY_ENV, "").strip()
         if not model_directory_value:
@@ -470,6 +436,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
             try:
                 baseline_network_policy = environment.network_policy
                 await self._stage_api_key(environment)
+                await self._stage_model_registry(environment)
                 await environment.set_network_policy(
                     _benchmark_agent_network_policy()
                 )
@@ -479,7 +446,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                         user="root",
                         cwd=_TESTBED,
                         env={
-                            "EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE": _REMOTE_API_KEY_FILE,
+                            "EASY_CODE_PROVIDER_API_KEY_FILE": _REMOTE_API_KEY_FILE,
                             _BENCHMARK_BASE_URL_ENV: _BENCHMARK_BASE_URL,
                             "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
                             "EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR,
@@ -1191,19 +1158,27 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
             self._host_api_key_file,
             _REMOTE_API_KEY_FILE,
         )
-
         ownership = ""
         if owner is not None:
             ownership = f"chown {shlex.quote(str(owner))} {shlex.quote(_REMOTE_API_KEY_FILE)} && "
         await self.exec_as_root(
             environment,
-            command=(
-                ownership
-                + f"chmod 600 {shlex.quote(_REMOTE_API_KEY_FILE)}"
-            ),
+            command=ownership + f"chmod 600 {shlex.quote(_REMOTE_API_KEY_FILE)}",
             timeout_sec=30,
         )
 
+    async def _stage_model_registry(self, environment: BaseEnvironment) -> None:
+        await self.exec_as_root(
+            environment,
+            command="mkdir -p /root/.easy_code && chmod 700 /root/.easy_code",
+            timeout_sec=30,
+        )
+        await environment.upload_file(self._model_registry_path, _REMOTE_MODEL_REGISTRY)
+        await self.exec_as_root(
+            environment,
+            command=f"chmod 600 {shlex.quote(_REMOTE_MODEL_REGISTRY)}",
+            timeout_sec=30,
+        )
     def _record_output(self, filename: str, result: Any) -> None:
         """Persist command output while defensively removing the API key."""
 

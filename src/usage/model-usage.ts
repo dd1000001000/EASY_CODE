@@ -3,7 +3,7 @@ import type {
   ModelUsageRecord,
   ProviderUsage,
 } from "../core/types.js";
-import { isProviderName } from "../models/catalog.js";
+import { isProviderIdentifier } from "../models/catalog.js";
 
 export interface ModelUsageTotals {
   requests: number;
@@ -98,7 +98,7 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
       input.actor !== "reviewer" && input.actor !== "approval_agent") ||
     !PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
-    !isProviderName(input.provider) ||
+    !isProviderIdentifier(input.provider) ||
     !safeLabel(input.model) ||
     !safeLabel(input.turnId) ||
     typeof input.retry !== "boolean"

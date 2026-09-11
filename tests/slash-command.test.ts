@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import {
-  HELP_TEXT,
+  helpText,
   parseModelCommand,
   parseSlashCommand,
 } from "../src/cli/slash-command.js";
@@ -40,6 +40,14 @@ describe("parseSlashCommand", () => {
       model: "GLM-5.3-Flash",
     });
     assert.deepEqual(
+      parseModelCommand(["kimi", "k3"]),
+      {
+        action: "switch",
+        provider: "kimi",
+        model: "k3",
+      },
+    );
+    assert.deepEqual(
       parseModelCommand(["glm-coding-plan", "GLM-5.3-Flash"]),
       {
         action: "switch",
@@ -59,8 +67,9 @@ describe("parseSlashCommand", () => {
   });
 
   it("documents the model command", () => {
+    const HELP_TEXT = helpText();
     assert.match(HELP_TEXT, /\/model/u);
-    assert.match(HELP_TEXT, /deepseek\|qwen\|glm\|glm-coding-plan/u);
+    assert.match(HELP_TEXT, /qwen\|deepseek\|kimi\|glm\|glm-coding-plan/u);
     assert.match(HELP_TEXT, /\/thinking \[id\|last\]/u);
     assert.match(HELP_TEXT, /\/agents/u);
     assert.match(HELP_TEXT, /child sessions, tasks, isolation, and handoff/u);

@@ -923,8 +923,8 @@ describe("image attachments", () => {
       thinkingEffort: "high",
     });
     assert.equal(JSON.parse(body).model, "deepseek-flash");
-    assert.deepEqual(JSON.parse(body).thinking, { type: "enabled" });
-    assert.equal(JSON.parse(body).reasoning_effort, "high");
+    assert.equal(JSON.parse(body).thinking, undefined);
+    assert.equal(JSON.parse(body).reasoning_effort, undefined);
     assert.match(body, /"type":"image_url"/u);
     assert.match(body, /data:image\/png;base64/u);
   });
@@ -976,6 +976,44 @@ describe("image attachments", () => {
       assert.match(textBody, new RegExp(`${model} cannot receive images`, "u"));
       assert.doesNotMatch(textBody, /data:image/u);
     }
+  });
+
+  it("sends Kimi K3 images without a provider-specific thinking dialect", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.kimi.apiKey = "kimi-test-key";
+    const attachment: ImageAttachment = {
+      id: "image_00000000-0000-4000-8000-000000000007",
+      label: "Image #1",
+      mediaType: "image/png",
+      storageKey:
+        "attachments/00000000000000000000000000000000/image_00000000-0000-4000-8000-000000000007.png",
+      sha256: "7".repeat(64),
+      byteSize: PNG_1X1.length,
+      width: 1,
+      height: 1,
+    };
+    let body = "";
+    const provider = createProvider(config, "kimi", "k3", {
+      loadImage: async () => PNG_1X1,
+      transport: async (request) => {
+        body = request.body;
+        return successResponse();
+      },
+    });
+
+    await provider.complete({
+      messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
+      currentTurnImageIds: [attachment.id],
+      thinkingEffort: "medium",
+    });
+    const parsed = JSON.parse(body) as {
+      model?: string;
+      thinking?: { type?: string; keep?: string; effort?: string };
+    };
+    assert.equal(parsed.model, "k3");
+    assert.equal(parsed.thinking, undefined);
+    assert.match(body, /"type":"image_url"/u);
+    assert.match(body, /data:image\/png;base64/u);
   });
 
   it("never sends direct image input through GLM Coding Plan", async () => {
@@ -1038,14 +1076,14 @@ describe("image attachments", () => {
 
     await assert.rejects(
       provider.complete({ messages: [{ role: "user", content: "tiny", images: [tiny] }] }),
-      /larger than 10x10/u,
+      /at least 11 pixels wide/u,
     );
     await assert.rejects(
       provider.complete({
         messages: [{ role: "user", content: "tiny", images: [tiny] }],
         currentTurnImageIds: [tiny.id],
       }),
-      /larger than 10x10/u,
+      /at least 11 pixels wide/u,
     );
     assert.equal(loaded, false);
   });
@@ -1109,7 +1147,7 @@ describe("image attachments", () => {
     assert.equal(typeof historicalContent, "string");
     if (typeof historicalContent === "string") {
       assert.match(historicalContent, /Historical image attachment\(s\) omitted/u);
-      assert.match(historicalContent, /Image #1 uses GIF/u);
+      assert.match(historicalContent, /Image #1 uses image\/gif/u);
       assert.match(historicalContent, /Local thread history is unchanged/u);
       assert.ok(historicalContent.length <= historicalPrompt.length + 2 + 600);
     }

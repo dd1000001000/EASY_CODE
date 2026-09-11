@@ -153,6 +153,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       if (!actorState) {
         actorState = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root, mode: "code", provider: state.provider,
           model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: state.promptBundle,
+          modelRegistryHash: state.modelRegistryHash,
           goal: `Review ${reviewId}`, constraints: ["Private review history. Project memory is read-only."] }));
         const diff = await reviewDiff(deps.workspace);
         const materialId = durableReviewWrite(() => deps.memory.evidenceStore.capture(workspaceId, threadId, "review_material", "review_material", {

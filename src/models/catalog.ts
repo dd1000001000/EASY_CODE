@@ -1,38 +1,28 @@
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import type {
-  AgentMode,
-  ImageAttachment,
-  ProviderName,
-  ThinkingEffort,
-} from "../core/types.js";
-import {
-  PACKAGED_MODEL_CATALOG,
-  PACKAGED_MODEL_CATALOG_SOURCE_HASH,
-} from "./generated-catalog.js";
+import { parse as parseToml } from "toml";
+import { z } from "zod";
+
+import type { AgentMode, ImageAttachment, ProviderName, ThinkingEffort } from "../core/types.js";
+
+export type WireApi = "chat_completions" | "responses";
+export type VisionSupport = "supported" | "unsupported" | "unknown";
 
 export interface ModelCatalogEntry {
-  /** Conservative documented window; optional for older external catalogs. */
-  readonly contextWindowTokens?: number;
+  readonly alias: string;
+  /** Exact model identifier sent over the wire. */
   readonly id: string;
   readonly label: string;
-  /**
-   * `unknown` is intentionally conservative: EASY CODE will not send image
-   * bytes until the provider documents that exact model identifier.
-   */
   readonly vision: VisionSupport;
-  readonly thinking: ThinkingProfile;
+  readonly reasoning: boolean;
+  readonly toolCalling: boolean;
+  readonly contextWindowTokens?: number;
 }
-
-export type VisionSupport = "supported" | "unsupported" | "unknown";
-export type ThinkingProfile =
-  | "unsupported"
-  | "qwen_budget"
-  | "deepseek_effort"
-  | "glm_forced_effort"
-  | "glm_optional_effort";
-export type ProviderAdapter = "qwen" | "deepseek" | "glm";
-export type ProviderEnvironmentField = keyof ProviderEnvironmentCatalog;
 
 export interface ProviderEnvironmentCatalog {
   readonly apiKey: readonly string[];
@@ -42,15 +32,31 @@ export interface ProviderEnvironmentCatalog {
   readonly maxRetries: readonly string[];
 }
 
+export interface ProviderImageConstraints {
+  readonly minWidth?: number;
+  readonly minHeight?: number;
+  readonly maxLongEdge?: number;
+  readonly maxShortEdge?: number;
+  readonly maxAspectRatio?: number;
+  readonly blockedMediaTypes: readonly string[];
+  readonly largeImageThreshold?: number;
+  readonly largeImageMediaTypes: readonly string[];
+}
+
 export interface ProviderCatalogEntry {
   readonly provider: ProviderName;
   readonly label: string;
   readonly vendor: string;
-  readonly adapter: ProviderAdapter;
+  readonly wireApi: WireApi;
   readonly credentialSlot: ProviderName;
-  readonly configKey: `${ProviderName}.api-key`;
+  readonly configKey: `${string}.api-key`;
   readonly defaultBaseUrl: string;
   readonly defaultModel: string;
+  readonly requestTimeoutMs?: number;
+  readonly maxRetries: number;
+  readonly supportsTemperature: boolean;
+  readonly supportsStrictTools: boolean;
+  readonly imageConstraints?: ProviderImageConstraints;
   readonly environment: ProviderEnvironmentCatalog;
   readonly models: readonly ModelCatalogEntry[];
 }
@@ -64,485 +70,289 @@ export interface BenchmarkProfile {
 
 export interface ModelCatalog {
   readonly catalogVersion: number;
+  readonly defaultModelAlias: string;
   readonly providers: readonly ProviderCatalogEntry[];
-  readonly profiles: Readonly<{
-    sweBenchVerified50: BenchmarkProfile;
-  }>;
+  readonly profiles: Readonly<{ sweBenchVerified50: BenchmarkProfile }>;
+  readonly sourceHash: string;
 }
 
-export const PROVIDER_NAMES = [
-  "qwen",
-  "deepseek",
-  "glm",
-  "glm-coding-plan",
-] as const satisfies readonly ProviderName[];
-const PROVIDER_NAME_SET = new Set<string>(PROVIDER_NAMES);
-const PROVIDER_ADAPTERS = new Set<ProviderAdapter>(["qwen", "deepseek", "glm"]);
-const VISION_VALUES = new Set<VisionSupport>([
-  "supported",
-  "unsupported",
-  "unknown",
-]);
-const THINKING_VALUES = new Set<ThinkingProfile>([
-  "unsupported",
-  "qwen_budget",
-  "deepseek_effort",
-  "glm_forced_effort",
-  "glm_optional_effort",
-]);
-const ENVIRONMENT_FIELDS = [
-  "apiKey",
-  "baseUrl",
-  "model",
-  "timeoutMs",
-  "maxRetries",
-] as const satisfies readonly ProviderEnvironmentField[];
-const ENVIRONMENT_NAME = /^[A-Z][A-Z0-9_]*$/u;
-const MODEL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
-
-function assertRecord(
-  value: unknown,
-  source: string,
-): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${source} must be an object`);
-  }
-}
-
-function assertExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-  source: string,
-): void {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
-    throw new Error(`${source} fields must be exactly: ${wanted.join(", ")}`);
-  }
-}
-
-function requireNonEmptyString(value: unknown, source: string): string {
-  if (
-    typeof value !== "string" ||
-    value.trim().length === 0 ||
-    value !== value.trim()
-  ) {
-    throw new Error(`${source} must be a non-empty string without surrounding whitespace`);
-  }
-  return value;
-}
-
-function requireHttpsBaseUrl(value: unknown, source: string): string {
-  const result = requireNonEmptyString(value, source);
-  let parsed: URL;
-  try {
-    parsed = new URL(result);
-  } catch {
-    throw new Error(`${source} must be an absolute HTTPS URL`);
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.username ||
-    parsed.password ||
-    parsed.search ||
-    parsed.hash ||
-    result.endsWith("/")
-  ) {
-    throw new Error(
-      `${source} must be an HTTPS base URL without credentials, query, fragment, or trailing slash`,
-    );
-  }
-  return result;
-}
-
-function parseEnvironment(
-  value: unknown,
-  source: string,
-): ProviderEnvironmentCatalog {
-  assertRecord(value, source);
-  assertExactKeys(value, ENVIRONMENT_FIELDS, source);
-  const parsed = Object.fromEntries(
-    ENVIRONMENT_FIELDS.map((field) => {
-      const names = value[field];
-      if (!Array.isArray(names) || names.length === 0) {
-        throw new Error(`${source}.${field} must be a non-empty array`);
-      }
-      const unique = new Set<string>();
-      const validated = names.map((name, index) => {
-        const result = requireNonEmptyString(name, `${source}.${field}[${index}]`);
-        if (!ENVIRONMENT_NAME.test(result)) {
-          throw new Error(`${source}.${field}[${index}] is not an environment variable name`);
-        }
-        if (unique.has(result)) {
-          throw new Error(`${source}.${field} contains duplicate ${result}`);
-        }
-        unique.add(result);
-        return result;
-      });
-      return [field, Object.freeze(validated)] as const;
-    }),
-  ) as unknown as ProviderEnvironmentCatalog;
-  return Object.freeze(parsed);
-}
-
-function parseModel(value: unknown, source: string): ModelCatalogEntry {
-  assertRecord(value, source);
-  assertExactKeys(value, ["id", "label", "vision", "thinking", ...(value.contextWindowTokens === undefined ? [] : ["contextWindowTokens"])], source);
-  if (value.contextWindowTokens !== undefined && (!Number.isSafeInteger(value.contextWindowTokens) || Number(value.contextWindowTokens) < 4096))
-    throw new Error(`${source}.contextWindowTokens must be a positive documented window`);
-  const id = requireNonEmptyString(value.id, `${source}.id`);
-  if (!MODEL_ID.test(id)) {
-    throw new Error(`${source}.id must be a normalized model identifier`);
-  }
-  const label = requireNonEmptyString(value.label, `${source}.label`);
-  if (!VISION_VALUES.has(value.vision as VisionSupport)) {
-    throw new Error(`${source}.vision is unsupported`);
-  }
-  if (!THINKING_VALUES.has(value.thinking as ThinkingProfile)) {
-    throw new Error(`${source}.thinking is unsupported`);
-  }
-  return Object.freeze({
-    id,
-    label,
-    vision: value.vision as VisionSupport,
-    thinking: value.thinking as ThinkingProfile,
-    ...(value.contextWindowTokens === undefined ? {} : { contextWindowTokens: Number(value.contextWindowTokens) }),
-  });
-}
-
-function parseProvider(value: unknown, index: number): ProviderCatalogEntry {
-  const source = `model catalog providers[${index}]`;
-  assertRecord(value, source);
-  assertExactKeys(value, [
-    "id",
-    "label",
-    "vendor",
-    "adapter",
-    "credentialSlot",
-    "configKey",
-    "defaultBaseUrl",
-    "defaultModel",
-    "environment",
-    "models",
-  ], source);
-  const provider = requireNonEmptyString(value.id, `${source}.id`);
-  if (!PROVIDER_NAME_SET.has(provider)) {
-    throw new Error(`${source}.id is unsupported: ${provider}`);
-  }
-  const adapter = requireNonEmptyString(value.adapter, `${source}.adapter`);
-  if (!PROVIDER_ADAPTERS.has(adapter as ProviderAdapter)) {
-    throw new Error(`${source}.adapter is unsupported: ${adapter}`);
-  }
-  const expectedAdapter: ProviderAdapter = provider === "glm-coding-plan"
-    ? "glm"
-    : provider as ProviderAdapter;
-  if (adapter !== expectedAdapter) {
-    throw new Error(`${source}.adapter must be ${expectedAdapter}`);
-  }
-  if (value.credentialSlot !== provider) {
-    throw new Error(`${source}.credentialSlot must equal its provider id`);
-  }
-  if (value.configKey !== `${provider}.api-key`) {
-    throw new Error(`${source}.configKey must be ${provider}.api-key`);
-  }
-  if (!Array.isArray(value.models) || value.models.length === 0) {
-    throw new Error(`${source}.models must be a non-empty array`);
-  }
-  const models = value.models.map((model, modelIndex) =>
-    parseModel(model, `${source}.models[${modelIndex}]`));
-  const modelIds = new Set(models.map((model) => model.id));
-  if (modelIds.size !== models.length) {
-    throw new Error(`${source}.models contains duplicate model ids`);
-  }
-  const modelLabels = new Set(models.map((model) => model.label.toLowerCase()));
-  if (modelLabels.size !== models.length) {
-    throw new Error(`${source}.models contains duplicate model labels`);
-  }
-  if (
-    provider === "glm-coding-plan" &&
-    models.some((model) => model.vision !== "unsupported")
-  ) {
-    throw new Error(
-      `${source}.models must disable direct vision for GLM Coding Plan`,
-    );
-  }
-  const defaultModel = requireNonEmptyString(
-    value.defaultModel,
-    `${source}.defaultModel`,
+const idSchema = z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,127}$/u);
+const providerIdSchema = z.string().trim().regex(/^[a-z][a-z0-9-]{0,63}$/u);
+const envSchema = z.string().trim().regex(/^[A-Z][A-Z0-9_]*$/u);
+const imageConstraintsSchema = z.object({
+  min_width: z.number().int().positive().optional(),
+  min_height: z.number().int().positive().optional(),
+  max_long_edge: z.number().int().positive().optional(),
+  max_short_edge: z.number().int().positive().optional(),
+  max_aspect_ratio: z.number().positive().optional(),
+  blocked_media_types: z.array(z.string().trim().regex(/^image\/[a-z0-9.+-]+$/u)).default([]),
+  large_image_threshold: z.number().int().positive().optional(),
+  large_image_media_types: z.array(z.string().trim().regex(/^image\/[a-z0-9.+-]+$/u)).default([]),
+}).strict()
+  .refine(
+    (value) => value.large_image_threshold === undefined || value.large_image_media_types.length > 0,
+    "large_image_media_types is required with large_image_threshold",
+  )
+  .refine(
+    (value) => value.max_long_edge === undefined || value.max_short_edge === undefined || value.max_short_edge <= value.max_long_edge,
+    "max_short_edge cannot exceed max_long_edge",
   );
-  if (!modelIds.has(defaultModel)) {
-    throw new Error(`${source}.defaultModel is not present in models`);
-  }
-  return Object.freeze({
-    provider: provider as ProviderName,
-    label: requireNonEmptyString(value.label, `${source}.label`),
-    vendor: requireNonEmptyString(value.vendor, `${source}.vendor`),
-    adapter: adapter as ProviderAdapter,
-    credentialSlot: provider as ProviderName,
-    configKey: `${provider}.api-key` as `${ProviderName}.api-key`,
-    defaultBaseUrl: requireHttpsBaseUrl(
-      value.defaultBaseUrl,
-      `${source}.defaultBaseUrl`,
-    ),
-    defaultModel,
-    environment: parseEnvironment(value.environment, `${source}.environment`),
-    models: Object.freeze(models),
-  });
+const providerSchema = z.object({
+  name: z.string().trim().min(1),
+  base_url: z.string().url().refine((value) => {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
+  }, "must be an HTTPS URL without credentials, query, or fragment"),
+  env_key: envSchema,
+  env_key_aliases: z.array(envSchema).default([]),
+  wire_api: z.enum(["chat_completions", "responses"]),
+  request_timeout_ms: z.number().int().positive().optional(),
+  max_retries: z.number().int().min(0).max(10).default(3),
+  supports_temperature: z.boolean().default(true),
+  supports_strict_tools: z.boolean().default(true),
+  image_constraints: imageConstraintsSchema.optional(),
+}).strict();
+const modelSchema = z.object({
+  name: z.string().trim().min(1),
+  provider: providerIdSchema,
+  model: z.string().trim().min(1),
+  context_window: z.number().int().min(4096).optional(),
+  input_modalities: z.array(z.enum(["text", "image"])).min(1),
+  tool_calling: z.boolean().default(true),
+  reasoning: z.boolean().default(false),
+}).strict();
+const profileSchema = z.object({
+  model: idSchema,
+  mode: z.enum(["plan", "auto", "code"]),
+  thinking_effort: z.enum(["none", "low", "medium", "high"]),
+}).strict();
+const registrySchema = z.object({
+  schema_version: z.literal(1),
+  default_model: idSchema,
+  providers: z.record(providerIdSchema, providerSchema),
+  models: z.record(idSchema, modelSchema),
+  profiles: z.object({ swe_bench_verified_50: profileSchema }).strict().optional(),
+}).strict();
+
+const packagedRegistryCandidates = [
+  fileURLToPath(new URL("../../resources/models.default.toml", import.meta.url)),
+  fileURLToPath(new URL("../../../resources/models.default.toml", import.meta.url)),
+];
+const packagedRegistryPath = packagedRegistryCandidates.find(existsSync) ?? packagedRegistryCandidates[0]!;
+export const USER_MODEL_REGISTRY_PATH = path.join(os.homedir(), ".easy_code", "models.toml");
+export const PACKAGED_MODEL_REGISTRY_SOURCE = readFileSync(packagedRegistryPath, "utf8");
+
+function envPrefix(provider: string): string {
+  return provider.replace(/[^a-z0-9]+/giu, "_").toUpperCase();
 }
 
-function parseProfile(
-  value: unknown,
-  providers: readonly ProviderCatalogEntry[],
-): BenchmarkProfile {
-  const source = "model catalog profiles.sweBenchVerified50";
-  assertRecord(value, source);
-  assertExactKeys(value, ["provider", "model", "mode", "thinkingEffort"], source);
-  const provider = requireNonEmptyString(value.provider, `${source}.provider`);
-  if (provider !== "glm-coding-plan") {
-    throw new Error(`${source}.provider must be glm-coding-plan`);
-  }
-  const entry = providers.find((candidate) => candidate.provider === provider);
-  if (!entry) throw new Error(`${source}.provider is unsupported: ${provider}`);
-  const model = requireNonEmptyString(value.model, `${source}.model`);
-  if (!entry.models.some((candidate) => candidate.id === model)) {
-    throw new Error(`${source}.model is not in provider ${provider}`);
-  }
-  if (!(value.mode === "plan" || value.mode === "auto" || value.mode === "code")) {
-    throw new Error(`${source}.mode is unsupported`);
-  }
-  if (!(value.thinkingEffort === "none" || value.thinkingEffort === "low" || value.thinkingEffort === "medium" || value.thinkingEffort === "high")) {
-    throw new Error(`${source}.thinkingEffort is unsupported`);
-  }
-  return Object.freeze({
-    provider: provider as ProviderName,
-    model,
-    mode: value.mode,
-    thinkingEffort: value.thinkingEffort,
-  });
-}
-
-/** Strictly parse the trusted, versioned provider/model catalog. */
-export function parseModelCatalog(value: unknown): ModelCatalog {
-  const source = "model catalog";
-  assertRecord(value, source);
-  assertExactKeys(value, ["catalogVersion", "providers", "profiles"], source);
-  if (value.catalogVersion !== 1) {
-    throw new Error("Unsupported model catalog version");
-  }
-  if (!Array.isArray(value.providers)) {
-    throw new Error("model catalog providers must be an array");
-  }
-  const providers = value.providers.map(parseProvider);
-  const ids = providers.map((entry) => entry.provider);
-  if (
-    ids.length !== PROVIDER_NAMES.length ||
-    PROVIDER_NAMES.some((provider) => !ids.includes(provider)) ||
-    new Set(ids).size !== ids.length
-  ) {
-    throw new Error(
-      `model catalog must contain each provider exactly once: ${PROVIDER_NAMES.join(", ")}`,
-    );
+function parseSource(source: string, sourceName: string): ModelCatalog {
+  let document: unknown;
+  try { document = parseToml(source) as unknown; }
+  catch { throw new Error(`Unable to parse model registry TOML: ${sourceName}`); }
+  const parsed = registrySchema.safeParse(document);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new Error(`Invalid model registry ${sourceName}: ${issue?.path.join(".") || "root"}: ${issue?.message || "invalid value"}`);
   }
 
-  // Environment aliases must never make standard GLM and Coding Plan inherit
-  // each other's credentials, endpoints, model choices, or retry policy.
-  const standardGlm = providers.find((entry) => entry.provider === "glm");
-  const codingPlan = providers.find((entry) => entry.provider === "glm-coding-plan");
-  if (!standardGlm || !codingPlan) throw new Error("model catalog GLM providers are missing");
-  for (const field of ENVIRONMENT_FIELDS) {
-    const standardNames = new Set(standardGlm.environment[field]);
-    const overlap = codingPlan.environment[field].filter((name) => standardNames.has(name));
-    if (overlap.length > 0) {
-      throw new Error(
-        `model catalog GLM environment.${field} overlaps Coding Plan: ${overlap.join(", ")}`,
-      );
+  const modelsByProvider = new Map<string, ModelCatalogEntry[]>();
+  for (const [alias, model] of Object.entries(parsed.data.models)) {
+    if (!parsed.data.providers[model.provider]) throw new Error(`Model ${alias} references unknown provider ${model.provider}`);
+    const entries = modelsByProvider.get(model.provider) ?? [];
+    if (entries.some((entry) => entry.id === model.model)) throw new Error(`Provider ${model.provider} defines model ${model.model} more than once`);
+    entries.push(Object.freeze({
+      alias,
+      id: model.model,
+      label: model.name,
+      vision: model.input_modalities.includes("image") ? "supported" : "unsupported",
+      reasoning: model.reasoning,
+      toolCalling: model.tool_calling,
+      ...(model.context_window === undefined ? {} : { contextWindowTokens: model.context_window }),
+    }));
+    modelsByProvider.set(model.provider, entries);
+  }
+  const defaultEntry = parsed.data.models[parsed.data.default_model];
+  if (!defaultEntry) throw new Error(`default_model ${parsed.data.default_model} is not defined`);
+
+  const credentialEnvironmentOwners = new Map<string, string>();
+  for (const [provider, value] of Object.entries(parsed.data.providers)) {
+    for (const environmentName of [value.env_key, ...value.env_key_aliases]) {
+      const owner = credentialEnvironmentOwners.get(environmentName);
+      if (owner) throw new Error(`Credential environment variable ${environmentName} is shared by providers ${owner} and ${provider}`);
+      credentialEnvironmentOwners.set(environmentName, provider);
     }
   }
 
-  assertRecord(value.profiles, "model catalog profiles");
-  assertExactKeys(value.profiles, ["sweBenchVerified50"], "model catalog profiles");
-  const profile = parseProfile(value.profiles.sweBenchVerified50, providers);
+  const providers = Object.entries(parsed.data.providers).map(([provider, value]) => {
+    const models = modelsByProvider.get(provider) ?? [];
+    if (models.length === 0) throw new Error(`Provider ${provider} has no models`);
+    const defaultForProvider = provider === defaultEntry.provider
+      ? models.find((entry) => entry.alias === parsed.data.default_model) ?? models[0]!
+      : models[0]!;
+    const prefix = envPrefix(provider);
+    return Object.freeze({
+      provider,
+      label: value.name,
+      vendor: value.name,
+      wireApi: value.wire_api,
+      credentialSlot: provider,
+      configKey: `${provider}.api-key` as `${string}.api-key`,
+      defaultBaseUrl: value.base_url.replace(/\/+$/u, ""),
+      defaultModel: defaultForProvider.id,
+      ...(value.request_timeout_ms === undefined ? {} : { requestTimeoutMs: value.request_timeout_ms }),
+      maxRetries: value.max_retries,
+      supportsTemperature: value.supports_temperature,
+      supportsStrictTools: value.supports_strict_tools,
+      ...(value.image_constraints
+        ? {
+            imageConstraints: Object.freeze({
+              ...(value.image_constraints.min_width === undefined ? {} : { minWidth: value.image_constraints.min_width }),
+              ...(value.image_constraints.min_height === undefined ? {} : { minHeight: value.image_constraints.min_height }),
+              ...(value.image_constraints.max_long_edge === undefined ? {} : { maxLongEdge: value.image_constraints.max_long_edge }),
+              ...(value.image_constraints.max_short_edge === undefined ? {} : { maxShortEdge: value.image_constraints.max_short_edge }),
+              ...(value.image_constraints.max_aspect_ratio === undefined ? {} : { maxAspectRatio: value.image_constraints.max_aspect_ratio }),
+              blockedMediaTypes: Object.freeze([...value.image_constraints.blocked_media_types]),
+              ...(value.image_constraints.large_image_threshold === undefined ? {} : { largeImageThreshold: value.image_constraints.large_image_threshold }),
+              largeImageMediaTypes: Object.freeze([...value.image_constraints.large_image_media_types]),
+            }),
+          }
+        : {}),
+      environment: Object.freeze({
+        apiKey: Object.freeze([value.env_key, ...value.env_key_aliases]),
+        baseUrl: Object.freeze([`EASY_CODE_${prefix}_BASE_URL`, `${prefix}_BASE_URL`]),
+        model: Object.freeze([`EASY_CODE_${prefix}_MODEL`, `${prefix}_MODEL`]),
+        timeoutMs: Object.freeze([`EASY_CODE_${prefix}_TIMEOUT_MS`, `${prefix}_TIMEOUT_MS`]),
+        maxRetries: Object.freeze([`EASY_CODE_${prefix}_MAX_RETRIES`, `${prefix}_MAX_RETRIES`]),
+      }),
+      models: Object.freeze(models),
+    });
+  });
+
+  const profile = parsed.data.profiles?.swe_bench_verified_50;
+  const profileModel = profile ? parsed.data.models[profile.model] : undefined;
+  if (profile && !profileModel) throw new Error(`Benchmark profile references unknown model alias ${profile.model}`);
+  if (profileModel && !profileModel.tool_calling) throw new Error(`Benchmark profile model ${profile!.model} must support tool calling`);
+  const fallbackProfile: BenchmarkProfile = Object.freeze({ provider: defaultEntry.provider, model: defaultEntry.model, mode: "code", thinkingEffort: "high" });
   return Object.freeze({
     catalogVersion: 1,
+    defaultModelAlias: parsed.data.default_model,
     providers: Object.freeze(providers),
-    profiles: Object.freeze({ sweBenchVerified50: profile }),
+    profiles: Object.freeze({
+      sweBenchVerified50: profile && profileModel
+        ? Object.freeze({ provider: profileModel.provider, model: profileModel.model, mode: profile.mode, thinkingEffort: profile.thinking_effort })
+        : fallbackProfile,
+    }),
+    sourceHash: `sha256:${createHash("sha256").update(source, "utf8").digest("hex")}`,
   });
 }
 
-let activeModelCatalog = parseModelCatalog(PACKAGED_MODEL_CATALOG);
-
+// Imports are deterministic and side-effect free. CLI startup explicitly calls
+// ensureUserModelRegistry() before it builds commands or creates an app.
+let activeModelCatalog = parseSource(PACKAGED_MODEL_REGISTRY_SOURCE, packagedRegistryPath);
 export let PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = activeModelCatalog.providers;
-export let DEFAULT_MODEL_IDS: Readonly<Record<ProviderName, string>> =
-  defaultModelIds(activeModelCatalog.providers);
+export let PROVIDER_NAMES: readonly string[] = Object.freeze(PROVIDER_CATALOG.map(({ provider }) => provider));
+export let DEFAULT_MODEL_IDS: Readonly<Record<string, string>> = defaultModelIds(PROVIDER_CATALOG);
 export let BENCHMARK_PROFILES: ModelCatalog["profiles"] = activeModelCatalog.profiles;
-export let ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES: readonly string[] =
-  allApiKeyEnvironmentVariables(activeModelCatalog.providers);
+export let ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES: readonly string[] = allApiKeyVariables(PROVIDER_CATALOG);
+export let ACTIVE_MODEL_REGISTRY_HASH = activeModelCatalog.sourceHash;
+export let DEFAULT_PROVIDER_NAME: ProviderName = providerForDefaultModel(activeModelCatalog);
 
-function defaultModelIds(
-  providers: readonly ProviderCatalogEntry[],
-): Readonly<Record<ProviderName, string>> {
-  return Object.freeze(Object.fromEntries(
-    providers.map((entry) => [entry.provider, entry.defaultModel]),
-  )) as Readonly<Record<ProviderName, string>>;
+function defaultModelIds(providers: readonly ProviderCatalogEntry[]): Readonly<Record<string, string>> {
+  return Object.freeze(Object.fromEntries(providers.map((entry) => [entry.provider, entry.defaultModel])));
+}
+function allApiKeyVariables(providers: readonly ProviderCatalogEntry[]): readonly string[] {
+  return Object.freeze([...new Set(providers.flatMap((entry) => entry.environment.apiKey))]);
+}
+function providerForDefaultModel(catalog: ModelCatalog): ProviderName {
+  const provider = catalog.providers.find((entry) =>
+    entry.models.some((model) => model.alias === catalog.defaultModelAlias));
+  if (!provider) throw new Error("The model registry default model has no provider");
+  return provider.provider;
 }
 
-function allApiKeyEnvironmentVariables(
-  providers: readonly ProviderCatalogEntry[],
-): readonly string[] {
-  return Object.freeze([
-    ...new Set(providers.flatMap((entry) => entry.environment.apiKey)),
-  ]);
-}
-
-/** Activate the verified installed catalog only if it matches this build exactly. */
-export function activateInstalledModelCatalog(sourceText: string): void {
-  const sourceHash = `sha256:${createHash("sha256").update(sourceText, "utf8").digest("hex")}`;
-  if (sourceHash !== PACKAGED_MODEL_CATALOG_SOURCE_HASH) {
-    throw new Error(
-      `Installed model catalog hash mismatch: expected ${PACKAGED_MODEL_CATALOG_SOURCE_HASH}, received ${sourceHash}`,
-    );
-  }
-  let parsedJson: unknown;
-  try {
-    parsedJson = JSON.parse(sourceText) as unknown;
-  } catch {
-    throw new Error("Installed model catalog is not valid JSON");
-  }
-  const parsed = parseModelCatalog(parsedJson);
-  const providers = parsed.providers;
-  const models = defaultModelIds(providers);
-  const apiKeyVariables = allApiKeyEnvironmentVariables(providers);
+export function activateModelRegistry(source: string, sourceName = USER_MODEL_REGISTRY_PATH): ModelCatalog {
+  const parsed = parseSource(source, sourceName);
   activeModelCatalog = parsed;
-  PROVIDER_CATALOG = providers;
-  DEFAULT_MODEL_IDS = models;
+  PROVIDER_CATALOG = parsed.providers;
+  PROVIDER_NAMES = Object.freeze(parsed.providers.map(({ provider }) => provider));
+  DEFAULT_MODEL_IDS = defaultModelIds(parsed.providers);
   BENCHMARK_PROFILES = parsed.profiles;
-  ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES = apiKeyVariables;
+  ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES = allApiKeyVariables(parsed.providers);
+  ACTIVE_MODEL_REGISTRY_HASH = parsed.sourceHash;
+  DEFAULT_PROVIDER_NAME = providerForDefaultModel(parsed);
+  return parsed;
 }
 
+/** Compatibility alias retained for old embedders. The input is now TOML. */
+export function activateInstalledModelCatalog(sourceText: string): void { activateModelRegistry(sourceText, "installed model registry"); }
+
+export async function ensureUserModelRegistry(registryPath = USER_MODEL_REGISTRY_PATH): Promise<string> {
+  await mkdir(path.dirname(registryPath), { recursive: true, mode: 0o700 });
+  try { await writeFile(registryPath, PACKAGED_MODEL_REGISTRY_SOURCE, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  await chmod(registryPath, 0o600).catch(() => undefined);
+  const source = await readFile(registryPath, "utf8");
+  activateModelRegistry(source, registryPath);
+  return registryPath;
+}
+
+export function parseModelCatalog(value: unknown): ModelCatalog {
+  if (typeof value !== "string") throw new Error("Model registry must be TOML text");
+  return parseSource(value, "model registry");
+}
 export function providerCatalogEntry(provider: ProviderName): ProviderCatalogEntry {
   const entry = PROVIDER_CATALOG.find((candidate) => candidate.provider === provider);
   if (!entry) throw new Error(`Unsupported provider: ${provider}`);
   return entry;
 }
-
-export function isProviderName(value: unknown): value is ProviderName {
-  return typeof value === "string" && PROVIDER_NAME_SET.has(value);
-}
-
-export function providerLabel(provider: ProviderName): string {
-  return providerCatalogEntry(provider).label;
-}
-
-export function providerEnvironment(provider: ProviderName): ProviderEnvironmentCatalog {
-  return providerCatalogEntry(provider).environment;
-}
-
-export function providerApiKeyEnvironmentVariables(
-  provider: ProviderName,
-): readonly string[] {
-  return providerEnvironment(provider).apiKey;
-}
-
-export function providerCredentialConfigKey(
-  provider: ProviderName,
-): `${ProviderName}.api-key` {
-  return providerCatalogEntry(provider).configKey;
-}
-
-export function sweBenchVerified50Profile(): BenchmarkProfile {
-  return BENCHMARK_PROFILES.sweBenchVerified50;
-}
-
-export function modelsForProvider(provider: ProviderName): readonly ModelCatalogEntry[] {
-  return providerCatalogEntry(provider).models;
-}
-
-export function resolveCatalogModel(
-  provider: ProviderName,
-  value: string,
-): ModelCatalogEntry | undefined {
+export function isProviderName(value: unknown): value is ProviderName { return typeof value === "string" && PROVIDER_CATALOG.some((entry) => entry.provider === value); }
+/** Syntax-only check for durable history whose registry may no longer be active. */
+export function isProviderIdentifier(value: unknown): value is ProviderName { return typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/u.test(value); }
+export function providerLabel(provider: ProviderName): string { return providerCatalogEntry(provider).label; }
+export function providerEnvironment(provider: ProviderName): ProviderEnvironmentCatalog { return providerCatalogEntry(provider).environment; }
+export function providerApiKeyEnvironmentVariables(provider: ProviderName): readonly string[] { return providerEnvironment(provider).apiKey; }
+export function providerCredentialConfigKey(provider: ProviderName): `${string}.api-key` { return providerCatalogEntry(provider).configKey; }
+export function sweBenchVerified50Profile(): BenchmarkProfile { return BENCHMARK_PROFILES.sweBenchVerified50; }
+export function modelsForProvider(provider: ProviderName): readonly ModelCatalogEntry[] { return providerCatalogEntry(provider).models; }
+export function resolveCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry | undefined {
   const normalized = value.trim().toLowerCase();
-  return modelsForProvider(provider).find(
-    (entry) => entry.id.toLowerCase() === normalized || entry.label.toLowerCase() === normalized,
-  );
+  return modelsForProvider(provider).find((entry) => entry.id.toLowerCase() === normalized || entry.alias.toLowerCase() === normalized || entry.label.toLowerCase() === normalized);
 }
-
 export function effectiveContextWindow(provider: ProviderName, model: string, configured?: number): number | undefined {
   if (!configured) return undefined;
   const documented = resolveCatalogModel(provider, model)?.contextWindowTokens;
   return documented ? Math.min(configured, documented) : configured;
 }
-
 export function requireCatalogModel(provider: ProviderName, value: string): ModelCatalogEntry {
   const model = resolveCatalogModel(provider, value);
   if (model) return model;
   const supported = modelsForProvider(provider).map((entry) => entry.id).join(", ");
-  throw new Error(
-    `Model ${JSON.stringify(value)} is not in the ${providerLabel(provider)} catalog. ` +
-      `Supported models: ${supported}`,
-  );
+  throw new Error(`Model ${JSON.stringify(value)} is not in the ${providerLabel(provider)} registry. Supported models: ${supported}`);
 }
-
-export function modelVisionSupport(provider: ProviderName, model: string): VisionSupport {
-  return resolveCatalogModel(provider, model)?.vision ?? "unknown";
-}
-
-export function modelSupportsVision(provider: ProviderName, model: string): boolean {
-  return modelVisionSupport(provider, model) === "supported";
-}
-
+export function modelVisionSupport(provider: ProviderName, model: string): VisionSupport { return resolveCatalogModel(provider, model)?.vision ?? "unknown"; }
+export function modelSupportsVision(provider: ProviderName, model: string): boolean { return modelVisionSupport(provider, model) === "supported"; }
 export function requireVisionModel(provider: ProviderName, model: string): void {
   const support = modelVisionSupport(provider, model);
   if (support === "supported") return;
-  const models = modelsForProvider(provider)
-    .filter((entry) => entry.vision === "supported")
-    .map((entry) => entry.id)
-    .join(", ");
-  const reason = support === "unknown"
-    ? "its image capability is not verified"
-    : "it is text-only";
-  const nextStep = models.length > 0
-    ? `Choose an image-capable model with /model: ${models}`
-    : "Remove the image or use /model to switch to a provider with direct image support.";
-  throw new Error(
-    `${providerLabel(provider)} model ${model} cannot accept images because ${reason}. ` + nextStep,
-  );
+  const models = modelsForProvider(provider).filter((entry) => entry.vision === "supported").map((entry) => entry.id).join(", ");
+  throw new Error(`${providerLabel(provider)} model ${model} cannot accept images because ${support === "unknown" ? "its image capability is not verified" : "it is text-only"}. ${models ? `Choose an image-capable model with /model: ${models}` : "Remove the image or select another provider."}`);
 }
-
-/** Validate documented image-input constraints before a turn is persisted. */
-export function validateProviderImageAttachments(
-  provider: ProviderName,
-  images: readonly ImageAttachment[],
-): void {
-  for (const attachment of images) {
-    const issue = providerImageCompatibilityIssue(provider, attachment);
-    if (issue) throw new Error(issue);
-  }
+export function validateProviderImageAttachments(provider: ProviderName, images: readonly ImageAttachment[]): void {
+  for (const attachment of images) { const issue = providerImageCompatibilityIssue(provider, attachment); if (issue) throw new Error(issue); }
 }
-
-/** Return the documented provider-specific incompatibility without mutating history. */
-export function providerImageCompatibilityIssue(
-  provider: ProviderName,
-  attachment: ImageAttachment,
-): string | undefined {
-  if (provider !== "qwen") return undefined;
+export function providerImageCompatibilityIssue(provider: ProviderName, attachment: ImageAttachment): string | undefined {
+  const entry = providerCatalogEntry(provider);
+  const constraints = entry.imageConstraints;
+  if (!constraints) return undefined;
   const { width, height, mediaType, label } = attachment;
-  if (width <= 10 || height <= 10) {
-    return `${label} must be larger than 10x10 pixels for Alibaba Qwen.`;
-  }
-  const longEdge = Math.max(width, height);
-  const shortEdge = Math.min(width, height);
-  if (longEdge / shortEdge > 200) {
-    return `${label} exceeds Alibaba Qwen's 200:1 aspect-ratio limit.`;
-  }
-  if (longEdge > 7_680 || shortEdge > 4_320) {
-    return `${label} exceeds Alibaba Qwen's 8K image limit.`;
-  }
-  if (mediaType === "image/gif") {
-    return `${label} uses GIF, which Alibaba Qwen does not accept.`;
-  }
-  if (longEdge > 4_096 && mediaType !== "image/png" && mediaType !== "image/jpeg") {
-    return `${label} must use PNG or JPEG when its longest edge exceeds 4096 pixels for Alibaba Qwen.`;
-  }
+  if (constraints.minWidth !== undefined && width < constraints.minWidth) return `${label} must be at least ${constraints.minWidth} pixels wide for ${entry.label}.`;
+  if (constraints.minHeight !== undefined && height < constraints.minHeight) return `${label} must be at least ${constraints.minHeight} pixels high for ${entry.label}.`;
+  const longEdge = Math.max(width, height); const shortEdge = Math.min(width, height);
+  if (constraints.maxAspectRatio !== undefined && longEdge / shortEdge > constraints.maxAspectRatio) return `${label} exceeds ${entry.label}'s ${constraints.maxAspectRatio}:1 aspect-ratio limit.`;
+  if (constraints.maxLongEdge !== undefined && longEdge > constraints.maxLongEdge) return `${label} exceeds ${entry.label}'s ${constraints.maxLongEdge}-pixel long-edge limit.`;
+  if (constraints.maxShortEdge !== undefined && shortEdge > constraints.maxShortEdge) return `${label} exceeds ${entry.label}'s ${constraints.maxShortEdge}-pixel short-edge limit.`;
+  if (constraints.blockedMediaTypes.includes(mediaType)) return `${label} uses ${mediaType}, which ${entry.label} does not accept.`;
+  if (constraints.largeImageThreshold !== undefined && longEdge > constraints.largeImageThreshold && !constraints.largeImageMediaTypes.includes(mediaType)) return `${label} must use ${constraints.largeImageMediaTypes.join(" or ")} when its longest edge exceeds ${constraints.largeImageThreshold} pixels for ${entry.label}.`;
   return undefined;
 }
