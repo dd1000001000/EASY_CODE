@@ -138,7 +138,10 @@ import {
 } from "./tool-recovery.js";
 import { availableAgentTools, toolMetadata } from "../tools/capabilities.js";
 import { snapshotToolSet, type ToolCatalogSnapshot } from "../tools/catalog.js";
-import { ToolExecutionGateway } from "../tools/execution-gateway.js";
+import {
+  ToolExecutionGateway,
+  type ToolExecutionAuthorizer,
+} from "../tools/execution-gateway.js";
 
 function runtimePromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -566,15 +569,19 @@ const LAYERED_EVIDENCE_SYSTEM_RESERVE_CHARS = 21_000;
 // is selected. This is deliberately small and is charged through the same
 // reservation passed to ContextManager.build().
 const CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS = 1_024;
+const MAX_AUDITED_TOOL_BINDINGS = 256;
 
 export interface AgentRuntimeDependencies {
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   taskBudget?: import("./task-budget.js").TaskBudget;
   tokenCalibration?: TokenCalibration;
   provider: ModelProvider;
-  tools: AgentTool[];
-  /** Immutable source-aware catalog. Legacy callers may supply tools only. */
-  toolCatalog?: Readonly<ToolCatalogSnapshot>;
+  /** Immutable, source-aware tool set captured once for this Runtime run. */
+  toolCatalog: Readonly<ToolCatalogSnapshot>;
+  /** Provider capability used when filtering the captured catalog. */
+  visionAvailable?: boolean;
+  /** Host-owned authorization bridge for effectful external tool sources. */
+  authorizeToolExecution?: ToolExecutionAuthorizer;
   /** Runtime-issued actor identity; the default is the only main agent. */
   agentIdentity?:
     | { role: "main_agent" }
@@ -739,11 +746,13 @@ function availableTools(
   role: AgentRole,
   _thinkingEffort: SessionState["thinkingEffort"],
   orchestrationAvailable = true,
+  visionAvailable = true,
 ): AgentTool[] {
   return availableAgentTools(tools, {
     mode,
     role,
     orchestrationAvailable,
+    visionAvailable,
   });
 }
 
@@ -1739,9 +1748,10 @@ export class AgentRuntime {
       ) {
         {
           const nextTools = availableTools(
-            this.dependencies.toolCatalog?.tools ?? this.dependencies.tools,
+            this.dependencies.toolCatalog.tools,
             "code", agentIdentity.role, state.thinkingEffort,
-            this.orchestrationToolsAvailable(state, options))
+            this.orchestrationToolsAvailable(state, options),
+            this.dependencies.visionAvailable ?? true)
             .filter((tool) => tool.name !== "compact_context");
           const nextRequest = { systemPrompt: await this.dependencies.buildSystemPrompt({ mode: "code",
             workspaceSummary: "", memories: [], toolNames: nextTools.map((tool) => tool.name) }),
@@ -2075,17 +2085,44 @@ export class AgentRuntime {
     let retrievedCache: RuntimeLayeredContext | undefined;
     let nextImageNumber = nextThreadImageNumber(state.messages);
     const exposedTools = availableTools(
-      this.dependencies.toolCatalog?.tools ?? this.dependencies.tools,
+      this.dependencies.toolCatalog.tools,
       effectiveMode,
       agentIdentity.role,
       state.thinkingEffort,
       this.orchestrationToolsAvailable(state, options),
+      this.dependencies.visionAvailable ?? true,
     );
     const exposedToolCatalog = snapshotToolSet(
       exposedTools,
-      this.dependencies.toolCatalog?.revision ?? 1,
+      this.dependencies.toolCatalog.revision,
     );
-    const toolGateway = new ToolExecutionGateway(exposedToolCatalog);
+    const toolGateway = new ToolExecutionGateway(
+      exposedToolCatalog,
+      this.dependencies.authorizeToolExecution,
+    );
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      type: "tool.catalog.bound",
+      phase: "completed",
+      payload: {
+        catalogRevision: this.dependencies.toolCatalog.revision,
+        catalogHash: this.dependencies.toolCatalog.hash,
+        exposureHash: exposedToolCatalog.hash,
+        toolCount: exposedToolCatalog.bindings.size,
+        toolsTruncated: exposedToolCatalog.bindings.size > MAX_AUDITED_TOOL_BINDINGS,
+        tools: [...exposedToolCatalog.bindings.values()]
+          .slice(0, MAX_AUDITED_TOOL_BINDINGS)
+          .map((binding) => ({
+          toolId: binding.toolId,
+          modelName: binding.modelName,
+          sourceId: binding.sourceId,
+          sourceKind: binding.sourceKind,
+          schemaHash: binding.schemaHash,
+          metadataHash: binding.metadataHash,
+          })),
+      },
+    });
     const progressResponseBase =
       state.progressGuard?.lastObservedResponseOrdinal ?? 0;
     const progressVerificationCommands = new Map<string, VerificationKind>();
@@ -3538,7 +3575,7 @@ export class AgentRuntime {
   private async maintainContext(state: SessionState, turnId: string, images: ImageAttachment[],
     memoryContext: { userInput: string }, options: AgentRunOptions, nextRequest: NormalRequestEnvelope,
     required: boolean, maxRequests: number, forceRecovery = false): Promise<CompactionResult> {
-    const compactTool = (this.dependencies.toolCatalog?.tools ?? this.dependencies.tools)
+    const compactTool = this.dependencies.toolCatalog.tools
       .find((tool) => tool.name === "compact_context");
     const result = await runCompactionTransaction({ state, manager: this.dependencies.contextManager, turnId,
       limits: this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS, signal: options.signal,

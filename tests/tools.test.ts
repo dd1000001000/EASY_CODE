@@ -10,7 +10,8 @@ import {
   ReadFileTool,
   ReadImageTool,
   UpdateFileTool,
-  createDefaultTools,
+  BuiltinToolSource,
+  ToolCatalog,
 } from "../src/tools/index.js";
 import {
   WorkspaceManager,
@@ -117,8 +118,10 @@ describe("workspace file tools", () => {
   });
   it("exports the workspace tools and runtime context tool", async () => {
     await withWorkspace(async (_root, manager) => {
+      const catalog = new ToolCatalog();
+      catalog.registerSource(new BuiltinToolSource({ workspace: manager }));
       assert.deepEqual(
-        createDefaultTools(manager).map((tool) => tool.name),
+        (await catalog.snapshot()).tools.map((tool) => tool.name),
         [
           "read_file",
           "search_files",
@@ -137,6 +140,21 @@ describe("workspace file tools", () => {
           "search_context",
         ],
       );
+      await catalog.close();
+    });
+  });
+
+  it("loads child-only terminal control through the same built-in source", async () => {
+    await withWorkspace(async (_root, manager) => {
+      const source = new BuiltinToolSource({
+        workspace: manager,
+        boundTask: { id: "task_1", status: "in_progress", completionChecks: ["tests pass"] },
+      });
+      const first = await source.listTools();
+      const second = await source.listTools();
+      assert.equal(first, second);
+      assert.equal(first.filter((tool) => tool.name === "submit_task_result").length, 1);
+      assert.equal(first.some((tool) => tool.name === "manage_subagents"), false);
     });
   });
 

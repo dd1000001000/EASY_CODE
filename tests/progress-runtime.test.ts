@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -194,7 +195,7 @@ describe("AgentRuntime progress intervention", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [runCommand, new ManageTasksTool()],
+      toolCatalog: snapshotToolSet([runCommand, new ManageTasksTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async (input) => {
         const prompt = `system\n${input.workingCheckpoint ?? ""}`;
@@ -281,7 +282,7 @@ describe("AgentRuntime progress intervention", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [new ManageTasksTool()],
+      toolCatalog: snapshotToolSet([new ManageTasksTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -377,7 +378,7 @@ describe("AgentRuntime progress intervention", () => {
           return { message: { role: "assistant", content: "Recovered safely." } };
         },
       },
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",

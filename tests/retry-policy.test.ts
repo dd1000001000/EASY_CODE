@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -27,7 +28,7 @@ function state(): SessionState { return { threadId: "retry", workspaceRoot: proc
   workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" }; }
 const runOptions = { maxSteps: 10, maxContextChars: 200000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
 function runtime(p: ModelProvider, extra: Partial<ConstructorParameters<typeof AgentRuntime>[0]> = {}) {
-  return new AgentRuntime({ provider: p, tools: [], contextManager: new ContextManager(), limits: defaultRuntimeLimits(),
+  return new AgentRuntime({ provider: p, toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(), limits: defaultRuntimeLimits(),
     buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "", searchMemories: async () => [],
     requestApproval: async () => false, appendEvent: async () => {}, ...extra });
 }
@@ -113,8 +114,8 @@ describe("shared retry policy", () => {
     let calls = 0, executions = 0; const events: string[] = []; const current = state();
     const result = await runtime(provider(async () => { calls++; return { finishReason: "length", message: { role: "assistant", content: null,
       tool_calls: [{ id: `half_${calls}`, type: "function", function: { name: "run_command", arguments: '{"program":"node"}' } }] } }; }), {
-      tools: [{ name: "run_command", mutating: true, definition: { type: "function", function: { name: "run_command", description: "run", parameters: {} } },
-        execute: async () => { executions++; return { ok: true, summary: "ran" }; } }],
+      toolCatalog: snapshotToolSet([{ name: "run_command", mutating: true, definition: { type: "function", function: { name: "run_command", description: "run", parameters: {} } },
+        execute: async () => { executions++; return { ok: true, summary: "ran" }; } }]),
       appendEvent: async event => { events.push(event.type); },
     }).run(current, "run", runOptions);
     assert.equal(result.reason, "failed"); assert.equal(calls, 3); assert.equal(executions, 0);

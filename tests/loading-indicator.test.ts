@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
@@ -65,7 +66,7 @@ function runtimeFor(
 ): AgentRuntime {
   return new AgentRuntime({
     provider,
-    tools: [],
+    toolCatalog: snapshotToolSet([]),
     contextManager: new ContextManager(),
     buildSystemPrompt: async () => "system",
     getWorkspaceSummary: async () => "workspace",
@@ -229,7 +230,7 @@ describe("model request loading indicator", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [tool, startTool],
+      toolCatalog: snapshotToolSet([tool, startTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -343,7 +344,7 @@ describe("model request loading indicator", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [tool],
+      toolCatalog: snapshotToolSet([tool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",

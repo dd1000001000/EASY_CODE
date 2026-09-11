@@ -128,12 +128,15 @@ import {
 } from "./subagents/coordinator.js";
 import {
   WorkspaceMutationLock,
-  wrapAgentToolsWithWorkspaceMutationLock,
 } from "./subagents/workspace-mutation-lock.js";
-import { SubmitTaskResultTool } from "./tools/submit-task-result.js";
-import { createDefaultTools } from "./tools/registry.js";
-import { availableAgentTools, isToolAvailable, toolMetadata } from "./tools/capabilities.js";
-import { snapshotToolSet } from "./tools/catalog.js";
+import { isToolAvailable, toolMetadata } from "./tools/capabilities.js";
+import { BuiltinToolSource } from "./tools/builtin-source.js";
+import {
+  ToolCatalog,
+  type ToolCatalogSnapshot,
+  type ToolSource,
+} from "./tools/catalog.js";
+import type { ToolExecutionAuthorizer } from "./tools/execution-gateway.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import {
   interruptedTurnAssistantMessage,
@@ -178,9 +181,25 @@ export interface EasyCodeAppOptions {
   credentialStore?: ApiKeyCredentialStore | false;
   /** Images queued before the first prompt; the option may be repeated by the CLI. */
   imagePaths?: readonly string[];
+  /** Internal composition seam for future managed tool adapters such as MCP. */
+  toolSourceFactories?: readonly ToolSourceFactory[];
+  /** Host-owned approval bridge for effectful tools from those sources. */
+  authorizeToolExecution?: ToolExecutionAuthorizer;
   /** Dependency injection for clipboard tests. */
   clipboardImageReader?: ClipboardImageReader;
 }
+
+export interface ToolSourceFactoryContext {
+  readonly workspaceRoot: string;
+  readonly threadId: string;
+  readonly role: "main_agent" | "subagent";
+  readonly agentId?: string;
+  readonly assignedTaskId?: string;
+}
+
+export type ToolSourceFactory = (
+  context: Readonly<ToolSourceFactoryContext>,
+) => ToolSource | Promise<ToolSource>;
 
 /** Add durable parent-thread attribution without mutating a child's private audit record. */
 export function attributeSubagentCommandAudit(
@@ -510,6 +529,7 @@ export class EasyCodeApp {
   private readonly workspaceMutationLock = new WorkspaceMutationLock();
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
+  private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
   private readonly executionEnvironments: ExecutionEnvironmentManager;
   private readonly subagentCoordinator: SubagentCoordinator;
   private pendingImages: ImageAttachment[] = [];
@@ -534,6 +554,8 @@ export class EasyCodeApp {
     private readonly startupInteraction: "none" | "select-model" | "ensure-api-key",
     private readonly sandboxStartupService: SandboxStartupService | undefined,
     private readonly clipboardImageReader: ClipboardImageReader,
+    private readonly toolSourceFactories: readonly ToolSourceFactory[],
+    private readonly authorizeToolExecution: ToolExecutionAuthorizer | undefined,
     resumeRecovery?: ResumeRecoverySummary,
   ) {
     this.workspace = workspace;
@@ -806,6 +828,8 @@ export class EasyCodeApp {
         options.clipboardImageReader ?? new SystemClipboardImageReader({
           currentDirectory: workspace.root,
         }),
+        options.toolSourceFactories ?? [],
+        options.authorizeToolExecution,
         resumeRecovery,
       );
       try {
@@ -1182,7 +1206,7 @@ export class EasyCodeApp {
         this.printSubagents(true);
         return false;
       case "tools":
-        this.printTools();
+        await this.printTools();
         return false;
       case "permissions":
         this.updatePermissions(command.args);
@@ -1327,6 +1351,11 @@ export class EasyCodeApp {
         "Cannot close synchronously while child work is outstanding; use closeAsync() so children are stopped and reconciled first.",
       );
     }
+    if ([...this.mainToolCatalogs.values()].some((catalog) => catalog.requiresAsyncClose())) {
+      throw new Error(
+        "Cannot close synchronously while a tool source has a managed lifecycle; use closeAsync().",
+      );
+    }
     this.closeResources();
   }
 
@@ -1346,6 +1375,12 @@ export class EasyCodeApp {
       } catch (error) {
         cleanupErrors.push(error);
       }
+    }
+    try {
+      for (const catalog of this.mainToolCatalogs.values()) catalog.closeSync();
+      this.mainToolCatalogs.clear();
+    } catch (error) {
+      cleanupErrors.push(error);
     }
     try {
       this.contextArtifactIndex.close();
@@ -1382,6 +1417,13 @@ export class EasyCodeApp {
     try {
       await this.clearPendingImages();
       await this.imageStore.shutdown();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    try {
+      const catalogs = [...this.mainToolCatalogs.values()];
+      this.mainToolCatalogs.clear();
+      await Promise.all(catalogs.map((catalog) => catalog.close()));
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -1713,26 +1755,11 @@ export class EasyCodeApp {
     );
     const workspaceId = workspaceIdFromRoot(this.workspace.root);
     const commandRuntime = this.createCommandRuntime(this.workspace);
-    let broker = this.downloadBrokers.get(this.state.threadId);
-    if (!broker) {
-      broker = DownloadBroker.create(this.workspace, this.config.configDir, this.config.cacheDir, this.state.threadId);
-      this.downloadBrokers.set(this.state.threadId, broker);
-    }
-    const downloadBroker = await broker;
     const commandOwner = {
       threadId: this.state.threadId,
       agentRole: "main_agent" as const,
     };
-    const tools = wrapAgentToolsWithWorkspaceMutationLock(
-      createDefaultTools(this.workspace, this.memoryManager, {
-        limits: this.config.limits,
-        subagentControl: this.subagentCoordinator,
-        commandRuntime,
-        downloadBroker: this.trustedOuterSandbox ? undefined : downloadBroker,
-      }).filter((tool) => !toolMetadata(tool).requiresVision || visionCapable),
-      this.workspaceMutationLock,
-    );
-    const toolCatalog = snapshotToolSet(tools);
+    const toolCatalog = await this.mainToolCatalogSnapshot();
 
     return new AgentRuntime({
       provider,
@@ -1740,8 +1767,9 @@ export class EasyCodeApp {
       taskBudget: budget,
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
         effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
-      tools,
       toolCatalog,
+      visionAvailable: visionCapable,
+      authorizeToolExecution: this.authorizeToolExecution,
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
@@ -2022,6 +2050,7 @@ export class EasyCodeApp {
   ): Promise<SubagentExecutionOutcome> {
     let activeEnvironment: ActiveExecutionEnvironment | undefined;
     let childWorkspace: WorkspaceManager | undefined;
+    let childToolCatalog: ToolCatalog | undefined;
     let childState: SessionState | undefined;
     let childLease: ThreadLease | undefined;
     const presentations: ToolPresentation[] = [];
@@ -2232,21 +2261,27 @@ export class EasyCodeApp {
         request.record.model,
       );
       const childCommandRuntime = this.createCommandRuntime(childWorkspace);
-      const childTools = availableAgentTools(createDefaultTools(childWorkspace, undefined, {
-        limits: this.config.limits,
-        commandRuntime: childCommandRuntime,
-      }), {
-        mode: "code",
-        role: "subagent",
-        orchestrationAvailable: false,
-        visionAvailable: false,
-      });
-      childTools.push(new SubmitTaskResultTool(request.task, this.config.limits));
       const mutationLock = activeEnvironment.descriptor.kind === "shared"
         ? this.workspaceMutationLock
         : new WorkspaceMutationLock();
-      const tools = wrapAgentToolsWithWorkspaceMutationLock(childTools, mutationLock);
-      const toolCatalog = snapshotToolSet(tools);
+      childToolCatalog = new ToolCatalog();
+      childToolCatalog.registerSource(new BuiltinToolSource({
+        workspace: childWorkspace,
+        commandRuntime: childCommandRuntime,
+        limits: this.config.limits,
+        mutationLock,
+        boundTask: request.task,
+      }));
+      for (const factory of this.toolSourceFactories ?? []) {
+        childToolCatalog.registerSource(await factory({
+          workspaceRoot: childWorkspace.root,
+          threadId: request.record.childThreadId,
+          role: "subagent",
+          agentId: request.record.id,
+          assignedTaskId: request.task.id,
+        }));
+      }
+      const toolCatalog = await childToolCatalog.snapshot();
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
       const assignment = json({
         agentId: request.record.id,
@@ -2281,8 +2316,9 @@ export class EasyCodeApp {
         taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
         tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
           childConfig.providers[provider.name]!.baseUrl]), this.storage),
-        tools,
         toolCatalog,
+        visionAvailable: false,
+        authorizeToolExecution: this.authorizeToolExecution,
         agentIdentity: {
           role: "subagent",
           agentId: request.record.id,
@@ -2570,6 +2606,14 @@ export class EasyCodeApp {
       }
       return outcome;
     } finally {
+      if (childToolCatalog) {
+        try {
+          await childToolCatalog.close();
+        } catch {
+          // The source is process-local today. Future external sources must not
+          // prevent durable child cleanup if their shutdown fails.
+        }
+      }
       if (childWorkspace && childWorkspace !== this.workspace) {
         // A recovery shell can exist before process-local command state has
         // been hydrated; durable child cleanup must remain safe in that case.
@@ -3972,11 +4016,9 @@ export class EasyCodeApp {
     );
   }
 
-  private printTools(): void {
-    const tools = createDefaultTools(this.workspace, this.memoryManager, {
-      limits: this.config.limits,
-      subagentControl: this.subagentCoordinator,
-    }).map((tool) => {
+  private async printTools(): Promise<void> {
+    const catalog = await this.mainToolCatalogSnapshot();
+    const tools = catalog.tools.map((tool) => {
       const availableForMode = isToolAvailable(tool, {
         mode: this.state.mode,
         role: "main_agent",
@@ -3994,6 +4036,59 @@ export class EasyCodeApp {
       };
     });
     this.terminal.write(`${json(tools)}\n`);
+  }
+
+  private async mainToolCatalogSnapshot(): Promise<Readonly<ToolCatalogSnapshot>> {
+    const threadId = this.state.threadId;
+    let catalog = this.mainToolCatalogs.get(threadId);
+    if (!catalog) {
+      let downloadBroker: DownloadBroker | undefined;
+      if (!this.trustedOuterSandbox) {
+        let broker = this.downloadBrokers.get(threadId);
+        if (!broker) {
+          broker = DownloadBroker.create(
+            this.workspace,
+            this.config.configDir,
+            this.config.cacheDir,
+            threadId,
+          );
+          this.downloadBrokers.set(threadId, broker);
+        }
+        downloadBroker = await broker;
+      }
+      catalog = new ToolCatalog();
+      catalog.registerSource(new BuiltinToolSource({
+        workspace: this.workspace,
+        memoryManager: this.memoryManager,
+        subagentControl: this.subagentCoordinator,
+        commandRuntime: this.createCommandRuntime(this.workspace),
+        downloadBroker,
+        limits: this.config.limits,
+        mutationLock: this.workspaceMutationLock,
+      }));
+      for (const factory of this.toolSourceFactories ?? []) {
+        catalog.registerSource(await factory({
+          workspaceRoot: this.workspace.root,
+          threadId,
+          role: "main_agent",
+        }));
+      }
+      this.mainToolCatalogs.set(threadId, catalog);
+    }
+    try {
+      return await catalog.snapshot();
+    } catch (error) {
+      this.mainToolCatalogs.delete(threadId);
+      try {
+        await catalog.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `Failed to load and close tool catalog for thread ${threadId}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private createCommandRuntime(workspace: WorkspaceManager): CommandRuntime {

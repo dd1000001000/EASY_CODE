@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import type { AgentTool, ModelProvider, SessionState, TaskNode, ToolExecutionResult } from "../src/core/types.js";
@@ -45,7 +46,7 @@ function fixture(current: SessionState) {
 
 function createRuntime(provider: ModelProvider, tools: AgentTool[], extra: Partial<AgentRuntimeDependencies> = {}) {
   return new AgentRuntime({
-    provider, tools, contextManager: new ContextManager(), buildSystemPrompt: async () => "system",
+    provider, toolCatalog: snapshotToolSet(tools), contextManager: new ContextManager(), buildSystemPrompt: async () => "system",
     getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
     appendEvent: async () => undefined, requestApproval: async () => false, ...extra,
   });

@@ -100,6 +100,23 @@ describe("extensible tool capabilities", () => {
     assert.equal(evaluateToolPolicy(writeTool, {
       mode: "code", role: "main_agent", orchestrationAvailable: true,
     }).requiresApproval, true);
+
+    for (const effect of ["agent_control", "context_control", "memory_write"] as const) {
+      const privileged = external(`claim_${effect}`, "fixture", effect, [effect]);
+      assert.throws(
+        () => snapshotToolSet([privileged]),
+        /cannot claim EASY CODE control-plane capabilities/u,
+      );
+    }
+    const controlBase = external("claim_control_plane");
+    const control: AgentTool = {
+      ...controlBase,
+      metadata: { ...controlBase.metadata!, controlPlane: true },
+    };
+    assert.throws(
+      () => snapshotToolSet([control]),
+      /cannot claim EASY CODE control-plane capabilities/u,
+    );
   });
 });
 
@@ -194,9 +211,12 @@ describe("dynamic ToolCatalog", () => {
     });
     await catalog.snapshot();
     await catalog.snapshot();
+    assert.equal(catalog.requiresAsyncClose(), true);
+    assert.throws(() => catalog.closeSync(), /requires asynchronous shutdown/u);
     await catalog.close();
     assert.equal(starts, 1);
     assert.equal(closes, 1);
+    assert.equal(catalog.requiresAsyncClose(), false);
   });
 
   it("normalizes bounded rich content at the execution boundary", async () => {
@@ -237,7 +257,7 @@ describe("dynamic ToolCatalog", () => {
     } };
     const events: Array<{ type: string; payload: unknown }> = [];
     const runtime = new AgentRuntime({
-      provider, tools: [], toolCatalog: catalog, contextManager: new ContextManager(),
+      provider, toolCatalog: catalog, contextManager: new ContextManager(),
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], appendEvent: async (event) => { events.push(event); },
       requestApproval: async () => false,
@@ -247,6 +267,18 @@ describe("dynamic ToolCatalog", () => {
       commandTimeoutMs: 1_000, approvalPolicy: "never",
     });
     assert.equal(result.reason, "success");
+    const catalogEvent = events.find((event) => event.type === "tool.catalog.bound")?.payload as {
+      catalogHash?: string;
+      exposureHash?: string;
+      toolCount?: number;
+      tools?: Array<{ toolId?: string; sourceId?: string }>;
+    };
+    assert.equal(catalogEvent.catalogHash, catalog.hash);
+    assert.match(catalogEvent.exposureHash ?? "", /^sha256:/u);
+    assert.equal(catalogEvent.toolCount, 1);
+    assert.deepEqual(catalogEvent.tools?.map((binding) => [binding.toolId, binding.sourceId]), [
+      ["fixture:future_connector_tool", "fixture"],
+    ]);
     const toolResult = events.find((event) => event.type === "tool.result")?.payload as {
       toolBinding?: { toolId?: string; sourceId?: string; schemaHash?: string };
     };

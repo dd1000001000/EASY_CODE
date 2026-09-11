@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -125,7 +126,7 @@ describe("project discovery regression", () => {
       commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     let calls = 0;
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), tools: [tool], contextManager: new ContextManager(),
+    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "Inspect the project", getWorkspaceSummary: async () => "", searchMemories: async () => [],
       appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async (request) => {

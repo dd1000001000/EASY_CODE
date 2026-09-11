@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -395,7 +396,7 @@ describe("completed-phase compaction transactions", () => {
     try {
       const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async () => {
         throw new Error("must not request impossible input");
-      } }, tools: [compactTool], contextManager: f.manager, appendEvent: async () => undefined,
+      } }, toolCatalog: snapshotToolSet([compactTool]), contextManager: f.manager, appendEvent: async () => undefined,
         buildSystemPrompt: async () => "rules".repeat(30000), getWorkspaceSummary: async () => "",
         searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Continue safely", options);
@@ -439,7 +440,7 @@ describe("completed-phase compaction transactions", () => {
       let requests = 0;
       const runtime = new AgentRuntime({ limits: fixtureLimits, provider: { name: "deepseek", model: "test", complete: async () => {
         requests += 1; return { message: candidate(5, "Continue safely") };
-      } }, tools: [compactTool], contextManager: f.manager, appendEvent: f.append,
+      } }, toolCatalog: snapshotToolSet([compactTool]), contextManager: f.manager, appendEvent: f.append,
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Continue safely", { ...options, maxSteps: 1 });
@@ -464,7 +465,7 @@ describe("completed-phase compaction transactions", () => {
         assert.ok(request.tools?.some((tool) => String(tool.function.name) === "respond_directly"));
         return { message: { role: "assistant", content: null, tool_calls: [{ id: "route_reply", type: "function",
           function: { name: "respond_directly", arguments: JSON.stringify({ content: "done" }) } }] } };
-      } }, tools: [compactTool], contextManager: f.manager, appendEvent: async () => undefined,
+      } }, toolCatalog: snapshotToolSet([compactTool]), contextManager: f.manager, appendEvent: async () => undefined,
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Answer directly", { ...options, maxContextChars: 70_000 });
@@ -521,7 +522,7 @@ describe("completed-phase compaction transactions", () => {
         assert.ok(request.messages.some((m) => m.role === "assistant" && m.reasoning_content === "keep this exactly"));
         assert.ok(request.messages.every((m) => m.role !== "assistant" || !m.tool_calls?.some((c) => c.id === "compact_candidate")));
         return { message: { role: "assistant", content: "done" } };
-      } }, tools: [compactTool], contextManager: f.manager, appendEvent: f.append,
+      } }, toolCatalog: snapshotToolSet([compactTool]), contextManager: f.manager, appendEvent: f.append,
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Continue safely", { ...options, maxSteps: 2 });

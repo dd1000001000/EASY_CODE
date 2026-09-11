@@ -11,7 +11,8 @@ import { WorkspaceManager } from "../workspace/manager.js";
 import { CommandRuntime } from "../command/runtime.js";
 import { AnthropicSandboxBackend } from "../sandbox/anthropic-backend.js";
 import { BenchmarkContainerBackend } from "../sandbox/benchmark-backend.js";
-import { createDefaultTools } from "../tools/registry.js";
+import { BuiltinToolSource } from "../tools/builtin-source.js";
+import { ToolCatalog } from "../tools/catalog.js";
 import { recallThreadContext } from "../context/recall.js";
 import { recoveryScope } from "../context/capacity.js";
 import { memoryQueries, selectMemoryContext, optionalMemoryTokenBudget } from "../context/memory-controller.js";
@@ -137,6 +138,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   }
   const workspaceId = workspaceIdFromRoot(deps.workspace.root);
   const commands: CommandRuntime[] = [];
+  const toolCatalogs: ToolCatalog[] = [];
   const leases: ReturnType<ThreadStore["acquireThreadLease"]>[] = [];
   let driver: ReturnType<typeof createReviewDriver> | undefined;
   try {
@@ -189,7 +191,14 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
           { type, turnId: reviewId, payload: { commandId, detail: payload } })),
       });
       commands.push(runtime);
-      const tools = createDefaultTools(workspace, undefined, { commandRuntime: runtime, limits: deps.limits }).filter(t =>
+      const toolCatalog = new ToolCatalog();
+      toolCatalog.registerSource(new BuiltinToolSource({
+        workspace,
+        commandRuntime: runtime,
+        limits: deps.limits,
+      }));
+      toolCatalogs.push(toolCatalog);
+      const tools = (await toolCatalog.snapshot()).tools.filter(t =>
         ["read_file", "search_files", "run_command", "search_context", "recall_context"].includes(t.name));
       const context: ToolContext = {
         workspaceRoot: root, mode: "code", threadId, turnId: reviewId, approvalPolicy: "ask",
@@ -272,7 +281,10 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     try { driver?.release(); } finally {
       try { await Promise.all(commands.map(runtime => runtime.cancelAll())); }
       catch (error) { throw new ReviewCleanupError(error); }
-      finally { for (const lease of leases) durableReviewWrite(() => deps.store.releaseThreadLease(lease)); }
+      finally {
+        await Promise.all(toolCatalogs.map((catalog) => catalog.close()));
+        for (const lease of leases) durableReviewWrite(() => deps.store.releaseThreadLease(lease));
+      }
     }
   }
   if (get().status === "decided") await emit({ type: "applied", id: reviewId, fresh: await fresh() });

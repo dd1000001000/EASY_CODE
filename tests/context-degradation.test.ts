@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import { ProviderError } from "../src/providers/errors.js";
 import { assessCapacity } from "../src/context/capacity.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
@@ -343,7 +344,7 @@ describe("bounded context degradation", () => {
   const options = { maxSteps: 4, maxContextChars: 30000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
   function runtime(f: ReturnType<typeof fixture>, complete: NonNullable<ConstructorParameters<typeof AgentRuntime>[0]>["provider"]["complete"],
     tools: AgentTool[] = [], system = "rules") {
-    return new AgentRuntime({ provider: { name: "deepseek", model: "mock", complete }, tools,
+    return new AgentRuntime({ provider: { name: "deepseek", model: "mock", complete }, toolCatalog: snapshotToolSet(tools),
       contextManager: f.manager, appendEvent: f.append, buildSystemPrompt: async () => system,
       getWorkspaceSummary: async () => "", searchMemories: async () => [], requestApproval: async () => false });
   }
