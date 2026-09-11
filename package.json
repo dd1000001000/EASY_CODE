@@ -1,7 +1,7 @@
 {
   "name": "easy-code-agent",
   "version": "0.1.0",
-  "description": "EASY CODE - a local CLI coding agent for Alibaba Qwen, DeepSeek, Zhipu GLM, and GLM Coding Plan",
+  "description": "EASY CODE - a local CLI coding agent with a user-maintained OpenAI-compatible model registry",
   "type": "module",
   "bin": {
     "easy-code": "dist/index.js"
@@ -19,6 +19,7 @@
     "benchmarks/swebench_verified/subset-50.json",
     "benchmarks/swebench_verified/verify_manifest.py",
     "resources/prompt-bundle",
+    "resources/models.default.toml",
     "scripts/embedding-model.cjs",
     "scripts/postinstall.cjs",
     "scripts/harbor-sandbox.c",
@@ -36,12 +37,14 @@
   ],
   "scripts": {
     "bundle:build": "node scripts/build-prompt-bundle.cjs",
-    "build": "npm run bundle:build && tsc -p tsconfig.json",
+    "clean:build": "node scripts/clean-build.cjs dist",
+    "clean:build:test": "node scripts/clean-build.cjs dist-test",
+    "build": "npm run bundle:build && npm run clean:build && tsc -p tsconfig.json",
     "dev": "npm run build && node dist/index.js",
     "start": "node dist/index.js",
     "test": "npm run build:test && node scripts/run-tests.cjs && npm run test:vscode",
     "test:vscode": "npm --prefix vscode-extension test",
-    "build:test": "npm run bundle:build && tsc -p tsconfig.test.json",
+    "build:test": "npm run bundle:build && npm run clean:build:test && tsc -p tsconfig.test.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "install:doctor": "node dist/index.js install doctor",
     "postinstall": "node scripts/postinstall.cjs",
@@ -59,6 +62,8 @@
     "cli",
     "qwen",
     "deepseek",
+    "kimi",
+    "moonshot-ai",
     "glm",
     "zhipu"
   ],

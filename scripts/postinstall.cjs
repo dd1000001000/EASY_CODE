@@ -31,6 +31,22 @@ const { pathToFileURL } = require("node:url");
 const { prepareEmbeddingModel } = require("./embedding-model.cjs");
 const { installBundledVsCodeExtension } = require("./install-vscode-extension.cjs");
 
+function ensureUserModelRegistry(options = {}) {
+  const home = options.home || require("node:os").homedir();
+  const source = options.source || path.join(__dirname, "..", "resources", "models.default.toml");
+  const directory = path.join(home, ".easy_code");
+  const destination = path.join(directory, "models.toml");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  try {
+    fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
+    try { fs.chmodSync(destination, 0o600); } catch {}
+    return { created: true, path: destination };
+  } catch (error) {
+    if (error && error.code === "EEXIST") return { created: false, path: destination };
+    throw error;
+  }
+}
+
 function comparablePath(value) {
   let resolved = path.resolve(value);
   try {
@@ -382,6 +398,15 @@ async function runPostinstall(options = {}) {
   const validateStack = options.validateStack || validateEmbeddingStack;
   const installExtension = options.installExtension || installBundledVsCodeExtension;
   const installPromptBundle = options.installPromptBundle || installBundledPromptResources;
+  const installModelRegistry = options.installModelRegistry || ensureUserModelRegistry;
+
+  try {
+    const registry = installModelRegistry(options.modelRegistryOptions || {});
+    stdout.write(`EASY CODE: user model registry ${registry.created ? "created" : "preserved"} at ${registry.path}.\n`);
+  } catch (error) {
+    stderr.write(`EASY CODE: model registry installation failed: ${errorMessage(error)}\n`);
+    return { promptBundleReady: false, sqliteReady: false, modelReady: false, vectorStackReady: false, extensionResult: undefined };
+  }
 
   try {
     const promptResult = await installPromptBundle();
@@ -509,6 +534,7 @@ async function runPostinstall(options = {}) {
 module.exports = {
   checkSandboxPrerequisites,
   installBundledPromptResources,
+  ensureUserModelRegistry,
   runPostinstall,
   shouldDeferLocalSourcePromptInstall,
   validateEmbeddingStack,

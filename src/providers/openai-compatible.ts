@@ -19,8 +19,6 @@ import {
 } from "../models/catalog.js";
 import {
   thinkingEffortTimeoutMs,
-  thinkingRequestParameters,
-  type ProviderThinkingParameters,
 } from "../models/thinking.js";
 import {
   ProviderError,
@@ -99,6 +97,10 @@ export interface ProviderRuntimeOptions {
   loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
   /** Unknown models default to false in the provider factory. */
   visionSupported?: boolean;
+  supportsTemperature?: boolean;
+  supportsStrictTools?: boolean;
+  /** False for registry models that do not implement native function calling. */
+  toolCallingSupported?: boolean;
 }
 
 type CompletionContentPart =
@@ -111,7 +113,7 @@ type CompletionMessage =
   | Extract<ChatMessage, { role: "assistant" }>
   | Extract<ChatMessage, { role: "tool" }>;
 
-interface CompletionBody extends ProviderThinkingParameters {
+interface CompletionBody {
   model: string;
   messages: CompletionMessage[];
   stream: false;
@@ -135,6 +137,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
   private readonly visionSupported: boolean;
   private readonly timeoutByEffort?: ProviderRuntimeOptions["timeoutByEffort"];
+  private readonly supportsTemperature: boolean;
+  private readonly supportsStrictTools: boolean;
+  private readonly toolCallingSupported: boolean;
 
   constructor(
     name: ProviderName,
@@ -154,6 +159,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.loadImage = runtime.loadImage;
     this.visionSupported = runtime.visionSupported ?? false;
     this.timeoutByEffort = runtime.timeoutByEffort;
+    this.supportsTemperature = runtime.supportsTemperature ?? true;
+    this.supportsStrictTools = runtime.supportsStrictTools ?? true;
+    this.toolCallingSupported = runtime.toolCallingSupported ?? true;
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
@@ -175,14 +183,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ),
       stream: false,
     };
-    if (request.tools?.length) body.tools = request.tools;
-    if (request.temperature !== undefined) {
+    if (request.tools?.length && this.toolCallingSupported) {
+      body.tools = this.runtimeTools(request.tools);
+    }
+    if (request.temperature !== undefined && this.supportsTemperature) {
       body.temperature = request.temperature;
     }
-    Object.assign(
-      body,
-      thinkingRequestParameters(this.name, this.model, request.thinkingEffort),
-    );
     const timeoutMs = this.config.timeoutMs ??
       this.timeoutByEffort?.[request.thinkingEffort ?? "none"] ??
       thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
@@ -252,6 +258,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     throw (
       lastError ?? this.error("Provider request failed", "request_failed")
     );
+  }
+
+  private runtimeTools(tools: NonNullable<ModelRequest["tools"]>): NonNullable<ModelRequest["tools"]> {
+    if (this.supportsStrictTools) return tools;
+    return tools.map((tool) => {
+      const { strict: _strict, ...definition } = tool.function;
+      return { ...tool, function: definition };
+    });
   }
 
   private async toCompletionMessages(

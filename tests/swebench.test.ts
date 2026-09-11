@@ -24,12 +24,12 @@ import {
   summarizeSweBenchContextMetrics,
   validateSweBenchRoot,
 } from "../src/benchmarks/swebench.js";
-import { PACKAGED_MODEL_CATALOG } from "../src/models/generated-catalog.js";
+import { PROVIDER_CATALOG, sweBenchVerified50Profile } from "../src/models/catalog.js";
 import { describe, it } from "./harness.js";
 
-const BENCHMARK_PROFILE = PACKAGED_MODEL_CATALOG.profiles.sweBenchVerified50;
-const BENCHMARK_PROVIDER = PACKAGED_MODEL_CATALOG.providers.find(
-  (provider) => provider.id === BENCHMARK_PROFILE.provider,
+const BENCHMARK_PROFILE = sweBenchVerified50Profile();
+const BENCHMARK_PROVIDER = PROVIDER_CATALOG.find(
+  (provider) => provider.provider === BENCHMARK_PROFILE.provider,
 );
 if (!BENCHMARK_PROVIDER) throw new Error("The benchmark provider is missing");
 
@@ -265,6 +265,7 @@ describe("SWE-bench Verified integration", () => {
       "GLM_CODING_PLAN_API_KEY",
     ]);
     assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, [
+      "EASY_CODE_GLM_CODING_PLAN_BASE_URL",
       "GLM_CODING_PLAN_BASE_URL",
     ]);
     const adapterPath = fileURLToPath(new URL(
@@ -279,9 +280,9 @@ describe("SWE-bench Verified integration", () => {
     );
     assert.match(
       source,
-      /catalog\.get\("profiles", \{\}\)\.get\("sweBenchVerified50"\)/u,
+      /catalog\.get\("profiles", \{\}\)\.get\("swe_bench_verified_50"\)/u,
     );
-    assert.match(source, /provider\.get\("defaultBaseUrl"\)/u);
+    assert.match(source, /provider\.get\("base_url"\)/u);
     assert.match(source, /"EASY_CODE_OUTER_SANDBOX":\s*"harbor"/u);
     assert.match(source, /class EasyCodeBenchmarkDockerEnvironment\(DockerEnvironment\):/u);
     assert.match(
@@ -308,11 +309,11 @@ describe("SWE-bench Verified integration", () => {
     );
     assert.match(
       source,
-      /"EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u,
+      /"EASY_CODE_PROVIDER_API_KEY_FILE":\s*_REMOTE_API_KEY_FILE/u,
     );
     assert.match(
       source,
-      /os\.environ\.get\(\s*"EASY_CODE_GLM_CODING_PLAN_KEY_FILE"/u,
+      /os\.environ\.get\(\s*"EASY_CODE_PROVIDER_KEY_FILE"/u,
     );
     assert.match(
       source,
@@ -388,23 +389,12 @@ describe("SWE-bench Verified integration", () => {
       import.meta.url,
     ));
     const powershellSource = readFileSync(powershellPath, "utf8");
-    assert.match(powershellSource, /models\\catalog\.json/u);
-    assert.match(powershellSource, /profiles\.sweBenchVerified50/u);
-    assert.match(powershellSource, /"--model",\s*\$harborModel/u);
-    assert.match(powershellSource, /"--max-retries", "1"/u);
-    assert.doesNotMatch(powershellSource, /"--retry-exclude"/u);
-    assert.match(powershellSource, /EASY_CODE_BENCHMARK_CHECKPOINT_ROOT = \$checkpointDir/u);
-    assert.match(powershellSource, /EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR = \$embeddingModelDir/u);
-    assert.match(powershellSource, /scripts\\embedding-model\.cjs/u);
-    assert.match(powershellSource, /& \$nodePath \$embeddingVerifier verify/u);
-    assert.match(powershellSource, /failed size\/SHA-256 verification/u);
-    assert.ok(
-      powershellSource.indexOf("$embeddingVerifyOutput = @(& $nodePath $embeddingVerifier verify") <
-        powershellSource.indexOf("$apiKey = @($benchmarkApiKeyEnvironmentNames"),
-      "the lower-level runner must verify every model asset before reading the API key",
-    );
-    assert.match(powershellSource, /easy-code-context-summary\.json/u);
-    assert.doesNotMatch(powershellSource, /"--model",\s*"glm\//u);
+    assert.match(powershellSource, /"benchmark", "swe-bench", "run"/u);
+    assert.match(powershellSource, /"--offset", \$offset\.ToString\(\)/u);
+    assert.match(powershellSource, /"--limit", \$limit\.ToString\(\)/u);
+    assert.match(powershellSource, /Get-Command easy-code/u);
+    assert.match(powershellSource, /thin wrapper prevents a second provider catalog/u);
+    assert.doesNotMatch(powershellSource, /models\\catalog\.json|ConvertFrom-Toml|GLM_CODING_PLAN_API_KEY/u);
   });
 
   it("supports a bounded smoke-test prefix without changing task order", () => {
@@ -567,7 +557,7 @@ describe("SWE-bench Verified integration", () => {
     const root = path.resolve("F:\\easy-code-bench\\swe-bench-verified-50");
     const originalProfile = path.resolve("C:\\Users\\benchmark-user");
     const providerConfiguration = Object.fromEntries(
-      PACKAGED_MODEL_CATALOG.providers.flatMap((provider) =>
+      PROVIDER_CATALOG.flatMap((provider) =>
         Object.values(provider.environment).flatMap((names) =>
           names.map((name: string) => [name, `untrusted-${name.toLowerCase()}`] as const)
         )
@@ -599,11 +589,11 @@ describe("SWE-bench Verified integration", () => {
     assert.equal(environment.BENCHMARK_NON_SECRET, "preserved");
     assert.deepEqual(baseEnvironment, originalSnapshot);
 
-    const stagedPath = path.join(root, "tmp", "glm-coding-plan-secret", "key");
+    const stagedPath = path.join(root, "tmp", "provider-secret", "key");
     assert.equal(
       benchmarkEnvironment(root, baseEnvironment, {
-        EASY_CODE_GLM_CODING_PLAN_KEY_FILE: stagedPath,
-      }).EASY_CODE_GLM_CODING_PLAN_KEY_FILE,
+        EASY_CODE_PROVIDER_KEY_FILE: stagedPath,
+      }).EASY_CODE_PROVIDER_KEY_FILE,
       stagedPath,
     );
     const checkpointRoot = path.join(root, "checkpoints");

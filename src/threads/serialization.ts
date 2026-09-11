@@ -15,7 +15,7 @@ import {
   type TurnSteeringEntry,
 } from "../core/types.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
-import { isProviderName } from "../models/catalog.js";
+import { isProviderIdentifier } from "../models/catalog.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 import { validateCommandApprovalPrefixes } from "../command/approval.js";
@@ -32,6 +32,7 @@ export interface SerializedSessionState {
   readonly workspaceRoot: string;
   /** Optional only for checkpoints created before Prompt Bundle binding. */
   readonly promptBundle?: PromptBundleBinding;
+  readonly modelRegistryHash?: string;
   readonly goal?: string;
   readonly constraints: string[];
   readonly messages: ChatMessage[];
@@ -69,6 +70,8 @@ export interface SerializedThreadCheckpointDelta {
     readonly model?: string;
     readonly thinkingEffort?: ThinkingEffort;
     readonly promptBundle?: PromptBundleBinding | null;
+    /** One-time binding for sessions created before model registries were versioned. */
+    readonly modelRegistryHash?: string;
     readonly goal?: string | null;
     readonly constraints?: string[];
   };
@@ -600,12 +603,13 @@ function validateThreadCheckpointDelta(
         "model",
         "thinkingEffort",
         "promptBundle",
+        "modelRegistryHash",
         "goal",
         "constraints",
       ]) ||
       (settings.mode !== undefined &&
         !["plan", "auto", "code"].includes(String(settings.mode))) ||
-      (settings.provider !== undefined && !isProviderName(settings.provider)) ||
+      (settings.provider !== undefined && !isProviderIdentifier(settings.provider)) ||
       (settings.orchestrationEnabled !== undefined && typeof settings.orchestrationEnabled !== "boolean") ||
       (settings.model !== undefined && typeof settings.model !== "string") ||
       (settings.thinkingEffort !== undefined &&
@@ -613,6 +617,8 @@ function validateThreadCheckpointDelta(
       (settings.promptBundle !== undefined &&
         settings.promptBundle !== null &&
         !isPromptBundleBinding(settings.promptBundle)) ||
+      (settings.modelRegistryHash !== undefined &&
+        !/^sha256:[a-f0-9]{64}$/u.test(String(settings.modelRegistryHash))) ||
       (settings.goal !== undefined &&
         settings.goal !== null &&
         typeof settings.goal !== "string") ||
@@ -820,6 +826,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     thinkingEffort: state.thinkingEffort,
     workspaceRoot: state.workspaceRoot,
     ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
+    ...(state.modelRegistryHash ? { modelRegistryHash: state.modelRegistryHash } : {}),
     goal: state.goal,
     constraints: [...state.constraints],
     messages: deserializeChatMessages(serializeChatMessages(state.messages)),
@@ -862,12 +869,14 @@ export function deserializeSessionState(value: unknown): SessionState {
     (value.orchestrationEnabled !== undefined && typeof value.orchestrationEnabled !== "boolean") ||
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
-    !isProviderName(value.provider) ||
+    !isProviderIdentifier(value.provider) ||
     typeof value.model !== "string" ||
     (value.thinkingEffort !== undefined &&
       !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort)) ||
     typeof value.workspaceRoot !== "string" ||
     (value.promptBundle !== undefined && !isPromptBundleBinding(value.promptBundle)) ||
+    (value.modelRegistryHash !== undefined &&
+      (typeof value.modelRegistryHash !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(value.modelRegistryHash))) ||
     !Array.isArray(value.constraints) ||
     !value.constraints.every((item) => typeof item === "string") ||
     !Array.isArray(value.messages) ||
@@ -994,6 +1003,9 @@ export function deserializeSessionState(value: unknown): SessionState {
     workspaceRoot: value.workspaceRoot,
     ...(isPromptBundleBinding(value.promptBundle)
       ? { promptBundle: { ...value.promptBundle } }
+      : {}),
+    ...(typeof value.modelRegistryHash === "string"
+      ? { modelRegistryHash: value.modelRegistryHash }
       : {}),
     goal: typeof value.goal === "string" ? value.goal : undefined,
     constraints: [...value.constraints] as string[],

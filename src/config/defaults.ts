@@ -9,6 +9,9 @@ import {
   type ProviderName,
 } from "../core/types.js";
 import {
+  ACTIVE_MODEL_REGISTRY_HASH,
+  DEFAULT_PROVIDER_NAME,
+  PROVIDER_CATALOG,
   DEFAULT_MODEL_IDS,
   providerCatalogEntry,
 } from "../models/catalog.js";
@@ -19,16 +22,18 @@ import {
 } from "../models/thinking.js";
 
 export const DEFAULT_QWEN_BASE_URL = providerCatalogEntry("qwen").defaultBaseUrl;
-export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen;
+export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen!;
 export const DEFAULT_DEEPSEEK_BASE_URL =
   providerCatalogEntry("deepseek").defaultBaseUrl;
-export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek;
+export const DEFAULT_DEEPSEEK_MODEL = DEFAULT_MODEL_IDS.deepseek!;
+export const DEFAULT_KIMI_BASE_URL = providerCatalogEntry("kimi").defaultBaseUrl;
+export const DEFAULT_KIMI_MODEL = DEFAULT_MODEL_IDS.kimi!;
 export const DEFAULT_GLM_BASE_URL = providerCatalogEntry("glm").defaultBaseUrl;
 export const DEFAULT_GLM_CODING_PLAN_BASE_URL =
   providerCatalogEntry("glm-coding-plan").defaultBaseUrl;
-export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm;
+export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm!;
 export const DEFAULT_GLM_CODING_PLAN_MODEL =
-  DEFAULT_MODEL_IDS["glm-coding-plan"];
+  DEFAULT_MODEL_IDS["glm-coding-plan"]!;
 
 /** Backward-compatible name for the default none/low request timeout. */
 export const DEFAULT_PROVIDER_TIMEOUT_MS = THINKING_EFFORT_TIMEOUT_MS.none;
@@ -60,7 +65,8 @@ export function createDefaultProviderConfig(
   return {
     baseUrl: entry.defaultBaseUrl,
     model: entry.defaultModel,
-    maxRetries: DEFAULT_PROVIDER_MAX_RETRIES,
+    timeoutMs: entry.requestTimeoutMs,
+    maxRetries: Math.min(entry.maxRetries, DEFAULT_PROVIDER_MAX_RETRIES),
   };
 }
 
@@ -68,8 +74,15 @@ export function createDefaultEasyCodeConfig(
   workspaceRoot: string,
   paths: EasyCodePaths = resolveEasyCodePaths(),
 ): EasyCodeConfig {
+  const providers = Object.fromEntries(
+    PROVIDER_CATALOG.map(({ provider }) => [provider, createDefaultProviderConfig(provider)]),
+  );
+  const defaultProvider = DEFAULT_PROVIDER_NAME;
+  if (!defaultProvider) throw new Error("The model registry does not define a provider");
+  const compatibility = (provider: string): ProviderConfig =>
+    providers[provider] ?? providers[defaultProvider]!;
   return {
-    provider: "qwen",
+    provider: defaultProvider,
     mode: "auto",
     thinkingEffort: DEFAULT_THINKING_EFFORT,
     approvalPolicy: "safe",
@@ -82,9 +95,12 @@ export function createDefaultEasyCodeConfig(
     subagentIsolation: "auto",
     worktreeBaseMode: "current-snapshot",
     worktreeRoot: path.join(path.resolve(paths.dataDir), "worktrees"),
-    qwen: createDefaultProviderConfig("qwen"),
-    deepseek: createDefaultProviderConfig("deepseek"),
-    glm: createDefaultProviderConfig("glm"),
-    "glm-coding-plan": createDefaultProviderConfig("glm-coding-plan"),
+    providers,
+    modelRegistryHash: ACTIVE_MODEL_REGISTRY_HASH,
+    qwen: compatibility("qwen"),
+    deepseek: compatibility("deepseek"),
+    kimi: compatibility("kimi"),
+    glm: compatibility("glm"),
+    "glm-coding-plan": compatibility("glm-coding-plan"),
   };
 }

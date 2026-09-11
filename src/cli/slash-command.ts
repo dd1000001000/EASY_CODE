@@ -15,12 +15,20 @@ export type ModelCommandRequest =
       model: string;
     };
 
-const PROVIDERS: readonly ProviderName[] = PROVIDER_CATALOG.map(
-  ({ provider }) => provider,
-);
-const PROVIDER_USAGE = PROVIDERS.join("|");
-const MODEL_COMMAND_USAGE =
-  `Usage: /model | /model <model-id> | /model <${PROVIDER_USAGE}> <model-id>`;
+function registeredProviders(): readonly ProviderName[] {
+  // The registry is activated during CLI startup, after modules have been
+  // evaluated. Resolve this live binding at command time rather than freezing
+  // the packaged installation seed in a module-level constant.
+  return PROVIDER_CATALOG.map(({ provider }) => provider);
+}
+
+function providerUsage(): string {
+  return registeredProviders().join("|");
+}
+
+function modelCommandUsage(): string {
+  return `Usage: /model | /model <model-id> | /model <${providerUsage()}> <model-id>`;
+}
 
 export function parseSlashCommand(input: string): SlashCommand | null {
   const trimmed = input.trim();
@@ -38,23 +46,23 @@ export function parseSlashCommand(input: string): SlashCommand | null {
 /** Parse /model without conflating provider names with arbitrary model IDs. */
 export function parseModelCommand(args: readonly string[]): ModelCommandRequest {
   if (args.length === 0) return { action: "select" };
-  if (args.length > 2) throw new Error(MODEL_COMMAND_USAGE);
+  if (args.length > 2) throw new Error(modelCommandUsage());
 
   const first = args[0];
-  if (!first) throw new Error(MODEL_COMMAND_USAGE);
+  if (!first) throw new Error(modelCommandUsage());
   const normalizedProvider = first.toLowerCase();
-  const provider = PROVIDERS.find((name) => name === normalizedProvider);
+  const provider = registeredProviders().find((name) => name === normalizedProvider);
 
   if (args.length === 2) {
     const model = args[1];
-    if (!provider || !isModelId(model)) throw new Error(MODEL_COMMAND_USAGE);
+    if (!provider || !isModelId(model)) throw new Error(modelCommandUsage());
     return { action: "switch", provider, model };
   }
 
   // A bare provider is intentionally rejected rather than being interpreted
   // as either a provider switch with an implicit model or a model ID.
-  if (provider) throw new Error(MODEL_COMMAND_USAGE);
-  if (!isModelId(first)) throw new Error(MODEL_COMMAND_USAGE);
+  if (provider) throw new Error(modelCommandUsage());
+  if (!isModelId(first)) throw new Error(modelCommandUsage());
   return { action: "switch", model: first };
 }
 
@@ -66,15 +74,17 @@ function isModelId(value: string | undefined): value is string {
   );
 }
 
-export const HELP_TEXT = `
+export function helpText(): string {
+  const providers = providerUsage();
+  return `
 EASY CODE commands
 
   /mode plan|auto|code       Switch working mode
-  /provider ${PROVIDER_USAGE}
+  /provider ${providers}
                               Switch provider
   /model                     Open the provider and model selector
   /model <model>             Switch the current provider's model
-  /model ${PROVIDER_USAGE} <id>
+  /model ${providers} <id>
                               Switch both provider and model
   /approval                 Select user approval, independent approval agent, or full host access
   /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
@@ -105,3 +115,4 @@ EASY CODE commands
   /help                      Show help
   /exit                      Save and exit
 `;
+}

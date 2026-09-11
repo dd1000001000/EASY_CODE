@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-EASY CODE 是本地运行的 CLI 编程 Agent，支持 Qwen、DeepSeek、智谱 GLM 和 GLM Coding Plan。进入项目目录，用自然语言描述任务，即可让模型阅读代码、修改文件、运行命令与测试。
+EASY CODE 是本地运行的 CLI 编程 Agent。内置模型注册表包含 Qwen、DeepSeek、Kimi K3、智谱 GLM 和 GLM Coding Plan，也可以不改源码直接加入其他 OpenAI-compatible 供应商。进入项目目录，用自然语言描述任务，即可让模型阅读代码、修改文件、运行命令与测试。
 
 ## 核心功能
 
@@ -31,9 +31,11 @@ npm install --global --allow-scripts=easy-code-agent .
 
 ```bash
 easy-code config set qwen.api-key
-# 其他选择：deepseek.api-key、glm.api-key、glm-coding-plan.api-key
+# 其他选择：deepseek.api-key、kimi.api-key、glm.api-key、glm-coding-plan.api-key
 easy-code --workspace /path/to/project
 ```
+
+首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、密钥环境变量名、协议（`chat_completions` 或 `responses`）、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。API Key 仍应保存在系统凭据库或配置的环境变量中，不要写入 `models.toml`。
 
 在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
 

@@ -107,34 +107,38 @@ Use `easy-code config defaults` for the complete TOML representation. Character,
 
 Provider API keys are managed through the [credential layer](../src/config/credentials.ts), normally using the OS keyring and hidden terminal input. They do not belong in project TOML, prompts, thread logs or benchmark task volumes.
 
-The [prompt bundle](../resources/prompt-bundle) separates system instructions, mode prompts, tool descriptions and model metadata from executable logic. The build produces bundled resources/catalog data; installation validates manifests, hashes and compatibility before activation. A prompt or tool-description JSON file cannot grant a capability that Runtime has not exposed.
+The [prompt bundle](../resources/prompt-bundle) separates system instructions, mode prompts and tool descriptions from executable logic. The build produces versioned resources; installation validates manifests, hashes and compatibility before activation. A prompt or tool-description JSON file cannot grant a capability that Runtime has not exposed. Model/provider configuration is intentionally separate and is described below.
 
 Project `EASYCODE.md` instructions are loaded by [instructions.ts](../src/prompts/instructions.ts). They supply project guidance, not permission to override Runtime security controls.
 
 ## 5. Providers, model requests and accounting
 
-[providers/](../src/providers) implements Qwen, DeepSeek, GLM and GLM Coding Plan through a shared OpenAI-compatible adapter. The [model catalog](../resources/prompt-bundle/models/catalog.json) records model IDs, endpoint-related metadata, vision/thinking support and context windows.
+### 5.1 User-maintained model registry
 
-### Maintaining provider configuration
+The authoritative runtime registry is the fixed user file `~/.easy_code/models.toml`. [models.default.toml](../resources/models.default.toml) is only the installation seed: postinstall creates the user file atomically when absent and never overwrites it. Startup parses the active file with a strict schema before CLI choices or credentials are resolved. The model-controlled tool layer cannot read or modify this protected file.
 
-`resources/prompt-bundle/models/catalog.json` is the single source configuration for all four providers' model menus and default base URLs. Do not duplicate these lists in TypeScript or the user TOML file.
-
-| JSON field | Meaning |
+| TOML field | Meaning |
 | --- | --- |
-| `providers[].defaultBaseUrl` | Default API base URL; the shared adapter appends `/chat/completions`. |
-| `providers[].defaultModel` | Default API model ID; must occur in this provider's `models` list. |
-| `providers[].models` | Available model choices; one array entry produces one menu choice. |
-| `models[].id` / `models[].label` | Actual API identifier / human-readable menu name; changing the label does not change requests. |
-| `models[].vision`, `thinking`, `contextWindowTokens` | Image capability, existing thinking-parameter profile and documented context window. |
-| `providers[].environment` | Environment-variable names for credentials, endpoint and model overrides. |
+| `default_model` | Alias of the initial model. |
+| `providers.<id>.base_url` / `wire_api` | HTTPS base endpoint and `chat_completions` or `responses` protocol. |
+| `providers.<id>.env_key` | Name of the environment variable that may contain this provider's key; the key itself is never stored here. |
+| `supports_temperature` / `supports_strict_tools` | Wire capabilities used by the generic drivers. |
+| `models.<alias>.provider` / `model` | Provider reference and exact model identifier sent to the API. |
+| `context_window`, `input_modalities` | Documented capacity and text/image support. |
+| `tool_calling`, `reasoning` | Declared model capabilities. |
+| `profiles.swe_bench_verified_50` | Model alias, mode and effort used by the benchmark launcher. |
 
-DeepSeek has one choice, labelled `deepseek v4.1-flash`, whose API ID remains `deepseek-flash`. API keys do not belong in this catalog. GLM and GLM Coding Plan keep separate endpoints and credentials.
+Provider and model identifiers are data, not TypeScript unions. A new provider that implements one of the supported wire protocols is therefore added by editing TOML, not by adding a subclass or factory branch. Unknown fields, unknown provider references, duplicate wire model IDs and non-HTTPS registry endpoints fail validation. Existing user configuration/environment endpoint overrides remain as a compatibility layer, but project configuration cannot redirect model traffic or supply credentials.
 
-After editing the source JSON, run `npm run build` and restart the CLI. The build regenerates the embedded catalog and Prompt Bundle hashes. A distributed installation requires a rebuilt package; directly editing its verified bundle is not supported. An endpoint override in **user** configuration (`[deepseek] base_url = "https://…"`, for example) or the configured environment variable takes precedence over the catalog default; workspace configuration cannot override endpoints. New models using an existing adapter/profile only require catalog changes; a new provider protocol still requires adapter code.
+New threads bind the active registry hash. Resume refuses a different binding rather than silently sending an old session to a changed endpoint or protocol; legacy threads receive a one-time binding checkpoint. The SWE-bench launcher uses the selected profile, stages the exact registry into the isolated controller and derives its network allowlist from the selected provider endpoint.
 
-The current transport requests **`stream: false`**: it receives a bounded complete JSON response, then normalizes text, native reasoning, tool calls, finish reason and usage. Terminal activity indicators are not evidence of SSE/token streaming.
+### 5.2 Protocol drivers and reasoning
 
-Provider-specific code handles wire-format differences, such as thinking parameters and GLM's tool-schema compatibility. Memory policy, capacity recovery and retry accounting remain provider-independent. Local output/storage limits are **not sent as `max_tokens` or `max_completion_tokens`**. A local HTTP response-size bound still exists to protect the process.
+[providers/](../src/providers) has two generic, non-streaming protocol drivers. The Chat Completions driver posts to `/chat/completions`; the Responses driver posts to `/responses` and normalizes Responses input items, function calls, reasoning summaries and usage into the common Runtime contracts. Both receive capability flags from the registry rather than provider-name checks.
+
+There is deliberately no Qwen/DeepSeek/Kimi/GLM-specific thinking map. Chat Completions dialects do not share a portable reasoning parameter, so EASY CODE sends no invented thinking field and lets the service use its configured default. For a registry model with `reasoning = true`, the Responses driver may send the standardized `reasoning.effort` selected by the user. Effort still controls local Runtime budgets and timeouts independently of wire support.
+
+The drivers receive a bounded complete JSON response, then normalize text, native reasoning, tool calls, finish reason and usage. Terminal activity indicators are not evidence of SSE/token streaming. Local output/context reservations are **never** serialized as `max_tokens`, `max_completion_tokens` or `max_output_tokens`; the HTTP response-size bound protects the local process without changing generation semantics.
 
 [model-retry.ts](../src/runtime/model-retry.ts) owns retry behavior; adapters do not add an independent nested retry loop. [task-budget.ts](../src/runtime/task-budget.ts) reserves and settles shared request/Token budgets across main agents, children, review and auxiliary requests. Resume does not replenish consumed budget.
 
@@ -383,7 +387,7 @@ Repository dependency installation deliberately skips lifecycle initialization u
 When extending the project:
 
 - Add tools through implementation, schema, prompt metadata, registration, role filtering and validation/security tests.
-- Add models/providers through catalog metadata and adapter normalization; keep shared memory/retry policy outside provider-specific wire code.
+- Add models/providers in `~/.easy_code/models.toml`; extend code only for a genuinely new wire protocol, and keep shared memory/retry policy outside protocol drivers.
 - Add durable transitions with event validation, folding, checkpoint/replay and interruption tests together.
 - Add configurable operational budgets in defaults, schema, example configuration and tests; do not silently turn a security invariant into a soft budget.
 - Test command failures without automatic replay, clipped versus executable data, stale review snapshots, budget recovery and requirements-only reset.

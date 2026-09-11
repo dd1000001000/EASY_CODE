@@ -11,14 +11,14 @@ import { sharedReviewEvidenceOwner } from "./context/recall.js";
 import chalk from "chalk";
 
 import {
-  consumeHarborGlmCodingPlanApiKeyFile,
+  consumeHarborProviderApiKeyFile,
   resolveHarborOuterSandbox,
 } from "./benchmarks/swebench.js";
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { PromptSubmission } from "./cli/prompt-input.js";
 import {
-  HELP_TEXT,
+  helpText,
   parseModelCommand,
   parseSlashCommand,
 } from "./cli/slash-command.js";
@@ -100,6 +100,8 @@ import {
   effectiveContextWindow,
   modelSupportsVision,
   validateProviderImageAttachments,
+  USER_MODEL_REGISTRY_PATH,
+  sweBenchVerified50Profile,
 } from "./models/catalog.js";
 import {
   thinkingEffortIsApplied,
@@ -604,18 +606,19 @@ export class EasyCodeApp {
     // Validate the benchmark-only outer boundary before creating a Thread or
     // touching workspace state. Invalid host claims fail without side effects.
     const trustedOuterSandbox = resolveHarborOuterSandbox();
-    const harborGlmCodingPlanApiKey = consumeHarborGlmCodingPlanApiKeyFile(
+    const harborProviderApiKey = consumeHarborProviderApiKeyFile(
       trustedOuterSandbox,
     );
-    const [codingPlanApiKeyEnvironment] =
-      providerApiKeyEnvironmentVariables("glm-coding-plan");
-    if (!codingPlanApiKeyEnvironment) {
-      throw new Error("GLM Coding Plan has no configured API-key environment variable");
+    const benchmarkProvider = sweBenchVerified50Profile().provider;
+    const [benchmarkApiKeyEnvironment] =
+      providerApiKeyEnvironmentVariables(benchmarkProvider);
+    if (!benchmarkApiKeyEnvironment) {
+      throw new Error(`${benchmarkProvider} has no configured API-key environment variable`);
     }
-    const configEnvironment = harborGlmCodingPlanApiKey
+    const configEnvironment = harborProviderApiKey
       ? {
           ...process.env,
-          [codingPlanApiKeyEnvironment]: harborGlmCodingPlanApiKey,
+          [benchmarkApiKeyEnvironment]: harborProviderApiKey,
         }
       : process.env;
     // Library consumers do not pass through CLI main(), so activate the same
@@ -688,6 +691,16 @@ export class EasyCodeApp {
             `Thread ${state.threadId} belongs to ${state.workspaceRoot}; launch EASY CODE with that --workspace first.`,
           );
         }
+        if (state.modelRegistryHash && state.modelRegistryHash !== config.modelRegistryHash) {
+          throw new Error(
+            `Thread ${state.threadId} is bound to a different ~/.easy_code/models.toml. ` +
+              "Restore that registry or start a new thread; endpoints and wire protocols are never changed silently on Resume.",
+          );
+        }
+        if (!state.modelRegistryHash) {
+          state.modelRegistryHash = config.modelRegistryHash;
+          shouldCheckpoint = true;
+        }
         const previousMode = state.mode;
         const previousProvider = state.provider;
         const previousModel = state.model;
@@ -720,7 +733,7 @@ export class EasyCodeApp {
         state.model = options.model
           ? requireCatalogModel(selectedProvider, options.model).id
           : options.provider
-            ? config[selectedProvider].model
+            ? config.providers[selectedProvider]!.model
             : state.model;
         const savedChanges = JSON.stringify(state.changes);
         const restoredWorkspace = workspace.restorePersistedState(
@@ -740,7 +753,7 @@ export class EasyCodeApp {
           interruptedTurnRepaired: repairedInterruptedTurn,
           reconciledSubagentAssignments: releasedOrphanedSubagents,
         });
-        shouldCheckpoint =
+        shouldCheckpoint = shouldCheckpoint ||
           previousMode !== state.mode ||
           previousProvider !== state.provider ||
           previousModel !== state.model ||
@@ -755,7 +768,7 @@ export class EasyCodeApp {
         const selectedMode = options.mode ?? config.mode;
         const selectedModel = options.model
           ? requireCatalogModel(selectedProvider, options.model).id
-          : config[selectedProvider].model;
+          : config.providers[selectedProvider]!.model;
         state = threadStore.create({
           workspaceRoot: workspace.root,
           mode: selectedMode,
@@ -763,6 +776,7 @@ export class EasyCodeApp {
           model: selectedModel,
           thinkingEffort: options.thinkingEffort ?? config.thinkingEffort,
           promptBundle,
+          modelRegistryHash: config.modelRegistryHash,
         });
         threadLease = threadStore.acquireThreadLease(state.threadId);
       }
@@ -771,7 +785,7 @@ export class EasyCodeApp {
       config.provider = state.provider;
       config.mode = state.mode;
       config.thinkingEffort = state.thinkingEffort;
-      config[state.provider].model = state.model;
+      config.providers[state.provider]!.model = state.model;
       if (shouldCheckpoint) threadStore.save(state);
       const app = new EasyCodeApp(
         config,
@@ -1049,7 +1063,7 @@ export class EasyCodeApp {
           );
         }
         this.requireProviderApiKey(provider);
-        const model = requireCatalogModel(provider, this.config[provider].model).id;
+        const model = requireCatalogModel(provider, this.config.providers[provider]!.model).id;
         this.commitModelSelection(provider, model, "Provider switched to");
         return false;
       }
@@ -1286,7 +1300,7 @@ export class EasyCodeApp {
         this.terminal.clearScreen();
         return false;
       case "help":
-        this.terminal.write(`${HELP_TEXT.trim()}\n`);
+        this.terminal.write(`${helpText().trim()}\n`);
         return false;
       case "exit":
       case "quit":
@@ -1722,7 +1736,7 @@ export class EasyCodeApp {
       limits: this.config.limits,
       taskBudget: budget,
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
-        effectiveConfig[provider.name].baseUrl]), this.storage),
+        effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
       tools,
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
@@ -1917,7 +1931,7 @@ export class EasyCodeApp {
           workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
           readBaseline: hash => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).get(hash),
           provider, budget, limits: this.config.limits,
-          sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir],
+          sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
           lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
           status: text => this.terminal.status(text),
           approve: async (context, request) => this.approvalQueue.run(async () => {
@@ -2136,6 +2150,7 @@ export class EasyCodeApp {
           model: request.record.model,
           thinkingEffort: request.record.thinkingEffort,
           promptBundle: this.state.promptBundle ?? activePromptBundleBinding(),
+          modelRegistryHash: this.state.modelRegistryHash ?? this.config.modelRegistryHash,
           goal: request.task.title,
           constraints: [
             `Parent thread: ${request.record.parentThreadId}`,
@@ -2206,7 +2221,7 @@ export class EasyCodeApp {
       childConfig.mode = "code";
       childConfig.provider = request.record.provider;
       childConfig.thinkingEffort = request.record.thinkingEffort;
-      childConfig[request.record.provider].model = request.record.model;
+      childConfig.providers[request.record.provider]!.model = request.record.model;
       const provider = createProvider(
         childConfig,
         request.record.provider,
@@ -2266,7 +2281,7 @@ export class EasyCodeApp {
         limits: this.config.limits,
         taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
         tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
-          childConfig[provider.name].baseUrl]), this.storage),
+          childConfig.providers[provider.name]!.baseUrl]), this.storage),
         tools,
         agentIdentity: {
           role: "subagent",
@@ -3142,13 +3157,13 @@ export class EasyCodeApp {
       PROVIDER_CATALOG.map((entry) => ({
         provider: entry.provider,
         label: entry.label,
-        apiKeyConfigured: Boolean(this.config[entry.provider].apiKey),
+        apiKeyConfigured: Boolean(this.config.providers[entry.provider]?.apiKey),
       })),
       this.state.provider,
     );
     if (!provider) return undefined;
 
-    const configuredModel = this.config[provider].model;
+    const configuredModel = this.config.providers[provider]!.model;
     const initialModel = resolveCatalogModel(provider, configuredModel)?.id ??
       DEFAULT_MODEL_IDS[provider];
     const model = await this.terminal.selectModel(
@@ -3173,7 +3188,7 @@ export class EasyCodeApp {
   }
 
   private async ensureProviderApiKey(provider: ProviderName): Promise<boolean> {
-    if (this.config[provider].apiKey) return true;
+    if (this.config.providers[provider]?.apiKey) return true;
     if (!this.credentialStore) {
       throw new Error(
         `No ${provider} API key is configured, and the system credential store is unavailable. ` +
@@ -3194,7 +3209,7 @@ export class EasyCodeApp {
       throw error;
     }
     const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
-    this.config[provider].apiKey = normalized;
+    this.config.providers[provider]!.apiKey = normalized;
     this.terminal.success(
       `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
     );
@@ -3213,7 +3228,7 @@ export class EasyCodeApp {
       stateModel: this.state.model,
       stateThinkingEffort: this.state.thinkingEffort,
       configProvider: this.config.provider,
-      configModel: this.config[provider].model,
+      configModel: this.config.providers[provider]!.model,
       configThinkingEffort: this.config.thinkingEffort,
       dirty: this.dirty,
     };
@@ -3222,7 +3237,7 @@ export class EasyCodeApp {
       this.state.model = canonicalModel;
       this.state.thinkingEffort = thinkingEffort;
       this.config.provider = provider;
-      this.config[provider].model = canonicalModel;
+      this.config.providers[provider]!.model = canonicalModel;
       this.config.thinkingEffort = thinkingEffort;
       this.dirty = true;
       this.save();
@@ -3231,7 +3246,7 @@ export class EasyCodeApp {
       this.state.model = previous.stateModel;
       this.state.thinkingEffort = previous.stateThinkingEffort;
       this.config.provider = previous.configProvider;
-      this.config[provider].model = previous.configModel;
+      this.config.providers[provider]!.model = previous.configModel;
       this.config.thinkingEffort = previous.configThinkingEffort;
       this.dirty = previous.dirty;
       throw error;
@@ -3255,12 +3270,11 @@ export class EasyCodeApp {
       mode: this.state.mode,
       thinkingEffort: this.state.thinkingEffort,
       provider: this.state.provider,
-      qwen: { ...this.config.qwen },
-      deepseek: { ...this.config.deepseek },
-      glm: { ...this.config.glm },
-      "glm-coding-plan": { ...this.config["glm-coding-plan"] },
+      providers: Object.fromEntries(Object.entries(this.config.providers).map(
+        ([provider, providerConfig]) => [provider, { ...providerConfig }],
+      )),
     };
-    config[this.state.provider].model = this.state.model;
+    config.providers[this.state.provider]!.model = this.state.model;
     return config;
   }
 
@@ -3553,6 +3567,7 @@ export class EasyCodeApp {
       model: this.state.model,
       thinkingEffort: this.state.thinkingEffort,
       promptBundle: this.state.promptBundle ?? activePromptBundleBinding(),
+      modelRegistryHash: this.state.modelRegistryHash ?? this.config.modelRegistryHash,
     });
     let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(
       nextState.threadId,
@@ -3723,7 +3738,7 @@ export class EasyCodeApp {
     this.config.mode = recovered.mode;
     this.config.thinkingEffort = recovered.thinkingEffort;
     this.config.provider = recovered.provider;
-    this.config[recovered.provider].model = recovered.model;
+    this.config.providers[recovered.provider]!.model = recovered.model;
     this.subagentCoordinator.discardPausedJobs(previousThreadId);
     this.commandRuntimes?.delete(previousWorkspace);
     this.dirty =
@@ -3869,7 +3884,8 @@ export class EasyCodeApp {
   }
 
   private printStatus(): void {
-    const providerConfig = this.effectiveConfig()[this.state.provider];
+    const providerConfig = this.effectiveConfig().providers[this.state.provider];
+    if (!providerConfig) throw new Error(`Provider ${this.state.provider} is not configured`);
     this.terminal.write(
       `${json({
         agent: "EASY CODE",
@@ -3947,7 +3963,7 @@ export class EasyCodeApp {
   }
 
   private requireProviderApiKey(provider: ProviderName): void {
-    if (this.config[provider].apiKey) return;
+    if (this.config.providers[provider]?.apiKey) return;
     const environment = providerApiKeyEnvironmentVariables(provider).join(" or ");
     throw new Error(
       `No ${provider} API key is configured. Run ` +
@@ -3986,7 +4002,7 @@ export class EasyCodeApp {
   private createCommandRuntime(workspace: WorkspaceManager): CommandRuntime {
     const existing = this.commandRuntimes.get(workspace);
     if (existing) return existing;
-    for (const root of [this.config.configDir, this.config.dataDir, this.config.cacheDir]) workspace.pathGuard.protect(root);
+    for (const root of [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH]) workspace.pathGuard.protect(root);
     workspace.pathGuard.protect(fileURLToPath(new URL("./", import.meta.url)));
     workspace.pathGuard.protect(fileURLToPath(new URL("../node_modules", import.meta.url)));
     const runtime = new CommandRuntime(
@@ -3999,6 +4015,7 @@ export class EasyCodeApp {
           this.config.configDir,
           this.config.dataDir,
           this.config.cacheDir,
+          USER_MODEL_REGISTRY_PATH,
         ],
       }),
       undefined,

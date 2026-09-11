@@ -24,7 +24,7 @@ import {
   type ProviderName,
   type ThinkingEffort,
 } from "./core/types.js";
-import { PROVIDER_CATALOG } from "./models/catalog.js";
+import { ensureUserModelRegistry, PROVIDER_CATALOG } from "./models/catalog.js";
 
 interface CliOptions {
   workspace?: string;
@@ -140,11 +140,14 @@ function addCommonOptions(command: Command): Command {
 
 export async function main(argv = process.argv): Promise<void> {
   assertSupportedNodeVersion();
+  // This fixed per-user file is created only once. Subsequent installs and
+  // upgrades validate and load it without overwriting user-defined models.
+  await ensureUserModelRegistry();
   const program = addCommonOptions(
     new Command()
       .name("easy-code")
       .description(
-        "EASY CODE — local CLI coding agent for Alibaba Qwen, DeepSeek, Zhipu GLM, and GLM Coding Plan",
+        "EASY CODE — local CLI coding agent with a user-maintained OpenAI-compatible model registry",
       )
       .version("0.1.0")
       .showHelpAfterError(),

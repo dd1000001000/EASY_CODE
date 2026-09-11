@@ -107,34 +107,38 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 
 [凭据模块](../src/config/credentials.ts) 通常通过系统 Keyring 和隐藏输入保存 API Key。密钥不应进入项目 TOML、提示词、会话日志或 Benchmark 任务卷。
 
-[Prompt Bundle](../resources/prompt-bundle) 将系统规则、模式提示、工具描述和模型元数据与可执行代码分离。构建生成资源和目录数据；安装通过 Manifest、哈希及兼容性检查后激活。提示词或工具说明 JSON 本身不能授予 Runtime 未开放的权限。
+[Prompt Bundle](../resources/prompt-bundle) 将系统规则、模式提示和工具描述与可执行代码分离。构建生成版本化资源；安装通过 Manifest、哈希及兼容性检查后激活。提示词或工具说明 JSON 本身不能授予 Runtime 未开放的权限。模型/供应商配置与 Prompt Bundle 分离，见下一节。
 
 [instructions.ts](../src/prompts/instructions.ts) 加载项目 `EASYCODE.md` 指导。它用于表达项目约定，不是覆盖 Runtime 安全策略的授权渠道。
 
 ## 5. 模型适配、请求与用量统计
 
-[providers/](../src/providers) 基于共享的 OpenAI-compatible 适配器接入 Qwen、DeepSeek、GLM 和 GLM Coding Plan。[模型目录](../resources/prompt-bundle/models/catalog.json) 保存模型 ID、端点相关元数据、视觉/thinking 支持和上下文窗口。
+### 5.1 用户维护的模型注册表
 
-### 供应商配置的维护方式
+Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[models.default.toml](../resources/models.default.toml) 只用作安装种子：postinstall 仅在文件不存在时原子创建，绝不覆盖用户已有内容。CLI 在解析命令行选项和凭据前以严格 Schema 加载它；模型工具层不能读取或修改这个受保护文件。
 
-`resources/prompt-bundle/models/catalog.json` 是四家供应商模型菜单和默认端点的统一源配置，不要在 TypeScript 或用户 TOML 中重复维护模型列表。
-
-| JSON 字段 | 用途 |
+| TOML 字段 | 用途 |
 | --- | --- |
-| `providers[].defaultBaseUrl` | API 默认基础地址；共享适配器自动追加 `/chat/completions`。 |
-| `providers[].defaultModel` | 默认 API 模型 ID，必须存在于该供应商的 `models` 中。 |
-| `providers[].models` | 可选模型列表；每个数组元素对应一个菜单选项。 |
-| `models[].id` / `models[].label` | 实际 API 标识 / 菜单显示名称；改显示名称不会改变请求 ID。 |
-| `models[].vision`、`thinking`、`contextWindowTokens` | 图片能力、已有 thinking 参数映射类型、官方上下文窗口。 |
-| `providers[].environment` | 密钥、端点、模型等覆盖设置对应的环境变量名。 |
+| `default_model` | 启动时默认模型的别名。 |
+| `providers.<id>.base_url` / `wire_api` | HTTPS 基础端点，以及 `chat_completions` 或 `responses` 协议。 |
+| `providers.<id>.env_key` | 可能保存该供应商密钥的环境变量名；文件中不保存密钥本身。 |
+| `supports_temperature` / `supports_strict_tools` | 通用协议驱动使用的 Wire 能力。 |
+| `models.<alias>.provider` / `model` | 供应商引用，以及实际发送给 API 的模型 ID。 |
+| `context_window`、`input_modalities` | 官方容量及文本/图片能力。 |
+| `tool_calling`、`reasoning` | 声明的模型能力。 |
+| `profiles.swe_bench_verified_50` | Benchmark 使用的模型别名、模式和 effort。 |
 
-DeepSeek 只有一个选项，显示为 `deepseek v4.1-flash`，实际 API ID 仍是 `deepseek-flash`。不要在目录中存储 API Key。GLM 普通 API 与 Coding Plan 的端点和密钥保持独立。
+供应商和模型 ID 都是数据，不再是 TypeScript 枚举。只要新供应商实现两种受支持协议之一，就能直接修改 TOML 接入，不需要增加 Provider 子类或 Factory 分支。未知字段、未知供应商引用、同一供应商重复 Wire Model ID、非 HTTPS 注册表端点都会失败关闭。旧用户配置/环境变量的端点覆盖仍作为兼容层保留，但项目配置不能重定向模型流量或注入凭据。
 
-修改源 JSON 后执行 `npm run build` 并重启 CLI；构建会重新生成内置目录及 Prompt Bundle 哈希。已分发的安装版本需要更新构建后的代码包，不支持直接编辑其经过哈希校验的 Bundle。**用户级**配置中的端点（例如 `[deepseek]` 下的 `base_url = "https://…"`）或对应环境变量会覆盖目录默认值；工作区配置不能覆盖端点。新增模型若复用已有适配器和 thinking 类型，只需修改目录；新增供应商协议仍需要适配代码。
+新 Thread 会绑定当前注册表哈希。Resume 遇到不同绑定会拒绝继续，避免把旧会话静默发送到已变化的端点或协议；旧 Thread 在首次恢复时写入一次性绑定 Checkpoint。SWE-bench Launcher 读取选定 Profile，把同一份注册表送入隔离 Controller，并根据目标供应商端点生成网络 Allowlist。
 
-当前传输明确使用 **`stream: false`**：接收有大小上限的完整 JSON 响应，再统一处理正文、原生 reasoning、工具调用、结束原因和用量。终端显示“正在思考”不代表底层使用 SSE 或逐 Token 流式响应。
+### 5.2 协议驱动与 reasoning
 
-供应商特有代码只负责 thinking 参数、GLM 工具 Schema 兼容等协议差异。记忆策略、容量恢复和重试计数保持供应商无关。本地输出/存储上限**不会转换成发送给服务端的 `max_tokens` 或 `max_completion_tokens`**。为保护本地进程，HTTP 响应仍有独立的字节上限。
+[providers/](../src/providers) 只保留两个通用、非流式协议驱动。Chat Completions Driver 请求 `/chat/completions`；Responses Driver 请求 `/responses`，并把 Responses Input、函数调用、reasoning summary 和用量统一转换为 Runtime 公共结构。两者从注册表读取能力标志，不按供应商名称分支。
+
+系统不再维护 Qwen / DeepSeek / Kimi / GLM 专属 thinking 映射。Chat Completions 的不同方言没有统一 reasoning 参数，因此 EASY CODE 不猜测字段，由服务端使用自身默认行为。若注册表模型声明 `reasoning = true`，Responses Driver 可以发送标准化的 `reasoning.effort`。无论 Wire 是否支持，effort 仍独立控制 Runtime 本地预算与超时。
+
+驱动收到有大小上限的完整 JSON 后，统一处理正文、原生 reasoning、工具调用、结束原因和用量；终端动画不代表 SSE 或逐 Token 流式响应。本地输出/上下文预留**绝不会**序列化成 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`；HTTP 响应字节上限只保护本地进程，不改变生成语义。
 
 [model-retry.ts](../src/runtime/model-retry.ts) 集中控制模型重试，适配器不再叠加另一层重试循环。[task-budget.ts](../src/runtime/task-budget.ts) 对主 Agent、子 Agent、审查和辅助请求统一预留、结算请求数及 Token 预算；Resume 不会补回已消耗额度。
 
@@ -383,7 +387,7 @@ npm pack
 扩展项目时：
 
 - 新工具需要同时补齐实现、Schema、提示元数据、注册、角色能力过滤和校验/安全测试。
-- 新模型/供应商通过目录元数据和适配器规范化接入，不把共享记忆或重试策略塞进供应商特有代码。
+- 新模型/供应商写入 `~/.easy_code/models.toml`；只有新增 Wire 协议才扩展代码，并保持共享记忆/重试策略独立于协议驱动。
 - 新持久化状态应同时提供事件校验、状态折叠、检查点/重放及中断测试。
 - 新运行预算应同步默认值、Schema、配置示例和测试；不能悄悄把安全不变量变成软预算。
 - 重点测试命令失败不重放、文本裁剪与可执行参数的区别、过期审查快照、预算恢复和只保留需求的重置。

@@ -49,8 +49,10 @@ interface EasyCodeConfigLayer {
   subagentIsolation?: unknown;
   worktreeBaseMode?: unknown;
   worktreeRoot?: unknown;
+  providers?: Record<string, ProviderConfigLayer>;
   qwen?: ProviderConfigLayer;
   deepseek?: ProviderConfigLayer;
+  kimi?: ProviderConfigLayer;
   glm?: ProviderConfigLayer;
   "glm-coding-plan"?: ProviderConfigLayer;
 }
@@ -131,6 +133,8 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
   const nestedDeepSeek = recordAt(providers, "deepseek");
   const directQwen = recordAt(value, "qwen");
   const directDeepSeek = recordAt(value, "deepseek");
+  const nestedKimi = recordAt(providers, "kimi");
+  const directKimi = recordAt(value, "kimi");
   const nestedGlm = recordAt(providers, "glm");
   const directGlm = recordAt(value, "glm");
   const nestedGlmCodingPlan = {
@@ -142,6 +146,12 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
     ...recordAt(value, "glm-coding-plan"),
   };
 
+  const dynamicProviders = Object.fromEntries(
+    PROVIDER_CATALOG.map(({ provider }) => [
+      provider,
+      providerLayer({ ...recordAt(providers, provider), ...recordAt(value, provider) }),
+    ]),
+  );
   return compact({
     provider: value.provider,
     approvalModel: field(value, "approvalModel", "approval_model"),
@@ -174,8 +184,10 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
       field(value, "worktreeRoot", "worktree_root"),
       field(worktrees, "root", "root"),
     ),
+    providers: dynamicProviders,
     qwen: providerLayer({ ...nestedQwen, ...directQwen }),
     deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
+    kimi: providerLayer({ ...nestedKimi, ...directKimi }),
     glm: providerLayer({ ...nestedGlm, ...directGlm }),
     "glm-coding-plan": providerLayer({
       ...nestedGlmCodingPlan,
@@ -217,6 +229,14 @@ function applyLayer(
     worktreeRoot: layer.worktreeRoot,
   });
 
+  const providers = Object.fromEntries(
+    Object.entries(base.providers).map(([provider, providerConfig]) => [
+      provider,
+      applyProviderLayer(providerConfig, layer.providers?.[provider]),
+    ]),
+  );
+  const compatibility = (provider: string): ProviderConfig =>
+    providers[provider] ?? providers[base.provider] ?? Object.values(providers)[0]!;
   return {
     ...base,
     ...topLevel,
@@ -232,13 +252,12 @@ function applyLayer(
         : isRecord(layer.limits.providerTimeoutMs) ? { ...base.limits.providerTimeoutMs, ...layer.limits.providerTimeoutMs }
           : layer.limits.providerTimeoutMs,
     },
-    qwen: applyProviderLayer(base.qwen, layer.qwen),
-    deepseek: applyProviderLayer(base.deepseek, layer.deepseek),
-    glm: applyProviderLayer(base.glm, layer.glm),
-    "glm-coding-plan": applyProviderLayer(
-      base["glm-coding-plan"],
-      layer["glm-coding-plan"],
-    ),
+    providers,
+    qwen: compatibility("qwen"),
+    deepseek: compatibility("deepseek"),
+    kimi: compatibility("kimi"),
+    glm: compatibility("glm"),
+    "glm-coding-plan": compatibility("glm-coding-plan"),
   } as EasyCodeConfig;
 }
 
@@ -273,21 +292,9 @@ function assertSafeWorkspaceLayer(
 ): void {
   const forbidden: string[] = [];
   if (layer.approvalModel !== undefined) forbidden.push("approval_model");
-  if (layer.qwen?.apiKey !== undefined) forbidden.push("qwen.api_key");
-  if (layer.deepseek?.apiKey !== undefined) {
-    forbidden.push("deepseek.api_key");
-  }
-  if (layer.glm?.apiKey !== undefined) forbidden.push("glm.api_key");
-  if (layer["glm-coding-plan"]?.apiKey !== undefined) {
-    forbidden.push("glm-coding-plan.api_key");
-  }
-  if (layer.qwen?.baseUrl !== undefined) forbidden.push("qwen.base_url");
-  if (layer.deepseek?.baseUrl !== undefined) {
-    forbidden.push("deepseek.base_url");
-  }
-  if (layer.glm?.baseUrl !== undefined) forbidden.push("glm.base_url");
-  if (layer["glm-coding-plan"]?.baseUrl !== undefined) {
-    forbidden.push("glm-coding-plan.base_url");
+  for (const [provider, providerLayer] of Object.entries(layer.providers ?? {})) {
+    if (providerLayer.apiKey !== undefined) forbidden.push(`${provider}.api_key`);
+    if (providerLayer.baseUrl !== undefined) forbidden.push(`${provider}.base_url`);
   }
   if (layer.configDir !== undefined) forbidden.push("config_dir");
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
@@ -346,7 +353,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
       limits = parsed;
     } catch { throw new EasyCodeConfigError("EASY_CODE_LIMITS_JSON must be a JSON object"); }
   }
-  const providers = Object.fromEntries(
+  const providerLayers = Object.fromEntries(
     PROVIDER_CATALOG.map(({ provider }) => {
       const names = providerEnvironment(provider);
       return [provider, compact({
@@ -357,7 +364,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
         maxRetries: envInteger(env, ...names.maxRetries),
       })];
     }),
-  ) as Pick<EasyCodeConfigLayer, ProviderName>;
+  );
   return compact({
     provider: envValue(env, "EASY_CODE_PROVIDER"),
     mode: envValue(env, "EASY_CODE_MODE"),
@@ -371,7 +378,7 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     subagentIsolation: envValue(env, "EASY_CODE_SUBAGENT_ISOLATION"),
     worktreeBaseMode: envValue(env, "EASY_CODE_WORKTREE_BASE_MODE"),
     worktreeRoot: envValue(env, "EASY_CODE_WORKTREE_ROOT"),
-    ...providers,
+    providers: providerLayers,
   });
 }
 
@@ -400,13 +407,21 @@ async function credentialLayer(
   const entries = await Promise.all(
     PROVIDER_CATALOG.map(async ({ provider }) => [
       provider,
-      compact({ apiKey: await read(provider, environment[provider]?.apiKey) }),
+      compact({ apiKey: await read(provider, environment.providers?.[provider]?.apiKey) }),
     ] as const),
   );
-  return Object.fromEntries(entries) as Pick<EasyCodeConfigLayer, ProviderName>;
+  return { providers: Object.fromEntries(entries) };
 }
 
 function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
+  const providers = Object.fromEntries(Object.entries(config.providers).map(
+    ([provider, providerConfig]) => [provider, {
+      ...providerConfig,
+      baseUrl: providerConfig.baseUrl.replace(/\/+$/, ""),
+    }],
+  ));
+  const compatibility = (provider: string): ProviderConfig =>
+    providers[provider] ?? providers[config.provider] ?? Object.values(providers)[0]!;
   return {
     ...config,
     workspaceRoot: path.resolve(cwd, config.workspaceRoot),
@@ -414,22 +429,12 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
     configDir: path.resolve(cwd, config.configDir),
     cacheDir: path.resolve(cwd, config.cacheDir),
     worktreeRoot: path.resolve(cwd, config.worktreeRoot),
-    qwen: {
-      ...config.qwen,
-      baseUrl: config.qwen.baseUrl.replace(/\/+$/, ""),
-    },
-    deepseek: {
-      ...config.deepseek,
-      baseUrl: config.deepseek.baseUrl.replace(/\/+$/, ""),
-    },
-    glm: {
-      ...config.glm,
-      baseUrl: config.glm.baseUrl.replace(/\/+$/, ""),
-    },
-    "glm-coding-plan": {
-      ...config["glm-coding-plan"],
-      baseUrl: config["glm-coding-plan"].baseUrl.replace(/\/+$/, ""),
-    },
+    providers,
+    qwen: compatibility("qwen"),
+    deepseek: compatibility("deepseek"),
+    kimi: compatibility("kimi"),
+    glm: compatibility("glm"),
+    "glm-coding-plan": compatibility("glm-coding-plan"),
   };
 }
 
@@ -530,6 +535,6 @@ export async function hasLegacyUserApiKey(
   provider: ProviderName,
 ): Promise<boolean> {
   const layer = await readTomlLayer(path.resolve(configPath));
-  const value = layer[provider]?.apiKey;
+  const value = layer.providers?.[provider]?.apiKey;
   return typeof value === "string" && value.trim().length > 0;
 }

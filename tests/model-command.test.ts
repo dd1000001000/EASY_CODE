@@ -37,10 +37,12 @@ const TEST_ENVIRONMENT = [
   "GLM_API_KEY",
   "ZHIPUAI_API_KEY",
   "GLM_CODING_PLAN_API_KEY",
+  "KIMI_API_KEY",
   "QWEN_MODEL",
   "DEEPSEEK_MODEL",
   "GLM_MODEL",
   "GLM_CODING_PLAN_MODEL",
+  "KIMI_MODEL",
 ] as const;
 
 interface AppFixture {
@@ -109,6 +111,7 @@ async function createAppFixture(
     deepseek?: string;
     glm?: string;
     glmCodingPlan?: string;
+    kimi?: string;
   },
   selection?: {
     provider?: ProviderName;
@@ -136,6 +139,8 @@ async function createAppFixture(
   delete process.env.GLM_API_KEY;
   delete process.env.ZHIPUAI_API_KEY;
   delete process.env.GLM_CODING_PLAN_API_KEY;
+  delete process.env.KIMI_API_KEY;
+  delete process.env.KIMI_MODEL;
   if (keys.qwen) process.env.QWEN_API_KEY = keys.qwen;
   else delete process.env.QWEN_API_KEY;
   if (keys.deepseek) process.env.DEEPSEEK_API_KEY = keys.deepseek;
@@ -145,6 +150,7 @@ async function createAppFixture(
   if (keys.glmCodingPlan) {
     process.env.GLM_CODING_PLAN_API_KEY = keys.glmCodingPlan;
   }
+  if (keys.kimi) process.env.KIMI_API_KEY = keys.kimi;
 
   const input = new PassThrough();
   const output = new PassThrough();
@@ -326,6 +332,10 @@ describe("/model", () => {
         assertMissingKey("deepseek"),
       );
       await assert.rejects(
+        fixture.app.handleSlashCommand("/model kimi k3"),
+        assertMissingKey("kimi"),
+      );
+      await assert.rejects(
         fixture.app.handleSlashCommand("/model glm glm-5.3-flash"),
         assertMissingKey("glm"),
       );
@@ -337,7 +347,7 @@ describe("/model", () => {
       );
       await assert.rejects(
         fixture.app.handleSlashCommand("/model qwen deepseek-flash"),
-        /not in the Alibaba Qwen catalog/u,
+        /not in the Alibaba Qwen registry/u,
       );
       await assert.rejects(
         fixture.app.handleSlashCommand("/model unknown-model"),
@@ -352,7 +362,7 @@ describe("/model", () => {
       ]) {
         await assert.rejects(
           fixture.app.handleSlashCommand(`/model ${model}`),
-          /not in the Alibaba Qwen catalog/u,
+          /not in the Alibaba Qwen registry/u,
         );
       }
 
@@ -423,6 +433,23 @@ describe("/model", () => {
     }
   });
 
+  it("switches to Kimi K3 with its independent key and generic thinking metadata", async () => {
+    const fixture = await createAppFixture({
+      qwen: "qwen-test-key",
+      kimi: "kimi-coding-plan-test-key",
+    });
+    try {
+      await fixture.app.handleSlashCommand("/model kimi k3");
+      await fixture.app.handleSlashCommand("/status");
+      assert.match(fixture.output(), /Kimi Coding Plan \/ k3/u);
+      assert.match(fixture.output(), /"provider": "kimi"/u);
+      assert.match(fixture.output(), /"vision": true/u);
+      assert.doesNotMatch(fixture.output(), /kimi-coding-plan-test-key/u);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("switches to GLM Coding Plan only with its separate API key", async () => {
     const standardOnly = await createAppFixture({
       qwen: "qwen-test-key",
@@ -485,7 +512,7 @@ describe("/model", () => {
       const terminal = fixture.terminal as ScriptedModelTerminal;
       assert.deepEqual(
         terminal.providerChoices.map((choice) => choice.label),
-        ["DeepSeek", "Alibaba Qwen", "Zhipu GLM", "GLM Coding Plan"],
+        ["Alibaba Qwen", "DeepSeek", "Kimi Coding Plan", "Zhipu GLM", "GLM Coding Plan"],
       );
       assert.deepEqual(
         terminal.modelChoices.map((choice) => choice.id),
@@ -499,10 +526,10 @@ describe("/model", () => {
       assert.deepEqual(
         terminal.thinkingChoices.map(({ id, applied }) => ({ id, applied })),
         [
-          { id: "none", applied: true },
-          { id: "low", applied: true },
-          { id: "medium", applied: true },
-          { id: "high", applied: true },
+          { id: "none", applied: false },
+          { id: "low", applied: false },
+          { id: "medium", applied: false },
+          { id: "high", applied: false },
         ],
       );
       assert.match(
@@ -511,7 +538,7 @@ describe("/model", () => {
       );
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
-      assert.match(fixture.output(), /"thinkingApplied": true/u);
+      assert.match(fixture.output(), /"thinkingApplied": false/u);
       assert.match(fixture.output(), /"steps":/u);
       assert.match(fixture.output(), /"stepLimit": 80/u);
       assert.match(fixture.output(), /"contextCharLimit": 250000/u);
@@ -566,7 +593,7 @@ describe("/model", () => {
       assert.match(fixture.output(), /"provider": "qwen"/u);
       assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
       assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
-      assert.match(fixture.output(), /"thinkingApplied": true/u);
+      assert.match(fixture.output(), /"thinkingApplied": false/u);
       assert.match(fixture.output(), /"stepLimit": 40/u);
       assert.doesNotMatch(fixture.output(), /Model switched to DeepSeek/u);
     } finally {

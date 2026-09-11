@@ -17,6 +17,8 @@ import {
   DEFAULT_GLM_CODING_PLAN_BASE_URL,
   DEFAULT_GLM_CODING_PLAN_MODEL,
   DEFAULT_GLM_MODEL,
+  DEFAULT_KIMI_BASE_URL,
+  DEFAULT_KIMI_MODEL,
   DEFAULT_PROVIDER_TIMEOUT_MS,
   DEFAULT_QWEN_BASE_URL,
   DEFAULT_QWEN_MODEL,
@@ -68,6 +70,10 @@ timeout_ms = 31000
 [deepseek]
 model = "user-deepseek"
 
+[kimi]
+model = "user-kimi"
+base_url = "https://user-kimi.example/coding/v1/"
+
 [glm]
 model = "user-glm"
 base_url = "https://user-glm.example/v4/"
@@ -116,6 +122,7 @@ timeout_ms = 41000
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
+          KIMI_API_KEY: "kimi-env-key",
           ZAI_API_KEY: "glm-env-key",
           GLM_CODING_PLAN_API_KEY: "glm-coding-plan-env-key",
         },
@@ -138,6 +145,9 @@ timeout_ms = 41000
       assert.equal(config.qwen.timeoutMs, 51_000);
       assert.equal(config.deepseek.model, "user-deepseek");
       assert.equal(config.deepseek.apiKey, "deepseek-env-key");
+      assert.equal(config.kimi.model, "user-kimi");
+      assert.equal(config.kimi.baseUrl, "https://user-kimi.example/coding/v1");
+      assert.equal(config.kimi.apiKey, "kimi-env-key");
       assert.equal(config.glm.model, "user-glm");
       assert.equal(config.glm.baseUrl, "https://user-glm.example/v4");
       assert.equal(config.glm.apiKey, "glm-env-key");
@@ -167,6 +177,7 @@ timeout_ms = 41000
         cacheDir: path.join(temporary, "cache"),
         env: {
           DASHSCOPE_API_KEY: "dashscope-key",
+          KIMI_API_KEY: "kimi-key",
           GLM_API_KEY: "glm-alias-key",
           GLM_CODING_PLAN_API_KEY: "glm-coding-plan-key",
         },
@@ -186,6 +197,9 @@ timeout_ms = 41000
       assert.equal(config.qwen.apiKey, "dashscope-key");
       assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
       assert.equal(config.deepseek.model, DEFAULT_DEEPSEEK_MODEL);
+      assert.equal(config.kimi.baseUrl, DEFAULT_KIMI_BASE_URL);
+      assert.equal(config.kimi.model, DEFAULT_KIMI_MODEL);
+      assert.equal(config.kimi.apiKey, "kimi-key");
       assert.equal(config.glm.baseUrl, DEFAULT_GLM_BASE_URL);
       assert.equal(config.glm.model, DEFAULT_GLM_MODEL);
       assert.equal(config.glm.apiKey, "glm-alias-key");
@@ -542,8 +556,8 @@ describe("OpenAI-compatible providers", () => {
     assert.equal("max_completion_tokens" in requestBody, false);
     assert.equal("max_output_tokens" in requestBody, false);
     assert.equal("outputReserveTokens" in requestBody, false);
-    assert.equal(requestBody.enable_thinking, true);
-    assert.equal(requestBody.thinking_budget, 16_384);
+    assert.equal(requestBody.enable_thinking, undefined);
+    assert.equal(requestBody.thinking_budget, undefined);
     assert.equal(response.message.tool_calls?.[0]?.id, "call_1");
     assert.equal(response.message.tool_calls?.[0]?.function.name, "start_command");
     assert.deepEqual(
@@ -695,7 +709,7 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(response.usage, undefined);
   });
 
-  it("sends thinking fields for DeepSeek V4.1 Flash", async () => {
+  it("leaves Chat Completions reasoning parameters to the provider default", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.deepseek.apiKey = "deepseek-key";
     let captured: JsonPostRequest | undefined;
@@ -726,8 +740,8 @@ describe("OpenAI-compatible providers", () => {
 
     const body = JSON.parse(captured?.body ?? "{}") as Record<string, unknown>;
     assert.equal(body.model, "deepseek-flash");
-    assert.deepEqual(body.thinking, { type: "enabled" });
-    assert.equal(body.reasoning_effort, "high");
+    assert.equal(body.thinking, undefined);
+    assert.equal(body.reasoning_effort, undefined);
     assert.equal("enable_thinking" in body, false);
     assert.equal("thinking_budget" in body, false);
   });
@@ -807,6 +821,50 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(attempts, 1);
   });
 
+  it("routes Kimi K3 through its registered endpoint without unsupported optional fields", async () => {
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.kimi.apiKey = "kimi-test-key";
+    let captured: JsonPostRequest | undefined;
+    const provider = createProvider(config, "kimi", "k3", {
+      transport: async (request) => {
+        captured = request;
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({
+            choices: [{
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "done",
+                reasoning_content: "checked the implementation",
+              },
+            }],
+          }),
+        };
+      },
+    });
+
+    const response = await provider.complete({
+      messages: [{ role: "user", content: "inspect" }],
+      thinkingEffort: "high",
+      temperature: 0,
+    });
+
+    assert.equal(provider.name, "kimi");
+    assert.equal(captured?.url.href, `${DEFAULT_KIMI_BASE_URL}/chat/completions`);
+    assert.equal(captured?.headers.authorization, "Bearer kimi-test-key");
+    const body = JSON.parse(captured?.body ?? "{}") as {
+      model?: string;
+      temperature?: number;
+      thinking?: { type?: string; keep?: string; effort?: string };
+    };
+    assert.equal(body.model, "k3");
+    assert.equal(body.temperature, undefined);
+    assert.equal(body.thinking, undefined);
+    assert.equal(response.message.reasoning_content, "checked the implementation");
+  });
+
   it("routes GLM through the official OpenAI-compatible endpoint", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.glm.apiKey = "glm-test-key";
@@ -865,8 +923,8 @@ describe("OpenAI-compatible providers", () => {
     assert.equal(body.model, "glm-5.3-flash");
     assert.equal(body.tools?.length, 1);
     assert.equal(body.tools?.[0]?.function?.strict, undefined);
-    assert.deepEqual(body.thinking, { type: "enabled", clear_thinking: false });
-    assert.equal(body.reasoning_effort, "high");
+    assert.equal(body.thinking, undefined);
+    assert.equal(body.reasoning_effort, undefined);
     assert.equal(response.message.tool_calls?.[0]?.function.name, "read_file");
     assert.equal(response.message.reasoning_content, "I will inspect the file.");
   });

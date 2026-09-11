@@ -5,7 +5,8 @@ export type { PromptBundleBinding } from "../prompt-bundle/types.js";
 export type AgentMode = "plan" | "auto" | "code";
 export type AgentRole = "main_agent" | "subagent";
 export type ModelUsageActor = AgentRole | "reviewer" | "approval_agent";
-export type ProviderName = "qwen" | "deepseek" | "glm" | "glm-coding-plan";
+/** User-defined provider identifier loaded from ~/.easy_code/models.toml. */
+export type ProviderName = string;
 export type ApprovalPolicyName = "safe" | "ask" | "never";
 /** Process-local command posture selected by the user from /approval. */
 export type CommandExecutionMode = "manual" | "auto_approve" | "unrestricted";
@@ -195,8 +196,14 @@ export interface EasyCodeConfig {
   worktreeBaseMode: WorktreeBaseMode;
   /** Trusted manager-owned root, always resolved outside model control. */
   worktreeRoot: string;
+  /** Runtime provider settings keyed by the user registry provider id. */
+  providers: Record<ProviderName, ProviderConfig>;
+  /** Hash of the exact model registry used to create/resume the session. */
+  modelRegistryHash: string;
+  /** @deprecated Compatibility aliases; new code must use providers. */
   qwen: ProviderConfig;
   deepseek: ProviderConfig;
+  kimi: ProviderConfig;
   glm: ProviderConfig;
   "glm-coding-plan": ProviderConfig;
 }
@@ -749,6 +756,8 @@ export interface SessionState {
   workspaceRoot: string;
   /** Exact trusted prompt/tool resource identity used for this session. */
   promptBundle?: PromptBundleBinding;
+  /** Exact user model registry identity; absent only on legacy sessions. */
+  modelRegistryHash?: string;
   goal?: string;
   constraints: string[];
   messages: ChatMessage[];

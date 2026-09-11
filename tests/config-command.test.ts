@@ -80,7 +80,7 @@ describe("config commands", () => {
     assert.equal(parsed.orchestrationEnabled, false);
     assert.doesNotMatch(command.output.value, /apiKey|api_key/u);
   });
-  it("accepts only the four exact provider API-key keys", () => {
+  it("accepts the exact API-key key for every registered provider", () => {
     assert.deepEqual(parseApiKeyConfigKey("qwen.api-key"), {
       key: "qwen.api-key",
       provider: "qwen",
@@ -88,6 +88,10 @@ describe("config commands", () => {
     assert.deepEqual(parseApiKeyConfigKey("glm.api-key"), {
       key: "glm.api-key",
       provider: "glm",
+    });
+    assert.deepEqual(parseApiKeyConfigKey("kimi.api-key"), {
+      key: "kimi.api-key",
+      provider: "kimi",
     });
     assert.deepEqual(parseApiKeyConfigKey("glm-coding-plan.api-key"), {
       key: "glm-coding-plan.api-key",
@@ -282,6 +286,7 @@ describe("config commands", () => {
       "keyring-secret",
       "legacy-secret",
       "coding-plan-environment-secret",
+      "kimi-environment-secret",
     ];
     try {
       await mkdir(configDir, { recursive: true });
@@ -299,12 +304,14 @@ describe("config commands", () => {
           QWEN_API_KEY: secrets[0],
           ZAI_API_KEY: "glm-environment-secret",
           GLM_CODING_PLAN_API_KEY: secrets[3],
+          KIMI_API_KEY: secrets[4],
         },
         userConfigPath,
       });
       await listed.run;
       assert.match(listed.output.value, /qwen\.api-key=\[configured\] \(environment variable QWEN_API_KEY\)/u);
       assert.match(listed.output.value, /deepseek\.api-key=\[configured\] \(operating system credential store\)/u);
+      assert.match(listed.output.value, /kimi\.api-key=\[configured\] \(environment variable KIMI_API_KEY\)/u);
       assert.match(listed.output.value, /glm\.api-key=\[configured\] \(environment variable ZAI_API_KEY\)/u);
       assert.match(
         listed.output.value,

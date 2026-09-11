@@ -29,7 +29,7 @@ import {
   type TurnSteeringEntry,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
-import { isProviderName } from "../models/catalog.js";
+import { isProviderIdentifier } from "../models/catalog.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { foldReviewEvent } from "../review/session.js";
 import { foldDelivery } from "../review/delivery.js";
@@ -93,6 +93,7 @@ export interface ThreadCreateInput {
   readonly model: string;
   readonly thinkingEffort?: ThinkingEffort;
   readonly promptBundle?: PromptBundleBinding;
+  readonly modelRegistryHash?: string;
   readonly goal?: string;
   readonly constraints?: readonly string[];
   readonly messages?: readonly ChatMessage[];
@@ -287,7 +288,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
     !Array.isArray(input.completionChecks) ||
     input.completionChecks.length === 0 ||
     !input.completionChecks.every((check) => typeof check === "string" && check.length > 0) ||
-    !isProviderName(input.provider) ||
+    !isProviderIdentifier(input.provider) ||
     typeof input.model !== "string" ||
     !input.model ||
     (input.thinkingEffort !== "none" &&
@@ -683,6 +684,12 @@ function createThreadCheckpointDelta(
   if (requested.createdAt !== durable.createdAt) {
     throw new Error("Thread checkpoint cannot change the durable creation time");
   }
+  if (
+    durable.modelRegistryHash !== undefined &&
+    requested.modelRegistryHash !== durable.modelRegistryHash
+  ) {
+    throw new Error("Thread checkpoint cannot change the bound model registry");
+  }
 
   let requestedMessagesAreStale = false;
   let messagesAppended: ChatMessage[] = [];
@@ -742,6 +749,7 @@ function createThreadCheckpointDelta(
     model?: string;
     thinkingEffort?: CheckpointDeltaSettings["thinkingEffort"];
     promptBundle?: PromptBundleBinding | null;
+    modelRegistryHash?: string;
     goal?: string | null;
     constraints?: string[];
   } = {};
@@ -758,6 +766,12 @@ function createThreadCheckpointDelta(
     settings.promptBundle = requested.promptBundle
       ? { ...requested.promptBundle }
       : null;
+  }
+  if (
+    durable.modelRegistryHash === undefined &&
+    requested.modelRegistryHash !== undefined
+  ) {
+    settings.modelRegistryHash = requested.modelRegistryHash;
   }
   if (
     !requestedMessagesAreStale &&
@@ -869,6 +883,14 @@ function applyThreadCheckpointDelta(
     if (settings.promptBundle !== undefined) {
       if (settings.promptBundle === null) delete state.promptBundle;
       else state.promptBundle = { ...settings.promptBundle };
+    }
+    if (settings.modelRegistryHash !== undefined) {
+      if (state.modelRegistryHash !== undefined) {
+        throw new Error(
+          `Thread checkpoint delta ${event.eventId} attempted to replace its model registry binding`,
+        );
+      }
+      state.modelRegistryHash = settings.modelRegistryHash;
     }
     if (settings.goal !== undefined) {
       if (settings.goal === null) delete state.goal;
@@ -1048,6 +1070,7 @@ export class ThreadStore {
       thinkingEffort: input.thinkingEffort ?? DEFAULT_THINKING_EFFORT,
       workspaceRoot: input.workspaceRoot,
       ...(input.promptBundle ? { promptBundle: { ...input.promptBundle } } : {}),
+      ...(input.modelRegistryHash ? { modelRegistryHash: input.modelRegistryHash } : {}),
       goal: input.goal,
       constraints: [...(input.constraints ?? [])],
       messages: (input.messages ?? []).map(cloneMessage),

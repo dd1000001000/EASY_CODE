@@ -2,21 +2,10 @@ import type {
   ProviderName,
   ThinkingEffort,
 } from "../core/types.js";
-import { resolveCatalogModel, type ThinkingProfile } from "./catalog.js";
+import { providerCatalogEntry, resolveCatalogModel } from "./catalog.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
-export interface ProviderThinkingParameters {
-  enable_thinking?: boolean;
-  thinking_budget?: number;
-  thinking?: { type: "enabled" | "disabled"; clear_thinking?: false };
-  reasoning_effort?: "low" | "medium" | "high";
-}
-
-const QWEN_THINKING_BUDGETS: Readonly<Record<Exclude<ThinkingEffort, "none">, number>> = {
-  low: 4_096,
-  medium: 16_384,
-  high: 32_768,
-};
+export type ProviderThinkingParameters = Record<string, never>;
 
 export const THINKING_EFFORT_BUDGET_MULTIPLIERS: Readonly<Record<ThinkingEffort, number>> = {
   none: 1,
@@ -97,56 +86,19 @@ export function thinkingEffortIsApplied(
   model: string,
   effort: ThinkingEffort,
 ): boolean {
-  const profile = resolveCatalogModel(provider, model)?.thinking ?? "unsupported";
-  return profile !== "unsupported" &&
-    !(profile === "glm_forced_effort" && effort === "none");
+  return effort !== "none" &&
+    providerCatalogEntry(provider).wireApi === "responses" &&
+    Boolean(resolveCatalogModel(provider, model)?.reasoning);
 }
 
 /** Build only fields documented for the exact provider/model combination. */
 export function thinkingRequestParameters(
-  provider: ProviderName,
-  model: string,
-  effort: ThinkingEffort | undefined,
+  _provider: ProviderName,
+  _model: string,
+  _effort: ThinkingEffort | undefined,
 ): ProviderThinkingParameters {
-  if (!effort) return {};
-  const profile = resolveCatalogModel(provider, model)?.thinking ?? "unsupported";
-  switch (profile) {
-    case "qwen_budget":
-      return effort === "none"
-        ? { enable_thinking: false }
-        : {
-            enable_thinking: true,
-            thinking_budget: QWEN_THINKING_BUDGETS[effort],
-          };
-    case "deepseek_effort":
-      return effort === "none"
-        ? { thinking: { type: "disabled" } }
-        : {
-            thinking: { type: "enabled" },
-            // DeepSeek accepts medium for compatibility but treats it as high.
-            reasoning_effort: effort === "medium" ? "high" : effort,
-          };
-    case "glm_forced_effort":
-      if (effort === "none") return {};
-      return {
-        thinking: { type: "enabled", clear_thinking: false },
-        // GLM 5.3 accepts low/high/max, so EASY CODE's medium maps to high.
-        reasoning_effort: effort === "medium" ? "high" : effort,
-      };
-    case "glm_optional_effort":
-      return effort === "none"
-        ? { thinking: { type: "disabled" } }
-        : {
-            thinking: { type: "enabled", clear_thinking: false },
-            reasoning_effort: effort,
-          };
-    case "unsupported":
-      return {};
-    default:
-      return assertNeverProfile(profile);
-  }
-}
-
-function assertNeverProfile(profile: never): ProviderThinkingParameters {
-  throw new Error(`Unsupported thinking profile: ${String(profile)}`);
+  // Chat Completions dialects do not share a portable reasoning contract.
+  // EASY CODE therefore lets those providers use their defaults. The generic
+  // Responses driver serializes the standardized `reasoning.effort` field.
+  return {};
 }

@@ -132,7 +132,7 @@ export async function buildSystemPrompt(
     workspaceRoot,
     mode: options.mode,
     provider: options.config.provider,
-    model: options.config[options.config.provider].model,
+    model: options.config.providers[options.config.provider]!.model,
   });
 
   const sections = [

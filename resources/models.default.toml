@@ -1,0 +1,235 @@
+schema_version = 1
+default_model = "qwen-default"
+
+[providers.qwen]
+name = "Alibaba Qwen"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+env_key = "QWEN_API_KEY"
+env_key_aliases = ["DASHSCOPE_API_KEY"]
+wire_api = "chat_completions"
+max_retries = 5
+supports_temperature = true
+supports_strict_tools = true
+
+[providers.qwen.image_constraints]
+min_width = 11
+min_height = 11
+max_long_edge = 7680
+max_short_edge = 4320
+max_aspect_ratio = 200
+blocked_media_types = ["image/gif"]
+large_image_threshold = 4096
+large_image_media_types = ["image/png", "image/jpeg"]
+
+[providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+env_key = "DEEPSEEK_API_KEY"
+wire_api = "chat_completions"
+max_retries = 5
+supports_temperature = true
+supports_strict_tools = true
+
+[providers.kimi]
+name = "Kimi Coding Plan"
+base_url = "https://api.kimi.com/coding/v1"
+env_key = "KIMI_API_KEY"
+wire_api = "chat_completions"
+max_retries = 5
+supports_temperature = false
+supports_strict_tools = true
+
+[providers.glm]
+name = "Zhipu GLM"
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+env_key = "GLM_API_KEY"
+env_key_aliases = ["ZAI_API_KEY", "ZHIPUAI_API_KEY"]
+wire_api = "chat_completions"
+max_retries = 5
+supports_temperature = true
+supports_strict_tools = false
+
+[providers.glm-coding-plan]
+name = "GLM Coding Plan"
+base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
+env_key = "GLM_CODING_PLAN_API_KEY"
+wire_api = "chat_completions"
+max_retries = 5
+supports_temperature = true
+supports_strict_tools = false
+
+[models.qwen-default]
+name = "Qwen3.7-Max"
+provider = "qwen"
+model = "qwen3.7-max"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-8-max]
+name = "Qwen3.8-Max"
+provider = "qwen"
+model = "qwen3.8-max"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-8-flash]
+name = "Qwen3.8-Flash"
+provider = "qwen"
+model = "qwen3.8-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-7-plus]
+name = "Qwen3.7-Plus"
+provider = "qwen"
+model = "qwen3.7-plus"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-7-flash]
+name = "Qwen3.7-Flash"
+provider = "qwen"
+model = "qwen3.7-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-coder-plus]
+name = "Qwen3-Coder-Plus"
+provider = "qwen"
+model = "qwen3-coder-plus"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-coder-flash]
+name = "Qwen3-Coder-Flash"
+provider = "qwen"
+model = "qwen3-coder-flash"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-6-plus]
+name = "Qwen3.6-Plus"
+provider = "qwen"
+model = "qwen3.6-plus"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-6-flash]
+name = "Qwen3.6-Flash"
+provider = "qwen"
+model = "qwen3.6-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-5-plus]
+name = "Qwen3.5-Plus"
+provider = "qwen"
+model = "qwen3.5-plus"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.qwen-3-5-flash]
+name = "Qwen3.5-Flash"
+provider = "qwen"
+model = "qwen3.5-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.deepseek-default]
+name = "DeepSeek v4.1 Flash"
+provider = "deepseek"
+model = "deepseek-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.kimi-default]
+name = "Kimi K3"
+provider = "kimi"
+model = "k3"
+context_window = 1048576
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.glm-default]
+name = "GLM-5.3"
+provider = "glm"
+model = "glm-5.3"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.glm-flash]
+name = "GLM-5.3-Flash"
+provider = "glm"
+model = "glm-5.3-flash"
+context_window = 1000000
+input_modalities = ["text", "image"]
+tool_calling = true
+reasoning = true
+
+[models.glm-5-2]
+name = "GLM-5.2"
+provider = "glm"
+model = "glm-5.2"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.glm-cp-default]
+name = "GLM-5.3"
+provider = "glm-coding-plan"
+model = "glm-5.3"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.glm-cp-flash]
+name = "GLM-5.3-Flash"
+provider = "glm-coding-plan"
+model = "glm-5.3-flash"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[models.glm-cp-5-2]
+name = "GLM-5.2"
+provider = "glm-coding-plan"
+model = "glm-5.2"
+context_window = 1000000
+input_modalities = ["text"]
+tool_calling = true
+reasoning = true
+
+[profiles.swe_bench_verified_50]
+model = "glm-cp-flash"
+mode = "code"
+thinking_effort = "high"
