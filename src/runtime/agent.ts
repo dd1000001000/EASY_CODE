@@ -136,18 +136,9 @@ import {
 import {
   ToolRecoveryBudget, ToolProtocolExhausted,
 } from "./tool-recovery.js";
-
-const PROGRESS_EXPERIMENT_TOOLS = new Set<ToolName>([
-  "recall_context",
-  "search_context",
-  "read_file",
-  "read_image",
-  "run_command",
-  "start_command",
-  "poll_command",
-  "cancel_command",
-  "compact_context",
-]);
+import { availableAgentTools, toolMetadata } from "../tools/capabilities.js";
+import { snapshotToolSet, type ToolCatalogSnapshot } from "../tools/catalog.js";
+import { ToolExecutionGateway } from "../tools/execution-gateway.js";
 
 function runtimePromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -582,6 +573,8 @@ export interface AgentRuntimeDependencies {
   tokenCalibration?: TokenCalibration;
   provider: ModelProvider;
   tools: AgentTool[];
+  /** Immutable source-aware catalog. Legacy callers may supply tools only. */
+  toolCatalog?: Readonly<ToolCatalogSnapshot>;
   /** Runtime-issued actor identity; the default is the only main agent. */
   agentIdentity?:
     | { role: "main_agent" }
@@ -741,88 +734,39 @@ export interface AgentRunOptions {
 }
 
 function availableTools(
-  tools: AgentTool[],
+  tools: readonly AgentTool[],
   mode: AgentMode,
   role: AgentRole,
   _thinkingEffort: SessionState["thinkingEffort"],
   orchestrationAvailable = true,
 ): AgentTool[] {
-  if (!orchestrationAvailable) tools = tools.filter((tool) => tool.name !== "manage_tasks" && tool.name !== "manage_subagents");
-  if (role === "subagent") {
-    if (mode !== "code") return [];
-    return tools.filter((tool) =>
-      tool.name === "read_file" ||
-      tool.name === "search_files" ||
-      tool.name === "create_file" ||
-      tool.name === "update_file" ||
-      tool.name === "delete_file" ||
-      tool.name === "run_command" ||
-      tool.name === "start_command" ||
-      tool.name === "poll_command" ||
-      tool.name === "cancel_command" ||
-      tool.name === "compact_context" ||
-      tool.name === "submit_task_result"
-      || tool.name === "search_context" || tool.name === "recall_context"
-    );
-  }
-  if (mode !== "plan") {
-    return tools.filter(
-      (tool) =>
-        tool.name !== "propose_plan" &&
-        tool.name !== "select_mode" &&
-        tool.name !== "submit_task_result",
-    );
-  }
-  return tools.filter(
-    (tool) =>
-      tool.name === "read_file" ||
-      tool.name === "search_files" ||
-      tool.name === "read_image" ||
-      tool.name === "run_command" ||
-      tool.name === "start_command" ||
-      tool.name === "poll_command" ||
-      tool.name === "cancel_command" ||
-      tool.name === "create_file" ||
-      tool.name === "update_file" ||
-      tool.name === "delete_file" ||
-      tool.name === "propose_plan" ||
-      tool.name === "compact_context" ||
-      tool.name === "manage_memory" || tool.name === "search_context" || tool.name === "recall_context",
-  );
+  return availableAgentTools(tools, {
+    mode,
+    role,
+    orchestrationAvailable,
+  });
 }
-
-const TASK_WORK_TOOLS = new Set<ToolName>([
-  "read_file",
-  "search_files",
-  "read_image",
-  "create_file",
-  "update_file",
-  "delete_file",
-  "run_command",
-  "start_command",
-  "poll_command",
-  "cancel_command",
-]);
 
 function taskGraphToolError(
   graph: Readonly<TaskGraph> | undefined,
-  toolName: ToolName,
+  tool: Readonly<AgentTool>,
   turnId: string,
 ): string | undefined {
   if (!graph) return undefined;
+  const metadata = toolMetadata(tool);
   if (graph.status === "completed") {
     if (
       graph.updatedByTurnId === turnId &&
-      TASK_WORK_TOOLS.has(toolName)
+      metadata.taskWork
     ) {
       return "The task DAG was completed in this turn. Return the final result before starting unrelated work.";
     }
     return undefined;
   }
-  if (toolName === "manage_memory") {
+  if (tool.name === "manage_memory") {
     return "Long-term memory maintenance must wait until the task DAG is completed.";
   }
-  if (!TASK_WORK_TOOLS.has(toolName)) return undefined;
+  if (!metadata.taskWork) return undefined;
   const current = activeTask(graph);
   if (current) return undefined;
   if (graph.status === "blocked") {
@@ -1794,7 +1738,9 @@ export class AgentRuntime {
         routingPressure >= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextCompactionTriggerRatio
       ) {
         {
-          const nextTools = availableTools(this.dependencies.tools, "code", agentIdentity.role, state.thinkingEffort,
+          const nextTools = availableTools(
+            this.dependencies.toolCatalog?.tools ?? this.dependencies.tools,
+            "code", agentIdentity.role, state.thinkingEffort,
             this.orchestrationToolsAvailable(state, options))
             .filter((tool) => tool.name !== "compact_context");
           const nextRequest = { systemPrompt: await this.dependencies.buildSystemPrompt({ mode: "code",
@@ -2128,16 +2074,18 @@ export class AgentRuntime {
     let retrievedQueryKey = "";
     let retrievedCache: RuntimeLayeredContext | undefined;
     let nextImageNumber = nextThreadImageNumber(state.messages);
-    const toolMap = new Map<ToolName, AgentTool>();
-    for (const tool of availableTools(
-      this.dependencies.tools,
+    const exposedTools = availableTools(
+      this.dependencies.toolCatalog?.tools ?? this.dependencies.tools,
       effectiveMode,
       agentIdentity.role,
       state.thinkingEffort,
       this.orchestrationToolsAvailable(state, options),
-    )) {
-      toolMap.set(tool.name, tool);
-    }
+    );
+    const exposedToolCatalog = snapshotToolSet(
+      exposedTools,
+      this.dependencies.toolCatalog?.revision ?? 1,
+    );
+    const toolGateway = new ToolExecutionGateway(exposedToolCatalog);
     const progressResponseBase =
       state.progressGuard?.lastObservedResponseOrdinal ?? 0;
     const progressVerificationCommands = new Map<string, VerificationKind>();
@@ -2235,9 +2183,9 @@ export class AgentRuntime {
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const ordinaryEnabledTools = taskDagFinalizationOnly
         ? state.taskGraph?.status === "completed"
-          ? [...toolMap.values()].filter((tool) => tool.name === "manage_memory")
+          ? [...toolGateway.catalog.tools].filter((tool) => tool.name === "manage_memory")
           : []
-        : [...toolMap.values()].filter((tool) =>
+        : [...toolGateway.catalog.tools].filter((tool) =>
             tool.name !== "compact_context"
           );
       const runtimeNextActions = [
@@ -2837,12 +2785,12 @@ export class AgentRuntime {
           break;
         }
         const toolName = call.function.name as ToolName;
-        const tool = toolMap.get(toolName);
+        const tool = toolGateway.get(toolName);
         // Pure file reading and Plan explanations pay no inventory-scan cost.
         // Capture before the first capability that could change verification bytes,
         // including arbitrary inspect commands and shared-workspace children.
         if (!state.progressGuard?.validationBaseline && tool &&
-            (tool.mutating || ["run_command", "start_command", "manage_subagents"].includes(toolName))) {
+            toolMetadata(tool).validationSensitive) {
           const baseline = await (this.dependencies.captureValidationBaseline?.() ?? captureValidationBaseline(state.workspaceRoot, this.dependencies.limits));
           await this.appendProgressReviewEvent(state, turnId, "progress.validation.baseline", "completed", { baseline });
         }
@@ -2898,7 +2846,7 @@ export class AgentRuntime {
           }
         } else if (
           progressExperimentAtCall &&
-          !PROGRESS_EXPERIMENT_TOOLS.has(toolName)
+          (!tool || !toolMetadata(tool).progressExperiment)
         ) {
           result = {
             ok: false,
@@ -2940,9 +2888,11 @@ export class AgentRuntime {
           };
         } else {
           try {
-            const graphError = taskGraphToolError(state.taskGraph, toolName, turnId);
+            const graphError = taskGraphToolError(state.taskGraph, tool, turnId);
             if (graphError) throw new Error(graphError);
-            const rawInput = prepareToolInput(tool, call.function.arguments);
+            const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
+            if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
+            const rawInput = preparedInvocation.input;
             let input: unknown = rawInput;
             if (toolName === "manage_tasks") {
               const parsedOperation = taskGraphOperationSchema.parse(rawInput);
@@ -3084,8 +3034,11 @@ export class AgentRuntime {
             };
             const waitAttempt = tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
             try {
-              result = reconciliationGate(state, tool.name, input) ?? commandRetries.before(tool.name, input) ?? await this.withToolExecutionActivity(tool.name,
-                () => tool.execute(input, { ...toolContext, waitSignal: waitAttempt?.signal }));
+              result = reconciliationGate(state, tool.name, input) ?? commandRetries.before(tool.name, input) ?? await toolGateway.invoke(
+                { ...preparedInvocation, input },
+                { ...toolContext, waitSignal: waitAttempt?.signal },
+                (name, execute) => this.withToolExecutionActivity(name, execute),
+              );
               result = commandRetries.after(tool.name, input, result);
             } finally { waitAttempt?.dispose(); }
             preparedSubagentLifecycle = result.subagentLifecycle;
@@ -3370,6 +3323,9 @@ export class AgentRuntime {
             payload: {
               callId: call.id,
               tool: call.function.name,
+              ...(toolGateway.catalog.bindings.get(call.function.name)
+                ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
+                : {}),
               message: toolMessage,
               progressObservation,
               ...(contextCommand ? { contextCommand } : {}),
@@ -3582,7 +3538,8 @@ export class AgentRuntime {
   private async maintainContext(state: SessionState, turnId: string, images: ImageAttachment[],
     memoryContext: { userInput: string }, options: AgentRunOptions, nextRequest: NormalRequestEnvelope,
     required: boolean, maxRequests: number, forceRecovery = false): Promise<CompactionResult> {
-    const compactTool = this.dependencies.tools.find((tool) => tool.name === "compact_context");
+    const compactTool = (this.dependencies.toolCatalog?.tools ?? this.dependencies.tools)
+      .find((tool) => tool.name === "compact_context");
     const result = await runCompactionTransaction({ state, manager: this.dependencies.contextManager, turnId,
       limits: this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS, signal: options.signal,
       skipSummary: forceRecovery, forceRecovery,

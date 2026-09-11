@@ -159,7 +159,7 @@ export function toolResultForModel(result: ToolExecutionResult, maximumChars: nu
   const payload = {
     evidenceId: result.evidenceId,
     ok: result.ok, summary: result.summary, data: result.data,
-    error: result.error, failure: result.failure,
+    error: result.error, failure: result.failure, content: result.content,
   };
   const encode = jsonForModel;
   const full = encode(payload);

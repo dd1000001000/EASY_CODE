@@ -132,6 +132,8 @@ import {
 } from "./subagents/workspace-mutation-lock.js";
 import { SubmitTaskResultTool } from "./tools/submit-task-result.js";
 import { createDefaultTools } from "./tools/registry.js";
+import { availableAgentTools, isToolAvailable, toolMetadata } from "./tools/capabilities.js";
+import { snapshotToolSet } from "./tools/catalog.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import {
   interruptedTurnAssistantMessage,
@@ -1727,9 +1729,10 @@ export class EasyCodeApp {
         subagentControl: this.subagentCoordinator,
         commandRuntime,
         downloadBroker: this.trustedOuterSandbox ? undefined : downloadBroker,
-      }).filter((tool) => tool.name !== "read_image" || visionCapable),
+      }).filter((tool) => !toolMetadata(tool).requiresVision || visionCapable),
       this.workspaceMutationLock,
     );
+    const toolCatalog = snapshotToolSet(tools);
 
     return new AgentRuntime({
       provider,
@@ -1738,6 +1741,7 @@ export class EasyCodeApp {
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
         effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
       tools,
+      toolCatalog,
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
@@ -2228,26 +2232,21 @@ export class EasyCodeApp {
         request.record.model,
       );
       const childCommandRuntime = this.createCommandRuntime(childWorkspace);
-      const childTools = createDefaultTools(childWorkspace, undefined, {
+      const childTools = availableAgentTools(createDefaultTools(childWorkspace, undefined, {
         limits: this.config.limits,
         commandRuntime: childCommandRuntime,
-      }).filter((tool) =>
-        tool.name === "read_file" ||
-        tool.name === "search_files" ||
-        tool.name === "create_file" ||
-        tool.name === "update_file" ||
-        tool.name === "delete_file" ||
-        tool.name === "run_command" ||
-        tool.name === "start_command" ||
-        tool.name === "poll_command" ||
-        tool.name === "cancel_command" ||
-        tool.name === "compact_context" || tool.name === "search_context" || tool.name === "recall_context"
-      );
+      }), {
+        mode: "code",
+        role: "subagent",
+        orchestrationAvailable: false,
+        visionAvailable: false,
+      });
       childTools.push(new SubmitTaskResultTool(request.task, this.config.limits));
       const mutationLock = activeEnvironment.descriptor.kind === "shared"
         ? this.workspaceMutationLock
         : new WorkspaceMutationLock();
       const tools = wrapAgentToolsWithWorkspaceMutationLock(childTools, mutationLock);
+      const toolCatalog = snapshotToolSet(tools);
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
       const assignment = json({
         agentId: request.record.id,
@@ -2283,6 +2282,7 @@ export class EasyCodeApp {
         tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
           childConfig.providers[provider.name]!.baseUrl]), this.storage),
         tools,
+        toolCatalog,
         agentIdentity: {
           role: "subagent",
           agentId: request.record.id,
@@ -3977,23 +3977,20 @@ export class EasyCodeApp {
       limits: this.config.limits,
       subagentControl: this.subagentCoordinator,
     }).map((tool) => {
-      const availableForMode = tool.name === "propose_plan"
-        ? this.state.mode === "plan"
-        : this.state.mode !== "plan" ||
-          tool.name === "read_file" ||
-          tool.name === "read_image" ||
-          tool.name === "search_files" ||
-          ["run_command", "start_command", "poll_command", "cancel_command", "create_file", "update_file", "delete_file"].includes(tool.name) ||
-          tool.name === "compact_context" ||
-          tool.name === "manage_memory";
+      const availableForMode = isToolAvailable(tool, {
+        mode: this.state.mode,
+        role: "main_agent",
+        orchestrationAvailable: this.state.orchestrationEnabled !== false,
+        visionAvailable: modelSupportsVision(this.state.provider, this.state.model),
+      });
       return {
+        id: toolMetadata(tool).identity.id,
+        source: toolMetadata(tool).identity.sourceId,
         name: tool.name,
         available:
-          availableForMode &&
-          tool.name !== "submit_task_result" &&
-          (tool.name !== "read_image" ||
-            modelSupportsVision(this.state.provider, this.state.model)),
+          availableForMode,
         mutating: tool.mutating,
+        effects: toolMetadata(tool).effects,
       };
     });
     this.terminal.write(`${json(tools)}\n`);
