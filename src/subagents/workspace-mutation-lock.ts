@@ -146,6 +146,12 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
       get mutating() {
         return tool.mutating;
       },
+      get metadata() {
+        return tool.metadata;
+      },
+      get inputSchema() {
+        return tool.inputSchema;
+      },
       execute(input, context): Promise<ToolExecutionResult> {
         if (tool.name === "start_command") {
           return runCommandStartWithLease(tool, input, context, lock);

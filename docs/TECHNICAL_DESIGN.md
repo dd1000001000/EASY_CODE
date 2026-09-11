@@ -146,7 +146,22 @@ The drivers receive a bounded complete JSON response, then normalize text, nativ
 
 ## 6. File tools, workspace state and Git
 
-The [tool registry](../src/tools/registry.ts) assembles tools; Runtime filters them by role and mode. Tools combine explicit model-facing JSON schemas, local Zod validation and structured result/error contracts.
+### 6.1 Source-aware tool boundary
+
+The tool layer now separates four concerns that were previously coupled to built-in names:
+
+1. A `ToolSource` owns discovery and lifecycle. `ToolCatalog` combines sources in deterministic order and publishes an immutable snapshot for a model request.
+2. Runtime-owned metadata binds every tool to a stable source-qualified identity, effects, allowed roles/modes, orchestration or vision requirements, idempotency and result class. A remote declaration cannot grant itself authority.
+3. The execution gateway resolves the snapshot binding, validates arguments, crosses the authorization boundary where required, invokes the implementation and normalizes bounded provider-neutral result content.
+4. Journaled tool results include the selected tool/source identity, schema and capability-metadata hashes, catalog revision and catalog hash, so later recovery and audit do not depend on whichever catalog happens to be active then.
+
+Built-in availability is defined in one declarative policy table. Unknown legacy tools retain a conservative main-Agent compatibility profile. A dynamic external tool must provide host-owned metadata; external write, process, network-write and destructive effects fail closed unless an explicit Runtime authorization bridge is installed. Duplicate model-facing names or stable identities are rejected before a request is built.
+
+This is an **extension seam, not an MCP integration**. The repository does not include an MCP SDK, MCP transport, server discovery, MCP configuration, credential exchange or resource/prompt adapter. A future MCP client can implement `ToolSource` and the authorization bridge without adding provider-specific branches to the agent loop, while connection supervision and trust configuration remain application responsibilities.
+
+### 6.2 Built-in file safety
+
+The [tool registry](../src/tools/registry.ts) assembles built-in tools; Runtime filters all catalog tools by role and mode. Tools combine explicit model-facing JSON schemas, local Zod validation and structured result/error contracts. Rich results use a bounded neutral content union for text, structured values, attachment references, resource references and durable artifacts; executable arguments and authoritative evidence remain separate from presentation content.
 
 File operations use canonical-path checks, protected-path rules and source hashes. Search results identify locations; they are not proof that the model has read a file or authorization to replace it.
 

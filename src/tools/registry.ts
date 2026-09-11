@@ -24,6 +24,7 @@ import { UpdateFileTool } from "./update-file.js";
 import { FetchArtifactTool } from "./fetch-artifact.js";
 import type { DownloadBroker } from "../downloads/broker.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
+import { bindBuiltinToolMetadata, toolMetadata } from "./capabilities.js";
 
 export class ToolRegistry {
   private readonly tools = new Map<ToolName, AgentTool>();
@@ -34,6 +35,7 @@ export class ToolRegistry {
 
   register(tool: AgentTool): void {
     if (this.tools.has(tool.name)) throw new Error(`Tool already registered: ${tool.name}`);
+    toolMetadata(tool);
     this.tools.set(tool.name, tool);
   }
 
@@ -79,6 +81,7 @@ export function createDefaultTools(
     new SearchContextTool(),
     ...(memoryManager ? [new ManageMemoryTool(memoryManager, workspaceManager)] : []),
   ].map((tool) => {
+    bindBuiltinToolMetadata(tool);
     if (tool.mutating) {
       const execute = tool.execute.bind(tool);
       tool.execute = (input: unknown, context: import("../core/types.js").ToolContext) => {

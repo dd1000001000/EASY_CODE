@@ -14,7 +14,8 @@ export const THINKING_EFFORTS = ["none", "low", "medium", "high"] as const;
 export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
 export const DEFAULT_THINKING_EFFORT: ThinkingEffort = "medium";
 
-export type ToolName =
+/** Compile-time names for Runtime-owned tools. External tool sources use ToolName. */
+export type BuiltinToolName =
   | "select_mode"
   | "propose_plan"
   | "read_file"
@@ -35,7 +36,64 @@ export type ToolName =
   | "search_context"
   | "recall_context"
   | "fetch_artifact";
+/** Model-facing tool names are extensible and therefore cannot be a closed union. */
+export type ToolName = string;
 // Artifact transfer has its own capability; normal command networking stays off.
+
+export type ToolSourceKind = "builtin" | "external" | "legacy";
+export type ToolEffect =
+  | "workspace_read"
+  | "workspace_write"
+  | "process_execute"
+  | "process_control"
+  | "network_read"
+  | "network_write"
+  | "external_read"
+  | "external_write"
+  | "destructive"
+  | "agent_control"
+  | "memory_read"
+  | "memory_write"
+  | "context_control";
+
+export type ToolResultClass =
+  | "generic"
+  | "file_read"
+  | "search"
+  | "command"
+  | "file_mutation"
+  | "task_control"
+  | "subagent_control"
+  | "context_control"
+  | "memory"
+  | "artifact";
+
+export interface ToolIdentity {
+  /** Stable, source-qualified identity used by policy, audit, and recovery. */
+  readonly id: string;
+  /** Function name exposed to the model. */
+  readonly name: ToolName;
+  readonly displayName: string;
+  readonly sourceId: string;
+  readonly sourceKind: ToolSourceKind;
+  readonly sourceVersion?: string;
+}
+
+/** Runtime-owned policy metadata. External declarations are never trusted as grants. */
+export interface ToolRuntimeMetadata {
+  readonly identity: ToolIdentity;
+  readonly effects: readonly ToolEffect[];
+  readonly allowedModes: readonly AgentMode[];
+  readonly allowedRoles: readonly AgentRole[];
+  readonly taskWork: boolean;
+  readonly progressExperiment: boolean;
+  readonly requiresOrchestration: boolean;
+  readonly requiresVision: boolean;
+  readonly validationSensitive: boolean;
+  readonly idempotent: boolean;
+  readonly controlPlane: boolean;
+  readonly resultClass: ToolResultClass;
+}
 
 export interface FunctionToolCall {
   id: string;
@@ -228,6 +286,8 @@ export interface ToolExecutionResult {
   data?: unknown;
   error?: string;
   failure?: ToolFailureInfo;
+  /** Provider-neutral rich result content. Legacy summary/data remain authoritative during migration. */
+  content?: ToolContent[];
   /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
   presentation?: ToolPresentation;
   /** Local-only context transition. AgentRuntime deliberately excludes the submitted summary from tool messages. */
@@ -252,6 +312,13 @@ export interface ToolExecutionResult {
    */
   imageAttachments?: ImageAttachment[];
 }
+
+export type ToolContent =
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "image"; readonly attachmentId: string }
+  | { readonly type: "structured"; readonly value: unknown }
+  | { readonly type: "resource"; readonly uri: string; readonly title?: string }
+  | { readonly type: "artifact"; readonly evidenceId: string };
 
 export interface ContextCompactionRequest {
   summary: string;
@@ -431,6 +498,8 @@ export interface AgentTool {
   readonly name: ToolName;
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
+  /** Omitted only by legacy/test tools; Runtime resolves a conservative compatibility profile. */
+  readonly metadata?: Readonly<ToolRuntimeMetadata>;
   /** Legacy/custom tools may omit this; built-in tools validate before execution. */
   readonly inputSchema?: { parse(input: unknown): unknown };
   execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult>;
