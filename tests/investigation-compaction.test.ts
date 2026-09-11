@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -364,7 +365,7 @@ describe("unfinished investigation compaction", () => {
         reads += 1;
         return { message: { role: "assistant", content: null, reasoning_content: `${reads}:` + "r".repeat(16_000),
           tool_calls: [{ id: `read_${reads}`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: `${reads}.ts` }) } }] } };
-      } }, limits: fixtureLimits, tools: [readTool, tool], contextManager: f.manager, appendEvent: f.append,
+      } }, limits: fixtureLimits, toolCatalog: snapshotToolSet([readTool, tool]), contextManager: f.manager, appendEvent: f.append,
         buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
         searchMemories: async () => [], requestApproval: async () => false });
       const result = await runtime.run(f.state, "Investigate the parser", { maxSteps: 12, maxContextChars: 100_000,

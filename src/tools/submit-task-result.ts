@@ -105,7 +105,7 @@ export class SubmitTaskResultTool implements AgentTool {
 
   private readonly task: BoundTask;
 
-  constructor(task: Readonly<TaskNode>, private readonly limits = DEFAULT_RUNTIME_LIMITS) {
+  constructor(task: Readonly<BoundTask>, private readonly limits = DEFAULT_RUNTIME_LIMITS) {
     this.task = {
       id: task.id,
       status: task.status,

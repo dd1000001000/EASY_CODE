@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -152,7 +153,7 @@ function runtime(input: {
 }): AgentRuntime {
   return new AgentRuntime({
     provider: input.provider,
-    tools: input.tools,
+    toolCatalog: snapshotToolSet(input.tools),
     ...(input.agentIdentity ? { agentIdentity: input.agentIdentity } : {}),
     contextManager: new ContextManager(),
     buildSystemPrompt: async () => "system",

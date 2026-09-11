@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -77,8 +78,8 @@ describe("configurable 1M context", () => {
     const runtime = new AgentRuntime({ limits, contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "", searchMemories: async () => [],
       appendEvent: async () => undefined, requestApproval: async () => false,
-      tools: [{ name: "read_file", mutating: false, definition: { type: "function", function: { name: "read_file", description: "Read", parameters: {} } },
-        execute: async (_input, context) => { observed = context; return { ok: true, summary: "read", data: { content: "source" } }; } }],
+      toolCatalog: snapshotToolSet([{ name: "read_file", mutating: false, definition: { type: "function", function: { name: "read_file", description: "Read", parameters: {} } },
+        execute: async (_input, context) => { observed = context; return { ok: true, summary: "read", data: { content: "source" } }; } }]),
       provider: { name: "glm", model: "mock", complete: async () => ({ message: ++calls === 1 ? { role: "assistant", content: null,
         tool_calls: [{ id: "read", type: "function", function: { name: "read_file", arguments: "{}" } }] } : { role: "assistant", content: "Source examined." } }) } });
     await runtime.run(s, "Read source", { maxSteps: 3, maxContextChars: 250000, maxContextTokens: 1_000_000,

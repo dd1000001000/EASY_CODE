@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
@@ -155,7 +156,7 @@ describe("bounded file discovery and coherent reads", () => {
     await writeFile(path.join(root, "large.ts"), Array.from({ length: 1000 }, (_, index) => `const name${index} = 'long but relevant code';`).join("\n"));
     let calls = 0;
     const current = state(root);
-    const runtime = new AgentRuntime({ limits, tools: [new ReadFileTool(manager)], contextManager: new ContextManager(),
+    const runtime = new AgentRuntime({ limits, toolCatalog: snapshotToolSet([new ReadFileTool(manager)]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "Read code", getWorkspaceSummary: async () => "", searchMemories: async () => [],
       appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async (request) => {

@@ -262,11 +262,18 @@ export class ToolCatalog {
     this.startedSources.clear();
     await Promise.all(sources.map((source) => source.close?.()));
   }
-}
 
-/** Compatibility helper for one already-resolved Runtime tool set. */
-export async function snapshotBuiltinTools(tools: readonly AgentTool[]): Promise<ToolCatalogSnapshot> {
-  const catalog = new ToolCatalog();
-  catalog.registerSource(new StaticToolSource("builtin", tools));
-  return catalog.snapshot();
+  requiresAsyncClose(): boolean {
+    return [...this.sources.values()].some((source) => source.close !== undefined);
+  }
+
+  /** Synchronous applications may close only sources with no asynchronous lifecycle. */
+  closeSync(): void {
+    const lifecycleSource = [...this.sources.values()].find((source) => source.close !== undefined);
+    if (lifecycleSource) {
+      throw new Error(`Tool source ${lifecycleSource.id} requires asynchronous shutdown`);
+    }
+    this.sources.clear();
+    this.startedSources.clear();
+  }
 }

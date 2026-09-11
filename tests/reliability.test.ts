@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import type { CommandAuditEntry, SessionState } from "../src/core/types.js";
@@ -107,7 +108,7 @@ describe("delivery reliability", () => {
     const s = reliabilityState(); s.changes.push({ path: "module.ts", operation: "update", source: "file_tool", status: "applied", timestamp: "now" });
     let reviews = 0;
     const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => ({ message: { role: "assistant", content: "Done" } }) },
-      tools: [], contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
+      toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
       runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: true }; } });
     const result = await runtime.run(s, "Continue", { maxSteps: 4, maxContextChars: 100000, maxContextTokens: 34000,

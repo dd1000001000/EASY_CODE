@@ -171,6 +171,15 @@ export function validateToolMetadata(
   if (metadata.identity.sourceKind === "external" && metadata.identity.sourceId === "builtin") {
     throw new Error(`External tool ${tool.name} cannot claim the builtin source`);
   }
+  if (
+    metadata.identity.sourceKind === "external" &&
+    (metadata.controlPlane || metadata.effects.some((effect) =>
+      effect === "agent_control" || effect === "context_control" || effect === "memory_write"))
+  ) {
+    throw new Error(
+      `External tool ${tool.name} cannot claim EASY CODE control-plane capabilities`,
+    );
+  }
   if (new Set(metadata.effects).size !== metadata.effects.length ||
       new Set(metadata.allowedModes).size !== metadata.allowedModes.length ||
       new Set(metadata.allowedRoles).size !== metadata.allowedRoles.length) {

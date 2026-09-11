@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { describe, it } from "./harness.js";
@@ -98,7 +99,7 @@ function contextRuntime(provider: ModelProvider, tools: AgentTool[],
     // These small-window protocol fixtures retain two exchanges deliberately.
     // The default five-exchange policy is covered by large-context.test.ts.
     limits: { ...DEFAULT_RUNTIME_LIMITS, compactionRetainRecentExchanges: 2, contextSummaryMaxTokens: 2048, contextCompactionTriggerRatio: 0.8 },
-    provider, tools, contextManager: new ContextManager(), buildSystemPrompt: async () => "rules",
+    provider, toolCatalog: snapshotToolSet(tools), contextManager: new ContextManager(), buildSystemPrompt: async () => "rules",
     getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
     appendEvent: async (event) => { events.push(event); },
     onModelUsage: async (record) => { purposes.push(record.purpose); },
@@ -119,7 +120,7 @@ describe("AgentRuntime", () => {
       if (reads === 2) return { message: { role: "assistant", content: "done" } };
       return { message: { role: "assistant", content: null, reasoning_content: "Keep reasoning byte-identical",
         tool_calls: [{ id: `read_${reads}`, type: "function", function: { name: "read_file", arguments: "{}" } }] } };
-    } }, tools: [read], contextManager: new ContextManager(), buildSystemPrompt: async () => "fixed policy",
+    } }, toolCatalog: snapshotToolSet([read]), contextManager: new ContextManager(), buildSystemPrompt: async () => "fixed policy",
       hasOpenCommandHandles: () => reads === 1,
       getWorkspaceSummary: async () => {
         current.progressGuard ??= createProgressGuardState();
@@ -196,7 +197,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async (input) => {
         promptLayers = {
@@ -276,7 +277,7 @@ describe("AgentRuntime", () => {
           throw new Error("Auto direct response should finish in one request");
         },
       },
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -321,7 +322,7 @@ describe("AgentRuntime", () => {
           return { message: { role: "assistant", content: "done" } };
         },
       },
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async (input) =>
         `system ${input.workingCheckpoint ?? ""} ${input.retrievedThreadEvidence ?? ""}`,
@@ -383,7 +384,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -429,7 +430,7 @@ describe("AgentRuntime", () => {
     currentState.thinkingEffort = "none";
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -469,7 +470,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -523,7 +524,7 @@ describe("AgentRuntime", () => {
     });
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -593,7 +594,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -698,7 +699,7 @@ describe("AgentRuntime", () => {
           };
         },
       },
-      tools: [new ManageTasksTool()],
+      toolCatalog: snapshotToolSet([new ManageTasksTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async ({ mode }) => {
         promptModes.push(mode);
@@ -781,7 +782,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [tool],
+      toolCatalog: snapshotToolSet([tool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -871,7 +872,7 @@ describe("AgentRuntime", () => {
     );
     const runtime = new AgentRuntime({
       provider,
-      tools,
+      toolCatalog: snapshotToolSet(tools),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1015,7 +1016,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [new ManageTasksTool(), readTool],
+      toolCatalog: snapshotToolSet([new ManageTasksTool(), readTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1103,7 +1104,7 @@ describe("AgentRuntime", () => {
           };
         },
       },
-      tools: [pollCommand],
+      toolCatalog: snapshotToolSet([pollCommand]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1186,7 +1187,7 @@ describe("AgentRuntime", () => {
             return response;
           },
         },
-        tools: [
+        toolCatalog: snapshotToolSet([
           new ManageTasksTool(),
           {
             name: "poll_command",
@@ -1200,7 +1201,7 @@ describe("AgentRuntime", () => {
               return { ok: true, summary: "terminal", data: { status: "exited" } };
             },
           },
-        ],
+        ]),
         contextManager: new ContextManager(),
         buildSystemPrompt: async () => "system",
         getWorkspaceSummary: async () => "workspace",
@@ -1278,7 +1279,7 @@ describe("AgentRuntime", () => {
           return { message: { role: "assistant", content: "Stopped", tool_calls: [] } };
         },
       },
-      tools: [
+      toolCatalog: snapshotToolSet([
         new ManageTasksTool(),
         {
           name: "read_file",
@@ -1292,7 +1293,7 @@ describe("AgentRuntime", () => {
             return { ok: true, summary: "read" };
           },
         },
-      ],
+      ]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1384,7 +1385,7 @@ describe("AgentRuntime", () => {
           return response;
         },
       },
-      tools: [new ManageTasksTool()],
+      toolCatalog: snapshotToolSet([new ManageTasksTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1424,12 +1425,12 @@ describe("AgentRuntime", () => {
         function: { name: "manage_tasks", arguments: JSON.stringify({ action: "complete", taskId: "verify", evidence: ["Tests passed"] }) } }] } };
       return { message: { role: "assistant", content: "Finish" } };
     } };
-    const runtime = new AgentRuntime({ provider: model, tools: [new ManageTasksTool(), {
+    const runtime = new AgentRuntime({ provider: model, toolCatalog: snapshotToolSet([new ManageTasksTool(), {
       name: "run_command", mutating: true, definition: { type: "function", function: { name: "run_command", description: "run", parameters: {} } },
       execute: async () => { executions++; return resumed ? { ok: true, summary: "passed" } : {
         ok: false, summary: "sandbox failed", data: { commandId: `h${executions}`, status: "sandbox_unavailable",
           lifecycle: { execution: "not_started", cleanup: "not_required" }, sandboxFailure: { phase: "initialization", retryable: true } } }; }
-    }], contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "",
+    }]), contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "",
       searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false });
     const opts = { maxSteps: 4, maxContextChars: 30000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
     const first = await runtime.run(current, "Verify", opts);
@@ -1512,7 +1513,7 @@ describe("AgentRuntime", () => {
           };
         },
       },
-      tools: [
+      toolCatalog: snapshotToolSet([
         new ManageTasksTool(),
         {
           name: "run_command",
@@ -1546,7 +1547,7 @@ describe("AgentRuntime", () => {
                 };
           },
         },
-      ],
+      ]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1642,7 +1643,7 @@ describe("AgentRuntime", () => {
           return response;
         },
       },
-      tools: [new ManageTasksTool()],
+      toolCatalog: snapshotToolSet([new ManageTasksTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1729,7 +1730,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [imageTool],
+      toolCatalog: snapshotToolSet([imageTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1848,7 +1849,7 @@ describe("AgentRuntime", () => {
     const currentState = state();
     const runtime = new AgentRuntime({
       provider,
-      tools: [imageTool],
+      toolCatalog: snapshotToolSet([imageTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -1986,7 +1987,7 @@ describe("AgentRuntime", () => {
     );
     const runtime = new AgentRuntime({
       provider,
-      tools: [new CompactContextTool(), readTool],
+      toolCatalog: snapshotToolSet([new CompactContextTool(), readTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -2037,7 +2038,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [new CompactContextTool()],
+      toolCatalog: snapshotToolSet([new CompactContextTool()]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => `system-${"s".repeat(11_000)}`,
       getWorkspaceSummary: async () => "workspace",
@@ -2100,7 +2101,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [readTool],
+      toolCatalog: snapshotToolSet([readTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "snapshot-system",
       getWorkspaceSummary: async () => "workspace",
@@ -2286,7 +2287,7 @@ describe("AgentRuntime", () => {
     const currentState = state();
     const runtime = new AgentRuntime({
       provider,
-      tools: [new CompactContextTool(), readTool],
+      toolCatalog: snapshotToolSet([new CompactContextTool(), readTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -2406,7 +2407,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [memoryTool],
+      toolCatalog: snapshotToolSet([memoryTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -2497,7 +2498,7 @@ describe("AgentRuntime", () => {
     const currentState = state();
     const runtime = new AgentRuntime({
       provider,
-      tools: [memoryTool],
+      toolCatalog: snapshotToolSet([memoryTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -2544,7 +2545,7 @@ describe("AgentRuntime", () => {
     const currentState = state();
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -2622,7 +2623,7 @@ describe("AgentRuntime", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [memoryTool],
+      toolCatalog: snapshotToolSet([memoryTool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",

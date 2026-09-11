@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -81,7 +82,7 @@ describe("AgentRuntime turn steering", () => {
     assert.throws(
       () => new AgentRuntime({
         provider,
-        tools: [],
+        toolCatalog: snapshotToolSet([]),
         contextManager: new ContextManager(),
         buildSystemPrompt: async () => "system",
         getWorkspaceSummary: async () => "workspace",
@@ -125,7 +126,7 @@ describe("AgentRuntime turn steering", () => {
     const turnController = new AbortController();
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -176,7 +177,7 @@ describe("AgentRuntime turn steering", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [],
+      toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",
@@ -262,7 +263,7 @@ describe("AgentRuntime turn steering", () => {
     };
     const runtime = new AgentRuntime({
       provider,
-      tools: [tool],
+      toolCatalog: snapshotToolSet([tool]),
       contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system",
       getWorkspaceSummary: async () => "workspace",

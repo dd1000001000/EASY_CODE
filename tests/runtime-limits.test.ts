@@ -1,3 +1,4 @@
+import { snapshotToolSet } from "../src/tools/catalog.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { parse as parseToml } from "toml";
@@ -157,7 +158,7 @@ describe("central runtime limits", () => {
 
   it("hides orchestration tools and does not execute hallucinated creation calls", async () => {
     let calls = 0;
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), tools: [new ManageTasksTool()],
+    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), toolCatalog: snapshotToolSet([new ManageTasksTool()]),
       contextManager: new ContextManager(), buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
       searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async (input) => {
@@ -177,7 +178,7 @@ describe("central runtime limits", () => {
   it("charges transport retries against the same shared request limit", async () => {
     let calls = 0;
     const budget = new TaskBudget(1, 0);
-    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget, tools: [],
+    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget, toolCatalog: snapshotToolSet([]),
       contextManager: new ContextManager(), buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
       searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async (input) => {
@@ -210,7 +211,7 @@ describe("central runtime limits", () => {
     let calls = 0;
     const budget = new TaskBudget(10, 0);
     const runtime = new AgentRuntime({ limits: { ...defaultRuntimeLimits(), maxProviderRetries: 0 }, taskBudget: budget,
-      tools: [], contextManager: new ContextManager(),
+      toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
       searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async () => {
