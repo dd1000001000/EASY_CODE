@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { sha256 } from "../utils/hash.js";
 import { ensureEasyCodeDataRootMarker } from "./data-root.js";
+import { assertNoUninstall } from "../install/ownership.js";
 import { runMigrations } from "./migrations.js";
 import { SqliteDatabase } from "./sqlite-database.js";
 
@@ -21,6 +22,7 @@ export function workspaceIdFromRoot(workspaceRoot: string): string {
 }
 
 export function createStorage(dataDir: string): EasyCodeStorage {
+  assertNoUninstall();
   if (typeof dataDir !== "string" || dataDir.trim().length === 0) {
     throw new Error("dataDir must be a non-empty path");
   }

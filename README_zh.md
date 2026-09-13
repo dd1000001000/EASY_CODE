@@ -41,6 +41,8 @@ easy-code --workspace /path/to/project
 
 沙箱随安装自动准备。直接启动 `easy-code` 时若发现缺少依赖或初始化未完成，也会自动尝试准备一次；失败后显示恢复菜单，不循环安装。系统授权或必要重启仍需用户完成。以下指令用于检查或继续初始化：
 
+安装、启动与命令执行使用同一显式 Podman 连接文件；已有虚拟机时补回缺失连接，不重建虚拟机；机器已不存在时先清理核验通过的旧连接，再继续安装，外来连接不动。并发安装会串行处理；失败信息会显示当前阶段、配置位置和发现的机器/连接。修改安装代码后请退出旧 CLI，再重新启动。
+
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
@@ -74,6 +76,15 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | `/context`、`/usage`、`/help` | 查看上下文、用量和完整帮助 |
 
 在项目 `EASYCODE.md` 中写入约定和验证命令；在 `.easycode/config.toml` 的 `[limits]` 中调整运行预算。运行 `easy-code config defaults` 查看默认值。
+
+## 卸载
+
+~~~sh
+easy-code uninstall --dry-run
+easy-code uninstall
+~~~
+
+卸载只确认一次：输入 `y` 后删除当前用户的配置、已存 API Key、会话与记忆、缓存、终端插件、确认归属的沙箱资源（含旧版状态）、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。已删除的数据及 Worktree 中未交付的修改，没有备份就无法恢复。用户项目、链接的源码仓库、Benchmark 项目、共享系统软件和归属不明的资源保留。`--keep-cli` 仅保留 CLI 安装包。清理失败时按提示处理后重跑，不要盲删状态未知的命令租约。
 
 更多资料：[配置示例](./docs/config.example.toml) · [架构与模块技术文档](./docs/TECHNICAL_DESIGN_ZH.md) · [Benchmark 指南](./benchmarks/swebench_verified/README.md)
 

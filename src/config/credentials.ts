@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { recordOwnedResource } from "../install/ownership.js";
 
 import type { ProviderName } from "../core/types.js";
 import {
@@ -54,6 +55,8 @@ export class SystemKeyringCredentialStore implements ApiKeyCredentialStore {
 
   async set(provider: ProviderName, value: string): Promise<void> {
     try {
+      if (this.service === EASY_CODE_KEYRING_SERVICE && this.moduleLoader === loadKeyring)
+        recordOwnedResource({ kind: "credential", name: apiKeyConfigKey(provider) });
       await this.entry(provider).setPassword(value);
     } catch {
       throw new EasyCodeCredentialError("write");

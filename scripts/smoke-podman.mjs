@@ -89,6 +89,15 @@ try {
 } finally {
   await runtime.cancelAll();
   await reviewRuntime?.cancelAll();
+  // WSL-created Linux directory symlinks cannot always be unlinked by native
+  // Windows Node. Remove ONLY these generated dependency fixtures inside their
+  // owning container before removing the fixture's task environment.
+  if (path.dirname(root) !== os.tmpdir() || !path.basename(root).startsWith("easy-code-podman-smoke-") ||
+      workspaceRoot !== path.join(root, "project")) throw new Error("Invalid dependency fixture cleanup root");
+  const cleaned = await runtime.run({ program: "rm", args: ["-rf", "--", "/workspace/.venv", "/workspace/node_modules"],
+    cwd: "/workspace", intent: "run" }, context);
+  assert.equal(cleaned.lifecycle?.cleanup, "confirmed", JSON.stringify(cleaned));
+  assert.equal(cleaned.exitCode, 0, JSON.stringify(cleaned));
   await reviewBackend?.removeTask(reviewThread);
   if (reviewSnapshot) {
     const resources = new PodmanResourceManager(path.join(root, "control"), limits);

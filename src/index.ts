@@ -17,6 +17,8 @@ import {
 } from "./prompt-bundle/index.js";
 import { registerUninstallCommand } from "./uninstall/index.js";
 import { registerInstallCommands } from "./install/index.js";
+import { assertNoUninstall, recordOwnedResource } from "./install/ownership.js";
+import { registerRuntimeSession } from "./install/session.js";
 import {
   THINKING_EFFORTS,
   type AgentMode,
@@ -102,11 +104,18 @@ async function withApp(
   action: (app: EasyCodeApp) => Promise<void>,
   startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
 ): Promise<void> {
-  const app = await EasyCodeApp.create(appOptions(options, startupInteraction));
+  let app: EasyCodeApp | undefined;
+  let stopRequested = false;
+  const release = registerRuntimeSession(() => { stopRequested = true; app?.requestUninstallShutdown(); });
   try {
+    const { loadEasyCodeConfig } = await import("./config/loader.js");
+    const config = await loadEasyCodeConfig({ workspaceRoot: options.workspace, credentialStore: false });
+    for (const kind of ["data", "config", "cache"] as const) recordOwnedResource({ kind, path: config[(kind + "Dir") as "dataDir" | "configDir" | "cacheDir"] });
+    app = await EasyCodeApp.create(appOptions(options, startupInteraction));
+    if (stopRequested) { app.requestUninstallShutdown(); return; }
     await action(app);
   } finally {
-    await app.closeAsync();
+    try { await app?.closeAsync(); } finally { release(); }
   }
 }
 
@@ -140,6 +149,15 @@ function addCommonOptions(command: Command): Command {
 
 export async function main(argv = process.argv): Promise<void> {
   assertSupportedNodeVersion();
+  // Maintenance must work even with invalid/missing user models and must not
+  // recreate configuration during --dry-run or after partially completed removal.
+  if (argv[2] === "uninstall") {
+    const maintenance = new Command().name("easy-code");
+    registerUninstallCommand(maintenance);
+    await maintenance.parseAsync(argv);
+    return;
+  }
+  assertNoUninstall();
   // This fixed per-user file is created only once. Subsequent installs and
   // upgrades validate and load it without overwriting user-defined models.
   await ensureUserModelRegistry();

@@ -54,7 +54,11 @@ function put(target: string, content = "private\n"): void {
 describe("EASY CODE uninstall cleanup", () => {
   it("marks every Runtime-created data root for safe future cleanup", () => {
     const test = fixture();
+    const previousHome = process.env.HOME, previousProfile = process.env.USERPROFILE;
     try {
+      // The storage lifecycle checks the user's uninstall lock. Keep this test
+      // independent of an actual uninstall running on the developer's machine.
+      process.env.HOME = test.home; process.env.USERPROFILE = test.home;
       const storage = createStorage(test.data);
       storage.close();
       assert.deepEqual(
@@ -62,6 +66,8 @@ describe("EASY CODE uninstall cleanup", () => {
         { product: "easy-code-agent", formatVersion: 1 },
       );
     } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
       rmSync(test.root, { recursive: true, force: true });
     }
   });

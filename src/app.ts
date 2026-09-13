@@ -904,6 +904,14 @@ export class EasyCodeApp {
     }
   }
 
+  private uninstallRequested = false;
+  private uninstallController?: AbortController;
+  requestUninstallShutdown(): void {
+    this.uninstallRequested = true;
+    if (this.uninstallController) this.uninstallController.abort();
+    else this.terminal.close();
+  }
+
   async runInteractive(): Promise<void> {
     if (!this.terminal.isInteractive()) {
       throw new Error("Interactive mode requires a TTY; use `easy-code run \"<task>\"` for non-interactive use.");
@@ -921,7 +929,7 @@ export class EasyCodeApp {
     if (!this.terminal.isInlineShell()) this.printStatus();
     this.announceResumeRecovery();
 
-    while (!this.closed) {
+    while (!this.closed && !this.uninstallRequested) {
       this.syncTerminalView();
       if (this.state.planReview) {
         try {
@@ -1581,7 +1589,9 @@ export class EasyCodeApp {
     validateImageAttachmentCollection(images);
     validateProviderImageAttachments(this.state.provider, images);
     this.dirty = true;
+    if (this.uninstallRequested) throw new Error("Task stopped for EASY CODE uninstall.");
     const controller = new AbortController();
+    this.uninstallController = controller;
     const steeringNotifier = new TurnSteeringAttemptNotifier();
     const capturedSteeringImages = new Map<string, ImageAttachment>();
     const pendingSteering = this.threadStore.pendingTurnSteering(this.state.threadId);
@@ -1601,6 +1611,7 @@ export class EasyCodeApp {
         controller.abort();
       } else {
         process.removeListener("SIGINT", onInterrupt);
+        if (this.uninstallController === controller) this.uninstallController = undefined;
         this.terminal.emergencyRestore();
         process.exit(130);
       }
@@ -1732,6 +1743,7 @@ export class EasyCodeApp {
         capturedSteeringImages.clear();
       } finally {
         process.removeListener("SIGINT", onInterrupt);
+        if (this.uninstallController === controller) this.uninstallController = undefined;
         this.save();
         this.syncTerminalView();
       }
