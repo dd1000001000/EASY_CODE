@@ -1,8 +1,8 @@
 import type { OutputDigest } from "../command/types.js";
 import type { SandboxWorkerControl } from "./types.js";
 
-const CONTROL_PREFIX = "[[EASY_CODE_SRT:";
-const CONTROL_PATTERN = /\[\[EASY_CODE_SRT:([^:\]]+):([A-Za-z0-9_-]+)\]\]\r?\n?/gu;
+const CONTROL_PREFIX = "[[EASY_CODE_SANDBOX:";
+const CONTROL_PATTERN = /\[\[EASY_CODE_SANDBOX:([^:\]]+):([A-Za-z0-9_-]+)\]\]\r?\n?/gu;
 
 export function encodeSandboxControl(
   commandId: string,
@@ -22,8 +22,8 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
         ((value as { outcome?: unknown }).outcome === undefined ||
           ["exited", "timed_out", "canceled", "output_limit", "spawn_failed", "unknown"].includes(String((value as { outcome?: unknown }).outcome)))) return value as SandboxWorkerControl;
     if (type === "cleanup_error" && typeof (value as { message?: unknown }).message === "string") return value as SandboxWorkerControl;
-    if (type === "ready" && ["anthropic-srt-linux","anthropic-srt-windows","anthropic-srt-macos","harbor-landlock","benchmark-container"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
-    if (type === "stage" && ["worker_started","runtime_loaded","initialize_start","initialize_complete","wrap_start","wrap_complete"].includes(String((value as {stage?:unknown}).stage))) return value as SandboxWorkerControl;
+    if (type === "ready" && ["podman","benchmark-container","host-unrestricted"].includes(String((value as {backend?:unknown}).backend))) return value as SandboxWorkerControl;
+    if (type === "stage" && ["worker_started","relay_start","dispatch_start","cleanup_start"].includes(String((value as {stage?:unknown}).stage))) return value as SandboxWorkerControl;
     if (type === "sandbox_error" || type === "target_spawn_error") {
       if (typeof (value as {message?:unknown}).message === "string") return value as SandboxWorkerControl;
     }

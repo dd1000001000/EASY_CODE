@@ -23,7 +23,9 @@ import posixpath
 
 
 class SplitBenchmarkEnvironment:
-    def __init__(self, original):
+    def __init__(self, original, resource_limits=None):
+        defaults = json.loads(Path(__file__).with_name("sandbox-resources.json").read_text(encoding="utf-8"))
+        self.resources = self.validate_resources(defaults if resource_limits is None else resource_limits)
         self.original = original
         self.name = "easy-code-split-" + uuid.uuid4().hex
         self.volume = self.name + "-workspace"
@@ -51,8 +53,8 @@ class SplitBenchmarkEnvironment:
         return result
 
     @classmethod
-    async def create(cls, original):
-        obj = cls(original)
+    async def create(cls, original, resource_limits=None):
+        obj = cls(original, resource_limits)
         try:
             found = await original._run_docker_compose_command(["ps", "-q", "main"], timeout_sec=30)
             main = str(found.stdout or "").strip()
@@ -75,7 +77,8 @@ class SplitBenchmarkEnvironment:
                 "--mount", f"type=bind,source={obj.bridge},target=/opt/easy-code-command-bridge",
                 "--entrypoint", "/bin/sh", obj.image, "-c", "while :; do sleep 3600; done")
             await obj.docker("create", "--name", obj.worker, "--network", "none", "--ipc", "private",
-                "--shm-size", "64m", "--security-opt", "no-new-privileges:true", "--mount", mount,
+                "--shm-size", f'{obj.resources["shmMiB"]}m', "--pids-limit", str(obj.resources["pidsLimit"]),
+                "--security-opt", "no-new-privileges:true", "--mount", mount,
                 "--entrypoint", "/bin/sh", obj.image, "-c", "while :; do sleep 3600; done")
             await obj.docker("start", obj.controller, obj.worker)
             # Harbor datasets may mount /testbed, which docker commit excludes.
@@ -86,10 +89,10 @@ class SplitBenchmarkEnvironment:
             # worker. Its own copy is hidden behind a private nested volume.
             await asyncio.to_thread(obj.copy_archive_in, obj.worker, obj.initial)
             info = json.loads((await obj.docker("inspect", obj.worker)).stdout)[0]
-            obj.validate_worker(info, obj.volume)
+            obj.validate_worker(info, obj.volume, obj.resources)
             obj.worker_id = info["Id"]
             (obj.bridge / "binding.json").write_text(json.dumps({"version": 1,
-                "workerId": obj.worker_id, "network": "none"}), encoding="utf-8")
+                "workerId": obj.worker_id, "network": "none", "resources": obj.resources}), encoding="utf-8")
             obj.broker = asyncio.create_task(obj.serve())
             return obj
         except BaseException:
@@ -97,7 +100,15 @@ class SplitBenchmarkEnvironment:
             raise
 
     @staticmethod
-    def validate_worker(info, volume):
+    def validate_resources(value):
+        if (not isinstance(value, dict) or set(value) != {"shmMiB", "pidsLimit"} or
+            type(value["shmMiB"]) is not int or not 16 <= value["shmMiB"] <= 4096 or
+            type(value["pidsLimit"]) is not int or not 32 <= value["pidsLimit"] <= 8192):
+            raise RuntimeError("Invalid Benchmark sandbox resources")
+        return dict(value)
+
+    @staticmethod
+    def validate_worker(info, volume, resources=None):
         config = info["HostConfig"]
         mounts = info.get("Mounts", [])
         if (config.get("NetworkMode") != "none" or config.get("Privileged") or
@@ -106,6 +117,12 @@ class SplitBenchmarkEnvironment:
             mounts[0].get("Type") != "volume" or mounts[0].get("Name") != volume or
             mounts[0].get("Destination") != "/testbed"):
             raise RuntimeError("Unsafe Benchmark worker: expected offline private container with only task volume")
+        if resources is not None:
+            resources = SplitBenchmarkEnvironment.validate_resources(resources)
+            if (config.get("ShmSize") != resources["shmMiB"] * 1024 * 1024 or
+                config.get("PidsLimit") != resources["pidsLimit"] or
+                not any(item in ("no-new-privileges", "no-new-privileges:true") for item in config.get("SecurityOpt", []))):
+                raise RuntimeError("Unsafe Benchmark worker: resource/isolation settings differ from controller policy")
 
     @property
     def network_policy(self):
@@ -185,7 +202,8 @@ class SplitBenchmarkEnvironment:
             environment["digest"] = self.dependency_digest(environment["dependencies"])
         item["dependency_digest"] = environment["digest"]
         await self.docker("volume", "create", item["volume"])
-        await self.docker("create", "--name", name, "--network", "none", "--ipc", "private", "--shm-size", "64m",
+        await self.docker("create", "--name", name, "--network", "none", "--ipc", "private",
+            "--shm-size", f'{self.resources["shmMiB"]}m', "--pids-limit", str(self.resources["pidsLimit"]),
             "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev", "--tmpfs", "/run:rw,nosuid,nodev",
             "--security-opt", "no-new-privileges:true", "--mount", f'type=volume,source={item["volume"]},target=/testbed',
             "--entrypoint", "/bin/sh", environment["image"], "-c", "while :; do sleep 3600; done")
@@ -193,7 +211,7 @@ class SplitBenchmarkEnvironment:
         await asyncio.to_thread(self.copy_archive_in, name, environment["dependencies"])
         await asyncio.to_thread(self.copy_archive_in, name, item["initial"])
         info = json.loads((await self.docker("inspect", name)).stdout)[0]
-        self.validate_worker(info, item["volume"])
+        self.validate_worker(info, item["volume"], self.resources)
         item["id"] = info["Id"]
         return item
 

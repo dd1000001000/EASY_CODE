@@ -54,7 +54,7 @@ public static class ECJob {
       if(!other) {quiet=true;break;}
       Thread.Sleep(25);
      }
-     if(!quiet) throw new Exception("Descendants remain before ACL cleanup");
+     if(!quiet) throw new Exception("Descendants remain before command cleanup");
      Console.WriteLine("QUIET");Console.Out.Flush();
     } finally { Marshal.FreeHGlobal(ids); }
    }

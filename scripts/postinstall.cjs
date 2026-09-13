@@ -107,69 +107,39 @@ async function installBundledPromptResources(options = {}) {
 }
 
 /**
- * Read-only installation check. It never elevates, installs OS packages, or
- * makes npm installation fail; privileged setup is offered by the retained
- * terminal on the first interactive EASY CODE launch.
+ * npm installation prepares the engine, dedicated machine and image. System
+ * installers own privilege prompts; an incomplete setup is never reported ready.
  */
 async function checkSandboxPrerequisites(options = {}) {
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
-  const platform = options.platform || process.platform;
-  const loadRuntime = options.loadRuntime || (() => import("@anthropic-ai/sandbox-runtime"));
-
+  const report = message => stdout.write(`EASY CODE: ${message}\n`);
   try {
-    const srt = await loadRuntime();
-    if (!srt.SandboxManager.isSupportedPlatform()) {
-      stdout.write(
-        `EASY CODE: Anthropic Sandbox Runtime does not support ${platform}; command execution will remain blocked.\n`,
-      );
-      return { ready: false, platform, status: "unsupported" };
-    }
-
-    if (platform === "win32") {
-      const resolved = srt.resolveSrtWin({ path: srt.VENDORED_SRT_WIN_EXE });
-      const status = await srt.checkWindowsSandboxStatusAsync({ srtWin: resolved });
-      const userReady = status.user.provisioned &&
-        status.user.credPresent &&
-        status.user.groupExists &&
-        status.user.inSandboxGroup;
-      let networkReady = false;
-      if (userReady) {
-        try {
-          await srt.verifyWindowsWfpEgress({ srtWin: resolved });
-          networkReady = true;
-        } catch {
-          networkReady = false;
-        }
+    let service = options.service;
+    if (!service) {
+      const compiled = path.join(__dirname, "..", "dist");
+      if (shouldDeferLocalSourcePromptInstall()) {
+        report("Source dependency installation precedes build. After building, run easy-code sandbox setup; no stale dist installer is executed.");
+        return { ready: false, status: "source_build_pending", deferred: true };
       }
-      const ready = userReady && networkReady;
-      stdout.write(
-        ready
-          ? "EASY CODE: Anthropic Windows sandbox prerequisites are ready.\n"
-          : "EASY CODE: Windows sandbox needs one-time setup; the first interactive launch will offer a UAC-guided setup.\n",
-      );
-      return { ready, platform, status: ready ? "ready" : "setup_required" };
+      const { PodmanStartupService } = await import(pathToFileURL(path.join(compiled, "sandbox", "podman-startup.js")).href);
+      const { ensurePodmanInstalled } = await import(pathToFileURL(path.join(compiled, "sandbox", "podman-install.js")).href);
+      const { loadEasyCodeConfig } = await import(pathToFileURL(path.join(compiled, "config", "loader.js")).href);
+      // Load user configuration, never the project from which npm was launched.
+      const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
+        workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
+      service = new PodmanStartupService(config.limits, undefined,
+        () => ensurePodmanInstalled(config.limits, { report }), report);
     }
-
-    const dependencies = await srt.SandboxManager.checkDependenciesAsync();
-    const problems = [...dependencies.errors, ...dependencies.warnings];
-    if (problems.length) {
-      stdout.write(
-        "EASY CODE: command sandbox prerequisites need attention; the first interactive launch will offer guided setup or diagnostics.\n",
-      );
-      for (const problem of problems) {
-        stdout.write(`EASY CODE: sandbox prerequisite: ${String(problem).replace(/[\r\n]+/g, " ")}\n`);
-      }
-      return { ready: false, platform, status: "dependencies_missing", problems };
-    }
-    stdout.write("EASY CODE: Anthropic command sandbox prerequisites are present.\n");
-    return { ready: true, platform, status: "ready" };
+    report("Preparing Podman sandbox automatically. Downloads and OS authorization may be required.");
+    const result = await service.setup();
+    const ready = result.readiness.status === "ready";
+    if (ready) report("Podman sandbox ready: installation and disposable IPC/offline probe passed.");
+    else stderr.write(`EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete OS authorization/reboot if requested, then run easy-code sandbox setup. No host fallback.\n`);
+    return { ready, status: result.readiness.status };
   } catch (error) {
-    stderr.write(
-      `EASY CODE: sandbox prerequisite check could not complete: ${errorMessage(error)}. ` +
-      "Installation will continue; the first interactive launch will retry.\n",
-    );
-    return { ready: false, platform, status: "check_failed" };
+    stderr.write(`EASY CODE: automatic sandbox setup failed: ${errorMessage(error)}. Run easy-code sandbox setup to resume; no host fallback.\n`);
+    return { ready: false, status: "setup_failed" };
   }
 }
 
@@ -544,9 +514,8 @@ module.exports = {
 
 if (require.main === module) {
   Promise.resolve()
-    .then(() => checkSandboxPrerequisites())
     .then(() => runPostinstall())
-    .then((result) => {
+    .then(async (result) => {
       if (
         !result.promptBundleReady ||
         !result.sqliteReady ||
@@ -554,7 +523,10 @@ if (require.main === module) {
         !result.vectorStackReady
       ) {
         process.exitCode = 1;
+        return;
       }
+      const sandbox = await checkSandboxPrerequisites();
+      if (!sandbox.ready && !sandbox.deferred) process.exitCode = 1;
     })
     .catch((error) => {
       process.stderr.write(`EASY CODE: installation check failed: ${errorMessage(error)}\n`);

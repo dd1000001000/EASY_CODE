@@ -23,7 +23,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-The final global install prepares the local retrieval model and integration resources and may download assets. If npm reports an existing `easy-code` launcher, run `npm run install:doctor`, uninstall the copies reported for the old npm prefixes, and reinstall without `--force`.
+The final global install automatically prepares Podman, its dedicated rootless machine on Windows/macOS, the sandbox base image, the local retrieval model and integration resources. Downloads and system authorization may be required. If npm reports an existing `easy-code` launcher, run `npm run install:doctor`, uninstall the copies reported for the old npm prefixes, and reinstall without `--force`.
 
 ## Get started
 
@@ -39,12 +39,17 @@ The first installation creates `~/.easy_code/models.toml`. Edit that file to mai
 
 Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
 
-Protected commands need a working sandbox. Inspect it and initialize it if requested:
+The sandbox is prepared during installation. Check it, or resume setup after an authorization/download/reboot interruption:
 
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
+easy-code sandbox resources
 ```
+
+Existing [Podman](https://podman.io/docs/installation) installations are reused. Windows/macOS use the `easy-code` rootless machine without switching your default connection. Linux package installation requires system privileges; rootless image setup must run as your normal user. Unavailable installers, denied authorization or required reboots leave setup explicitly incomplete, never a host fallback. Normal commands run in a persistent Linux task container at `/workspace`; approved HTTP(S) access lets the model install dependencies. Full access remains native host execution. Benchmark keeps its offline Harbor/Docker worker.
+
+To permanently remove a selected stopped/unused EASY CODE resource, inspect the list first, then use `easy-code sandbox remove <container|volume|image> <full-name> --yes`. Project files and history are preserved; container/volume contents require a backup to recover.
 
 Run one task or resume a session:
 

@@ -1,12 +1,13 @@
 {
   "id": "run_command",
   "contractVersion": "1.1.0",
-  "description": "Run a structured program/argv command. Every new command uses the selected approval mode. Plan commands may modify files when approved. Full access uses the host; Benchmark uses an offline task container. Runtime manages timeout and cleanup.",
+  "description": "Run structured program/argv. Normal CLI workspace commands use a persistent Linux Podman task container at /workspace; use Linux tools, not host Windows interpreters. File tools use the same checkout through relative paths. Plan commands may write when approved. Full access uses the host; Benchmark keeps its offline worker. Runtime manages timeout and cleanup.",
   "propertyDescriptions": {
     "executionScope": "Default workspace sandbox. Request host for exact per-command host escalation; the approval includes full host filesystem and network access. Benchmark always remains container-confined.",
-    "program": "Executable name, path relative to cwd, or absolute local executable. Runtime checks links and executable identity; remote paths are not accepted.",
+    "requiredCapabilities": "Compatibility requirements only, never permission grants. test/verify assumes loopback_tcp for runtime IPC. Set [] for checks known not to need IPC. Missing capabilities can request a separately approved host invocation; Benchmark cannot escape. Do not patch language runtimes or repackage a denied command.",
+    "program": "Executable name or container Linux path for workspace commands (python3, node, bash). Dependencies are installed inside the task container. Never pass host Windows executable paths unless requesting separately approved host scope.",
     "args": "Literal structured argv, including multiline code and punctuation. Supply real arguments, not an extra launcher name. For cmd /c pass the whole command as ONE argument, e.g. [\"/c\",\"dir /b\"]. Prefer search_files mode=list for directory listing.",
-    "cwd": "Absolute or workspace-relative directory. Workspace scope stays in the workspace; approved host scope and Full access may use other local directories. Benchmark resolves this directory inside its worker container.",
+    "cwd": "Normal CLI workspace: /workspace or a relative directory; other Linux container directories are allowed. Host scope/Full access uses host paths. Benchmark resolves paths in its own worker. Arguments are literal and are never path-rewritten.",
     "intent": "Declared purpose, not permission or proof of read-only behavior. Use test, build or verify for validation.",
     "verificationKind": "Optional validation category: unit_test, integration_test, build, typecheck, lint, format_check, smoke_test, benchmark, custom. Missing verify/test categories default to custom; build defaults to build. Invalid or inapplicable metadata is normalized without blocking execution.",
     "timeoutMs": "An optional requested command-phase timeout. Runtime applies the minimum of this request, the configured command limit, and the classified capability limit, then returns all four timeout values including the effective limit.",

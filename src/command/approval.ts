@@ -2,6 +2,7 @@ import path from "node:path";
 import { reusableExecutableGrant } from "./security.js";
 import { isCommandGrant, decodeCommandGrant, commandGrantMatches } from "./command-grant.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { isPodmanGrant, decodePodmanGrant, podmanGrantMatches } from "./podman-grant.js";
 
 /** Keep Thread checkpoints and approval prompts bounded even in long sessions. */
 export const MAX_COMMAND_APPROVAL_PREFIXES = 128;
@@ -32,6 +33,7 @@ export function networkCommandApprovalPrefix(executable: string, args: string[],
 }
 
 export function canGrantCommandPrefix(prefix: string): boolean {
+  if (isPodmanGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
   if (prefix.startsWith(ONCE_PREFIX)) return false;
   if (isCommandGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
   // Legacy UI labels may be noncanonical; the application validates before
@@ -42,6 +44,7 @@ export function canGrantCommandPrefix(prefix: string): boolean {
 }
 
 export function formatCommandApprovalPrefix(prefix: string): string {
+  if (isPodmanGrant(prefix)) { const v = decodePodmanGrant(prefix); return redactSensitiveInformation(`${JSON.stringify([v.program, ...(v.exact ? [] : v.prefix)])} (Podman container; ${v.exact ? "exact argv hash=" + v.prefix[0] : "argv prefix"}; cwd=${v.cwd}; network=${v.network}; executable/script contents may change)`); }
   if (prefix.startsWith(ONCE_PREFIX)) return "one invocation only (worker executable identity is not available for a reusable grant)";
   if (isCommandGrant(prefix)) { const v = decodeCommandGrant(prefix); return redactSensitiveInformation(`${JSON.stringify([v.executable, ...(v.exact ? [] : v.args)])} (${v.exact ? `exact argv SHA256=${v.args[0]}` : "argv prefix"}; ${v.scope}; cwd=${JSON.stringify(v.cwd)}; network=${v.network}; script contents may change)`); }
   if (!prefix.startsWith(NETWORK_PREFIX)) return JSON.stringify([prefix]);
@@ -50,6 +53,7 @@ export function formatCommandApprovalPrefix(prefix: string): string {
 }
 
 export function commandPrefixApprovalLabel(prefix: string): string {
+  if (isPodmanGrant(prefix)) return `Yes, allow this container permission for this Thread and its children: ${formatCommandApprovalPrefix(prefix)}`;
   if (isCommandGrant(prefix)) return `Yes, allow this permission prefix for this Thread and its children: ${formatCommandApprovalPrefix(prefix)}`;
   return prefix.startsWith(NETWORK_PREFIX)
     ? `Yes, authorize this network prefix for the Thread: ${formatCommandApprovalPrefix(prefix)}`
@@ -85,6 +89,7 @@ export function normalizeCommandApprovalPrefix(
   }
 
   const selected = approvalPlatform(platform);
+  if (isPodmanGrant(value)) { decodePodmanGrant(value); return value; }
   if (value.startsWith(ONCE_PREFIX)) {
     if (!/^once:v1:[a-f0-9]{64}$/u.test(value)) throw new Error("Invalid one-shot approval identity");
     return value;
@@ -146,6 +151,7 @@ export function isCommandApprovalPrefixGranted(
 ): boolean {
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
+  if (isPodmanGrant(candidate)) return approved.filter(isPodmanGrant).some(p => podmanGrantMatches(p, candidate));
   if (candidate.startsWith(ONCE_PREFIX)) return false;
   if (isCommandGrant(candidate)) return approved.filter(isCommandGrant).some(p => commandGrantMatches(p, candidate));
   if (candidate.startsWith(NETWORK_PREFIX)) {
@@ -168,7 +174,7 @@ export function grantCommandApprovalPrefix(
   const approved = validateCommandApprovalPrefixes(prefixes, platform);
   const candidate = normalizeCommandApprovalPrefix(commandPrefix, platform);
   if (candidate.startsWith(ONCE_PREFIX)) throw new Error("This command allows one-shot approval only");
-  if (!isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
+  if (!isPodmanGrant(candidate) && !isCommandGrant(candidate) && !candidate.startsWith(NETWORK_PREFIX) && !reusableExecutableGrant(candidate)) throw new Error("Shells, interpreters and package managers require per-invocation approval");
   if (approved.some((prefix) => prefix === candidate)) return approved;
   if (approved.length >= MAX_COMMAND_APPROVAL_PREFIXES) {
     throw new Error(`Command approval prefix limit is ${MAX_COMMAND_APPROVAL_PREFIXES}`);

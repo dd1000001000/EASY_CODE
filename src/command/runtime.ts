@@ -8,21 +8,16 @@ import type { ToolContext } from "../core/types.js";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import {
-  AnthropicSandboxBackend,
-  extractSandboxControls,
-  type CommandExecutionBackend,
-  type PreparedCommand,
-  type SandboxExecutionMetadata,
-  type SandboxExecutionRequest,
-} from "../sandbox/index.js";
+import { extractSandboxControls } from "../sandbox/control.js";
+import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionMetadata, SandboxExecutionRequest } from "../sandbox/types.js";
+import { PodmanSandboxBackend } from "../sandbox/podman-backend.js";
 import { terminateProcessTree } from "./lifecycle.js";
 import { SandboxControlStream } from "../sandbox/control.js";
 import type { SandboxWorkerControl } from "../sandbox/types.js";
 import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
 import { commandRequestMetadata, normalizeCommandRequest } from "./normalize-request.js";
-import { CommandVerificationCollector, packageScriptRunner, validationCheckKey } from "./verification.js";
+import { CommandVerificationCollector, packageScriptRunner, validationCheckKey, workspacePackageManifest } from "./verification.js";
 import { captureValidationBaseline, compareValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
 import { inspectNetworkOperation } from "./network-policy.js";
@@ -36,6 +31,9 @@ import {
 } from "./request-validation.js";
 import { CommandPolicyBoundaryError, CommandResolver } from "./resolver.js";
 import { resolveCommandTimeoutBudget } from "./timeout.js";
+import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
+import { assertExecutionCapabilities, SandboxCapabilityError } from "../sandbox/capabilities.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import {
   summarizeWorkspaceDelta,
   type CommandExecutionOutput,
@@ -58,6 +56,7 @@ interface ProcessResult {
 }
 
 export interface CommandRuntimeOptions {
+  limits?: Readonly<RuntimeLimits>;
   /** Trusted host selection, never controlled by model arguments. */
   networkProfile?: "development" | "benchmark" | "review_offline";
   sandboxStartupTimeoutMs?: number;
@@ -99,8 +98,6 @@ const MAX_STATUS_WAIT_MS = 30_000;
 const COMPLETED_JOB_RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_JOBS = 64;
 
-const WINDOWS_SANDBOX_STARTUP_TIMEOUT_MS = 75_000;
-const POSIX_SANDBOX_STARTUP_TIMEOUT_MS = 30_000;
 
 function emptyDigest(): OutputDigest {
   return { head: "", tail: "", text: "", totalBytes: 0, truncated: false };
@@ -128,18 +125,18 @@ function commandPreview(command: ResolvedCommand): string {
   return JSON.stringify([command.executablePath, ...redactArguments(command.args)]);
 }
 
-function defaultSandboxStartupTimeout(metadata: SandboxExecutionMetadata): number {
-  return metadata.backend === "anthropic-srt-windows"
-    ? WINDOWS_SANDBOX_STARTUP_TIMEOUT_MS
-    : POSIX_SANDBOX_STARTUP_TIMEOUT_MS;
+function defaultSandboxStartupTimeout(limits: Readonly<RuntimeLimits>): number {
+  return process.platform === "win32"
+    ? limits.sandboxStartupWindowsMs
+    : limits.sandboxStartupPosixMs;
 }
 
 function retryableSandboxFailure(message: string): boolean {
-  return /(?:srt-win\s+acl\s+(?:grant|stamp|restore|revoke).*timed\s+out|OS\s+sandbox\s+initialization\s+did\s+not\s+become\s+ready|Windows\s+SRT\s+ACL\s+lease|database\s+is\s+locked|resource\s+(?:is\s+)?busy)/iu.test(message);
+  return /(?:OS\s+sandbox\s+initialization\s+did\s+not\s+become\s+ready|database\s+is\s+locked|resource\s+(?:is\s+)?busy)/iu.test(message);
 }
 
 function containsReadyControl(commandId: string, value: string): boolean {
-  if (!value.includes("[[EASY_CODE_SRT:")) return false;
+  if (!value.includes("[[EASY_CODE_SANDBOX:")) return false;
   const digest: OutputDigest = {
     head: value,
     tail: "",
@@ -159,22 +156,23 @@ export class CommandRuntime {
   private readonly backgroundJobs = new Map<string, BackgroundCommandJob>();
   private quarantineReason?: string;
   private readonly executionJournal: ExecutionJournal;
+  private readonly limits: Readonly<RuntimeLimits>;
 
   assertEnvironmentSafe(backend: CommandExecutionBackend = this.executionBackend): void {
     backend.assertEnvironmentSafe?.();
     this.executionJournal.assertRecovered();
     if (this.quarantineReason || (this.options.quarantinePath && existsSync(this.options.quarantinePath))) {
-      throw new Error(`Command environment quarantined; inspect cleanup before resuming mutations: ${this.quarantineReason ?? this.options.quarantinePath}`);
+      throw new CommandEnvironmentQuarantined(`Command environment quarantined; inspect cleanup before resuming mutations: ${this.quarantineReason ?? this.options.quarantinePath}`);
     }
   }
 
-  private quarantine(reason: string): void {
+  private quarantine(reason: string, backend: CommandExecutionBackend = this.executionBackend): void {
     this.quarantineReason = reason;
-    this.executionBackend.quarantine?.(reason);
+    backend.quarantine?.(reason);
     if (this.options.quarantinePath) {
       mkdirSync(path.dirname(this.options.quarantinePath), { recursive: true });
       writeFileSync(this.options.quarantinePath, JSON.stringify({ version: 1, workspace: this.workspace.root,
-        reason: sanitizeCommandOutput(reason).slice(0, 2048), at: new Date().toISOString() }), { mode: 0o600 });
+        backend: backend.describe().backend, reason: sanitizeCommandOutput(reason).slice(0, 2048), at: new Date().toISOString() }), { mode: 0o600 });
     }
   }
 
@@ -186,9 +184,10 @@ export class CommandRuntime {
     private readonly options: CommandRuntimeOptions = {},
   ) {
     this.executionJournal = new ExecutionJournal(options.lifecycleDirectory);
+    this.limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
-    this.executionBackend = executionBackend ?? new AnthropicSandboxBackend(workspace);
+    this.executionBackend = executionBackend ?? new PodmanSandboxBackend(workspace, { limits: this.limits });
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
@@ -401,14 +400,15 @@ export class CommandRuntime {
       (context.isUnrestrictedHostAccessActive?.() ?? true);
     const benchmark = this.options.networkProfile === "benchmark";
     const containerExecution = benchmark || this.options.networkProfile === "review_offline";
-    const hostAccess = !containerExecution && (unrestricted || input.executionScope === "host");
-    const executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
+    let hostAccess = !containerExecution && (unrestricted || input.executionScope === "host");
+    let executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
     this.assertEnvironmentSafe(executionBackend);
     let resolved: ResolvedCommand;
     const networkEnabled = !benchmark && this.options.networkProfile !== "review_offline";
     const resolverOptions = { unrestrictedHostAccess: hostAccess || benchmark, unrestrictedCommands: true, networkEnabled };
     try {
-      resolved = containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
+      resolved = executionBackend.resolveCommand ? await executionBackend.resolveCommand(input, context)
+        : containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     } catch (error) {
       return this.resolutionFailure(
         commandId,
@@ -419,13 +419,35 @@ export class CommandRuntime {
         executionBackend,
       );
     }
+    let capabilityEscalation: string | undefined;
+    const capabilities = executionBackend.describe().capabilities;
+    const required = input.requiredCapabilities ?? (capabilities && this.limits.sandboxVerificationRequiresLoopback &&
+      ["test", "verify"].includes(input.intent) ? ["loopback_tcp" as const] : []);
+    if (!hostAccess && !containerExecution && this.limits.sandboxAllowHostEscalation) {
+      try {
+        if (capabilities?.features.process_tree === "blocked") throw new SandboxCapabilityError(["process_tree"], capabilities);
+        assertExecutionCapabilities(capabilities, required);
+      } catch (error) {
+        if (!(error instanceof SandboxCapabilityError)) throw error;
+        // No target or worker exists yet. Propose the broader scope BEFORE
+        // approval so an old workspace grant can never authorize this launch.
+        capabilityEscalation = error.message;
+        hostAccess = true;
+        executionBackend = this.unrestrictedExecutionBackend;
+        this.assertEnvironmentSafe(executionBackend);
+        resolverOptions.unrestrictedHostAccess = true;
+        resolved = await this.resolver.resolve(input, resolverOptions);
+        this.options.recordLifecycle?.(context, commandId, "command.host_escalation_requested", { required, capabilities, execution: "not_started" });
+      }
+    }
     const networkOperation = inspectNetworkOperation(resolved);
     let policyDecision = this.policy.classify(input, resolved, "code", networkEnabled);
-    const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
+    const scope = containerExecution || executionBackend.describe().backend === "podman" ? "container" : hostAccess ? "host" : "workspace";
     const commandNetwork = hostAccess || Boolean(networkOperation) && networkEnabled;
     // PATH and executable bytes belong to the offline worker, not controller.
     // Without host-attested bytes, use one-shot approval, never a fake digest.
-    const prefix = containerExecution ? `once:v1:${sha256(commandId)}` : commandGrantPrefix(resolved, scope, commandNetwork);
+    const prefix = executionBackend.approvalPrefix?.(resolved, context, commandNetwork) ??
+      (containerExecution ? `once:v1:${sha256(commandId)}` : commandGrantPrefix(resolved, scope, commandNetwork));
     const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
 
     // A single approval authorizes this invocation, not the entire Thread.
@@ -436,7 +458,7 @@ export class CommandRuntime {
     const approveNetwork = (destination?: string): Promise<boolean> => networkApproval ??= (async () => {
       const effect = networkOperation?.effect ?? "unknown";
       if (!networkEnabled) return false;
-      const prefix = commandGrantPrefix(resolved, scope, true);
+      const prefix = executionBackend.approvalPrefix?.(resolved, context, true) ?? commandGrantPrefix(resolved, scope, true);
       let granted = false;
       try {
         granted = await requestNetworkApproval({ ...context, signal: networkSignal }, {
@@ -459,8 +481,8 @@ export class CommandRuntime {
         approved = await context.requestApproval({
           id: fingerprint,
           signal: context.signal,
-          title: `Run ${resolved.program}`,
-          description: `${input.reason ?? "Execute requested command"}. Environment=${scope}; network=${commandNetwork}; cwd=${resolved.cwdAbsolute}; exact approval=${fingerprint}`,
+          title: `${capabilityEscalation ? "Run outside sandbox: " : "Run "}${resolved.program}`,
+          description: `${capabilityEscalation ? `${capabilityEscalation} Requesting HOST execution with host filesystem and network permissions, not sandbox execution. ` : ""}${input.reason ?? "Execute requested command"}. Environment=${scope}; network=${commandNetwork}; cwd=${resolved.cwdAbsolute}; exact approval=${fingerprint}`,
           risk: hostAccess ? "system" : policyDecision.risk,
           // This value is produced by CommandResolver after PATH lookup and
           // realpath canonicalization. The UI must never derive a reusable
@@ -507,6 +529,7 @@ export class CommandRuntime {
     }
 
     const sandboxRequest: SandboxExecutionRequest = {
+      timeoutMs: resolveCommandTimeoutBudget(input.timeoutMs, context.commandTimeoutMs, policyDecision.capability, this.limits).effectiveMs,
       commandId,
       command: resolved,
       policyDecision,
@@ -514,6 +537,20 @@ export class CommandRuntime {
       commandPreview: commandPreview(resolved),
       hostExecutionAuthorized: hostAccess,
     };
+    // These are compatibility requirements, not permission grants. Scope changes
+    // always go through a new approved invocation; never replay here.
+    if (!hostAccess) {
+      const report = executionBackend.describe(sandboxRequest).capabilities;
+      const required = input.requiredCapabilities ?? (report && this.limits.sandboxVerificationRequiresLoopback &&
+        ["test", "verify"].includes(input.intent) ? ["loopback_tcp" as const] : []);
+      try {
+        if (report?.features.process_tree === "blocked") throw new SandboxCapabilityError(["process_tree"], report);
+        assertExecutionCapabilities(report, required);
+      } catch (error) {
+        this.options.recordLifecycle?.(context, commandId, "command.capability_rejected", { required, report, execution: "not_started" });
+        return this.sandboxFailure(commandId, startedAt, resolved, policyDecision, context, error, sandboxRequest, executionBackend);
+      }
+    }
     if (context.signal?.aborted) {
       return this.canceledBeforeStart(
         commandId,
@@ -527,7 +564,8 @@ export class CommandRuntime {
 
     // Re-resolve after an approval wait. Changed executable/npm material needs a
     // fresh invocation and cannot silently reuse the old approval.
-    const fresh = containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
+    const fresh = executionBackend.resolveCommand ? await executionBackend.resolveCommand(input, context)
+      : containerExecution ? this.resolver.resolveContainer(input) : await this.resolver.resolve(input, resolverOptions);
     if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
       throw new Error("Command material changed while awaiting approval; request again");
     }
@@ -546,10 +584,11 @@ export class CommandRuntime {
     this.executionJournal.begin(commandId, context);
     this.options.recordLifecycle?.(context, commandId, "command.preparing", { execution: "not_started" });
     let prepared: PreparedCommand;
+    const preparingAt = Date.now();
     try {
       prepared = await executionBackend.prepare(sandboxRequest);
     } catch (error) {
-      if (error instanceof AggregateError) this.quarantine("Sandbox preparation cleanup was incomplete");
+      if (error instanceof AggregateError) this.quarantine("Sandbox preparation cleanup was incomplete", executionBackend);
       else this.executionJournal.complete(commandId);
       if (context.signal?.aborted) {
         return this.canceledBeforeStart(
@@ -577,7 +616,7 @@ export class CommandRuntime {
         await prepared.cleanup();
         this.executionJournal.complete(commandId);
       } catch (error) {
-        this.quarantine(`Canceled preparation cleanup failed: ${String(error)}`);
+        this.quarantine(`Canceled preparation cleanup failed: ${String(error)}`, executionBackend);
       }
       return this.canceledBeforeStart(
         commandId,
@@ -594,21 +633,28 @@ export class CommandRuntime {
     const stderr = new OutputCollector(maxOutputChars, text => archive?.push("stderr", text));
     const verification = new CommandVerificationCollector({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute,
       environmentDigest: sha256(JSON.stringify(Object.entries(resolved.environment).sort(([a], [b]) => a.localeCompare(b)))) },
-      await packageScriptRunner({ program: resolved.executablePath, args: resolved.args }, resolved.cwdAbsolute));
+      await packageScriptRunner({ program: resolved.executablePath, args: resolved.args }, resolved.cwdAbsolute,
+        () => workspacePackageManifest(this.workspace, executionBackend.workspaceRelativeCwd
+          ? executionBackend.workspaceRelativeCwd(resolved)
+          : path.relative(this.workspace.root, resolved.cwdAbsolute))));
     const timeout = resolveCommandTimeoutBudget(
       input.timeoutMs,
       context.commandTimeoutMs,
       policyDecision.capability,
+      this.limits,
     );
     const timeoutMs = timeout.effectiveMs;
-    let timeoutPhase: "initialization" | "command" | undefined;
+    let timeoutPhase: "initialization" | "command" | "cleanup" | undefined;
+    const workerStartedAt = Date.now();
+    let dispatchedAt: number | undefined;
+    let executionEndedAt: number | undefined;
     let canceled = false;
     let result: ProcessResult = {};
     let termination: ReturnType<typeof terminateProcessTree> | undefined;
     const sandboxStartupTimeoutMs = Math.max(
       1,
       this.options.sandboxStartupTimeoutMs ??
-        defaultSandboxStartupTimeout(prepared.metadata),
+        defaultSandboxStartupTimeout(this.limits),
     );
 
     const subprocess = execa(prepared.executablePath, prepared.args, {
@@ -634,21 +680,28 @@ export class CommandRuntime {
     const requestTermination = (): void => {
       networkApprovalController.abort();
       void networkGate?.close();
-      // Leave the trusted Windows worker alive to revoke/restore its ACL lease.
-      // Killing the entire Job here would prevent cleanup_complete forever.
-      if (windowsJob && dispatched && !protocolError && !cleanupError) {
+      // Let the owning supervisor stop its workload before finalizing cleanup.
+      // Killing only the local client cannot prove container termination.
+      if (prepared.externalLifecycle && prepared.cancel) {
         if (!cooperativeStop) {
           if (timeoutTimer) clearTimeout(timeoutTimer);
-          cleanupDeadline = setTimeout(forceTermination, 45_000);
+          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
+          cooperativeStop = prepared.cancel().catch(error => { cleanupError = `Container cancellation failed: ${String(error)}`; })
+            .finally(forceTermination);
+        }
+      } else if (windowsJob && dispatched && !protocolError && !cleanupError) {
+        if (!cooperativeStop) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
           cooperativeStop = windowsJob.quiesce().catch(error => {
             cleanupError = `Descendant cancellation failed: ${String(error)}`;
             forceTermination();
           });
         }
-      } else if (prepared.cooperativeTermination && process.platform === "linux" && !protocolError) {
+      } else if (prepared.cooperativeTermination && process.platform !== "win32" && !protocolError) {
         if (!cooperativeStop) {
           if (timeoutTimer) clearTimeout(timeoutTimer);
-          cleanupDeadline = setTimeout(forceTermination, 15000);
+          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
           cooperativeStop = Promise.resolve();
           if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
         }
@@ -656,22 +709,23 @@ export class CommandRuntime {
     };
     let timeoutTimer: NodeJS.Timeout | undefined;
     const armTimeout = (
-      phase: "initialization" | "command",
+      phase: "initialization" | "command" | "cleanup",
       durationMs: number,
     ): void => {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       timeoutTimer = setTimeout(() => {
         timeoutPhase = phase;
+        if (phase === "cleanup") cleanupError = "Sandbox cleanup deadline exceeded after target exit; command is not a test timeout";
         requestTermination();
       }, durationMs);
       timeoutTimer.unref();
     };
     let readyProbe = "";
-    let readyObserved = !prepared.metadata.enforced;
-    let dispatched = !prepared.metadata.enforced;
+    let readyObserved = !prepared.metadata.enforced && !prepared.controlPipe;
+    let dispatched = !prepared.metadata.enforced && !prepared.controlPipe;
     let targetExitCode: number | undefined;
     let targetOutcome: Extract<SandboxWorkerControl, { type: "execution_exited" }>["outcome"];
-    let cleanupConfirmed = !prepared.metadata.enforced;
+    let cleanupConfirmed = !prepared.metadata.enforced && !prepared.controlPipe;
     let cleanupError: string | undefined;
     let protocolError: string | undefined;
     const lifecycleEvents: SandboxWorkerControl[] = [];
@@ -716,9 +770,15 @@ export class CommandRuntime {
     const controlStream = new SandboxControlStream(commandId, (control) => {
       lifecycleEvents.push(control);
       this.options.recordLifecycle?.(context, commandId, `command.${control.type}`, control);
-      if (control.type === "ready") { readyObserved = true; armTimeout("command", timeoutMs); }
-      if (control.type === "execution_dispatched") { dispatched = true; announceStarted(); }
-      if (control.type === "execution_exited") { targetExitCode = control.exitCode; targetOutcome = control.outcome; }
+      if (control.type === "ready") { readyObserved = true; if (!prepared.controlPipe) armTimeout("command", timeoutMs); }
+      if (control.type === "execution_dispatched") {
+        dispatched = true; dispatchedAt = Date.now(); armTimeout("command", timeoutMs); announceStarted();
+      }
+      if (control.type === "execution_exited") {
+        targetExitCode = control.exitCode; targetOutcome = control.outcome; executionEndedAt = Date.now();
+        // Cleanup latency must not turn a completed target into a test timeout.
+        armTimeout("cleanup", this.limits.sandboxCleanupTimeoutMs);
+      }
       if (control.type === "cleanup_complete") cleanupConfirmed = true;
       if (control.type === "cleanup_error") cleanupError = control.message;
       if (control.type === "cleanup_requested") {
@@ -759,12 +819,12 @@ export class CommandRuntime {
       : undefined;
     revocationTimer?.unref();
     armTimeout(
-      prepared.metadata.enforced ? "initialization" : "command",
-      prepared.metadata.enforced ? sandboxStartupTimeoutMs : timeoutMs,
+      prepared.metadata.enforced || prepared.controlPipe ? "initialization" : "command",
+      prepared.metadata.enforced || prepared.controlPipe ? sandboxStartupTimeoutMs : timeoutMs,
     );
-    if (!prepared.metadata.enforced) announceStarted();
+    if (!prepared.metadata.enforced && !prepared.controlPipe) { dispatchedAt = Date.now(); announceStarted(); }
 
-    if (prepared.controlPipe && process.platform === "win32") {
+    if (prepared.controlPipe && !prepared.externalLifecycle && process.platform === "win32") {
       try {
         if (!subprocess.pid) throw new Error("Worker did not start");
         windowsJob = await containWindowsWorker(subprocess.pid);
@@ -781,24 +841,33 @@ export class CommandRuntime {
     } catch (error) {
       result = error as ProcessResult;
     } finally {
+      executionEndedAt ??= Date.now();
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (cleanupDeadline) clearTimeout(cleanupDeadline);
       if (revocationTimer) clearInterval(revocationTimer);
       context.signal?.removeEventListener("abort", onAbort);
     }
+    await cooperativeStop;
     const terminationResult = await (windowsJob?.stop() ?? termination);
     await networkGate?.close();
-    if (terminationResult && !terminationResult.confirmed) {
+    if (terminationResult && !terminationResult.confirmed && !prepared.externalLifecycle) {
       cleanupError = "Process tree termination could not be confirmed";
-      this.quarantine(cleanupError);
+      this.quarantine(cleanupError, executionBackend);
     }
 
     try {
-      if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) await prepared.cleanup();
-      else this.quarantine(cleanupError ?? "Sandbox cleanup was not confirmed");
+      if (prepared.externalLifecycle) {
+        await prepared.cleanup();
+        // Only backend engine inspection, never a killed local client, may
+        // recover cleanup certainty. Execution remains unknown/non-retryable.
+        cleanupConfirmed = true;
+        cleanupError = undefined;
+        if (dispatched && targetExitCode === undefined) targetOutcome = "unknown";
+      } else if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) await prepared.cleanup();
+      else this.quarantine(cleanupError ?? "Sandbox cleanup was not confirmed", executionBackend);
     } catch (error) {
       cleanupError = error instanceof Error ? error.message : String(error);
-      this.quarantine(cleanupError);
+      this.quarantine(cleanupError, executionBackend);
       stderr.push(
         `EASY CODE sandbox cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
@@ -824,7 +893,8 @@ export class CommandRuntime {
       control.type === "stage"
     );
     const sandboxReady = readyObserved;
-    const provenNotStarted = !dispatched && !readyObserved && !protocolError && cleanupConfirmed;
+    const provenNotStarted = !dispatched && !readyObserved && !protocolError && cleanupConfirmed &&
+      (!prepared.externalLifecycle || sandboxError?.type === "sandbox_error");
     const sandboxUnavailableMessage = protocolError ?? (sandboxError?.type === "sandbox_error"
       ? sandboxError.message
       : !sandboxReady
@@ -856,7 +926,7 @@ export class CommandRuntime {
       delta = await this.workspace.completeCommandChangeTracking(before, context.signal?.aborted ? undefined : context.signal);
     } catch (error) {
       cleanupError = `Post-execution workspace audit failed: ${String(error)}`;
-      this.quarantine(cleanupError);
+      this.quarantine(cleanupError, executionBackend);
       delta = { created: [], updated: [], deleted: [], truncated: true };
     }
 
@@ -926,9 +996,15 @@ export class CommandRuntime {
       status,
       exitCode: targetExitCode ?? (typeof result.exitCode === "number" ? result.exitCode : null),
       lifecycle: {
+        timings: { preparationMs: workerStartedAt - preparingAt,
+          initializationMs: (dispatchedAt ?? executionEndedAt) - workerStartedAt,
+          executionMs: dispatchedAt === undefined ? 0 : executionEndedAt - dispatchedAt,
+          cleanupMs: Date.now() - executionEndedAt },
+        ...(timeoutPhase ? { timeoutPhase } : {}),
         ...(targetOutcome ? { outcome: targetOutcome } : {}),
-        execution: targetOutcome === "unknown" || targetOutcome === "spawn_failed" ? "unknown" : targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
-        cleanup: cleanupError ? "failed" : !prepared.metadata.enforced ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
+        execution: targetOutcome === "unknown" || targetOutcome === "spawn_failed" ? "unknown" :
+          targetExitCode !== undefined || !prepared.controlPipe && !prepared.metadata.enforced && typeof result.exitCode === "number" ? "exited" : provenNotStarted ? "not_started" : "unknown",
+        cleanup: cleanupError ? "failed" : !prepared.metadata.enforced && !prepared.controlPipe ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
         ...(cleanupError ? { cleanupError } : {}),
       },
       signal: result.signal ?? null,
@@ -955,7 +1031,7 @@ export class CommandRuntime {
       this.options.recordLifecycle?.(context, commandId, "command.finished", { status: output.status, exitCode: output.exitCode, lifecycle: output.lifecycle, validation: output.validation });
       if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) this.executionJournal.complete(commandId);
     } catch (error) {
-      this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`);
+      this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`, executionBackend);
       output.lifecycle!.cleanup = "unconfirmed";
     }
 
@@ -1226,6 +1302,7 @@ export class CommandRuntime {
     const output: RunCommandOutput = {
       commandId,
       status: "sandbox_unavailable",
+      lifecycle: { execution: "not_started", cleanup: error instanceof AggregateError ? "unconfirmed" : "not_required" },
       exitCode: null,
       signal: null,
       durationMs: Date.now() - startedAt,
@@ -1240,9 +1317,10 @@ export class CommandRuntime {
       },
       failure: {
         kind: "sandbox",
-        code: "sandbox_prepare_failed",
+        code: error instanceof SandboxCapabilityError ? error.code : "sandbox_prepare_failed",
         message,
         processStarted: false,
+        executionState: "not_started",
         retryable: retryableSandboxFailure(message),
       },
       executed: this.executionSummary(resolved),

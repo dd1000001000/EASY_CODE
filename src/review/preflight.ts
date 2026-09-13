@@ -5,18 +5,22 @@ import { ReviewCleanupError } from "./errors.js";
 
 /** Capability check, not a test verdict. Goes through the same command approval
  * and isolation boundary as every participant command. Never installs anything. */
-export async function preflightReviewEnvironment(p: ReviewParticipant): Promise<void> {
+export async function preflightReviewEnvironment(p: ReviewParticipant, containerRoot?: string): Promise<void> {
   const root = p.context.workspaceRoot;
   const exists = async (name: string) => access(path.join(root, name)).then(() => true, () => false);
   let program: string | undefined, args: string[] = ["--version"];
   if (await exists("package.json")) program = "node";
   else if (await exists("pyproject.toml") || await exists("setup.py") || await exists("manage.py")) {
-    program = "python";
-    for (const venv of [".venv", "venv"]) {
-      const executable = path.join(venv, process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+    program = containerRoot ? "python3" : "python";
+    if (containerRoot) {
+      // The dependency volumes are not host directories. Discover interpreters
+      // inside the approved command's container, never through host realpath.
+      args = ["-I", "-c", "import os,subprocess,sys\nfor name in ('.venv','venv'):\n p=os.path.join(os.getcwd(),name)\n exe=os.path.join(p,'bin','python')\n if os.path.isfile(exe):\n  subprocess.run([exe,'-I','-c',\"import os,sys; assert os.path.realpath(sys.prefix)==os.path.realpath(sys.argv[1]), 'Non-relocatable review venv'\",p],check=True)\n  break\nelse: print(sys.version)"];
+    } else for (const venv of [".venv", "venv"]) {
+      const executable = path.join(venv, !containerRoot && process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
       if (await exists(executable)) {
-        program = path.join(root, executable);
-        args = ["-c", "import os,sys; assert os.path.realpath(sys.prefix)==os.path.realpath(sys.argv[1]), 'Non-relocatable review venv'", path.join(root, venv)];
+        program = containerRoot ? path.posix.join(containerRoot, venv, "bin/python") : path.join(root, executable);
+        args = ["-c", "import os,sys; assert os.path.realpath(sys.prefix)==os.path.realpath(sys.argv[1]), 'Non-relocatable review venv'", containerRoot ? path.posix.join(containerRoot, venv) : path.join(root, venv)];
         break;
       }
     }

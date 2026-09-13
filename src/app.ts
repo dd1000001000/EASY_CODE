@@ -1,7 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
-import { HarborSandboxBackend } from "./sandbox/harbor-backend.js";
 import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
 import { runWorkspaceReview } from "./review/application.js";
 import { ValidationBaselineStore } from "./review/baseline-store.js";
@@ -112,9 +111,9 @@ import { createProvider } from "./providers/factory.js";
 import { TokenCalibration } from "./context/token-calibration.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
-import { AnthropicSandboxBackend } from "./sandbox/anthropic-backend.js";
+import { PodmanSandboxBackend } from "./sandbox/podman-backend.js";
+import { PodmanStartupService } from "./sandbox/podman-startup.js";
 import {
-  DefaultSandboxStartupService,
   runSandboxStartupGuide,
   type SandboxStartupService,
 } from "./sandbox/startup.js";
@@ -825,7 +824,7 @@ export class EasyCodeApp {
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup
-          ? options.sandboxStartupService ?? new DefaultSandboxStartupService()
+          ? options.sandboxStartupService ?? new PodmanStartupService(config.limits)
           : undefined,
         options.clipboardImageReader ?? new SystemClipboardImageReader({
           currentDirectory: workspace.root,
@@ -1846,6 +1845,7 @@ export class EasyCodeApp {
         await this.contextArtifactIndex.checkpoint(workspaceId, state);
       },
       hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
+      assertEnvironmentSafe: () => commandRuntime.assertEnvironmentSafe(),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
           sourceState: input.sourceState,
@@ -1969,6 +1969,7 @@ export class EasyCodeApp {
           provider, budget, limits: this.config.limits,
           sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
           lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
+          podmanStateRoot: path.join(this.config.dataDir, "podman"),
           status: text => this.terminal.status(text),
           approve: async (context, request) => this.approvalQueue.run(async () => {
             if (request.signal?.aborted || request.command?.scope === "host") return false;
@@ -2338,6 +2339,7 @@ export class EasyCodeApp {
         contextManager: new ContextManager(),
         hasOpenCommandHandles: () =>
           childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
+        assertEnvironmentSafe: () => childCommandRuntime.assertEnvironmentSafe(),
         buildSystemPrompt: async ({
           mode,
           workspaceSummary,
@@ -3896,7 +3898,7 @@ export class EasyCodeApp {
       thinkingEffort: this.state.thinkingEffort,
       approvalPolicy: this.config.approvalPolicy,
       commandExecutionMode: this.commandExecutionMode,
-      commandEnvironment: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "sandbox",
+      commandEnvironment: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "container",
       contextTokens: this.contextManager.estimateShortTermTokens(this.state),
     };
   }
@@ -4113,7 +4115,9 @@ export class EasyCodeApp {
       undefined,
       this.trustedOuterSandbox === "harbor"
         ? new BenchmarkContainerBackend()
-        : new AnthropicSandboxBackend(workspace, {
+        : new PodmanSandboxBackend(workspace, {
+        limits: this.config.limits,
+        stateRoot: path.join(this.config.dataDir, "podman"),
         sensitiveReadPaths: [
           this.config.configDir,
           this.config.dataDir,
@@ -4124,6 +4128,7 @@ export class EasyCodeApp {
       undefined,
       {
         networkProfile: this.trustedOuterSandbox === "harbor" ? "benchmark" : "development",
+        limits: this.config.limits,
         quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspaceIdFromRoot(workspace.root)}.json`),
         lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspaceIdFromRoot(workspace.root)),
         createOutputArchive: (commandId, context) => this.memoryManager.evidenceStore.createCommandArchive(
@@ -4169,16 +4174,12 @@ export class EasyCodeApp {
         osSandbox: {
           enabled: Boolean(this.trustedOuterSandbox) || this.commandExecutionMode !== "unrestricted",
           failClosed: true,
-          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : process.platform === "win32"
-              ? "anthropic-srt-windows-alpha"
-              : process.platform === "darwin"
-                ? "anthropic-srt-macos-seatbelt"
-                : "anthropic-srt-linux-bubblewrap",
-          filesystem: this.trustedOuterSandbox ? "container" : this.commandExecutionMode === "unrestricted" ? "host" : "workspace-write",
+          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : "podman",
+          filesystem: this.commandExecutionMode === "unrestricted" && !this.trustedOuterSandbox ? "host" : "container",
           network: this.trustedOuterSandbox ? "offline worker: no external networking" : this.commandExecutionMode === "unrestricted" ? "host network, no approval" : "per-command approval and network gate; explicit host escalation uses host networking",
           setup: "easy-code sandbox doctor | easy-code sandbox setup",
         },
-        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; workspace defaults to OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark always stays container-confined",
+        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; workspace uses a Linux Podman task container at /workspace; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
         npmInstall: "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
         subagents:
           "main agent only; Code mode; DAG-bound or standalone isolated tasks; parent effort limits none/low=2, medium=4, high=8; no nested children; shared mutations serialized",

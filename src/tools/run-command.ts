@@ -22,6 +22,7 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { EXECUTION_CAPABILITIES } from "../sandbox/capabilities.js";
 
 const commandInvocationSchema = z
   .object({
@@ -33,6 +34,7 @@ const commandInvocationSchema = z
     timeoutMs: z.number().int().positive().optional(),
     reason: z.string().max(2_000).optional(),
     executionScope: z.enum(["workspace", "host"]).optional(),
+    requiredCapabilities: z.array(z.enum(EXECUTION_CAPABILITIES)).max(EXECUTION_CAPABILITIES.length).optional(),
   })
   .strict()
   .transform(normalizeCommandRequest);
@@ -66,6 +68,7 @@ function commandInvocationDefinition(): Record<string, unknown> {
       timeoutMs: { type: "integer", minimum: 1 },
       reason: { type: "string", maxLength: 2_000 },
       executionScope: { type: "string", enum: ["workspace", "host"], description: "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined." },
+      requiredCapabilities: { type: "array", items: { type: "string", enum: [...EXECUTION_CAPABILITIES] }, maxItems: EXECUTION_CAPABILITIES.length, description: "Compatibility requirements, NOT permissions. Test/verify defaults to requiring loopback TCP for runtime IPC. Set [] only for checks known not to need IPC; otherwise request host scope with normal approval if the sandbox reports missing capabilities. Never rewrite libraries to bypass isolation." },
     },
     required: ["program", "intent"],
   };
@@ -143,12 +146,17 @@ function commandResult(
           (output.validation.standard?.status === "changed" ? "; original tests/configuration changed: this result cannot resolve the original failure" :
             output.validation.standard?.status === "unknown" ? "; testing-standard coverage is incomplete: no verified recovery can be claimed" : "") : "");
   const summary = cleanupUnsafe
-    ? `Command outcome retained (exit=${output.exitCode}); cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
+    ? `${baseSummary}; cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
     : `${baseSummary}${timeoutSummary}`;
   return {
     ok: successful,
     summary,
     data: output,
+    ...(cleanupUnsafe ? { failure: {
+      version: 1 as const, kind: "execution" as const, code: "command_environment_quarantined",
+      execution: "unknown" as const, recovery: "none" as const, issues: [],
+      instruction: "Pause the task. Execution and cleanup are separate outcomes; repair and verify the environment outside the agent before resuming. Do not retry commands or start review experiments.",
+    } } : {}),
     ...(successful ? {} : { error: summary }),
   };
 }

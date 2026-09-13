@@ -13,8 +13,7 @@ import type { CommandExecutionBackend, SandboxWorkerControl } from "../src/sandb
 import type { ToolContext } from "../src/core/types.js";
 import type { ResolvedCommand } from "../src/command/types.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
-import { assertWindowsAclCleanup } from "../src/sandbox/windows-cleanup.js";
-import { AnthropicSandboxBackend } from "../src/sandbox/anthropic-backend.js";
+import { PodmanSandboxBackend } from "../src/sandbox/podman-backend.js";
 import { redactSensitiveInformation } from "../src/memory/sensitive.js";
 import { describe, it } from "./harness.js";
 import { RunCommandTool } from "../src/tools/run-command.js";
@@ -56,24 +55,22 @@ describe("command security floor", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-plan-permissions-"));
     try {
       const workspace = await WorkspaceManager.create(root);
-      const backend = new AnthropicSandboxBackend(workspace, { platform: "win32" });
+      const backend = new PodmanSandboxBackend(workspace);
       const command: ResolvedCommand = { program: "node", executablePath: process.execPath, args: ["--version"],
         cwdAbsolute: root, cwdRelative: ".", executableInsideWorkspace: false, environment: {}, environmentKeys: [] };
       const request = { commandId: "plan", command, context: { ...context(root), mode: "plan" as const }, commandPreview: "node",
         policyDecision: new CommandPolicy().classify({ program: "node", intent: "inspect" }, command, "plan") };
-      assert.equal(backend.describe(request).filesystem, "workspace-write");
+      const plan = backend.describe(request);
+      const codeRequest = { ...request, context: { ...request.context, mode: "code" as const } };
+      assert.deepEqual(plan, backend.describe(codeRequest));
+      assert.equal(plan.filesystem, "container");
+      assert.equal(plan.enforced, true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("keeps redaction placeholders stable across repeated audit/render passes", () => {
     const text = redactSensitiveInformation("token=ghp_1234567890123456789012345");
     assert.equal(redactSensitiveInformation(text), text);
     assert.equal(text, "token=[REDACTED TOKEN]");
-  });
-  it("rejects silent SDK ACL cleanup failure instead of trusting reset resolution", () => {
-    assertWindowsAclCleanup([]);
-    assertWindowsAclCleanup([{ status: "revoked" }]);
-    assert.throws(() => assertWindowsAclCleanup(undefined), /confirmed/u);
-    assert.throws(() => assertWindowsAclCleanup([{ status: "accessDenied" }]), /confirmed/u);
   });
   it("keeps historical interpreter grants inert and disallows new blanket grants", () => {
     for (const filename of ["C:\\tools\\cmd.exe", "/usr/bin/python3", "/usr/bin/npm", process.execPath]) {
@@ -94,7 +91,7 @@ describe("command security floor", () => {
   it("uses a bounded, monotonic control stream independent of display text", () => {
     const seen: SandboxWorkerControl[] = [];
     const stream = new SandboxControlStream("owned", event => seen.push(event), true);
-    const ready = encodeSandboxControl("owned", { type: "ready", backend: "anthropic-srt-linux" });
+    const ready = encodeSandboxControl("owned", { type: "ready", backend: "podman" });
     stream.push(ready.slice(0, 10)); stream.push(ready.slice(10));
     stream.push(encodeSandboxControl("owned", { type: "execution_dispatched" }));
     stream.push(encodeSandboxControl("owned", { type: "execution_exited", exitCode: 0 }));
@@ -117,9 +114,9 @@ describe("command security floor", () => {
     try {
       const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
       const manager = await WorkspaceManager.create(workspaceRoot);
-      const metadata = { backend: "anthropic-srt-windows" as const, enforced: true, filesystem: "workspace-write" as const, network: "denied" as const };
+      const metadata = { backend: "podman" as const, enforced: true, filesystem: "container" as const, network: "denied" as const };
       const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
-        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "anthropic-srt-windows" }, { type: "execution_dispatched" }, { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "ACL restore timed out" }];
+        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "podman" }, { type: "execution_dispatched" }, { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "Container stop was not confirmed" }];
         const records = events.map(event => encodeSandboxControl(request.commandId, event)).join("");
         const script = `const fs=require('fs');const go=()=>{process.stdout.write('noise'.repeat(10000));fs.writeSync(3,${JSON.stringify(records)});process.exit(0)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
         return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot, environment: { ...process.env }, metadata, controlPipe: true, cleanup: async () => { throw new Error("Should not release a failed cleanup lease"); } };
@@ -139,7 +136,7 @@ describe("command security floor", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it("confirms Windows descendant termination before allowing ACL cleanup", async () => {
+  it("confirms Windows descendant termination before finalizing host cleanup", async () => {
     if (process.platform !== "win32") return;
     const worker = spawn(process.execPath, ["-e", "process.stdin.on('data',()=>{const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});process.stdout.write(String(c.pid)+'\\n')});process.stdin.resume();"], { windowsHide: true, stdio: ["pipe", "pipe", "ignore"] });
     try {

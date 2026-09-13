@@ -50,7 +50,7 @@ flowchart TD
 | TypeScript、Node.js ≥ 20.11、ESM | 严格类型、NodeNext 模块解析；编译到 `dist/` 的 CLI |
 | Commander、TOML、Zod | 命令行解析、配置读取、运行时 Schema 与工具参数校验 |
 | Node HTTP / HTTPS | 模型传输、取消、时间和大小限制、受控代理连接 |
-| execa、sandbox-runtime | 进程启动和平台沙箱集成；项目另行管理审批和生命周期 |
+| execa、Podman CLI | 宿主进程控制和 rootless Linux 任务容器；项目管理审批、网络代理与生命周期 |
 | node-sqlite3-wasm、SQLite FTS5 | 持久化仓储、全文检索和数据库迁移，避免 Node SQLite ABI 编译依赖 |
 | ONNX Runtime、Hugging Face tokenizers | 本地文本向量生成 |
 | Orama | 派生的向量检索缓存，不是长期记忆的权威存储 |
@@ -222,15 +222,43 @@ Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问�
 
 管道最外层返回零**不能证明测试通过**。[verification.ts](../src/command/verification.ts) 和进展观测单独解释能可靠识别的测试终态。输出超限与清理失败也分开处理；只有清理/安全状态确实无法确认时才应隔离执行环境。
 
-### 7.3 执行后端与网络访问
+### 7.3 Podman 执行后端与网络边界
 
-[sandbox/](../src/sandbox) 选择平台受限执行、宿主机不受限执行或受信任的 Benchmark 容器后端。受限执行包含平台设置、预检、路径保护、命令租约和清理；不能将“沙箱不可用”悄悄当作“隔离正常”。
+普通 CLI 的工作区命令统一使用 [PodmanSandboxBackend](../src/sandbox/podman-backend.ts)。Linux 使用 rootless Podman，Windows 使用 WSL 支撑的 rootless Podman machine，macOS 使用 Linux 虚拟机。这明确是 Linux 执行环境，不是原生 Windows/macOS 模拟器。模型 API、密钥、审批、Journal、记忆以及容器控制面留在宿主机。
 
-普通 CLI 联网行为遵循执行环境和批准模式，**不是所有模式统一禁网**。[network-gate.ts](../src/command/network-gate.ts) 对代理连接实施授权与目标检查，避免批准前解析/连接目标。HTTPS CONNECT 是隧道而非 TLS 解密代理，不能证明加密请求在业务语义上只读。
+每个工作区/thread 对应一个带所有权标签的持久容器；容器内命令串行执行。停止、重启保留根文件系统和已安装依赖，但不保留临时目录与进程。服务和访问它的客户端应放在同一条受监督命令内。不同任务及可写子 Agent Worktree 使用不同容器。必须使用 rootless 引擎，不使用 privileged、宿主网络、宿主 PID 命名空间或容器管理接口挂载。容器内 root 可安装依赖，但不等于宿主机管理员。
 
-[下载 Broker](../src/downloads) 是另一条受控制品下载路径，通过目录、URL、哈希、大小和重定向检查约束下载。它不是通用搜索接口，也不能让完全访问的宿主机命令自动变安全。
+工作区绑定到 `/workspace`，文件工具与命令直接操作同一份代码，不通过回写覆盖宿主文件。Windows 路径映射到 WSL 的 `/mnt/<盘符>`，每次派发都通过宿主创建的随机文件校验 VM 侧挂载是否一致；共享失败明确报错，不会改用空的远端目录。拒绝挂载参数注入和与 Runtime 数据重叠的根目录；隐藏工作区内受保护目录，以空只读挂载遮蔽受保护文件。宿主 `.git` 只读，另建私有 Git 元数据副本用于容器内 Git 操作，兼容 Windows/Worktree 的指针路径。容器内提交不直接改变宿主 Git refs，Worktree 的最终交付仍由宿主 Runtime 管理。
 
-Benchmark Worker 另外实施网络隔离；供应商 API 请求属于控制器，不属于执行器。普通 CLI 的完全访问有意保留很强的能力，只适合用户信任的任务。
+审批与隔离分离。保留手动审批、独立审批 Agent 和 thread/子 Agent 授权继承。Podman 前缀使用独立命名空间，绑定镜像配置及容器 cwd，绝不能授权宿主命令；它表示命令配方权限，不伪造“容器内可执行文件字节已被可信验证”，界面会提示脚本和程序内容可能变化。完全访问仍明确使用无沙箱宿主执行；`executionScope=host` 需要独立适用的批准。引擎、镜像、能力缺失都不能静默回退到宿主机。
+
+任务容器始终使用 `--network=none`，保留 Linux 本地 IPC：回环、socketpair、共享内存。普通 HTTP(S) 依赖下载经过容器内代理，通过 Podman exec 的标准输入输出转送到唯一的宿主[网络审批网关](../src/command/network-gate.ts)。只有宿主网关在审批后解析、连接目标，并拒绝私有/保留地址。来自容器的帧不可信，限制单帧、连接、缓冲及累计传输量，不能指定宿主控制面地址。完成或取消即关闭网关，后续命令不会继承临时联网能力。直接 socket、SSH、UDP 外联不开放。HTTPS CONNECT 不解密，批准的是调用权限，不保证任意加密请求在业务上只读。
+
+[Podman worker](../src/sandbox/podman-worker.ts) 将 stdout/stderr 与私有 fd 3 上的宿主生命周期事件分离。保留准备、初始化、命令执行、清理的独立计时。超时/取消停止容器，不只终止本地 Podman 客户端。即使 worker 被杀或响应丢失，后端也必须执行清理并独立查询引擎状态。确认容器停止只能恢复清理确定性，不能伪造命令退出结果。命令非零、超时、取消和派发不确定均不自动重放。
+
+持久租约保存容器名、所有者、命令和 thread ID。运行中、所有权不符、配置不符的容器或未完成租约不能静默复用；清理无法确认则保留租约及 Runtime 隔离状态。引擎断线不等于“容器不存在”。升级不会删除旧命令租约或 SRT 清理记录。
+
+Reviewer 在主容器停止后取得不包含挂载内容的依赖镜像快照。两个讨论参与者分别使用该依赖镜像和各自的审查代码副本、Git 元数据，不共享主 Agent 的可写代码。镜像 ID 与命令历史参与审查环境缓存失效。审查预检使用 Linux 解释器及可重定位的 Linux 虚拟环境，而不是宿主 Windows 的 python.exe。
+
+`npm postinstall` 通过 [podman-install.ts](../src/sandbox/podman-install.ts) 自动准备沙箱：复用 Podman，缺失时通过 Windows WinGet、macOS Homebrew / 校验哈希与 Red Hat 签名的官方安装包、Linux 固定包管理配方安装。Windows 按需准备 WSL；Windows/macOS 创建或启动配置中的 rootless `easy-code` 专用虚拟机，不切换已有默认连接，不调整其他虚拟机或停止其任务。系统自己处理授权，不收集密码，不强制重启。不支持的安装器、拒绝授权、需要重启均明确报告安装未完成。Linux 必要时使用非交互 sudo 安装系统包，rootless 准备必须以普通用户执行。尚未编译的源码依赖安装会延后初始化；`--ignore-scripts` 明确跳过 postinstall，Benchmark 也采用该方式。
+
+`easy-code sandbox setup` 继续同一安装流程，构建缺失的随包 [Containerfile](../resources/podman/Containerfile) 镜像，或拉取用户配置的外部镜像；已有镜像复用。只有 `sandbox doctor` 的临时 asyncio/socketpair/信号量/临时目录/禁外网探针通过才报告就绪，不代表全部语言兼容性已验证。桌面端控制器与 worker 均显式选择专用连接；每次派发验证 VM 能看见工作区，不可共享路径直接报错，不回退宿主机。虚拟机名称/创建时内存/CPU/磁盘及单容器内存/CPU/PID/共享内存/临时空间/代理/控制预算见 [config.example.toml](config.example.toml)。修改创建参数不会重设已有 VM。镜像与任务容器保留，不全局 prune。引擎侧寿命上限约束 CLI 崩溃后遗留的进程，不确定的 lease 保留供诊断。Reviewer 使用已停止的主任务依赖快照，只读根文件系统加独立可写工作区。
+
+Benchmark 有意保留原有可信的离线 Harbor/Docker 控制器—执行器分离，不安装嵌套 Podman。资源限制仍从 [sandbox-resources.json](../benchmarks/swebench_verified/sandbox-resources.json) 加载；模型命令不能获得普通 CLI 的联网中继。供应商 API 访问仍只属于控制器。
+
+Podman 是普通 CLI 唯一的沙箱。原生旧沙箱实现、依赖（含开发依赖）、ACL 修复工具、专用探针及已废弃的 Harbor 内层隔离器均已删除。完全访问的原生宿主执行保留 Windows Job/POSIX 进程组监督，但不是沙箱。Benchmark 只保留独立的 Docker 控制器/执行器桥接。容器验收入口为 [smoke-podman.mjs](../scripts/smoke-podman.mjs)。升级后需重新构建/安装并重启 CLI；清理源码不会删除历史日志或未完成命令记录。
+
+### 7.4 容器迁移后的验证、审查与资源维护
+
+测试框架识别通过后端声明的工作区映射读取 `package.json`，不会把容器 `/workspace` 当作宿主路径。只有工作区内、通过路径保护且不超过 1 MiB 的清单可以参与识别。无法识别的 npm/yarn/pnpm 脚本返回未知验证结果，不能仅凭外层退出码 0 记为通过。
+
+Reviewer 的宿主副本仅保存源码与原始测试基线。Linux `.venv`、`node_modules`、`venv`、`dist`、`build` 由离线容器中的 [review-dependencies.py](../resources/podman/review-dependencies.py) 读取、限额哈希并复制，保留 Linux 链接与执行权限，不使用宿主机 junction 或解析宿主 Python。依赖放入 Runtime 所有的命名卷，两位参与者只读挂载到各自的 `/workspace` 对应目录；源码副本仍可用于独立实验。容器根文件系统同样只读。Python 虚拟环境预检也在容器内执行。
+
+[podman-review.ts](../src/sandbox/podman-review.ts) 按持久化命令环境版本和依赖内容摘要缓存不可变镜像、卷和审查版本。恢复会话、检查新鲜度不会无条件重复 commit；新命令或依赖变化使旧版本失效。快照事务和命令使用同一个独占租约；快照错误但辅助容器已清理，不会隔离主任务，只有辅助容器清理不明才保留租约。辅助进程有时限，文件数、字节和遍历时间复用 `reviewDependencyMaxFiles`、`reviewDependencyMaxBytes`、`reviewPreparationTimeoutMs` 配置。
+
+`easy-code sandbox resources` 列出引擎中 EASY CODE 所有的容器、审查卷和镜像。`easy-code sandbox remove <container|volume|image> <完整名称> --yes` 才执行单项永久删除。删除前检查名称、引擎标签、控制目录和租约；运行中、状态未知、仍被容器引用或存在未完成租约的资源不能强制删除。无全局 prune，无自动删除 Podman/WSL 虚拟机、基础镜像、项目文件或历史日志。卸载 CLI 默认保留这些环境，并提醒先按需清理；普通停止仍保留任务依赖供恢复。
+
+Podman 验收统一在 [smoke-podman.mjs](../scripts/smoke-podman.mjs)：涵盖 Plan 命令审批、管道失败、npm 元数据映射、生命周期以及独立审查依赖。旧的原生平台验收脚本已经移除。Linux 依赖复制器可单独在 WSL 执行 `python3 tests/podman-review-dependencies.test.py`，此测试不替代完整容器验收。
 
 ## 8. 持久化、恢复与事实来源
 

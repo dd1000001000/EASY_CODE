@@ -93,6 +93,7 @@ export function registerUninstallCommand(program: Command): void {
       process.stdout.write(
         "EASY CODE: API keys, configuration, caches, workspace files, and managed Worktrees were preserved.\n",
       );
+      process.stdout.write("EASY CODE: Podman machines, task containers and review caches are also preserved. Before uninstalling, use easy-code sandbox resources and sandbox remove <kind> <name> --yes for exact, stopped/unused resource cleanup.\n");
       if (options.dataOnly) return;
       await removeGlobalEasyCodePackage();
     });

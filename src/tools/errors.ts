@@ -3,6 +3,7 @@ import type { AgentTool, ToolExecutionResult, ToolFailureInfo } from "../core/ty
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { jsonForModel } from "../utils/json.js";
 import { projectText } from "../utils/bounded-text.js";
+import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 
 /** Projection only, after raw evidence has been archived. Never reuse this
  * object as executable arguments, file-read authority or verification facts. */
@@ -80,6 +81,10 @@ export function prepareToolInput(tool: AgentTool, argumentsJson: string): unknow
 }
 
 export function describeToolFailure(error: unknown): ToolFailureInfo {
+  if (error instanceof CommandEnvironmentQuarantined) return {
+    version: 1, kind: "execution", code: error.code, execution: "not_started",
+    recovery: "none", issues: [], instruction: "Environment quarantined. Pause the task; do not retry commands, file mutations or review experiments. Repair and verify the environment outside the agent before resuming.",
+  };
   const preflight = error instanceof InvalidToolParameters;
   if (error instanceof InvalidToolParameters) error = error.cause;
   if (error instanceof ZodError) {
