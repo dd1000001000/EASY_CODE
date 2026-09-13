@@ -25,6 +25,10 @@ export interface JsonPostRequest {
   timeoutMs: number;
   maxResponseBytes: number;
   signal?: AbortSignal;
+  /** Called after response headers arrive and before any body bytes. */
+  onResponseStart?: (response: Pick<JsonPostResponse, "statusCode" | "headers">) => void;
+  /** Raw response bytes in arrival order. Intended for bounded SSE parsing. */
+  onResponseChunk?: (chunk: Buffer) => void;
 }
 
 export interface JsonPostResponse {
@@ -87,8 +91,23 @@ export const postJsonWithNode: JsonPostTransport = (
     };
 
     const request = requestImpl(options, (response) => {
+      if (settled) { response.destroy(); return; }
       const chunks: Buffer[] = [];
+      try {
+        input.onResponseStart?.({
+          statusCode: response.statusCode ?? 0,
+          headers: response.headers,
+        });
+      } catch (error) {
+        const callbackError = error instanceof Error
+          ? error
+          : new HttpTransportError("network", String(error));
+        finish(() => reject(callbackError), timer);
+        response.destroy();
+        return;
+      }
       response.on("data", (chunk: Buffer | string) => {
+        if (settled) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         responseBytes += buffer.length;
         if (responseBytes > input.maxResponseBytes) {
@@ -97,6 +116,16 @@ export const postJsonWithNode: JsonPostTransport = (
             `Provider response exceeded ${input.maxResponseBytes} bytes`,
           );
           finish(() => reject(error), timer);
+          response.destroy();
+          return;
+        }
+        try {
+          input.onResponseChunk?.(buffer);
+        } catch (error) {
+          const callbackError = error instanceof Error
+            ? error
+            : new HttpTransportError("network", String(error));
+          finish(() => reject(callbackError), timer);
           response.destroy();
           return;
         }

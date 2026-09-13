@@ -58,6 +58,7 @@ import type {
   ImageAttachment,
   PlanProposal,
   PromptBundleBinding,
+  ProviderStreamEvent,
   ProviderName,
   SessionState,
   ThinkingEffort,
@@ -559,6 +560,7 @@ export class EasyCodeApp {
     resumeRecovery?: ResumeRecoverySummary,
   ) {
     this.workspace = workspace;
+    this.terminal.configureStreaming(config.limits);
     this.state = state;
     this.threadLease = threadLease;
     this.commandExecutionMode = trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
@@ -1720,7 +1722,9 @@ export class EasyCodeApp {
       });
 
       this.syncWorkspaceState();
-      this.terminal.write(`\n${result.text.trim()}\n\n`);
+      if (!this.terminal.finalizeStreamedAnswer(result.text)) {
+        this.terminal.write(`\n${result.text.trim()}\n\n`);
+      }
       return result;
     } finally {
       try {
@@ -2010,6 +2014,13 @@ export class EasyCodeApp {
       onProviderContext: (snapshot) => {
         if (snapshot.threadId === this.state.threadId) {
           this.lastProviderContext = snapshot;
+        }
+      },
+      onModelStream: (event: Readonly<ProviderStreamEvent>) => {
+        try {
+          this.terminal.modelStream(event);
+        } catch {
+          // Streaming is transient UI only; the assembled response is still shown.
         }
       },
       ...(presentReasoning

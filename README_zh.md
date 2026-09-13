@@ -35,7 +35,7 @@ easy-code config set qwen.api-key
 easy-code --workspace /path/to/project
 ```
 
-首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、密钥环境变量名、协议（`chat_completions` 或 `responses`）、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。API Key 仍应保存在系统凭据库或配置的环境变量中，不要写入 `models.toml`。
+首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、密钥环境变量名、协议（`chat_completions` 或 `responses`）、端点流式能力、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。API Key 仍应保存在系统凭据库或配置的环境变量中，不要写入 `models.toml`。
 
 在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
 

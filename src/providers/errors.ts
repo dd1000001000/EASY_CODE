@@ -27,6 +27,26 @@ export class ProviderError extends Error {
   }
 }
 
+/** Errors delivered inside a successful HTTP/SSE response still obey API policy. */
+export function streamProviderError(provider: ProviderName, value: unknown, secret?: string): ProviderError {
+  const record = (input: unknown): Record<string, unknown> =>
+    input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : {};
+  const event = record(value);
+  const response = record(event.response);
+  const error = record(event.error ?? response.error ?? event);
+  const code = String(error.code ?? error.type ?? "stream_error");
+  const message = typeof error.message === "string" ? error.message : "Provider reported a stream error";
+  const status = Number(error.status_code ?? error.status ?? event.status_code ?? error.code);
+  const permanent = /auth|api.?key|permission|forbidden|invalid.request|invalid.param|not.found|quota|billing|context|content.filter/iu.test(code);
+  const retryable = !permanent && (status === 408 || status === 409 || status === 425 || status === 429 || status >= 500 ||
+    /server.error|internal.error|rate.limit|overload|temporar|unavailable|timeout/iu.test(code));
+  return new ProviderError(message, {
+    provider, code, retryable,
+    ...(Number.isInteger(status) && status >= 400 && status <= 599 ? { statusCode: status } : {}),
+    secrets: [secret],
+  });
+}
+
 /** Remove inline image payloads before provider text can reach logs or durable state. */
 export function redactImageDataUrls(input: string): string {
   return input.replace(

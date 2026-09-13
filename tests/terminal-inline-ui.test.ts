@@ -344,6 +344,146 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("streams Thinking and answer in place and reconciles without duplicate rows", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Explain this project");
+        terminal.modelStream({ kind: "started", streamId: "stream_1", sequence: 1 });
+        terminal.modelStream({ kind: "reasoning_delta", streamId: "stream_1", sequence: 2, text: "Inspect" });
+        terminal.modelStream({ kind: "reasoning_delta", streamId: "stream_1", sequence: 3, text: " files" });
+        terminal.modelStream({ kind: "text_delta", streamId: "stream_1", sequence: 4, text: "Hello" });
+        terminal.modelStream({ kind: "text_delta", streamId: "stream_1", sequence: 5, text: " world" });
+        terminal.modelStream({ kind: "completed", streamId: "stream_1", sequence: 6, finishReason: "stop" });
+
+        const thinkingId = terminal.addReasoning("Inspect files");
+        assert.equal(thinkingId, 1);
+        assert.equal(terminal.finalizeStreamedAnswer("Hello world"), true);
+
+        const state = terminalState(terminal);
+        assert.deepEqual(state.transcript.map((entry) => entry.kind), [
+          "user", "raw", "assistant",
+        ]);
+        assert.equal(state.transcript.filter((entry) => entry.id === "thinking_1").length, 1);
+        assert.equal(state.transcript[1]?.reasoning, "Inspect files");
+        assert.equal(state.transcript[2]?.text, "\nHello world\n\n");
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("keeps an interrupted partial stream but does not claim it as the final answer", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Interrupt this request");
+        terminal.modelStream({ kind: "started", streamId: "stream_2", sequence: 1 });
+        terminal.modelStream({ kind: "text_delta", streamId: "stream_2", sequence: 2, text: "Partial " });
+        terminal.modelStream({ kind: "interrupted", streamId: "stream_2", sequence: 3 });
+        assert.equal(terminal.finalizeStreamedAnswer("Failure result"), false);
+        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /Partial.*\n\[Interrupted model response/u);
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
+  it("coalesces a delta burst, bounds live previews, and restores complete final text", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      const probe = terminal as unknown as { flushModelStreams(): void; streamFlushTimer?: NodeJS.Timeout };
+      try {
+        terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
+        terminal.beginShell(session()); terminal.setCurrentRequest("Streaming burst");
+        terminal.modelStream({ kind: "started", streamId: "burst", sequence: 1 });
+        const fragment = "Incremental output words. ";
+        for (let index = 0; index < 200; index++) terminal.modelStream({ kind: "text_delta", streamId: "burst", sequence: index + 2, text: fragment });
+        assert.equal(terminalState(terminal).transcript.filter((entry) => entry.kind === "assistant").length, 0);
+        assert.ok(probe.streamFlushTimer);
+        probe.flushModelStreams();
+        assert.equal(probe.streamFlushTimer, undefined);
+        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /Live preview limited/u);
+        assert.ok((terminalState(terminal).transcript.at(-1)?.text.length ?? 0) < 1200);
+        terminal.modelStream({ kind: "completed", streamId: "burst", sequence: 202, finishReason: "stop" });
+        assert.equal(terminal.finalizeStreamedAnswer(fragment.repeat(200)), true);
+        assert.equal(terminalState(terminal).transcript.at(-1)?.text, `\n${fragment.repeat(200).trim()}\n\n`);
+      } finally { terminal.close(); }
+    });
+  });
+
+  it("isolates interrupted attempts and ignores duplicate or late delta events", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      try {
+        terminal.beginShell(session()); terminal.setCurrentRequest("Retry stream");
+        terminal.modelStream({ kind: "started", streamId: "old", sequence: 1 });
+        terminal.modelStream({ kind: "text_delta", streamId: "old", sequence: 2, text: "Discarded " });
+        terminal.modelStream({ kind: "interrupted", streamId: "old", sequence: 3 });
+        terminal.modelStream({ kind: "started", streamId: "new", sequence: 1 });
+        terminal.modelStream({ kind: "text_delta", streamId: "new", sequence: 2, text: "Accepted" });
+        terminal.modelStream({ kind: "text_delta", streamId: "new", sequence: 2, text: "duplicate" });
+        terminal.modelStream({ kind: "text_delta", streamId: "old", sequence: 4, text: "late" });
+        terminal.modelStream({ kind: "completed", streamId: "new", sequence: 3, finishReason: "stop" });
+        assert.equal(terminal.finalizeStreamedAnswer("Accepted"), true);
+        const answers = terminalState(terminal).transcript.filter((entry) => entry.kind === "assistant");
+        assert.equal(answers.length, 2);
+        assert.match(answers[0]?.text ?? "", /Interrupted/u);
+        assert.equal(answers[1]?.text, "\nAccepted\n\n");
+      } finally { terminal.close(); }
+    });
+  });
+
+  it("clear and close cancel pending stream flushes and reject old deltas", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      const probe = terminal as unknown as { streamFlushTimer?: NodeJS.Timeout };
+      try {
+        terminal.beginShell(session()); terminal.setCurrentRequest("Clear stream");
+        terminal.modelStream({ kind: "started", streamId: "clear", sequence: 1 });
+        terminal.modelStream({ kind: "text_delta", streamId: "clear", sequence: 2, text: "stale " });
+        terminal.clearScreen();
+        assert.equal(probe.streamFlushTimer, undefined);
+        terminal.modelStream({ kind: "text_delta", streamId: "clear", sequence: 3, text: "late " });
+        terminal.modelStream({ kind: "completed", streamId: "clear", sequence: 4, finishReason: "stop" });
+        assert.equal(terminal.finalizeStreamedAnswer("stale late"), false);
+        assert.equal(terminalState(terminal).transcript.length, 0);
+      } finally { terminal.close(); }
+      assert.equal(probe.streamFlushTimer, undefined);
+    });
+  });
+
+  it("holds split sensitive tokens until they can be safely filtered", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      const probe = terminal as unknown as { flushModelStreams(): void };
+      try {
+        terminal.beginShell(session()); terminal.setCurrentRequest("Sensitive stream");
+        terminal.modelStream({ kind: "started", streamId: "sensitive", sequence: 1 });
+        terminal.modelStream({ kind: "text_delta", streamId: "sensitive", sequence: 2, text: "Image data:image/png;base64,c2Vj" });
+        probe.flushModelStreams();
+        assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj/u);
+        terminal.modelStream({ kind: "text_delta", streamId: "sensitive", sequence: 3, text: "cmV0\n" });
+        probe.flushModelStreams();
+        assert.doesNotMatch(terminalState(terminal).transcript.at(-1)?.text ?? "", /c2Vj|cmV0/u);
+        terminal.modelStream({ kind: "completed", streamId: "sensitive", sequence: 4, finishReason: "stop" });
+        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /REDACTED_IMAGE_DATA_URL/u);
+      } finally { terminal.close(); }
+    });
+  });
+
   it("renders the session header and keeps activity, task DAG, and subagents live", async () => {
     await withInteractiveEnvironment(() => {
       const input = new TtyInput();

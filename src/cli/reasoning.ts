@@ -151,6 +151,18 @@ export class ReasoningRegistry {
     return resolved === undefined ? undefined : this.blocks.get(resolved);
   }
 
+  /** Replace one in-progress block without changing its stable disclosure ID. */
+  replace(id: number, value: string): ReasoningBlock | undefined {
+    if (!this.blocks.has(id)) return undefined;
+    const block: ReasoningBlock = {
+      id,
+      ...prepareReasoningText(value, this.limits),
+    };
+    this.blocks.set(id, block);
+    if (this.latestId === id) this.latestId = id;
+    return block;
+  }
+
   /** Recreate stable Thread-local IDs after loading durable message history. */
   rebuild(values: readonly string[]): number {
     this.blocks.clear();

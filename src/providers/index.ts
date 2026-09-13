@@ -3,3 +3,4 @@ export * from "./factory.js";
 export * from "./http-transport.js";
 export * from "./openai-compatible.js";
 export * from "./responses.js";
+export * from "./sse.js";

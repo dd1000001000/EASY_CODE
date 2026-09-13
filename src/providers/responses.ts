@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 
 import type {
   ChatMessage,
@@ -9,14 +10,16 @@ import type {
   ProviderConfig,
   ProviderName,
   ProviderResponse,
+  ProviderStreamEvent,
 } from "../core/types.js";
 import { projectModelInputMessages } from "../context/micro-compaction.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { providerImageCompatibilityIssue, resolveCatalogModel, validateProviderImageAttachments } from "../models/catalog.js";
 import { thinkingEffortTimeoutMs } from "../models/thinking.js";
-import { ProviderError, redactImageDataUrls, redactSensitiveText } from "./errors.js";
+import { ProviderError, redactImageDataUrls, redactSensitiveText, streamProviderError } from "./errors.js";
 import { HttpTransportError, postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
+import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
 const DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_HISTORICAL_IMAGE_OMISSION_NOTE_CHARS = 600;
@@ -36,12 +39,27 @@ const responseSchema = z.object({
 
 type ResponseInput = Record<string, unknown>;
 
-/** Generic, non-streaming implementation of the OpenAI Responses wire API. */
+type StreamEventPayload = ProviderStreamEvent extends infer Event
+  ? Event extends { streamId: string; sequence: number }
+    ? Omit<Event, "streamId" | "sequence">
+    : never
+  : never;
+
+interface ResponsesStreamState {
+  content: string;
+  reasoning: string;
+  completed?: unknown;
+  status?: string;
+  readonly toolItems: Map<string, { id: string; callId: string; name: string; arguments: string }>;
+}
+
+/** Generic implementation of the OpenAI Responses wire API. */
 export class ResponsesProvider implements ModelProvider {
   readonly name: ProviderName;
   readonly model: string;
   private readonly endpoint: URL;
   private readonly maxResponseBytes: number;
+  private readonly supportsStreaming: boolean;
 
   constructor(
     name: ProviderName,
@@ -52,6 +70,7 @@ export class ResponsesProvider implements ModelProvider {
     this.model = config.model;
     this.endpoint = endpoint(config.baseUrl, name);
     this.maxResponseBytes = runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+    this.supportsStreaming = runtime.supportsStreaming ?? false;
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
@@ -59,6 +78,7 @@ export class ResponsesProvider implements ModelProvider {
     const body: Record<string, unknown> = {
       model: this.model,
       input: await this.toInput(request.messages, request.currentTurnImageIds),
+      stream: this.supportsStreaming,
     };
     if (request.tools?.length && this.runtime.toolCallingSupported !== false) {
       body.tools = request.tools.map(({ function: tool }) => ({
@@ -87,12 +107,30 @@ export class ResponsesProvider implements ModelProvider {
     const maxRetries = Math.min(this.config.maxRetries, requestedRetries);
     let lastError: ProviderError | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      let streamStarted = false;
+      let streamSequence = 0;
+      const streamId = `${this.name}-${randomUUID()}`;
+      const decoder = new ServerSentEventDecoder();
+      const streamState: ResponsesStreamState = {
+        content: "",
+        reasoning: "",
+        toolItems: new Map(),
+      };
+      const emit = (event: StreamEventPayload): void => {
+        if (!request.onStreamEvent) return;
+        try {
+          request.onStreamEvent({ ...event, streamId, sequence: ++streamSequence } as ProviderStreamEvent);
+        } catch {
+          // Presentation observers are isolated from provider I/O.
+        }
+      };
+      const consume = (event: ServerSentEvent): void => this.consumeStreamEvent(streamState, event, emit);
       try {
         const response = await (this.runtime.transport ?? postJsonWithNode)({
           url: this.endpoint,
           headers: {
             authorization: `Bearer ${this.config.apiKey}`,
-            accept: "application/json",
+            accept: this.supportsStreaming ? "text/event-stream" : "application/json",
             "content-type": "application/json",
             "user-agent": "easy-code-agent/0.1",
           },
@@ -100,16 +138,114 @@ export class ResponsesProvider implements ModelProvider {
           timeoutMs,
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
+          ...(this.supportsStreaming
+            ? {
+                onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
+                  streamStarted = statusCode >= 200 && statusCode < 300 &&
+                    isEventStreamContentType(headers["content-type"]);
+                  if (streamStarted) emit({ kind: "started" });
+                },
+                onResponseChunk: (chunk: Buffer) => {
+                  if (!streamStarted) return;
+                  for (const event of decoder.push(chunk)) consume(event);
+                },
+              }
+            : {}),
         });
+        request.signal?.throwIfAborted();
+        if (streamStarted) {
+          for (const event of decoder.finish()) consume(event);
+          const result = this.finishStream(streamState);
+          if (result.usage) emit({ kind: "usage", usage: result.usage });
+          emit({ kind: "completed", finishReason: result.finishReason ?? null });
+          return result;
+        }
         return this.parse(response);
       } catch (error) {
         const normalized = this.normalizeError(error, request.signal, timeoutMs);
         lastError = normalized;
+        if (streamStarted) {
+          emit({ kind: "interrupted" });
+        }
         if (!normalized.retryable || attempt >= maxRetries) throw normalized;
         await (this.runtime.sleep ?? sleep)(normalized.retryAfterMs ?? retryDelay(attempt, this.runtime.random?.() ?? Math.random()), request.signal);
       }
     }
     throw lastError ?? this.error("Provider request failed", "request_failed");
+  }
+
+  private consumeStreamEvent(
+    state: ResponsesStreamState,
+    event: ServerSentEvent,
+    emit: (event: StreamEventPayload) => void,
+  ): void {
+    if (!event.data.trim() || event.data.trim() === "[DONE]") return;
+    let value: unknown;
+    try { value = JSON.parse(event.data) as unknown; }
+    catch { throw this.error("Provider returned an invalid Responses SSE event", "invalid_response"); }
+    if (!isRecord(value)) throw this.error("Provider returned an unsupported Responses SSE event", "invalid_response");
+    const type = typeof value.type === "string" ? value.type : event.event;
+    if (type === "error" || type === "response.failed" || "error" in value) {
+      throw streamProviderError(this.name, value, this.config.apiKey);
+    }
+    if (state.status !== undefined) {
+      throw this.error("Provider sent another event after the Responses terminal event", "invalid_response");
+    }
+    if (type === "response.output_text.delta" && typeof value.delta === "string") {
+      state.content += value.delta;
+      emit({ kind: "text_delta", text: value.delta });
+      return;
+    }
+    if ((type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") &&
+        typeof value.delta === "string") {
+      state.reasoning += value.delta;
+      emit({ kind: "reasoning_delta", text: value.delta });
+      return;
+    }
+    if (type === "response.output_item.added" || type === "response.output_item.done") {
+      if (isRecord(value.item) && value.item.type === "function_call") {
+        const key = typeof value.output_index === "number"
+          ? String(value.output_index)
+          : typeof value.item.id === "string" ? value.item.id : String(state.toolItems.size);
+        const prior = state.toolItems.get(key) ?? { id: "", callId: "", name: "", arguments: "" };
+        const next = {
+          id: typeof value.item.id === "string" ? value.item.id : prior.id,
+          callId: typeof value.item.call_id === "string" ? value.item.call_id : prior.callId,
+          name: typeof value.item.name === "string" ? value.item.name : prior.name,
+          arguments: typeof value.item.arguments === "string" ? value.item.arguments : prior.arguments,
+        };
+        state.toolItems.set(key, next);
+        emit({ kind: "tool_call_delta", index: Number(key) || 0, id: next.callId || next.id, name: next.name, arguments: next.arguments });
+      }
+      return;
+    }
+    if (type === "response.function_call_arguments.delta" && typeof value.delta === "string") {
+      const key = typeof value.output_index === "number"
+        ? String(value.output_index)
+        : typeof value.item_id === "string" ? value.item_id : "0";
+      const prior = state.toolItems.get(key) ?? { id: typeof value.item_id === "string" ? value.item_id : "", callId: "", name: "", arguments: "" };
+      prior.arguments += value.delta;
+      state.toolItems.set(key, prior);
+      emit({ kind: "tool_call_delta", index: Number(key) || 0, arguments: value.delta });
+      return;
+    }
+    if (type === "response.completed" || type === "response.incomplete") {
+      if (!isRecord(value.response) || value.response.status !== type.slice("response.".length) ||
+          !Array.isArray(value.response.output)) {
+        throw this.error("Provider returned an invalid Responses terminal event", "invalid_response");
+      }
+      state.completed = value.response;
+      state.status = type.slice("response.".length);
+    }
+  }
+
+  private finishStream(state: ResponsesStreamState): ProviderResponse {
+    if (state.completed !== undefined) {
+      return this.parse({ statusCode: 200, headers: {}, body: JSON.stringify(state.completed) });
+    }
+    throw new ProviderError("Responses stream ended without a terminal event", {
+      provider: this.name, code: "incomplete_stream", retryable: true,
+    });
   }
 
   private async toInput(messages: readonly ChatMessage[], currentTurnImageIds?: readonly string[]): Promise<ResponseInput[]> {
@@ -201,7 +337,10 @@ export class ResponsesProvider implements ModelProvider {
     for (const item of parsed.data.output) {
       if (item.type === "message" && Array.isArray(item.content)) {
         for (const part of item.content) if (isRecord(part) && part.type === "output_text" && typeof part.text === "string") text.push(part.text);
-      } else if (item.type === "function_call" && typeof item.call_id === "string" && typeof item.name === "string" && typeof item.arguments === "string") {
+      } else if (item.type === "function_call") {
+        if (typeof item.call_id !== "string" || !item.call_id || typeof item.name !== "string" || !item.name || typeof item.arguments !== "string") {
+          throw this.error("Provider returned an incomplete function call", "invalid_response");
+        }
         toolCalls.push({ id: item.call_id, type: "function", function: { name: item.name, arguments: item.arguments } });
       } else if (item.type === "reasoning" && Array.isArray(item.summary)) {
         for (const part of item.summary) if (isRecord(part) && typeof part.text === "string") reasoning.push(part.text);
@@ -213,6 +352,7 @@ export class ResponsesProvider implements ModelProvider {
     const incompleteReason = parsed.data.incomplete_details?.reason;
     const finishReason = incompleteReason === "max_output_tokens"
       ? "length"
+      : parsed.data.status === "incomplete" ? "incomplete"
       : incompleteReason ?? (parsed.data.status === "completed" ? "stop" : parsed.data.status ?? null);
     const result: ProviderResponse = { message, finishReason };
     if (parsed.data.usage) result.usage = {
@@ -227,6 +367,7 @@ export class ResponsesProvider implements ModelProvider {
 
   private normalizeError(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): ProviderError {
     if (error instanceof ProviderError) return error;
+    if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
     if (signal?.aborted) return this.error("Request was canceled", "aborted");
     if (error instanceof HttpTransportError) {
       if (error.kind === "aborted") return this.error("Request was canceled", "aborted");

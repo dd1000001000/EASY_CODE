@@ -182,6 +182,27 @@ describe("pure terminal UI state", () => {
     assert.notEqual(withPresentation.transcript[0]?.presentation, presentation);
   });
 
+  it("replaces a mutable transcript entry by stable id without moving it", () => {
+    const initial = applyEvents(createUIState(), [
+      { type: "transcript.append", entry: { kind: "user", id: "before", text: "before" } },
+      { type: "transcript.append", entry: { kind: "assistant", id: "stream", text: "partial" } },
+      { type: "transcript.append", entry: { kind: "tool", id: "after", text: "after" } },
+    ]);
+    const replaced = applyEvent(initial, {
+      type: "transcript.replace",
+      id: "stream",
+      entry: { kind: "assistant", text: "complete" },
+    });
+    assert.deepEqual(replaced.transcript.map((entry) => entry.id), ["before", "stream", "after"]);
+    assert.equal(replaced.transcript[1]?.text, "complete");
+    assert.equal(initial.transcript[1]?.text, "partial");
+    assert.equal(applyEvent(replaced, {
+      type: "transcript.replace",
+      id: "missing",
+      entry: { kind: "assistant", text: "ignored" },
+    }).transcript, replaced.transcript);
+  });
+
   it("keeps activity transitions stale-safe and task/subagent snapshots bounded", () => {
     const initial = createUIState();
     const active = applyEvent(initial, {

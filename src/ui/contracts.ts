@@ -195,6 +195,11 @@ export type UIEvent =
   | { readonly type: "header.merge"; readonly patch: UIHeaderPatch }
   | { readonly type: "session.set"; readonly session: UISessionInfo | null }
   | { readonly type: "transcript.append"; readonly entry: UITranscriptEntry }
+  | {
+      readonly type: "transcript.replace";
+      readonly id: string;
+      readonly entry: UITranscriptEntry;
+    }
   | { readonly type: "activity.start"; readonly activity: UIActivityState }
   | { readonly type: "activity.stop"; readonly id?: string }
   | {

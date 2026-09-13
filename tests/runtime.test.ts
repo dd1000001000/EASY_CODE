@@ -27,6 +27,7 @@ import { ManageTasksTool } from "../src/tools/manage-tasks.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { createProgressGuardState } from "../src/progress/guard.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
+import { OpenAICompatibleProvider } from "../src/providers/openai-compatible.js";
 
 function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   const now = new Date().toISOString();
@@ -108,6 +109,43 @@ function contextRuntime(provider: ModelProvider, tools: AgentTool[],
 }
 
 describe("AgentRuntime", () => {
+  it("never executes or persists tools from an incomplete stream before retry acceptance", async () => {
+    const current = state();
+    let requests = 0, executions = 0;
+    const tool: AgentTool = { name: "read_file", mutating: false,
+      definition: { type: "function", function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      execute: async () => { executions++; return { ok: true, summary: "read" }; },
+    };
+    const provider = new OpenAICompatibleProvider("qwen", {
+      apiKey: "mock", model: "mock", baseUrl: "https://example.invalid", maxRetries: 5, timeoutMs: 1000,
+    }, { supportsStreaming: true, transport: async (request) => {
+      requests++;
+      request.onResponseStart?.({ statusCode: 200, headers: { "content-type": "text/event-stream" } });
+      const data = requests <= 2 ? { choices: [{ delta: {
+        content: requests === 1 ? "discarded partial" : null,
+        tool_calls: [{ index: 0, id: requests === 1 ? "discarded_call" : "accepted_call", function: { name: "read_file", arguments: "{}" } }],
+      }, finish_reason: requests === 1 ? null : "tool_calls" }] }
+        : { choices: [{ delta: { content: "done" }, finish_reason: "stop" }] };
+      if (requests <= 2) assert.equal(executions, 0);
+      const body = `data: ${JSON.stringify(data)}\n\n${requests === 1 ? "" : "data: [DONE]\n\n"}`;
+      request.onResponseChunk?.(Buffer.from(body));
+      if (requests <= 2) assert.equal(executions, 0);
+      return { statusCode: 200, headers: {}, body };
+    } });
+    const runtime = new AgentRuntime({ provider, toolCatalog: snapshotToolSet([tool]),
+      contextManager: new ContextManager(), buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
+      appendEvent: async () => undefined, requestApproval: async () => false,
+    });
+    const result = await runtime.run(current, "Read once", {
+      maxSteps: 3, maxContextChars: 20000, maxOutputChars: 4000, commandTimeoutMs: 1000, approvalPolicy: "never",
+    });
+    assert.equal(result.reason, "success");
+    assert.equal(requests, 3);
+    assert.equal(executions, 1);
+    assert.ok(!JSON.stringify(current.messages).includes("discarded"));
+  });
+
   it("keeps the system and history prefix stable as background and progress reminders change", async () => {
     const current = state();
     let reads = 0;
@@ -408,6 +446,60 @@ describe("AgentRuntime", () => {
 
     assert.equal(result.reason, "success");
     assert.deepEqual(notifications, ["visible main-model thinking"]);
+  });
+
+  it("forwards stream events only from the main agent model step", async () => {
+    let requestCount = 0;
+    const notifications: string[] = [];
+    const provider: ModelProvider = {
+      name: "qwen",
+      model: "mock",
+      async complete(request) {
+        requestCount += 1;
+        if (requestCount === 1) {
+          assert.equal(request.onStreamEvent, undefined);
+          return {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_select_mode",
+                type: "function",
+                function: {
+                  name: "select_mode",
+                  arguments: '{"mode":"code","reason":"A scoped task."}',
+                },
+              }],
+            },
+          };
+        }
+        request.onStreamEvent?.({ kind: "started", streamId: "stream", sequence: 1 });
+        request.onStreamEvent?.({ kind: "text_delta", streamId: "stream", sequence: 2, text: "done" });
+        request.onStreamEvent?.({ kind: "completed", streamId: "stream", sequence: 3, finishReason: "stop" });
+        return { message: { role: "assistant", content: "done" } };
+      },
+    };
+    const runtime = new AgentRuntime({
+      provider,
+      toolCatalog: snapshotToolSet([]),
+      contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system",
+      getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [],
+      appendEvent: async () => undefined,
+      requestApproval: async () => false,
+      onModelStream: (event) => notifications.push(event.kind),
+    });
+
+    const result = await runtime.run(state("auto"), "Complete the task", {
+      maxSteps: 2,
+      maxContextChars: 20_000,
+      maxOutputChars: 4_000,
+      commandTimeoutMs: 1_000,
+      approvalPolicy: "never",
+    });
+    assert.equal(result.reason, "success");
+    assert.deepEqual(notifications, ["started", "text_delta", "completed"]);
   });
 
   it("does not notify the UI when thinking effort is none", async () => {

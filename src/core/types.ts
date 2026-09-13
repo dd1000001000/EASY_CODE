@@ -187,6 +187,28 @@ export interface ProviderResponse {
 }
 
 /**
+ * Ephemeral output from one physical provider request. Stream events are for
+ * live presentation only; the assembled ProviderResponse remains the sole
+ * durable/model-history representation of the assistant message.
+ */
+export type ProviderStreamEvent =
+  | { readonly kind: "started"; readonly streamId: string; readonly sequence: number }
+  | { readonly kind: "reasoning_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
+  | { readonly kind: "text_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
+  | {
+      readonly kind: "tool_call_delta";
+      readonly streamId: string;
+      readonly sequence: number;
+      readonly index: number;
+      readonly id?: string;
+      readonly name?: string;
+      readonly arguments?: string;
+    }
+  | { readonly kind: "usage"; readonly streamId: string; readonly sequence: number; readonly usage: ProviderUsage }
+  | { readonly kind: "completed"; readonly streamId: string; readonly sequence: number; readonly finishReason?: string | null }
+  | { readonly kind: "interrupted"; readonly streamId: string; readonly sequence: number };
+
+/**
  * Ephemeral UI notification for reasoning returned by a main agent request.
  * The text remains durably represented only by the matching assistant
  * ChatMessage; consumers must not persist this notification as a second copy.
@@ -219,6 +241,8 @@ export interface ModelRequest {
   maxRetries?: number;
   /** User-selected normalized effort; unsupported provider/model combinations ignore it. */
   thinkingEffort?: ThinkingEffort;
+  /** Transient observer. Implementations must never let observer failures replace a model result. */
+  onStreamEvent?: (event: ProviderStreamEvent) => void;
 }
 
 export interface ModelProvider {
