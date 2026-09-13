@@ -114,7 +114,11 @@ function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
     throw new EasyCodeConfigError("Configuration root must be a TOML table");
   }
 
-  const limits = recordAt(value, "limits");
+  const limits = { ...recordAt(value, "limits") };
+  // Retired host-ACL traversal budgets have no meaning for container cleanup.
+  // Ignore only these exact saved settings so upgrading does not break startup.
+  delete limits.sandboxCleanupMaxEntries;
+  delete limits.sandboxCleanupMaxDepth;
   if (value.limits !== undefined && !isRecord(value.limits)) {
     throw new EasyCodeConfigError("limits must be a TOML table");
   }

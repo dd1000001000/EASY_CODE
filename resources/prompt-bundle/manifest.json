@@ -1,6 +1,6 @@
 {
   "formatVersion": 1,
-  "bundleVersion": "1.2.0",
+  "bundleVersion": "1.2.1",
   "runtimeCompatibility": {
     "min": "0.1.0",
     "maxExclusive": "0.2.0"
@@ -19,8 +19,8 @@
       "bytes": 899
     },
     "agents/child-environment-sandboxed.md": {
-      "sha256": "sha256:f5d203e91dc7a513ff15d52a8d560ced4b961c6b94c99ca78834f2990146102b",
-      "bytes": 242
+      "sha256": "sha256:b8c564864065bded288a5ed76995989cc5f44495aa13c2e7960ea83cde2755cd",
+      "bytes": 364
     },
     "agents/child-environment-unrestricted.md": {
       "sha256": "sha256:18cb670bd9e9137a7a33a372ac14468e36f285ef95810e16a803dde18597ffb4",
@@ -399,8 +399,8 @@
       "bytes": 871
     },
     "tools/run_command.json": {
-      "sha256": "sha256:9c1133bc34fc3b6d96d05137719fc3268501c074549ba45dc7996c5ddaa3b589",
-      "bytes": 2817
+      "sha256": "sha256:77577ff939876eb27711628a11bb0aef953b6eb009e5e7047be76da5087b98ee",
+      "bytes": 3389
     },
     "tools/search_context.json": {
       "sha256": "sha256:ec0da266be77f2612ca5592b979635716488985a73ca5c6df6b0a52b77649648",
@@ -415,8 +415,8 @@
       "bytes": 763
     },
     "tools/start_command.json": {
-      "sha256": "sha256:55c5abdb687c151273b4ad9f0576b3977eaf4410cfcc5de4f0b722014fb53e86",
-      "bytes": 2010
+      "sha256": "sha256:0b9c7452743de666b8d342b6eba16c68e55a3a9ad075ca48b75e22fb956eb572",
+      "bytes": 2568
     },
     "tools/submit_task_result.json": {
       "sha256": "sha256:8ef0a9dc39afb223d6447cac15cf1533ba4807e23f38eb170c3ff20dca2001be",
@@ -501,7 +501,7 @@
     "run_command": {
       "path": "tools/run_command.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:9c1133bc34fc3b6d96d05137719fc3268501c074549ba45dc7996c5ddaa3b589"
+      "contentHash": "sha256:77577ff939876eb27711628a11bb0aef953b6eb009e5e7047be76da5087b98ee"
     },
     "search_context": {
       "path": "tools/search_context.json",
@@ -521,7 +521,7 @@
     "start_command": {
       "path": "tools/start_command.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:55c5abdb687c151273b4ad9f0576b3977eaf4410cfcc5de4f0b722014fb53e86"
+      "contentHash": "sha256:0b9c7452743de666b8d342b6eba16c68e55a3a9ad075ca48b75e22fb956eb572"
     },
     "submit_task_result": {
       "path": "tools/submit_task_result.json",
@@ -534,5 +534,5 @@
       "contentHash": "sha256:e05da57356f474f29d757cb79ec943ec4e46dcee02b77c7a7be0f5e4ec2f6cf0"
     }
   },
-  "bundleHash": "sha256:8a9a04cd346307b4bbd282a7585212c5ee77c9e708621d86bc3451495452dcbc"
+  "bundleHash": "sha256:364352f8375b75fe82d27d03fc17bda64176ac2179133277f0f4f4e33717ed7b"
 }

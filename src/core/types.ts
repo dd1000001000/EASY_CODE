@@ -920,7 +920,7 @@ export interface AgentRunResult {
   text: string;
   reason: "success" | "planned" | "needs_input" | "blocked" | "limit_reached" | "interrupted" | "failed";
   /** A recoverable control-plane failure, not evidence that the coding task failed. */
-  failure?: { code: "context_compaction_failed" | "context_capacity_insufficient" | "context_capacity_exhausted" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
+  failure?: { code: "command_environment_quarantined" | "context_compaction_failed" | "context_capacity_insufficient" | "context_capacity_exhausted" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
   steps: number;
   threadId: string;
   turnId: string;

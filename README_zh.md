@@ -23,7 +23,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-最后一步全局安装会准备本地检索模型与集成资源，可能需要下载。如果 npm 报告已有 `easy-code` 启动文件，先运行 `npm run install:doctor`，按输出用旧 npm 卸载对应副本，再重新安装；不要使用 `--force`。
+最后一步全局安装会自动准备 Podman、专用虚拟机（Windows/macOS）、沙箱基础镜像、本地检索模型与集成资源，可能需要下载和系统授权。如果 npm 报告已有 `easy-code` 启动文件，先运行 `npm run install:doctor`，按输出用旧 npm 卸载对应副本，再重新安装；不要使用 `--force`。
 
 ## 开始使用
 
@@ -39,12 +39,17 @@ easy-code --workspace /path/to/project
 
 在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
 
-受保护命令需要可用沙箱；按检查结果初始化：
+沙箱随安装自动准备。以下指令用于检查，或在下载、授权、重启中断后继续初始化：
 
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
+easy-code sandbox resources
 ```
+
+安装 EASY CODE 时会自动安装缺失的 [Podman](https://podman.io/docs/installation)、准备 Windows/macOS 专用的 rootless `easy-code` 虚拟机并构建基础镜像。复用已有 Podman，不切换默认连接。下载、系统授权或重启中断后，可用 `sandbox setup` 继续；`sandbox doctor` 检查环境。Linux 安装系统包需要权限，rootless 镜像准备必须以普通用户运行。自动安装不可用时明确报错，不退回宿主机。普通命令在持久化的 Linux 任务容器 `/workspace` 内运行，模型可经批准的 HTTP(S) 网络安装依赖。完全访问仍使用原生宿主机；Benchmark 保留离线 Harbor/Docker 执行器。
+
+需要清理时，先检查资源列表，再用 `easy-code sandbox remove <container|volume|image> <完整名称> --yes` 永久删除单个已停止/未使用资源。项目和历史记录保留；容器/卷内容需要备份才能恢复。
 
 单次运行或恢复会话：
 

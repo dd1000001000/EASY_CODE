@@ -47,6 +47,8 @@ export function commandVerificationKind(
 }
 
 export interface RunCommandInput {
+  /** Compatibility requirements only: these never grant permissions. [] explicitly declares no IPC requirement. */
+  requiredCapabilities?: import("../sandbox/capabilities.js").ExecutionCapability[];
   program: string;
   args?: string[];
   cwd?: string;
@@ -150,6 +152,8 @@ export interface RunCommandOutput {
   validation?: CommandValidation;
   requestMetadata?: CommandRequestMetadata;
   lifecycle?: {
+    timings?: { preparationMs: number; initializationMs: number; executionMs: number; cleanupMs: number };
+    timeoutPhase?: "initialization" | "command" | "cleanup";
     outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown";
     execution: "not_started" | "unknown" | "started" | "exited";
     cleanup: "not_required" | "confirmed" | "failed" | "unconfirmed";

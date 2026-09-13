@@ -1,20 +1,13 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
 import type { CommandAuditEntry, ToolContext } from "../src/core/types.js";
 import {
-  AnthropicSandboxBackend,
-  DefaultSandboxStartupService,
   encodeSandboxControl,
   extractSandboxControls,
-  formatWindowsAclPreflightFailure,
-  isWindowsSharedExecutablePath,
-  runWindowsProbeWorkerProcess,
   runSandboxStartupGuide,
   UnrestrictedHostBackend,
   type CommandExecutionBackend,
@@ -24,35 +17,9 @@ import {
   type SandboxExecutionRequest,
   type SandboxStartupService,
   type SandboxStartupTerminal,
-  type SandboxSystemCommand,
-  type SandboxWorkerPayload,
 } from "../src/sandbox/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
-import { WindowsSandboxProcessLock } from "../src/sandbox/windows-process-lock.js";
 import { describe, it } from "./harness.js";
-
-const execFileAsync = promisify(execFile);
-
-const runtimeReadableWindowsProbe = {
-  pathAccess: async (paths: readonly string[]) => {
-    return new Map(paths.map((candidate) => {
-      const normalized = path.win32.resolve(candidate).toLowerCase();
-      return [
-        normalized,
-        path.win32.basename(normalized) === "node.exe" ? "readable" : "denied",
-      ] as const;
-    }));
-  },
-};
-
-function pathIsWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return !relative || (
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
-}
 
 async function withWorkspace(
   run: (root: string, manager: WorkspaceManager) => Promise<void>,
@@ -124,7 +91,7 @@ class ThrowingSandboxBackend implements CommandExecutionBackend {
     return {
       backend: "host-test-only",
       enforced: this.enforced,
-      filesystem: this.enforced ? "workspace-write" : "host",
+      filesystem: this.enforced ? "container" : "host",
       network: this.enforced ? "denied" : "host",
     };
   }
@@ -139,9 +106,9 @@ class ThrowingSandboxBackend implements CommandExecutionBackend {
 class NeverReadySandboxBackend implements CommandExecutionBackend {
   describe(): SandboxExecutionMetadata {
     return {
-      backend: "anthropic-srt-windows",
+      backend: "podman",
       enforced: true,
-      filesystem: "workspace-write",
+      filesystem: "container",
       network: "denied",
     };
   }
@@ -149,7 +116,7 @@ class NeverReadySandboxBackend implements CommandExecutionBackend {
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     const stage = encodeSandboxControl(request.commandId, {
       type: "stage",
-      stage: "initialize_start",
+      stage: "relay_start",
     });
     return {
       executablePath: process.execPath,
@@ -173,7 +140,7 @@ class DelayedReadySandboxBackend extends NeverReadySandboxBackend {
   override async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     const ready = encodeSandboxControl(request.commandId, {
       type: "ready",
-      backend: "anthropic-srt-windows",
+      backend: "podman",
     });
     return {
       executablePath: process.execPath,
@@ -263,100 +230,7 @@ class ScriptedSandboxTerminal implements SandboxStartupTerminal {
   }
 }
 
-function runtimeFixture(options: {
-  dependencies?: () => { errors: string[]; warnings: string[] };
-  windowsReady?: () => boolean;
-  installCancelled?: () => boolean;
-  onInstall?: () => void;
-  onVerify?: () => void;
-} = {}) {
-  return {
-    SandboxManager: {
-      isSupportedPlatform: () => true,
-      checkDependenciesAsync: async () =>
-        options.dependencies?.() ?? { errors: [], warnings: [] },
-      initialize: async (_config: Record<string, unknown>) => undefined,
-      wrapWithSandboxArgv: async () => ({
-        argv: [process.execPath, "--version"],
-        env: { ...process.env },
-      }),
-      cleanupAfterCommand: () => undefined,
-      reset: async () => undefined,
-    },
-    VENDORED_SRT_WIN_EXE: "C:\\trusted\\srt-win.exe",
-    resolveSrtWin: (_options: { path: string }) => ({ path: "resolved-srt-win" }),
-    checkWindowsSandboxStatusAsync: async () => {
-      const ready = options.windowsReady?.() ?? true;
-      return {
-        user: {
-          provisioned: ready,
-          credPresent: ready,
-          groupExists: ready,
-          inSandboxGroup: ready,
-        },
-        wfp: { state: ready ? "installed" : "absent" },
-      };
-    },
-    verifyWindowsWfpEgress: async () => {
-      options.onVerify?.();
-      if (!(options.windowsReady?.() ?? true)) throw new Error("WFP is not ready");
-      return {};
-    },
-    installWindowsSandboxAsync: async () => {
-      options.onInstall?.();
-      return { cancelled: options.installCancelled?.() ?? false };
-    },
-  };
-}
-
 describe("sandbox command execution boundary", () => {
-  it("serializes the Windows SRT ACL lease and recovers an abandoned owner", async () => {
-    await withWorkspace(async (root) => {
-      const livePath = path.join(root, "live-windows-acl.lock");
-      let token = 0;
-      const lock = new WindowsSandboxProcessLock(livePath, {
-        waitTimeoutMs: 1_000,
-        pollIntervalMs: 5,
-        createToken: () => `token-${String(++token)}`,
-      });
-      const releaseFirst = await lock.acquire();
-      let secondAcquired = false;
-      const second = lock.acquire().then((release) => {
-        secondAcquired = true;
-        return release;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      assert.equal(secondAcquired, false);
-      await releaseFirst();
-      const releaseSecond = await second;
-      assert.equal(secondAcquired, true);
-      await releaseSecond();
-
-      const abandonedPath = path.join(root, "abandoned-windows-acl.lock");
-      await mkdir(abandonedPath);
-      await writeFile(
-        path.join(abandonedPath, "owner.json"),
-        JSON.stringify({
-          pid: 999_999,
-          token: "abandoned",
-          acquiredAt: new Date(0).toISOString(),
-        }),
-        "utf8",
-      );
-      const recovery = new WindowsSandboxProcessLock(abandonedPath, {
-        waitTimeoutMs: 1_000,
-        pollIntervalMs: 5,
-        isProcessAlive: () => false,
-      });
-      const releaseRecovered = await recovery.acquire();
-      await releaseRecovered();
-      await assert.rejects(
-        access(abandonedPath),
-        (error: NodeJS.ErrnoException) => error.code === "ENOENT",
-      );
-    });
-  });
-
   it("requires a Runtime-issued host permit even when caller labels the context unrestricted", async () => {
     await withWorkspace(async (root) => {
       const request = sandboxRequest(root);
@@ -371,7 +245,7 @@ describe("sandbox command execution boundary", () => {
     const commandId = "command-owned";
     const owned = encodeSandboxControl(commandId, {
       type: "ready",
-      backend: "anthropic-srt-linux",
+      backend: "podman",
     });
     const foreign = encodeSandboxControl("command-foreign", {
       type: "sandbox_error",
@@ -379,7 +253,7 @@ describe("sandbox command execution boundary", () => {
     });
     const originalText = `before\n${owned}middle\n${foreign}after`;
 
-    assert.doesNotMatch(owned, /"type"|anthropic-srt-linux/u);
+    assert.doesNotMatch(owned, /"type"|podman/u);
     const extracted = extractSandboxControls(commandId, {
       head: `before\n${owned}middle\n`,
       tail: `${foreign}after`,
@@ -389,427 +263,12 @@ describe("sandbox command execution boundary", () => {
     });
 
     assert.deepEqual(extracted.controls, [
-      { type: "ready", backend: "anthropic-srt-linux" },
+      { type: "ready", backend: "podman" },
     ]);
     assert.equal(extracted.digest.text, `before\nmiddle\n${foreign}after`);
     assert.equal(extracted.digest.head, "before\nmiddle\n");
     assert.equal(extracted.digest.tail, `${foreign}after`);
     assert.equal(extracted.digest.truncated, false);
-  });
-
-  it("preserves approved Git arguments while removing inherited Git environment injections", async () => {
-    await withWorkspace(async (root, manager) => {
-      const backend = new AnthropicSandboxBackend(manager, {
-        windowsAclPreflight: { check: async () => undefined },
-        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-      });
-      const git = (await execFileAsync(process.platform === "win32" ? "where" : "which", ["git"])).stdout.trim().split(/\r?\n/u)[0]!;
-      const original = sandboxRequest(root);
-      const prepared = await backend.prepare({ ...original, command: { ...original.command,
-        program: "git", executablePath: git, args: ["diff", "--ext-diff", "--textconv", "--", "a b.txt"] } });
-      try {
-        const payload = JSON.parse(await readFile(prepared.args[1]!, "utf8")) as SandboxWorkerPayload;
-        assert.deepEqual(payload.target.args, ["diff", "--ext-diff", "--textconv", "--", "a b.txt"]);
-        assert.ok(!payload.target.args.includes("diff.external="));
-        assert.equal(payload.target.environment.GIT_EXTERNAL_DIFF, undefined);
-      } finally { await prepared.cleanup(); }
-    });
-  });
-
-  it("prepares a structured worker payload and removes its scratch data", async () => {
-    await withWorkspace(async (root, manager) => {
-      const backend = new AnthropicSandboxBackend(manager, {
-        sensitiveReadPaths: [path.join(root, "private-fixture")],
-        windowsAclPreflight: { check: async () => undefined },
-        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-      });
-      const request = sandboxRequest(root);
-      request.networkProxyURL = "http://easy-code:test-capability@127.0.0.1:32123";
-      const prepared = await backend.prepare(request);
-      const payloadPath = prepared.args[1];
-      assert.ok(payloadPath, "sandbox worker payload path was not provided");
-
-      try {
-        assert.equal(prepared.executablePath, process.execPath);
-        assert.equal(prepared.args.length, 2);
-        assert.equal(prepared.cwdAbsolute, root);
-        assert.equal(prepared.environment.EASY_CODE_TEST_ENV, "preserved-value");
-        assert.equal(prepared.environment.EASY_CODE_SRT_WORKER, "1");
-
-        const payload = JSON.parse(
-          await readFile(payloadPath, "utf8"),
-        ) as SandboxWorkerPayload;
-        assert.equal(payload.version, 1);
-        assert.equal(payload.commandId, request.commandId);
-        assert.equal(payload.commandPreview, request.commandPreview);
-        assert.equal(payload.workspaceRoot, root);
-        assert.equal(pathIsWithin(payload.scratchRoot, payload.bridgePath), true);
-        assert.match(payload.bridgePath, /argv-bridge\.mjs$/u);
-        assert.match(await readFile(payload.bridgePath, "utf8"), /node:child_process/u);
-        assert.equal(
-          await access(path.join(path.dirname(payload.bridgePath), "node_modules"))
-            .then(() => true, () => false),
-          false,
-        );
-        assert.equal(payload.target.executablePath, process.execPath);
-        assert.deepEqual(payload.target.args, request.command.args);
-        assert.equal(payload.target.cwdAbsolute, root);
-        assert.equal(payload.target.environment.EASY_CODE_TEST_ENV, "preserved-value");
-        assert.equal(payload.target.environment.GIT_EXTERNAL_DIFF, undefined);
-        assert.equal(payload.target.environment.GIT_CONFIG_PARAMETERS, undefined);
-        assert.equal(payload.target.environment.GIT_CONFIG_KEY_0, "core.fsmonitor");
-        assert.equal(payload.target.environment.EASY_CODE_SANDBOXED, "1");
-        assert.equal(payload.target.environment.HOME, path.join(payload.scratchRoot, "home"));
-        assert.deepEqual(payload.network.allowedDomains, []);
-        assert.equal(payload.network.proxyURL, request.networkProxyURL);
-        assert.equal(prepared.metadata.network, "brokered");
-        assert.equal(JSON.stringify(payload.target).includes("test-capability"), false);
-        assert.equal(JSON.stringify(prepared.environment).includes("test-capability"), false);
-        assert.equal(payload.filesystem.allowWrite.includes(root), true);
-        assert.equal(
-          payload.filesystem.denyRead.includes(path.resolve(root, "private-fixture")),
-          true,
-        );
-        assert.equal(
-          payload.filesystem.denyRead.includes(path.dirname(payload.scratchRoot)),
-          process.platform !== "win32",
-        );
-        assert.equal(payload.filesystem.denyRead.includes(payloadPath), true);
-        if (process.platform === "win32") {
-          assert.equal(payload.filesystem.denyRead.includes(path.resolve(os.homedir())), false);
-          assert.equal(
-            payload.filesystem.denyRead.includes(path.resolve(os.homedir(), ".ssh")),
-            false,
-          );
-        }
-        assert.equal(payload.filesystem.allowRead.includes(path.dirname(process.execPath)), false);
-        assert.equal(payload.filesystem.allowRead.includes(root), false);
-        const runtimeRoot = path.resolve(path.dirname(prepared.args[0]!), "..", "..");
-        assert.equal(payload.filesystem.allowRead.includes(runtimeRoot), false);
-        assert.equal(
-          payload.filesystem.denyWrite.some((filename) => pathIsWithin(root, filename)),
-          true,
-        );
-        assert.equal(
-          payload.filesystem.denyWrite.includes(
-            `${path.join(root, ".easycode")}${path.sep}`,
-          ),
-          true,
-        );
-        assert.equal(
-          payload.filesystem.denyWrite.includes(
-            `${path.join(root, ".git")}${path.sep}`,
-          ),
-          true,
-        );
-      } finally {
-        await prepared.cleanup();
-        await prepared.cleanup();
-      }
-
-      await assert.rejects(
-        access(payloadPath),
-        (error: NodeJS.ErrnoException) => error.code === "ENOENT",
-      );
-    });
-  });
-
-  it("does not request redundant Windows grants for shared installed-program roots", () => {
-    const environment = {
-      SystemDrive: "C:",
-      SystemRoot: "C:\\Windows",
-      ProgramFiles: "C:\\Program Files",
-      "ProgramFiles(x86)": "C:\\Program Files (x86)",
-      ProgramW6432: "C:\\Program Files",
-      ProgramData: "C:\\ProgramData",
-    };
-    assert.equal(
-      isWindowsSharedExecutablePath("C:\\Program Files\\Git\\cmd\\git.exe", environment),
-      true,
-    );
-    assert.equal(
-      isWindowsSharedExecutablePath("C:\\Windows\\System32\\cmd.exe", environment),
-      true,
-    );
-    assert.equal(
-      isWindowsSharedExecutablePath("E:\\nvm\\v20.20.2\\node.exe", environment),
-      false,
-    );
-  });
-
-  it("omits an external sensitive deny only after the restricted account proves it unreadable", async () => {
-    if (process.platform !== "win32") return;
-    const outside = await mkdtemp(path.join(os.tmpdir(), "easy-code-sensitive-unreadable-"));
-    try {
-      await withWorkspace(async (root, manager) => {
-        const backend = new AnthropicSandboxBackend(manager, {
-          sensitiveReadPaths: [outside],
-          windowsAclPreflight: { check: async () => undefined },
-          windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-        });
-        const prepared = await backend.prepare(sandboxRequest(root));
-        try {
-          const payload = JSON.parse(
-            await readFile(prepared.args[1]!, "utf8"),
-          ) as SandboxWorkerPayload;
-          assert.equal(
-            payload.filesystem.denyRead.includes(path.resolve(outside)),
-            false,
-          );
-        } finally {
-          await prepared.cleanup();
-        }
-      });
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it("fails fast when the restricted-account read proof is unavailable", async () => {
-    if (process.platform !== "win32") return;
-    const outside = await mkdtemp(path.join(os.tmpdir(), "easy-code-sensitive-unknown-"));
-    try {
-      await withWorkspace(async (root, manager) => {
-        const backend = new AnthropicSandboxBackend(manager, {
-          sensitiveReadPaths: [outside],
-          windowsAclPreflight: { check: async () => undefined },
-          windowsSandboxReadProbe: {
-            pathAccess: async () => {
-              throw new Error("probe unavailable");
-            },
-          },
-        });
-        const startedAt = Date.now();
-        await assert.rejects(
-          backend.prepare(sandboxRequest(root)),
-          /Windows SRT restricted-account preflight failed before sandbox initialization: probe unavailable/u,
-        );
-        assert.ok(Date.now() - startedAt < 5_000);
-      });
-    } finally {
-      await rm(outside, { recursive: true, force: true });
-    }
-  });
-
-  it("cancels Windows sensitive-path preparation and releases the process lease", async () => {
-    if (process.platform !== "win32") return;
-    await withWorkspace(async (root, manager) => {
-      const backend = new AnthropicSandboxBackend(manager, {
-        windowsAclPreflight: { check: async () => undefined },
-        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-      });
-      const cancelled = sandboxRequest(root);
-      const controller = new AbortController();
-      controller.abort();
-      cancelled.context.signal = controller.signal;
-      await assert.rejects(
-        backend.prepare(cancelled),
-        (error: Error) => error.name === "AbortError",
-      );
-
-      const prepared = await backend.prepare(sandboxRequest(root));
-      await prepared.cleanup();
-    });
-  });
-
-  it("uses an exact-file grant when a private Windows executable is not readable", async () => {
-    if (process.platform !== "win32") return;
-    await withWorkspace(async (root, manager) => {
-      const backend = new AnthropicSandboxBackend(manager, {
-        windowsAclPreflight: { check: async () => undefined },
-        windowsSandboxReadProbe: {
-          pathAccess: async (paths) => new Map(paths.map((candidate) => [
-            path.win32.resolve(candidate).toLowerCase(),
-            "unknown" as const,
-          ])),
-        },
-      });
-      const prepared = await backend.prepare(sandboxRequest(root));
-      try {
-        const payload = JSON.parse(
-          await readFile(prepared.args[1]!, "utf8"),
-        ) as SandboxWorkerPayload;
-        const executable = await realpath(process.execPath);
-        assert.equal(payload.filesystem.allowRead.includes(executable), true);
-        assert.equal(
-          payload.filesystem.allowRead.includes(path.dirname(executable)),
-          false,
-        );
-      } finally {
-        await prepared.cleanup();
-      }
-    });
-  });
-
-  it("stages a standalone argv bridge that preserves structured arguments", async () => {
-    await withWorkspace(async (root, manager) => {
-      const backend = new AnthropicSandboxBackend(manager, {
-        windowsAclPreflight: { check: async () => undefined },
-        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-      });
-      const prepared = await backend.prepare(sandboxRequest(root));
-      const workerPayloadPath = prepared.args[1]!;
-      try {
-        const workerPayload = JSON.parse(
-          await readFile(workerPayloadPath, "utf8"),
-        ) as SandboxWorkerPayload;
-        const fixturePath = path.join(workerPayload.scratchRoot, "capture-argv.cjs");
-        const outputPath = path.join(workerPayload.scratchRoot, "captured.json");
-        const targetPayloadPath = path.join(workerPayload.scratchRoot, "bridge-target.json");
-        await writeFile(
-          fixturePath,
-          "require('node:fs').writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n",
-          "utf8",
-        );
-        const expected = ["argument with spaces", "literal;&|value", "quote\"value", "tail\\"];
-        await writeFile(targetPayloadPath, JSON.stringify({
-          executablePath: process.execPath,
-          args: [fixturePath, outputPath, ...expected],
-          cwdAbsolute: root,
-          environment: {
-            PATH: process.env.PATH,
-            SystemRoot: process.env.SystemRoot,
-          },
-        }), "utf8");
-
-        await execFileAsync(process.execPath, [workerPayload.bridgePath, targetPayloadPath]);
-        assert.deepEqual(JSON.parse(await readFile(outputPath, "utf8")), expected);
-
-        if (process.platform === "win32") {
-          const batchPath = path.join(workerPayload.scratchRoot, "capture-argv.cmd");
-          const batchOutputPath = path.join(workerPayload.scratchRoot, "captured-batch.json");
-          const batchPayloadPath = path.join(workerPayload.scratchRoot, "bridge-batch-target.json");
-          await writeFile(
-            batchPath,
-            `@echo off\r\n"${process.execPath}" "${fixturePath}" %*\r\n`,
-            "utf8",
-          );
-          await writeFile(batchPayloadPath, JSON.stringify({
-            executablePath: batchPath,
-            args: [batchOutputPath, ...expected],
-            cwdAbsolute: root,
-            environment: {
-              PATH: process.env.PATH,
-              SystemRoot: process.env.SystemRoot,
-            },
-          }), "utf8");
-          await execFileAsync(process.execPath, [workerPayload.bridgePath, batchPayloadPath]);
-          assert.deepEqual(JSON.parse(await readFile(batchOutputPath, "utf8")), expected);
-
-          const findstrFixturePath = path.join(
-            workerPayload.scratchRoot,
-            "findstr fixture with spaces.txt",
-          );
-          const findstrPayloadPath = path.join(
-            workerPayload.scratchRoot,
-            "bridge-cmd-findstr-target.json",
-          );
-          await writeFile(
-            findstrFixturePath,
-            [
-              "const RECEIVER_PORT = 27121;",
-              "function isCompanionExtensionRequest() {}",
-              "server = createServer();",
-              "function sendSocket() {}",
-              "function removeClient() {}",
-              "function reapClients() {}",
-              "startCompanionServer();",
-              "server.listen();",
-            ].join("\r\n"),
-            "utf8",
-          );
-          const findstrCommand = [
-            "findstr /n",
-            '/c:"27121"',
-            '/c:"isCompanionExtensionRequest"',
-            '/c:"createServer"',
-            '/c:"function sendSocket"',
-            '/c:"function removeClient"',
-            '/c:"function reapClients"',
-            '/c:"startCompanionServer"',
-            '/c:"listen("',
-            `"${findstrFixturePath}"`,
-          ].join(" ");
-          const cmdPath = path.win32.join(
-            process.env.SystemRoot ?? "C:\\Windows",
-            "System32",
-            "cmd.exe",
-          );
-          await writeFile(findstrPayloadPath, JSON.stringify({
-            executablePath: cmdPath,
-            args: ["/d", "/c", findstrCommand],
-            cwdAbsolute: root,
-            environment: {
-              PATH: process.env.PATH,
-              SystemRoot: process.env.SystemRoot,
-            },
-          }), "utf8");
-          const findstrResult = await execFileAsync(
-            process.execPath,
-            [workerPayload.bridgePath, findstrPayloadPath],
-            { encoding: "utf8" },
-          );
-          const findstrOutput = String(findstrResult.stdout);
-          assert.match(findstrOutput, /27121/u);
-          assert.match(findstrOutput, /function sendSocket/u);
-          assert.match(findstrOutput, /function removeClient/u);
-          assert.match(findstrOutput, /function reapClients/u);
-          assert.match(findstrOutput, /server\.listen/u);
-          assert.doesNotMatch(String(findstrResult.stderr), /Cannot open/iu);
-        }
-      } finally {
-        await prepared.cleanup();
-      }
-    });
-  });
-
-  it("fails fast with the owner and path when Windows cannot change a required DACL", async () => {
-    await withWorkspace(async (root, manager) => {
-      let observedProbes: readonly { path: string; reasons: readonly string[] }[] = [];
-      const backend = new AnthropicSandboxBackend(manager, {
-        platform: "win32",
-        windowsSandboxReadProbe: runtimeReadableWindowsProbe,
-        windowsAclPreflight: {
-          check: async (probes) => {
-            observedProbes = probes;
-            const message = formatWindowsAclPreflightFailure(
-              {
-                identity: "DESKTOP\\developer",
-                entries: [{
-                  path: root,
-                  owner: "DESKTOP\\CodexSandboxOffline",
-                  canWriteDacl: false,
-                }],
-              },
-              probes,
-              root,
-            );
-            assert.ok(message);
-            throw new Error(message);
-          },
-        },
-      });
-      const startedAt = Date.now();
-      await assert.rejects(
-        () => backend.prepare(sandboxRequest(root)),
-        (error: Error) => {
-          assert.match(error.message, /WRITE_DAC \(Change permissions\)/u);
-          assert.match(error.message, /CodexSandboxOffline/u);
-          assert.match(error.message, /target command was not started/u);
-          assert.match(error.message, /before the 75-second SRT initialization timeout/u);
-          assert.match(error.message, /sandbox repair-workspace --target/u);
-          assert.match(error.message, /--apply --confirm/u);
-          assert.match(error.message, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
-          return true;
-        },
-      );
-      assert.ok(Date.now() - startedAt < 1_000, "ACL preflight did not fail fast");
-      const workspaceProbe = observedProbes.find(
-        (probe) => path.resolve(probe.path).toLowerCase() === path.resolve(root).toLowerCase(),
-      );
-      assert.ok(workspaceProbe, "workspace ACL was not preflighted");
-      assert.equal(workspaceProbe.reasons.includes("allow-write grant"), true);
-    });
   });
 
   it("fails closed when backend preparation fails and never starts the target", async () => {
@@ -901,7 +360,7 @@ describe("sandbox command execution boundary", () => {
 
       assert.equal(output.status, "sandbox_unavailable");
       assert.match(output.stderr.text, /not confirmed started/iu);
-      assert.match(output.stderr.text, /last worker stage: initialize_start/iu);
+      assert.match(output.stderr.text, /last worker stage: relay_start/iu);
       assert.equal(output.sandboxFailure?.phase, "execution");
       assert.equal(output.sandboxFailure?.retryable, false);
       assert.equal(output.lifecycle?.execution, "unknown");
@@ -1021,337 +480,5 @@ describe("sandbox first-interactive startup guide", () => {
 
     const canceling = new ScriptedSandboxTerminal([undefined]);
     assert.equal(await runSandboxStartupGuide(service, canceling), false);
-  });
-});
-
-describe("platform sandbox startup service", () => {
-  it("waits for the probe worker close event before reporting completion", async () => {
-    const grandchildDelayMs = 180;
-    const workerScript = [
-      "import('node:child_process').then(({ spawn }) => {",
-      `const child = spawn(${JSON.stringify(process.execPath)}, ` +
-        `["-e", "setTimeout(() => process.exit(0), ${String(grandchildDelayMs)})"], ` +
-        "{ detached: true, stdio: ['ignore', 1, 2] });",
-      "child.unref();",
-      "});",
-    ].join("");
-    const startedAt = Date.now();
-
-    const result = await runWindowsProbeWorkerProcess({
-      executablePath: process.execPath,
-      args: ["-e", workerScript],
-      environment: process.env,
-      timeoutMs: 2_000,
-    });
-
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.timedOut, false);
-    assert.ok(
-      Date.now() - startedAt >= 100,
-      "probe completion must wait for inherited worker stdio handles to close",
-    );
-  });
-
-  it("recognizes a fully provisioned Windows sandbox", async () => {
-    let verifyCalls = 0;
-    let probeCommand: SandboxSystemCommand | undefined;
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: {},
-      loadRuntime: async () => runtimeFixture({
-        onVerify: () => {
-          verifyCalls += 1;
-        },
-      }),
-      runWindowsProbeWorker: async (command) => {
-        probeCommand = command;
-        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
-      },
-    });
-
-    const result = await service.inspect();
-    assert.equal(result.status, "ready");
-    assert.equal(result.canSetup, false);
-    assert.equal(verifyCalls, 1);
-    assert.equal(probeCommand?.executablePath, process.execPath);
-    assert.match(probeCommand?.args[0] ?? "", /sandbox-probe-worker\.js$/u);
-    assert.equal(probeCommand?.timeoutMs, 30_000);
-    assert.equal(probeCommand?.environment?.EASY_CODE_SANDBOX_PROBE_WORKER, "1");
-    assert.equal(probeCommand?.environment?.DEEPSEEK_API_KEY, undefined);
-  });
-
-  it("fails a hung Windows ACL probe at the parent-owned deadline", async () => {
-    let workerCalls = 0;
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: { DEEPSEEK_API_KEY: "must-not-reach-probe" },
-      loadRuntime: async () => runtimeFixture(),
-      windowsProbeTimeoutMs: 37,
-      runWindowsProbeWorker: async (command) => {
-        workerCalls += 1;
-        assert.equal(command.timeoutMs, 37);
-        assert.equal(command.environment?.DEEPSEEK_API_KEY, undefined);
-        return { exitCode: null, stdout: "", stderr: "", timedOut: true };
-      },
-    });
-
-    const result = await service.inspect();
-
-    assert.equal(workerCalls, 1);
-    assert.equal(result.status, "probe_failed");
-    assert.equal(result.canSetup, false);
-    assert.match(result.details.join(" "), /timed out after 37ms/iu);
-    assert.match(result.details.join(" "), /process tree was terminated/iu);
-  });
-
-  it("preserves an ACL batch rollback diagnostic from a failed Windows probe worker", async () => {
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: {},
-      loadRuntime: async () => runtimeFixture(),
-      runWindowsProbeWorker: async () => ({
-        exitCode: 1,
-        stdout: "",
-        stderr: "srt-win acl grant exited 1: 1 of 2 paths could not be granted; batch rolled back",
-        timedOut: false,
-      }),
-    });
-
-    const result = await service.inspect();
-
-    assert.equal(result.status, "probe_failed");
-    assert.equal(result.canSetup, false);
-    assert.match(result.details.join(" "), /probe worker failed \(exit 1\)/iu);
-    assert.match(result.details.join(" "), /batch rolled back/iu);
-  });
-
-  it("requires Windows setup, installs once, and verifies the live result", async () => {
-    let ready = false;
-    let installCalls = 0;
-    let statusCalls = 0;
-    let verifyCalls = 0;
-    const runtime = runtimeFixture({
-      windowsReady: () => ready,
-      onInstall: () => {
-        installCalls += 1;
-        ready = true;
-      },
-      onVerify: () => {
-        verifyCalls += 1;
-      },
-    });
-    const originalStatus = runtime.checkWindowsSandboxStatusAsync;
-    runtime.checkWindowsSandboxStatusAsync = async () => {
-      statusCalls += 1;
-      return await originalStatus();
-    };
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: {},
-      loadRuntime: async () => runtime,
-      probe: async () => undefined,
-    });
-
-    const before = await service.inspect();
-    assert.equal(before.status, "setup_required");
-    assert.equal(before.canSetup, true);
-    const result = await service.setup(before);
-
-    assert.equal(result.status, "completed");
-    assert.equal(result.readiness.status, "ready");
-    assert.equal(installCalls, 1);
-    assert.equal(statusCalls, 2, "Windows setup did not perform a fresh status check");
-    assert.equal(verifyCalls, 1, "Windows setup did not verify the WFP fence");
-  });
-
-  it("reports Windows UAC cancellation without claiming readiness", async () => {
-    let installCalls = 0;
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: {},
-      loadRuntime: async () => runtimeFixture({
-        windowsReady: () => false,
-        installCancelled: () => true,
-        onInstall: () => {
-          installCalls += 1;
-        },
-      }),
-    });
-    const before = await service.inspect();
-    const result = await service.setup(before);
-
-    assert.equal(result.status, "cancelled");
-    assert.equal(result.readiness, before);
-    assert.equal(result.readiness.status, "setup_required");
-    assert.equal(installCalls, 1);
-  });
-
-  it("fails fast when Windows SRT is nested inside a restricted Codex process", async () => {
-    let runtimeLoads = 0;
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: {
-        CODEX_PERMISSION_PROFILE: ":workspace",
-        CODEX_SANDBOX_NETWORK_DISABLED: "1",
-      },
-      loadRuntime: async () => {
-        runtimeLoads += 1;
-        return runtimeFixture();
-      },
-    });
-
-    const result = await service.inspect();
-
-    assert.equal(result.status, "probe_failed");
-    assert.equal(result.canSetup, false);
-    assert.equal(runtimeLoads, 0);
-    assert.match(result.details.join(" "), /restricted Codex process sandbox/iu);
-    assert.match(result.details.join(" "), /ordinary PowerShell/iu);
-  });
-
-  it("does not mistake a full-access Codex profile for a restricted outer sandbox", async () => {
-    let workerCalls = 0;
-    const service = new DefaultSandboxStartupService({
-      platform: "win32",
-      environment: { CODEX_PERMISSION_PROFILE: ":full" },
-      loadRuntime: async () => runtimeFixture(),
-      runWindowsProbeWorker: async () => {
-        workerCalls += 1;
-        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
-      },
-    });
-
-    const result = await service.inspect();
-
-    assert.equal(result.status, "ready");
-    assert.equal(workerCalls, 1);
-  });
-
-  it("uses only fixed Linux package-manager argv and non-interactive sudo", async () => {
-    const cases = [
-      {
-        osRelease: "ID=ubuntu\nID_LIKE=debian\n",
-        managerPath: "/usr/bin/apt-get",
-        managerArgs: ["install", "-y", "bubblewrap", "socat", "ripgrep"],
-      },
-      {
-        osRelease: "ID=fedora\n",
-        managerPath: "/usr/bin/dnf",
-        managerArgs: ["install", "-y", "bubblewrap", "socat", "ripgrep"],
-      },
-      {
-        osRelease: "ID=arch\n",
-        managerPath: "/usr/bin/pacman",
-        managerArgs: ["-S", "--needed", "--noconfirm", "bubblewrap", "socat", "ripgrep"],
-      },
-      {
-        osRelease: "ID=opensuse-tumbleweed\nID_LIKE=suse\n",
-        managerPath: "/usr/bin/zypper",
-        managerArgs: [
-          "--non-interactive",
-          "install",
-          "--no-recommends",
-          "bubblewrap",
-          "socat",
-          "ripgrep",
-        ],
-      },
-      {
-        osRelease: "ID=alpine\n",
-        managerPath: "/sbin/apk",
-        managerArgs: ["add", "--no-cache", "bubblewrap", "socat", "ripgrep", "bash"],
-      },
-    ] as const;
-
-    for (const fixture of cases) {
-      let dependenciesMissing = true;
-      const commands: SandboxSystemCommand[] = [];
-      const runtime = runtimeFixture({
-        dependencies: () => dependenciesMissing
-          ? {
-              errors: ["bubblewrap is missing", "socat is missing", "ripgrep is missing"],
-              warnings: [],
-            }
-          : { errors: [], warnings: [] },
-      });
-      const service = new DefaultSandboxStartupService({
-        platform: "linux",
-        loadRuntime: async () => runtime,
-        readTextFile: async (filename) => {
-          assert.equal(filename, "/etc/os-release");
-          return fixture.osRelease;
-        },
-        resolveExecutable: async (candidates) => {
-          if (!dependenciesMissing) {
-            if (candidates.includes("/usr/bin/bwrap")) return "/usr/bin/bwrap";
-            if (candidates.includes("/usr/bin/socat")) return "/usr/bin/socat";
-            if (candidates.includes("/usr/bin/rg")) return "/usr/bin/rg";
-          }
-          if (candidates.includes(fixture.managerPath)) return fixture.managerPath;
-          if (candidates.includes("/usr/bin/sudo")) return "/usr/bin/sudo";
-          return undefined;
-        },
-        getUid: () => 1_000,
-        runCommand: async (command) => {
-          commands.push(command);
-          if (command.args[0] === "-n" && command.args[1] === "--") {
-            dependenciesMissing = false;
-          }
-          return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
-        },
-        probe: async () => undefined,
-      });
-
-      const before = await service.inspect();
-      assert.equal(before.status, "dependencies_missing", fixture.osRelease);
-      const result = await service.setup(before);
-      assert.equal(result.status, "completed", fixture.osRelease);
-      assert.equal(result.readiness.status, "ready", fixture.osRelease);
-      assert.equal(commands.length, 2, fixture.osRelease);
-      assert.equal(commands[0]?.executablePath, "/usr/bin/sudo");
-      assert.deepEqual(commands[0]?.args, ["-n", "true"]);
-      assert.equal(commands[0]?.timeoutMs, 10_000);
-      assert.equal(
-        commands[0]?.environment?.PATH,
-        "/opt/homebrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-      );
-      assert.equal(commands[1]?.executablePath, "/usr/bin/sudo");
-      assert.deepEqual(
-        commands[1]?.args,
-        ["-n", "--", fixture.managerPath, ...fixture.managerArgs],
-      );
-      if (fixture.managerPath === "/usr/bin/apt-get") {
-        assert.equal(commands[1]?.environment?.DEBIAN_FRONTEND, "noninteractive");
-      }
-    }
-  });
-
-  it("fails closed for an unknown Linux distribution without running a command", async () => {
-    let commandCalls = 0;
-    const runtime = runtimeFixture({
-      dependencies: () => ({
-        errors: ["bubblewrap is missing"],
-        warnings: [],
-      }),
-    });
-    const service = new DefaultSandboxStartupService({
-      platform: "linux",
-      loadRuntime: async () => runtime,
-      readTextFile: async () => "ID=unknown-fixture\n",
-      resolveExecutable: async () => undefined,
-      runCommand: async () => {
-        commandCalls += 1;
-        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
-      },
-      getUid: () => 1_000,
-      probe: async () => undefined,
-    });
-
-    const before = await service.inspect();
-    const result = await service.setup(before);
-    assert.equal(result.status, "unavailable");
-    assert.match(result.message, /No trusted, supported package manager/u);
-    assert.equal(result.readiness, before);
-    assert.equal(commandCalls, 0);
   });
 });

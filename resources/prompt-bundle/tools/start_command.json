@@ -1,12 +1,13 @@
 {
   "id": "start_command",
   "contractVersion": "1.1.0",
-  "description": "Start one structured program/argv command under Runtime supervision and return a command handle after policy, approval, and sandbox initialization succeed. Use this for commands that may outlast one tool call.",
+  "description": "Start a supervised command using run_command's environment and approval rules. Normal CLI workspace execution is Linux Podman at /workspace. Poll/cancel the handle. A task container runs one command at a time; start a service and its client in the same command. Final delivery requires every handle to be terminal.",
   "propertyDescriptions": {
     "executionScope": "Default workspace sandbox. Request host only for an explicit per-command host escalation approved with this invocation. Benchmark remains container-confined.",
+    "requiredCapabilities": "Compatibility requirements only, never permission grants. test/verify assumes loopback_tcp for runtime IPC. Set [] for checks known not to need IPC. Separate sandbox commands may not share localhost; keep server and client under one supervised command. Missing capabilities require explicit approval for host execution; Benchmark never escapes.",
     "program": "Executable name, path relative to cwd, or absolute local executable. Same resolution and isolation as run_command.",
     "args": "Literal structured argv, including multiline code. For cmd /c the complete command must be one argument; no automatic shell-string joining.",
-    "cwd": "Existing absolute or workspace-relative directory whose normalized real path stays inside the workspace.",
+    "cwd": "Normal CLI workspace: /workspace or a relative path; other Linux container directories are allowed. Host scope/Full access uses host paths. Benchmark keeps its offline worker paths.",
     "intent": "Declared command purpose, not permission. Use test, build or verify for validation.",
     "verificationKind": "Optional validation category. Missing verify/test categories default to custom; build defaults to build. Inapplicable or invalid metadata is normalized without blocking execution.",
     "timeoutMs": "An optional requested total command-phase timeout. It remains attached to the process across later polls; Runtime returns the effective capped budget.",

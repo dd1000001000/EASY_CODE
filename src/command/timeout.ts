@@ -1,4 +1,5 @@
 import type { CommandCapability } from "./types.js";
+import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
 export interface CommandTimeoutBudget {
   /** Per-invocation request, or the configured default when omitted. */
@@ -11,19 +12,20 @@ export interface CommandTimeoutBudget {
   capabilityLimitMs: number;
 }
 
-export function commandCapabilityTimeoutLimitMs(capability: CommandCapability): number {
-  if (capability === "safe_inspect") return 60_000;
-  if (capability === "registry_install") return 20 * 60_000;
-  return 15 * 60_000;
+export function commandCapabilityTimeoutLimitMs(capability: CommandCapability, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): number {
+  if (capability === "safe_inspect") return limits.commandInspectTimeoutMaxMs;
+  if (capability === "registry_install") return limits.commandInstallTimeoutMaxMs;
+  return limits.commandExecuteTimeoutMaxMs;
 }
 
 export function resolveCommandTimeoutBudget(
   requestedTimeoutMs: number | undefined,
   configuredLimitMs: number,
   capability: CommandCapability,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
 ): CommandTimeoutBudget {
   const requestedMs = requestedTimeoutMs ?? configuredLimitMs;
-  const capabilityLimitMs = commandCapabilityTimeoutLimitMs(capability);
+  const capabilityLimitMs = commandCapabilityTimeoutLimitMs(capability, limits);
   return {
     requestedMs,
     effectiveMs: Math.max(

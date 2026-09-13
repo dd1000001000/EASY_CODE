@@ -283,7 +283,7 @@ describe("model request loading indicator", () => {
     assert.equal(advertisedTools[0]?.includes("start_command"), true);
   });
 
-  it("allows one bounded retry after a transient Windows SRT ACL failure", async () => {
+  it("allows one bounded retry after a transient sandbox initialization failure", async () => {
     let requestCount = 0;
     let executionCount = 0;
     const advertisedTools: string[][] = [];
@@ -330,7 +330,7 @@ describe("model request loading indicator", () => {
         if (executionCount === 1) {
           return {
             ok: false,
-            summary: "srt-win acl stamp timed out",
+            summary: "sandbox resource is busy before dispatch",
             error: "sandbox unavailable",
             data: {
               status: "sandbox_unavailable",

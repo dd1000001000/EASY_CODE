@@ -1,5 +1,6 @@
 import path from "node:path";
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import type { WorkspaceManager } from "../workspace/manager.js";
 import { StringDecoder } from "node:string_decoder";
 import { sanitizeCommandOutput, stripTerminalControls } from "./output-stream.js";
 import { explicitShellKind, shellCommandWords, literalPipelineCommands } from "./shell.js";
@@ -51,13 +52,32 @@ function framework(words: readonly string[]): Framework | undefined {
 }
 
 /** Only literal, single-runner package scripts are attributed. No shell is executed here. */
-export async function packageScriptRunner(command: Command, cwd: string): Promise<string[] | undefined> {
+export async function readPackageManifest(filename: string): Promise<string | undefined> {
+  const file = await open(filename, "r");
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 1024 * 1024) return undefined;
+    const buffer = Buffer.alloc(1024 * 1024 + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    return bytesRead > 1024 * 1024 ? undefined : buffer.subarray(0, bytesRead).toString("utf8");
+  } finally { await file.close(); }
+}
+
+/** Resolve only the backend's explicitly shared checkout, never /workspace on the host. */
+export async function workspacePackageManifest(workspace: WorkspaceManager, relativeCwd: string | undefined): Promise<string | undefined> {
+  if (relativeCwd === undefined) return undefined;
+  return readPackageManifest(await workspace.pathGuard.resolveExisting(path.join(relativeCwd, "package.json")));
+}
+
+export async function packageScriptRunner(command: Command, cwd: string,
+  readManifest: () => Promise<string | undefined> = () => readPackageManifest(path.join(cwd, "package.json")),
+): Promise<string[] | undefined> {
   if (!["npm", "yarn", "pnpm"].includes(basename(command.program))) return undefined;
   const name = command.args[0] === "run" ? command.args[1] : command.args[0];
   if (!name || name.startsWith("-")) return undefined;
   try {
-    const text = await readFile(path.join(cwd, "package.json"), "utf8");
-    if (text.length > 1024 * 1024) return undefined;
+    const text = await readManifest();
+    if (!text || text.length > 1024 * 1024) return undefined;
     const scripts = JSON.parse(text).scripts;
     if (typeof scripts?.[name] !== "string" || scripts[`pre${name}`] || scripts[`post${name}`]) return undefined;
     const commands = literalPipelineCommands("sh", ["-c", scripts[name]]);
@@ -99,7 +119,7 @@ export class CommandVerificationCollector {
 
   constructor(command: Command, packageRunner?: string[]) {
     this.targetKey = verificationTargetKey(command);
-    this.opaque = opaque(command);
+    this.opaque = opaque(command) || ["npm", "yarn", "pnpm"].includes(basename(command.program));
     const direct = framework(packageRunner ?? [command.program, ...command.args]);
     const runners = direct ? [direct] : shellCommandWords(command.program, command.args).map(framework).filter((value): value is Framework => value !== undefined);
     if (runners.length === 1) this.selected = runners[0];

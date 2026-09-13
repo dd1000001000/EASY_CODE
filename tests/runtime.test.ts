@@ -28,6 +28,48 @@ import { ProposePlanTool } from "../src/tools/propose-plan.js";
 import { createProgressGuardState } from "../src/progress/guard.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { OpenAICompatibleProvider } from "../src/providers/openai-compatible.js";
+import { CommandEnvironmentQuarantined } from "../src/sandbox/environment-fault.js";
+
+describe("environment quarantine", () => {
+  it("closes the tool exchange, skips later tools and pauses without another model request", async () => {
+    let requests = 0, executions = 0, reviews = 0;
+    const tool: AgentTool = { name: "read_file", mutating: false,
+      definition: { type: "function", function: { name: "read_file", description: "mock", parameters: {} } },
+      execute: async () => { executions++; return { ok: false, summary: "cleanup failed", failure: {
+        version: 1, kind: "execution", code: "command_environment_quarantined", execution: "unknown", recovery: "none", issues: [], instruction: "Pause and inspect cleanup.",
+      } }; },
+    };
+    const current = state();
+    const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => {
+      requests++;
+      return { message: { role: "assistant", content: "", tool_calls: ["first", "second"].map(id => ({
+        id, type: "function" as const, function: { name: "read_file", arguments: "{}" },
+      })) } };
+    } }, toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
+    buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
+    appendEvent: async () => {}, requestApproval: async () => false,
+    runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: false }; },
+    });
+    const result = await runtime.run(current, "inspect", degradationOptions);
+    assert.equal(result.reason, "failed");
+    assert.equal(result.failure?.code, "command_environment_quarantined");
+    assert.equal(requests, 1); assert.equal(executions, 1); assert.equal(reviews, 0);
+    assert.equal(current.messages.filter(m => m.role === "tool").length, 2);
+  });
+
+  it("does not contact the model when a shared environment is already quarantined", async () => {
+    let requests = 0;
+    const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => {
+      requests++; return { message: { role: "assistant", content: "done" } };
+    } }, toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+    assertEnvironmentSafe: () => { throw new CommandEnvironmentQuarantined("container cleanup failed"); },
+    buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
+    appendEvent: async () => {}, requestApproval: async () => false });
+    const result = await runtime.run(state(), "continue", degradationOptions);
+    assert.equal(result.reason, "failed"); assert.equal(requests, 0);
+    assert.equal(result.failure?.code, "command_environment_quarantined");
+  });
+});
 
 function state(mode: "plan" | "auto" | "code" = "code"): SessionState {
   const now = new Date().toISOString();

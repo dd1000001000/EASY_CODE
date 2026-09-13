@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionRequest } from "./types.js";
 import { benchmarkResultSchema } from "./benchmark-result.js";
+import { executionCapabilities } from "./capabilities.js";
 
 export const BENCHMARK_BRIDGE_ROOT = "/opt/easy-code-command-bridge";
 export async function inspectBenchmarkBridge(): Promise<string> {
@@ -36,7 +37,7 @@ export class BenchmarkContainerBackend implements CommandExecutionBackend {
     } catch (error) { void previous.then(release); throw error; }
     finally { if (onAbort) signal?.removeEventListener("abort", onAbort); }
   }
-  describe() { return { backend: "benchmark-container" as const, enforced: true, filesystem: "container" as const, network: "denied" as const }; }
+  describe() { return { backend: "benchmark-container" as const, enforced: true, filesystem: "container" as const, network: "denied" as const, capabilities: executionCapabilities("benchmark-container") }; }
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     // Command timeout starts only after this slot is acquired. All child
     // backends in the controller share it; restarting a worker never kills
@@ -53,7 +54,7 @@ export class BenchmarkContainerBackend implements CommandExecutionBackend {
     dir = await mkdtemp(path.join(BENCHMARK_BRIDGE_ROOT, "commands", "request-"));
     await writeFile(path.join(dir, "request.pending"), JSON.stringify({ version: 1, commandId: request.commandId,
       program: request.command.executablePath, args: request.command.args, cwd: request.command.cwdAbsolute,
-      environment: request.command.environment, timeoutMs: 1200000, ...(this.review ? { review: this.review } : {}) }), { flag: "wx", mode: 0o600 });
+      environment: request.command.environment, timeoutMs: request.timeoutMs ?? 1200000, ...(this.review ? { review: this.review } : {}) }), { flag: "wx", mode: 0o600 });
     await rename(path.join(dir, "request.pending"), path.join(dir, "request.json"));
     const metadata: import("./types.js").SandboxExecutionMetadata = { ...this.describe(), ...(this.review ? { reviewEnvironmentUnchanged: false } : {}) };
     return { executablePath: process.execPath,

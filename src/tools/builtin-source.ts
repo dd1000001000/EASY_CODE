@@ -61,7 +61,9 @@ export class BuiltinToolSource implements ToolSource {
 
   private createTools(): AgentTool[] {
     const { workspace } = this.options;
-    const commandRuntime = this.options.commandRuntime ?? new CommandRuntime(workspace);
+    const commandRuntime = this.options.commandRuntime ?? new CommandRuntime(workspace, undefined, undefined, undefined, {
+      limits: this.options.limits,
+    });
     const tools: AgentTool[] = [
       new ReadFileTool(workspace),
       new SearchFilesTool(workspace),

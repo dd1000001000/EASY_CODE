@@ -7,7 +7,6 @@ import type { WorkspaceSnapshot } from "../workspace/snapshot.js";
 import { sha256 } from "../utils/hash.js";
 import type { ValidationBaseline } from "../progress/validation-standard.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
-import { copyReviewDependencies } from "./environment.js";
 
 export function reviewFingerprint(snapshot: WorkspaceSnapshot): string {
   if (snapshot.truncated) throw new Error("Incomplete workspace inventory; review cannot certify this snapshot");
@@ -74,7 +73,9 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
     await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, content, { flag: "wx", mode: 0o600 });
     baselines.reviewer[path.normalize(file.path)] = file.hash; restoredTests.push(file.path);
   }
-  const dependencyHashes = options.offline ? {} : await copyReviewDependencies(workspace.root, Object.values(roots), options.limits ?? DEFAULT_RUNTIME_LIMITS, options.signal);
+  // Dependencies are supplied by the execution backend as immutable Linux
+  // snapshots. Host copies contain source only, on every host platform.
+  const dependencyHashes = {};
   if (reviewFingerprint(await workspace.captureSnapshot()) !== expected) throw new Error("Workspace changed during review copy");
   await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, roots, baselines, restoredTests, dependencyHashes }), { flag: "wx", mode: 0o600 });
   return { directory, roots, baselines, restoredTests, dependencyHashes };

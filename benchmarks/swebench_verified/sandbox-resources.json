@@ -1,0 +1,4 @@
+{
+  "shmMiB": 256,
+  "pidsLimit": 512
+}

@@ -18,6 +18,20 @@ Split = module.SplitBenchmarkEnvironment
 
 
 class WorkerBoundaryTests(unittest.TestCase):
+    def test_resource_settings_are_bounded_and_verified(self):
+        limits = {"shmMiB": 256, "pidsLimit": 512}
+        self.assertEqual(Split.validate_resources(limits), limits)
+        for change in ({"shmMiB": True}, {"shmMiB": 0}, {"pidsLimit": -1}, {"network": "host"}):
+            with self.assertRaisesRegex(RuntimeError, "Invalid Benchmark"):
+                Split.validate_resources({**limits, **change})
+        info = {"HostConfig": {"NetworkMode": "none", "IpcMode": "private", "ShmSize": 256 * 1024 * 1024,
+                "PidsLimit": 512, "SecurityOpt": ["no-new-privileges:true"]},
+                "Mounts": [{"Type": "volume", "Name": "task", "Destination": "/testbed"}]}
+        Split.validate_worker(info, "task", limits)
+        for change in ({"ShmSize": 64}, {"PidsLimit": -1}, {"SecurityOpt": []}):
+            with self.assertRaisesRegex(RuntimeError, "Unsafe Benchmark"):
+                Split.validate_worker({**info, "HostConfig": {**info["HostConfig"], **change}}, "task", limits)
+
     def test_review_can_only_bind_runtime_private_copy(self):
         review = {"id": "review_" + "a" * 36, "actor": "reviewer",
                   "root": "/tmp/easy-code-review_" + "a" * 36 + "/reviewer"}
@@ -165,7 +179,8 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
                 result = review["root"] + "\n"
             elif args[0] == "inspect":
                 item = next(iter(split.review_workers.values()))
-                result = json.dumps([{"Id": "a" * 64, "HostConfig": {"NetworkMode": "none", "IpcMode": "private"},
+                result = json.dumps([{"Id": "a" * 64, "HostConfig": {"NetworkMode": "none", "IpcMode": "private",
+                    "ShmSize": split.resources["shmMiB"] * 1024 * 1024, "PidsLimit": split.resources["pidsLimit"], "SecurityOpt": ["no-new-privileges:true"]},
                     "Mounts": [{"Type": "volume", "Name": split.volume if args[1] == "main-worker" else item["volume"], "Destination": "/testbed"}]}])
             return SimpleNamespace(returncode=0, stdout=result, stderr="")
 

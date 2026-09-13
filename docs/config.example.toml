@@ -22,6 +22,37 @@ maxContextTokens = 1000000
 maxOutputChars = 256000
 maxToolResultChars = 64000
 commandTimeoutMs = 120000
+sandboxStartupWindowsMs = 75000
+sandboxStartupPosixMs = 30000
+sandboxCleanupTimeoutMs = 45000
+# A compatibility assumption, NOT a network permission. Use requiredCapabilities=[]
+# for a check known not to need IPC; the OS boundary remains unchanged.
+sandboxVerificationRequiresLoopback = true
+# Offer the exact host-scoped invocation to the existing approval flow.
+# No workspace grant authorizes host scope. Never applies to Benchmark.
+sandboxAllowHostEscalation = true
+# Rootless Podman on Linux; rootless Podman machine on Windows/macOS.
+# npm postinstall and sandbox setup prepare the engine/machine and missing image.
+# Existing machines are reused, not resized; changes below apply on creation.
+podmanImage = "localhost/easy-code-sandbox:0.1.0"
+podmanMachineName = "easy-code"
+podmanMachineMemoryMb = 8192
+podmanMachineCpus = 4
+podmanMachineDiskGb = 60
+podmanMemoryMb = 4096
+podmanCpus = 2
+podmanPidsLimit = 512
+podmanShmMb = 256
+podmanTmpMb = 1024
+podmanControlTimeoutMs = 30000
+podmanSetupTimeoutMs = 1200000
+podmanProxyMaxConnections = 32
+podmanProxyMaxBytes = 536870912
+# These are per-container limits, not a global resource quota. Rootfs disk usage
+# is bounded by the Podman machine/storage, not by the RAM or tmpfs settings.
+commandInspectTimeoutMaxMs = 60000
+commandExecuteTimeoutMaxMs = 900000
+commandInstallTimeoutMaxMs = 1200000
 maxManagedWorktrees = 15
 maxSubagentsPerTurn = 8
 maxSubagentFollowUps = 8

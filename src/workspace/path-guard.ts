@@ -47,6 +47,9 @@ export class WorkspacePathGuard {
   readonly root: string;
   private readonly protectedRoots: string[] = [];
 
+  /** Runtime-owned mount exclusions; callers cannot mutate the guard. */
+  protectedPaths(): readonly string[] { return [...this.protectedRoots]; }
+
   constructor(workspaceRoot: string) {
     if (!workspaceRoot || workspaceRoot.includes("\0")) {
       throw new Error("A valid workspace root is required");

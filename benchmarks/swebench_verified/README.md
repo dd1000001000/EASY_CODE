@@ -302,8 +302,9 @@ a different directory on F:.
 
 ### Harbor command isolation
 
-The adapter now separates control from execution; it does not compile or require
-the legacy `harbor-sandbox.c` nested Landlock/seccomp backend.
+The adapter separates control from execution using its offline Docker worker.
+The obsolete nested Landlock/seccomp helper has been removed from the package;
+ordinary CLI commands use Podman instead of that legacy implementation.
 
 Bounded reviewer discussions additionally allocate separate offline worker/volume
 pairs for the author representative and reviewer. They receive only their Runtime

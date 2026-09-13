@@ -21,8 +21,10 @@ import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { effectiveContextWindow } from "../models/catalog.js";
 import { foldMemoryGate } from "../context/pressure-recovery.js";
 import { projectToolResult } from "../tools/output-projection.js";
+import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 
 export interface ReviewParticipant {
+  assertEnvironmentSafe?(): void;
   state: SessionState;
   tools: AgentTool[];
   context: ToolContext;
@@ -83,6 +85,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
   const request = async (who: ReviewActor, request: ModelRequest, summary = false, closingRequest = summary, additional = false) => {
     if (input.signal?.aborted) throw new Error("Review canceled");
     const p = input.participants[who];
+    try { p.assertEnvironmentSafe?.(); } catch (error) { throw new ReviewCleanupError(error); }
     const remainingMs = input.get().deadline - Date.now();
     if (remainingMs <= 0) throw new Error("Review time limit");
     const timeout = AbortSignal.timeout(Math.min(remainingMs, input.limits.reviewSummaryTimeoutMs));
@@ -257,6 +260,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
                   JSON.stringify(resultHistory).length - JSON.stringify(definitions).length - input.limits.contextSafetyReserveTokens * 2),
               });
               result = commandRetries[who].after(tool.name, value, result);
+              if (result.failure?.code === "command_environment_quarantined") throw new ReviewCleanupError(result.summary);
               const observation = reconciliationObservation(p.state, tool.name, result);
               if (observation) {
                 await p.append("context.reconciled", { tool: tool.name, observation });
@@ -293,6 +297,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
               }
             }
           } catch (error) { if (error instanceof ReviewFatalError) throw error;
+            if (error instanceof CommandEnvironmentQuarantined) throw new ReviewCleanupError(error);
             if (!executing) invalidResponse = true;
             statement = undefined; result = { ok: false, summary: "Review action not accepted", error: redactSensitiveInformation(String(error)) }; }
           await recordMessage(p, { role: "tool", name: call.function.name, tool_call_id: call.id,

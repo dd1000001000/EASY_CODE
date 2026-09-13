@@ -17,9 +17,6 @@ import { WorkspaceManager } from "../src/workspace/manager.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
-import { allowBrokeredNetworkHost } from "../src/command/network-destination.js";
-import { createHttpProxyServer } from "@anthropic-ai/sandbox-runtime/dist/sandbox/http-proxy.js";
-import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
 
 function command(name: string, args: string[]): ResolvedCommand {
   return { program: name, executablePath: path.resolve(name), args, cwdAbsolute: process.cwd(), cwdRelative: ".",
@@ -152,25 +149,8 @@ describe("network authorization", () => {
   });
 
   it("does not open private, metadata or IPv6 connections even after authorization", async () => {
-    for (const host of ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1"]) await assert.rejects(() => resolvePublicNetworkHost(host));
-  });
-
-  it("chains the installed SRT HTTP proxy through the gate without its implicit localhost bypass", async () => {
-    for (const host of ["localhost", "LOCALHOST.", "127.0.0.1", "127.1", "2130706433", "[::1]", "[::ffff:127.0.0.1]", "169.254.169.254"]) assert.equal(allowBrokeredNetworkHost(host), false, host);
-    let accepted = 0, grants = 0;
-    const target = createServer((_req, res) => { accepted++; res.end("srt-chain-ok"); });
-    const port = await listen(target);
-    const gate = await createCommandNetworkGate({ authorize: async () => { grants++; return true; }, record: () => {}, resolveHost: async () => "127.0.0.1" });
-    const proxy = createHttpProxyServer({ filter: (_port, host) => allowBrokeredNetworkHost(host), proxyAuthToken: "fixture-only",
-      parentProxy: resolveParentProxy({ http: gate.proxyURL, https: gate.proxyURL, noProxy: "" }) });
-    const proxyPort = await listen(proxy);
-    try {
-      const url = `http://srt:fixture-only@127.0.0.1:${proxyPort}`;
-      assert.equal((await proxyRequest(url, `http://localhost:${port}/`)).status, 403);
-      assert.equal(accepted, 0); assert.equal(grants, 0);
-      assert.deepEqual(await proxyRequest(url, `http://fixture.test:${port}/`), { status: 200, text: "srt-chain-ok" });
-      assert.equal(accepted, 1); assert.equal(grants, 1);
-    } finally { await gate.close(); await new Promise<void>(r => proxy.close(() => r())); await new Promise<void>(r => target.close(() => r())); }
+    for (const host of ["127.0.0.1", "10.0.0.1", "169.254.169.254", "::1", "localhost", "LOCALHOST.", "127.1", "2130706433", "[::ffff:127.0.0.1]"])
+      await assert.rejects(() => resolvePublicNetworkHost(host));
   });
 
   it("enforces the mode matrix before starting known network commands", async () => {

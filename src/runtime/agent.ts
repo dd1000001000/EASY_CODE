@@ -1,4 +1,5 @@
 import { foldDelivery, newDelivery, pendingDelivery } from "../review/delivery.js";
+import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
@@ -162,6 +163,7 @@ function contextUtilizationPercent(utilization: number): string {
 }
 
 function contextCapacityFailure(error: unknown, state: Readonly<SessionState>): AgentRunResult["failure"] {
+  if (error instanceof CommandEnvironmentQuarantined) return { code: error.code, tool: "runtime", attempts: 0, recoverable: true };
   if (error instanceof TaskBudgetExceeded) return { code: "task_budget_exhausted", tool: "runtime", attempts: 0, recoverable: true };
   return isContextCapacityError(error)
     ? { code: "context_capacity_exhausted", tool: "runtime",
@@ -573,6 +575,8 @@ const CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS = 1_024;
 const MAX_AUDITED_TOOL_BINDINGS = 256;
 
 export interface AgentRuntimeDependencies {
+  /** Host-owned health gate shared by main and child runtimes. */
+  assertEnvironmentSafe?: () => void;
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   taskBudget?: import("./task-budget.js").TaskBudget;
   tokenCalibration?: TokenCalibration;
@@ -1595,6 +1599,7 @@ export class AgentRuntime {
     turnSignal: AbortSignal | undefined,
     operation: (signal: AbortSignal | undefined) => Promise<T>,
   ): Promise<{ kind: "completed"; value: T } | { kind: "steering_interrupted" }> {
+    this.dependencies.assertEnvironmentSafe?.();
     const steeringAttempt = this.dependencies.steeringNotifier?.openAttempt();
     const attemptSignal = createProviderAttemptSignal({
       turnSignal,
@@ -2142,6 +2147,7 @@ export class AgentRuntime {
       step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed <= Math.min(stepLimit, options.maxSteps) && this.remainingRequests > 0;
       step += 1
     ) {
+      this.dependencies.assertEnvironmentSafe?.();
       if (options.signal?.aborted) {
         return this.finish(
           state,
@@ -2762,6 +2768,7 @@ export class AgentRuntime {
       let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
       let finishRejectedReason: string | undefined;
       let completedVerificationPhase = false;
+      let environmentFault: string | undefined;
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
         const call = calls[callIndex]!;
@@ -2840,7 +2847,7 @@ export class AgentRuntime {
         // Pure file reading and Plan explanations pay no inventory-scan cost.
         // Capture before the first capability that could change verification bytes,
         // including arbitrary inspect commands and shared-workspace children.
-        if (!state.progressGuard?.validationBaseline && tool &&
+        if (!environmentFault && !state.progressGuard?.validationBaseline && tool &&
             toolMetadata(tool).validationSensitive) {
           const baseline = await (this.dependencies.captureValidationBaseline?.() ?? captureValidationBaseline(state.workspaceRoot, this.dependencies.limits));
           await this.appendProgressReviewEvent(state, turnId, "progress.validation.baseline", "completed", { baseline });
@@ -2871,7 +2878,9 @@ export class AgentRuntime {
 
         const journalRecall = tool && toolName === "manage_memory"
           ? recallCompactionEvidence(state, call.function.arguments, this.dependencies.limits) : undefined;
-        if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
+        if (environmentFault) {
+          result = toolFailure(new CommandEnvironmentQuarantined(environmentFault), "Tool skipped: environment quarantined; task paused.");
+        } else if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
           result = { ok: false, summary: "compact_context cannot be batched with workspace tools; no call in this batch was executed.",
             error: "context_compaction_must_be_exclusive",
             failure: protocolToolFailure("context_compaction_must_be_exclusive", "Continue normal work without compact_context; Runtime manages context maintenance.") };
@@ -3270,6 +3279,9 @@ export class AgentRuntime {
           }
         }
         result = normalizeToolFailure(result);
+        if (result.failure?.code === "command_environment_quarantined") {
+          environmentFault = result.error ?? result.failure.instruction;
+        }
         if (result.ok) toolRecovery.succeed(toolName);
         // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
         // Once accepted, context maintenance owns its own durable correction budget.
@@ -3438,6 +3450,10 @@ export class AgentRuntime {
         }
       }
 
+      if (environmentFault) {
+        throw new CommandEnvironmentQuarantined(environmentFault);
+      }
+      this.dependencies.assertEnvironmentSafe?.();
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
       else if (investigationExchangeStart(state.messages) !== undefined)
         await this.closeContextPhase(state, turnId, "investigation");
@@ -3547,11 +3563,12 @@ export class AgentRuntime {
       const controlFailure = protocolFailure?.failure ?? (!interrupted ? contextCapacityFailure(error, state) : undefined);
       const capacityExhausted = !interrupted && isContextCapacityError(error);
       const result: AgentRunResult = {
-        text: interrupted ? "The task was interrupted by the user." : capacityExhausted
+        text: interrupted ? "The task was interrupted by the user." : error instanceof CommandEnvironmentQuarantined
+          ? `Task paused: the command environment is quarantined. History and pending work are preserved; repair and verify cleanup before resuming. ${message}` : capacityExhausted
           ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
           : `Agent run failed: ${message}`,
         reason: interrupted ? "interrupted" : capacityExhausted || error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
-        steps: error instanceof TaskBudgetExceeded ? options.maxSteps - this.remainingRequests : protocolFailure?.steps ?? 0,
+        steps: error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined ? options.maxSteps - this.remainingRequests : protocolFailure?.steps ?? 0,
         threadId: state.threadId,
         turnId,
         ...(controlFailure ? { failure: controlFailure } : {}),
