@@ -158,6 +158,19 @@ function appendTranscript(
   return [...transcript, cloneTranscriptEntry(entry)];
 }
 
+function replaceTranscript(
+  transcript: readonly UITranscriptEntry[],
+  id: string,
+  entry: Readonly<UITranscriptEntry>,
+): readonly UITranscriptEntry[] {
+  const index = transcript.findIndex((candidate) => candidate.id === id);
+  if (index < 0) return transcript;
+  const replacement = cloneTranscriptEntry({ ...entry, id });
+  return transcript.map((candidate, candidateIndex) =>
+    candidateIndex === index ? replacement : candidate
+  );
+}
+
 function cloneActivity(activity: Readonly<UIActivityState>): UIActivityState {
   return { ...activity };
 }
@@ -306,6 +319,11 @@ export function applyEvent(
       return {
         ...state,
         transcript: appendTranscript(state.transcript, event.entry),
+      };
+    case "transcript.replace":
+      return {
+        ...state,
+        transcript: replaceTranscript(state.transcript, event.id, event.entry),
       };
     case "activity.start":
       return {

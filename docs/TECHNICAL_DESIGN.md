@@ -122,6 +122,8 @@ The authoritative runtime registry is the fixed user file `~/.easy_code/models.t
 | `default_model` | Alias of the initial model. |
 | `providers.<id>.base_url` / `wire_api` | HTTPS base endpoint and `chat_completions` or `responses` protocol. |
 | `providers.<id>.env_key` | Name of the environment variable that may contain this provider's key; the key itself is never stored here. |
+| `providers.<id>.supports_streaming` | Whether this endpoint is requested and parsed as an SSE stream. Missing values fail safely to `false`. |
+| `providers.<id>.supports_stream_usage` | Whether Chat Completions streaming requests send `stream_options.include_usage`. Defaults to `false`; enabled for packaged Qwen and DeepSeek endpoints. Responses uses terminal-event usage instead. |
 | `supports_temperature` / `supports_strict_tools` | Wire capabilities used by the generic drivers. |
 | `models.<alias>.provider` / `model` | Provider reference and exact model identifier sent to the API. |
 | `context_window`, `input_modalities` | Documented capacity and text/image support. |
@@ -134,11 +136,17 @@ New threads bind the active registry hash. Resume refuses a different binding ra
 
 ### 5.2 Protocol drivers and reasoning
 
-[providers/](../src/providers) has two generic, non-streaming protocol drivers. The Chat Completions driver posts to `/chat/completions`; the Responses driver posts to `/responses` and normalizes Responses input items, function calls, reasoning summaries and usage into the common Runtime contracts. Both receive capability flags from the registry rather than provider-name checks.
+[providers/](../src/providers) has two generic protocol drivers. The Chat Completions driver posts to `/chat/completions`; the Responses driver posts to `/responses` and normalizes Responses input items, function calls, reasoning summaries and usage into the common Runtime contracts. Both receive capability flags from the registry rather than provider-name checks.
 
 There is deliberately no Qwen/DeepSeek/Kimi/GLM-specific thinking map. Chat Completions dialects do not share a portable reasoning parameter, so EASY CODE sends no invented thinking field and lets the service use its configured default. For a registry model with `reasoning = true`, the Responses driver may send the standardized `reasoning.effort` selected by the user. Effort still controls local Runtime budgets and timeouts independently of wire support.
 
-The drivers receive a bounded complete JSON response, then normalize text, native reasoning, tool calls, finish reason and usage. Terminal activity indicators are not evidence of SSE/token streaming. Local output/context reservations are **never** serialized as `max_tokens`, `max_completion_tokens` or `max_output_tokens`; the HTTP response-size bound protects the local process without changing generation semantics.
+When `supports_streaming = true`, the selected protocol driver requests SSE and emits provider-neutral transient events with a unique physical-request ID and ordered sequence numbers. UTF-8, LF/CRLF/CR and SSE records are decoded incrementally. Chat Completions accepts null usage and usage-only chunks, and requires both the selected choice's finish reason and `[DONE]`; Responses requires a validated completed/incomplete terminal event. HTTP EOF alone never completes a model response, and stream error events cannot be ignored. Tools run only after a complete response is accepted and their original arguments pass validation. A successful JSON response is still parsed atomically without a second request.
+
+Network failures and missing stream terminators use the existing shared API retry allowance (five retries by default); each attempt has fresh buffers and a new ID. No partial response is added to model history or executed. Cancellation, authentication and malformed protocol data do not gain automatic retries. Length/incomplete model outcomes use the existing content-correction allowance instead. Actual usage is settled once; absent usage keeps the existing estimation fallback. Standalone adapter calls retain their explicit retry cap, while Runtime requests set that cap to zero and own all retries.
+
+The CLI buffers deltas and refreshes at `limits.streamFlushIntervalMs` (50 ms by default), using the existing layout cache for unchanged nodes. `limits.streamPreviewMaxChars` (16,000 by default) bounds in-progress previews only; the unfinished lexical token is held for safe filtering, and accepted final text/thinking is retained in full. Completion/interruption flushes immediately; retries mark old previews interrupted. Clear, thread reset and close cancel pending flushes, and duplicate/late deltas cannot update a new attempt. Existing user `models.toml` files are not overwritten: enable `supports_stream_usage = true` there for endpoints supporting that option.
+
+The terminal replaces stable virtual transcript nodes as deltas arrive, preserving the actual reasoning/text/tool order. Only the final assembled assistant message is journaled; individual deltas are not durable events. The completed result reconciles the live node instead of printing a second answer, while non-interactive and small-terminal paths retain atomic output. Local output/context reservations are **never** serialized as `max_tokens`, `max_completion_tokens` or `max_output_tokens`; the HTTP response-size bound protects the local process without changing generation semantics.
 
 [model-retry.ts](../src/runtime/model-retry.ts) owns retry behavior; adapters do not add an independent nested retry loop. [task-budget.ts](../src/runtime/task-budget.ts) reserves and settles shared request/Token budgets across main agents, children, review and auxiliary requests. Resume does not replenish consumed budget.
 

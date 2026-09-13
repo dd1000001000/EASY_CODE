@@ -48,6 +48,8 @@ export interface ProviderCatalogEntry {
   readonly label: string;
   readonly vendor: string;
   readonly wireApi: WireApi;
+  readonly supportsStreaming: boolean;
+  readonly supportsStreamUsage: boolean;
   readonly credentialSlot: ProviderName;
   readonly configKey: `${string}.api-key`;
   readonly defaultBaseUrl: string;
@@ -106,6 +108,10 @@ const providerSchema = z.object({
   env_key: envSchema,
   env_key_aliases: z.array(envSchema).default([]),
   wire_api: z.enum(["chat_completions", "responses"]),
+  // Missing means disabled for compatibility with existing user registries.
+  // The packaged registry declares this explicitly for every endpoint.
+  supports_streaming: z.boolean().default(false),
+  supports_stream_usage: z.boolean().default(false),
   request_timeout_ms: z.number().int().positive().optional(),
   max_retries: z.number().int().min(0).max(10).default(3),
   supports_temperature: z.boolean().default(true),
@@ -196,6 +202,8 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
       label: value.name,
       vendor: value.name,
       wireApi: value.wire_api,
+      supportsStreaming: value.supports_streaming,
+      supportsStreamUsage: value.supports_stream_usage,
       credentialSlot: provider,
       configKey: `${provider}.api-key` as `${string}.api-key`,
       defaultBaseUrl: value.base_url.replace(/\/+$/u, ""),

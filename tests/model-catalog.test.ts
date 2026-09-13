@@ -34,6 +34,10 @@ describe("user model registry", () => {
       "qwen", "deepseek", "kimi", "glm", "glm-coding-plan",
     ]);
     assert.equal(providerCatalogEntry("kimi").wireApi, "chat_completions");
+    assert.equal(providerCatalogEntry("kimi").supportsStreaming, true);
+    assert.equal(providerCatalogEntry("kimi").supportsStreamUsage, false);
+    assert.equal(providerCatalogEntry("qwen").supportsStreamUsage, true);
+    assert.equal(providerCatalogEntry("deepseek").supportsStreamUsage, true);
     assert.equal(providerCatalogEntry("kimi").supportsTemperature, false);
     assert.equal(providerCatalogEntry("glm").supportsStrictTools, false);
     assert.equal(DEFAULT_MODEL_IDS.qwen, "qwen3.7-max");
@@ -62,6 +66,8 @@ reasoning = true
 `;
     const parsed = parseModelCatalog(source);
     assert.equal(parsed.providers[0]?.wireApi, "responses");
+    assert.equal(parsed.providers[0]?.supportsStreaming, false);
+    assert.equal(parsed.providers[0]?.supportsStreamUsage, false);
     assert.equal(parsed.providers[0]?.models[0]?.id, "coder-1");
     assert.equal(parsed.providers[0]?.models[0]?.vision, "supported");
     try {

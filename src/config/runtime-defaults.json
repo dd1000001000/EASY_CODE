@@ -20,6 +20,8 @@
   "maxTaskTokens": 0,
   "maxResponseTokens": 32768,
   "providerResponseMaxBytes": 16777216,
+  "streamFlushIntervalMs": 50,
+  "streamPreviewMaxChars": 16000,
   "providerTimeoutMs": { "none": 300000, "low": 300000, "medium": 450000, "high": 600000 },
   "maxProviderRetries": 5,
   "modelContentRetries": 2,

@@ -25,6 +25,8 @@ export const runtimeLimitsSchema = z.object({
   // Local output reservation; never a server generation limit.
   maxResponseTokens: integer(256, 131072),
   providerResponseMaxBytes: integer(1048576, 67108864),
+  streamFlushIntervalMs: integer(16, 1000),
+  streamPreviewMaxChars: integer(1024, 64000),
   providerTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
     medium: integer(1000, 3600000), high: integer(1000, 3600000) }).strict(),
   maxProviderRetries: integer(0, 10),

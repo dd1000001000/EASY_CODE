@@ -92,6 +92,8 @@ async function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<
 
 export function incompleteModelOutput(response: ProviderResponse): string | undefined {
   if (response.finishReason === "length") return "Model output was truncated (finishReason=length); submit a complete response. No incomplete tool call was executed.";
+  if (["incomplete", "failed", "in_progress", "queued", "cancelled", "content_filter", "insufficient_system_resource"].includes(response.finishReason ?? ""))
+    return `Model response did not complete (finishReason=${response.finishReason}); submit a complete response. No incomplete tool call was executed.`;
   if (!response.message.tool_calls?.length && !response.message.content?.trim())
     return "Model returned no usable text or tool call. Thinking alone is not a completed task.";
   return undefined;

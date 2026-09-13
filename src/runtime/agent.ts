@@ -19,6 +19,7 @@ import {
   type ModelProvider,
   type PlanProposal,
   type PlanReviewState,
+  type ProviderStreamEvent,
   type SessionState,
   type SubagentLifecycleUpdate,
   type SubagentAssignmentSnapshot,
@@ -673,6 +674,8 @@ export interface AgentRuntimeDependencies {
   onProviderContext?: (snapshot: ProviderContextSnapshot) => void;
   /** Transient presentation only; reasoning is persisted in its assistant message. */
   onReasoning?: (notification: AgentReasoningNotification) => void;
+  /** Transient provider deltas; the assembled assistant message remains authoritative. */
+  onModelStream?: (event: Readonly<ProviderStreamEvent>) => void;
   /** Child-only FIFO parent guidance, drained at a model-step boundary. */
   takeAdditionalInstructions?: () => readonly string[];
   /**
@@ -2465,6 +2468,17 @@ export class AgentRuntime {
               tools: enabledTools.map((tool) => tool.definition),
               signal: attemptSignal,
               thinkingEffort: state.thinkingEffort,
+              ...(agentIdentity.role === "main_agent" && this.dependencies.onModelStream
+                ? {
+                    onStreamEvent: (event: ProviderStreamEvent) => {
+                      try {
+                        this.dependencies.onModelStream?.(event);
+                      } catch {
+                        // Live presentation must never replace provider output.
+                      }
+                    },
+                  }
+                : {}),
             }),
           ),
         );

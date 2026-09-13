@@ -34,6 +34,9 @@ maxTaskTokens = 0
 maxResponseTokens = 32768
 # Independent transport safety ceiling, not a summary/display limit (16 MiB).
 providerResponseMaxBytes = 16777216
+# Live UI only: batch deltas and bound in-progress previews; final output is retained.
+streamFlushIntervalMs = 50
+streamPreviewMaxChars = 16000
 # Retry counts exclude the initial attempt. Shared by every agent role.
 maxProviderRetries = 5
 modelContentRetries = 2

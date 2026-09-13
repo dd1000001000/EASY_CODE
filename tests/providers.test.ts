@@ -997,6 +997,32 @@ describe("OpenAI-compatible providers", () => {
 });
 
 describe("Node HTTP JSON transport", () => {
+  it("reports response headers and bounded body chunks in arrival order", async () => {
+    await withServer(
+      (_request, response) => {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.write("data: one\n\n");
+        response.end("data: two\n\n");
+      },
+      async (url) => {
+        const starts: number[] = [];
+        const chunks: Buffer[] = [];
+        const result = await postJsonWithNode({
+          url,
+          headers: { "content-type": "application/json" },
+          body: "{}",
+          timeoutMs: 1_000,
+          maxResponseBytes: 1_024,
+          onResponseStart: (response) => starts.push(response.statusCode),
+          onResponseChunk: (chunk) => chunks.push(Buffer.from(chunk)),
+        });
+        assert.deepEqual(starts, [200]);
+        assert.equal(Buffer.concat(chunks).toString("utf8"), result.body);
+        assert.equal(result.headers["content-type"], "text/event-stream");
+      },
+    );
+  });
+
   it("enforces the response byte cap", async () => {
     await withServer(
       (_request, response) => {

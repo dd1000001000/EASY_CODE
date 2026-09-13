@@ -1,13 +1,16 @@
 import readline from "node:readline";
+import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import chalk from "chalk";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { redactImageDataUrls } from "../providers/errors.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
   FileDiffPresentation,
   ImageAttachment,
   PlanProposal,
+  ProviderStreamEvent,
   ThinkingEffort,
 } from "../core/types.js";
 import { selectApproval } from "./approval-selector.js";
@@ -28,6 +31,7 @@ import {
 } from "./prompt-input.js";
 import {
   ReasoningRegistry,
+  prepareReasoningText,
   renderReasoningBody,
   renderReasoningMarker,
   type ReasoningBlock,
@@ -159,6 +163,28 @@ interface CurrentTurnDisclosure {
   readonly adjustment?: Readonly<AdjustmentBlock>;
 }
 
+interface ActiveModelStream {
+  readonly streamId: string;
+  reasoningText: string;
+  answerText: string;
+  reasoningId?: number;
+  reasoningEntryId?: string;
+  answerEntryId?: string;
+  toolCallSeen: boolean;
+  completed: boolean;
+  sequence: number;
+  pendingReasoning: string[];
+  pendingText: string[];
+  finalDisplay: boolean;
+  renderedReasoning?: string;
+  renderedAnswer?: string;
+}
+
+interface DeferredTranscriptCommit {
+  readonly id?: string;
+  text: string;
+}
+
 type DisclosureKind = "thinking" | "adjustment";
 
 interface ActiveDisclosureViewer {
@@ -177,7 +203,7 @@ interface ActiveDisclosureViewer {
   readonly wasFlowing: boolean;
   readonly onData: (chunk: Buffer | string) => void;
   readonly onError: () => void;
-  readonly deferredCommits: string[];
+  readonly deferredCommits: DeferredTranscriptCommit[];
   /** Primary prompt/composer changed while hidden by the alternate buffer. */
   primaryDisplayDirty: boolean;
   clearPrimaryOnClose?: boolean;
@@ -293,6 +319,23 @@ export class Terminal {
   private pendingRequestTranscriptStart?: number;
   /** A completed turn remains viewable, but a later direct/resumed request is new. */
   private currentTurnCompleted = false;
+  /** Provider deltas are a replaceable projection; only assembled messages are durable. */
+  private readonly modelStreams = new Map<string, ActiveModelStream>();
+  private streamFlushTimer?: NodeJS.Timeout;
+  private streamFlushIntervalMs = DEFAULT_RUNTIME_LIMITS.streamFlushIntervalMs;
+  private streamPreviewMaxChars = DEFAULT_RUNTIME_LIMITS.streamPreviewMaxChars;
+  private streamBatchRendering = false;
+  private streamDocumentDirty = false;
+  private streamedAnswerCandidate?: Readonly<{
+    streamId: string;
+    entryId: string;
+    text: string;
+  }>;
+  private streamedReasoningCandidate?: Readonly<{
+    streamId: string;
+    id: number;
+    text: string;
+  }>;
   private activityTimer?: NodeJS.Timeout;
   private activityStartedAt = 0;
   private activityFrameIndex = 0;
@@ -344,6 +387,17 @@ export class Terminal {
       this.input.isTTY &&
       (this.output as NodeJS.WriteStream).isTTY,
     );
+  }
+
+  configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void {
+    this.streamFlushIntervalMs = limits.streamFlushIntervalMs;
+    this.streamPreviewMaxChars = limits.streamPreviewMaxChars;
+  }
+
+  private resetModelStreams(): void {
+    if (this.streamFlushTimer) clearTimeout(this.streamFlushTimer);
+    this.streamFlushTimer = undefined;
+    this.modelStreams.clear();
   }
 
   /** Enable the retained inline UI only for a real TTY owned by this instance. */
@@ -430,6 +484,9 @@ export class Terminal {
     }
     this.pendingRequestTranscriptStart = undefined;
     this.currentTurnCompleted = false;
+    this.resetModelStreams();
+    this.streamedAnswerCandidate = undefined;
+    this.streamedReasoningCandidate = undefined;
     this.currentTurnTranscriptEnd = undefined;
     this.progressItems = [];
     this.progressSequence = 0;
@@ -637,6 +694,9 @@ export class Terminal {
     this.currentTurnTranscriptStart = this.uiState.composer.busy ? 0 : undefined;
     this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
+    this.resetModelStreams();
+    this.streamedAnswerCandidate = undefined;
+    this.streamedReasoningCandidate = undefined;
     if (!this.inlineShellActive) {
       if ((this.output as NodeJS.WriteStream).isTTY) this.output.write("\u001B[3J\u001B[2J\u001B[H");
       return;
@@ -683,6 +743,9 @@ export class Terminal {
     this.currentTurnTranscriptEnd = undefined;
     this.pendingRequestTranscriptStart = undefined;
     this.currentTurnCompleted = false;
+    this.resetModelStreams();
+    this.streamedAnswerCandidate = undefined;
+    this.streamedReasoningCandidate = undefined;
     this.reasoning.clear();
     this.adjustments.clear();
     this.uiState = createUIState({
@@ -877,7 +940,7 @@ export class Terminal {
       this.disclosureViewer.state = scrollDisclosureViewToEnd(
         this.disclosureViewer.state,
       );
-      this.disclosureViewer.deferredCommits.push(rendered);
+      this.disclosureViewer.deferredCommits.push({ text: rendered });
       this.refreshDisclosureViewer(true);
     } else {
       this.screen?.commit(rendered);
@@ -1016,7 +1079,7 @@ export class Terminal {
           this.disclosureViewer.state = scrollDisclosureViewToEnd(
             this.disclosureViewer.state,
           );
-          this.disclosureViewer.deferredCommits.push(rendered);
+          this.disclosureViewer.deferredCommits.push({ text: rendered });
           this.refreshDisclosureViewer(true);
         } else {
           this.screen?.commit(rendered);
@@ -1565,6 +1628,11 @@ export class Terminal {
 
   /** Store provider thinking safely and print only its collapsed marker. */
   addReasoning(text: string): number {
+    const streamed = this.streamedReasoningCandidate;
+    if (streamed && prepareReasoningText(text).text === streamed.text) {
+      this.streamedReasoningCandidate = undefined;
+      return streamed.id;
+    }
     const block = this.reasoning.add(text);
     if (this.isInteractive()) {
       const entry = {
@@ -1580,6 +1648,239 @@ export class Terminal {
       }
     }
     return block.id;
+  }
+
+  /** Project transient provider deltas into stable in-place transcript nodes. */
+  modelStream(event: Readonly<ProviderStreamEvent>): void {
+    if (this.closed) return;
+    if (event.kind === "started") {
+      this.flushModelStreams();
+      this.applyModelStream(event);
+      return;
+    }
+    const state = this.modelStreams.get(event.streamId);
+    if (!state || state.completed || event.sequence <= state.sequence) return;
+    state.sequence = event.sequence;
+    if (event.kind === "reasoning_delta" || event.kind === "text_delta") {
+      (event.kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText).push(event.text);
+      if (!this.streamFlushTimer) {
+        this.streamFlushTimer = setTimeout(() => {
+          try { this.flushModelStreams(); }
+          catch {
+            // Rendering is optional, including when it runs outside the
+            // provider observer's synchronous error boundary.
+            this.resetModelStreams();
+            this.streamedAnswerCandidate = undefined;
+            this.streamedReasoningCandidate = undefined;
+          }
+        }, this.streamFlushIntervalMs);
+        this.streamFlushTimer.unref();
+      }
+      return;
+    }
+    if (event.kind !== "tool_call_delta") this.flushModelStreams(event.kind === "completed" ? event.streamId : undefined);
+    this.applyModelStream(event);
+  }
+
+  private flushModelStreams(finalStreamId?: string): void {
+    if (this.streamFlushTimer) clearTimeout(this.streamFlushTimer);
+    this.streamFlushTimer = undefined;
+    this.streamBatchRendering = true;
+    try {
+      for (const state of this.modelStreams.values()) {
+        if (state.completed) continue;
+        state.finalDisplay = state.streamId === finalStreamId;
+        for (const kind of ["reasoning_delta", "text_delta"] as const) {
+          const pending = kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText;
+          const retained = kind === "reasoning_delta" ? state.reasoningText : state.answerText;
+          if (!pending.length && !(state.finalDisplay && retained)) continue;
+          const text = pending.join("");
+          pending.length = 0;
+          this.applyModelStream({ kind, streamId: state.streamId, sequence: state.sequence, text });
+        }
+      }
+    } finally {
+      this.streamBatchRendering = false;
+      if (this.streamDocumentDirty) {
+        this.streamDocumentDirty = false;
+        this.refreshDisclosureViewer(true);
+      }
+    }
+  }
+
+  private liveStreamText(value: string, final: boolean): string {
+    if (final) return this.safeStreamText(value);
+    const prefix = value.slice(0, this.streamPreviewMaxChars);
+    // Hold the unfinished lexical token (including credentials, data URLs and
+    // terminal escape fragments) until a whitespace boundary is available.
+    const boundary = Math.max(prefix.lastIndexOf(" "), prefix.lastIndexOf("\n"), prefix.lastIndexOf("\t"),
+      ...["。", "，", "！", "？", "；"].map((mark) => prefix.lastIndexOf(mark)));
+    const safe = this.safeStreamText(prefix.slice(0, Math.max(0, boundary + 1)));
+    return value.length > this.streamPreviewMaxChars
+      ? `${safe}\n[Live preview limited; complete output will appear when the response finishes.]`
+      : safe;
+  }
+
+  private applyModelStream(event: Readonly<ProviderStreamEvent>): void {
+    // Small/non-TTY terminals retain the existing atomic final-answer path.
+    // Streaming is enabled only when the managed document can replace nodes
+    // without corrupting ordinary terminal scrollback.
+    if (!this.inlineShellActive || !this.isInteractive() || !this.disclosureViewer) {
+      return;
+    }
+
+    if (event.kind === "started") {
+      for (const [streamId, state] of this.modelStreams) {
+        if (state.completed) this.modelStreams.delete(streamId);
+      }
+      this.streamedAnswerCandidate = undefined;
+      this.modelStreams.set(event.streamId, {
+        streamId: event.streamId,
+        reasoningText: "",
+        answerText: "",
+        toolCallSeen: false,
+        completed: false,
+        sequence: event.sequence,
+        pendingReasoning: [],
+        pendingText: [],
+        finalDisplay: false,
+      });
+      return;
+    }
+
+    const state = this.modelStreams.get(event.streamId);
+    if (!state || event.sequence <= 1) return;
+
+    if (event.kind === "reasoning_delta") {
+      const previewWasFull = state.reasoningText.length > this.streamPreviewMaxChars;
+      state.reasoningText += event.text;
+      if (previewWasFull && state.renderedReasoning && !state.finalDisplay) return;
+      const safeReasoning = this.liveStreamText(state.reasoningText, state.finalDisplay);
+      if (!safeReasoning || safeReasoning === state.renderedReasoning) return;
+      state.renderedReasoning = safeReasoning;
+      if (!state.reasoningId) {
+        const block = this.reasoning.add(safeReasoning);
+        const entryId = `thinking_${block.id}`;
+        state.reasoningId = block.id;
+        state.reasoningEntryId = entryId;
+        this.retainCurrentTurnDisclosure({
+          kind: "raw",
+          id: entryId,
+          text: renderReasoningMarker(block, { color: this.colorEnabled() }),
+          reasoning: block.text,
+        }, block);
+      } else {
+        const block = this.reasoning.replace(
+          state.reasoningId,
+          safeReasoning,
+        );
+        if (block && state.reasoningEntryId) {
+          this.retainedReasoningDisclosures.set(state.reasoningEntryId, block);
+          this.replaceTranscriptEntry(state.reasoningEntryId, {
+            kind: "raw",
+            id: state.reasoningEntryId,
+            text: renderReasoningMarker(block, { color: this.colorEnabled() }),
+            reasoning: block.text,
+          });
+        }
+      }
+      return;
+    }
+
+    if (event.kind === "text_delta") {
+      const previewWasFull = state.answerText.length > this.streamPreviewMaxChars;
+      state.answerText += event.text;
+      if (previewWasFull && state.renderedAnswer && !state.finalDisplay) return;
+      const safe = this.liveStreamText(state.answerText, state.finalDisplay);
+      if (!safe || safe === state.renderedAnswer) return;
+      state.renderedAnswer = safe;
+      if (!state.answerEntryId) {
+        state.answerEntryId = `model_stream_${event.streamId}_answer`;
+        this.commitTranscript({
+          kind: "assistant",
+          id: state.answerEntryId,
+          text: `\n${safe}`,
+        });
+      } else {
+        this.replaceTranscriptEntry(state.answerEntryId, {
+          kind: "assistant",
+          id: state.answerEntryId,
+          text: `\n${safe}`,
+        });
+      }
+      return;
+    }
+
+    if (event.kind === "tool_call_delta") {
+      state.toolCallSeen = true;
+      return;
+    }
+
+    if (event.kind === "completed") {
+      state.completed = true;
+      if (state.reasoningId) {
+        const block = this.reasoning.get(state.reasoningId);
+        if (block) {
+          this.streamedReasoningCandidate = {
+            streamId: event.streamId,
+            id: block.id,
+            text: block.text,
+          };
+        }
+      }
+      if (!state.toolCallSeen && state.answerEntryId && ["stop", null, undefined].includes(event.finishReason)) {
+        this.streamedAnswerCandidate = {
+          streamId: event.streamId,
+          entryId: state.answerEntryId,
+          text: this.safeStreamText(state.answerText),
+        };
+      }
+      return;
+    }
+
+    if (event.kind === "interrupted") {
+      const interrupted = "[Interrupted model response; not a completed answer.]";
+      if (state.reasoningId && state.reasoningEntryId) {
+        const block = this.reasoning.get(state.reasoningId);
+        if (block) this.replaceTranscriptEntry(state.reasoningEntryId, {
+          kind: "raw", id: state.reasoningEntryId,
+          text: `${renderReasoningMarker(block, { color: this.colorEnabled() })} [interrupted]`,
+          reasoning: block.text,
+        });
+      }
+      if (state.answerEntryId) {
+        this.replaceTranscriptEntry(state.answerEntryId, {
+          kind: "assistant", id: state.answerEntryId,
+          text: `\n${state.renderedAnswer ?? ""}\n${interrupted}\n`,
+        });
+      } else {
+        this.commitTranscript({ kind: "raw", id: `model_stream_${event.streamId}_interrupted`, text: `${interrupted}\n` });
+      }
+      state.completed = true;
+      this.modelStreams.delete(event.streamId);
+      if (this.streamedAnswerCandidate?.streamId === event.streamId) {
+        this.streamedAnswerCandidate = undefined;
+      }
+      if (this.streamedReasoningCandidate?.streamId === event.streamId) {
+        this.streamedReasoningCandidate = undefined;
+      }
+    }
+  }
+
+  /** Reconcile the streamed final node with the Runtime's assembled result. */
+  finalizeStreamedAnswer(text: string): boolean {
+    const candidate = this.streamedAnswerCandidate;
+    this.streamedAnswerCandidate = undefined;
+    if (!candidate || !this.disclosureViewer) return false;
+    const complete = this.safeStreamText(text).trim();
+    if (!complete) return false;
+    this.replaceTranscriptEntry(candidate.entryId, {
+      kind: "assistant",
+      id: candidate.entryId,
+      text: `\n${complete}\n\n`,
+    });
+    this.modelStreams.delete(candidate.streamId);
+    return true;
   }
 
   /** Retain one durable user adjustment and present it as ordinary user input. */
@@ -1654,6 +1955,9 @@ export class Terminal {
 
   /** Drop the current Thread's blocks without reusing IDs from old markers. */
   clearReasoning(): void {
+    this.resetModelStreams();
+    this.streamedAnswerCandidate = undefined;
+    this.streamedReasoningCandidate = undefined;
     this.closeDisclosureViewer();
     this.retainedReasoningDisclosures.clear();
     this.freezeCurrentTurnDisclosures();
@@ -1663,6 +1967,7 @@ export class Terminal {
   }
 
   close(): void {
+    this.resetModelStreams();
     this.activeApprovalController?.abort();
     this.vscodeMenuBridge?.close();
     if (this.closed) return;
@@ -2501,11 +2806,11 @@ export class Terminal {
       // committed exactly once. When an editor session survived, route it
       // through that session after restoration so its preserved draft is
       // erased/redrawn around the output instead of being overwritten.
-      for (const text of viewer.deferredCommits) {
+      for (const commit of viewer.deferredCommits) {
         if (this.activePromptSession) {
-          this.activePromptSession.writeAbove(text);
+          this.activePromptSession.writeAbove(commit.text);
         } else {
-          this.screen?.commit(text);
+          this.screen?.commit(commit.text);
         }
       }
       // With an untouched primary prompt there is nothing to redraw. Avoiding
@@ -2516,6 +2821,7 @@ export class Terminal {
   }
 
   private refreshDisclosureViewer(nodesChanged = false): void {
+    if (this.streamBatchRendering) { this.streamDocumentDirty ||= nodesChanged; return; }
     const viewer = this.disclosureViewer;
     if (!viewer || viewer.closing) return;
     if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
@@ -3296,7 +3602,10 @@ export class Terminal {
       : entry.text;
     const viewer = this.disclosureViewer;
     if (viewer) {
-      viewer.deferredCommits.push(renderedText);
+      viewer.deferredCommits.push({
+        ...(entry.id ? { id: entry.id } : {}),
+        text: renderedText,
+      });
       this.refreshDisclosureViewer(true);
       return;
     }
@@ -3306,6 +3615,34 @@ export class Terminal {
       this.activePromptSession.writeAbove(renderedText);
     } else {
       this.screen?.commit(renderedText);
+    }
+  }
+
+  /** Replace a mutable transcript node while preserving its document position. */
+  private replaceTranscriptEntry(
+    id: string,
+    entry: Readonly<UITranscriptEntry>,
+  ): void {
+    const existing = this.uiState.transcript.find((candidate) => candidate.id === id);
+    if (!existing) return;
+    this.uiState = applyEvent(this.uiState, {
+      type: "transcript.replace",
+      id,
+      entry,
+    });
+    const renderedText = entry.kind === "user"
+      ? `${this.formatUserTranscriptEntry(entry)}\n\n`
+      : entry.text;
+    const viewer = this.disclosureViewer;
+    if (viewer) {
+      for (let index = viewer.deferredCommits.length - 1; index >= 0; index -= 1) {
+        const commit = viewer.deferredCommits[index];
+        if (commit?.id === id) {
+          commit.text = renderedText;
+          break;
+        }
+      }
+      this.refreshDisclosureViewer(true);
     }
   }
 
@@ -3492,6 +3829,12 @@ export class Terminal {
     return safe.length <= maximum
       ? safe
       : `${safe.slice(0, Math.max(0, maximum - 1))}…`;
+  }
+
+  private safeStreamText(value: string): string {
+    return redactImageDataUrls(
+      redactSensitiveInformation(sanitizeCommandOutput(value)),
+    );
   }
 
   private canUseInlineShell(): boolean {

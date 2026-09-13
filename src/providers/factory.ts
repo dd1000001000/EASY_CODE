@@ -41,6 +41,10 @@ export function createProvider(
     toolCallingSupported:
       runtime?.toolCallingSupported ??
       (resolveCatalogModel(providerName, providerConfig.model)?.toolCalling ?? true),
+    supportsStreaming:
+      runtime?.supportsStreaming ?? providerCatalogEntry(providerName).supportsStreaming,
+    supportsStreamUsage:
+      runtime?.supportsStreamUsage ?? providerCatalogEntry(providerName).supportsStreamUsage,
   };
 
   switch (providerCatalogEntry(providerName).wireApi) {
