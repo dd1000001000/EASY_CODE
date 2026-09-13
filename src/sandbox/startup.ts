@@ -85,7 +85,7 @@ export interface SandboxStartupTerminal {
   stopActivity(): void;
 }
 
-/** Run the first-interactive-start guide inside the existing retained terminal. */
+/** Prepare missing prerequisites once, then offer recovery in the retained terminal. */
 export async function runSandboxStartupGuide(
   service: SandboxStartupService,
   terminal: SandboxStartupTerminal,
@@ -99,6 +99,32 @@ export async function runSandboxStartupGuide(
   }
   if (sandboxIsReady(readiness)) {
     return true;
+  }
+
+  const setup = async (): Promise<boolean> => {
+    const result = await service.setup(readiness);
+    readiness = result.readiness;
+    if ((result.status === "completed" || result.status === "already_ready") && sandboxIsReady(readiness)) {
+      terminal.success(safeDetail(result.message));
+      return true;
+    }
+    if (result.status === "cancelled" || result.status === "unavailable") terminal.warning(safeDetail(result.message));
+    else terminal.error(safeDetail(result.message));
+    return false;
+  };
+
+  // One automatic attempt per startup. A probe/cleanup failure is not a missing
+  // installation; never rebuild it blindly or loop after denied OS approval.
+  if (readiness.canSetup && ["dependencies_missing", "setup_required"].includes(readiness.status)) {
+    terminal.info("Preparing the missing Podman sandbox automatically. Downloads and OS authorization may be required; a required reboot must be completed manually.");
+    terminal.startActivity("Setting up the command sandbox");
+    try {
+      if (await setup()) return true;
+    } catch (error) {
+      terminal.error(`Sandbox startup operation failed: ${safeDetail(errorMessage(error))}`);
+    } finally {
+      terminal.stopActivity();
+    }
   }
 
   while (true) {
@@ -117,7 +143,7 @@ export async function runSandboxStartupGuide(
         label: "Continue with sandboxed commands blocked",
         detail: "Chat and workspace file tools remain available; dangerous full access requires a separate confirmation",
       },
-      { id: "exit", label: "Exit EASY CODE", detail: "Make no system changes" },
+      { id: "exit", label: "Exit EASY CODE", detail: "Make no further system changes" },
     ];
     const selected = await terminal.selectChoice(
       "Command sandbox is not ready",
@@ -138,17 +164,7 @@ export async function runSandboxStartupGuide(
     );
     try {
       if (selected === "setup") {
-        const result = await service.setup(readiness);
-        readiness = result.readiness;
-        if (result.status === "completed" || result.status === "already_ready") {
-          terminal.success(result.message);
-          return true;
-        }
-        if (result.status === "cancelled" || result.status === "unavailable") {
-          terminal.warning(result.message);
-        } else {
-          terminal.error(result.message);
-        }
+        if (await setup()) return true;
       } else {
         readiness = await service.inspect();
         if (sandboxIsReady(readiness)) {

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import path from "node:path";
+import os from "node:os";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { execa } from "execa";
 import { ensurePodmanInstalled, linuxPodmanPackages, type InstallRunner } from "../src/sandbox/podman-install.js";
-import { podmanArguments } from "../src/sandbox/podman-client.js";
+import { podmanArguments, podmanEnvironment } from "../src/sandbox/podman-client.js";
 import { PodmanStartupService, PODMAN_IPC_PROBE } from "../src/sandbox/podman-startup.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { describe, it } from "./harness.js";
@@ -36,6 +40,40 @@ function fakeInstall(options: { installed?: boolean; machine?: boolean; running?
 }
 
 describe("Podman automatic installation", () => {
+  it("preserves Windows OpenSSH's ProgramData but never inherits arbitrary host secrets", () => {
+    const previous = process.env.ProgramData;
+    const secret = process.env.EASY_CODE_TEST_SECRET;
+    try {
+      process.env.ProgramData = "C:\\ProgramData";
+      process.env.EASY_CODE_TEST_SECRET = "must-not-be-inherited";
+      const environment = podmanEnvironment();
+      assert.equal(environment.ProgramData, "C:\\ProgramData");
+      assert.equal(environment.EASY_CODE_TEST_SECRET, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.ProgramData; else process.env.ProgramData = previous;
+      if (secret === undefined) delete process.env.EASY_CODE_TEST_SECRET; else process.env.EASY_CODE_TEST_SECRET = secret;
+    }
+  });
+  it("can generate a temporary Windows machine key using the filtered control environment", async () => {
+    if (process.platform !== "win32") return;
+    const executable = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "OpenSSH", "ssh-keygen.exe");
+    if (!existsSync(executable)) return;
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-keygen-test-"));
+    try {
+      const key = path.join(directory, "probe");
+      const result = await execa(executable, ["-q", "-t", "ed25519", "-N", "", "-f", key], {
+        env: podmanEnvironment(), extendEnv: false, cwd: directory, shell: false, windowsHide: true,
+        reject: false, timeout: 10000,
+      });
+      assert.equal(result.exitCode, 0, result.stderr);
+      assert.ok(existsSync(key) && existsSync(`${key}.pub`));
+    } finally {
+      // Only this test's newly allocated directory, never real Podman/user keys.
+      assert.equal(path.dirname(directory), os.tmpdir());
+      assert.ok(path.basename(directory).startsWith("easy-code-keygen-test-"));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
   it("installs Windows Podman, creates only the dedicated WSL machine and never changes the default connection", async () => {
     const fake = fakeInstall({ installed: false });
     await ensurePodmanInstalled(limits, { platform: "win32", ...fake, executable: () => "podman" });

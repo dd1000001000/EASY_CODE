@@ -26,7 +26,7 @@ export function registerSandboxCommands(
 ): Command {
   const service: SandboxStartupService = options.service ?? {
     inspect: async () => new PodmanStartupService((await loadEasyCodeConfig({ credentialStore: false })).limits).inspect(),
-    setup: async readiness => new PodmanStartupService((await loadEasyCodeConfig({ credentialStore: false })).limits).setup(readiness),
+    setup: async readiness => new PodmanStartupService((await loadEasyCodeConfig({ credentialStore: false })).limits, undefined, undefined, writeLine).setup(readiness),
   };
   const stdout = options.stdout ?? process.stdout;
   const setExitCode = options.setExitCode ?? ((code: number) => {

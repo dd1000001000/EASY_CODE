@@ -94,7 +94,7 @@ export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, opt
   const timeout = limits.podmanSetupTimeoutMs;
   const checked = async (program: string, args: string[]) => {
     const result = await run(program, args, timeout);
-    if (result.exitCode !== 0) throw new Error(`${path.basename(program)} setup failed (${result.exitCode}): ${(result.stderr || result.stdout).slice(-1600)}`);
+    if (result.exitCode !== 0) throw new Error(`${path.basename(program)} ${args.slice(0, 2).join(" ")} setup failed (${result.exitCode}): ${(result.stderr || result.stdout).slice(-1600)}`);
     return result.stdout;
   };
   const version = await run(executable(), ["--version"], limits.podmanControlTimeoutMs).catch(() => undefined);
