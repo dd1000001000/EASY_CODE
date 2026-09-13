@@ -39,7 +39,7 @@ The first installation creates `~/.easy_code/models.toml`. Edit that file to mai
 
 Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
 
-The sandbox is prepared during installation. Check it, or resume setup after an authorization/download/reboot interruption:
+The sandbox is prepared during installation. Interactive `easy-code` startup also automatically attempts setup once when dependencies or initialization are missing; failures open the recovery menu without an installation loop. OS authorization and required reboots still need user action. Check or resume setup with:
 
 ```bash
 easy-code sandbox doctor

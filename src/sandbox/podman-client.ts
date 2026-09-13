@@ -23,7 +23,10 @@ export function podmanArguments(args: string[], limits: Readonly<RuntimeLimits>,
 /** Only the host control plane calls Podman. Never pass this environment to exec. */
 export function podmanEnvironment(excludeRoots: readonly string[] = [process.cwd()]): NodeJS.ProcessEnv {
   const names = ["PATH", "Path", "HOME", "USERPROFILE", "SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
-    "LOCALAPPDATA", "APPDATA", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK"];
+    "LOCALAPPDATA", "APPDATA", "ProgramData", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK"];
+  // Windows OpenSSH requires ProgramData even for ssh-keygen. Dropping it makes
+  // Podman's machine init fail with an empty diagnostic and exit status 255.
+  // Keep this host-only allowlist; do not inherit credentials or the full env.
   const env = Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
   // Compatible with Podman 5 and 6; --provider on machine init is 6-only.
   if (process.platform === "win32") env.CONTAINERS_MACHINE_PROVIDER = "wsl";

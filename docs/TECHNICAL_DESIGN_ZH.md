@@ -240,6 +240,8 @@ Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问�
 
 Reviewer 在主容器停止后取得不包含挂载内容的依赖镜像快照。两个讨论参与者分别使用该依赖镜像和各自的审查代码副本、Git 元数据，不共享主 Agent 的可写代码。镜像 ID 与命令历史参与审查环境缓存失效。审查预检使用 Linux 解释器及可重定位的 Linux 虚拟环境，而不是宿主 Windows 的 python.exe。
 
+交互启动检查遇到可安装的 `dependencies_missing` / `setup_required` 时，自动调用同一套 setup 一次，显示安装进度；就绪则继续，失败才显示恢复菜单。重新检查不会自动重试安装，用户可明确选择再次 setup。`probe_failed` / `unsupported` 不触发自动安装，成功状态还必须同时满足 readiness 为 `ready`。宿主控制面环境变量采用白名单，保留 Windows OpenSSH 生成机器密钥必需的 `ProgramData`，不继承完整宿主环境或供应商密钥；该环境不传给模型命令。
+
 `npm postinstall` 通过 [podman-install.ts](../src/sandbox/podman-install.ts) 自动准备沙箱：复用 Podman，缺失时通过 Windows WinGet、macOS Homebrew / 校验哈希与 Red Hat 签名的官方安装包、Linux 固定包管理配方安装。Windows 按需准备 WSL；Windows/macOS 创建或启动配置中的 rootless `easy-code` 专用虚拟机，不切换已有默认连接，不调整其他虚拟机或停止其任务。系统自己处理授权，不收集密码，不强制重启。不支持的安装器、拒绝授权、需要重启均明确报告安装未完成。Linux 必要时使用非交互 sudo 安装系统包，rootless 准备必须以普通用户执行。尚未编译的源码依赖安装会延后初始化；`--ignore-scripts` 明确跳过 postinstall，Benchmark 也采用该方式。
 
 `easy-code sandbox setup` 继续同一安装流程，构建缺失的随包 [Containerfile](../resources/podman/Containerfile) 镜像，或拉取用户配置的外部镜像；已有镜像复用。只有 `sandbox doctor` 的临时 asyncio/socketpair/信号量/临时目录/禁外网探针通过才报告就绪，不代表全部语言兼容性已验证。桌面端控制器与 worker 均显式选择专用连接；每次派发验证 VM 能看见工作区，不可共享路径直接报错，不回退宿主机。虚拟机名称/创建时内存/CPU/磁盘及单容器内存/CPU/PID/共享内存/临时空间/代理/控制预算见 [config.example.toml](config.example.toml)。修改创建参数不会重设已有 VM。镜像与任务容器保留，不全局 prune。引擎侧寿命上限约束 CLI 崩溃后遗留的进程，不确定的 lease 保留供诊断。Reviewer 使用已停止的主任务依赖快照，只读根文件系统加独立可写工作区。

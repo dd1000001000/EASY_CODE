@@ -30,12 +30,14 @@ print('PODMAN_IPC_OK')`;
 
 export class PodmanStartupService implements SandboxStartupService {
   private readonly run: PodmanRunner;
+  private readonly bootstrap: () => Promise<void>;
   constructor(private readonly limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS, run?: PodmanRunner,
-    private readonly bootstrap = () => run
-      ? Promise.reject(new Error("An injected Podman runner requires an explicit setup bootstrap; system installation is disabled for test runners"))
-      : ensurePodmanInstalled(limits),
+    bootstrap?: () => Promise<void>,
     private readonly report: (message: string) => void = () => undefined) {
     this.run = run ?? podmanRunner(limits);
+    this.bootstrap = bootstrap ?? (() => run
+      ? Promise.reject(new Error("An injected Podman runner requires an explicit setup bootstrap; system installation is disabled for test runners"))
+      : ensurePodmanInstalled(limits, { report: this.report }));
   }
   private result(status: SandboxReadiness["status"], details: string[], canSetup = false): SandboxReadiness {
     return { status, platform: process.platform, backend: "Podman (rootless Linux task containers)", details, canSetup,

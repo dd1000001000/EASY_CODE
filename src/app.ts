@@ -824,7 +824,7 @@ export class EasyCodeApp {
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup
-          ? options.sandboxStartupService ?? new PodmanStartupService(config.limits)
+          ? options.sandboxStartupService ?? new PodmanStartupService(config.limits, undefined, undefined, message => terminal.info(message))
           : undefined,
         options.clipboardImageReader ?? new SystemClipboardImageReader({
           currentDirectory: workspace.root,
