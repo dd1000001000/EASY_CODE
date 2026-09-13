@@ -21,15 +21,35 @@ export function podmanArguments(args: string[], limits: Readonly<RuntimeLimits>,
 }
 
 /** Only the host control plane calls Podman. Never pass this environment to exec. */
-export function podmanEnvironment(excludeRoots: readonly string[] = [process.cwd()]): NodeJS.ProcessEnv {
+export function podmanConnectionsFile(env: NodeJS.ProcessEnv = process.env, platform = process.platform, home = os.homedir()): string {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const configured = env.PODMAN_CONNECTIONS_CONF?.trim();
+  const directory = platform === "win32"
+    ? env.APPDATA || paths.join(env.USERPROFILE || home, "AppData", "Roaming")
+    : env.XDG_CONFIG_HOME || paths.join(env.HOME || home, ".config");
+  const file = configured || paths.join(directory, "containers", "podman-connections.json");
+  if (!paths.isAbsolute(file) || /[\u0000-\u001f]/u.test(file))
+    throw new Error("Podman connections configuration must be an absolute host path");
+  return paths.normalize(file);
+}
+
+export function podmanEnvironment(excludeRoots: readonly string[] = [process.cwd()],
+  source: NodeJS.ProcessEnv = process.env, platform = process.platform): NodeJS.ProcessEnv {
   const names = ["PATH", "Path", "HOME", "USERPROFILE", "SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
     "LOCALAPPDATA", "APPDATA", "ProgramData", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "SSH_AUTH_SOCK"];
   // Windows OpenSSH requires ProgramData even for ssh-keygen. Dropping it makes
   // Podman's machine init fail with an empty diagnostic and exit status 255.
   // Keep this host-only allowlist; do not inherit credentials or the full env.
-  const env = Object.fromEntries(names.flatMap(name => process.env[name] ? [[name, process.env[name]]] : []));
+  const env = Object.fromEntries(names.flatMap(name => source[name] ? [[name, source[name]]] : []));
+  // Pin the registry for management AND engine calls. Shell/npm sessions may
+  // supply different overrides; never let Podman silently pick a different file.
+  env.PODMAN_CONNECTIONS_CONF = podmanConnectionsFile(source, platform);
+  if (platform === "win32") {
+    env.APPDATA ||= path.win32.dirname(path.win32.dirname(podmanConnectionsFile({ ...source, PODMAN_CONNECTIONS_CONF: undefined }, platform)));
+    env.ProgramData ||= path.win32.join(source.SystemDrive || "C:", "ProgramData");
+  }
   // Compatible with Podman 5 and 6; --provider on machine init is 6-only.
-  if (process.platform === "win32") env.CONTAINERS_MACHINE_PROVIDER = "wsl";
+  if (platform === "win32") env.CONTAINERS_MACHINE_PROVIDER = "wsl";
   for (const key of ["PATH", "Path"]) if (env[key]) env[key] = env[key]!.split(path.delimiter).filter(entry => {
     entry = entry.replace(/^"|"$/gu, "");
     if (!entry || !path.isAbsolute(entry)) return false;
@@ -40,8 +60,9 @@ export function podmanEnvironment(excludeRoots: readonly string[] = [process.cwd
 }
 
 export function podmanRunner(limits: Readonly<RuntimeLimits>, excludeRoots?: readonly string[]): PodmanRunner {
+  const environment = podmanEnvironment(excludeRoots);
   return async (args, options = {}) => {
-    const result = await execa(podmanExecutable(), podmanArguments(args, limits), { cwd: os.tmpdir(), env: podmanEnvironment(excludeRoots), extendEnv: false, shell: false,
+    const result = await execa(podmanExecutable(), podmanArguments(args, limits), { cwd: os.tmpdir(), env: environment, extendEnv: false, shell: false,
       windowsHide: true, reject: false, timeout: options.timeoutMs ?? limits.podmanControlTimeoutMs,
       maxBuffer: 1024 * 1024, ...(options.input !== undefined ? { input: options.input } : {}),
       ...(options.signal ? { signal: options.signal } : {}) });

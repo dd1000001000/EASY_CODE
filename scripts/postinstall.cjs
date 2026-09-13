@@ -128,6 +128,8 @@ async function checkSandboxPrerequisites(options = {}) {
       // Load user configuration, never the project from which npm was launched.
       const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
         workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
+      const { recordOwnedResource } = await import(pathToFileURL(path.join(compiled, "install", "ownership.js")).href);
+      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: config[kind + "Dir"] });
       service = new PodmanStartupService(config.limits, undefined,
         () => ensurePodmanInstalled(config.limits, { report }), report);
     }

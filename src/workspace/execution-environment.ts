@@ -25,6 +25,7 @@ import type {
   WorktreeBaseMode,
 } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
+import { assertNoUninstall } from "../install/ownership.js";
 import { WorkspaceManager } from "./manager.js";
 import { WorkspacePathGuard } from "./path-guard.js";
 import {
@@ -151,6 +152,7 @@ export class ExecutionEnvironmentManager {
   }
 
   async initialize(): Promise<void> {
+    assertNoUninstall();
     await Promise.all([
       mkdir(this.worktreeRoot, { recursive: true }),
       mkdir(this.environmentDir, { recursive: true }),

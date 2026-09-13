@@ -41,6 +41,8 @@ Select a model, then describe a task, such as “Fix the login error and run the
 
 The sandbox is prepared during installation. Interactive `easy-code` startup also automatically attempts setup once when dependencies or initialization are missing; failures open the recovery menu without an installation loop. OS authorization and required reboots still need user action. Check or resume setup with:
 
+Setup and uninstall share connection ownership checks. Existing machines are reused and missing aliases repaired; verified stale aliases of a removed machine are cleared before reinstalling. Foreign connections remain untouched.
+
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
@@ -74,6 +76,17 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | `/context`, `/usage`, `/help` | Inspect context, usage and full help |
 
 Put project conventions and validation commands in `EASYCODE.md`. Adjust operational budgets in the `[limits]` table of `.easycode/config.toml`; run `easy-code config defaults` to inspect defaults.
+
+Installation, startup and command execution use the same explicit Podman connections file. A missing connection can be restored from an existing machine without rebuilding it. Concurrent setup is serialized; failures report the stage, configuration location and discovered machines/connections. Restart an already-running CLI after updating installation code.
+
+## Uninstall
+
+~~~sh
+easy-code uninstall --dry-run
+easy-code uninstall
+~~~
+
+Uninstall asks once: enter `y` to remove current-user configuration, stored API keys, history/memory, caches, terminal integration, verified sandbox resources (including legacy state), managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. Deleted data and unintegrated Worktree changes are not recoverable without a backup. User projects, linked source checkouts, Benchmark projects, shared system software and unidentified resources are preserved. `--keep-cli` retains only the CLI package. If cleanup fails, fix the reported issue and rerun; do not delete unknown command leases blindly.
 
 More: [Configuration example](./docs/config.example.toml) · [Architecture and module documentation](./docs/TECHNICAL_DESIGN.md) · [Benchmark guide](./benchmarks/swebench_verified/README.md)
 

@@ -67,6 +67,9 @@ export class WorkspacePathGuard {
       throw new Error("Workspace root must be a directory");
     }
     this.root = path.normalize(info);
+    const home = path.dirname(getEasyCodeHome());
+    this.protect(path.join(home, ".easy-code-uninstall.lock"));
+    this.protect(path.join(home, ".easy-code-uninstall-state.json"));
   }
 
   normalizeRelative(input: string): string {

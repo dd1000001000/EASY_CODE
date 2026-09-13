@@ -5,8 +5,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { recordOwnedResource, readOwnedResources, type OwnedResource } from "../install/ownership.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
-import { podmanEnvironment, podmanExecutable, type PodmanResult } from "./podman-client.js";
+import { podmanArguments, podmanConnectionsFile, podmanEnvironment, podmanExecutable, type PodmanResult } from "./podman-client.js";
+import { machineEndpoint, machineIdentity, rootMachineEndpoint } from "./podman-connection.js";
+import { machineConnectionReceipts, reconcileAbsentMachine, reconcileLiveMachineConnections } from "./podman-machine-state.js";
 
 export type InstallRunner = (program: string, args: string[], timeoutMs: number) => Promise<PodmanResult>;
 export interface PodmanInstallOptions {
@@ -18,10 +21,15 @@ export interface PodmanInstallOptions {
   osRelease?: string;
   installMac?: () => Promise<void>;
   report?: (message: string) => void;
+  wait?: (milliseconds: number) => Promise<void>;
+  home?: string;
+  connectionsFile?: string;
+  resources?: readonly OwnedResource[];
+  record?: (resource: OwnedResource) => void;
 }
 
-const runInstall: InstallRunner = async (program, args, timeoutMs) => {
-  const result = await execa(program, args, { cwd: os.tmpdir(), env: podmanEnvironment(), extendEnv: false,
+const installRunner = (env: NodeJS.ProcessEnv): InstallRunner => async (program, args, timeoutMs) => {
+  const result = await execa(program, args, { cwd: os.tmpdir(), env, extendEnv: false,
     shell: false, windowsHide: true, reject: false, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 });
   return { exitCode: result.exitCode ?? 125, stdout: result.stdout, stderr: result.stderr };
 };
@@ -87,17 +95,30 @@ async function installMacPackage(run: InstallRunner, timeout: number): Promise<v
 export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, options: PodmanInstallOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
   if (!["win32", "darwin", "linux"].includes(platform)) throw new Error(`Automatic Podman setup is unsupported on ${platform}`);
-  const run = options.run ?? runInstall;
+  // Capture one control environment per transaction. Inventory, mutations and
+  // verification must not drift between registries when npm/worker env changes.
+  const environment = podmanEnvironment();
+  const run = options.run ?? installRunner(environment);
   const exists = options.exists ?? existsSync;
   const executable = options.executable ?? podmanExecutable;
   const report = options.report ?? (() => undefined);
   const timeout = limits.podmanSetupTimeoutMs;
+  const home = options.home ?? os.homedir();
+  const file = options.connectionsFile ?? (!options.run ? environment.PODMAN_CONNECTIONS_CONF : undefined);
+  if (!options.run && options.connectionsFile && options.connectionsFile !== podmanConnectionsFile())
+    throw new Error("A custom connection registry requires its matching command runner");
+  const resources = options.resources ?? (!options.run ? readOwnedResources(home) : []);
+  const record = (resource: OwnedResource) => {
+    if (options.record) options.record(resource);
+    else if (!options.run) recordOwnedResource(resource, home);
+  };
   const checked = async (program: string, args: string[]) => {
     const result = await run(program, args, timeout);
     if (result.exitCode !== 0) throw new Error(`${path.basename(program)} ${args.slice(0, 2).join(" ")} setup failed (${result.exitCode}): ${(result.stderr || result.stdout).slice(-1600)}`);
     return result.stdout;
   };
   const version = await run(executable(), ["--version"], limits.podmanControlTimeoutMs).catch(() => undefined);
+  report(`Checking Podman executable: ${executable()}`);
   if (!version || version.exitCode !== 0) {
     report("Installing Podman; system authorization may be requested.");
     if (platform === "win32") {
@@ -115,6 +136,9 @@ export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, opt
       }
     }
     await checked(executable(), ["--version"]);
+    record({ kind: "podman-install", method: platform === "win32" ? "winget" : platform === "darwin"
+      ? (["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].find(exists) ? "brew" : "signed-pkg") : "linux-packages",
+      ...(platform === "darwin" ? { path: ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].find(exists) } : {}) });
   }
   if (platform === "linux") {
     if ((options.uid ?? process.getuid?.()) === 0)
@@ -136,14 +160,15 @@ export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, opt
   const machines = JSON.parse(await checked(executable(), ["machine", "list", "--format", "json"]));
   if (!Array.isArray(machines)) throw new Error("Invalid Podman machine list; refusing to change it");
   const name = limits.podmanMachineName;
+  let created = false;
   if (!machines.some(machine => machine.Name === name)) {
-    const connections = JSON.parse(await checked(executable(), ["system", "connection", "list", "--format", "json"]));
-    if (!Array.isArray(connections) || connections.some(connection => connection.Name === name || connection.Name === `${name}-root`))
-      throw new Error(`Podman connection name ${name} is already in use without the expected machine; choose another podmanMachineName`);
+    await reconcileAbsentMachine((program, args) => run(program, args, limits.podmanControlTimeoutMs), executable(), name, platform,
+      { home, connectionsFile: file, receipts: machineConnectionReceipts(resources, name, file, platform) }, report);
     report(`Creating rootless Podman machine ${name}. Other machines are left unchanged.`);
     await checked(executable(), ["machine", "init", "--rootful=false",
       "--cpus", String(limits.podmanMachineCpus), "--memory", String(limits.podmanMachineMemoryMb),
       "--disk-size", String(limits.podmanMachineDiskGb), name]);
+    created = true;
   }
   const inspect = async () => {
     const data = JSON.parse(await checked(executable(), ["machine", "inspect", name]));
@@ -154,6 +179,7 @@ export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, opt
     return data[0];
   };
   const machine = await inspect();
+  if (created) record({ kind: "machine", name, identity: machineIdentity(machine) });
   if (machine.State === "stopped") {
     report(`Starting Podman machine ${name}.`);
     // Podman 5 has neither this flag nor the prompt; Podman 6 must explicitly
@@ -161,5 +187,38 @@ export async function ensurePodmanInstalled(limits: Readonly<RuntimeLimits>, opt
     const help = await checked(executable(), ["machine", "start", "--help"]);
     await checked(executable(), ["machine", "start", ...(help.includes("--update-connection") ? ["--update-connection=false"] : []), name]);
   } else if (machine.State !== "running") throw new Error(`Machine ${name} is ${machine.State}; wait for its existing operation to finish`);
-  if ((await inspect()).State !== "running") throw new Error(`Machine ${name} did not reach running state`);
+  const runningMachine = await inspect();
+  if (runningMachine.State !== "running") throw new Error(`Machine ${name} did not reach running state`);
+
+  // A surviving VM is not sufficient: a lost connections file used to make
+  // every subsequent setup fail without ever repairing anything.
+  report(`Verifying rootless connection ${name}.`);
+  const endpoint = await machineEndpoint(runningMachine, platform,
+    () => checked(executable(), ["machine", "ssh", name, "id", "-u"]), exists);
+  await reconcileLiveMachineConnections((program, args) => run(program, args, limits.podmanControlTimeoutMs),
+    executable(), runningMachine, platform, endpoint, { connectionsFile: file, createMissing: true, report });
+  const expected = new Map([[name, endpoint], [name + "-root", rootMachineEndpoint(endpoint)]]);
+  for (const [alias, target] of expected) {
+    // Our ownership is endpoint + registry provenance, independent of Podman's
+    // optional IsMachine field (ordinary `connection add` does not set it).
+    if (file) record({ kind: "machine-connection", name: alias, connection: name, path: file, identity: JSON.stringify(target) });
+  }
+  // Only readiness reads may be repeated. Never replay init/start/install or a
+  // user command when its execution result is unknown.
+  const deadline = Date.now() + limits.podmanControlTimeoutMs;
+  const wait = options.wait ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  while (true) {
+    const result = await run(executable(), podmanArguments(["info", "--format", "json"], limits, platform), limits.podmanControlTimeoutMs);
+    if (result.exitCode === 0) {
+      const info = JSON.parse(result.stdout);
+      if (info.host?.security?.rootless !== true && info.Host?.Security?.Rootless !== true)
+        throw new Error("The selected Podman endpoint is not rootless");
+      break;
+    }
+    const detail = (result.stderr || result.stdout).slice(-1600);
+    if (!/connection refused|actively refused|connection reset|no such file|service.*unavailable/iu.test(detail) || Date.now() >= deadline)
+      throw new Error(`Podman connection ${name} is registered but engine verification failed: ${detail}`);
+    report(`Waiting for the rootless engine of ${name} to become ready.`);
+    await wait(Math.min(500, Math.max(0, deadline - Date.now())));
+  }
 }
