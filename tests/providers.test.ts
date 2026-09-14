@@ -541,12 +541,14 @@ describe("OpenAI-compatible providers", () => {
     const requestBody = JSON.parse(captured[0]?.body ?? "{}") as {
       model?: string;
       tools?: Array<{ function?: ToolDefinition["function"] }>;
+      tool_stream?: boolean;
       max_tokens?: number;
       enable_thinking?: boolean;
       thinking_budget?: number;
     };
     assert.equal(requestBody.model, DEFAULT_QWEN_MODEL);
     assert.equal(requestBody.tools?.length, 1);
+    assert.equal(requestBody.tool_stream, true);
     assert.deepEqual(requestBody.tools?.[0]?.function?.parameters, tool.function.parameters);
     assert.equal(
       "oneOf" in (requestBody.tools?.[0]?.function?.parameters ?? {}),
@@ -917,11 +919,13 @@ describe("OpenAI-compatible providers", () => {
     const body = JSON.parse(captured?.body ?? "{}") as {
       model?: string;
       tools?: Array<{ function?: { strict?: boolean } }>;
+      tool_stream?: boolean;
       thinking?: { type?: string };
       reasoning_effort?: string;
     };
     assert.equal(body.model, "glm-5.3-flash");
     assert.equal(body.tools?.length, 1);
+    assert.equal(body.tool_stream, true);
     assert.equal(body.tools?.[0]?.function?.strict, undefined);
     assert.equal(body.thinking, undefined);
     assert.equal(body.reasoning_effort, undefined);

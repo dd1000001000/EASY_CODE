@@ -180,6 +180,8 @@ export interface ProviderRuntimeOptions {
   supportsStreaming?: boolean;
   /** Endpoint supports stream_options.include_usage (not implied by SSE). */
   supportsStreamUsage?: boolean;
+  /** Endpoint accepts the non-standard tool_stream Chat Completions flag. */
+  toolStream?: boolean;
 }
 
 type CompletionContentPart =
@@ -197,6 +199,7 @@ interface CompletionBody {
   messages: CompletionMessage[];
   stream: boolean;
   stream_options?: { include_usage: true };
+  tool_stream?: true;
   tools?: ModelRequest["tools"];
   temperature?: number;
 }
@@ -222,6 +225,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly toolCallingSupported: boolean;
   private readonly supportsStreaming: boolean;
   private readonly supportsStreamUsage: boolean;
+  private readonly toolStream: boolean;
 
   constructor(
     name: ProviderName,
@@ -246,6 +250,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.toolCallingSupported = runtime.toolCallingSupported ?? true;
     this.supportsStreaming = runtime.supportsStreaming ?? false;
     this.supportsStreamUsage = runtime.supportsStreamUsage ?? false;
+    this.toolStream = runtime.toolStream ?? false;
   }
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
@@ -270,6 +275,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     };
     if (request.tools?.length && this.toolCallingSupported) {
       body.tools = this.runtimeTools(request.tools);
+      if (this.supportsStreaming && this.toolStream) body.tool_stream = true;
     }
     if (request.temperature !== undefined && this.supportsTemperature) {
       body.temperature = request.temperature;
