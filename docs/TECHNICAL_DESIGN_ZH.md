@@ -150,7 +150,7 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 
 CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复用未变化节点的布局缓存。`limits.streamPreviewMaxChars`（默认 16,000 字符）只限制生成过程中的预览；末尾未完成词片段暂不展示以便完整过滤，接受后的正文和 thinking 仍完整保留。工具调用增量只展示工具名称和累计参数大小，不显示原始参数内容。完成/中断立即刷新，重试时旧预览标记为中断。清屏、切换 Thread 和关闭会取消待执行刷新，重复或迟到的增量不能更新新尝试。已有用户 `models.toml` 不会被覆盖；只有端点实际支持时，才应在其中开启 `supports_stream_usage = true` 和 `tool_stream = true`。
 
-终端以稳定 ID 原位替换虚拟文档中的 Thinking/回答节点，保持 reasoning、正文和工具调用的真实先后顺序。只有最终组装后的 Assistant Message 写入 Journal，逐片段事件不持久化；完成结果与已有节点对齐，不会重复打印答案。非交互终端及无法启用固定视窗的小终端继续使用完整原子输出。本地输出/上下文预留**绝不会**序列化成 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`；HTTP 响应字节上限只保护本地进程，不改变生成语义。
+终端以稳定 ID 原位替换虚拟文档中的 Thinking/回答节点，保持 reasoning、正文和工具调用的真实先后顺序。只有最终组装后的 Assistant Message 写入 Journal，逐片段事件不持久化；完成结果与已有节点对齐，不会重复打印答案。非交互终端及无法启用固定视窗的小终端继续使用完整原子输出。`limits.max_response_tokens` 是按 effort 选择的本地预留，默认 none/low/medium/high 分别为 32K/32K/64K/128K，覆盖 reasoning、正文与工具参数。该预留**绝不会**序列化成 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`；HTTP 响应字节上限只保护本地进程，不改变生成语义。
 
 [model-retry.ts](../src/runtime/model-retry.ts) 集中控制模型重试，适配器不再叠加另一层重试循环。[task-budget.ts](../src/runtime/task-budget.ts) 对主 Agent、子 Agent、审查和辅助请求统一预留、结算请求数及 Token 预算；Resume 不会补回已消耗额度。
 

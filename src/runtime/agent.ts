@@ -46,7 +46,7 @@ import { projectToolResult } from "../tools/output-projection.js";
 import { renderPinnedCurrentState, renderRetrievedContext, type ContextSearchHit } from "../context/artifact-index.js";
 import { memoryQueries, memoryQueryKey, optionalMemoryTokenBudget, selectMemoryContext, expandedMemoryRecall, visibleMemoryText } from "../context/memory-controller.js";
 import { foldMemoryGate } from "../context/pressure-recovery.js";
-import { budgetedRequest, requestTokens } from "../context/token-budget.js";
+import { budgetedRequest, requestTokens, responseTokenReserve } from "../context/token-budget.js";
 import type { TokenCalibration } from "../context/token-calibration.js";
 import { runCompactionTransaction, foldCompactionControl, completeExchange, investigationExchangeStart, type CompactionResult } from "../context/compaction-transaction.js";
 import type { NormalRequestEnvelope } from "../context/context-request.js";
@@ -970,7 +970,12 @@ export class AgentRuntime {
       complete: async (request) => {
         if (this.remainingRequests <= 0) throw new TaskBudgetExceeded("actor step limit reached");
         const limits = dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-        const sent = budgetedRequest({ ...request, outputReserveTokens: request.outputReserveTokens ?? dependencies.contextManager.tokenCapacity?.outputReserve ?? limits.maxResponseTokens }, dependencies.contextManager.tokenCapacity,
+        const capacity = dependencies.contextManager.tokenCapacity;
+        const effortReserve = request.thinkingEffort === undefined
+          ? capacity?.outputReserve ?? responseTokenReserve(limits, "none")
+          : responseTokenReserve(limits, request.thinkingEffort, capacity?.window);
+        const sent = budgetedRequest({ ...request,
+          outputReserveTokens: request.outputReserveTokens ?? effortReserve }, capacity,
           dependencies.contextManager.estimateRequestTokens);
         this.remainingRequests -= 1; // Logical model step, not physical API attempts.
         let actualRequest = sent;
@@ -1664,7 +1669,11 @@ export class AgentRuntime {
     options: AgentRunOptions
   ): Promise<AgentRunResult> {
     this.remainingRequests = options.maxSteps;
-    this.dependencies.contextManager.configureTokenBudget(effectiveContextWindow(state.provider, state.model, options.maxContextTokens), this.dependencies.limits);
+    this.dependencies.contextManager.configureTokenBudget(
+      effectiveContextWindow(state.provider, state.model, options.maxContextTokens),
+      this.dependencies.limits,
+      state.thinkingEffort,
+    );
     const userInput = typeof input === "string" ? input : input.text;
     const inputImages = typeof input === "string" ? [] : [...(input.images ?? [])];
     validateImageAttachmentCollection(inputImages);

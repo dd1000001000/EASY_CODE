@@ -598,7 +598,11 @@ export class EasyCodeApp {
     });
     this.imageStore = new ImageStore(config.dataDir);
     this.pendingResumeRecovery = resumeRecovery;
-    this.contextManager.configureTokenBudget(effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens), config.limits);
+    this.contextManager.configureTokenBudget(
+      effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens),
+      config.limits,
+      this.state.thinkingEffort,
+    );
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
       defaultIsolation: config.subagentIsolation,

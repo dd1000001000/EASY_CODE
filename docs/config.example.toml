@@ -50,8 +50,6 @@ max_dag_nodes = 16
 max_model_requests = 120
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
 max_task_tokens = 0
-# Local output reservation only. No output-token ceiling is sent to the server.
-max_response_tokens = 32768
 # Independent transport safety ceiling, not a summary/display limit (16 MiB).
 provider_response_max_bytes = 16777216
 # Live UI only: batch deltas and bound in-progress previews; final output is retained.
@@ -168,6 +166,14 @@ none = 40
 low = 40
 medium = 40
 high = 80
+
+# Local output reservation selected by thinking effort. No output-token ceiling
+# is sent to the provider. Values include reasoning, answer and tool arguments.
+[limits.max_response_tokens]
+none = 32768
+low = 32768
+medium = 65536
+high = 131072
 
 # Resolved from the current parent thinking effort, including after a switch.
 [limits.max_concurrent_subagents]

@@ -3,7 +3,7 @@ import type { RuntimeLimits } from "../config/runtime-limits.js";
 import { ContextManager } from "../context/manager.js";
 import { runCompactionTransaction } from "../context/compaction-transaction.js";
 import { CompactContextTool } from "../tools/compact-context.js";
-import { budgetedRequest } from "../context/token-budget.js";
+import { budgetedRequest, responseTokenReserve } from "../context/token-budget.js";
 import { completeExchange } from "../context/exchange-boundary.js";
 import { summaryInstructions, requestSummaryWithCorrections, type SummaryRecoveryEvent } from "../context/summary-output.js";
 import { completeWithApiRetries, incompleteModelOutput, type ApiAttempt } from "../runtime/model-retry.js";
@@ -61,12 +61,15 @@ const statementTool = { type: "function", function: { name: "post_review", descr
 
 export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { release(): void } {
   const managers = { author: new ContextManager(), reviewer: new ContextManager() };
-  for (const manager of Object.values(managers)) manager.configureTokenBudget(effectiveContextWindow(input.provider.name,
-    input.provider.model, input.limits.maxContextTokens), input.limits);
+  for (const actor of ["author", "reviewer"] as const) managers[actor].configureTokenBudget(
+    effectiveContextWindow(input.provider.name, input.provider.model, input.limits.maxContextTokens),
+    input.limits,
+    input.participants[actor].state.thinkingEffort,
+  );
   // Reserve closing room independently of the maximum model window. Reserving
   // two full 1M windows here would reject small reviews under a finite task
   // budget. Actual closing requests are still charged in full by TaskBudget.
-  const summaryAllowance = (managers.author.tokenCapacity?.outputReserve ?? input.limits.maxResponseTokens) +
+  const summaryAllowance = responseTokenReserve(input.limits, "none", managers.author.tokenCapacity?.window) +
     Math.min(input.limits.reviewClosingInputReserveTokens, managers.author.tokenCapacity?.inputCapacity ?? Infinity);
   const pending = (["author", "reviewer"] as const).filter(who => !input.get().requestedSummaries.includes(who) && !input.get().summaries[who]);
   const closing = pending.length ? input.budget.hold(pending.length, summaryAllowance) : undefined;
@@ -90,8 +93,11 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
     if (remainingMs <= 0) throw new Error("Review time limit");
     const timeout = AbortSignal.timeout(Math.min(remainingMs, input.limits.reviewSummaryTimeoutMs));
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+    const requestEffort = summary ? "none" : p.state.thinkingEffort;
     const sent = budgetedRequest({ ...request, responseMode: "stream",
-      thinkingEffort: summary ? "none" : p.state.thinkingEffort,
+      thinkingEffort: requestEffort,
+      outputReserveTokens: request.outputReserveTokens ??
+        responseTokenReserve(input.limits, requestEffort, managers[who].tokenCapacity?.window),
       maxRetries: 0, signal }, managers[who].tokenCapacity);
     return completeWithApiRetries(input.provider, sent, {
       limits: input.limits,

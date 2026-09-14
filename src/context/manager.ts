@@ -1,4 +1,4 @@
-import type { ChatMessage, SessionState, ToolDefinition } from "../core/types.js";
+import type { ChatMessage, SessionState, ThinkingEffort, ToolDefinition } from "../core/types.js";
 import {
   MAX_IMAGES_PER_MODEL_REQUEST,
   MAX_TOTAL_IMAGE_BYTES_PER_MODEL_REQUEST,
@@ -300,9 +300,13 @@ export class ContextManager {
   private limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS;
   private capacity: TokenBudget | undefined;
   estimateRequestTokens = requestTokens;
-  configureTokenBudget(window: number | undefined, limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>): void {
+  configureTokenBudget(
+    window: number | undefined,
+    limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>,
+    thinkingEffort: ThinkingEffort = "none",
+  ): void {
     this.limits = limits ?? DEFAULT_RUNTIME_LIMITS;
-    this.capacity = window === undefined ? undefined : tokenBudget(window, limits);
+    this.capacity = window === undefined ? undefined : tokenBudget(window, limits, thinkingEffort);
   }
   get tokenCapacity(): TokenBudget | undefined { return this.capacity; }
   get runtimeLimits(): Readonly<RuntimeLimits> { return this.limits; }

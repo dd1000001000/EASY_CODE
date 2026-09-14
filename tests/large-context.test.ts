@@ -38,6 +38,9 @@ describe("configurable 1M context", () => {
     assert.equal(limits.maxContextTokens, 1_000_000);
     assert.deepEqual(tokenBudget(limits.maxContextTokens, limits), { window: 1_000_000, outputReserve: 32768,
       toolReserve: 65536, safetyReserve: 50000, inputCapacity: 851696 });
+    assert.equal(tokenBudget(limits.maxContextTokens, limits, "low").outputReserve, 32768);
+    assert.equal(tokenBudget(limits.maxContextTokens, limits, "medium").outputReserve, 65536);
+    assert.equal(tokenBudget(limits.maxContextTokens, limits, "high").outputReserve, 131072);
     for (const [value, expected] of [[0.79999, "normal"], [0.8, "suggest"], [0.89999, "suggest"],
       [0.9, "require"], [0.94999, "require"], [0.95, "force"], [1, "force"]] as const)
       assert.equal(contextPressureLevel(value, limits), expected);
@@ -92,7 +95,9 @@ describe("configurable 1M context", () => {
   it("summarizes a minimum old prefix instead of everything before the last five exchanges", async () => {
     const s = state();
     s.messages.push(...Array.from({ length: 24 }, (_, i): ChatMessage => ({ role: "assistant", content: `${i}:` + "a".repeat(12000) })));
-    const limits = { ...defaultRuntimeLimits(), maxContextTokens: 100000, maxResponseTokens: 2048, contextToolReserveTokens: 1024, contextSummaryMaxTokens: 2048 };
+    const limits = { ...defaultRuntimeLimits(), maxContextTokens: 100000,
+      maxResponseTokens: { none: 2048, low: 2048, medium: 4096, high: 8192 },
+      contextToolReserveTokens: 1024, contextSummaryMaxTokens: 2048 };
     const manager = new ContextManager(); manager.configureTokenBudget(limits.maxContextTokens, limits);
     const original = s.messages.length;
     const result = await runCompactionTransaction({ state: s, manager, limits, maxContextChars: 250000,
