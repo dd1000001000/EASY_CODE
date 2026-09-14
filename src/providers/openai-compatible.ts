@@ -30,8 +30,10 @@ import {
   redactImageDataUrls,
   redactSensitiveText,
   streamProviderError,
+  type ProviderProgress,
 } from "./errors.js";
 import {
+  describeTransportTimeout,
   HttpTransportError,
   postJsonWithNode,
   type JsonPostResponse,
@@ -286,11 +288,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body.temperature = request.temperature;
     }
     const effort = request.thinkingEffort ?? "none";
-    const timeoutMs = streamResponse
-      ? this.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort)
-      : this.config.timeoutMs ?? this.bufferedTimeoutByEffort?.[effort] ??
-        thinkingEffortBufferedTimeoutMs(effort);
-    const timeoutMode = streamResponse ? "stream_idle" as const : "buffered_total" as const;
+    const streamIdleTimeoutMs = this.streamIdleTimeoutByEffort?.[effort] ??
+      thinkingEffortStreamIdleTimeoutMs(effort);
+    const bufferedTimeoutMs = this.config.timeoutMs ?? this.bufferedTimeoutByEffort?.[effort] ??
+      thinkingEffortBufferedTimeoutMs(effort);
+    const timeoutMs = streamResponse ? streamIdleTimeoutMs : bufferedTimeoutMs;
+    const timeoutMode = streamResponse ? "stream_semantic_idle" as const : "buffered_total" as const;
     if (
       request.maxRetries !== undefined &&
       (!Number.isSafeInteger(request.maxRetries) ||
@@ -341,10 +344,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
           // Presentation observers are deliberately isolated from provider I/O.
         }
       };
-      const consume = (event: ServerSentEvent): void => {
+      const consume = (event: ServerSentEvent): boolean => {
         if (event.data.trim() === "[DONE]") {
+          const progressed = !streamState.done;
           streamState.done = true;
-          return;
+          return progressed;
         }
         let decoded: unknown;
         try { decoded = JSON.parse(event.data) as unknown; }
@@ -355,7 +359,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         if (streamState.done) throw this.error("Provider sent data after [DONE]", "invalid_response");
         const parsed = chatCompletionChunkSchema.safeParse(decoded);
         if (!parsed.success) throw this.error("Provider returned an unsupported Chat Completions SSE event", "invalid_response");
-        this.consumeStreamChunk(streamState, parsed.data, emit);
+        return this.consumeStreamChunk(streamState, parsed.data, emit);
       };
 
       try {
@@ -370,6 +374,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           body: serialized,
           timeoutMs,
           timeoutMode,
+          ...(streamResponse ? { bufferedTimeoutMs } : {}),
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
           ...(streamResponse
@@ -378,10 +383,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
                   streamStarted = statusCode >= 200 && statusCode < 300 &&
                     isEventStreamContentType(headers["content-type"]);
                   if (streamStarted) emit({ kind: "started" });
+                  return streamStarted ? "stream" as const : "buffered" as const;
                 },
                 onResponseChunk: (chunk: Buffer) => {
-                  if (!streamStarted) return;
-                  for (const event of decoder.push(chunk)) consume(event);
+                  if (!streamStarted) return false;
+                  let progressed = false;
+                  for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
+                  return progressed;
                 },
               }
             : {}),
@@ -399,7 +407,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
         const providerError = this.normalizeError(
           error,
           request.signal,
-          timeoutMs,
+          this.streamProgress(streamState),
+          { streamIdleTimeoutMs, bufferedTimeoutMs },
         );
         lastError = providerError;
         if (streamStarted) {
@@ -415,7 +424,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         try {
           await this.sleep(delay, request.signal);
         } catch (sleepError) {
-          throw this.normalizeError(sleepError, request.signal, timeoutMs);
+          throw this.normalizeError(sleepError, request.signal);
         }
       }
     }
@@ -429,7 +438,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     state: ChatStreamState,
     chunk: z.infer<typeof chatCompletionChunkSchema>,
     emit: (event: StreamEventPayload) => void,
-  ): void {
+  ): boolean {
+    let progressed = false;
     const choice = chunk.choices.find((candidate) => (candidate.index ?? 0) === 0);
     if (choice) {
       if (state.finishReason != null &&
@@ -441,11 +451,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (reasoning) {
         state.reasoning += reasoning;
         emit({ kind: "reasoning_delta", text: reasoning });
+        progressed = true;
       }
       const content = choice.delta.content ?? "";
       if (content) {
         state.content += content;
         emit({ kind: "text_delta", text: content });
+        progressed = true;
       }
       for (const fragment of choice.delta.tool_calls ?? []) {
         const pending = state.toolCalls.get(fragment.index) ?? { id: "", name: "", arguments: "" };
@@ -453,18 +465,37 @@ export class OpenAICompatibleProvider implements ModelProvider {
         if (fragment.function?.name) pending.name += fragment.function.name;
         if (fragment.function?.arguments) pending.arguments += fragment.function.arguments;
         state.toolCalls.set(fragment.index, pending);
-        emit({
-          kind: "tool_call_delta",
-          index: fragment.index,
-          ...(fragment.id ? { id: fragment.id } : {}),
-          ...(fragment.function?.name ? { name: fragment.function.name } : {}),
-          ...(fragment.function?.arguments ? { arguments: fragment.function.arguments } : {}),
-        });
+        if (fragment.id || fragment.function?.name || fragment.function?.arguments) {
+          progressed = true;
+          emit({
+            kind: "tool_call_delta",
+            index: fragment.index,
+            ...(fragment.id ? { id: fragment.id } : {}),
+            ...(fragment.function?.name ? { name: fragment.function.name } : {}),
+            ...(fragment.function?.arguments ? { arguments: fragment.function.arguments } : {}),
+          });
+        }
       }
-      if (choice.finish_reason != null) state.finishReason = choice.finish_reason;
+      if (choice.finish_reason != null && choice.finish_reason !== state.finishReason) {
+        state.finishReason = choice.finish_reason;
+        progressed = true;
+      }
     }
     const usage = normalizeChatUsage(chunk.usage ?? undefined);
-    if (usage) state.usage = usage;
+    if (usage && JSON.stringify(usage) !== JSON.stringify(state.usage)) {
+      state.usage = usage;
+      progressed = true;
+    }
+    return progressed;
+  }
+
+  private streamProgress(state: ChatStreamState): ProviderProgress {
+    return {
+      reasoningChars: state.reasoning.length,
+      textChars: state.content.length,
+      toolArgumentChars: [...state.toolCalls.values()]
+        .reduce((total, call) => total + call.arguments.length, 0),
+    };
   }
 
   private finishStream(state: ChatStreamState): ProviderResponse {
@@ -715,7 +746,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private normalizeError(
     error: unknown,
     signal: AbortSignal | undefined,
-    timeoutMs: number,
+    progress?: ProviderProgress,
+    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number },
   ): ProviderError {
     if (error instanceof ProviderError) return error;
     if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
@@ -724,23 +756,36 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (error.kind === "aborted") {
         return this.error("Request was canceled", "aborted");
       }
-      if (error.kind === "stream_idle_timeout") {
+      if (error.kind === "stream_header_timeout") {
         return new ProviderError(
-          `Provider stream was idle for ${timeoutMs}ms`,
+          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
           {
             provider: this.name,
-            code: "stream_idle_timeout",
+            code: "stream_header_timeout",
             retryable: true,
+            progress,
+          },
+        );
+      }
+      if (error.kind === "stream_semantic_idle_timeout") {
+        return new ProviderError(
+          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
+          {
+            provider: this.name,
+            code: "stream_semantic_idle_timeout",
+            retryable: true,
+            progress,
           },
         );
       }
       if (error.kind === "buffered_total_timeout") {
         return new ProviderError(
-          `Buffered provider request exceeded ${timeoutMs}ms`,
+          deadlines ? describeTransportTimeout(error, deadlines) : error.message,
           {
             provider: this.name,
             code: "buffered_total_timeout",
             retryable: true,
+            progress,
           },
         );
       }

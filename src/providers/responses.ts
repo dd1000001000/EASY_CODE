@@ -16,8 +16,8 @@ import { projectModelInputMessages } from "../context/micro-compaction.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { providerImageCompatibilityIssue, resolveCatalogModel, validateProviderImageAttachments } from "../models/catalog.js";
 import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
-import { ProviderError, redactImageDataUrls, redactSensitiveText, streamProviderError } from "./errors.js";
-import { HttpTransportError, postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
+import { ProviderError, redactImageDataUrls, redactSensitiveText, streamProviderError, type ProviderProgress } from "./errors.js";
+import { describeTransportTimeout, HttpTransportError, postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
 import { ServerSentEventDecoder, SseDecodingError, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 
@@ -48,6 +48,7 @@ type StreamEventPayload = ProviderStreamEvent extends infer Event
 interface ResponsesStreamState {
   content: string;
   reasoning: string;
+  done: boolean;
   completed?: unknown;
   status?: string;
   readonly toolItems: Map<string, { id: string; callId: string; name: string; arguments: string }>;
@@ -103,11 +104,12 @@ export class ResponsesProvider implements ModelProvider {
     try { serialized = JSON.stringify(body); }
     catch { throw this.error("Unable to serialize the model request", "invalid_request"); }
     const effort = request.thinkingEffort ?? "none";
-    const timeoutMs = streamResponse
-      ? this.runtime.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort)
-      : this.config.timeoutMs ?? this.runtime.bufferedTimeoutByEffort?.[effort] ??
-        thinkingEffortBufferedTimeoutMs(effort);
-    const timeoutMode = streamResponse ? "stream_idle" as const : "buffered_total" as const;
+    const streamIdleTimeoutMs = this.runtime.streamIdleTimeoutByEffort?.[effort] ??
+      thinkingEffortStreamIdleTimeoutMs(effort);
+    const bufferedTimeoutMs = this.config.timeoutMs ?? this.runtime.bufferedTimeoutByEffort?.[effort] ??
+      thinkingEffortBufferedTimeoutMs(effort);
+    const timeoutMs = streamResponse ? streamIdleTimeoutMs : bufferedTimeoutMs;
+    const timeoutMode = streamResponse ? "stream_semantic_idle" as const : "buffered_total" as const;
     const requestedRetries = request.maxRetries ?? this.config.maxRetries;
     if (!Number.isSafeInteger(requestedRetries) || requestedRetries < 0 || requestedRetries > 10) throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
     const maxRetries = Math.min(this.config.maxRetries, requestedRetries);
@@ -120,6 +122,7 @@ export class ResponsesProvider implements ModelProvider {
       const streamState: ResponsesStreamState = {
         content: "",
         reasoning: "",
+        done: false,
         toolItems: new Map(),
       };
       const emit = (event: StreamEventPayload): void => {
@@ -130,7 +133,7 @@ export class ResponsesProvider implements ModelProvider {
           // Presentation observers are isolated from provider I/O.
         }
       };
-      const consume = (event: ServerSentEvent): void => this.consumeStreamEvent(streamState, event, emit);
+      const consume = (event: ServerSentEvent): boolean => this.consumeStreamEvent(streamState, event, emit);
       try {
         const response = await (this.runtime.transport ?? postJsonWithNode)({
           url: this.endpoint,
@@ -143,6 +146,7 @@ export class ResponsesProvider implements ModelProvider {
           body: serialized,
           timeoutMs,
           timeoutMode,
+          ...(streamResponse ? { bufferedTimeoutMs } : {}),
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
           ...(streamResponse
@@ -151,10 +155,13 @@ export class ResponsesProvider implements ModelProvider {
                   streamStarted = statusCode >= 200 && statusCode < 300 &&
                     isEventStreamContentType(headers["content-type"]);
                   if (streamStarted) emit({ kind: "started" });
+                  return streamStarted ? "stream" as const : "buffered" as const;
                 },
                 onResponseChunk: (chunk: Buffer) => {
-                  if (!streamStarted) return;
-                  for (const event of decoder.push(chunk)) consume(event);
+                  if (!streamStarted) return false;
+                  let progressed = false;
+                  for (const event of decoder.push(chunk)) progressed = consume(event) || progressed;
+                  return progressed;
                 },
               }
             : {}),
@@ -169,7 +176,8 @@ export class ResponsesProvider implements ModelProvider {
         }
         return this.parse(response);
       } catch (error) {
-        const normalized = this.normalizeError(error, request.signal, timeoutMs);
+        const normalized = this.normalizeError(error, request.signal, this.streamProgress(streamState),
+          { streamIdleTimeoutMs, bufferedTimeoutMs });
         lastError = normalized;
         if (streamStarted) {
           emit({ kind: "interrupted" });
@@ -185,8 +193,16 @@ export class ResponsesProvider implements ModelProvider {
     state: ResponsesStreamState,
     event: ServerSentEvent,
     emit: (event: StreamEventPayload) => void,
-  ): void {
-    if (!event.data.trim() || event.data.trim() === "[DONE]") return;
+  ): boolean {
+    if (!event.data.trim()) return false;
+    if (event.data.trim() === "[DONE]") {
+      const progressed = !state.done;
+      state.done = true;
+      return progressed;
+    }
+    if (state.done) {
+      throw this.error("Provider sent data after [DONE]", "invalid_response");
+    }
     let value: unknown;
     try { value = JSON.parse(event.data) as unknown; }
     catch { throw this.error("Provider returned an invalid Responses SSE event", "invalid_response"); }
@@ -199,15 +215,17 @@ export class ResponsesProvider implements ModelProvider {
       throw this.error("Provider sent another event after the Responses terminal event", "invalid_response");
     }
     if (type === "response.output_text.delta" && typeof value.delta === "string") {
+      if (!value.delta) return false;
       state.content += value.delta;
       emit({ kind: "text_delta", text: value.delta });
-      return;
+      return true;
     }
     if ((type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") &&
         typeof value.delta === "string") {
+      if (!value.delta) return false;
       state.reasoning += value.delta;
       emit({ kind: "reasoning_delta", text: value.delta });
-      return;
+      return true;
     }
     if (type === "response.output_item.added" || type === "response.output_item.done") {
       if (isRecord(value.item) && value.item.type === "function_call") {
@@ -221,12 +239,24 @@ export class ResponsesProvider implements ModelProvider {
           name: typeof value.item.name === "string" ? value.item.name : prior.name,
           arguments: typeof value.item.arguments === "string" ? value.item.arguments : prior.arguments,
         };
+        const changed = next.id !== prior.id || next.callId !== prior.callId ||
+          next.name !== prior.name || next.arguments !== prior.arguments;
         state.toolItems.set(key, next);
-        emit({ kind: "tool_call_delta", index: Number(key) || 0, id: next.callId || next.id, name: next.name, arguments: next.arguments });
+        if (changed) {
+          const argumentDelta = next.arguments.startsWith(prior.arguments)
+            ? next.arguments.slice(prior.arguments.length)
+            : next.arguments;
+          emit({ kind: "tool_call_delta", index: Number(key) || 0,
+            ...(next.callId !== prior.callId || next.id !== prior.id ? { id: next.callId || next.id } : {}),
+            ...(next.name !== prior.name ? { name: next.name } : {}),
+            ...(argumentDelta ? { arguments: argumentDelta } : {}) });
+        }
+        return changed;
       }
-      return;
+      return false;
     }
     if (type === "response.function_call_arguments.delta" && typeof value.delta === "string") {
+      if (!value.delta) return false;
       const key = typeof value.output_index === "number"
         ? String(value.output_index)
         : typeof value.item_id === "string" ? value.item_id : "0";
@@ -234,7 +264,7 @@ export class ResponsesProvider implements ModelProvider {
       prior.arguments += value.delta;
       state.toolItems.set(key, prior);
       emit({ kind: "tool_call_delta", index: Number(key) || 0, arguments: value.delta });
-      return;
+      return true;
     }
     if (type === "response.completed" || type === "response.incomplete") {
       if (!isRecord(value.response) || value.response.status !== type.slice("response.".length) ||
@@ -243,7 +273,18 @@ export class ResponsesProvider implements ModelProvider {
       }
       state.completed = value.response;
       state.status = type.slice("response.".length);
+      return true;
     }
+    return false;
+  }
+
+  private streamProgress(state: ResponsesStreamState): ProviderProgress {
+    return {
+      reasoningChars: state.reasoning.length,
+      textChars: state.content.length,
+      toolArgumentChars: [...state.toolItems.values()]
+        .reduce((total, call) => total + call.arguments.length, 0),
+    };
   }
 
   private finishStream(state: ResponsesStreamState): ProviderResponse {
@@ -372,14 +413,19 @@ export class ResponsesProvider implements ModelProvider {
     return result;
   }
 
-  private normalizeError(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): ProviderError {
+  private normalizeError(error: unknown, signal: AbortSignal | undefined, progress?: ProviderProgress,
+    deadlines?: { streamIdleTimeoutMs: number; bufferedTimeoutMs: number }): ProviderError {
     if (error instanceof ProviderError) return error;
     if (error instanceof SseDecodingError) return this.error(error.message, "invalid_response");
     if (signal?.aborted) return this.error("Request was canceled", "aborted");
     if (error instanceof HttpTransportError) {
       if (error.kind === "aborted") return this.error("Request was canceled", "aborted");
-      if (error.kind === "stream_idle_timeout") return new ProviderError(`Provider stream was idle for ${timeoutMs}ms`, { provider: this.name, code: "stream_idle_timeout", retryable: true });
-      if (error.kind === "buffered_total_timeout") return new ProviderError(`Buffered provider request exceeded ${timeoutMs}ms`, { provider: this.name, code: "buffered_total_timeout", retryable: true });
+      if (error.kind === "stream_header_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
+        { provider: this.name, code: "stream_header_timeout", retryable: true, progress });
+      if (error.kind === "stream_semantic_idle_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
+        { provider: this.name, code: "stream_semantic_idle_timeout", retryable: true, progress });
+      if (error.kind === "buffered_total_timeout") return new ProviderError(deadlines ? describeTransportTimeout(error, deadlines) : error.message,
+        { provider: this.name, code: "buffered_total_timeout", retryable: true, progress });
       if (error.kind === "response_too_large") return this.error(error.message, "response_too_large");
       return new ProviderError(`Provider network error: ${error.message}`, { provider: this.name, code: "network_error", retryable: true, secrets: [this.config.apiKey] });
     }

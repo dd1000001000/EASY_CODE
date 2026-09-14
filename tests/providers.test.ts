@@ -410,10 +410,11 @@ describe("OpenAI-compatible providers", () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.providers.deepseek!.apiKey = "deepseek-key";
     config.providers.deepseek!.timeoutMs = 42_000;
-    const captured: Array<{ timeoutMs: number; timeoutMode: string; stream: boolean }> = [];
+    const captured: Array<{ timeoutMs: number; timeoutMode: string; bufferedTimeoutMs?: number; stream: boolean }> = [];
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async (request) => {
         captured.push({ timeoutMs: request.timeoutMs, timeoutMode: request.timeoutMode,
+          bufferedTimeoutMs: request.bufferedTimeoutMs,
           stream: Boolean((JSON.parse(request.body) as { stream?: boolean }).stream) });
         return { statusCode: 200, headers: {}, body: JSON.stringify({ choices: [{
           finish_reason: "stop", message: { role: "assistant", content: "done" },
@@ -425,7 +426,7 @@ describe("OpenAI-compatible providers", () => {
         thinkingEffort, responseMode: "stream" });
     }
     assert.deepEqual(captured, ["none", "low", "medium", "high"].map(() => ({
-      timeoutMs: 60_000, timeoutMode: "stream_idle", stream: true,
+      timeoutMs: 60_000, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 42_000, stream: true,
     })));
   });
 
@@ -1033,10 +1034,11 @@ describe("Node HTTP JSON transport", () => {
           headers: { "content-type": "application/json" },
           body: "{}",
           timeoutMs: 1_000,
-          timeoutMode: "stream_idle",
+          timeoutMode: "stream_semantic_idle",
+          bufferedTimeoutMs: 2_000,
           maxResponseBytes: 1_024,
-          onResponseStart: (response) => starts.push(response.statusCode),
-          onResponseChunk: (chunk) => chunks.push(Buffer.from(chunk)),
+          onResponseStart: (response) => { starts.push(response.statusCode); return "stream"; },
+          onResponseChunk: (chunk) => { chunks.push(Buffer.from(chunk)); return true; },
         });
         assert.deepEqual(starts, [200]);
         assert.equal(Buffer.concat(chunks).toString("utf8"), result.body);
@@ -1119,7 +1121,7 @@ describe("Node HTTP JSON transport", () => {
     );
   });
 
-  it("renews only a stream idle timeout when response bytes keep arriving", async () => {
+  it("renews a stream idle timeout only when the parser reports semantic progress", async () => {
     await withServer(
       (_request, response) => {
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -1131,24 +1133,72 @@ describe("Node HTTP JSON transport", () => {
       async (url) => {
         const result = await postJsonWithNode({ url,
           headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 70, timeoutMode: "stream_idle", maxResponseBytes: 1_024 });
+          timeoutMs: 70, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
+          maxResponseBytes: 1_024,
+          onResponseStart: () => "stream",
+          onResponseChunk: (chunk) => chunk.toString("utf8").includes("data:") });
         assert.match(result.body, /done/u);
       },
     );
   });
 
-  it("fails a stream after one complete idle interval", async () => {
+  it("ignores SSE heartbeats when enforcing semantic stream idleness", async () => {
     await withServer(
       (_request, response) => {
         response.writeHead(200, { "content-type": "text/event-stream" });
         response.flushHeaders();
+        const heartbeat = setInterval(() => {
+          if (!response.destroyed) response.write(": keepalive\n\n");
+        }, 10);
+        response.once("close", () => clearInterval(heartbeat));
         setTimeout(() => { if (!response.destroyed) response.end("data: late\n\n"); }, 120);
       },
       async (url) => {
         await assert.rejects(postJsonWithNode({ url,
           headers: { "content-type": "application/json" }, body: "{}",
-          timeoutMs: 40, timeoutMode: "stream_idle", maxResponseBytes: 1_024 }),
-        (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_idle_timeout");
+          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
+          maxResponseBytes: 1_024,
+          onResponseStart: () => "stream",
+          onResponseChunk: () => false }),
+        (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_semantic_idle_timeout");
+      },
+    );
+  });
+
+  it("uses the fixed total deadline when a requested stream returns buffered JSON", async () => {
+    await withServer(
+      (_request, response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.flushHeaders();
+        setTimeout(() => {
+          response.end('{"ok":true}');
+        }, 80);
+      },
+      async (url) => {
+        const result = await postJsonWithNode({ url,
+          headers: { "content-type": "application/json" }, body: "{}",
+          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 150,
+          maxResponseBytes: 1_024,
+          onResponseStart: () => "buffered",
+          onResponseChunk: () => false });
+        assert.equal(result.body, '{"ok":true}');
+      },
+    );
+  });
+
+  it("reports a distinct timeout while waiting for stream response headers", async () => {
+    await withServer(
+      (_request, response) => {
+        setTimeout(() => { if (!response.destroyed) response.end("late"); }, 120);
+      },
+      async (url) => {
+        await assert.rejects(postJsonWithNode({ url,
+          headers: { "content-type": "application/json" }, body: "{}",
+          timeoutMs: 40, timeoutMode: "stream_semantic_idle", bufferedTimeoutMs: 500,
+          maxResponseBytes: 1_024,
+          onResponseStart: () => "stream",
+          onResponseChunk: () => false }),
+        (error: unknown) => error instanceof HttpTransportError && error.kind === "stream_header_timeout");
       },
     );
   });

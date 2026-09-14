@@ -19,7 +19,8 @@ export interface ApiAttempt {
   outcome: "completed" | "failed";
   usage?: ProviderUsage;
   failure?: { category: ReturnType<typeof failureCategory>; execution: "not_started";
-    recovery: "retry_api" | "reset_context" | "propagate"; apiRetries: number; capacityRetries: number };
+    recovery: "retry_api" | "reset_context" | "propagate"; apiRetries: number; capacityRetries: number;
+    code?: string; progress?: { reasoningChars: number; textChars: number; toolArgumentChars: number } };
 }
 const managed = new WeakSet<ModelProvider>();
 export function markRetryManaged(provider: ModelProvider): void { managed.add(provider); }
@@ -55,11 +56,14 @@ export async function completeWithApiRetries(provider: ModelProvider, request: M
     }
     settle?.();
     const category = failureCategory(failure, request.signal);
+    const providerFailure = failure instanceof ProviderError ? failure : undefined;
     await options.onSettled?.({ attempt: ordinal, retry: ordinal > 1, outcome: "failed", failure: {
       category, execution: "not_started", apiRetries, capacityRetries,
       recovery: category === "capacity" && options.resetContext && capacityRetries < limits.contextMaxCapacityRetries
         ? "reset_context" : category === "api" && retryableApiFailure(failure) &&
           apiRetries < limits.maxProviderRetries && (failure.retryAfterMs ?? 0) <= limits.providerRetryWaitMs ? "retry_api" : "propagate",
+      ...(providerFailure?.code ? { code: providerFailure.code } : {}),
+      ...(providerFailure?.progress ? { progress: { ...providerFailure.progress } } : {}),
     } });
     request.signal?.throwIfAborted();
     if (isContextCapacityError(failure)) {
