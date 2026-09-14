@@ -98,7 +98,7 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 | `steps` | none/low/medium：40；high：80 | Agent 逻辑步数预算 |
 | `maxModelRequests` | 120 | 共享模型请求次数上限 |
 | `maxTaskTokens` | 0 | 不单独限制累计 Token；其他预算仍生效 |
-| `provider_stream_idle_timeout_ms` | 所有 effort 均为 60,000 | 主 Agent 流式请求可续期的空闲超时，毫秒 |
+| `provider_stream_idle_timeout_ms` | 所有 effort 均为 60,000 | 所有流式模型请求可续期的语义空闲超时，毫秒 |
 | `provider_buffered_timeout_ms` | 300,000 / 300,000 / 450,000 / 600,000 | none/low/medium/high 非流式请求固定总超时，毫秒 |
 | `providerResponseMaxBytes` | 16 MiB | 本地 HTTP 响应大小保护 |
 | `commandTimeoutMs` | 120,000 | 默认命令超时，毫秒 |
@@ -144,7 +144,7 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 
 当 `supports_streaming = true` 时，对应协议驱动请求 SSE，每次实际请求使用唯一 ID 和有序的瞬态事件。若 Chat Completions 端点还明确声明 `tool_stream = true`，驱动会在请求包含工具时要求函数名称和参数增量返回；不支持该扩展的端点以及不含工具的请求完全省略此字段。增量解码支持 UTF-8、LF/CRLF/CR 和 SSE 记录。Chat Completions 接受空用量字段及纯用量块，要求选定 choice 的结束原因和 `[DONE]` 均已到达；Responses 必须收到并校验 completed/incomplete 终态事件。HTTP EOF 不代表模型完成，流内错误不能忽略。只有完整响应被接受、原始参数通过校验后才执行工具。若成功端点返回 JSON，仍在同一次请求内完整解析，不另发请求。
 
-所有 Runtime 模型调用——包括主 Agent、子 Agent、reviewer、审批、路由和上下文压缩——都优先使用同一套流式 Provider 传输，并使用 `limits.provider_stream_idle_timeout_ms` 中按 effort 选择的可续期空闲期限，默认所有 effort 均为 60 秒。收到响应头或响应字节即证明流仍有活动并重新计时，因此持续输出的长 thinking 或大型工具调用可以运行超过一分钟。不声明流式能力的端点自动退回完整响应，并使用 `limits.provider_buffered_timeout_ms` 的固定总期限，默认依次为 5/5/7.5/10 分钟。共享 CLI 只展示主 Agent 的增量；辅助 Agent 的私有流仅在内部组装。两种传输仍受用户取消、共享请求和任务预算约束。
+所有 Runtime 模型调用——包括主 Agent、子 Agent、reviewer、审批、路由和上下文压缩——都优先使用同一套流式 Provider 传输，并使用 `limits.provider_stream_idle_timeout_ms` 中按 effort 选择的可续期语义空闲期限，默认所有 effort 均为 60 秒。只有非空 thinking/正文增量、持续增长的工具调用字段、usage/finish 状态变化和终态协议事件才会重新计时；HTTP 响应头、SSE 注释、心跳、空事件和未完成的协议片段均不续期。这样，持续产生真实内容的长 thinking 或大型工具调用可以超过一分钟，但只有心跳的连接不会无限等待。响应头到达前另有同长度的头部期限；如果流式请求实际返回完整 JSON，传输会切换到 `limits.provider_buffered_timeout_ms` 的固定总期限（默认 5/5/7.5/10 分钟），且从请求发出时开始计算。共享 CLI 只展示主 Agent 的增量；辅助 Agent 的私有流仅在内部组装。两种传输仍受用户取消、共享请求和任务预算约束，未完成的工具参数绝不会执行。
 
 网络故障和缺失终态沿用统一 API 重试额度（默认重试五次），每次尝试重新分配 ID 和缓冲区；部分响应不进入模型历史，也不执行。取消、认证失败和损坏的协议数据不会获得额外自动重试。长度截断及 incomplete 输出进入现有内容纠正流程。真实用量仅结算一次，缺失时沿用既有估算。独立适配器调用保留显式重试上限；Runtime 调用将其设为零，由 Runtime 统一拥有重试预算。
 

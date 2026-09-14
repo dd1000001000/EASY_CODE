@@ -6,7 +6,7 @@ import path from "node:path";
 import { describe, it } from "./harness.js";
 import type { ModelProvider, ModelRequest, ProviderResponse, SessionState, ToolExecutionResult } from "../src/core/types.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
-import { completeWithApiRetries, markRetryManaged, incompleteModelOutput } from "../src/runtime/model-retry.js";
+import { completeWithApiRetries, markRetryManaged, incompleteModelOutput, type ApiAttempt } from "../src/runtime/model-retry.js";
 import { ProviderError } from "../src/providers/errors.js";
 import { TaskBudget } from "../src/runtime/task-budget.js";
 import { CommandRetryTracker } from "../src/runtime/command-retry.js";
@@ -40,6 +40,24 @@ describe("shared retry policy", () => {
     await assert.rejects(completeWithApiRetries(provider(async r => { calls++; assert.equal(r.maxRetries, 0); throw apiFailure(); }), request,
       { reserve: r => budget.reserve(r), sleep: async () => {}, onSettled: a => { events.push(a.attempt); } }), /temporary API/);
     assert.equal(calls, 6); assert.equal(budget.snapshot().requests, 6); assert.deepEqual(events, [1, 2, 3, 4, 5, 6]);
+  });
+  it("records semantic stream timeout progress in the durable API-attempt event", async () => {
+    const attempts: ApiAttempt[] = [];
+    const failure = new ProviderError("semantic stream idle", {
+      provider: "glm",
+      code: "stream_semantic_idle_timeout",
+      retryable: true,
+      progress: { reasoningChars: 12, textChars: 3, toolArgumentChars: 456 },
+    });
+    await assert.rejects(completeWithApiRetries(provider(async () => { throw failure; }), request, {
+      limits: { ...defaultRuntimeLimits(), maxProviderRetries: 0 },
+      onSettled: attempt => { attempts.push(attempt); },
+    }), /semantic stream idle/u);
+    assert.equal(attempts.length, 1);
+    assert.equal(attempts[0]?.failure?.code, "stream_semantic_idle_timeout");
+    assert.deepEqual(attempts[0]?.failure?.progress,
+      { reasoningChars: 12, textChars: 3, toolArgumentChars: 456 });
+    assert.equal(attempts[0]?.failure?.recovery, "propagate");
   });
   it("does not multiply retry counts when auxiliary callers receive an owned provider", async () => {
     let calls = 0;

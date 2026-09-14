@@ -6,7 +6,14 @@ export interface ProviderErrorOptions {
   statusCode?: number;
   retryable?: boolean;
   retryAfterMs?: number;
+  progress?: ProviderProgress;
   secrets?: readonly (string | undefined)[];
+}
+
+export interface ProviderProgress {
+  reasoningChars: number;
+  textChars: number;
+  toolArgumentChars: number;
 }
 
 export class ProviderError extends Error {
@@ -15,6 +22,7 @@ export class ProviderError extends Error {
   readonly statusCode?: number;
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
+  readonly progress?: ProviderProgress;
 
   constructor(message: string, options: ProviderErrorOptions) {
     super(redactSensitiveText(message, options.secrets));
@@ -24,6 +32,7 @@ export class ProviderError extends Error {
     this.statusCode = options.statusCode;
     this.retryable = options.retryable ?? false;
     this.retryAfterMs = options.retryAfterMs;
+    this.progress = options.progress ? { ...options.progress } : undefined;
   }
 }
 

@@ -176,6 +176,8 @@ low = 2
 medium = 4
 high = 8
 
+# Renewable only after parsed, non-empty semantic model progress. Headers,
+# heartbeat comments and partial SSE framing do not reset this deadline.
 [limits.provider_stream_idle_timeout_ms]
 none = 60000
 low = 60000

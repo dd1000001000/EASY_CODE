@@ -980,6 +980,19 @@ export class AgentRuntime {
           onSettled: async attempt => {
             if (this.retryContext) await dependencies.appendEvent({ threadId: this.retryContext.state.threadId,
               turnId: this.retryContext.turnId, type: "model.api_attempt", phase: attempt.outcome, payload: attempt });
+            if (attempt.outcome === "failed" &&
+                ["stream_header_timeout", "stream_semantic_idle_timeout"].includes(attempt.failure?.code ?? "")) {
+              const progress = attempt.failure?.progress;
+              const detail = progress
+                ? ` (${progress.reasoningChars} thinking, ${progress.textChars} text, ${progress.toolArgumentChars} tool-argument chars received)`
+                : "";
+              const reason = attempt.failure?.code === "stream_header_timeout"
+                ? "Model response headers did not arrive within the configured interval"
+                : "Model stream made no semantic progress for the configured idle interval";
+              dependencies.onStatus?.(attempt.failure?.recovery === "retry_api"
+                ? `${reason}${detail}. Retrying API attempt ${attempt.attempt + 1}/${limits.maxProviderRetries + 1}.`
+                : `${reason}${detail}. No API retries remain.`);
+            }
           },
           resetContext: async rejected => {
             const active = this.retryContext;
