@@ -37,6 +37,24 @@ describe("Thinking terminal presentation", () => {
     );
   });
 
+  it("renders bounded live Thinking with independent transport progress", () => {
+    const block = new ReasoningRegistry().add("Inspect the repository before editing.");
+    assert.equal(
+      renderReasoningMarker(block, {
+        live: {
+          sourceChars: 48_320,
+          previewLimitChars: 16_000,
+          lastDeltaAtMs: 10_000,
+          nowMs: 10_400,
+        },
+      }),
+      "▶ Thinking #1 · 48,320 chars · still receiving · last delta 0.4s ago · " +
+        "/thinking 1 · VS Code Ctrl/Cmd+click to toggle\n" +
+        "  Inspect the repository before editing.\n" +
+        "  [Live preview limited to 16,000 chars]\n",
+    );
+  });
+
   it("strips terminal controls before redacting secrets", () => {
     const unsafe = [
       "\u001B]0;forged title\u0007safe",
