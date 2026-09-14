@@ -68,7 +68,13 @@ export function currentProcessIdentity(): ProcessIdentity | undefined {
 }
 
 export function processOwnerState(owner: ProcessOwner, probe: (pid: number) => ProcessSnapshot = inspectProcess): OwnerState {
-  if (owner.hostname !== os.hostname() || !Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0) return "unknown";
+  if (!Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0) return "unknown";
+  // A recorded foreign host must never be compared with this host's PID
+  // namespace. Older EASY CODE command leases did not record a hostname,
+  // however, so absence of that field is not itself evidence of a live owner.
+  // Probe those legacy PIDs: an absent PID is definitive and lets maintenance
+  // discard the stale lease, while a present Node process remains ambiguous.
+  if (owner.hostname !== undefined && owner.hostname !== null && owner.hostname !== os.hostname()) return "unknown";
   const actual = probe(Number(owner.pid));
   if (actual.state === "absent") return "inactive";
   if (actual.state !== "present") return "unknown";

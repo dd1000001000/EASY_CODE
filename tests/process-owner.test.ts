@@ -17,6 +17,11 @@ describe("process-incarnation ownership", () => {
     assert.equal(processOwnerState(legacy, () => ({ state: "present", name: "conhost.exe", identity: { started: "new-birth", executable: "C:\\Windows\\System32\\conhost.exe" } })), "inactive");
     assert.equal(processOwnerState(legacy, () => present("new-birth")), "unknown");
   });
+  it("retires a missing legacy PID even when its old lease has no hostname", () => {
+    const legacy = { pid: owner.pid, hostname: undefined };
+    assert.equal(processOwnerState(legacy, () => ({ state: "absent" })), "inactive");
+    assert.equal(processOwnerState(legacy, () => present("unknown-birth")), "unknown");
+  });
   it("preserves unreadable, foreign-host and malformed ownership without signaling processes", () => {
     assert.equal(processOwnerState(owner, () => ({ state: "unknown" })), "unknown");
     assert.equal(processOwnerState({ ...owner, hostname: "another-host" }, () => { throw new Error("must not probe"); }), "unknown");
