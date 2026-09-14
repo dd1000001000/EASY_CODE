@@ -6,19 +6,15 @@ import os from "node:os";
 import path from "node:path";
 import { assertPlainAncestors, maintenanceLock, readOwnedResources } from "../install/ownership.js";
 import { children, readJson, type UninstallAction, type UninstallPlan } from "./plan.js";
-import { alive } from "./system.js";
+import { processOwnerProbe, currentProcessIdentity } from "../core/process-owner.js";
 
 const require = createRequire(import.meta.url);
 export async function activeOwners(plan: UninstallPlan, confirmed: readonly string[] = []): Promise<string[]> {
   const active: string[] = [];
-  const setupFile = path.join(plan.home, ".easy_code", "podman-setup.lock");
-  if (existsSync(setupFile)) {
-    const entry = await readJson(setupFile);
-    if (entry.hostname !== os.hostname() || alive(entry.pid)) active.push("Podman setup PID " + entry.pid);
-  }
+  const ownerState = processOwnerProbe();
   for (const file of await children(path.join(plan.home, ".easy_code", "runtime-sessions"))) {
     const entry = await readJson(path.join(plan.home, ".easy_code", "runtime-sessions", file));
-    if (entry.hostname !== os.hostname() || alive(entry.pid)) active.push("Runtime PID " + entry.pid);
+    if (ownerState(entry) !== "inactive") active.push("Runtime PID " + entry.pid);
   }
   for (const data of plan.roots.data) {
     const dbPath = path.join(data, "easy-code.db");
@@ -29,8 +25,10 @@ export async function activeOwners(plan: UninstallPlan, confirmed: readonly stri
       try {
         db = new Database(dbPath, { fileMustExist: true, readOnly: true });
         const table = db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='thread_leases'");
-        if (table) for (const row of db.all("SELECT owner_pid, owner_hostname FROM thread_leases")) {
-          if (row.owner_hostname !== os.hostname() || alive(row.owner_pid)) active.push("Thread PID " + row.owner_pid);
+        const hasIdentity = table && db.all("PRAGMA table_info(thread_leases)").some((column: { name: string }) => column.name === "owner_process_identity");
+        if (table) for (const row of db.all(`SELECT owner_pid, owner_hostname, ${hasIdentity ? "owner_process_identity" : "NULL AS owner_process_identity"} FROM thread_leases`)) {
+          if (ownerState({ pid: row.owner_pid, hostname: row.owner_hostname,
+            processIdentity: row.owner_process_identity ? JSON.parse(row.owner_process_identity) : undefined }) !== "inactive") active.push("Thread PID " + row.owner_pid);
         }
       } catch {
         if (!confirmed.includes("corrupt-store:" + dbPath))
@@ -38,11 +36,12 @@ export async function activeOwners(plan: UninstallPlan, confirmed: readonly stri
       }
       finally { db?.close(); }
     }
-    for (const directory of await children(path.join(data, "podman"))) {
-      const lease = path.join(data, "podman", directory, "command.lease");
-      if (!existsSync(lease)) continue;
-      const entry = await readJson(lease);
-      if (alive(entry.pid)) active.push("Command/snapshot PID " + entry.pid);
+    for (const workspace of await children(path.join(data, "command-leases"))) {
+      for (const name of await children(path.join(data, "command-leases", workspace))) {
+        if (!name.endsWith(".lease")) continue;
+        const entry = await readJson(path.join(data, "command-leases", workspace, name));
+        if (ownerState({ ...entry, pid: entry.ownerPid }) !== "inactive") active.push("Command PID " + entry.ownerPid);
+      }
     }
   }
   return [...new Set(active)];
@@ -69,7 +68,7 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
   const completed: string[] = [];
   const state = { product: "easy-code-agent", version: 1, token,
     resources: [...plan.resources, ...(["data", "config", "cache"] as const).flatMap(kind => plan.roots[kind].map(value => ({ kind, path: value })))],
-    completed, failed: "" };
+    completed, failed: "", failures: [] as Array<{ id: string; reason: string }> };
   const persist = async () => {
     assertPlainAncestors(statePath);
     const temporary = statePath + "." + token + ".tmp";
@@ -77,7 +76,7 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
     await rename(temporary, statePath);
   };
   try {
-    await lock.writeFile(JSON.stringify({ product: "easy-code-agent", pid: process.pid, hostname: os.hostname(), token }));
+    await lock.writeFile(JSON.stringify({ product: "easy-code-agent", pid: process.pid, hostname: os.hostname(), token, processIdentity: currentProcessIdentity() }));
     await lock.sync();
     await persist();
     const activity = options.activity ?? (() => activeOwners(plan, options.confirmations));
@@ -94,12 +93,17 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
       if (!known.has(JSON.stringify(resource))) throw new Error("New resources were registered after preview. Run uninstall again to review the updated inventory.");
     }
     for (const item of [...plan.actions].sort((a, b) => a.phase - b.phase)) {
+      // Phase 60 begins data deletion. Keep recovery records, configuration and
+      // CLI when any resource/integration failed; independent earlier steps may finish.
+      if (state.failures.length && item.phase >= 60) continue;
       if (options.onAction) options.onAction(item);
       else log(item.description + ": " + item.target);
       state.failed = item.id; await persist();
-      await item.execute();
-      completed.push(item.id); state.failed = ""; await persist();
+      try { await item.execute(); completed.push(item.id); state.failed = ""; }
+      catch (error) { state.failures.push({ id: item.id, reason: String(error).slice(0, 1600) }); log(`Pending: ${item.description}: ${String(error).slice(0, 800)}`); }
+      await persist();
     }
+    if (state.failures.length) throw new Error(`Uninstall has ${state.failures.length} pending step(s); recovery data and CLI preserved:\n${state.failures.map(item => item.reason).join("\n")}`);
     await unlink(statePath);
     log("Uninstall completed. Deleted data is not recoverable without a backup; user projects and shared software were preserved.");
   } catch (error) {

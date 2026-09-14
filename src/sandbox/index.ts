@@ -1,6 +1,6 @@
-export * from "./podman-backend.js";
-export * from "./podman-startup.js";
-export { PodmanStartupService as DefaultSandboxStartupService } from "./podman-startup.js";
+export * from "./native-backend.js";
+export * from "./native-startup.js";
+export { NativeSandboxStartupService as DefaultSandboxStartupService } from "./native-startup.js";
 export * from "./cli.js";
 export * from "./control.js";
 export * from "./startup.js";

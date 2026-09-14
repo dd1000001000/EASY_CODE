@@ -1,7 +1,7 @@
 {
   "id": "start_command",
   "contractVersion": "1.1.0",
-  "description": "Start a supervised command using run_command's environment and approval rules. Normal CLI workspace execution is Linux Podman at /workspace. Poll/cancel the handle. A task container runs one command at a time; start a service and its client in the same command. Final delivery requires every handle to be terminal.",
+  "description": "Start a supervised command using run_command's native sandbox and approval rules. Poll or cancel the handle. Final delivery requires every handle to be terminal.",
   "propertyDescriptions": {
     "executionScope": "Default workspace sandbox. Request host only for an explicit per-command host escalation approved with this invocation. Benchmark remains container-confined.",
     "requiredCapabilities": "Compatibility requirements only, never permission grants. test/verify assumes loopback_tcp for runtime IPC. Set [] for checks known not to need IPC. Separate sandbox commands may not share localhost; keep server and client under one supervised command. Missing capabilities require explicit approval for host execution; Benchmark never escapes.",

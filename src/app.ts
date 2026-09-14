@@ -111,8 +111,8 @@ import { createProvider } from "./providers/factory.js";
 import { TokenCalibration } from "./context/token-calibration.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
-import { PodmanSandboxBackend } from "./sandbox/podman-backend.js";
-import { PodmanStartupService } from "./sandbox/podman-startup.js";
+import { NativeSandboxBackend } from "./sandbox/native-backend.js";
+import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
 import {
   runSandboxStartupGuide,
   type SandboxStartupService,
@@ -824,7 +824,7 @@ export class EasyCodeApp {
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup
-          ? options.sandboxStartupService ?? new PodmanStartupService(config.limits, undefined, undefined, message => terminal.info(message))
+          ? options.sandboxStartupService ?? new NativeSandboxStartupService(config.limits, config.dataDir, message => terminal.info(message))
           : undefined,
         options.clipboardImageReader ?? new SystemClipboardImageReader({
           currentDirectory: workspace.root,
@@ -1981,7 +1981,6 @@ export class EasyCodeApp {
           provider, budget, limits: this.config.limits,
           sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
           lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
-          podmanStateRoot: path.join(this.config.dataDir, "podman"),
           status: text => this.terminal.status(text),
           approve: async (context, request) => this.approvalQueue.run(async () => {
             if (request.signal?.aborted || request.command?.scope === "host") return false;
@@ -4127,15 +4126,9 @@ export class EasyCodeApp {
       undefined,
       this.trustedOuterSandbox === "harbor"
         ? new BenchmarkContainerBackend()
-        : new PodmanSandboxBackend(workspace, {
+        : new NativeSandboxBackend(workspace, {
         limits: this.config.limits,
-        stateRoot: path.join(this.config.dataDir, "podman"),
-        sensitiveReadPaths: [
-          this.config.configDir,
-          this.config.dataDir,
-          this.config.cacheDir,
-          USER_MODEL_REGISTRY_PATH,
-        ],
+        dataDir: this.config.dataDir,
       }),
       undefined,
       {
@@ -4186,12 +4179,12 @@ export class EasyCodeApp {
         osSandbox: {
           enabled: Boolean(this.trustedOuterSandbox) || this.commandExecutionMode !== "unrestricted",
           failClosed: true,
-          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : "podman",
-          filesystem: this.commandExecutionMode === "unrestricted" && !this.trustedOuterSandbox ? "host" : "container",
+          backend: this.trustedOuterSandbox === "harbor" ? "benchmark-container" : this.commandExecutionMode === "unrestricted" ? "host-unrestricted" : "native",
+          filesystem: this.trustedOuterSandbox === "harbor" ? "container" : "host",
           network: this.trustedOuterSandbox ? "offline worker: no external networking" : this.commandExecutionMode === "unrestricted" ? "host network, no approval" : "per-command approval and network gate; explicit host escalation uses host networking",
           setup: "easy-code sandbox doctor | easy-code sandbox setup",
         },
-        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; workspace uses a Linux Podman task container at /workspace; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
+        commandBoundary: "structured argv; Plan discourages direct editing, not command writes; normal CLI commands use the platform-native OS sandbox; explicit host scope requires approval; full access is unsandboxed; Benchmark keeps its offline Harbor container bridge",
         npmInstall: "normal command approvals apply; requested scripts/flags are preserved; Benchmark dependencies must be preinstalled or available offline",
         subagents:
           "main agent only; Code mode; DAG-bound or standalone isolated tasks; parent effort limits none/low=2, medium=4, high=8; no nested children; shared mutations serialized",

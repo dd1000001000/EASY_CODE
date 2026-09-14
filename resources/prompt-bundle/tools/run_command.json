@@ -1,7 +1,7 @@
 {
   "id": "run_command",
   "contractVersion": "1.1.0",
-  "description": "Run structured program/argv. Normal CLI workspace commands use a persistent Linux Podman task container at /workspace; use Linux tools, not host Windows interpreters. File tools use the same checkout through relative paths. Plan commands may write when approved. Full access uses the host; Benchmark keeps its offline worker. Runtime manages timeout and cleanup.",
+  "description": "Run structured program/argv with the platform-native toolchain under the OS sandbox. File tools and commands use the same checkout. Plan commands may write when approved. Full access is unsandboxed; Benchmark keeps its offline worker. Runtime manages timeout and process-tree cleanup.",
   "propertyDescriptions": {
     "executionScope": "Default workspace sandbox. Request host for exact per-command host escalation; the approval includes full host filesystem and network access. Benchmark always remains container-confined.",
     "requiredCapabilities": "Compatibility requirements only, never permission grants. test/verify assumes loopback_tcp for runtime IPC. Set [] for checks known not to need IPC. Missing capabilities can request a separately approved host invocation; Benchmark cannot escape. Do not patch language runtimes or repackage a denied command.",

@@ -23,7 +23,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-最后一步全局安装会自动准备 Podman、专用虚拟机（Windows/macOS）、沙箱基础镜像、本地检索模型与集成资源，可能需要下载和系统授权。如果 npm 报告已有 `easy-code` 启动文件，先运行 `npm run install:doctor`，按输出用旧 npm 卸载对应副本，再重新安装；不要使用 `--force`。
+最后一步全局安装会准备本地检索和集成资源，并解析安装时可用的最新版 `@openai/codex` 原生沙箱 Runtime。Windows 首次使用需要管理员确认，以建立专用离线身份；macOS 使用 Seatbelt；Linux 使用 bubblewrap/seccomp。普通 CLI 命令不再要求安装虚拟机或容器引擎。
 
 ## 开始使用
 
@@ -39,19 +39,15 @@ easy-code --workspace /path/to/project
 
 在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
 
-沙箱随安装自动准备。直接启动 `easy-code` 时若发现缺少依赖或初始化未完成，也会自动尝试准备一次；失败后显示恢复菜单，不循环安装。系统授权或必要重启仍需用户完成。以下指令用于检查或继续初始化：
-
-安装、启动与命令执行使用同一显式 Podman 连接文件；已有虚拟机时补回缺失连接，不重建虚拟机；机器已不存在时先清理核验通过的旧连接，再继续安装，外来连接不动。并发安装会串行处理；失败信息会显示当前阶段、配置位置和发现的机器/连接。修改安装代码后请退出旧 CLI，再重新启动。
+安装时会检查沙箱。直接启动 `easy-code` 时若发现 Windows 一次性初始化未完成，也会自动尝试一次；失败后显示恢复菜单，不循环安装。以下指令用于检查、继续初始化或核对未完成命令：
 
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
-easy-code sandbox resources
+easy-code sandbox recover --workspace /path/to/project
 ```
 
-安装 EASY CODE 时会自动安装缺失的 [Podman](https://podman.io/docs/installation)、准备 Windows/macOS 专用的 rootless `easy-code` 虚拟机并构建基础镜像。复用已有 Podman，不切换默认连接。下载、系统授权或重启中断后，可用 `sandbox setup` 继续；`sandbox doctor` 检查环境。Linux 安装系统包需要权限，rootless 镜像准备必须以普通用户运行。自动安装不可用时明确报错，不退回宿主机。普通命令在持久化的 Linux 任务容器 `/workspace` 内运行，模型可经批准的 HTTP(S) 网络安装依赖。完全访问仍使用原生宿主机；Benchmark 保留离线 Harbor/Docker 执行器。
-
-需要清理时，先检查资源列表，再用 `easy-code sandbox remove <container|volume|image> <完整名称> --yes` 永久删除单个已停止/未使用资源。项目和历史记录保留；容器/卷内容需要备份才能恢复。
+普通命令在当前项目上由平台原生沙箱执行：允许写工作区，禁止写工作区外路径，默认禁止直接访问外网；获批的 HTTP(S) 下载经过 Runtime 网络门。完全访问会明确绕过沙箱；Benchmark 仍限制在离线 Harbor/Docker 容器内，不会静默回退宿主机。
 
 单次运行或恢复会话：
 
@@ -84,7 +80,7 @@ easy-code uninstall --dry-run
 easy-code uninstall
 ~~~
 
-卸载只确认一次：输入 `y` 后删除当前用户的配置、已存 API Key、会话与记忆、缓存、终端插件、确认归属的沙箱资源（含旧版状态）、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。已删除的数据及 Worktree 中未交付的修改，没有备份就无法恢复。用户项目、链接的源码仓库、Benchmark 项目、共享系统软件和归属不明的资源保留。`--keep-cli` 仅保留 CLI 安装包。清理失败时按提示处理后重跑，不要盲删状态未知的命令租约。
+卸载只确认一次：输入 `y` 后删除当前用户的配置、已存 API Key、会话与记忆、缓存、终端插件、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。用户项目、链接的源码仓库、Benchmark 项目和共享系统软件保留。Windows 上游原生沙箱使用的系统账户属于共享 OS 基础设施，不归 EASY CODE 所有，因此不会在卸载时删除。
 
 更多资料：[配置示例](./docs/config.example.toml) · [架构与模块技术文档](./docs/TECHNICAL_DESIGN_ZH.md) · [Benchmark 指南](./benchmarks/swebench_verified/README.md)
 

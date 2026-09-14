@@ -9,7 +9,7 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { ContextManager } from "../src/context/manager.js";
 import { deliveryEvidenceSatisfied, foldReviewEvent, type ReviewEvent, type ReviewSession } from "../src/review/session.js";
 import { packageScriptRunner } from "../src/command/verification.js";
-import { mkdtemp, writeFile, rm, mkdir, readFile } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, mkdir, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { ValidationBaselineStore } from "../src/review/baseline-store.js";
@@ -79,7 +79,7 @@ describe("delivery reliability", () => {
     deps.store.appendEvent = () => { throw new Error("disk full"); };
     await assert.rejects(() => runWorkspaceReview(input, deps), ReviewPersistenceError);
   });
-  it("copies only source on the host and restores a deleted non-Git test baseline", async () => {
+  it("copies source, links installed dependencies, and restores a deleted non-Git test baseline", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-review-env-test-"));
     let copy: string | undefined;
     try {
@@ -93,10 +93,10 @@ describe("delivery reliability", () => {
       const copies = await createReviewCopies(workspace, createId("review"), reviewFingerprint(await workspace.captureSnapshot()), 100000, baseline, { readBaseline: hash => archive.get(hash) });
       copy = copies.directory;
       assert.equal(await readFile(path.join(copies.roots.reviewer, "test_original.py"), "utf8"), "assert True\n");
-      await assert.rejects(readFile(path.join(copies.roots.reviewer, "node_modules", "dep", "index.js")), { code: "ENOENT" });
+      assert.equal(await readFile(path.join(copies.roots.reviewer, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
       assert.equal(await readFile(path.join(root, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
-      await assert.rejects(readFile(path.join(copies.roots.author, "node_modules", "dep", "index.js")), { code: "ENOENT" });
-      assert.deepEqual(copies.dependencyHashes, {});
+      assert.equal(await readFile(path.join(copies.roots.author, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
+      assert.equal(copies.dependencyLinks.author.node_modules, await realpath(path.join(root, "node_modules")));
     } finally { if (copy) await rm(copy, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
   });
   it("cannot bypass prior unapproved changes on a new turn", async () => {

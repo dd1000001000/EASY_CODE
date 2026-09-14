@@ -23,7 +23,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-The final global install automatically prepares Podman, its dedicated rootless machine on Windows/macOS, the sandbox base image, the local retrieval model and integration resources. Downloads and system authorization may be required. If npm reports an existing `easy-code` launcher, run `npm run install:doctor`, uninstall the copies reported for the old npm prefixes, and reinstall without `--force`.
+The final global install prepares local retrieval and integrations, and resolves the latest `@openai/codex` native sandbox runtime available at installation time. Windows performs a one-time elevated setup for a dedicated offline identity; macOS uses Seatbelt; Linux uses bubblewrap/seccomp. EASY CODE does not install a VM or container engine for normal CLI commands.
 
 ## Get started
 
@@ -39,19 +39,15 @@ The first installation creates `~/.easy_code/models.toml`. Edit that file to mai
 
 Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
 
-The sandbox is prepared during installation. Interactive `easy-code` startup also automatically attempts setup once when dependencies or initialization are missing; failures open the recovery menu without an installation loop. OS authorization and required reboots still need user action. Check or resume setup with:
-
-Setup and uninstall share connection ownership checks. Existing machines are reused and missing aliases repaired; verified stale aliases of a removed machine are cleared before reinstalling. Foreign connections remain untouched.
+The sandbox is checked during installation. Interactive startup also attempts the one-time Windows setup when needed; failures open a recovery menu without an installation loop. Check or resume it with:
 
 ```bash
 easy-code sandbox doctor
 easy-code sandbox setup
-easy-code sandbox resources
+easy-code sandbox recover --workspace /path/to/project
 ```
 
-Existing [Podman](https://podman.io/docs/installation) installations are reused. Windows/macOS use the `easy-code` rootless machine without switching your default connection. Linux package installation requires system privileges; rootless image setup must run as your normal user. Unavailable installers, denied authorization or required reboots leave setup explicitly incomplete, never a host fallback. Normal commands run in a persistent Linux task container at `/workspace`; approved HTTP(S) access lets the model install dependencies. Full access remains native host execution. Benchmark keeps its offline Harbor/Docker worker.
-
-To permanently remove a selected stopped/unused EASY CODE resource, inspect the list first, then use `easy-code sandbox remove <container|volume|image> <full-name> --yes`. Project files and history are preserved; container/volume contents require a backup to recover.
+Normal commands run against the current project under the platform sandbox: workspace writes are allowed, writes outside it are denied and direct external networking is blocked. Approved HTTP(S) downloads use the Runtime network gate. Full access explicitly bypasses the sandbox; Benchmark remains confined to its offline Harbor/Docker container. There is no silent host fallback.
 
 Run one task or resume a session:
 
@@ -77,7 +73,7 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 
 Put project conventions and validation commands in `EASYCODE.md`. Adjust operational budgets in the `[limits]` table of `.easycode/config.toml`; run `easy-code config defaults` to inspect defaults.
 
-Installation, startup and command execution use the same explicit Podman connections file. A missing connection can be restored from an existing machine without rebuilding it. Concurrent setup is serialized; failures report the stage, configuration location and discovered machines/connections. Restart an already-running CLI after updating installation code.
+Installation and startup do not change Docker, Podman or WSL configuration. Restart existing CLI sessions after updating installation code.
 
 ## Uninstall
 
@@ -86,7 +82,7 @@ easy-code uninstall --dry-run
 easy-code uninstall
 ~~~
 
-Uninstall asks once: enter `y` to remove current-user configuration, stored API keys, history/memory, caches, terminal integration, verified sandbox resources (including legacy state), managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. Deleted data and unintegrated Worktree changes are not recoverable without a backup. User projects, linked source checkouts, Benchmark projects, shared system software and unidentified resources are preserved. `--keep-cli` retains only the CLI package. If cleanup fails, fix the reported issue and rerun; do not delete unknown command leases blindly.
+Uninstall asks once: enter `y` to remove current-user configuration, stored API keys, history/memory, caches, terminal integration, managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. User projects, linked source checkouts, Benchmark projects and shared system software are preserved. On Windows, the upstream native sandbox accounts are shared OS infrastructure and are not owned or removed by EASY CODE.
 
 More: [Configuration example](./docs/config.example.toml) · [Architecture and module documentation](./docs/TECHNICAL_DESIGN.md) · [Benchmark guide](./benchmarks/swebench_verified/README.md)
 

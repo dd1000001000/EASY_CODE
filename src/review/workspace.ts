@@ -1,6 +1,6 @@
 import path from "node:path";
 import os from "node:os";
-import { mkdir, readFile, writeFile, lstat, realpath } from "node:fs/promises";
+import { mkdir, readFile, writeFile, lstat, realpath, symlink } from "node:fs/promises";
 import { execa } from "execa";
 import { WorkspaceManager } from "../workspace/manager.js";
 import type { WorkspaceSnapshot } from "../workspace/snapshot.js";
@@ -12,6 +12,12 @@ export function reviewFingerprint(snapshot: WorkspaceSnapshot): string {
   if (snapshot.truncated) throw new Error("Incomplete workspace inventory; review cannot certify this snapshot");
   return `sha256:${sha256(JSON.stringify({ files: [...snapshot.files.values()]
     .map(entry => [entry.path, entry.kind, entry.hash, entry.size]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))) }))}`;
+}
+
+const REVIEW_DEPENDENCY_DIRECTORIES = ["node_modules", ".venv", "venv"] as const;
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 /** No shared checkout and no git control files. Explicit temporary copies are
@@ -73,12 +79,26 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
     await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, content, { flag: "wx", mode: 0o600 });
     baselines.reviewer[path.normalize(file.path)] = file.hash; restoredTests.push(file.path);
   }
-  // Dependencies are supplied by the execution backend as immutable Linux
-  // snapshots. Host copies contain source only, on every host platform.
-  const dependencyHashes = {};
+  // Keep large dependency trees out of the source copy. Native sandbox path
+  // resolution prevents writes through these links to the original workspace;
+  // they exist only so independent tests can use the already installed toolchain.
+  const dependencyLinks = { author: {} as Record<string, string>, reviewer: {} as Record<string, string> };
+  if (!options.offline) for (const name of REVIEW_DEPENDENCY_DIRECTORIES) {
+    const source = path.join(workspace.root, name);
+    let target: string;
+    try {
+      if (!(await lstat(source)).isDirectory()) continue;
+      target = await realpath(source);
+    } catch { continue; }
+    if (!isInside(workspace.root, target)) throw new Error(`Review dependency leaves the workspace: ${name}`);
+    for (const who of ["author", "reviewer"] as const) {
+      await symlink(target, path.join(roots[who], name), process.platform === "win32" ? "junction" : "dir");
+      dependencyLinks[who][name] = target;
+    }
+  }
   if (reviewFingerprint(await workspace.captureSnapshot()) !== expected) throw new Error("Workspace changed during review copy");
-  await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, roots, baselines, restoredTests, dependencyHashes }), { flag: "wx", mode: 0o600 });
-  return { directory, roots, baselines, restoredTests, dependencyHashes };
+  await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, roots, baselines, restoredTests, dependencyLinks }), { flag: "wx", mode: 0o600 });
+  return { directory, roots, baselines, restoredTests, dependencyLinks };
 }
 
 export async function restoreReviewCopies(directory: string, id: string, snapshotId: string) {
@@ -89,8 +109,14 @@ export async function restoreReviewCopies(directory: string, id: string, snapsho
   const roots = { author: path.join(directory, "author"), reviewer: path.join(directory, "reviewer") };
   for (const root of Object.values(roots)) if (await realpath(root) !== root) throw new Error("Redirected review copy");
   if (!binding.baselines?.author || !binding.baselines?.reviewer || !Array.isArray(binding.restoredTests)) throw new Error("Missing review baseline manifest");
+  const dependencyLinks = (binding.dependencyLinks ?? { author: {}, reviewer: {} }) as Record<"author" | "reviewer", Record<string, string>>;
+  for (const who of ["author", "reviewer"] as const) for (const [name, expected] of Object.entries(dependencyLinks[who] ?? {})) {
+    if (!REVIEW_DEPENDENCY_DIRECTORIES.includes(name as typeof REVIEW_DEPENDENCY_DIRECTORIES[number]) ||
+      !path.isAbsolute(expected) || await realpath(path.join(roots[who], name)) !== expected)
+      throw new Error("Review dependency binding mismatch");
+  }
   return { directory, roots, baselines: binding.baselines as Record<"author" | "reviewer", Record<string, string>>,
-    restoredTests: binding.restoredTests as string[], dependencyHashes: (binding.dependencyHashes ?? {}) as Record<string, string> };
+    restoredTests: binding.restoredTests as string[], dependencyLinks };
 }
 
 export async function reviewDiff(workspace: WorkspaceManager): Promise<string> {

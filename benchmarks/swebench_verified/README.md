@@ -303,8 +303,9 @@ a different directory on F:.
 ### Harbor command isolation
 
 The adapter separates control from execution using its offline Docker worker.
-The obsolete nested Landlock/seccomp helper has been removed from the package;
-ordinary CLI commands use Podman instead of that legacy implementation.
+The adapter does not nest the normal CLI sandbox. Ordinary CLI commands use the
+host platform's native sandbox; benchmark commands remain fully capable only
+inside this offline Harbor/Docker worker.
 
 Bounded reviewer discussions additionally allocate separate offline worker/volume
 pairs for the author representative and reviewer. They receive only their Runtime

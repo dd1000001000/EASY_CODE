@@ -1,9 +1,0 @@
-# Built by installation/setup, never by a model command.
-FROM docker.io/library/python:3.13-bookworm
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash ca-certificates curl git ripgrep build-essential nodejs npm \
-    && rm -rf /var/lib/apt/lists/*
-ENV HOME=/root LANG=C.UTF-8 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
-WORKDIR /workspace
-# Runtime overrides entrypoint; no host services or keys belong in this image.
-CMD ["sleep", "infinity"]

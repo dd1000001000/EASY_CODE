@@ -13,7 +13,7 @@ import type { CommandExecutionBackend, SandboxWorkerControl } from "../src/sandb
 import type { ToolContext } from "../src/core/types.js";
 import type { ResolvedCommand } from "../src/command/types.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
-import { PodmanSandboxBackend } from "../src/sandbox/podman-backend.js";
+import { NativeSandboxBackend } from "../src/sandbox/native-backend.js";
 import { redactSensitiveInformation } from "../src/memory/sensitive.js";
 import { describe, it } from "./harness.js";
 import { RunCommandTool } from "../src/tools/run-command.js";
@@ -55,7 +55,7 @@ describe("command security floor", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-plan-permissions-"));
     try {
       const workspace = await WorkspaceManager.create(root);
-      const backend = new PodmanSandboxBackend(workspace);
+      const backend = new NativeSandboxBackend(workspace);
       const command: ResolvedCommand = { program: "node", executablePath: process.execPath, args: ["--version"],
         cwdAbsolute: root, cwdRelative: ".", executableInsideWorkspace: false, environment: {}, environmentKeys: [] };
       const request = { commandId: "plan", command, context: { ...context(root), mode: "plan" as const }, commandPreview: "node",
@@ -63,7 +63,7 @@ describe("command security floor", () => {
       const plan = backend.describe(request);
       const codeRequest = { ...request, context: { ...request.context, mode: "code" as const } };
       assert.deepEqual(plan, backend.describe(codeRequest));
-      assert.equal(plan.filesystem, "container");
+      assert.equal(plan.filesystem, "host");
       assert.equal(plan.enforced, true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -91,7 +91,7 @@ describe("command security floor", () => {
   it("uses a bounded, monotonic control stream independent of display text", () => {
     const seen: SandboxWorkerControl[] = [];
     const stream = new SandboxControlStream("owned", event => seen.push(event), true);
-    const ready = encodeSandboxControl("owned", { type: "ready", backend: "podman" });
+    const ready = encodeSandboxControl("owned", { type: "ready", backend: "native" });
     stream.push(ready.slice(0, 10)); stream.push(ready.slice(10));
     stream.push(encodeSandboxControl("owned", { type: "execution_dispatched" }));
     stream.push(encodeSandboxControl("owned", { type: "execution_exited", exitCode: 0 }));
@@ -114,9 +114,9 @@ describe("command security floor", () => {
     try {
       const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
       const manager = await WorkspaceManager.create(workspaceRoot);
-      const metadata = { backend: "podman" as const, enforced: true, filesystem: "container" as const, network: "denied" as const };
+      const metadata = { backend: "native" as const, enforced: true, filesystem: "host" as const, network: "denied" as const };
       const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
-        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "podman" }, { type: "execution_dispatched" }, { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "Container stop was not confirmed" }];
+        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "native" }, { type: "execution_dispatched" }, { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "Native cleanup was not confirmed" }];
         const records = events.map(event => encodeSandboxControl(request.commandId, event)).join("");
         const script = `const fs=require('fs');const go=()=>{process.stdout.write('noise'.repeat(10000));fs.writeSync(3,${JSON.stringify(records)});process.exit(0)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
         return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot, environment: { ...process.env }, metadata, controlPipe: true, cleanup: async () => { throw new Error("Should not release a failed cleanup lease"); } };

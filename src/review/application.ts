@@ -9,7 +9,7 @@ import type { TaskBudget } from "../runtime/task-budget.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { WorkspaceManager } from "../workspace/manager.js";
 import { CommandRuntime } from "../command/runtime.js";
-import { PodmanSandboxBackend } from "../sandbox/podman-backend.js";
+import { NativeSandboxBackend } from "../sandbox/native-backend.js";
 import { BenchmarkContainerBackend } from "../sandbox/benchmark-backend.js";
 import { BuiltinToolSource } from "../tools/builtin-source.js";
 import { ToolCatalog } from "../tools/catalog.js";
@@ -37,7 +37,7 @@ export interface WorkspaceReviewResult { approved: boolean; requests: number; re
 export interface WorkspaceReviewDependencies {
   workspace: WorkspaceManager; store: ThreadStore; memory: MemoryManager; index: ContextArtifactIndex;
   provider: ModelProvider; budget: TaskBudget; limits: Readonly<RuntimeLimits>;
-  sensitivePaths: string[]; lifecycleDirectory: string; offline: boolean; podmanStateRoot?: string;
+  sensitivePaths: string[]; lifecycleDirectory: string; offline: boolean;
   approve(context: ToolContext, request: import("../core/types.js").ApprovalRequest): Promise<boolean>;
   status(text: string): void;
   readBaseline?: (hash: string) => Promise<Buffer | undefined>;
@@ -71,13 +71,10 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   if (latest && state.delivery && latest.sourceMessageIndex > state.delivery.sourceMessageIndex) correctionRefs.push(latest);
   const corrections = [...new Set(correctionRefs.map(c => state.messages[c.sourceMessageIndex]?.content ?? c.text))];
   const requirementRevision = sha256(JSON.stringify([input.userInput, state.constraints, corrections]));
-  // Dependencies are outside the source snapshot. They must still invalidate
-  // cached approvals. The offline worker also owns image-level installations;
-  // a new main command conservatively invalidates that environment revision.
-  const parentBackend = deps.offline ? undefined : new PodmanSandboxBackend(deps.workspace,
-    { limits: deps.limits, stateRoot: deps.podmanStateRoot, sensitiveReadPaths: deps.sensitivePaths });
-  const reviewSnapshot = await parentBackend?.snapshotForReview(state.threadId, input.signal);
-  const environmentRevision = sha256(JSON.stringify([reviewSnapshot?.revision, state.commands.map(c => c.id)]));
+  // Native review copies use the host toolchain. Completed parent commands
+  // conservatively invalidate the environment revision without sharing the
+  // parent's private context or writable filesystem with either participant.
+  const environmentRevision = sha256(JSON.stringify([process.platform, process.arch, state.commands.map(c => c.id)]));
   const key = sha256(JSON.stringify([scope, input.purpose, snapshotId, requirementRevision, environmentRevision,
     // A changed verified outcome is new evidence; merely re-running the same command is not.
     state.commands.slice(-6).map(c => [c.program, c.args, c.exitCode, c.status, c.summary])]));
@@ -123,8 +120,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   const beforeRequests = session.requests;
   const fresh = async () => !input.signal?.aborted && !deps.store.hasPendingTurnSteering(state.threadId, input.turnId) && requirementRevision === get().requirementRevision &&
     get().key === key &&
-    reviewFingerprint(await deps.workspace.captureSnapshot()) === get().snapshotId &&
-    (!parentBackend || (await parentBackend.snapshotForReview(state.threadId, input.signal)).revision === reviewSnapshot?.revision);
+    reviewFingerprint(await deps.workspace.captureSnapshot()) === get().snapshotId;
   if (session.status === "decided") {
     await emit({ type: "applied", id: reviewId, fresh: await fresh() });
     return { approved: session.approval && await fresh(), requests: 0, reused: true };
@@ -183,8 +179,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       }
       leases.push(deps.store.acquireThreadLease(threadId));
       const backend = deps.offline ? new BenchmarkContainerBackend({ id: reviewId, actor: who, root })
-        : new PodmanSandboxBackend(workspace, { sensitiveReadPaths: privatePaths, stateRoot: deps.podmanStateRoot,
-          limits: { ...deps.limits, podmanImage: reviewSnapshot!.image }, readOnlyRootfs: true, reviewSnapshot });
+        : new NativeSandboxBackend(workspace, { limits: deps.limits });
       const runtime = new CommandRuntime(workspace, undefined, backend, undefined, {
         networkProfile: deps.offline ? "review_offline" : "development",
         limits: deps.limits,
@@ -255,8 +250,8 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
             try { if (sha256(await readFile(await workspace.pathGuard.resolveExisting(name))) !== hash) return false; }
             catch { return false; }
           }
-          // Podman mounts the captured Linux dependency volumes read-only.
-          // Never follow container links or hash Linux venvs on the CLI host.
+          // The native sandbox can write only this participant's private copy;
+          // source baseline hashes remain the authoritative freshness check.
           return true;
         },
       };
@@ -273,7 +268,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       await emit({ type: "environment_started", id: reviewId });
       for (const participant of Object.values(participants)) {
         await emit({ type: "tool", id: reviewId });
-        await preflightReviewEnvironment(participant, deps.offline ? undefined : "/workspace");
+        await preflightReviewEnvironment(participant);
       }
       await emit({ type: "environment_checked", id: reviewId, ready: true });
     }

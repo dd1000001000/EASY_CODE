@@ -8,7 +8,6 @@ import { assertPlainAncestors } from "../install/ownership.js";
 import type { Command } from "commander";
 
 import { buildFilePlan, type UninstallAction, type UninstallPlan } from "./plan.js";
-import { addPodman } from "./podman.js";
 import { addWorktrees } from "./worktrees.js";
 import { addCredentials, addExtensions, addPackage } from "./integrations.js";
 import { activeOwners, executeUninstall } from "./execute.js";
@@ -87,7 +86,7 @@ export async function removeGlobalEasyCodePackage(
 export interface UninstallOptions { dryRun?: boolean; yes?: boolean; keepCli?: boolean }
 export async function createUninstallPlan(options: UninstallOptions = {}): Promise<UninstallPlan> {
   const plan = await buildFilePlan();
-  for (const inspect of [addPodman, addWorktrees, addCredentials, addExtensions]) {
+  for (const inspect of [addWorktrees, addCredentials, addExtensions]) {
     try { await inspect(plan); } catch (error) { plan.blockers.push(String(error)); }
   }
   // Include unreadable legacy leases in the scope of the single confirmation.
@@ -120,11 +119,9 @@ export interface UninstallDependencies {
 }
 function actionGroup(action: UninstallAction): string {
   if (action.phase < 10) return "Data, configuration, history and caches";
-  if (action.phase < 30) return "Dedicated sandbox and owned container resources";
   if (action.phase < 40) return "Managed Worktrees and Runtime refs";
   if (action.phase <= 50) return "Terminal integration and stored API keys";
   if (action.phase <= 80) return "Data, configuration, history and caches";
-  if (action.phase < 100) return "Podman installed exclusively by EASY CODE";
   return "Global CLI and launchers";
 }
 export async function runUninstall(options: UninstallOptions, overrides: Partial<UninstallDependencies> = {}): Promise<void> {
@@ -171,7 +168,7 @@ export async function runUninstall(options: UninstallOptions, overrides: Partial
 }
 export function registerUninstallCommand(program: Command): void {
   program.command("uninstall")
-    .description("fully uninstall current-user EASY CODE data, credentials, integration, owned sandbox and global CLI")
+    .description("fully uninstall current-user EASY CODE data, credentials, integration and global CLI")
     .option("--dry-run", "inspect and print the removal plan without changing anything")
     .option("--yes", "confirm the entire verified removal plan without interactive prompts")
     .option("--keep-cli", "remove owned user resources but keep the npm CLI")

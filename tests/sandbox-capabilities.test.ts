@@ -9,7 +9,7 @@ import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { encodeSandboxControl } from "../src/sandbox/control.js";
 import { runCommandInputSchema } from "../src/tools/run-command.js";
-import { PodmanSandboxBackend } from "../src/sandbox/podman-backend.js";
+import { NativeSandboxBackend } from "../src/sandbox/native-backend.js";
 import type { CommandExecutionBackend, SandboxBackendName } from "../src/sandbox/types.js";
 import type { ToolContext, ApprovalRequest } from "../src/core/types.js";
 
@@ -34,16 +34,16 @@ function backend(name: SandboxBackendName, prepared: string[]): CommandExecution
 }
 
 describe("unified sandbox compatibility", () => {
-  it("uses Podman container metadata independent of the host platform", async () => fixture(async (_, workspace) => {
-    const metadata = new PodmanSandboxBackend(workspace).describe();
-    assert.equal(metadata.backend, "podman");
-    assert.equal(metadata.filesystem, "container");
-    assert.deepEqual(metadata.capabilities, executionCapabilities("podman"));
+  it("uses native enforced metadata independent of the host platform", async () => fixture(async (_, workspace) => {
+    const metadata = new NativeSandboxBackend(workspace).describe();
+    assert.equal(metadata.backend, "native");
+    assert.equal(metadata.filesystem, "host");
+    assert.deepEqual(metadata.capabilities, executionCapabilities("native"));
   }));
   it("reports policy capabilities, not fictitious cross-language proof", () => {
-    const report = executionCapabilities("podman");
+    const report = executionCapabilities("native");
     assert.equal(report.source, "policy");
-    assert.equal(report.isolation, "container");
+    assert.equal(report.isolation, "host");
     assert.equal(report.features.loopback_tcp, "supported");
     assert.equal(executionCapabilities("benchmark-container").features.shared_memory, "supported");
     const unknown = executionCapabilities("host-test-only");
@@ -51,7 +51,7 @@ describe("unified sandbox compatibility", () => {
     assert.doesNotThrow(() => assertExecutionCapabilities(report, ["temporary_files", "child_processes"]));
   });
   it("does not inject Python hooks and strictly validates optional capability names", async () => {
-    const source = await readFile(path.join(process.cwd(), "src/sandbox/podman-backend.ts"), "utf8");
+    const source = await readFile(path.join(process.cwd(), "src/sandbox/native-backend.ts"), "utf8");
     assert.doesNotMatch(source, /sitecustomize|windowsPythonIpc|targetEnvironment\.PYTHONPATH/);
     assert.deepEqual(runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: [] }).requiredCapabilities, []);
     assert.throws(() => runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: ["full_network"] }));

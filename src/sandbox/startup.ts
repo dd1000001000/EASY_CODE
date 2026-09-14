@@ -53,7 +53,7 @@ export function sandboxIsReady(readiness: SandboxReadiness): boolean {
 export function formatSandboxReadiness(readiness: SandboxReadiness): string[] {
   const lines = [`Sandbox backend: ${readiness.backend}`];
   if (readiness.status === "ready") {
-    lines.push(readiness.backend.startsWith("Podman") ? "Podman readiness checks passed (not a proof for every language/project)." : "Filesystem and network sandbox checks passed.");
+    lines.push("Filesystem and network sandbox checks passed.");
   } else if (readiness.status === "setup_required") {
     lines.push("One-time operating-system sandbox setup is required.");
   } else if (readiness.status === "dependencies_missing") {
@@ -65,7 +65,7 @@ export function formatSandboxReadiness(readiness: SandboxReadiness): string[] {
   }
   for (const detail of readiness.details) lines.push(`Detail: ${safeDetail(detail)}`);
   for (const warning of readiness.warnings) lines.push(`Warning: ${safeDetail(warning)}`);
-  const capabilities = executionCapabilities("podman");
+  const capabilities = executionCapabilities("native");
   lines.push(`Compatibility policy (not a language test): ${JSON.stringify(capabilities.features)}`);
   for (const note of capabilities.notes) lines.push(`Compatibility: ${note}`);
   return lines;
@@ -116,7 +116,7 @@ export async function runSandboxStartupGuide(
   // One automatic attempt per startup. A probe/cleanup failure is not a missing
   // installation; never rebuild it blindly or loop after denied OS approval.
   if (readiness.canSetup && ["dependencies_missing", "setup_required"].includes(readiness.status)) {
-    terminal.info("Preparing the missing Podman sandbox automatically. Downloads and OS authorization may be required; a required reboot must be completed manually.");
+    terminal.info("Preparing the native command sandbox. Windows may request one administrator-approved setup; macOS and Linux use the packaged native runtime without a virtual machine.");
     terminal.startActivity("Setting up the command sandbox");
     try {
       if (await setup()) return true;
@@ -134,7 +134,7 @@ export async function runSandboxStartupGuide(
         ? [{
             id: "setup",
             label: "Set up sandbox now (Recommended)",
-            detail: "Install Podman, prepare its dedicated machine and base image; OS authorization and downloads may be required",
+            detail: "Prepare the operating-system sandbox; Windows may request administrator approval",
           }]
         : []),
       { id: "recheck", label: "Recheck sandbox", detail: "Run the readiness probe again" },
