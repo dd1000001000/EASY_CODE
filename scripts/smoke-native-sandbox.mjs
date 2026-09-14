@@ -5,23 +5,32 @@ import path from "node:path";
 import { createServer } from "node:net";
 
 import { CommandPolicy, CommandRuntime } from "../dist/command/index.js";
+import { ensureSharedCommandNetworkGateServer } from "../dist/command/network-gate.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../dist/config/runtime-limits.js";
 import { NativeAppServerClient } from "../dist/sandbox/app-server-client.js";
 import { NativeSandboxBackend } from "../dist/sandbox/native-backend.js";
 import { nativePermissionProfile } from "../dist/sandbox/native-policy.js";
-import { nativeSandboxEntrypoint, nativeSandboxHome } from "../dist/sandbox/native-runtime.js";
+import { nativeSandboxEntrypoint, nativeSandboxEnvironment, nativeSandboxHome } from "../dist/sandbox/native-runtime.js";
 import { NativeSandboxStartupService } from "../dist/sandbox/native-startup.js";
+import { acquireWindowsProxyPortLease } from "../dist/sandbox/windows-proxy-registry.js";
 import { WorkspaceManager } from "../dist/workspace/manager.js";
 
 const workspace = await mkdtemp(path.join(process.cwd(), ".easy-code-native-smoke-"));
 const outside = await mkdtemp(path.join(os.homedir(), ".easy-code-native-outside-"));
 const dataDir = path.join(workspace, ".easy-code-data");
 const outsideSentinel = path.join(outside, "sentinel.txt");
+const sandboxHome = nativeSandboxHome();
+const sandboxDataDir = path.resolve(sandboxHome, "..", "..");
+let sandboxProxyURL;
+let sandboxProxyPorts = [];
 await writeFile(outsideSentinel, "must remain private", "utf8");
 
 async function execute(client, command, timeoutMs = 10_000) {
   return client.request("command/exec", {
     command,
     cwd: workspace,
+    ...(sandboxProxyURL ? { env: nativeSandboxEnvironment(sandboxHome, process.env,
+      sandboxProxyURL, sandboxProxyPorts) } : {}),
     ...nativePermissionProfile(),
     timeoutMs,
   }, timeoutMs + 5_000);
@@ -40,7 +49,18 @@ try {
   assert.equal(readiness.status, "ready", readiness.details.join("\n"));
   console.log("readiness: ok");
 
-  const client = new NativeAppServerClient(nativeSandboxEntrypoint(), nativeSandboxHome());
+  if (process.platform === "win32") {
+    const lease = await acquireWindowsProxyPortLease({ dataDir: sandboxDataDir,
+      portStart: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortStart,
+      portSlots: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortSlots,
+      bind: ensureSharedCommandNetworkGateServer });
+    sandboxProxyURL = `http://127.0.0.1:${lease.port}`;
+    sandboxProxyPorts = [...await lease.authorizedPorts()];
+    assert.ok(sandboxProxyPorts.includes(lease.port), "startup did not authorize this process proxy port");
+  }
+
+  const client = new NativeAppServerClient(nativeSandboxEntrypoint(), sandboxHome, process.env,
+    sandboxProxyURL, sandboxProxyPorts);
   try {
     await client.initialize();
     const inside = await execute(client, [process.execPath, "-e",

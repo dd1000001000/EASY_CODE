@@ -227,7 +227,7 @@ Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问�
 
 [NativeSandboxBackend](../src/sandbox/native-backend.ts) 是普通 CLI 的命令后端。EASY CODE 在用户安装时解析 `@openai/codex@latest`，并在该次安装的生命周期内使用实际安装的版本；仓库自身的 `package-lock.json` 只用于保持开发和测试可复现，不会锁定下游用户安装。EASY CODE 通过 [app-server-client.ts](../src/sandbox/app-server-client.ts) 调用不涉及模型的 app-server `command/exec` API。它不会读取用户的 Codex 配置、创建 Codex 对话或请求模型。当前架构包提供对应平台可执行文件：Windows elevated 沙箱、macOS Seatbelt、Linux bubblewrap/seccomp。
 
-Runtime 只传结构化 argv 和私有子进程环境，供应商密钥及控制面 capability 不会进入目标命令。`:workspace` 权限配置允许写命令工作区和沙箱临时区，拒绝写工作区外路径，并阻止直接外网 socket。获批 HTTP(S) 仍是独立的[网络门](../src/command/network-gate.ts)决策。完全访问显式使用 [UnrestrictedHostBackend](../src/sandbox/unrestricted-host-backend.ts)，沙箱失败不会导致自动回退。
+Runtime 只传结构化 argv 和私有子进程环境，供应商密钥及控制面 capability 不会进入目标命令。`:workspace` 权限配置允许写命令工作区和沙箱临时区，拒绝写工作区外路径，并阻止直接外网 socket。获批 HTTP(S) 仍是独立的[网络门](../src/command/network-gate.ts)决策。Windows 上，每个 EASY CODE 进程从 `limits.nativeSandboxProxyPortStart` 与 `nativeSandboxProxyPortSlots` 配置的范围内租用一个回环端口；监听器在进程启动时绑定，并由该进程中的主 Agent、子 Agent 和 reviewer 共享。带跨进程锁的 Runtime 注册表区分“已分配端口”和“已写入 Codex 持久 WFP 策略的端口”；新并发进程通过串行 setup 把自己的端口加入策略，因此至多在首次增加并发槽位时授权一次，之后可复用空闲的已授权槽位。所有沙箱调用（包括离线命令）都携带完整的已授权端口集合，避免策略来回变化。每条命令仍使用独立、不可猜测的代理凭据和审批会话；共享或预授权端口本身不授予任何外网目标权限。完全访问显式使用 [UnrestrictedHostBackend](../src/sandbox/unrestricted-host-backend.ts)，沙箱失败不会导致自动回退。
 
 [native-worker.ts](../src/sandbox/native-worker.ts) 把目标 stdout/stderr 与可信 fd 3 生命周期控制分开。Windows elevated 沙箱暂不支持实验性的命令流式输出，因此使用有界缓冲输出。app-server 负责沙箱内目标超时，Runtime 仍保留更硬的 watchdog；Windows 取消和异常清理由现有进程树监督器兜底。沙箱终态、worker 退出与 scratch 清理仍是三个独立事实。
 

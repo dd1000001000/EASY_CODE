@@ -57,6 +57,8 @@ export interface SandboxExecutionRequest {
   commandPreview: string;
   /** Runtime-issued per-command capability; never copied into target environment. */
   networkProxyURL?: string;
+  /** Runtime-attested Windows WFP proxy port union; never a model field. */
+  networkProxyPorts?: readonly number[];
   /** Set only by Runtime after explicit host permission; never a tool field. */
   hostExecutionAuthorized?: boolean;
   /** Trusted lifecycle store, not accepted from model tool arguments. */
@@ -69,6 +71,9 @@ export interface CommandExecutionBackend {
   workspaceRelativeCwd?(command: ResolvedCommand): string | undefined;
   /** Container paths must never be looked up or executed on the host. */
   resolveCommand?(input: import("../command/types.js").RunCommandInput, context: ToolContext): ResolvedCommand | Promise<ResolvedCommand>;
+  /** Platform backend may provide a process-scoped network gate. */
+  createNetworkGate?(options: import("../command/network-gate.js").CommandNetworkGateOptions):
+    Promise<import("../command/network-gate.js").CommandNetworkGate>;
   approvalPrefix?(command: ResolvedCommand, context: ToolContext, network: boolean): string;
   assertEnvironmentSafe?(): void;
   quarantine?(reason: string): void;

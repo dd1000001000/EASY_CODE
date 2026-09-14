@@ -25,6 +25,9 @@ commandTimeoutMs = 120000
 sandboxStartupWindowsMs = 75000
 sandboxStartupPosixMs = 30000
 sandboxCleanupTimeoutMs = 45000
+# Per-process Windows broker ports are leased from this bounded range.
+nativeSandboxProxyPortStart = 43179
+nativeSandboxProxyPortSlots = 32
 # A compatibility assumption, NOT a network permission. Use requiredCapabilities=[]
 # for a check known not to need IPC; the OS boundary remains unchanged.
 sandboxVerificationRequiresLoopback = true

@@ -114,6 +114,47 @@ describe("network authorization", () => {
     } finally { await gate.close(); await other.close(); }
   });
 
+  it("binds a configured process loopback port for durable Windows WFP policy", async () => {
+    const reservation = createServer();
+    const port = await listen(reservation);
+    await new Promise<void>(resolve => reservation.close(() => resolve()));
+    const gate = await createCommandNetworkGate({
+      listenPort: port,
+      authorize: async () => false,
+      record: () => {},
+    });
+    try {
+      assert.equal(Number(new URL(gate.proxyURL).port), port);
+    } finally {
+      await gate.close();
+    }
+  });
+
+  it("shares a stable listener across concurrent agents without sharing authority", async () => {
+    const reservation = createServer();
+    const port = await listen(reservation);
+    await new Promise<void>(resolve => reservation.close(() => resolve()));
+    let firstApprovals = 0;
+    let secondApprovals = 0;
+    const first = await createCommandNetworkGate({ listenPort: port,
+      authorize: async () => { firstApprovals++; return false; }, record: () => {} });
+    const second = await createCommandNetworkGate({ listenPort: port,
+      authorize: async () => { secondApprovals++; return false; }, record: () => {} });
+    try {
+      assert.equal(new URL(first.proxyURL).port, new URL(second.proxyURL).port);
+      assert.notEqual(new URL(first.proxyURL).password, new URL(second.proxyURL).password);
+      assert.equal((await proxyRequest(first.proxyURL, "http://fixture.test/")).status, 403);
+      assert.equal(firstApprovals, 1);
+      assert.equal(secondApprovals, 0);
+      await first.close();
+      assert.equal((await proxyRequest(second.proxyURL, "http://fixture.test/")).status, 403);
+      assert.equal(secondApprovals, 1);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
   it("forwards an approved request once, preserving the body after an approval wait", async () => {
     let received = "", requests = 0, credentialLeaked = false;
     const server = createServer((req, res) => {

@@ -14,6 +14,8 @@
   "sandboxStartupWindowsMs": 75000,
   "sandboxStartupPosixMs": 30000,
   "sandboxCleanupTimeoutMs": 45000,
+  "nativeSandboxProxyPortStart": 43179,
+  "nativeSandboxProxyPortSlots": 32,
   "sandboxVerificationRequiresLoopback": true,
   "sandboxAllowHostEscalation": true,
   "nativeSandboxSetupTimeoutMs": 600000,

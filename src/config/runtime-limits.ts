@@ -17,6 +17,8 @@ export const runtimeLimitsSchema = z.object({
   sandboxStartupWindowsMs: integer(1000, 300000),
   sandboxStartupPosixMs: integer(1000, 300000),
   sandboxCleanupTimeoutMs: integer(1000, 300000),
+  nativeSandboxProxyPortStart: integer(1024, 65535),
+  nativeSandboxProxyPortSlots: integer(1, 128),
   sandboxVerificationRequiresLoopback: z.boolean(),
   sandboxAllowHostEscalation: z.boolean(),
   nativeSandboxSetupTimeoutMs: integer(30000, 1800000),
@@ -130,6 +132,10 @@ export const runtimeLimitsSchema = z.object({
   contextSafetyReserveTokens: integer(128, 131072),
   contextSafetyReserveRatio: z.number().min(0.01).max(0.2),
 }).strict().superRefine((value, context) => {
+  if (value.nativeSandboxProxyPortStart + value.nativeSandboxProxyPortSlots - 1 > 65535) {
+    context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ["nativeSandboxProxyPortSlots"], message: "native sandbox proxy port range exceeds 65535" });
+  }
   const check = (condition: boolean, path: string, message: string) => {
     if (!condition) context.addIssue({ code: "custom", path: [path], message });
   };
