@@ -50,6 +50,8 @@ export interface ProviderCatalogEntry {
   readonly wireApi: WireApi;
   readonly supportsStreaming: boolean;
   readonly supportsStreamUsage: boolean;
+  /** Send the non-standard Chat Completions tool_stream request flag. */
+  readonly toolStream: boolean;
   readonly credentialSlot: ProviderName;
   readonly configKey: `${string}.api-key`;
   readonly defaultBaseUrl: string;
@@ -112,12 +114,30 @@ const providerSchema = z.object({
   // The packaged registry declares this explicitly for every endpoint.
   supports_streaming: z.boolean().default(false),
   supports_stream_usage: z.boolean().default(false),
+  // Non-standard Chat Completions extension. Missing stays disabled so an
+  // existing/custom OpenAI-compatible endpoint never receives an unknown key.
+  tool_stream: z.boolean().default(false),
   request_timeout_ms: z.number().int().positive().optional(),
   max_retries: z.number().int().min(0).max(10).default(3),
   supports_temperature: z.boolean().default(true),
   supports_strict_tools: z.boolean().default(true),
   image_constraints: imageConstraintsSchema.optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.tool_stream && !value.supports_streaming) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["tool_stream"],
+      message: "requires supports_streaming = true",
+    });
+  }
+  if (value.tool_stream && value.wire_api !== "chat_completions") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["tool_stream"],
+      message: "is only valid for the chat_completions wire API",
+    });
+  }
+});
 const modelSchema = z.object({
   name: z.string().trim().min(1),
   provider: providerIdSchema,
@@ -204,6 +224,7 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
       wireApi: value.wire_api,
       supportsStreaming: value.supports_streaming,
       supportsStreamUsage: value.supports_stream_usage,
+      toolStream: value.tool_stream,
       credentialSlot: provider,
       configKey: `${provider}.api-key` as `${string}.api-key`,
       defaultBaseUrl: value.base_url.replace(/\/+$/u, ""),

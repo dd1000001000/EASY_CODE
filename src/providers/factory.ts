@@ -45,6 +45,8 @@ export function createProvider(
       runtime?.supportsStreaming ?? providerCatalogEntry(providerName).supportsStreaming,
     supportsStreamUsage:
       runtime?.supportsStreamUsage ?? providerCatalogEntry(providerName).supportsStreamUsage,
+    toolStream:
+      runtime?.toolStream ?? providerCatalogEntry(providerName).toolStream,
   };
 
   switch (providerCatalogEntry(providerName).wireApi) {

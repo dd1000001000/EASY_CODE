@@ -110,6 +110,45 @@ describe("provider streaming", () => {
     assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4, 5, 6, 7]);
   });
 
+  it("sends configured tool_stream only for streamed Chat Completions requests with tools", async () => {
+    activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged tool streaming registry");
+    const config = createDefaultEasyCodeConfig(process.cwd());
+    config.qwen.apiKey = "test-key";
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = createProvider(config, "qwen", undefined, {
+      transport: async (request) => {
+        bodies.push(JSON.parse(request.body) as Record<string, unknown>);
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }] }),
+        };
+      },
+    });
+    const tool = {
+      type: "function" as const,
+      function: { name: "read_file", description: "read", parameters: { type: "object" } },
+    };
+    await provider.complete({ messages: [{ role: "user", content: "plain" }] });
+    await provider.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool] });
+    assert.equal(bodies[0]?.tool_stream, undefined);
+    assert.equal(bodies[1]?.tool_stream, true);
+
+    const disabled = createProvider(config, "qwen", undefined, {
+      toolStream: false,
+      transport: async (request) => {
+        bodies.push(JSON.parse(request.body) as Record<string, unknown>);
+        return {
+          statusCode: 200,
+          headers: {},
+          body: JSON.stringify({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "done" } }] }),
+        };
+      },
+    });
+    await disabled.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool] });
+    assert.equal(bodies[2]?.tool_stream, undefined);
+  });
+
   it("assembles Responses semantic events without exposing partial tool calls", async () => {
     activateModelRegistry(STREAMING_RESPONSES_REGISTRY, "streaming responses registry");
     try {

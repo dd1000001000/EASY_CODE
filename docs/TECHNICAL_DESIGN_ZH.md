@@ -124,6 +124,7 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 | `providers.<id>.env_key` | 可能保存该供应商密钥的环境变量名；文件中不保存密钥本身。 |
 | `providers.<id>.supports_streaming` | 是否把该端点作为 SSE 流请求和解析；缺失时安全地默认为 `false`。 |
 | `providers.<id>.supports_stream_usage` | Chat Completions 流式请求是否发送 `stream_options.include_usage`；默认 `false`，内置 Qwen 和 DeepSeek 开启。Responses 直接读取终态用量。 |
+| `providers.<id>.tool_stream` | 带工具的流式 Chat Completions 请求是否发送非标准 Wire 参数 `tool_stream = true`；缺失时安全地默认为 `false`，内置 Qwen 和 GLM 端点开启。 |
 | `supports_temperature` / `supports_strict_tools` | 通用协议驱动使用的 Wire 能力。 |
 | `models.<alias>.provider` / `model` | 供应商引用，以及实际发送给 API 的模型 ID。 |
 | `context_window`、`input_modalities` | 官方容量及文本/图片能力。 |
@@ -140,11 +141,11 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 
 系统不再维护 Qwen / DeepSeek / Kimi / GLM 专属 thinking 映射。Chat Completions 的不同方言没有统一 reasoning 参数，因此 EASY CODE 不猜测字段，由服务端使用自身默认行为。若注册表模型声明 `reasoning = true`，Responses Driver 可以发送标准化的 `reasoning.effort`。无论 Wire 是否支持，effort 仍独立控制 Runtime 本地预算与超时。
 
-当 `supports_streaming = true` 时，对应协议驱动请求 SSE，每次实际请求使用唯一 ID 和有序的瞬态事件。增量解码支持 UTF-8、LF/CRLF/CR 和 SSE 记录。Chat Completions 接受空用量字段及纯用量块，要求选定 choice 的结束原因和 `[DONE]` 均已到达；Responses 必须收到并校验 completed/incomplete 终态事件。HTTP EOF 不代表模型完成，流内错误不能忽略。只有完整响应被接受、原始参数通过校验后才执行工具。若成功端点返回 JSON，仍在同一次请求内完整解析，不另发请求。
+当 `supports_streaming = true` 时，对应协议驱动请求 SSE，每次实际请求使用唯一 ID 和有序的瞬态事件。若 Chat Completions 端点还明确声明 `tool_stream = true`，驱动会在请求包含工具时要求函数名称和参数增量返回；不支持该扩展的端点以及不含工具的请求完全省略此字段。增量解码支持 UTF-8、LF/CRLF/CR 和 SSE 记录。Chat Completions 接受空用量字段及纯用量块，要求选定 choice 的结束原因和 `[DONE]` 均已到达；Responses 必须收到并校验 completed/incomplete 终态事件。HTTP EOF 不代表模型完成，流内错误不能忽略。只有完整响应被接受、原始参数通过校验后才执行工具。若成功端点返回 JSON，仍在同一次请求内完整解析，不另发请求。
 
 网络故障和缺失终态沿用统一 API 重试额度（默认重试五次），每次尝试重新分配 ID 和缓冲区；部分响应不进入模型历史，也不执行。取消、认证失败和损坏的协议数据不会获得额外自动重试。长度截断及 incomplete 输出进入现有内容纠正流程。真实用量仅结算一次，缺失时沿用既有估算。独立适配器调用保留显式重试上限；Runtime 调用将其设为零，由 Runtime 统一拥有重试预算。
 
-CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复用未变化节点的布局缓存。`limits.streamPreviewMaxChars`（默认 16,000 字符）只限制生成过程中的预览；末尾未完成词片段暂不展示以便完整过滤，接受后的正文和 thinking 仍完整保留。完成/中断立即刷新，重试时旧预览标记为中断。清屏、切换 Thread 和关闭会取消待执行刷新，重复或迟到的增量不能更新新尝试。已有用户 `models.toml` 不会被覆盖；支持用量选项的端点需要在其中开启 `supports_stream_usage = true`。
+CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复用未变化节点的布局缓存。`limits.streamPreviewMaxChars`（默认 16,000 字符）只限制生成过程中的预览；末尾未完成词片段暂不展示以便完整过滤，接受后的正文和 thinking 仍完整保留。完成/中断立即刷新，重试时旧预览标记为中断。清屏、切换 Thread 和关闭会取消待执行刷新，重复或迟到的增量不能更新新尝试。已有用户 `models.toml` 不会被覆盖；只有端点实际支持时，才应在其中开启 `supports_stream_usage = true` 和 `tool_stream = true`。
 
 终端以稳定 ID 原位替换虚拟文档中的 Thinking/回答节点，保持 reasoning、正文和工具调用的真实先后顺序。只有最终组装后的 Assistant Message 写入 Journal，逐片段事件不持久化；完成结果与已有节点对齐，不会重复打印答案。非交互终端及无法启用固定视窗的小终端继续使用完整原子输出。本地输出/上下文预留**绝不会**序列化成 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`；HTTP 响应字节上限只保护本地进程，不改变生成语义。
 

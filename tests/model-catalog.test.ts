@@ -38,6 +38,11 @@ describe("user model registry", () => {
     assert.equal(providerCatalogEntry("kimi").supportsStreamUsage, false);
     assert.equal(providerCatalogEntry("qwen").supportsStreamUsage, true);
     assert.equal(providerCatalogEntry("deepseek").supportsStreamUsage, true);
+    assert.equal(providerCatalogEntry("qwen").toolStream, true);
+    assert.equal(providerCatalogEntry("deepseek").toolStream, false);
+    assert.equal(providerCatalogEntry("kimi").toolStream, false);
+    assert.equal(providerCatalogEntry("glm").toolStream, true);
+    assert.equal(providerCatalogEntry("glm-coding-plan").toolStream, true);
     assert.equal(providerCatalogEntry("kimi").supportsTemperature, false);
     assert.equal(providerCatalogEntry("glm").supportsStrictTools, false);
     assert.equal(DEFAULT_MODEL_IDS.qwen, "qwen3.7-max");
@@ -68,6 +73,7 @@ reasoning = true
     assert.equal(parsed.providers[0]?.wireApi, "responses");
     assert.equal(parsed.providers[0]?.supportsStreaming, false);
     assert.equal(parsed.providers[0]?.supportsStreamUsage, false);
+    assert.equal(parsed.providers[0]?.toolStream, false);
     assert.equal(parsed.providers[0]?.models[0]?.id, "coder-1");
     assert.equal(parsed.providers[0]?.models[0]?.vision, "supported");
     try {
@@ -97,6 +103,21 @@ reasoning = true
       'provider = "deepseek"',
       'provider = "missing"',
     )), /unknown provider/u);
+    assert.throws(() => parseModelCatalog(`schema_version = 1
+default_model = "custom-default"
+[providers.custom]
+name = "Custom"
+base_url = "https://models.example/v1"
+env_key = "CUSTOM_API_KEY"
+wire_api = "responses"
+supports_streaming = true
+tool_stream = true
+[models.custom-default]
+name = "Custom Coder"
+provider = "custom"
+model = "coder-1"
+input_modalities = ["text"]
+`), /tool_stream/u);
   });
 
   it("creates the fixed user file once and never overwrites it", async () => {
