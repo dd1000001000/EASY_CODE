@@ -29,7 +29,8 @@ export function createProvider(
   };
   const effectiveRuntime: ProviderRuntimeOptions = {
     ...runtime,
-    timeoutByEffort: config.limits.providerTimeoutMs,
+    streamIdleTimeoutByEffort: config.limits.providerStreamIdleTimeoutMs,
+    bufferedTimeoutByEffort: config.limits.providerBufferedTimeoutMs,
     maxResponseBytes: runtime?.maxResponseBytes ?? config.limits.providerResponseMaxBytes,
     visionSupported:
       runtime?.visionSupported ??

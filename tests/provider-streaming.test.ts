@@ -86,6 +86,7 @@ describe("provider streaming", () => {
     const events: ProviderStreamEvent[] = [];
     const response = await provider.complete({
       messages: [{ role: "user", content: "inspect" }],
+      responseMode: "stream",
       onStreamEvent: (event) => events.push(event),
     });
     assert.equal(JSON.parse(sent!.body).stream, true);
@@ -129,8 +130,8 @@ describe("provider streaming", () => {
       type: "function" as const,
       function: { name: "read_file", description: "read", parameters: { type: "object" } },
     };
-    await provider.complete({ messages: [{ role: "user", content: "plain" }] });
-    await provider.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool] });
+    await provider.complete({ messages: [{ role: "user", content: "plain" }], responseMode: "stream" });
+    await provider.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool], responseMode: "stream" });
     assert.equal(bodies[0]?.tool_stream, undefined);
     assert.equal(bodies[1]?.tool_stream, true);
 
@@ -145,7 +146,7 @@ describe("provider streaming", () => {
         };
       },
     });
-    await disabled.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool] });
+    await disabled.complete({ messages: [{ role: "user", content: "use a tool" }], tools: [tool], responseMode: "stream" });
     assert.equal(bodies[2]?.tool_stream, undefined);
   });
 
@@ -167,6 +168,7 @@ describe("provider streaming", () => {
       });
       const response = await provider.complete({
         messages: [{ role: "user", content: "inspect" }],
+        responseMode: "stream",
         onStreamEvent: (event) => events.push(event),
       });
       assert.equal(response.message.content, "done");
@@ -198,6 +200,7 @@ describe("provider streaming", () => {
       const events: ProviderStreamEvent[] = [];
       await provider.complete({
         messages: [{ role: "user", content: "answer" }],
+        responseMode: "stream",
         onStreamEvent: (event) => events.push(event),
       });
       assert.equal(JSON.parse(sent!.body).stream, false);
@@ -226,6 +229,7 @@ describe("provider streaming", () => {
     });
     await assert.rejects(provider.complete({
       messages: [{ role: "user", content: "answer" }],
+      responseMode: "stream",
       maxRetries: 0,
       onStreamEvent: (event) => events.push(event),
     }), /connection lost/u);
@@ -237,7 +241,7 @@ describe("provider streaming", () => {
 });
 
 const mockConfig = { apiKey: "mock-key", model: "mock", baseUrl: "https://example.invalid", maxRetries: 0, timeoutMs: 1000 };
-const mockRequest = { messages: [{ role: "user" as const, content: "test" }] };
+const mockRequest = { messages: [{ role: "user" as const, content: "test" }], responseMode: "stream" as const };
 const buffers = (events: readonly unknown[]) => events.map((event) => Buffer.from(
   `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`,
 ));

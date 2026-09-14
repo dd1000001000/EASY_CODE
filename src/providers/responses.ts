@@ -15,7 +15,7 @@ import type {
 import { projectModelInputMessages } from "../context/micro-compaction.js";
 import { validateImageAttachmentCollection } from "../images/image-store.js";
 import { providerImageCompatibilityIssue, resolveCatalogModel, validateProviderImageAttachments } from "../models/catalog.js";
-import { thinkingEffortTimeoutMs } from "../models/thinking.js";
+import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
 import { ProviderError, redactImageDataUrls, redactSensitiveText, streamProviderError } from "./errors.js";
 import { HttpTransportError, postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
@@ -75,10 +75,11 @@ export class ResponsesProvider implements ModelProvider {
 
   async complete(request: ModelRequest): Promise<ProviderResponse> {
     if (!this.config.apiKey) throw this.error(`Missing API key for ${this.name}. Configure the provider before use.`, "missing_api_key");
+    const streamResponse = request.responseMode === "stream" && this.supportsStreaming;
     const body: Record<string, unknown> = {
       model: this.model,
       input: await this.toInput(request.messages, request.currentTurnImageIds),
-      stream: this.supportsStreaming,
+      stream: streamResponse,
     };
     if (request.tools?.length && this.runtime.toolCallingSupported !== false) {
       body.tools = request.tools.map(({ function: tool }) => ({
@@ -101,7 +102,12 @@ export class ResponsesProvider implements ModelProvider {
     let serialized: string;
     try { serialized = JSON.stringify(body); }
     catch { throw this.error("Unable to serialize the model request", "invalid_request"); }
-    const timeoutMs = this.config.timeoutMs ?? this.runtime.timeoutByEffort?.[request.thinkingEffort ?? "none"] ?? thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
+    const effort = request.thinkingEffort ?? "none";
+    const timeoutMs = streamResponse
+      ? this.runtime.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort)
+      : this.config.timeoutMs ?? this.runtime.bufferedTimeoutByEffort?.[effort] ??
+        thinkingEffortBufferedTimeoutMs(effort);
+    const timeoutMode = streamResponse ? "stream_idle" as const : "buffered_total" as const;
     const requestedRetries = request.maxRetries ?? this.config.maxRetries;
     if (!Number.isSafeInteger(requestedRetries) || requestedRetries < 0 || requestedRetries > 10) throw this.error("Request maxRetries must be between 0 and 10", "invalid_request");
     const maxRetries = Math.min(this.config.maxRetries, requestedRetries);
@@ -130,15 +136,16 @@ export class ResponsesProvider implements ModelProvider {
           url: this.endpoint,
           headers: {
             authorization: `Bearer ${this.config.apiKey}`,
-            accept: this.supportsStreaming ? "text/event-stream" : "application/json",
+            accept: streamResponse ? "text/event-stream" : "application/json",
             "content-type": "application/json",
             "user-agent": "easy-code-agent/0.1",
           },
           body: serialized,
           timeoutMs,
+          timeoutMode,
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
-          ...(this.supportsStreaming
+          ...(streamResponse
             ? {
                 onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
                   streamStarted = statusCode >= 200 && statusCode < 300 &&
@@ -371,7 +378,8 @@ export class ResponsesProvider implements ModelProvider {
     if (signal?.aborted) return this.error("Request was canceled", "aborted");
     if (error instanceof HttpTransportError) {
       if (error.kind === "aborted") return this.error("Request was canceled", "aborted");
-      if (error.kind === "timeout") return new ProviderError(`Provider request timed out after ${timeoutMs}ms`, { provider: this.name, code: "timeout", retryable: true });
+      if (error.kind === "stream_idle_timeout") return new ProviderError(`Provider stream was idle for ${timeoutMs}ms`, { provider: this.name, code: "stream_idle_timeout", retryable: true });
+      if (error.kind === "buffered_total_timeout") return new ProviderError(`Buffered provider request exceeded ${timeoutMs}ms`, { provider: this.name, code: "buffered_total_timeout", retryable: true });
       if (error.kind === "response_too_large") return this.error(error.message, "response_too_large");
       return new ProviderError(`Provider network error: ${error.message}`, { provider: this.name, code: "network_error", retryable: true, secrets: [this.config.apiKey] });
     }

@@ -226,6 +226,8 @@ export interface AgentReasoningNotification {
 
 export interface ModelRequest {
   messages: ChatMessage[];
+  /** Wire delivery mode. Runtime call sites set it explicitly; omitted requests are safely buffered. */
+  responseMode?: "stream" | "buffered";
   /**
    * Image IDs introduced by the active turn. Providers use this boundary to
    * keep current input validation strict while safely omitting older images
@@ -255,7 +257,7 @@ export interface ProviderConfig {
   apiKey?: string;
   baseUrl: string;
   model: string;
-  /** Optional exact timeout override; defaults otherwise depend on thinking effort. */
+  /** Optional buffered total-time override; streamed requests use the Runtime idle budget. */
   timeoutMs?: number;
   maxRetries: number;
 }

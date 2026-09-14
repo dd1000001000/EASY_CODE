@@ -396,6 +396,31 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("shows bounded streamed tool-argument progress without exposing arguments", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      const probe = terminal as unknown as { flushModelStreams(): void };
+      try {
+        terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
+        terminal.beginShell(session()); terminal.setCurrentRequest("Create the application");
+        const activity = terminal.startActivity("Waiting for model response", "model");
+        terminal.modelStream({ kind: "started", streamId: "tool-stream", sequence: 1 });
+        terminal.modelStream({ kind: "tool_call_delta", streamId: "tool-stream", sequence: 2,
+          index: 0, id: "call_1", name: "create_", arguments: '{"content":"SECRET_' });
+        terminal.modelStream({ kind: "tool_call_delta", streamId: "tool-stream", sequence: 3,
+          index: 0, name: "file", arguments: "x".repeat(2048) });
+        probe.flushModelStreams();
+        const label = terminalState(terminal).live.activity?.label ?? "";
+        assert.match(label, /Preparing create_file #1 · 2\.0 KiB arguments/u);
+        assert.equal(label.includes("SECRET"), false);
+        terminal.modelStream({ kind: "interrupted", streamId: "tool-stream", sequence: 4 });
+        assert.match(terminalState(terminal).transcript.at(-1)?.text ?? "", /tool arguments were incomplete and were not executed/u);
+        terminal.stopActivity(activity);
+      } finally { terminal.close(); }
+    });
+  });
+
   it("coalesces a delta burst, bounds live previews, and restores complete final text", async () => {
     await withInteractiveEnvironment(() => {
       const output = new TtyOutput(); output.resume();

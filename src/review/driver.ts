@@ -90,7 +90,8 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
     if (remainingMs <= 0) throw new Error("Review time limit");
     const timeout = AbortSignal.timeout(Math.min(remainingMs, input.limits.reviewSummaryTimeoutMs));
     const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
-    const sent = budgetedRequest({ ...request, thinkingEffort: summary ? "none" : p.state.thinkingEffort,
+    const sent = budgetedRequest({ ...request, responseMode: "stream",
+      thinkingEffort: summary ? "none" : p.state.thinkingEffort,
       maxRetries: 0, signal }, managers[who].tokenCapacity);
     return completeWithApiRetries(input.provider, sent, {
       limits: input.limits,
@@ -142,7 +143,9 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       required: false, maxRequests: summary ? 0 : Math.max(0, input.get().maxRequests - input.get().requests - 2),
       skipSummary: summary, signal: input.signal, nextRequest, tool: new CompactContextTool(input.limits).definition,
       append: async event => p.append(event.type, event.payload),
-      complete: async (messages, _attempt, summaryTools) => (await request(who, { messages, tools: summaryTools })).message,
+      complete: async (messages, _attempt, summaryTools) => (await request(who, {
+        messages, tools: summaryTools, responseMode: "stream",
+      })).message,
     }).then(result => { if (result.paused) throw new Error(result.paused.reason); });
     return manager.build({ state: p.state, systemPrompt, runtimeContext: requestContext, maxContextChars: input.limits.maxContextChars });
   };
@@ -157,7 +160,9 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
         const messages = input.briefSource && !reconciliationPending(input.participants.author.state) ? managers.author.build({ state: input.briefSource,
           systemPrompt: summaryInstructions(false, input.limits.reviewBriefingMaxTokens), runtimeContext: prompt, maxContextChars: input.limits.maxContextChars })
           : await build("author", [], prompt, true);
-        const response = await request("author", { messages: [...messages, ...(feedback ? [{ role: "user" as const, content: feedback }] : [])] }, true, false);
+        const response = await request("author", { messages: [...messages,
+          ...(feedback ? [{ role: "user" as const, content: feedback }] : [])],
+          responseMode: "stream" }, true, false);
         return response.message.content;
       }, input.limits, summaryRecovery("briefing"));
     },
@@ -213,7 +218,8 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       while (input.get().status === "discussing") {
         if (contentFailures > input.limits.modelContentRetries) throw new Error("Review content corrections were already exhausted before Resume");
         if (Date.now() >= session.deadline) throw new Error("Review time limit");
-        const response = await request(who, { messages: await build(who, definitions), tools: definitions });
+        const response = await request(who, { messages: await build(who, definitions),
+          tools: definitions, responseMode: "stream" });
         await recordMessage(p, response.message);
         const calls = response.message.tool_calls ?? [];
         const incomplete = incompleteModelOutput(response);
@@ -316,7 +322,9 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
         `Use <summary>; optional <analysis> is discarded. Over ${session.summaryTokens} estimated tokens is clipped locally, never retried.\n` +
         JSON.stringify({ reason: session.closeReason, statements: session.statements, experiments: session.experiments });
       return requestSummaryWithCorrections(async (attempt, feedback) => {
-        const response = await request(who, { messages: await build(who, [], prompt + (feedback ? "\n" + feedback : ""), true) }, true, true, attempt > 1);
+        const response = await request(who, { messages: await build(who, [],
+          prompt + (feedback ? "\n" + feedback : ""), true), responseMode: "stream" },
+          true, true, attempt > 1);
         return response.message.content;
       }, input.limits, summaryRecovery(who));
     },

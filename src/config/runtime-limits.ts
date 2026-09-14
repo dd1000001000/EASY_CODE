@@ -38,7 +38,9 @@ export const runtimeLimitsSchema = z.object({
   providerResponseMaxBytes: integer(1048576, 67108864),
   streamFlushIntervalMs: integer(16, 1000),
   streamPreviewMaxChars: integer(1024, 64000),
-  providerTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
+  providerStreamIdleTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
+    medium: integer(1000, 3600000), high: integer(1000, 3600000) }).strict(),
+  providerBufferedTimeoutMs: z.object({ none: integer(1000, 3600000), low: integer(1000, 3600000),
     medium: integer(1000, 3600000), high: integer(1000, 3600000) }).strict(),
   maxProviderRetries: integer(0, 10),
   // Retry counts exclude the initial attempt. Shared by every agent role.
@@ -174,5 +176,6 @@ export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze(run
 export function defaultRuntimeLimits(): RuntimeLimits {
   return { ...DEFAULT_RUNTIME_LIMITS, steps: { ...DEFAULT_RUNTIME_LIMITS.steps },
     maxConcurrentSubagents: { ...DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents },
-    providerTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerTimeoutMs } };
+    providerStreamIdleTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerStreamIdleTimeoutMs },
+    providerBufferedTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerBufferedTimeoutMs } };
 }

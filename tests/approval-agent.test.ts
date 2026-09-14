@@ -66,6 +66,7 @@ describe("independent approval agent", () => {
       });
       assert.equal(result.decision, decision); assert.equal(result.unavailable, undefined);
       assert.equal(captured!.tools, undefined); assert.equal(captured!.thinkingEffort, "none");
+      assert.equal(captured!.responseMode, "stream");
       assert.equal(captured!.maxRetries, 0); assert.equal("maxTokens" in captured!, false);
       assert.match(captured!.messages[1]!.content!, /proposedPermission/);
     }

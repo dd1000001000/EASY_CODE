@@ -55,13 +55,15 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\n[limits.steps]\nhigh = 60\n[limits.provider_timeout_ms]\nhigh = 10000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
+        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\n[limits.steps]\nhigh = 60\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
       assert.deepEqual(config.limits.steps, { none: 40, low: 40, medium: 40, high: 60 });
-      assert.equal(config.limits.providerTimeoutMs.low, 300000);
-      assert.equal(config.limits.providerTimeoutMs.high, 10000);
+      assert.equal(config.limits.providerBufferedTimeoutMs.low, 300000);
+      assert.equal(config.limits.providerBufferedTimeoutMs.high, 10000);
+      assert.equal(config.limits.providerStreamIdleTimeoutMs.low, 60000);
+      assert.equal(config.limits.providerStreamIdleTimeoutMs.high, 20000);
       assert.deepEqual(defaultRuntimeLimits().maxConcurrentSubagents, { none: 2, low: 2, medium: 4, high: 8 });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 2, medium: 3, high: 8 });
       assert.equal(config.limits.maxTaskTokens, 90000);

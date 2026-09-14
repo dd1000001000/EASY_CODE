@@ -171,6 +171,8 @@ interface ActiveModelStream {
   reasoningEntryId?: string;
   answerEntryId?: string;
   toolCallSeen: boolean;
+  readonly toolCalls: Map<number, { name: string; argumentChars: number }>;
+  toolProgressDirty: boolean;
   completed: boolean;
   sequence: number;
   pendingReasoning: string[];
@@ -1664,23 +1666,31 @@ export class Terminal {
     state.sequence = event.sequence;
     if (event.kind === "reasoning_delta" || event.kind === "text_delta") {
       (event.kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText).push(event.text);
-      if (!this.streamFlushTimer) {
-        this.streamFlushTimer = setTimeout(() => {
-          try { this.flushModelStreams(); }
-          catch {
-            // Rendering is optional, including when it runs outside the
-            // provider observer's synchronous error boundary.
-            this.resetModelStreams();
-            this.streamedAnswerCandidate = undefined;
-            this.streamedReasoningCandidate = undefined;
-          }
-        }, this.streamFlushIntervalMs);
-        this.streamFlushTimer.unref();
-      }
+      this.scheduleModelStreamFlush();
       return;
     }
-    if (event.kind !== "tool_call_delta") this.flushModelStreams(event.kind === "completed" ? event.streamId : undefined);
+    if (event.kind === "tool_call_delta") {
+      this.applyModelStream(event);
+      this.scheduleModelStreamFlush();
+      return;
+    }
+    this.flushModelStreams(event.kind === "completed" ? event.streamId : undefined);
     this.applyModelStream(event);
+  }
+
+  private scheduleModelStreamFlush(): void {
+    if (this.streamFlushTimer) return;
+    this.streamFlushTimer = setTimeout(() => {
+      try { this.flushModelStreams(); }
+      catch {
+        // Rendering is optional, including when it runs outside the
+        // provider observer's synchronous error boundary.
+        this.resetModelStreams();
+        this.streamedAnswerCandidate = undefined;
+        this.streamedReasoningCandidate = undefined;
+      }
+    }, this.streamFlushIntervalMs);
+    this.streamFlushTimer.unref();
   }
 
   private flushModelStreams(finalStreamId?: string): void {
@@ -1699,6 +1709,7 @@ export class Terminal {
           pending.length = 0;
           this.applyModelStream({ kind, streamId: state.streamId, sequence: state.sequence, text });
         }
+        if (state.toolProgressDirty) this.renderStreamToolProgress(state);
       }
     } finally {
       this.streamBatchRendering = false;
@@ -1707,6 +1718,31 @@ export class Terminal {
         this.refreshDisclosureViewer(true);
       }
     }
+  }
+
+  private renderStreamToolProgress(state: ActiveModelStream): void {
+    state.toolProgressDirty = false;
+    const calls = [...state.toolCalls.entries()].sort(([left], [right]) => left - right);
+    if (!calls.length || !this.activeActivityId) return;
+    const parts = calls.slice(0, 2).map(([index, call]) => {
+      const name = this.safeInline(call.name || "tool", 48);
+      const size = call.argumentChars < 1024
+        ? `${call.argumentChars} chars`
+        : `${(call.argumentChars / 1024).toFixed(call.argumentChars < 10 * 1024 ? 1 : 0)} KiB`;
+      return `${name} #${index + 1} · ${size}`;
+    });
+    const remaining = calls.length - parts.length;
+    this.activityText = `Preparing ${parts.join("; ")}${remaining > 0 ? `; +${remaining} more` : ""} arguments`;
+    if (this.inlineShellActive) {
+      const current = this.uiState.live.activity;
+      if (current?.id === this.activeActivityId) {
+        this.uiState = applyEvent(this.uiState, {
+          type: "activity.start",
+          activity: { ...current, label: this.activityText },
+        });
+      }
+    }
+    this.renderActivity();
   }
 
   private liveStreamText(value: string, final: boolean): string {
@@ -1740,6 +1776,8 @@ export class Terminal {
         reasoningText: "",
         answerText: "",
         toolCallSeen: false,
+        toolCalls: new Map(),
+        toolProgressDirty: false,
         completed: false,
         sequence: event.sequence,
         pendingReasoning: [],
@@ -1814,6 +1852,11 @@ export class Terminal {
 
     if (event.kind === "tool_call_delta") {
       state.toolCallSeen = true;
+      const current = state.toolCalls.get(event.index) ?? { name: "", argumentChars: 0 };
+      if (event.name) current.name += event.name;
+      if (event.arguments) current.argumentChars += event.arguments.length;
+      state.toolCalls.set(event.index, current);
+      state.toolProgressDirty = true;
       return;
     }
 
@@ -1840,7 +1883,9 @@ export class Terminal {
     }
 
     if (event.kind === "interrupted") {
-      const interrupted = "[Interrupted model response; not a completed answer.]";
+      const interrupted = state.toolCallSeen
+        ? "[Interrupted model response; streamed tool arguments were incomplete and were not executed.]"
+        : "[Interrupted model response; not a completed answer.]";
       if (state.reasoningId && state.reasoningEntryId) {
         const block = this.reasoning.get(state.reasoningId);
         if (block) this.replaceTranscriptEntry(state.reasoningEntryId, {

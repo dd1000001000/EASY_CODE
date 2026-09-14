@@ -22,7 +22,8 @@ import {
   validateProviderImageAttachments,
 } from "../models/catalog.js";
 import {
-  thinkingEffortTimeoutMs,
+  thinkingEffortBufferedTimeoutMs,
+  thinkingEffortStreamIdleTimeoutMs,
 } from "../models/thinking.js";
 import {
   ProviderError,
@@ -163,7 +164,8 @@ function normalizeChatUsage(
 }
 
 export interface ProviderRuntimeOptions {
-  timeoutByEffort?: Readonly<Record<NonNullable<ModelRequest["thinkingEffort"]>, number>>;
+  streamIdleTimeoutByEffort?: Readonly<Record<NonNullable<ModelRequest["thinkingEffort"]>, number>>;
+  bufferedTimeoutByEffort?: Readonly<Record<NonNullable<ModelRequest["thinkingEffort"]>, number>>;
   transport?: JsonPostTransport;
   sleep?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   random?: () => number;
@@ -219,7 +221,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly maxResponseBytes: number;
   private readonly loadImage?: (attachment: ImageAttachment) => Promise<Buffer>;
   private readonly visionSupported: boolean;
-  private readonly timeoutByEffort?: ProviderRuntimeOptions["timeoutByEffort"];
+  private readonly streamIdleTimeoutByEffort?: ProviderRuntimeOptions["streamIdleTimeoutByEffort"];
+  private readonly bufferedTimeoutByEffort?: ProviderRuntimeOptions["bufferedTimeoutByEffort"];
   private readonly supportsTemperature: boolean;
   private readonly supportsStrictTools: boolean;
   private readonly toolCallingSupported: boolean;
@@ -244,7 +247,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       runtime.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     this.loadImage = runtime.loadImage;
     this.visionSupported = runtime.visionSupported ?? false;
-    this.timeoutByEffort = runtime.timeoutByEffort;
+    this.streamIdleTimeoutByEffort = runtime.streamIdleTimeoutByEffort;
+    this.bufferedTimeoutByEffort = runtime.bufferedTimeoutByEffort;
     this.supportsTemperature = runtime.supportsTemperature ?? true;
     this.supportsStrictTools = runtime.supportsStrictTools ?? true;
     this.toolCallingSupported = runtime.toolCallingSupported ?? true;
@@ -264,25 +268,29 @@ export class OpenAICompatibleProvider implements ModelProvider {
       );
     }
 
+    const streamResponse = request.responseMode === "stream" && this.supportsStreaming;
     const body: CompletionBody = {
       model: this.model,
       messages: await this.toCompletionMessages(
         request.messages,
         request.currentTurnImageIds,
       ),
-      stream: this.supportsStreaming,
-      ...(this.supportsStreaming && this.supportsStreamUsage ? { stream_options: { include_usage: true as const } } : {}),
+      stream: streamResponse,
+      ...(streamResponse && this.supportsStreamUsage ? { stream_options: { include_usage: true as const } } : {}),
     };
     if (request.tools?.length && this.toolCallingSupported) {
       body.tools = this.runtimeTools(request.tools);
-      if (this.supportsStreaming && this.toolStream) body.tool_stream = true;
+      if (streamResponse && this.toolStream) body.tool_stream = true;
     }
     if (request.temperature !== undefined && this.supportsTemperature) {
       body.temperature = request.temperature;
     }
-    const timeoutMs = this.config.timeoutMs ??
-      this.timeoutByEffort?.[request.thinkingEffort ?? "none"] ??
-      thinkingEffortTimeoutMs(request.thinkingEffort ?? "none");
+    const effort = request.thinkingEffort ?? "none";
+    const timeoutMs = streamResponse
+      ? this.streamIdleTimeoutByEffort?.[effort] ?? thinkingEffortStreamIdleTimeoutMs(effort)
+      : this.config.timeoutMs ?? this.bufferedTimeoutByEffort?.[effort] ??
+        thinkingEffortBufferedTimeoutMs(effort);
+    const timeoutMode = streamResponse ? "stream_idle" as const : "buffered_total" as const;
     if (
       request.maxRetries !== undefined &&
       (!Number.isSafeInteger(request.maxRetries) ||
@@ -355,15 +363,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
           url: this.endpoint,
           headers: {
             authorization: `Bearer ${this.config.apiKey}`,
-            accept: this.supportsStreaming ? "text/event-stream" : "application/json",
+            accept: streamResponse ? "text/event-stream" : "application/json",
             "content-type": "application/json",
             "user-agent": "easy-code-agent/0.1",
           },
           body: serialized,
           timeoutMs,
+          timeoutMode,
           maxResponseBytes: this.maxResponseBytes,
           signal: request.signal,
-          ...(this.supportsStreaming
+          ...(streamResponse
             ? {
                 onResponseStart: ({ statusCode, headers }: Pick<JsonPostResponse, "statusCode" | "headers">) => {
                   streamStarted = statusCode >= 200 && statusCode < 300 &&
@@ -715,12 +724,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (error.kind === "aborted") {
         return this.error("Request was canceled", "aborted");
       }
-      if (error.kind === "timeout") {
+      if (error.kind === "stream_idle_timeout") {
         return new ProviderError(
-          `Provider request timed out after ${timeoutMs}ms`,
+          `Provider stream was idle for ${timeoutMs}ms`,
           {
             provider: this.name,
-            code: "timeout",
+            code: "stream_idle_timeout",
+            retryable: true,
+          },
+        );
+      }
+      if (error.kind === "buffered_total_timeout") {
+        return new ProviderError(
+          `Buffered provider request exceeded ${timeoutMs}ms`,
+          {
+            provider: this.name,
+            code: "buffered_total_timeout",
             retryable: true,
           },
         );

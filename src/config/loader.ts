@@ -111,9 +111,16 @@ function applyLayer(
       maxConcurrentSubagents: layer.limits?.maxConcurrentSubagents === undefined ? base.limits.maxConcurrentSubagents
         : isRecord(layer.limits.maxConcurrentSubagents) ? { ...base.limits.maxConcurrentSubagents, ...layer.limits.maxConcurrentSubagents }
           : layer.limits.maxConcurrentSubagents,
-      providerTimeoutMs: layer.limits?.providerTimeoutMs === undefined ? base.limits.providerTimeoutMs
-        : isRecord(layer.limits.providerTimeoutMs) ? { ...base.limits.providerTimeoutMs, ...layer.limits.providerTimeoutMs }
-          : layer.limits.providerTimeoutMs,
+      providerStreamIdleTimeoutMs: layer.limits?.providerStreamIdleTimeoutMs === undefined
+        ? base.limits.providerStreamIdleTimeoutMs
+        : isRecord(layer.limits.providerStreamIdleTimeoutMs)
+          ? { ...base.limits.providerStreamIdleTimeoutMs, ...layer.limits.providerStreamIdleTimeoutMs }
+          : layer.limits.providerStreamIdleTimeoutMs,
+      providerBufferedTimeoutMs: layer.limits?.providerBufferedTimeoutMs === undefined
+        ? base.limits.providerBufferedTimeoutMs
+        : isRecord(layer.limits.providerBufferedTimeoutMs)
+          ? { ...base.limits.providerBufferedTimeoutMs, ...layer.limits.providerBufferedTimeoutMs }
+          : layer.limits.providerBufferedTimeoutMs,
     },
     providers,
   } as EasyCodeConfig;

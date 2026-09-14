@@ -404,6 +404,7 @@ export async function determineAutoRoute(
         signal,
         temperature: 0,
         thinkingEffort,
+        responseMode: "stream",
       };
       try {
         onRequest?.(request, attempt + 1);

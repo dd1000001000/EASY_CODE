@@ -371,7 +371,8 @@ export async function runCompactionTransaction(input: {
           "\nCorrect the summary format only. Submit a complete outer <summary> block; do not repeat tools or experiments." : ""),
     }];
     try {
-      budgetedRequest({ messages, tools }, manager.tokenCapacity, manager.estimateRequestTokens);
+      budgetedRequest({ messages, tools, responseMode: "stream" }, manager.tokenCapacity,
+        manager.estimateRequestTokens);
       if (!manager.tokenCapacity && manager.inspectProviderRequest({ state, messages, tools,
         maxContextChars: input.maxContextChars }).utilization > 1) throw new Error("context_capacity_insufficient: summary request too large");
     } catch (error) {

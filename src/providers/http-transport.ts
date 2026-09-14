@@ -4,7 +4,8 @@ import { request as httpsRequest } from "node:https";
 
 export type TransportErrorKind =
   | "aborted"
-  | "timeout"
+  | "stream_idle_timeout"
+  | "buffered_total_timeout"
   | "network"
   | "response_too_large";
 
@@ -23,6 +24,8 @@ export interface JsonPostRequest {
   headers: Record<string, string>;
   body: string;
   timeoutMs: number;
+  /** Idle deadlines are renewed by response activity; total deadlines never move. */
+  timeoutMode: "stream_idle" | "buffered_total";
   maxResponseBytes: number;
   signal?: AbortSignal;
   /** Called after response headers arrive and before any body bytes. */
@@ -43,7 +46,8 @@ export type JsonPostTransport = (
 
 /**
  * Small Node 20-compatible JSON transport. It intentionally supports only HTTP(S),
- * performs no redirects, and enforces a total wall-clock timeout and body cap.
+ * performs no redirects, and enforces either a renewable stream-idle timeout
+ * or a fixed buffered-response deadline plus a body cap.
  */
 export const postJsonWithNode: JsonPostTransport = (
   input,
@@ -79,13 +83,35 @@ export const postJsonWithNode: JsonPostTransport = (
     let settled = false;
     let responseBytes = 0;
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const clearTimer = (): void => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    };
+    const armTimer = (): void => {
+      clearTimer();
+      timer = setTimeout(() => {
+        const idle = input.timeoutMode === "stream_idle";
+        request.destroy(
+          new HttpTransportError(
+            idle ? "stream_idle_timeout" : "buffered_total_timeout",
+            idle
+              ? `Provider stream was idle for ${input.timeoutMs}ms`
+              : `Buffered provider request exceeded ${input.timeoutMs}ms`,
+          ),
+        );
+      }, input.timeoutMs);
+    };
+    const noteActivity = (): void => {
+      if (input.timeoutMode === "stream_idle") armTimer();
+    };
+
     const finish = (
       callback: () => void,
-      timer: ReturnType<typeof setTimeout>,
     ): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimer();
       input.signal?.removeEventListener("abort", onAbort);
       callback();
     };
@@ -98,24 +124,26 @@ export const postJsonWithNode: JsonPostTransport = (
           statusCode: response.statusCode ?? 0,
           headers: response.headers,
         });
+        noteActivity();
       } catch (error) {
         const callbackError = error instanceof Error
           ? error
           : new HttpTransportError("network", String(error));
-        finish(() => reject(callbackError), timer);
+        finish(() => reject(callbackError));
         response.destroy();
         return;
       }
       response.on("data", (chunk: Buffer | string) => {
         if (settled) return;
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        noteActivity();
         responseBytes += buffer.length;
         if (responseBytes > input.maxResponseBytes) {
           const error = new HttpTransportError(
             "response_too_large",
             `Provider response exceeded ${input.maxResponseBytes} bytes`,
           );
-          finish(() => reject(error), timer);
+          finish(() => reject(error));
           response.destroy();
           return;
         }
@@ -125,7 +153,7 @@ export const postJsonWithNode: JsonPostTransport = (
           const callbackError = error instanceof Error
             ? error
             : new HttpTransportError("network", String(error));
-          finish(() => reject(callbackError), timer);
+          finish(() => reject(callbackError));
           response.destroy();
           return;
         }
@@ -139,7 +167,6 @@ export const postJsonWithNode: JsonPostTransport = (
               headers: response.headers,
               body: Buffer.concat(chunks).toString("utf8"),
             }),
-          timer,
         );
       });
       response.on("error", (error) => {
@@ -147,7 +174,7 @@ export const postJsonWithNode: JsonPostTransport = (
           error instanceof HttpTransportError
             ? error
             : new HttpTransportError("network", error.message);
-        finish(() => reject(transportError), timer);
+        finish(() => reject(transportError));
       });
       response.on("aborted", () => {
         finish(
@@ -158,19 +185,11 @@ export const postJsonWithNode: JsonPostTransport = (
                 "Provider closed the response before completion",
               ),
             ),
-          timer,
         );
       });
     });
 
-    const timer = setTimeout(() => {
-      request.destroy(
-        new HttpTransportError(
-          "timeout",
-          `Provider request timed out after ${input.timeoutMs}ms`,
-        ),
-      );
-    }, input.timeoutMs);
+    armTimer();
 
     const onAbort = (): void => {
       request.destroy(new HttpTransportError("aborted", "Request was canceled"));
@@ -184,7 +203,7 @@ export const postJsonWithNode: JsonPostTransport = (
         error instanceof HttpTransportError
           ? error
           : new HttpTransportError("network", error.message);
-      finish(() => reject(transportError), timer);
+      finish(() => reject(transportError));
     });
     request.write(input.body);
     request.end();
