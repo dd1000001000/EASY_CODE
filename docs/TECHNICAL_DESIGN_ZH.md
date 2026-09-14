@@ -231,6 +231,10 @@ Runtime 只传结构化 argv 和私有子进程环境，供应商密钥及控制
 
 [native-worker.ts](../src/sandbox/native-worker.ts) 把目标 stdout/stderr 与可信 fd 3 生命周期控制分开。Windows elevated 沙箱暂不支持实验性的命令流式输出，因此使用有界缓冲输出。app-server 负责沙箱内目标超时，Runtime 仍保留更硬的 watchdog；Windows 取消和异常清理由现有进程树监督器兜底。沙箱终态、worker 退出与 scratch 清理仍是三个独立事实。
 
+app-server 客户端会保留结构化 JSON-RPC 错误。明确的沙箱拒绝会转换成可信 `sandbox_boundary_violation` 控制事件，并跟随一个已知的非零终态；它不会再被改写成“执行结果未知”，在清理成功时也不会隔离环境。常见包管理缓存（npm、pip、Yarn 与 XDG cache）被重定向到每条命令的沙箱临时根，避免无意写入用户 Profile。基础设施 app-server 不继承目标命令的 HTTP 代理 URL，只有目标流量参与逐命令网络审批。
+
+[sandbox-boundary.ts](../src/command/sandbox-boundary.ts) 按用户回合/子任务、cwd 与越界访问类别保存有界、持久的 incident 计数；改变 argv 或给同一操作套一层 Shell 不会重置计数。第一次拒绝给模型一次调整机会；同一 incident 第二次拒绝时跳过独立审批 Agent，强制由用户选择单次允许、该 Thread 前缀允许或拒绝。审批只会在命令终态与清理已经持久化后发生，Runtime 绝不自动重放停止的命令。单次允许生成一个十分钟有效、绑定精确命令的宿主能力，并在下次派发前一次性消费。Benchmark 在相同阈值使用配置中的确定性选择，但重试仍只能发生在离线任务容器内，永远不会转换成宿主授权。
+
 [执行日志](../src/command/execution-journal.ts)记录准备、派发、终态和清理。非零退出、超时、取消或派发不确定都不会自动重放。[SandboxRecovery](../src/sandbox/recovery.ts) 只有在持久事件已证明终态与清理、且所有者不活跃时才能删除 lease；不能从死 PID 推断命令结果。Runtime scratch 位于工作区受保护的 `.easy-code-srt-runtime`，worker 退出后再删除；Windows ACL 继承导致宿主删除失败时，才用同一原生身份做一次有界兜底清理。
 
 [NativeSandboxStartupService](../src/sandbox/native-startup.ts) 检查本次安装实际解析到的最新版可执行文件并运行真实受限命令探针。Windows 另用 `windowsSandbox/readiness` 和一次性 elevated setup；macOS、Linux 不创建 EASY CODE 专用虚拟机。安装和启动不会改 Docker、Podman 或 WSL 配置。Windows 离线身份属于上游共享 OS 基础设施，不是 EASY CODE 拥有的卸载资源。
@@ -390,6 +394,7 @@ Token 计数使用保守本地估算、图片计量和供应商用量校准，�
 | 明确的上下文容量拒绝 | 恢复后以更小上下文重试一次 |
 | 命令非零退出、超时、取消、是否执行不明 | 不自动重放命令 |
 | 临时沙箱初始化故障 | 给模型一次重发机会；第二次失败明确报告环境不可用 |
+| 已知沙箱边界拒绝 | 给模型一次调整；同一 incident 再次拒绝时要求用户审批；绝不自动重放 |
 | 子 Agent 失败 | 通知父 Agent，不自动重启 |
 | 不满足条件的提前结束 | 返回原因，不自动重试结束操作 |
 | 展示/存储内容超长 | 按对应预算本地裁剪，不因长度单独触发格式纠正 |

@@ -26,6 +26,7 @@ import { createCommandNetworkGate } from "./network-gate.js";
 import { networkCommandApprovalPrefix } from "./approval.js";
 import { requestNetworkApproval } from "./network-approval.js";
 import { commandGrantPrefix } from "./command-grant.js";
+import { sharedSandboxBoundaryStore, type SandboxBoundaryStore } from "./sandbox-boundary.js";
 import { UnrestrictedHostBackend } from "../sandbox/unrestricted-host-backend.js";
 import {
   type CommandRequestValidationFailure,
@@ -63,6 +64,8 @@ export interface CommandRuntimeOptions {
   sandboxStartupTimeoutMs?: number;
   quarantinePath?: string;
   lifecycleDirectory?: string;
+  /** Runtime-owned state; persists correction counts and exact one-shot grants across Resume. */
+  boundaryStatePath?: string;
   createOutputArchive?: (commandId: string, context: ToolContext) => CommandOutputArchive;
   recordLifecycle?: (context: ToolContext, commandId: string, type: string, payload: unknown) => void;
 }
@@ -154,6 +157,7 @@ export class CommandRuntime {
   private quarantineReason?: string;
   private readonly executionJournal: ExecutionJournal;
   private readonly limits: Readonly<RuntimeLimits>;
+  private readonly boundaryStore: SandboxBoundaryStore;
 
   assertEnvironmentSafe(backend: CommandExecutionBackend = this.executionBackend): void {
     backend.assertEnvironmentSafe?.();
@@ -182,6 +186,7 @@ export class CommandRuntime {
   ) {
     this.executionJournal = new ExecutionJournal(options.lifecycleDirectory);
     this.limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
+    this.boundaryStore = sharedSandboxBoundaryStore(options.boundaryStatePath, this.limits.sandboxBoundaryIncidentLimit);
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
     this.executionBackend = executionBackend ?? new NativeSandboxBackend(workspace, { limits: this.limits });
@@ -416,6 +421,26 @@ export class CommandRuntime {
         executionBackend,
       );
     }
+    const boundaryScope = this.boundaryStore.scope(context);
+    let boundaryHostPrefix = !containerExecution && !unrestricted
+      ? commandGrantPrefix(resolved, "host", true)
+      : undefined;
+    let boundaryCommandFamily = sha256(JSON.stringify({ cwd: resolved.cwdAbsolute }));
+    let boundaryIncidentKey = boundaryCommandFamily;
+    let boundaryGrantConsumed = false;
+    if (!hostAccess && boundaryHostPrefix && this.boundaryStore.consumeHostGrant(boundaryScope, boundaryHostPrefix)) {
+      // A user approved this exact command after its previous sandbox denial.
+      // The grant is consumed before resolution/dispatch and cannot be replayed.
+      boundaryGrantConsumed = true;
+      hostAccess = true;
+      executionBackend = this.unrestrictedExecutionBackend;
+      this.assertEnvironmentSafe(executionBackend);
+      resolverOptions.unrestrictedHostAccess = true;
+      resolved = await this.resolver.resolve(input, resolverOptions);
+      this.options.recordLifecycle?.(context, commandId, "command.boundary_grant_consumed", {
+        fingerprint: sha256(boundaryHostPrefix), execution: "not_started",
+      });
+    }
     let capabilityEscalation: string | undefined;
     const capabilities = executionBackend.describe().capabilities;
     const required = input.requiredCapabilities ?? (capabilities && this.limits.sandboxVerificationRequiresLoopback &&
@@ -470,7 +495,7 @@ export class CommandRuntime {
       return granted && !networkSignal.aborted;
     })();
 
-    const shouldAsk = !unrestricted && !benchmark;
+    const shouldAsk = !unrestricted && !benchmark && !boundaryGrantConsumed;
     if (shouldAsk) {
       let approved = false;
       let approvalUnavailable = false;
@@ -513,7 +538,7 @@ export class CommandRuntime {
       }
       if (commandNetwork) networkApproval = Promise.resolve(true);
     }
-    policyDecision = { ...policyDecision, effect: "allow", reason: benchmark ? "Container execution; external network boundary remains" : unrestricted ? "Full access" : "Command and requested permissions approved", matchedRule: `approved.${scope}` };
+    policyDecision = { ...policyDecision, effect: "allow", reason: benchmark ? "Container execution; external network boundary remains" : unrestricted ? "Full access" : boundaryGrantConsumed ? "Exact one-shot host approval consumed after sandbox boundary denial" : "Command and requested permissions approved", matchedRule: boundaryGrantConsumed ? "approved.boundary_once" : `approved.${scope}` };
 
     if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
       policyDecision = {
@@ -920,6 +945,9 @@ export class CommandRuntime {
     const targetSpawnError = controls.find((control) =>
       control.type === "target_spawn_error"
     );
+    const boundaryViolation = controls.find((control) =>
+      control.type === "sandbox_boundary_violation"
+    );
     const lastSandboxStage = [...controls].reverse().find((control) =>
       control.type === "stage"
     );
@@ -974,7 +1002,11 @@ export class CommandRuntime {
           : (targetExitCode ?? result.exitCode) === undefined
               ? "spawn_failed"
               : "exited";
-    const failure: RunCommandOutput["failure"] = targetOutcome === "output_limit" ? {
+    const failure: RunCommandOutput["failure"] = boundaryViolation?.type === "sandbox_boundary_violation" ? {
+      kind: "sandbox", code: "sandbox_boundary_violation",
+      message: boundaryViolation.message,
+      processStarted: true, executionState: "exited", retryable: false,
+    } : targetOutcome === "output_limit" ? {
       kind: "runtime", code: "command_output_limit", message: "Command exceeded the 32 MiB bridge output limit. Execution is incomplete; narrow output before a new call. No automatic replay.",
       processStarted: true, retryable: false,
     } : status === "exited" && result.exitCode !== 0
@@ -1021,8 +1053,43 @@ export class CommandRuntime {
                   retryable: retryableInitialization,
                 }
               : undefined;
+    let sandboxBoundary: RunCommandOutput["sandboxBoundary"] | undefined;
+    if (boundaryViolation?.type === "sandbox_boundary_violation") {
+      if (!benchmark) boundaryHostPrefix ??= commandGrantPrefix(resolved, "host", true);
+      boundaryCommandFamily = sha256(JSON.stringify({ cwd: resolved.cwdAbsolute }));
+      boundaryIncidentKey = sha256(JSON.stringify({ family: boundaryCommandFamily, access: boundaryViolation.access,
+        destinationCategory: boundaryViolation.destinationCategory }));
+      let attempt: number;
+      try { attempt = this.boundaryStore.recordViolation(boundaryScope, boundaryCommandFamily, boundaryIncidentKey); }
+      catch (error) {
+        // A command with a known exit remains known even if intervention state
+        // cannot be saved. Fail closed by asking the user immediately.
+        attempt = this.limits.sandboxBoundaryApprovalThreshold;
+        this.options.recordLifecycle?.(context, commandId, "command.boundary_state_failed", { error: String(error).slice(0, 1200) });
+      }
+      const escalate = attempt >= this.limits.sandboxBoundaryApprovalThreshold;
+      const action: NonNullable<RunCommandOutput["sandboxBoundary"]>["action"] = !escalate
+        ? "adjust_command"
+        : benchmark
+          ? this.limits.benchmarkBoundaryApproval === "allow_once" ? "benchmark_allow_once" : "benchmark_rejected"
+          : "user_required";
+      sandboxBoundary = {
+        attempt, modelCorrectionBudget: this.limits.sandboxBoundaryModelCorrections,
+        action, access: boundaryViolation.access,
+        ...(boundaryViolation.destination ? { destination: boundaryViolation.destination } : {}),
+        destinationCategory: boundaryViolation.destinationCategory,
+        hostRetryAuthorized: false, autoReplay: false,
+      };
+      try {
+        if (action === "benchmark_allow_once") this.boundaryStore.recordDecision(boundaryScope, boundaryIncidentKey, "benchmark_allow_once");
+        else if (action === "benchmark_rejected") this.boundaryStore.recordDecision(boundaryScope, boundaryIncidentKey, "reject");
+      } catch (error) {
+        this.options.recordLifecycle?.(context, commandId, "command.boundary_state_failed", { error: String(error).slice(0, 1200) });
+      }
+    }
     const output: RunCommandOutput = {
-      validation: { ...verification.finish(targetOutcome === "output_limit" ? "spawn_failed" : status, typeof result.exitCode === "number" ? result.exitCode : null, input.verificationKind), targetKey: verification.targetKey,
+      validation: { ...verification.finish(targetOutcome === "output_limit" || boundaryViolation ? "spawn_failed" : status,
+        typeof result.exitCode === "number" ? result.exitCode : null, input.verificationKind), targetKey: verification.targetKey,
         checkKey: validationCheckKey({ program: resolved.executablePath, args: resolved.args, cwd: resolved.cwdRelative }, this.workspace.root) },
       commandId,
       status,
@@ -1057,6 +1124,7 @@ export class CommandRuntime {
           }
         : {}),
       ...(failure ? { failure } : {}),
+      ...(sandboxBoundary ? { sandboxBoundary } : {}),
       executed: this.executionSummary(resolved),
     };
 
@@ -1067,6 +1135,47 @@ export class CommandRuntime {
     } catch (error) {
       this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`, executionBackend, "state_persistence");
       output.lifecycle!.cleanup = "unconfirmed";
+    }
+
+    // Ask only after the denied execution and its cleanup are durably closed.
+    // Approval authorizes a future exact resubmission; Runtime never replays it.
+    if (output.sandboxBoundary?.action === "user_required" && boundaryHostPrefix &&
+      output.lifecycle?.cleanup === "confirmed") {
+      let observedDecision: import("../core/types.js").ApprovalDecision | undefined;
+      let approved = false;
+      try {
+        approved = await context.requestApproval({
+          id: `${sha256(boundaryHostPrefix)}:sandbox-boundary`, signal: context.signal,
+          title: `Allow outside sandbox: ${resolved.program}`,
+          description: `The enforced workspace sandbox rejected this exact command on attempt ${output.sandboxBoundary.attempt}. ` +
+            "The command has stopped and cleanup is confirmed. Approving does not replay it; it gives the next exact resubmission one host execution with host filesystem and network access.",
+          risk: "system", commandPrefix: boundaryHostPrefix,
+          commandPreview: commandPreview(resolved), allowPrompt: context.approvalPolicy !== "never",
+          requiredReviewer: "user", executionTiming: "future_resubmission",
+          observeDecision: decision => { observedDecision = decision; },
+          command: { executable: resolved.executablePath, args: resolved.args, cwd: resolved.cwdAbsolute, scope: "host", network: true },
+        });
+      } catch { approved = false; }
+      const decision = approved ? observedDecision ?? "allow_once" : observedDecision === "reject" ? "reject" : "user_required";
+      let decisionStored = true;
+      try { this.boundaryStore.recordDecision(boundaryScope, boundaryIncidentKey, decision, boundaryHostPrefix); }
+      catch (error) {
+        decisionStored = false;
+        this.options.recordLifecycle?.(context, commandId, "command.boundary_state_failed", { error: String(error).slice(0, 1200) });
+      }
+      if (!decisionStored && (decision === "allow_once" || decision === "allow_prefix")) {
+        output.sandboxBoundary.action = "user_required";
+        output.sandboxBoundary.hostRetryAuthorized = false;
+      } else {
+        output.sandboxBoundary.action = decision === "allow_once" ? "approved_once"
+          : decision === "allow_prefix" ? "approved_prefix"
+            : decision === "reject" ? "rejected" : "user_required";
+        output.sandboxBoundary.hostRetryAuthorized = decision === "allow_once" || decision === "allow_prefix";
+      }
+      this.options.recordLifecycle?.(context, commandId, "command.boundary_intervention", {
+        attempt: output.sandboxBoundary.attempt, action: output.sandboxBoundary.action,
+        fingerprint: sha256(boundaryHostPrefix), autoReplay: false,
+      });
     }
 
     const summary = status === "exited"

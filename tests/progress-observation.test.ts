@@ -122,6 +122,20 @@ describe("progress observation", () => {
     assert.equal(observation.verificationCycleId, undefined);
   });
 
+  it("does not count a known sandbox boundary exit as a failed code verification", () => {
+    const observation = observeToolResult({
+      sourceEventId: "event_boundary_failure", sourceCallId: "call_boundary_failure",
+      scopeKey: "thread:test", responseOrdinal: 4, tool: "run_command", verificationIntent: true,
+      result: { ok: false, summary: "sandbox boundary", data: {
+        ...commandOutput("exited", 1),
+        sandboxBoundary: { attempt: 1, action: "adjust_command", hostRetryAuthorized: false },
+      } },
+    });
+    assert.equal(observation.kind, "infrastructure_failure");
+    assert.equal(observation.outcomeClass, "unknown");
+    assert.equal(observation.verificationCycleId, undefined);
+  });
+
   it("does not promote an ordinary command failure into verified code evidence", () => {
     const observation = observeToolResult({
       sourceEventId: "event_inspect_failure",

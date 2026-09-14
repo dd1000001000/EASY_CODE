@@ -237,7 +237,7 @@ function commandObservation(
   }
 
   const evidenceDigest = commandEvidenceDigest(data);
-  if (INFRASTRUCTURE_STATUSES.has(data.status) || isRecord(data.lifecycle) &&
+  if (isRecord(data.sandboxBoundary) || INFRASTRUCTURE_STATUSES.has(data.status) || isRecord(data.lifecycle) &&
       ["failed", "unconfirmed"].includes(String(data.lifecycle.cleanup))) {
     return {
       schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,

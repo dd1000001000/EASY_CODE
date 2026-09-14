@@ -18,8 +18,29 @@ import { redactSensitiveInformation } from "../src/memory/sensitive.js";
 import { describe, it } from "./harness.js";
 import { RunCommandTool } from "../src/tools/run-command.js";
 import { benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
+import { NativeAppServerRequestError } from "../src/sandbox/app-server-client.js";
+import { sandboxBoundaryResultFromError } from "../src/sandbox/native-command-error.js";
+import { SandboxBoundaryStore } from "../src/command/sandbox-boundary.js";
 
 function context(root: string): ToolContext { return { workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn", approvalPolicy: "safe", requestApproval: async () => true, commandExecutionMode: "auto_approve", commandTimeoutMs: 10000, maxOutputChars: 256 }; }
+
+function boundaryDenyingBackend(workspaceRoot: string, backend: "native" | "benchmark-container"): CommandExecutionBackend {
+  const metadata = { backend, enforced: true, filesystem: backend === "native" ? "host" as const : "container" as const, network: "denied" as const };
+  return { describe: () => metadata, async prepare(request) {
+    const events: SandboxWorkerControl[] = [
+      { type: "ready", backend },
+      { type: "execution_dispatched" },
+      { type: "sandbox_boundary_violation", access: "write", destinationCategory: "outside_workspace",
+        destination: path.join(workspaceRoot, "..", "cache"), message: "sandbox denied write outside workspace" },
+      { type: "execution_exited", exitCode: 1, outcome: "exited" },
+    ];
+    const frames = events.map(event => encodeSandboxControl(request.commandId, event)).join("");
+    const script = `const fs=require('fs');const go=()=>{fs.writeSync(3,${JSON.stringify(frames)});process.exit(1)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
+    return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot,
+      environment: { ...process.env }, metadata, controlPipe: true, cleanupAfterWorkerExit: true,
+      cleanup: async () => undefined };
+  } };
+}
 
 describe("command security floor", () => {
   it("returns an output-limit failure without poisoning a confirmed-clean worker or reporting a pass", async () => {
@@ -94,10 +115,43 @@ describe("command security floor", () => {
     const ready = encodeSandboxControl("owned", { type: "ready", backend: "native" });
     stream.push(ready.slice(0, 10)); stream.push(ready.slice(10));
     stream.push(encodeSandboxControl("owned", { type: "execution_dispatched" }));
+    stream.push(encodeSandboxControl("owned", { type: "sandbox_boundary_violation", access: "write",
+      destinationCategory: "outside_workspace", message: "sandbox denied write" }));
     stream.push(encodeSandboxControl("owned", { type: "execution_exited", exitCode: 0 }));
-    assert.equal(seen.length, 3);
+    assert.equal(seen.length, 4);
     assert.throws(() => stream.push(ready), /transition/u);
     assert.throws(() => new SandboxControlStream("owned", () => {}, true).push("untrusted text\n"), /Malformed/u);
+  });
+
+  it("classifies only structured app-server sandbox denials as known boundary exits", () => {
+    const classified = sandboxBoundaryResultFromError(new NativeAppServerRequestError(
+      "sandbox denied exec error, exit code: 7", -32000,
+      { result: { stderr: "write blocked", path: "C:\\outside\\cache", exitCode: 7 } },
+    ));
+    assert.equal(classified?.exitCode, 7);
+    assert.equal(classified?.stderr, "write blocked");
+    assert.equal(classified?.event.type, "sandbox_boundary_violation");
+    assert.equal(classified?.event.destination, "C:\\outside\\cache");
+    assert.equal(sandboxBoundaryResultFromError(new Error("Permission denied")), undefined);
+    assert.equal(sandboxBoundaryResultFromError(new NativeAppServerRequestError(
+      "transport closed", -32001, { exitCode: 7 },
+    )), undefined);
+  });
+
+  it("persists boundary attempts and consumes an exact host grant only once", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-boundary-state-"));
+    try {
+      const filename = path.join(root, "state.json");
+      const first = new SandboxBoundaryStore(filename, 32);
+      assert.equal(first.recordViolation("thread:task", "family", "incident"), 1);
+      const resumed = new SandboxBoundaryStore(filename, 32);
+      assert.equal(resumed.recordViolation("thread:task", "family", "incident"), 2);
+      resumed.recordDecision("thread:task", "incident", "allow_once", "exact-host-command");
+      const approved = new SandboxBoundaryStore(filename, 32);
+      assert.equal(approved.consumeHostGrant("thread:task", "different-command"), false);
+      assert.equal(approved.consumeHostGrant("thread:task", "exact-host-command"), true);
+      assert.equal(new SandboxBoundaryStore(filename, 32).consumeHostGrant("thread:task", "exact-host-command"), false);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("does not interpret an orphaned lease as retryable or silently clear it", async () => {
@@ -133,6 +187,76 @@ describe("command security floor", () => {
       assert.ok(events.includes("command.execution_exited"));
       assert.throws(() => runtime.assertEnvironmentSafe(), /quarantined/u);
       assert.throws(() => new CommandRuntime(manager, undefined, backend, undefined, options).assertEnvironmentSafe(), /quarantined/u);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("treats a sandbox boundary denial as known, asks the model once, then requires the user without replay", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-boundary-test-"));
+    try {
+      const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
+      const manager = await WorkspaceManager.create(workspaceRoot);
+      const boundaryPrompts: import("../src/core/types.js").ApprovalRequest[] = [];
+      const toolContext: ToolContext = { ...context(workspaceRoot), requestApproval: async request => {
+        if (request.requiredReviewer === "user") {
+          boundaryPrompts.push(request);
+          request.observeDecision?.("allow_once");
+        }
+        return true;
+      } };
+      const options = { quarantinePath: path.join(root, "quarantine.json"), lifecycleDirectory: path.join(root, "leases"),
+        boundaryStatePath: path.join(root, "boundary.json") };
+      const firstRuntime = new CommandRuntime(manager, undefined, boundaryDenyingBackend(workspaceRoot, "native"), undefined, options);
+      const firstTool = new RunCommandTool(manager, firstRuntime);
+      const first = await firstTool.execute({ program: "node", args: ["--version"], intent: "inspect" }, toolContext);
+      const firstData = first.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(first.ok, false);
+      assert.equal(firstData.failure?.code, "sandbox_boundary_violation");
+      assert.equal(firstData.lifecycle?.execution, "exited");
+      assert.equal(firstData.lifecycle?.cleanup, "confirmed");
+      assert.equal(firstData.sandboxBoundary?.action, "adjust_command");
+      assert.equal(firstData.validation?.status, "unknown");
+      assert.equal(first.failure?.execution, "exited");
+      assert.equal(boundaryPrompts.length, 0);
+      assert.doesNotThrow(() => firstRuntime.assertEnvironmentSafe());
+
+      // Changing argv is a correction attempt, but the executable/cwd boundary
+      // incident remains the same and therefore escalates on its second denial.
+      const resumedRuntime = new CommandRuntime(manager, undefined, boundaryDenyingBackend(workspaceRoot, "native"), undefined, options);
+      const resumedTool = new RunCommandTool(manager, resumedRuntime);
+      const second = await resumedTool.execute({ program: "node", args: ["--help"], intent: "inspect" }, toolContext);
+      const secondData = second.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(secondData.sandboxBoundary?.attempt, 2);
+      assert.equal(secondData.sandboxBoundary?.action, "approved_once");
+      assert.equal(secondData.sandboxBoundary?.hostRetryAuthorized, true);
+      assert.equal(boundaryPrompts.length, 1);
+      assert.equal(boundaryPrompts[0]?.requiredReviewer, "user");
+      assert.equal(boundaryPrompts[0]?.executionTiming, "future_resubmission");
+
+      const third = await resumedTool.execute({ program: "node", args: ["--help"], intent: "inspect" }, toolContext);
+      const thirdData = third.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(third.ok, true);
+      assert.equal(thirdData.sandbox.backend, "host-unrestricted");
+      assert.equal(boundaryPrompts.length, 1, "the approved exact resubmission must not prompt twice");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("auto-approves the second boundary intervention in Benchmark without granting host escape", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-benchmark-boundary-"));
+    try {
+      const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
+      const manager = await WorkspaceManager.create(workspaceRoot);
+      let approvals = 0;
+      const toolContext: ToolContext = { ...context(workspaceRoot), requestApproval: async () => { approvals++; return true; } };
+      const runtime = new CommandRuntime(manager, undefined, boundaryDenyingBackend(workspaceRoot, "benchmark-container"), undefined, {
+        networkProfile: "benchmark", lifecycleDirectory: path.join(root, "leases"), boundaryStatePath: path.join(root, "boundary.json") });
+      const tool = new RunCommandTool(manager, runtime);
+      await tool.execute({ program: "node", args: ["--version"], intent: "inspect" }, toolContext);
+      const second = await tool.execute({ program: "node", args: ["--help"], intent: "inspect" }, toolContext);
+      const data = second.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(data.sandboxBoundary?.action, "benchmark_allow_once");
+      assert.equal(data.sandboxBoundary?.hostRetryAuthorized, false);
+      assert.equal(data.sandbox.backend, "benchmark-container");
+      assert.equal(approvals, 0);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

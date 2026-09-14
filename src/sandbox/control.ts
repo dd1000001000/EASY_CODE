@@ -27,6 +27,13 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     if (type === "sandbox_error" || type === "target_spawn_error") {
       if (typeof (value as {message?:unknown}).message === "string") return value as SandboxWorkerControl;
     }
+    if (type === "sandbox_boundary_violation") {
+      const candidate = value as { access?: unknown; destination?: unknown; destinationCategory?: unknown; message?: unknown };
+      if (["read", "write", "delete", "execute", "unknown"].includes(String(candidate.access)) &&
+          ["outside_workspace", "protected_path", "unknown"].includes(String(candidate.destinationCategory)) &&
+          typeof candidate.message === "string" &&
+          (candidate.destination === undefined || typeof candidate.destination === "string")) return value as SandboxWorkerControl;
+    }
     return undefined;
   } catch {
     return undefined;
