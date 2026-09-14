@@ -5,7 +5,7 @@ import { MAX_CONTEXT_SUMMARY_CHARS, type ContextManager } from "./manager.js";
 import { createCompactionMetadata } from "./compaction-metadata.js";
 import { evaluateCompactionBenefit } from "./compaction-policy.js";
 import { exactContext, type NormalRequestEnvelope } from "./context-request.js";
-import { budgetedRequest, estimatedTokens } from "./token-budget.js";
+import { budgetedRequest, estimatedTokens, responseTokenReserve } from "./token-budget.js";
 import { sha256 } from "../utils/hash.js";
 import { createId } from "../utils/ids.js";
 import { MAX_TOOL_PROTOCOL_ATTEMPTS } from "../runtime/tool-recovery.js";
@@ -371,7 +371,8 @@ export async function runCompactionTransaction(input: {
           "\nCorrect the summary format only. Submit a complete outer <summary> block; do not repeat tools or experiments." : ""),
     }];
     try {
-      budgetedRequest({ messages, tools, responseMode: "stream" }, manager.tokenCapacity,
+      budgetedRequest({ messages, tools, responseMode: "stream", thinkingEffort: "none",
+        outputReserveTokens: responseTokenReserve(limits, "none", manager.tokenCapacity?.window) }, manager.tokenCapacity,
         manager.estimateRequestTokens);
       if (!manager.tokenCapacity && manager.inspectProviderRequest({ state, messages, tools,
         maxContextChars: input.maxContextChars }).utilization > 1) throw new Error("context_capacity_insufficient: summary request too large");

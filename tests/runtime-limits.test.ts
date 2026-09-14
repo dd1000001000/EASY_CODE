@@ -55,7 +55,7 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\n[limits.steps]\nhigh = 60\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
+        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\n[limits.steps]\nhigh = 60\n[limits.max_response_tokens]\nmedium = 70000\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
@@ -64,6 +64,8 @@ describe("central runtime limits", () => {
       assert.equal(config.limits.providerBufferedTimeoutMs.high, 10000);
       assert.equal(config.limits.providerStreamIdleTimeoutMs.low, 60000);
       assert.equal(config.limits.providerStreamIdleTimeoutMs.high, 20000);
+      assert.deepEqual(config.limits.maxResponseTokens,
+        { none: 32768, low: 32768, medium: 70000, high: 131072 });
       assert.deepEqual(defaultRuntimeLimits().maxConcurrentSubagents, { none: 2, low: 2, medium: 4, high: 8 });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 2, medium: 3, high: 8 });
       assert.equal(config.limits.maxTaskTokens, 90000);
@@ -76,14 +78,20 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, "config"));
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, "config", "config.toml"), "[limits.max_concurrent_subagents]\nlow = 3\nmedium = 5\n");
-      await writeFile(path.join(root, ".easycode", "config.toml"), "[limits.max_concurrent_subagents]\nmedium = 6\n");
+      await writeFile(path.join(root, "config", "config.toml"),
+        "[limits.max_concurrent_subagents]\nlow = 3\nmedium = 5\n[limits.max_response_tokens]\nlow = 40000\n");
+      await writeFile(path.join(root, ".easycode", "config.toml"),
+        "[limits.max_concurrent_subagents]\nmedium = 6\n[limits.max_response_tokens]\nmedium = 70000\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
-        env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10}}' }, credentialStore: false });
+        env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10},"maxResponseTokens":{"high":120000}}' }, credentialStore: false });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 3, medium: 6, high: 10 });
+      assert.deepEqual(config.limits.maxResponseTokens,
+        { none: 32768, low: 40000, medium: 70000, high: 120000 });
       const copy = defaultRuntimeLimits();
       copy.maxConcurrentSubagents.low = 7;
+      copy.maxResponseTokens.medium = 80000;
       assert.equal(defaultRuntimeLimits().maxConcurrentSubagents.low, 2);
+      assert.equal(defaultRuntimeLimits().maxResponseTokens.medium, 65536);
       for (const invalid of [2, { ...copy.maxConcurrentSubagents, high: 0 },
         { ...copy.maxConcurrentSubagents, high: 17 }, { ...copy.maxConcurrentSubagents, high: 1.5 },
         { ...copy.maxConcurrentSubagents, typo: 3 }]) {
@@ -142,12 +150,16 @@ describe("central runtime limits", () => {
   });
 
   it("uses configured context reserves without clipping active reasoning", () => {
-    const limits = { ...defaultRuntimeLimits(), maxResponseTokens: 1024, contextToolReserveTokens: 512 };
+    const limits = { ...defaultRuntimeLimits(),
+      maxResponseTokens: { none: 1024, low: 1024, medium: 2048, high: 4096 },
+      contextToolReserveTokens: 512 };
     const capacity = tokenBudget(16000, limits);
     assert.equal(capacity.outputReserve, 1024);
     assert.equal(capacity.toolReserve, 512);
     assert.equal(capacity.safetyReserve, 800);
     assert.equal(capacity.inputCapacity, 13664);
+    assert.equal(tokenBudget(16000, limits, "medium").outputReserve, 2048);
+    assert.equal(tokenBudget(16000, limits, "high").outputReserve, 3200);
     const manager = new ContextManager();
     manager.configureTokenBudget(undefined, { ...limits, maxActiveContextChars: 360000 });
     assert.equal(manager.inspect(state(), 400000).budgetChars, 360000);

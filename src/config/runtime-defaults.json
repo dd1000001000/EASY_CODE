@@ -29,7 +29,7 @@
   "maxDagNodes": 16,
   "maxModelRequests": 120,
   "maxTaskTokens": 0,
-  "maxResponseTokens": 32768,
+  "maxResponseTokens": { "none": 32768, "low": 32768, "medium": 65536, "high": 131072 },
   "providerResponseMaxBytes": 16777216,
   "streamFlushIntervalMs": 50,
   "streamPreviewMaxChars": 16000,

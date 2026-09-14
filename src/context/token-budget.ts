@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelRequest, ToolDefinition } from "../core/types.js";
+import type { ChatMessage, ModelRequest, ThinkingEffort, ToolDefinition } from "../core/types.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 
 /** Provider-neutral conservative estimate. Not a claim to be a native tokenizer. */
@@ -17,9 +17,25 @@ export interface TokenBudget {
   inputCapacity: number;
 }
 
-export function tokenBudget(window: number, limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS): TokenBudget {
+/** Resolve the local response reservation without creating a provider limit. */
+export function responseTokenReserve(
+  limits: Readonly<RuntimeLimits>,
+  effort: ThinkingEffort,
+  window?: number,
+): number {
+  const configured = limits.maxResponseTokens[effort];
+  return window === undefined
+    ? configured
+    : Math.min(configured, Math.floor(window * limits.contextOutputReserveRatio));
+}
+
+export function tokenBudget(
+  window: number,
+  limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+  effort: ThinkingEffort = "none",
+): TokenBudget {
   if (!Number.isSafeInteger(window) || window < 4096) throw new Error("maxContextTokens must be at least 4096");
-  const outputReserve = Math.min(limits.maxResponseTokens, Math.floor(window * limits.contextOutputReserveRatio));
+  const outputReserve = responseTokenReserve(limits, effort, window);
   const toolReserve = Math.min(limits.contextToolReserveTokens, Math.floor(window * limits.contextToolReserveRatio));
   const safetyReserve = Math.max(limits.contextSafetyReserveTokens, Math.ceil(window * limits.contextSafetyReserveRatio));
   if (window - outputReserve - toolReserve - safetyReserve < 1024) throw new Error("Context reserves leave insufficient input capacity");

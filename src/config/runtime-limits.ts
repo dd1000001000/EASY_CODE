@@ -33,8 +33,9 @@ export const runtimeLimitsSchema = z.object({
   maxDagNodes: integer(1, 32),
   maxModelRequests: integer(1, 10000),
   maxTaskTokens: integer(0, Number.MAX_SAFE_INTEGER),
-  // Local output reservation; never a server generation limit.
-  maxResponseTokens: integer(256, 131072),
+  // Effort-aware local output reservation; never a server generation limit.
+  maxResponseTokens: z.object({ none: integer(256, 131072), low: integer(256, 131072),
+    medium: integer(256, 131072), high: integer(256, 131072) }).strict(),
   providerResponseMaxBytes: integer(1048576, 67108864),
   streamFlushIntervalMs: integer(16, 1000),
   streamPreviewMaxChars: integer(1024, 64000),
@@ -175,6 +176,7 @@ export type RuntimeLimits = z.infer<typeof runtimeLimitsSchema>;
 export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze(runtimeLimitsSchema.parse(defaults));
 export function defaultRuntimeLimits(): RuntimeLimits {
   return { ...DEFAULT_RUNTIME_LIMITS, steps: { ...DEFAULT_RUNTIME_LIMITS.steps },
+    maxResponseTokens: { ...DEFAULT_RUNTIME_LIMITS.maxResponseTokens },
     maxConcurrentSubagents: { ...DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents },
     providerStreamIdleTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerStreamIdleTimeoutMs },
     providerBufferedTimeoutMs: { ...DEFAULT_RUNTIME_LIMITS.providerBufferedTimeoutMs } };

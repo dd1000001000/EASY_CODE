@@ -108,6 +108,9 @@ function applyLayer(
       steps: layer.limits?.steps === undefined ? base.limits.steps
         : isRecord(layer.limits.steps) ? { ...base.limits.steps, ...layer.limits.steps }
           : layer.limits.steps,
+      maxResponseTokens: layer.limits?.maxResponseTokens === undefined ? base.limits.maxResponseTokens
+        : isRecord(layer.limits.maxResponseTokens) ? { ...base.limits.maxResponseTokens, ...layer.limits.maxResponseTokens }
+          : layer.limits.maxResponseTokens,
       maxConcurrentSubagents: layer.limits?.maxConcurrentSubagents === undefined ? base.limits.maxConcurrentSubagents
         : isRecord(layer.limits.maxConcurrentSubagents) ? { ...base.limits.maxConcurrentSubagents, ...layer.limits.maxConcurrentSubagents }
           : layer.limits.maxConcurrentSubagents,
