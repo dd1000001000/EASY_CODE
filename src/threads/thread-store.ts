@@ -1,4 +1,5 @@
 import { hostname } from "node:os";
+import { currentProcessIdentity, processOwnerState, validProcessIdentity, type ProcessIdentity } from "../core/process-owner.js";
 import { foldCompactionControl, prefixHash, completeExchange } from "../context/compaction-transaction.js";
 import { compactionSnapshot } from "../context/semantic-compaction.js";
 import { foldPendingOperations } from "../context/pending-operations.js";
@@ -129,6 +130,7 @@ export interface ThreadLease {
   readonly ownerHostname: string;
   readonly ownerToken: string;
   readonly acquiredAt: string;
+  readonly ownerProcessIdentity?: ProcessIdentity;
 }
 
 export interface DurableSubagentResult {
@@ -264,6 +266,7 @@ interface ThreadLeaseRow {
   owner_hostname: string;
   owner_token: string;
   acquired_at: string;
+  owner_process_identity: string | null;
 }
 
 function asPayloadRecord(payload: unknown): Record<string, unknown> | undefined {
@@ -1540,13 +1543,13 @@ export class ThreadStore {
     const ownerHostname = options.ownerHostname ?? hostname();
     const ownerToken = options.ownerToken ?? createId("thread_lease");
     const acquiredAt = (options.now ?? (() => new Date()))().toISOString();
-    const isProcessAlive = options.isProcessAlive ?? processIsAlive;
     const lease: ThreadLease = {
       threadId,
       ownerPid,
       ownerHostname,
       ownerToken,
       acquiredAt,
+      ...(ownerPid === process.pid && ownerHostname === hostname() ? { ownerProcessIdentity: currentProcessIdentity() } : {}),
     };
     assertValidThreadLease(lease);
 
@@ -1561,17 +1564,18 @@ export class ThreadStore {
 
       const existing = this.storage.db
         .prepare<[string], ThreadLeaseRow>(
-          `SELECT thread_id, owner_pid, owner_hostname, owner_token, acquired_at
+          `SELECT thread_id, owner_pid, owner_hostname, owner_token, acquired_at, owner_process_identity
              FROM thread_leases
             WHERE thread_id = ?`,
         )
         .get(threadId);
       if (existing) {
         assertValidThreadLeaseRow(existing);
-        const ownerState = existing.owner_hostname === ownerHostname
-          ? (isProcessAlive(existing.owner_pid) ? "alive" : "dead")
-          : "unknown";
-        if (ownerState !== "dead") {
+        const ownerState = options.isProcessAlive
+          ? existing.owner_hostname === ownerHostname ? options.isProcessAlive(existing.owner_pid) ? "active" : "inactive" : "unknown"
+          : processOwnerState({ pid: existing.owner_pid, hostname: existing.owner_hostname,
+            processIdentity: existing.owner_process_identity ? JSON.parse(existing.owner_process_identity) : undefined });
+        if (ownerState !== "inactive") {
           throw new Error(
             `Thread ${threadId} is already active in another EASY CODE process ` +
             `(PID ${existing.owner_pid} on ${existing.owner_hostname}). Close it before resuming.`,
@@ -1590,10 +1594,10 @@ export class ThreadStore {
       this.storage.db
         .prepare(
           `INSERT INTO thread_leases(
-             thread_id, owner_pid, owner_hostname, owner_token, acquired_at
-           ) VALUES (?, ?, ?, ?, ?)`,
+             thread_id, owner_pid, owner_hostname, owner_token, acquired_at, owner_process_identity
+           ) VALUES (?, ?, ?, ?, ?, ?)`,
         )
-        .run(threadId, ownerPid, ownerHostname, ownerToken, acquiredAt);
+        .run(threadId, ownerPid, ownerHostname, ownerToken, acquiredAt, lease.ownerProcessIdentity ? JSON.stringify(lease.ownerProcessIdentity) : null);
     })();
     return lease;
   }
@@ -3001,19 +3005,6 @@ export class ThreadStore {
   }
 }
 
-function processIsAlive(processId: number): boolean {
-  try {
-    process.kill(processId, 0);
-    return true;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ESRCH") return false;
-    // EPERM means the process exists but this user cannot signal it. Treat all
-    // ambiguous failures as alive so a lease is never stolen unsafely.
-    return true;
-  }
-}
-
 function assertValidThreadLease(lease: ThreadLease): void {
   if (!lease.threadId || lease.threadId.includes("\u0000")) {
     throw new Error("Invalid thread lease thread id");
@@ -3034,6 +3025,7 @@ function assertValidThreadLease(lease: ThreadLease): void {
   if (!lease.acquiredAt || !Number.isFinite(Date.parse(lease.acquiredAt))) {
     throw new Error("Invalid thread lease acquisition time");
   }
+  if (lease.ownerProcessIdentity !== undefined && !validProcessIdentity(lease.ownerProcessIdentity)) throw new Error("Invalid thread lease process identity");
 }
 
 function assertValidThreadLeaseRow(row: ThreadLeaseRow): void {
@@ -3043,5 +3035,6 @@ function assertValidThreadLeaseRow(row: ThreadLeaseRow): void {
     ownerHostname: row.owner_hostname,
     ownerToken: row.owner_token,
     acquiredAt: row.acquired_at,
+    ...(row.owner_process_identity ? { ownerProcessIdentity: JSON.parse(row.owner_process_identity) } : {}),
   });
 }

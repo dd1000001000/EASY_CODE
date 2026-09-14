@@ -151,12 +151,12 @@ export async function buildSystemPrompt(
   }
   // Stable policy/tool/project guidance precedes per-turn environment facts.
   sections.push(environment);
-  sections.push("COMMAND ENVIRONMENT: Host OS/shell/workspace paths above describe the CLI, not necessarily command execution. " +
-    "Normal CLI workspace commands run in a Linux Podman task container: project=/workspace, shell=bash, tools=Linux python3/node/git. " +
-    "File tools use workspace-relative paths into the same checkout. Dependencies installed in the container persist across commands. " +
-    "Container commands are serialized and remaining processes stop when the command ends; run server and client in one invocation. " +
+  sections.push("COMMAND ENVIRONMENT: Host OS/shell/workspace paths above describe the CLI and its native command toolchain. " +
+    "Normal CLI workspace commands run under the platform-native OS sandbox: Windows elevated low-privilege identity, macOS Seatbelt, or Linux bubblewrap/seccomp. " +
+    "Use the displayed host paths and platform tools; file tools and commands see the same checkout. Workspace-local dependencies persist normally. " +
+    "Commands are supervised and their process trees are stopped on timeout or cancellation. " +
     "HTTP(S) downloads require the existing network approval gate; direct network is disabled. " +
-    "Exception: Benchmark uses its own offline worker and workspace path. Explicitly approved host scope and Full access use the native host.");
+    "Exception: Benchmark uses its own offline worker and workspace path. Full access bypasses the sandbox and uses the native host account.");
   if (options.workspaceSummary?.trim()) {
     sections.push(
       untrustedBlock(

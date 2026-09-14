@@ -5,7 +5,7 @@ import type {
 } from "../command/types.js";
 
 export type SandboxBackendName =
-  | "podman"
+  | "native"
   | "benchmark-container"
   | "host-unrestricted"
   | "host-test-only";
@@ -30,10 +30,22 @@ export interface PreparedCommand {
   controlPipe?: boolean;
   /** Trusted POSIX worker handles SIGTERM before Runtime's hard deadline. */
   cooperativeTermination?: boolean;
+  /** The sandbox service enforces the same command timeout internally; the
+   * Runtime watchdog waits one cleanup window before its hard fallback. */
+  sandboxManagedTimeout?: boolean;
+  /** Disable the Runtime's extra Windows Job Object only when the native
+   * sandbox service owns the target lifecycle and enforces its timeout. */
+  windowsJobContainment?: boolean;
+  /** Backend can perform deterministic resource cleanup after Runtime has
+   * independently confirmed that the supervised process tree is empty. */
+  cleanupAfterTermination?: boolean;
+  /** The sandbox service's terminal command result proves its target tree is
+   * finished; Runtime performs the filesystem cleanup after the worker exits. */
+  cleanupAfterWorkerExit?: boolean;
   /** Host-owned container supervisor, independent of the local client process tree. */
   externalLifecycle?: boolean;
   cancel?(): Promise<void>;
-  cleanup(): Promise<void>;
+  cleanup(): Promise<void | import("./failure.js").SandboxCleanupResult>;
 }
 
 export interface SandboxExecutionRequest {
@@ -47,6 +59,9 @@ export interface SandboxExecutionRequest {
   networkProxyURL?: string;
   /** Set only by Runtime after explicit host permission; never a tool field. */
   hostExecutionAuthorized?: boolean;
+  /** Trusted lifecycle store, not accepted from model tool arguments. */
+  lifecycleFile?: string;
+  recordLifecycle?(type: string, payload: unknown): void;
 }
 
 export interface CommandExecutionBackend {

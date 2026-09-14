@@ -158,6 +158,7 @@ export interface RunCommandOutput {
     execution: "not_started" | "unknown" | "started" | "exited";
     cleanup: "not_required" | "confirmed" | "failed" | "unconfirmed";
     cleanupError?: string;
+    pendingCleanupFiles?: string[];
   };
   commandId: string;
   status:

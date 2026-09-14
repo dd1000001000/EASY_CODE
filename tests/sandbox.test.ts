@@ -20,6 +20,37 @@ import {
 } from "../src/sandbox/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
+import { nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
+
+describe("native sandbox runtime", () => {
+  it("resolves the latest runtime for user installs without publishing a shrinkwrap", async () => {
+    const packageManifest = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+    };
+    const developmentLock = JSON.parse(await readFile(path.join(process.cwd(), "package-lock.json"), "utf8")) as {
+      packages?: Record<string, { dependencies?: Record<string, string> }>;
+    };
+
+    assert.equal(packageManifest.dependencies?.["@openai/codex"], "latest");
+    assert.equal(developmentLock.packages?.[""]?.dependencies?.["@openai/codex"], "latest");
+    await assert.rejects(
+      access(path.join(process.cwd(), "npm-shrinkwrap.json")),
+      (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+    );
+  });
+
+  it("maps every supported platform and architecture explicitly", () => {
+    assert.equal(nativeSandboxTarget("win32", "x64").binaryName, "codex.exe");
+    assert.equal(nativeSandboxTarget("darwin", "arm64").targetTriple, "aarch64-apple-darwin");
+    assert.equal(nativeSandboxTarget("linux", "x64").packageName, "@openai/codex-linux-x64");
+    assert.throws(() => nativeSandboxTarget("win32", "ia32"), /Unsupported native sandbox platform/u);
+    assert.throws(() => nativeSandboxTarget("freebsd", "x64"), /Unsupported native sandbox platform/u);
+  });
+
+  it("reports the version of the runtime npm actually installed", () => {
+    assert.match(nativeSandboxRuntimeVersion(), /^\d+\.\d+\.\d+(?:[-+].+)?$/u);
+  });
+});
 
 async function withWorkspace(
   run: (root: string, manager: WorkspaceManager) => Promise<void>,
@@ -106,9 +137,9 @@ class ThrowingSandboxBackend implements CommandExecutionBackend {
 class NeverReadySandboxBackend implements CommandExecutionBackend {
   describe(): SandboxExecutionMetadata {
     return {
-      backend: "podman",
+      backend: "native",
       enforced: true,
-      filesystem: "container",
+      filesystem: "host",
       network: "denied",
     };
   }
@@ -140,7 +171,7 @@ class DelayedReadySandboxBackend extends NeverReadySandboxBackend {
   override async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     const ready = encodeSandboxControl(request.commandId, {
       type: "ready",
-      backend: "podman",
+      backend: "native",
     });
     return {
       executablePath: process.execPath,
@@ -245,7 +276,7 @@ describe("sandbox command execution boundary", () => {
     const commandId = "command-owned";
     const owned = encodeSandboxControl(commandId, {
       type: "ready",
-      backend: "podman",
+      backend: "native",
     });
     const foreign = encodeSandboxControl("command-foreign", {
       type: "sandbox_error",
@@ -253,7 +284,7 @@ describe("sandbox command execution boundary", () => {
     });
     const originalText = `before\n${owned}middle\n${foreign}after`;
 
-    assert.doesNotMatch(owned, /"type"|podman/u);
+    assert.doesNotMatch(owned, /"type"|native/u);
     const extracted = extractSandboxControls(commandId, {
       head: `before\n${owned}middle\n`,
       tail: `${foreign}after`,
@@ -263,7 +294,7 @@ describe("sandbox command execution boundary", () => {
     });
 
     assert.deepEqual(extracted.controls, [
-      { type: "ready", backend: "podman" },
+      { type: "ready", backend: "native" },
     ]);
     assert.equal(extracted.digest.text, `before\nmiddle\n${foreign}after`);
     assert.equal(extracted.digest.head, "before\nmiddle\n");

@@ -10,7 +10,8 @@ import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { extractSandboxControls } from "../sandbox/control.js";
 import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionMetadata, SandboxExecutionRequest } from "../sandbox/types.js";
-import { PodmanSandboxBackend } from "../sandbox/podman-backend.js";
+import { NativeSandboxBackend } from "../sandbox/native-backend.js";
+import { SandboxFailure } from "../sandbox/failure.js";
 import { terminateProcessTree } from "./lifecycle.js";
 import { SandboxControlStream } from "../sandbox/control.js";
 import type { SandboxWorkerControl } from "../sandbox/types.js";
@@ -131,10 +132,6 @@ function defaultSandboxStartupTimeout(limits: Readonly<RuntimeLimits>): number {
     : limits.sandboxStartupPosixMs;
 }
 
-function retryableSandboxFailure(message: string): boolean {
-  return /(?:OS\s+sandbox\s+initialization\s+did\s+not\s+become\s+ready|database\s+is\s+locked|resource\s+(?:is\s+)?busy)/iu.test(message);
-}
-
 function containsReadyControl(commandId: string, value: string): boolean {
   if (!value.includes("[[EASY_CODE_SANDBOX:")) return false;
   const digest: OutputDigest = {
@@ -166,12 +163,12 @@ export class CommandRuntime {
     }
   }
 
-  private quarantine(reason: string, backend: CommandExecutionBackend = this.executionBackend): void {
+  private quarantine(reason: string, backend: CommandExecutionBackend = this.executionBackend, code = "cleanup_unknown"): void {
     this.quarantineReason = reason;
     backend.quarantine?.(reason);
     if (this.options.quarantinePath) {
       mkdirSync(path.dirname(this.options.quarantinePath), { recursive: true });
-      writeFileSync(this.options.quarantinePath, JSON.stringify({ version: 1, workspace: this.workspace.root,
+      writeFileSync(this.options.quarantinePath, JSON.stringify({ version: 2, code, workspace: this.workspace.root,
         backend: backend.describe().backend, reason: sanitizeCommandOutput(reason).slice(0, 2048), at: new Date().toISOString() }), { mode: 0o600 });
     }
   }
@@ -187,7 +184,7 @@ export class CommandRuntime {
     this.limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
     this.resolver = new CommandResolver(workspace);
     this.policy = policy;
-    this.executionBackend = executionBackend ?? new PodmanSandboxBackend(workspace, { limits: this.limits });
+    this.executionBackend = executionBackend ?? new NativeSandboxBackend(workspace, { limits: this.limits });
   }
 
   async run(input: RunCommandInput, context: ToolContext): Promise<RunCommandOutput> {
@@ -442,7 +439,7 @@ export class CommandRuntime {
     }
     const networkOperation = inspectNetworkOperation(resolved);
     let policyDecision = this.policy.classify(input, resolved, "code", networkEnabled);
-    const scope = containerExecution || executionBackend.describe().backend === "podman" ? "container" : hostAccess ? "host" : "workspace";
+    const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
     const commandNetwork = hostAccess || Boolean(networkOperation) && networkEnabled;
     // PATH and executable bytes belong to the offline worker, not controller.
     // Without host-attested bytes, use one-shot approval, never a fake digest.
@@ -582,13 +579,16 @@ export class CommandRuntime {
     try {
     const before = await this.workspace.beginCommandChangeTracking(context.signal);
     this.executionJournal.begin(commandId, context);
+    sandboxRequest.lifecycleFile = this.executionJournal.file(commandId);
+    sandboxRequest.recordLifecycle = (type, payload) => this.executionJournal.record(commandId, type, payload);
     this.options.recordLifecycle?.(context, commandId, "command.preparing", { execution: "not_started" });
     let prepared: PreparedCommand;
     const preparingAt = Date.now();
     try {
       prepared = await executionBackend.prepare(sandboxRequest);
     } catch (error) {
-      if (error instanceof AggregateError) this.quarantine("Sandbox preparation cleanup was incomplete", executionBackend);
+      if (error instanceof SandboxFailure && ["cleanup_unknown", "state_persistence"].includes(error.code))
+        this.quarantine(error.message, executionBackend, error.code);
       else this.executionJournal.complete(commandId);
       if (context.signal?.aborted) {
         return this.canceledBeforeStart(
@@ -659,7 +659,8 @@ export class CommandRuntime {
 
     const subprocess = execa(prepared.executablePath, prepared.args, {
       cwd: prepared.cwdAbsolute,
-      env: { ...prepared.environment, ...(prepared.controlPipe && process.platform === "win32" ? { EASY_CODE_JOB_HANDSHAKE: "1" } : {}) },
+      env: { ...prepared.environment, ...(prepared.controlPipe && process.platform === "win32" &&
+        prepared.windowsJobContainment !== false ? { EASY_CODE_JOB_HANDSHAKE: "1" } : {}) },
       extendEnv: false,
       shell: false,
       stdio: prepared.controlPipe ? [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
@@ -689,6 +690,20 @@ export class CommandRuntime {
           cooperativeStop = prepared.cancel().catch(error => { cleanupError = `Container cancellation failed: ${String(error)}`; })
             .finally(forceTermination);
         }
+      } else if (prepared.sandboxManagedTimeout && !canceled && timeoutPhase === "command") {
+        if (!cooperativeStop) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
+          cooperativeStop = Promise.resolve();
+        }
+      } else if (prepared.cooperativeTermination && !protocolError) {
+        if (!cooperativeStop) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
+          cooperativeStop = Promise.resolve();
+          if (process.platform === "win32") subprocess.stdin?.write("TERMINATE\n");
+          else if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
+        }
       } else if (windowsJob && dispatched && !protocolError && !cleanupError) {
         if (!cooperativeStop) {
           if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -697,13 +712,6 @@ export class CommandRuntime {
             cleanupError = `Descendant cancellation failed: ${String(error)}`;
             forceTermination();
           });
-        }
-      } else if (prepared.cooperativeTermination && process.platform !== "win32" && !protocolError) {
-        if (!cooperativeStop) {
-          if (timeoutTimer) clearTimeout(timeoutTimer);
-          cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
-          cooperativeStop = Promise.resolve();
-          if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
         }
       } else forceTermination();
     };
@@ -769,6 +777,7 @@ export class CommandRuntime {
     };
     const controlStream = new SandboxControlStream(commandId, (control) => {
       lifecycleEvents.push(control);
+      this.executionJournal.record(commandId, control.type, control);
       this.options.recordLifecycle?.(context, commandId, `command.${control.type}`, control);
       if (control.type === "ready") { readyObserved = true; if (!prepared.controlPipe) armTimeout("command", timeoutMs); }
       if (control.type === "execution_dispatched") {
@@ -824,7 +833,8 @@ export class CommandRuntime {
     );
     if (!prepared.metadata.enforced && !prepared.controlPipe) { dispatchedAt = Date.now(); announceStarted(); }
 
-    if (prepared.controlPipe && !prepared.externalLifecycle && process.platform === "win32") {
+    if (prepared.controlPipe && !prepared.externalLifecycle && process.platform === "win32" &&
+      prepared.windowsJobContainment !== false) {
       try {
         if (!subprocess.pid) throw new Error("Worker did not start");
         windowsJob = await containWindowsWorker(subprocess.pid);
@@ -855,19 +865,32 @@ export class CommandRuntime {
       this.quarantine(cleanupError, executionBackend);
     }
 
+    let pendingCleanupFiles: string[] | undefined;
     try {
       if (prepared.externalLifecycle) {
-        await prepared.cleanup();
+        const cleanup = await prepared.cleanup();
+        pendingCleanupFiles = cleanup?.pendingFiles;
+        if (pendingCleanupFiles?.length) stderr.push(`EASY CODE: process cleanup confirmed; ${pendingCleanupFiles.length} temporary item(s) await garbage collection.\n`);
         // Only backend engine inspection, never a killed local client, may
         // recover cleanup certainty. Execution remains unknown/non-retryable.
         cleanupConfirmed = true;
         cleanupError = undefined;
         if (dispatched && targetExitCode === undefined) targetOutcome = "unknown";
-      } else if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) await prepared.cleanup();
+      } else if (prepared.cleanupAfterWorkerExit &&
+        (targetOutcome === "exited" || targetOutcome === "timed_out" || targetOutcome === "canceled")) {
+        await prepared.cleanup(); cleanupConfirmed = true; cleanupError = undefined;
+      } else if (prepared.cleanupAfterTermination && terminationResult?.confirmed &&
+        (cleanupError !== undefined || !cleanupConfirmed)) {
+        // The supervisor has independently proved that the process tree is
+        // empty. A killed worker cannot finish its own cleanup protocol, so
+        // let the backend re-enter the sandbox identity and verify cleanup.
+        await prepared.cleanup(); cleanupConfirmed = true; cleanupError = undefined;
+      }
+      else if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) await prepared.cleanup();
       else this.quarantine(cleanupError ?? "Sandbox cleanup was not confirmed", executionBackend);
     } catch (error) {
       cleanupError = error instanceof Error ? error.message : String(error);
-      this.quarantine(cleanupError, executionBackend);
+      this.quarantine(cleanupError, executionBackend, error instanceof SandboxFailure ? error.code : "cleanup_unknown");
       stderr.push(
         `EASY CODE sandbox cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
@@ -895,6 +918,7 @@ export class CommandRuntime {
     const sandboxReady = readyObserved;
     const provenNotStarted = !dispatched && !readyObserved && !protocolError && cleanupConfirmed &&
       (!prepared.externalLifecycle || sandboxError?.type === "sandbox_error");
+    const retryableInitialization = provenNotStarted && timeoutPhase === "initialization";
     const sandboxUnavailableMessage = protocolError ?? (sandboxError?.type === "sandbox_error"
       ? sandboxError.message
       : !sandboxReady
@@ -926,7 +950,7 @@ export class CommandRuntime {
       delta = await this.workspace.completeCommandChangeTracking(before, context.signal?.aborted ? undefined : context.signal);
     } catch (error) {
       cleanupError = `Post-execution workspace audit failed: ${String(error)}`;
-      this.quarantine(cleanupError, executionBackend);
+      this.quarantine(cleanupError, executionBackend, "state_persistence");
       delta = { created: [], updated: [], deleted: [], truncated: true };
     }
 
@@ -986,7 +1010,7 @@ export class CommandRuntime {
                   message: sandboxUnavailableMessage,
                   processStarted: !provenNotStarted,
                   executionState: targetExitCode !== undefined ? "exited" : provenNotStarted ? "not_started" : "unknown",
-                  retryable: provenNotStarted && retryableSandboxFailure(sandboxUnavailableMessage),
+                  retryable: retryableInitialization,
                 }
               : undefined;
     const output: RunCommandOutput = {
@@ -1006,6 +1030,7 @@ export class CommandRuntime {
           targetExitCode !== undefined || !prepared.controlPipe && !prepared.metadata.enforced && typeof result.exitCode === "number" ? "exited" : provenNotStarted ? "not_started" : "unknown",
         cleanup: cleanupError ? "failed" : !prepared.metadata.enforced && !prepared.controlPipe ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
         ...(cleanupError ? { cleanupError } : {}),
+        ...(pendingCleanupFiles?.length ? { pendingCleanupFiles } : {}),
       },
       signal: result.signal ?? null,
       durationMs: Date.now() - startedAt,
@@ -1019,7 +1044,7 @@ export class CommandRuntime {
         ? {
             sandboxFailure: {
               phase: provenNotStarted ? "initialization" as const : "execution" as const,
-              retryable: provenNotStarted && retryableSandboxFailure(sandboxUnavailableMessage),
+              retryable: retryableInitialization,
             },
           }
         : {}),
@@ -1029,9 +1054,10 @@ export class CommandRuntime {
 
     try {
       this.options.recordLifecycle?.(context, commandId, "command.finished", { status: output.status, exitCode: output.exitCode, lifecycle: output.lifecycle, validation: output.validation });
+      this.executionJournal.record(commandId, "finished", { status: output.status, exitCode: output.exitCode, lifecycle: output.lifecycle });
       if (!cleanupError && (!prepared.controlPipe || cleanupConfirmed)) this.executionJournal.complete(commandId);
     } catch (error) {
-      this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`, executionBackend);
+      this.quarantine(`Execution outcome could not be durably finalized: ${String(error)}`, executionBackend, "state_persistence");
       output.lifecycle!.cleanup = "unconfirmed";
     }
 
@@ -1302,7 +1328,7 @@ export class CommandRuntime {
     const output: RunCommandOutput = {
       commandId,
       status: "sandbox_unavailable",
-      lifecycle: { execution: "not_started", cleanup: error instanceof AggregateError ? "unconfirmed" : "not_required" },
+      lifecycle: { execution: "not_started", cleanup: error instanceof SandboxFailure && ["cleanup_unknown", "state_persistence"].includes(error.code) ? "unconfirmed" : "not_required" },
       exitCode: null,
       signal: null,
       durationMs: Date.now() - startedAt,
@@ -1313,15 +1339,15 @@ export class CommandRuntime {
       sandbox: executionBackend.describe(request),
       sandboxFailure: {
         phase: "prepare",
-        retryable: retryableSandboxFailure(message),
+        retryable: error instanceof SandboxFailure && error.retryableBeforeDispatch,
       },
       failure: {
         kind: "sandbox",
-        code: error instanceof SandboxCapabilityError ? error.code : "sandbox_prepare_failed",
+        code: error instanceof SandboxCapabilityError || error instanceof SandboxFailure ? error.code : "sandbox_prepare_failed",
         message,
         processStarted: false,
         executionState: "not_started",
-        retryable: retryableSandboxFailure(message),
+        retryable: error instanceof SandboxFailure && error.retryableBeforeDispatch,
       },
       executed: this.executionSummary(resolved),
     };

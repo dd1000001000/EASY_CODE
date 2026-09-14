@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import os from "node:os";
 import path from "node:path";
 import { assertNoUninstall, assertPlainAncestors, maintenanceLock } from "./ownership.js";
+import { currentProcessIdentity } from "../core/process-owner.js";
 
 /** Cooperative shutdown, never kill an arbitrary PID obtained from a stale file. */
 export function registerRuntimeSession(onStop: () => void, home = os.homedir()): () => void {
@@ -11,7 +12,7 @@ export function registerRuntimeSession(onStop: () => void, home = os.homedir()):
   assertPlainAncestors(directory);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const token = randomUUID(); const file = path.join(directory, `${token}.json`);
-  writeFileSync(file, JSON.stringify({ token, pid: process.pid, hostname: os.hostname() }), { flag: "wx", mode: 0o600 });
+  writeFileSync(file, JSON.stringify({ token, pid: process.pid, hostname: os.hostname(), processIdentity: currentProcessIdentity() }), { flag: "wx", mode: 0o600 });
   try { assertNoUninstall(home); } catch (error) { unlinkSync(file); throw error; }
   let stopped = false;
   const timer = setInterval(() => {

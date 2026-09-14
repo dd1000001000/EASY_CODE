@@ -2,10 +2,9 @@ import type { Command } from "commander";
 import { resolveHarborOuterSandbox } from "../benchmarks/swebench.js";
 import { inspectBenchmarkBridge } from "./benchmark-backend.js";
 import { executionCapabilities } from "./capabilities.js";
-import { PodmanStartupService } from "./podman-startup.js";
+import { NativeSandboxStartupService } from "./native-startup.js";
 import { loadEasyCodeConfig } from "../config/loader.js";
-import path from "node:path";
-import { PodmanResourceManager, type PodmanResourceKind } from "./podman-resources.js";
+import { SandboxRecovery } from "./recovery.js";
 
 import {
   formatSandboxReadiness,
@@ -17,23 +16,28 @@ export interface SandboxCommandRegistrationOptions {
   readonly service?: SandboxStartupService;
   readonly stdout?: Pick<NodeJS.WritableStream, "write">;
   readonly setExitCode?: (code: number) => void;
-  readonly resources?: Pick<PodmanResourceManager, "list" | "remove">;
 }
 
 export function registerSandboxCommands(
   program: Command,
   options: SandboxCommandRegistrationOptions = {},
 ): Command {
-  const service: SandboxStartupService = options.service ?? {
-    inspect: async () => new PodmanStartupService((await loadEasyCodeConfig({ credentialStore: false })).limits).inspect(),
-    setup: async readiness => new PodmanStartupService((await loadEasyCodeConfig({ credentialStore: false })).limits, undefined, undefined, writeLine).setup(readiness),
-  };
   const stdout = options.stdout ?? process.stdout;
   const setExitCode = options.setExitCode ?? ((code: number) => {
     process.exitCode = code;
   });
   const writeLine = (value: string): void => {
     stdout.write(`${value}\n`);
+  };
+  const service: SandboxStartupService = options.service ?? {
+    inspect: async () => {
+      const config = await loadEasyCodeConfig({ credentialStore: false });
+      return new NativeSandboxStartupService(config.limits, config.dataDir).inspect();
+    },
+    setup: async readiness => {
+      const config = await loadEasyCodeConfig({ credentialStore: false });
+      return new NativeSandboxStartupService(config.limits, config.dataDir, writeLine).setup(readiness);
+    },
   };
   const writeReadiness = (
     readiness: Awaited<ReturnType<SandboxStartupService["inspect"]>>,
@@ -43,29 +47,21 @@ export function registerSandboxCommands(
 
   const sandbox = program
     .command("sandbox")
-    .description("set up or diagnose the Podman Linux task sandbox");
-  const resources = async () => {
-    if (resolveHarborOuterSandbox() === "harbor") throw new Error("Benchmark resource lifecycle belongs to Harbor; no nested Podman maintenance");
-    if (options.resources) return options.resources;
-    const config = await loadEasyCodeConfig({ credentialStore: false });
-    return new PodmanResourceManager(path.join(config.dataDir, "podman"), config.limits);
-  };
-  sandbox.command("resources").description("list EASY CODE-owned containers, review volumes and snapshot images")
-    .action(async () => writeLine(JSON.stringify(await (await resources()).list(), null, 2)));
-  sandbox.command("remove <kind> <name>")
-    .description("remove one stopped/unused owned resource; kind: container, volume or image; never removes logs or the Podman machine")
-    .option("--yes", "confirm permanent removal of this exact resource and its retained dependencies")
-    .action(async (kind: string, name: string, flags: { yes?: boolean }) => {
-      if (!["container", "volume", "image"].includes(kind)) throw new Error("kind must be container, volume or image");
-      if (!flags.yes) throw new Error(`Inspect sandbox resources first, then repeat with --yes to confirm removal of ${kind} ${name}`);
-      await (await resources()).remove(kind as PodmanResourceKind, name);
-      writeLine(`Removed ${kind} ${name}. Its container/volume contents are not recoverable without a backup. Workspace files and history were preserved.`);
+    .description("set up or diagnose the native operating-system command sandbox");
+  sandbox.command("recover").description("inspect interrupted native commands; never replays commands or guesses an unknown outcome")
+    .option("--workspace <path>", "workspace to inspect", process.cwd())
+    .option("--apply", "clear only leases proven inactive by recorded identity and engine inspection")
+    .action(async (flags: { workspace: string; apply?: boolean }) => {
+      if (resolveHarborOuterSandbox() === "harbor") throw new Error("Harbor owns benchmark command recovery");
+      const config = await loadEasyCodeConfig({ credentialStore: false });
+      const result = await new SandboxRecovery(config.dataDir, config.limits).inspect(flags.workspace, flags.apply);
+      writeLine(JSON.stringify(result, null, 2));
+      if (result.items.some(item => item.status === "blocked") || result.quarantine === "preserved") setExitCode(2);
     });
-
   sandbox.command("capabilities")
     .description("show backend policy capabilities (not a live toolchain compatibility test)")
     .action(() => {
-      const backend = resolveHarborOuterSandbox() === "harbor" ? "benchmark-container" : "podman";
+      const backend = resolveHarborOuterSandbox() === "harbor" ? "benchmark-container" : "native";
       writeLine(JSON.stringify({ backend, ...executionCapabilities(backend) }, null, 2));
     });
 

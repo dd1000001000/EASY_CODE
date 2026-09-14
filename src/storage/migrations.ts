@@ -464,6 +464,10 @@ const MIGRATIONS: readonly Migration[] = [
     );
     CREATE INDEX context_token_samples_scope_idx ON context_token_samples(scope, sequence);`,
   },
+  {
+    version: 9,
+    sql: "ALTER TABLE thread_leases ADD COLUMN owner_process_identity TEXT;",
+  },
 ];
 
 export function runMigrations(db: SqliteDatabase): void {

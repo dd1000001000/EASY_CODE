@@ -3,15 +3,15 @@
 EASY CODE's original source code is licensed under the MIT License in
 [`LICENSE`](./LICENSE). Third-party components retain their own licenses.
 
-## Podman
+## OpenAI Codex CLI runtime
 
-The command sandbox uses a separately installed Podman engine. EASY CODE's
-installer may download/install it through an OS package manager or its official
-installer; the engine binary is not bundled in EASY CODE's npm package.
+EASY CODE declares `@openai/codex@latest` and uses the version resolved when the
+user installs EASY CODE. Its platform-native binary is used only as a
+model-free command-sandbox service. The dependency and matching optional
+platform package are installed through the npm dependency tree.
 
-- Project: [Podman](https://github.com/podman-container-tools/podman)
-- License: [Apache License 2.0](https://github.com/podman-container-tools/podman/blob/main/LICENSE)
+- Project: [OpenAI Codex](https://github.com/openai/codex)
+- License: [Apache License 2.0](https://github.com/openai/codex/blob/main/LICENSE)
 
-Container base images and packages installed inside them retain their respective
-licenses and notices. Other npm dependencies are governed by the license metadata
-and license files distributed with their respective packages.
+Other npm dependencies are governed by the license metadata and license files
+distributed with their respective packages.

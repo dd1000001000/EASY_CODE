@@ -106,10 +106,9 @@ async function installBundledPromptResources(options = {}) {
   return promptBundle.ensurePromptBundle(options);
 }
 
-/**
- * npm installation prepares the engine, dedicated machine and image. System
- * installers own privilege prompts; an incomplete setup is never reported ready.
- */
+/** Validate the native sandbox resolved by this installation and perform the one-time Windows
+ * elevated setup when required. No VM, container engine or global CLI is
+ * installed or reconfigured. */
 async function checkSandboxPrerequisites(options = {}) {
   const stdout = options.stdout || process.stdout;
   const stderr = options.stderr || process.stderr;
@@ -122,22 +121,20 @@ async function checkSandboxPrerequisites(options = {}) {
         report("Source dependency installation precedes build. After building, run easy-code sandbox setup; no stale dist installer is executed.");
         return { ready: false, status: "source_build_pending", deferred: true };
       }
-      const { PodmanStartupService } = await import(pathToFileURL(path.join(compiled, "sandbox", "podman-startup.js")).href);
-      const { ensurePodmanInstalled } = await import(pathToFileURL(path.join(compiled, "sandbox", "podman-install.js")).href);
+      const { NativeSandboxStartupService } = await import(pathToFileURL(path.join(compiled, "sandbox", "native-startup.js")).href);
       const { loadEasyCodeConfig } = await import(pathToFileURL(path.join(compiled, "config", "loader.js")).href);
       // Load user configuration, never the project from which npm was launched.
       const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
         workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
       const { recordOwnedResource } = await import(pathToFileURL(path.join(compiled, "install", "ownership.js")).href);
       for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: config[kind + "Dir"] });
-      service = new PodmanStartupService(config.limits, undefined,
-        () => ensurePodmanInstalled(config.limits, { report }), report);
+      service = new NativeSandboxStartupService(config.limits, config.dataDir, report);
     }
-    report("Preparing Podman sandbox automatically. Downloads and OS authorization may be required.");
+    report("Verifying the installed native command sandbox.");
     const result = await service.setup();
     const ready = result.readiness.status === "ready";
-    if (ready) report("Podman sandbox ready: installation and disposable IPC/offline probe passed.");
-    else stderr.write(`EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete OS authorization/reboot if requested, then run easy-code sandbox setup. No host fallback.\n`);
+    if (ready) report(`Native command sandbox ready: ${result.readiness.details[0] || "enforced filesystem/network probe passed."}`);
+    else stderr.write(`EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete Windows authorization if requested, then run easy-code sandbox setup. No host fallback.\n`);
     return { ready, status: result.readiness.status };
   } catch (error) {
     stderr.write(`EASY CODE: automatic sandbox setup failed: ${errorMessage(error)}. Run easy-code sandbox setup to resume; no host fallback.\n`);

@@ -113,9 +113,9 @@ describe("storage", () => {
               "SELECT COUNT(*) AS count FROM schema_migrations",
             )
             .get()?.count,
-            8,
+            9,
         );
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 8);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 9);
       } finally {
         reopened.close();
       }
@@ -675,6 +675,22 @@ describe("storage", () => {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+
+  it("recovers a reused PID by OS birth identity without accepting its previous release token", () => {
+    const dataDir = temporaryDataDir(), storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      threads.create({ threadId: "thread_reused_pid", workspaceRoot: path.join(dataDir, "workspace"), mode: "auto", provider: "qwen", model: "qwen-test" });
+      const old = threads.acquireThreadLease("thread_reused_pid");
+      assert.ok(old.ownerProcessIdentity?.started);
+      storage.db.prepare("UPDATE thread_leases SET owner_process_identity = ? WHERE thread_id = ?")
+        .run(JSON.stringify({ started: "previous-process-incarnation", executable: process.execPath }), old.threadId);
+      const current = threads.acquireThreadLease(old.threadId);
+      assert.notEqual(current.ownerToken, old.ownerToken);
+      assert.throws(() => threads.releaseThreadLease(old), /ownership no longer matches/u);
+      threads.releaseThreadLease(current);
+    } finally { storage.close(); rmSync(dataDir, { recursive: true, force: true }); }
   });
 
   it("blocks a live cross-process thread owner and recovers after that process dies", async () => {

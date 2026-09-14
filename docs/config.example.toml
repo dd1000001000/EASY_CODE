@@ -31,25 +31,9 @@ sandboxVerificationRequiresLoopback = true
 # Offer the exact host-scoped invocation to the existing approval flow.
 # No workspace grant authorizes host scope. Never applies to Benchmark.
 sandboxAllowHostEscalation = true
-# Rootless Podman on Linux; rootless Podman machine on Windows/macOS.
-# npm postinstall and sandbox setup prepare the engine/machine and missing image.
-# Existing machines are reused, not resized; changes below apply on creation.
-podmanImage = "localhost/easy-code-sandbox:0.1.0"
-podmanMachineName = "easy-code"
-podmanMachineMemoryMb = 8192
-podmanMachineCpus = 4
-podmanMachineDiskGb = 60
-podmanMemoryMb = 4096
-podmanCpus = 2
-podmanPidsLimit = 512
-podmanShmMb = 256
-podmanTmpMb = 1024
-podmanControlTimeoutMs = 30000
-podmanSetupTimeoutMs = 1200000
-podmanProxyMaxConnections = 32
-podmanProxyMaxBytes = 536870912
-# These are per-container limits, not a global resource quota. Rootfs disk usage
-# is bounded by the Podman machine/storage, not by the RAM or tmpfs settings.
+# One-time Windows elevated sandbox preparation may display an OS consent UI.
+# macOS Seatbelt and Linux bubblewrap/seccomp require no VM setup.
+nativeSandboxSetupTimeoutMs = 600000
 commandInspectTimeoutMaxMs = 60000
 commandExecuteTimeoutMaxMs = 900000
 commandInstallTimeoutMaxMs = 1200000

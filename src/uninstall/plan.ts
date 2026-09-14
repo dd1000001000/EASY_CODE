@@ -60,7 +60,7 @@ export async function addPath(plan: UninstallPlan, target: string, phase = 60): 
     execute: () => removeOwnedPath(target, plan.home, stat) });
 }
 const dataEntries = new Set(["threads", "artifacts", "attachments", "subagent-artifacts", "subagent-environments",
-  "validation-baselines", "review-command-leases", "command-leases", "command-quarantine", "podman"]);
+  "validation-baselines", "review-command-leases", "command-leases", "command-quarantine", "native-sandbox", "podman"]);
 async function identifiedReviewCopy(directory: string, name: string): Promise<boolean> {
   try {
     const binding = await readJson(path.join(directory, "binding.json"));
@@ -104,10 +104,6 @@ export async function buildFilePlan(options: PlanOptions = {}): Promise<Uninstal
       assertPlainAncestors(file);
       if (lstatSync(file).size > 1024 * 1024) throw new Error("oversized config");
       const config = parseToml(readFileSync(file, "utf8"));
-      const machineName = config.limits?.podmanMachineName;
-      if (typeof machineName === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/u.test(machineName) &&
-        !plan.resources.some(r => r.kind === "machine" && r.name === machineName))
-        plan.resources.push({ kind: "machine", name: machineName }); // Discovery, not ownership proof.
       for (const kind of ["data", "config", "cache"] as const) {
         const value = config[kind + "_dir"] ?? config[kind + "Dir"] ?? config.paths?.[kind + "_dir"] ?? config.paths?.[kind + "Dir"];
         if (typeof value === "string" && path.isAbsolute(value)) plan.roots[kind].push(value);

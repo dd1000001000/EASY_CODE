@@ -50,7 +50,7 @@ flowchart TD
 | TypeScript、Node.js ≥ 20.11、ESM | 严格类型、NodeNext 模块解析；编译到 `dist/` 的 CLI |
 | Commander、TOML、Zod | 命令行解析、配置读取、运行时 Schema 与工具参数校验 |
 | Node HTTP / HTTPS | 模型传输、取消、时间和大小限制、受控代理连接 |
-| execa、Podman CLI | 宿主进程控制和 rootless Linux 任务容器；项目管理审批、网络代理与生命周期 |
+| execa、安装时最新版 `@openai/codex` 原生 Runtime | 宿主进程控制，以及 Windows elevated、macOS Seatbelt、Linux bubblewrap/seccomp 隔离 |
 | node-sqlite3-wasm、SQLite FTS5 | 持久化仓储、全文检索和数据库迁移，避免 Node SQLite ABI 编译依赖 |
 | ONNX Runtime、Hugging Face tokenizers | 本地文本向量生成 |
 | Orama | 派生的向量检索缓存，不是长期记忆的权威存储 |
@@ -222,73 +222,41 @@ Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问�
 
 管道最外层返回零**不能证明测试通过**。[verification.ts](../src/command/verification.ts) 和进展观测单独解释能可靠识别的测试终态。输出超限与清理失败也分开处理；只有清理/安全状态确实无法确认时才应隔离执行环境。
 
-### 7.3 Podman 执行后端与网络边界
+### 7.3 三平台原生沙箱与命令生命周期
 
-普通 CLI 的工作区命令统一使用 [PodmanSandboxBackend](../src/sandbox/podman-backend.ts)。Linux 使用 rootless Podman，Windows 使用 WSL 支撑的 rootless Podman machine，macOS 使用 Linux 虚拟机。这明确是 Linux 执行环境，不是原生 Windows/macOS 模拟器。模型 API、密钥、审批、Journal、记忆以及容器控制面留在宿主机。
+[NativeSandboxBackend](../src/sandbox/native-backend.ts) 是普通 CLI 的命令后端。EASY CODE 在用户安装时解析 `@openai/codex@latest`，并在该次安装的生命周期内使用实际安装的版本；仓库自身的 `package-lock.json` 只用于保持开发和测试可复现，不会锁定下游用户安装。EASY CODE 通过 [app-server-client.ts](../src/sandbox/app-server-client.ts) 调用不涉及模型的 app-server `command/exec` API。它不会读取用户的 Codex 配置、创建 Codex 对话或请求模型。当前架构包提供对应平台可执行文件：Windows elevated 沙箱、macOS Seatbelt、Linux bubblewrap/seccomp。
 
-每个工作区/thread 对应一个带所有权标签的持久容器；容器内命令串行执行。停止、重启保留根文件系统和已安装依赖，但不保留临时目录与进程。服务和访问它的客户端应放在同一条受监督命令内。不同任务及可写子 Agent Worktree 使用不同容器。必须使用 rootless 引擎，不使用 privileged、宿主网络、宿主 PID 命名空间或容器管理接口挂载。容器内 root 可安装依赖，但不等于宿主机管理员。
+Runtime 只传结构化 argv 和私有子进程环境，供应商密钥及控制面 capability 不会进入目标命令。`:workspace` 权限配置允许写命令工作区和沙箱临时区，拒绝写工作区外路径，并阻止直接外网 socket。获批 HTTP(S) 仍是独立的[网络门](../src/command/network-gate.ts)决策。完全访问显式使用 [UnrestrictedHostBackend](../src/sandbox/unrestricted-host-backend.ts)，沙箱失败不会导致自动回退。
 
-工作区绑定到 `/workspace`，文件工具与命令直接操作同一份代码，不通过回写覆盖宿主文件。Windows 路径映射到 WSL 的 `/mnt/<盘符>`，每次派发都通过宿主创建的随机文件校验 VM 侧挂载是否一致；共享失败明确报错，不会改用空的远端目录。拒绝挂载参数注入和与 Runtime 数据重叠的根目录；隐藏工作区内受保护目录，以空只读挂载遮蔽受保护文件。宿主 `.git` 只读，另建私有 Git 元数据副本用于容器内 Git 操作，兼容 Windows/Worktree 的指针路径。容器内提交不直接改变宿主 Git refs，Worktree 的最终交付仍由宿主 Runtime 管理。
+[native-worker.ts](../src/sandbox/native-worker.ts) 把目标 stdout/stderr 与可信 fd 3 生命周期控制分开。Windows elevated 沙箱暂不支持实验性的命令流式输出，因此使用有界缓冲输出。app-server 负责沙箱内目标超时，Runtime 仍保留更硬的 watchdog；Windows 取消和异常清理由现有进程树监督器兜底。沙箱终态、worker 退出与 scratch 清理仍是三个独立事实。
 
-审批与隔离分离。保留手动审批、独立审批 Agent 和 thread/子 Agent 授权继承。Podman 前缀使用独立命名空间，绑定镜像配置及容器 cwd，绝不能授权宿主命令；它表示命令配方权限，不伪造“容器内可执行文件字节已被可信验证”，界面会提示脚本和程序内容可能变化。完全访问仍明确使用无沙箱宿主执行；`executionScope=host` 需要独立适用的批准。引擎、镜像、能力缺失都不能静默回退到宿主机。
+[执行日志](../src/command/execution-journal.ts)记录准备、派发、终态和清理。非零退出、超时、取消或派发不确定都不会自动重放。[SandboxRecovery](../src/sandbox/recovery.ts) 只有在持久事件已证明终态与清理、且所有者不活跃时才能删除 lease；不能从死 PID 推断命令结果。Runtime scratch 位于工作区受保护的 `.easy-code-srt-runtime`，worker 退出后再删除；Windows ACL 继承导致宿主删除失败时，才用同一原生身份做一次有界兜底清理。
 
-任务容器始终使用 `--network=none`，保留 Linux 本地 IPC：回环、socketpair、共享内存。普通 HTTP(S) 依赖下载经过容器内代理，通过 Podman exec 的标准输入输出转送到唯一的宿主[网络审批网关](../src/command/network-gate.ts)。只有宿主网关在审批后解析、连接目标，并拒绝私有/保留地址。来自容器的帧不可信，限制单帧、连接、缓冲及累计传输量，不能指定宿主控制面地址。完成或取消即关闭网关，后续命令不会继承临时联网能力。直接 socket、SSH、UDP 外联不开放。HTTPS CONNECT 不解密，批准的是调用权限，不保证任意加密请求在业务上只读。
+[NativeSandboxStartupService](../src/sandbox/native-startup.ts) 检查本次安装实际解析到的最新版可执行文件并运行真实受限命令探针。Windows 另用 `windowsSandbox/readiness` 和一次性 elevated setup；macOS、Linux 不创建 EASY CODE 专用虚拟机。安装和启动不会改 Docker、Podman 或 WSL 配置。Windows 离线身份属于上游共享 OS 基础设施，不是 EASY CODE 拥有的卸载资源。
 
-[Podman worker](../src/sandbox/podman-worker.ts) 将 stdout/stderr 与私有 fd 3 上的宿主生命周期事件分离。保留准备、初始化、命令执行、清理的独立计时。超时/取消停止容器，不只终止本地 Podman 客户端。即使 worker 被杀或响应丢失，后端也必须执行清理并独立查询引擎状态。确认容器停止只能恢复清理确定性，不能伪造命令退出结果。命令非零、超时、取消和派发不确定均不自动重放。
+Benchmark 是独立边界：可信适配器选择 [BenchmarkContainerBackend](../src/sandbox/benchmark-backend.ts)，命令只在离线 Harbor/Docker worker 内拥有完全能力。它不嵌套普通 CLI 原生沙箱，也不能静默选择宿主完全访问。
 
-持久租约保存容器名、所有者、命令和 thread ID。运行中、所有权不符、配置不符的容器或未完成租约不能静默复用；清理无法确认则保留租约及 Runtime 隔离状态。引擎断线不等于“容器不存在”。升级不会删除旧命令租约或 SRT 清理记录。
+### 7.4 验证与隔离 Reviewer 工作区
 
-Reviewer 在主容器停止后取得不包含挂载内容的依赖镜像快照。两个讨论参与者分别使用该依赖镜像和各自的审查代码副本、Git 元数据，不共享主 Agent 的可写代码。镜像 ID 与命令历史参与审查环境缓存失效。审查预检使用 Linux 解释器及可重定位的 Linux 虚拟环境，而不是宿主 Windows 的 python.exe。
+测试运行器发现通过普通路径保护和后端工作区映射读取清单。无法归属的 npm/yarn/pnpm 脚本得到 unknown 验证，不会仅因外层退出码为 0 就判成功；管道输出与进程状态分别解释。
 
-交互启动检查遇到可安装的 `dependencies_missing` / `setup_required` 时，自动调用同一套 setup 一次，显示安装进度；就绪则继续，失败才显示恢复菜单。重新检查不会自动重试安装，用户可明确选择再次 setup。`probe_failed` / `unsupported` 不触发自动安装，成功状态还必须同时满足 readiness 为 `ready`。宿主控制面环境变量采用白名单，保留 Windows OpenSSH 生成机器密钥必需的 `ProgramData`，不继承完整宿主环境或供应商密钥；该环境不传给模型命令。
+[review/workspace.ts](../src/review/workspace.ts) 为 author 和 reviewer 创建两份私有源码快照；若验证基线可用，reviewer 副本会恢复 Agent 修改前的原始测试。两者都拿不到主 Agent 的私有短期历史，也不能写主工作区。原生审查通过有记录、可复核的链接复用既有 `node_modules`、`.venv` 或 `venv`，避免重复安装依赖；原生路径策略会拒绝通过这些链接越出私有副本的写入。普通 CLI 审查使用相同原生命令后端和独立自动审批；Benchmark 审查使用独立离线 worker 副本。快照哈希、需求 ID 和独立反例仍是审查合约的一部分。
 
-`npm postinstall` 通过 [podman-install.ts](../src/sandbox/podman-install.ts) 自动准备沙箱：复用 Podman，缺失时通过 Windows WinGet、macOS Homebrew / 校验哈希与 Red Hat 签名的官方安装包、Linux 固定包管理配方安装。Windows 按需准备 WSL；Windows/macOS 创建或启动配置中的 rootless `easy-code` 专用虚拟机，不切换已有默认连接，不调整其他虚拟机或停止其任务。系统自己处理授权，不收集密码，不强制重启。不支持的安装器、拒绝授权、需要重启均明确报告安装未完成。Linux 必要时使用非交互 sudo 安装系统包，rootless 准备必须以普通用户执行。尚未编译的源码依赖安装会延后初始化；`--ignore-scripts` 明确跳过 postinstall，Benchmark 也采用该方式。
-
-`easy-code sandbox setup` 继续同一安装流程，构建缺失的随包 [Containerfile](../resources/podman/Containerfile) 镜像，或拉取用户配置的外部镜像；已有镜像复用。只有 `sandbox doctor` 的临时 asyncio/socketpair/信号量/临时目录/禁外网探针通过才报告就绪，不代表全部语言兼容性已验证。桌面端控制器与 worker 均显式选择专用连接；每次派发验证 VM 能看见工作区，不可共享路径直接报错，不回退宿主机。虚拟机名称/创建时内存/CPU/磁盘及单容器内存/CPU/PID/共享内存/临时空间/代理/控制预算见 [config.example.toml](config.example.toml)。修改创建参数不会重设已有 VM。镜像与任务容器保留，不全局 prune。引擎侧寿命上限约束 CLI 崩溃后遗留的进程，不确定的 lease 保留供诊断。Reviewer 使用已停止的主任务依赖快照，只读根文件系统加独立可写工作区。
-
-Benchmark 有意保留原有可信的离线 Harbor/Docker 控制器—执行器分离，不安装嵌套 Podman。资源限制仍从 [sandbox-resources.json](../benchmarks/swebench_verified/sandbox-resources.json) 加载；模型命令不能获得普通 CLI 的联网中继。供应商 API 访问仍只属于控制器。
-
-Podman 是普通 CLI 唯一的沙箱。原生旧沙箱实现、依赖（含开发依赖）、ACL 修复工具、专用探针及已废弃的 Harbor 内层隔离器均已删除。完全访问的原生宿主执行保留 Windows Job/POSIX 进程组监督，但不是沙箱。Benchmark 只保留独立的 Docker 控制器/执行器桥接。容器验收入口为 [smoke-podman.mjs](../scripts/smoke-podman.mjs)。升级后需重新构建/安装并重启 CLI；清理源码不会删除历史日志或未完成命令记录。
-
-安装、引擎调用、Worker 和卸载共用 `podmanEnvironment()` 解析的绝对 `PODMAN_CONNECTIONS_CONF`；默认沿用 Podman 的平台路径（Windows `%APPDATA%/containers/podman-connections.json`，其他平台 `$XDG_CONFIG_HOME/containers` 或 `$HOME/.config/containers`），保留用户显式指定的连接文件，拒绝相对路径。Windows 缺失 APPDATA 时由用户目录补齐。这个变量只属于宿主控制面，不给模型命令。
-
-初始化不能把“VM 正在运行”等同于“可以派发命令”。安装器核验 VM 的 rootless、SSH 用户/端口/身份文件，通过该 VM 的 `id -u` 获取 UID，再验证同名连接的 URI 与身份。缺少连接时仅用 Podman 的 `system connection add` 补回；已有同名连接指向其他目标则拒绝覆盖。之后仅对服务尚未就绪的连接错误，在 `podmanControlTimeoutMs` 内重复只读 info 探测，不重复安装或用户命令。
-
-`podman-setup.lock` 将 npm、交互启动和显式 setup 串行化，等待上限使用 `podmanControlTimeoutMs`。获得锁后重新检查就绪状态，避免第二个调用重建已准备好的环境；卸载等待正在运行的安装进程。错误保留失败阶段及同一运行环境下的连接文件、机器/连接清单，不再仅显示过时的初始“依赖缺失”。测试可设置 `EASY_CODE_TEST_REAL_PODMAN=1` 运行真实引擎的隔离连接文件恢复测试；该测试禁止安装/启停/删除真实机器，并校验真实连接文件未变化。
-
-### 7.4 容器迁移后的验证、审查与资源维护
-
-测试框架识别通过后端声明的工作区映射读取 `package.json`，不会把容器 `/workspace` 当作宿主路径。只有工作区内、通过路径保护且不超过 1 MiB 的清单可以参与识别。无法识别的 npm/yarn/pnpm 脚本返回未知验证结果，不能仅凭外层退出码 0 记为通过。
-
-Reviewer 的宿主副本仅保存源码与原始测试基线。Linux `.venv`、`node_modules`、`venv`、`dist`、`build` 由离线容器中的 [review-dependencies.py](../resources/podman/review-dependencies.py) 读取、限额哈希并复制，保留 Linux 链接与执行权限，不使用宿主机 junction 或解析宿主 Python。依赖放入 Runtime 所有的命名卷，两位参与者只读挂载到各自的 `/workspace` 对应目录；源码副本仍可用于独立实验。容器根文件系统同样只读。Python 虚拟环境预检也在容器内执行。
-
-[podman-review.ts](../src/sandbox/podman-review.ts) 按持久化命令环境版本和依赖内容摘要缓存不可变镜像、卷和审查版本。恢复会话、检查新鲜度不会无条件重复 commit；新命令或依赖变化使旧版本失效。快照事务和命令使用同一个独占租约；快照错误但辅助容器已清理，不会隔离主任务，只有辅助容器清理不明才保留租约。辅助进程有时限，文件数、字节和遍历时间复用 `reviewDependencyMaxFiles`、`reviewDependencyMaxBytes`、`reviewPreparationTimeoutMs` 配置。
-
-`easy-code sandbox resources` 列出引擎中 EASY CODE 所有的容器、审查卷和镜像。`easy-code sandbox remove <container|volume|image> <完整名称> --yes` 才执行单项永久删除。删除前检查名称、引擎标签、控制目录和租约；运行中、状态未知、仍被容器引用或存在未完成租约的资源不能强制删除。无全局 prune，无自动删除 Podman/WSL 虚拟机、基础镜像、项目文件或历史日志。完整卸载使用下述独立的确认流程，不借此命令做全局清理；普通停止仍保留任务依赖供恢复。
-
-Podman 验收统一在 [smoke-podman.mjs](../scripts/smoke-podman.mjs)：涵盖 Plan 命令审批、管道失败、npm 元数据映射、生命周期以及独立审查依赖。旧的原生平台验收脚本已经移除。Linux 依赖复制器可单独在 WSL 执行 `python3 tests/podman-review-dependencies.test.py`，此测试不替代完整容器验收。
+`npm run test:native-sandbox` 会编译项目并运行 [smoke-native-sandbox.mjs](../scripts/smoke-native-sandbox.mjs)，检查原生身份、工作区写入、工作区外写入拒绝、直接外网阻断、超时清理和后续命令恢复。Windows 已通过真实 elevated 沙箱验证；macOS 和 Linux 在发布认证前仍需各自真机/OS CI。
 
 ### 7.5 当前用户完整卸载
 
-[uninstall/](../src/uninstall) 独立生成只读操作清单。卸载分支在用户模型注册表校验之前执行，配置损坏不会阻止维护，--dry-run 也不会重新创建配置。旧 --data-only 由含义明确的 --keep-cli 替代。
+[uninstall/](../src/uninstall) 先生成只读清单。维护入口绕过模型注册表初始化，因此模型配置损坏不会导致检查时重建文件。CLI 只询问一次 `y`；`--yes` 表示相同授权，`--dry-run` 不执行删除。用户项目、源码工作区和共享软件不属于删除范围。
 
-卸载预检不依赖 `--connection <名称>`，也不调用安装器修复连接文件。Windows/macOS 从已核验的 VM 元数据及该 VM 的 rootless UID 构造明确的本地 SSH 地址与身份，通过 `--url` / `--identity` 直接盘点资源；即使连接记录不存在，仍可生成只读清单。安装与卸载复用 [podman-connection.ts](../src/sandbox/podman-connection.ts) 的端点校验。真正的外来同名连接仍阻止删除，但已核验的旧转发端口不等于外来身份；执行前再次验证 VM 身份、端口、用户、rootless 状态、连接归属及资源清单。SSH 身份不可用或引擎确实不可达时保留数据并报告错误，不能跳过资源核验强制清理。
+[install/ownership.ts](../src/install/ownership.ts) 把当前用户的数据、配置、缓存、凭据和插件记录 fsync 到私有 `install-resources.jsonl`。旧容器时代的 receipt 只作为惰性迁移输入被识别，不能授权删除引擎、Machine、镜像或连接。旧 EASY CODE 数据目录只会沿普通有界应用数据清单删除。
 
-生命周期明确区分稳定的 VM 身份（名称、创建时间、配置目录、SSH 密钥）与可变化的连接索引。机器仍存在时，如果连接的密钥、回环主机、SSH 用户和 socket 路径均一致，仅端口过期，且可写的 CLI 条目与所选连接文件匹配、旧端口不属于另一台 Podman 机器，就可按当前 VM 修复。安装只更新已核验的旧连接、补齐缺失的 root/rootless 连接，保留默认连接、VM、镜像和密钥。卸载更简单：预览只分类不写入，使用当前 VM 端点盘点资源，确认删除时保留实际连接快照以便精确处理部分清理；不为删除而先重建或改写连接。机器重建后使用最新身份记录，而不是第一条历史记录；Windows 身份路径比较共用长短路径规范化。
+确认后取得维护锁，阻止新会话并等待现有任务、命令和快照所有者退出，不凭记录随意杀 PID。沙箱某步失败后可以继续独立的资源/集成清理，但只要仍有未完成项，就保留数据、配置、归属记录和 CLI。用户目录下、不在删除目标中的 `.easy-code-uninstall-state.json` 记录已完成及失败步骤。再次执行先重新盘点并检查实际结果，不盲信旧完成列表。
 
-[sandbox/podman-machine-state.ts](../src/sandbox/podman-machine-state.ts) 由安装和卸载共同使用。机器存在时检查并复用，从已核验端点补回缺失的 rootless/root 连接；机器不存在时（Windows 还确认 WSL 发行版已不存在），先清理核验通过的残留连接，再允许安装创建机器。卸载使用同一套归属判断，但不会创建机器。外来密钥或端点、仍存活的发行版、不可确认的可写性以及元数据不一致均会在破坏性操作前阻止执行。Podman 也可能已移除 VM/配置、最后清理连接才报连接不存在：仅对这个明确的部分成功错误核验后恢复，其他错误仍停止。每次删除前重新检查状态，不盲目重放修改，不使用全局 remove/prune/reset。设置 `EASY_CODE_TEST_REAL_PODMAN_CONNECTIONS=1` 可用真实 CLI 测试临时连接文件清理，并验证用户实际连接文件未被更改。
+[process-owner.ts](../src/core/process-owner.ts) 以主机、PID、操作系统进程启动身份及可用的可执行文件信息判断所有者，不再只检查 PID 是否存在。Runtime 会话、线程租约、命令/快照租约和安装锁共用此判断；SQLite 迁移 9 为线程租约增加可空的进程身份字段，卸载仍能只读检查旧表而不执行迁移。PID 被其他进程复用，不代表旧任务仍存活。旧记录若指向另一个 Node 进程、元数据无法读取或属于其他主机，则仍保留未知/阻断状态；检查本身不终止进程、不删除记录。
 
-孤立连接的身份路径比较会解析仍存在的祖先目录，即使密钥文件已删除，也能统一 Windows 长短路径别名。拒绝时明确指出可写性、身份路径、端点/角色、归属记录或配对端口中的具体失败项。CLI 清单与连接文件不一致时单独报告清单来源错误，附所选文件及端点比较；诊断不读取私钥内容。
+Worktree 通过 Git 删除，只处理核验通过的托管目录，不删除用户分支或主工作区。插件和凭据删除只限 EASY CODE。拒绝祖先目录的符号链接/junction；叶子链接仅删除链接本身。全局 npm junction 由已核验 prefix 对应的 npm 卸载，不递归进入源码目录。归属不明的旧数据和无法核查的维护锁需要检查。
 
-`IsMachine` 只描述 Podman 的连接创建方式，不作为归属契约：普通 `system connection add` 不会设置它。安装核验两个连接后记录 `machine-connection`，绑定准确连接文件、机器名称、URI 和密钥路径。恢复优先使用这份宿主写入记录；无记录的旧安装必须同时符合标准 Podman 机器密钥路径、匹配的可写连接文件条目、准确名称、本地回环 SSH 和对应 root/rootless socket。缺少或为 false 的 `IsMachine` 不会推翻这些独立证据，非法字段类型仍拒绝。连接文件缺失、不可读、重定向或内容不一致仍阻止删除。安装、Runtime 和卸载固定本次控制环境，避免事务跨连接文件漂移；测试执行器必须提供自己的连接文件，不能借用宿主证据。生命周期测试覆盖首次安装、普通连接修复、部分卸载、重装、来源不一致和外来资源保护。
-
-[install/ownership.ts](../src/install/ownership.ts) 在私有 install-resources.jsonl 中记录实际目录、创建的机器身份、基础镜像 ID、软件安装来源和凭据槽名称，不记录密钥内容。旧安装从固定目录、用户配置及 Runtime 元数据发现；项目配置不能指定删除目标。自定义数据根目录必须有归属标记。未知文件明确列为保留；拒绝祖先路径中的符号链接/junction，叶子链接仅删除链接，不遍历其目标。
-
-用户确认后取得维护锁，阻止新 CLI 会话，通知现有任务协作退出并等待线程、命令和快照所有者结束，再依次清理沙箱、已注册的 detached Worktree、插件、凭据、数据/缓存/配置，最后移除 npm 包。退出超时或所有者不明时停止清理，不凭记录里的 PID 随意杀进程。Podman 核验 rootless 和资源归属；已停止的专用机器只在确认后启动以检查内容，发现外来资源则拒绝删除。Linux 共享引擎仅删除确认所属的资源，不做 reset/global prune。由安装记录证明为 EASY CODE 安装的 Windows WinGet/macOS Homebrew Podman，在没有其他机器和连接时才可一并卸载；预装软件、WSL、Node、Git 和不支持安全自动卸载的安装方式明确保留。
-
-CLI 简要展示范围，只询问一次 `y`；`--yes` 无交互确认同一份完整清单，`--dry-run` 则列出每个准确目标且不执行修改。该确认涵盖已核验的旧机器、旧原生沙箱临时状态、无法验证旧租约的损坏数据库（需先关闭所有会话）、以及含未交付修改的托管 Worktree。CLI 将整份预览所需的内部授权标记传给执行器，不再逐项确认，也不再提供 `--confirm-resource`。归属核验、活跃所有者检查、清单变化检查仍保留。执行进度按类别简报，保留项和错误仍明确显示。Worktree 使用 Git 的 NUL 分隔清单和 Runtime 路径布局校验，通过 Git 移除，仅删除对应 Runtime 命名空间引用，不删除用户分支或主工作区。审查临时副本必须有匹配的 review ID、快照哈希及 `binding.json` 中本目录内的 author/reviewer 根路径；用真实路径统一 Windows 长短路径别名，链接重定向或根路径不符仍保留，不遍历外部目标。
-
-执行过程把阶段结果和资源发现信息保存到用户目录下的 .easy-code-uninstall-state.json，避免随配置提前被删。失败后停止后续步骤、返回非零并保留恢复信息，下次可继续。进程崩溃遗留且所有权不明确的维护锁必须检查，不自动擦除。npm 卸载锁定已核验的全局 prefix，并禁用生命周期脚本；源码 junction 由 npm 删除链接，不递归删除源码目标。自动化测试不执行真实工作站卸载。
+卸载不再枚举或修改容器引擎、WSL 发行版、Docker context 或 Podman 连接。它删除 EASY CODE 私有的原生 Runtime 数据，但保留上游 Windows 沙箱账户和所有共享系统软件。原生沙箱验收与卸载单元测试相互独立；命令探针通过不等于获得删除 OS 基础设施的权限。
 
 ## 8. 持久化、恢复与事实来源
 

@@ -20,10 +20,10 @@ export function executionCapabilities(backend: SandboxBackendName): ExecutionCap
     return { source: "policy", isolation: "host", features, notes: ["Host permissions apply; no sandbox isolation or toolchain compatibility is claimed."] };
   }
   features.temporary_files = features.child_processes = "supported";
-  if (backend === "benchmark-container" || backend === "podman") {
+  if (backend === "benchmark-container" || backend === "native") {
     features.loopback_tcp = features.unix_sockets = features.shared_memory = features.process_tree = "supported";
-    return { source: "policy", isolation: "container", features, notes: [backend === "podman"
-      ? "Linux task container; local IPC allowed, direct external networking disabled. HTTP(S) egress uses an approved per-command broker. Commands are serialized; start a service and its client in one command."
+    return { source: "policy", isolation: backend === "native" ? "host" : "container", features, notes: [backend === "native"
+      ? "Native OS sandbox; workspace and temporary roots are bounded, direct external networking is disabled, and HTTP(S) egress uses an approved per-command broker."
       : "Container-local IPC; external network disabled. Shared memory remains resource-limited."] };
   }
   return { source: "policy", isolation: "host", features, notes: ["Unknown execution capabilities; never infer them from an exit code."] };

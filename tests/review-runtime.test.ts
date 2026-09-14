@@ -21,7 +21,7 @@ import type { MemoryManager } from "../src/memory/memory-manager.js";
 import type { ContextArtifactIndex } from "../src/context/artifact-index.js";
 import { ProviderError } from "../src/providers/errors.js";
 import { mock } from "node:test";
-import { PodmanSandboxBackend } from "../src/sandbox/podman-backend.js";
+import { NativeSandboxBackend } from "../src/sandbox/native-backend.js";
 
 function state(threadId: string): SessionState { return { threadId, workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
   thinkingEffort: "none", messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [],
@@ -288,12 +288,9 @@ describe("review runtime isolation and recovery", () => {
     const db = createStorage(path.join(directory, "data")), store = new ThreadStore(db);
     const main = store.create({ threadId: "main", workspaceRoot: root, mode: "code", provider: "glm", model: "mock", thinkingEffort: "none" });
     // This message-only fixture must never dispatch commands to the real engine.
-    const noCommands = mock.method(PodmanSandboxBackend.prototype, "prepare", async () => {
+    const noCommands = mock.method(NativeSandboxBackend.prototype, "prepare", async () => {
       throw new Error("Review message fixture must not launch sandbox commands");
     });
-    const noSnapshots = mock.method(PodmanSandboxBackend.prototype, "snapshotForReview", async () => ({ version: 1 as const,
-      owner: "a".repeat(64), generation: "b".repeat(64), image: "sha256:" + "c".repeat(64), revision: "d".repeat(64),
-      dependencyDigest: "e".repeat(64), volumes: {} }));
     let calls = 0;
     try {
       const deps = { workspace: await WorkspaceManager.create(root), store,
@@ -321,7 +318,6 @@ describe("review runtime isolation and recovery", () => {
       assert.equal(second.reused, true); assert.equal(calls, 13);
     } finally {
       noCommands.mock.restore();
-      noSnapshots.mock.restore();
       for (const session of main.reviewSessions ?? []) if (session.directory) await rm(session.directory, { recursive: true, force: true });
       db.close(); await rm(directory, { recursive: true, force: true });
     }
