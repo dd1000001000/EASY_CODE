@@ -20,6 +20,28 @@ class CapturedOutput extends PassThrough implements ScreenOutput {
   }
 }
 
+class BackpressuredOutput extends CapturedOutput {
+  blocked = true;
+
+  override write(
+    chunk: Uint8Array | string,
+    encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+    callback?: (error?: Error | null) => void,
+  ): boolean {
+    const accepted = typeof encodingOrCallback === "function"
+      ? super.write(chunk, encodingOrCallback)
+      : encodingOrCallback === undefined
+        ? super.write(chunk, callback)
+        : super.write(chunk, encodingOrCallback, callback);
+    return this.blocked ? false : accepted;
+  }
+
+  drain(): void {
+    this.blocked = false;
+    this.emit("drain");
+  }
+}
+
 function capture(output: CapturedOutput): { read: () => string } {
   output.setEncoding("utf8");
   let transcript = "";
@@ -70,6 +92,21 @@ describe("FullScreenWriter", () => {
     writer.render(["alpha", "beta"]);
 
     assert.equal(transcript.read(), once);
+    writer.close();
+  });
+
+  it("coalesces blocked paints and renders only the latest frame after drain", () => {
+    const output = new BackpressuredOutput(true, 20, 3);
+    const transcript = capture(output);
+    const writer = new FullScreenWriter(output);
+
+    writer.enter();
+    writer.render(["superseded"]);
+    writer.render(["latest"]);
+    output.drain();
+
+    assert.doesNotMatch(transcript.read(), /superseded/u);
+    assert.match(transcript.read(), /latest/u);
     writer.close();
   });
 

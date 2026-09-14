@@ -6,6 +6,7 @@ import {
   stripAnsi,
   wrapToWidth,
 } from "./layout.js";
+import { OutputDrainMonitor } from "./output-drain-monitor.js";
 
 const DEFAULT_COLUMNS = 80;
 const MAX_COLUMNS = 10_000;
@@ -22,6 +23,7 @@ export type ScreenWidthSource = number | (() => number | undefined);
 export interface ScreenWriterOptions {
   readonly output: ScreenOutput;
   readonly columns?: ScreenWidthSource;
+  readonly onFailure?: (error: Error) => void;
 }
 
 export interface LiveCursor {
@@ -39,6 +41,8 @@ export interface LiveCursor {
 export class ScreenWriter {
   private readonly output: ScreenOutput;
   private readonly widthSource?: ScreenWidthSource;
+  private readonly onFailure?: (error: Error) => void;
+  private readonly outputDrain: OutputDrainMonitor;
   private readonly tty: boolean;
   private closed = false;
   private atLineStart = true;
@@ -61,6 +65,10 @@ export class ScreenWriter {
   constructor(options: ScreenWriterOptions) {
     this.output = options.output;
     this.widthSource = options.columns;
+    this.onFailure = options.onFailure;
+    this.outputDrain = new OutputDrainMonitor(this.output, {
+      onFailure: this.onFailure,
+    });
     this.tty = Boolean(this.output.isTTY);
   }
 
@@ -169,6 +177,7 @@ export class ScreenWriter {
     if (this.tty && this.renderedLiveRows > 0) this.eraseRenderedLive();
     this.resetLiveState();
     this.closed = true;
+    this.outputDrain.close();
   }
 
   private drawLive(text: string, cursor?: LiveCursor): void {
@@ -279,7 +288,11 @@ export class ScreenWriter {
   }
 
   private write(value: string): void {
-    if (value) this.output.write(value);
+    // One inline redraw is emitted as several cursor/text chunks. Once its
+    // first chunk is accepted, keep that atomic redraw intact; the monitor
+    // still rejects a permanently stalled terminal after its fixed deadline.
+    // Full-screen frames, which dominate busy requests, are coalesced instead.
+    this.outputDrain.write(value, true);
   }
 }
 

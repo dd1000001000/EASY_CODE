@@ -41,7 +41,8 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "manage_subagents",
   "submit_task_result",
   "compact_context",
-  "manage_memory",
+  "read_memory",
+  "write_memory",
 ];
 
 const CHILD_TOOL_NAMES: ToolName[] = [
@@ -51,6 +52,7 @@ const CHILD_TOOL_NAMES: ToolName[] = [
   "run_command",
   "start_command",
   "poll_command",
+  "read_memory",
   "cancel_command",
   "submit_task_result",
   "update_file",
@@ -115,7 +117,7 @@ function fakeTool(
       name === "manage_tasks" ||
       name === "manage_subagents" ||
       name === "submit_task_result" ||
-      name === "manage_memory",
+      name === "write_memory",
     definition: {
       type: "function",
       function: {
@@ -528,7 +530,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(outstanding, false);
   });
 
-  it("gives a child only its Code-mode worker tools and hides parent controls and memory", async () => {
+  it("gives a child Code-mode worker tools plus memory reads while hiding parent controls and memory writes", async () => {
     const taskId = "child_tool_visibility";
     let visibleTools: ToolName[] = [];
     const tools = ALL_TOOL_NAMES.map((name) =>
@@ -555,7 +557,8 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.deepEqual([...visibleTools].sort(), [...CHILD_TOOL_NAMES].sort());
     assert.equal(visibleTools.includes("manage_subagents"), false);
     assert.equal(visibleTools.includes("manage_tasks"), false);
-    assert.equal(visibleTools.includes("manage_memory"), false);
+    assert.equal(visibleTools.includes("write_memory"), false);
+    assert.equal(visibleTools.includes("read_memory"), true);
     assert.equal(visibleTools.includes("read_image"), false);
   });
 

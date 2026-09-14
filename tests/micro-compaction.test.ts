@@ -112,11 +112,11 @@ describe("MicroCompaction", () => {
     const messages: ChatMessage[] = [
       call("call_short", "read_file"),
       { role: "tool", tool_call_id: "call_short", name: "read_file", content: shortRead },
-      call("call_memory", "manage_memory"),
+      call("call_memory", "write_memory"),
       {
         role: "tool",
         tool_call_id: "call_memory",
-        name: "manage_memory",
+        name: "write_memory",
         content: largeMemoryResult,
       },
       { role: "assistant", content: "consumed both" },

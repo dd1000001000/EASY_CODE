@@ -32,7 +32,8 @@ export type BuiltinToolName =
   | "manage_subagents"
   | "submit_task_result"
   | "compact_context"
-  | "manage_memory"
+  | "read_memory"
+  | "write_memory"
   | "search_context"
   | "recall_context"
   | "fetch_artifact";
@@ -494,7 +495,10 @@ export interface ToolContext {
     id: string; title: string; preview: string; historical: true;
   }>>;
   recallContext?: (input: { evidenceId: string; offset: number; limit: number }) => Promise<ToolExecutionResult>;
-  searchProjectMemory?: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
+  searchProjectMemory?: (
+    query: string,
+    options?: { readonly limit?: number; readonly includeInactive?: boolean },
+  ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
     absolutePath: string;

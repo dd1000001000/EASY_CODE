@@ -1806,8 +1806,9 @@ export class EasyCodeApp {
           .sort(([left], [right]) => left.localeCompare(right));
         return `sha256:${sha256(JSON.stringify({ files }))}`;
       },
-      searchMemories: async (query) => this.memoryManager.searchHybrid(workspaceId, query,
-        { workspaceRoot: this.workspace.root, limit: this.config.limits.memorySearchLimit }),
+      searchMemories: async (query, options) => this.memoryManager.searchHybrid(workspaceId, query,
+        { workspaceRoot: this.workspace.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
+          includeInactive: options?.includeInactive }),
       captureToolEvidence: (state, callId, tool, result) =>
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
       readToolEvidence: (state, id, offset, limit) =>
@@ -2381,11 +2382,12 @@ export class EasyCodeApp {
           this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
         readToolEvidence: (state, id, offset, limit) =>
           this.memoryManager.evidenceStore.read(workspaceId, state.threadId, id, offset, limit),
-        searchMemories: async (query) =>
+        searchMemories: async (query, options) =>
           this.memoryManager.searchHybrid(
             workspaceId,
             `${request.task.title}\n${request.task.description}\n${query}`,
-            { workspaceRoot: childWorkspace?.root, limit: this.config.limits.memorySearchLimit, readOnly: true },
+            { workspaceRoot: childWorkspace?.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
+              includeInactive: options?.includeInactive, readOnly: true },
           ),
         getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
           const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);

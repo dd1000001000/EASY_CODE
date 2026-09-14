@@ -13,13 +13,14 @@ import {
   CreateFileTool,
   DeleteFileTool,
   FetchArtifactTool,
-  ManageMemoryTool,
+  MemoryToolSession,
   ManageSubagentsTool,
   ManageTasksTool,
   ProposePlanTool,
   PollCommandTool,
   ReadFileTool,
   ReadImageTool,
+  ReadMemoryTool,
   RecallContextTool,
   SearchContextTool,
   RunCommandTool,
@@ -31,6 +32,7 @@ import {
   startCommandInputSchema,
   SubmitTaskResultTool,
   UpdateFileTool,
+  WriteMemoryTool,
   assertDocumentedToolSchema,
   computeToolDefinitionCatalogHash,
   documentToolSchema,
@@ -41,6 +43,7 @@ import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
+  const memorySession = new MemoryToolSession();
   const task = {
     id: "bound_task",
     status: "in_progress",
@@ -51,7 +54,8 @@ function actualDefinitions() {
     new CreateFileTool(workspace).definition,
     new DeleteFileTool(workspace).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
-    new ManageMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace).definition,
+    new ReadMemoryTool(workspace, memorySession).definition,
+    new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
     new ManageTasksTool().definition,
     new ProposePlanTool().definition,
@@ -80,13 +84,13 @@ describe("Prompt Bundle tool metadata", () => {
       "create_file",
       "delete_file",
       "fetch_artifact",
-      "manage_memory",
       "manage_subagents",
       "manage_tasks",
       "poll_command",
       "propose_plan",
       "read_file",
       "read_image",
+      "read_memory",
       "recall_context",
       "respond_directly",
       "run_command",
@@ -96,6 +100,7 @@ describe("Prompt Bundle tool metadata", () => {
       "start_command",
       "submit_task_result",
       "update_file",
+      "write_memory",
     ]);
     assert.deepEqual(loadPromptBundleCatalog().listTools(), names);
     for (const definition of definitions) {

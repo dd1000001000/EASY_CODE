@@ -138,6 +138,7 @@ describe("workspace file tools", () => {
           "compact_context",
           "recall_context",
           "search_context",
+          "read_memory",
         ],
       );
       await catalog.close();

@@ -95,6 +95,24 @@ describe("file diff UI", () => {
     assert.doesNotMatch(output, /\+ three/u);
   });
 
+  it("hard-limits the complete diff block to 100 lines", () => {
+    const output = renderFileDiff(
+      {
+        type: "file_diff",
+        path: "src/large-preview.ts",
+        before: "",
+        after: Array.from(
+          { length: 500 },
+          (_, index) => `line ${index + 1}`,
+        ).join("\n"),
+      },
+      // Callers cannot raise this UI-only safety boundary.
+      { color: false, maxLines: 10_000 },
+    );
+    assert.ok(output.trimEnd().split("\n").length <= 100);
+    assert.match(output, /Diff preview limited to 100 lines/u);
+  });
+
   it("falls back without an unbounded diff for very large replacements", () => {
     const after = Array.from({ length: 10_001 }, (_, index) => `line ${index + 1}`).join("\n");
     const output = renderFileDiff(
