@@ -86,7 +86,46 @@ export function nativeSandboxWorker(): string {
   return fileURLToPath(new URL("native-worker.js", import.meta.url));
 }
 
-export function nativeSandboxEnvironment(home: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+function validatedLocalProxyURL(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !/^\d+$/u.test(url.port) ||
+      Number(url.port) < 1024 || Number(url.port) > 65535 || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("Native sandbox proxy must be an authenticated or unauthenticated HTTP URL on 127.0.0.1 with an explicit unprivileged port");
+  }
+  return url.href;
+}
+
+function validatedProxyPorts(values: readonly number[]): number[] {
+  const ports = [...new Set(values)];
+  if (ports.some(port => !Number.isInteger(port) || port < 1024 || port > 65535) || ports.length > 128) {
+    throw new Error("Native sandbox proxy port list contains an invalid port");
+  }
+  return ports.sort((a, b) => a - b);
+}
+
+export function nativeSandboxProxyEnvironment(
+  localProxyURL?: string,
+  windowsProxyPorts: readonly number[] = [],
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  if (localProxyURL) {
+    const proxy = validatedLocalProxyURL(localProxyURL);
+    environment.HTTP_PROXY = proxy;
+    environment.HTTPS_PROXY = proxy;
+    environment.ALL_PROXY = proxy;
+    environment.NO_PROXY = "127.0.0.1,localhost";
+  }
+  const ports = validatedProxyPorts(windowsProxyPorts);
+  if (ports.length) environment.CODEX_WINDOWS_SANDBOX_PROXY_PORTS = ports.join(",");
+  return environment;
+}
+
+export function nativeSandboxEnvironment(
+  home: string,
+  source: NodeJS.ProcessEnv = process.env,
+  localProxyURL?: string,
+  windowsProxyPorts: readonly number[] = [],
+): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const key of ["SystemRoot", "WINDIR", "COMSPEC", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
     "TEMP", "TMP", "TMPDIR", "HOME", "PATH", "PATHEXT", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ"]) {
@@ -96,5 +135,6 @@ export function nativeSandboxEnvironment(home: string, source: NodeJS.ProcessEnv
   // controller's CODEX_HOME or reads a user's Codex configuration.
   environment.CODEX_HOME = home;
   environment.NO_COLOR = "1";
+  Object.assign(environment, nativeSandboxProxyEnvironment(localProxyURL, windowsProxyPorts));
   return environment;
 }

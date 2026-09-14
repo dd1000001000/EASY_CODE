@@ -20,7 +20,7 @@ import {
 } from "../src/sandbox/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
-import { nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
+import { nativeSandboxEnvironment, nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
 
 describe("native sandbox runtime", () => {
   it("resolves the latest runtime for user installs without publishing a shrinkwrap", async () => {
@@ -49,6 +49,18 @@ describe("native sandbox runtime", () => {
 
   it("reports the version of the runtime npm actually installed", () => {
     assert.match(nativeSandboxRuntimeVersion(), /^\d+\.\d+\.\d+(?:[-+].+)?$/u);
+  });
+
+  it("pins only an explicit local proxy into the native sandbox environment", () => {
+    const environment = nativeSandboxEnvironment("C:\\fixture", { PATH: "fixture", HTTP_PROXY: "http://remote.invalid:80" },
+      "http://easy-code:secret@127.0.0.1:43179", [43180, 43179, 43180]);
+    assert.equal(environment.HTTP_PROXY, "http://easy-code:secret@127.0.0.1:43179/");
+    assert.equal(environment.HTTPS_PROXY, environment.HTTP_PROXY);
+    assert.equal(environment.ALL_PROXY, environment.HTTP_PROXY);
+    assert.equal(environment.NO_PROXY, "127.0.0.1,localhost");
+    assert.equal(environment.CODEX_WINDOWS_SANDBOX_PROXY_PORTS, "43179,43180");
+    assert.throws(() => nativeSandboxEnvironment("C:\\fixture", {}, "http://remote.invalid:43179"), /127\.0\.0\.1/u);
+    assert.throws(() => nativeSandboxEnvironment("C:\\fixture", {}, undefined, [80]), /invalid port/u);
   });
 });
 

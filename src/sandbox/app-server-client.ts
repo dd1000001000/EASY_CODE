@@ -17,9 +17,10 @@ export class NativeAppServerClient {
   private terminated = false;
   private notifications = new Set<(message: any) => void>();
 
-  constructor(entrypoint: string, home: string, environment: NodeJS.ProcessEnv = process.env) {
+  constructor(entrypoint: string, home: string, environment: NodeJS.ProcessEnv = process.env,
+    localProxyURL?: string, windowsProxyPorts: readonly number[] = []) {
     this.child = spawn(entrypoint, ["app-server"], {
-      env: nativeSandboxEnvironment(home, environment), cwd: home, shell: false,
+      env: nativeSandboxEnvironment(home, environment, localProxyURL, windowsProxyPorts), cwd: home, shell: false,
       windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     });
     this.lines = createInterface({ input: this.child.stdout, crlfDelay: Infinity });

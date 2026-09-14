@@ -95,6 +95,8 @@ describe("central runtime limits", () => {
       await assert.rejects(load(), /Legacy limit fields/u);
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 10001 }));
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 150, maxReadLines: 50 }));
+      assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(),
+        nativeSandboxProxyPortStart: 65530, nativeSandboxProxyPortSlots: 32 }), /range exceeds/u);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

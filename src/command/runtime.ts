@@ -566,16 +566,24 @@ export class CommandRuntime {
     if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
       throw new Error("Command material changed while awaiting approval; request again");
     }
+    const networkGateOptions = {
+      signal: networkSignal,
+      authorize: async (host: string, port: number) => {
+        if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) return false;
+        return approveNetwork(`${host}:${port}`);
+      },
+      record: (host: string, port: number, outcome: string) =>
+        this.options.recordLifecycle?.(context, commandId, "network.connection", { host, port, outcome }),
+    };
     const networkGate = networkEnabled && !hostAccess
-      ? await createCommandNetworkGate({
-          signal: networkSignal,
-          authorize: async (host, port) => {
-            if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) return false;
-            return approveNetwork(`${host}:${port}`);
-          },
-          record: (host, port, outcome) => this.options.recordLifecycle?.(context, commandId, "network.connection", { host, port, outcome }),
-        }) : undefined;
-    if (networkGate) sandboxRequest.networkProxyURL = networkGate.proxyURL;
+      ? executionBackend.createNetworkGate
+        ? await executionBackend.createNetworkGate(networkGateOptions)
+        : await createCommandNetworkGate(networkGateOptions)
+      : undefined;
+    if (networkGate) {
+      sandboxRequest.networkProxyURL = networkGate.proxyURL;
+      if (networkGate.proxyPorts) sandboxRequest.networkProxyPorts = networkGate.proxyPorts;
+    }
     try {
     const before = await this.workspace.beginCommandChangeTracking(context.signal);
     this.executionJournal.begin(commandId, context);

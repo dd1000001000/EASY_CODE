@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { NativeAppServerClient } from "./app-server-client.js";
+import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
 import { encodeSandboxControl } from "./control.js";
 import { nativePermissionProfile } from "./native-policy.js";
 import type { ResolvedCommand } from "../command/types.js";
@@ -12,7 +13,7 @@ import type { SandboxWorkerControl } from "./types.js";
 interface Payload {
   commandId: string; entrypoint: string; home: string;
   tempRoot: string; timeoutMs: number; startupMs: number; cleanupMs: number;
-  target: ResolvedCommand; readOnly?: boolean; proxyURL?: string;
+  target: ResolvedCommand; readOnly?: boolean; proxyURL?: string; proxyPorts?: number[];
 }
 
 const payload = JSON.parse(await readFile(process.argv[2]!, "utf8")) as Payload;
@@ -29,8 +30,7 @@ async function authorization(expected: string, timeoutMs: number): Promise<void>
 }
 
 const environment: NodeJS.ProcessEnv = { ...payload.target.environment, TEMP: payload.tempRoot, TMP: payload.tempRoot,
-  TMPDIR: payload.tempRoot, ...(payload.proxyURL ? { HTTP_PROXY: payload.proxyURL, HTTPS_PROXY: payload.proxyURL,
-    ALL_PROXY: payload.proxyURL, NO_PROXY: "127.0.0.1,localhost" } : {}) };
+  TMPDIR: payload.tempRoot, ...nativeSandboxProxyEnvironment(payload.proxyURL, payload.proxyPorts) };
 const permission = nativePermissionProfile(payload.readOnly);
 let service: NativeAppServerClient | undefined;
 let dispatched = false;
@@ -40,7 +40,7 @@ try {
   emit({ type: "stage", stage: "worker_started" });
   if (process.platform === "win32" && process.env.EASY_CODE_JOB_HANDSHAKE === "1")
     await authorization("GO", payload.startupMs);
-  service = new NativeAppServerClient(payload.entrypoint, payload.home, environment);
+  service = new NativeAppServerClient(payload.entrypoint, payload.home, environment, payload.proxyURL, payload.proxyPorts);
   await service.initialize(payload.startupMs);
   const stopListening = service.onNotification(message => {
     if (message?.method !== "command/exec/outputDelta") return;

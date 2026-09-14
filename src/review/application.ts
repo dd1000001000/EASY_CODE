@@ -37,7 +37,7 @@ export interface WorkspaceReviewResult { approved: boolean; requests: number; re
 export interface WorkspaceReviewDependencies {
   workspace: WorkspaceManager; store: ThreadStore; memory: MemoryManager; index: ContextArtifactIndex;
   provider: ModelProvider; budget: TaskBudget; limits: Readonly<RuntimeLimits>;
-  sensitivePaths: string[]; lifecycleDirectory: string; offline: boolean;
+  sensitivePaths: string[]; dataDir?: string; lifecycleDirectory: string; offline: boolean;
   approve(context: ToolContext, request: import("../core/types.js").ApprovalRequest): Promise<boolean>;
   status(text: string): void;
   readBaseline?: (hash: string) => Promise<Buffer | undefined>;
@@ -179,7 +179,8 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       }
       leases.push(deps.store.acquireThreadLease(threadId));
       const backend = deps.offline ? new BenchmarkContainerBackend({ id: reviewId, actor: who, root })
-        : new NativeSandboxBackend(workspace, { limits: deps.limits });
+        : new NativeSandboxBackend(workspace, { limits: deps.limits,
+          dataDir: deps.dataDir ?? path.resolve(deps.lifecycleDirectory, "..") });
       const runtime = new CommandRuntime(workspace, undefined, backend, undefined, {
         networkProfile: deps.offline ? "review_offline" : "development",
         limits: deps.limits,

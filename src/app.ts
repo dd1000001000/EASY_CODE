@@ -1980,6 +1980,7 @@ export class EasyCodeApp {
           readBaseline: hash => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).get(hash),
           provider, budget, limits: this.config.limits,
           sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
+          dataDir: this.config.dataDir,
           lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
           status: text => this.terminal.status(text),
           approve: async (context, request) => this.approvalQueue.run(async () => {

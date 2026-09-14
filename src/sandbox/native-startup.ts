@@ -2,16 +2,24 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import { resolveEasyCodePaths } from "../config/defaults.js";
+import { ensureSharedCommandNetworkGateServer } from "../command/network-gate.js";
 import { NativeAppServerClient } from "./app-server-client.js";
 import { nativePermissionProfile } from "./native-policy.js";
 import {
   nativeSandboxBootstrapEntrypoint,
+  nativeSandboxEnvironment,
   nativeSandboxEntrypoint,
   nativeSandboxHome,
   nativeSandboxRuntimeVersion,
 } from "./native-runtime.js";
 import type { SandboxReadiness, SandboxSetupResult, SandboxStartupService } from "./startup.js";
 import { prepareWindowsSandboxStorage } from "./windows-bootstrap.js";
+import {
+  acquireWindowsProxyPortLease,
+  withWindowsProxyProvisioningLock,
+  type WindowsProxyPortLease,
+} from "./windows-proxy-registry.js";
 
 const WINDOWS_SANDBOX_BIN_LOCK_REGRESSION_VERSIONS = new Set(["0.154.0"]);
 
@@ -25,6 +33,7 @@ export function needsWindowsBootstrapCompatibility(error: unknown, runtimeVersio
 }
 
 export class NativeSandboxStartupService implements SandboxStartupService {
+  private proxyLease?: Promise<WindowsProxyPortLease>;
   constructor(private readonly limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
     private readonly dataDir?: string, private readonly report: (message: string) => void = () => undefined) {}
 
@@ -33,8 +42,25 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     return { status, platform: process.platform, backend: `Native OS sandbox (${platformName})`, details, canSetup, warnings: [] };
   }
 
+  private resolvedDataDir(): string { return this.dataDir ?? resolveEasyCodePaths().dataDir; }
+
+  /** Bind one broker for this CLI before inspecting Windows policy. Main,
+   * child and reviewer agents in the process later reuse this listener. */
+  private async windowsProxyState(): Promise<{ lease: WindowsProxyPortLease; proxyURL: string; ports: readonly number[] } | undefined> {
+    if (process.platform !== "win32") return undefined;
+    this.proxyLease ??= acquireWindowsProxyPortLease({
+      dataDir: this.resolvedDataDir(),
+      portStart: this.limits.nativeSandboxProxyPortStart,
+      portSlots: this.limits.nativeSandboxProxyPortSlots,
+      bind: ensureSharedCommandNetworkGateServer,
+    });
+    const lease = await this.proxyLease;
+    return { lease, proxyURL: `http://127.0.0.1:${lease.port}`, ports: await lease.setupPorts() };
+  }
+
   private async runWindowsSetup(entrypoint: string, home: string): Promise<void> {
-    const service = new NativeAppServerClient(entrypoint, home);
+    const proxy = await this.windowsProxyState();
+    const service = new NativeAppServerClient(entrypoint, home, process.env, proxy?.proxyURL, proxy?.ports);
     try {
       await service.initialize(this.limits.sandboxStartupWindowsMs);
       const completion = service.waitFor("windowsSandbox/setupCompleted", params => params?.mode === "elevated",
@@ -56,14 +82,15 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     };
   }
 
-  async inspect(): Promise<SandboxReadiness> {
+  private async inspectUnlocked(): Promise<SandboxReadiness> {
     if (!["win32", "darwin", "linux"].includes(process.platform)) return this.result("unsupported", [`Unsupported native sandbox platform: ${process.platform}`]);
     const home = nativeSandboxHome(this.dataDir);
     let root: string | undefined;
     try {
       await mkdir(home, { recursive: true, mode: 0o700 });
       root = await mkdtemp(path.join(os.tmpdir(), "easy-code-native-readiness-"));
-      const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home);
+      const proxy = await this.windowsProxyState();
+      const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home, process.env, proxy?.proxyURL, proxy?.ports);
       try {
         await service.initialize(this.limits.sandboxStartupWindowsMs);
         if (process.platform === "win32") {
@@ -74,11 +101,13 @@ export class NativeSandboxStartupService implements SandboxStartupService {
           ? [path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "whoami.exe")]
           : ["/bin/sh", "-c", "printf EASY_CODE_NATIVE_OK"];
         const result = await service.request("command/exec", { command: probe, cwd: root,
+          ...(proxy ? { env: nativeSandboxEnvironment(home, process.env, proxy.proxyURL, proxy.ports) } : {}),
           ...nativePermissionProfile(), timeoutMs: 15_000 },
           process.platform === "win32" ? this.limits.sandboxStartupWindowsMs : this.limits.sandboxStartupPosixMs);
         if (result?.exitCode !== 0) throw new Error(String(result?.stderr ?? "readiness command failed"));
         if (process.platform === "win32" && !/\\codexsandboxoffline\s*$/iu.test(String(result.stdout ?? "").trim()))
           return this.result("setup_required", ["The dedicated Windows offline identity is not active. Elevated setup is required."], true);
+        await proxy?.lease.markAuthorized();
         return this.result("ready", [`Installed native runtime ${nativeSandboxRuntimeVersion()} passed an enforced command probe.`,
           process.platform === "win32" ? "Dedicated offline identity is active." : "Native filesystem sandbox is active."]);
       } finally { await service.close(); }
@@ -87,6 +116,22 @@ export class NativeSandboxStartupService implements SandboxStartupService {
       return this.result(process.platform === "win32" ? "setup_required" : /not found|ENOENT|bubblewrap|bwrap/iu.test(message)
         ? "dependencies_missing" : "probe_failed", [message.slice(0, 2000)], process.platform === "win32");
     } finally { if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined); }
+  }
+
+  async inspect(): Promise<SandboxReadiness> {
+    if (process.platform !== "win32") return this.inspectUnlocked();
+    try {
+      const proxy = await this.windowsProxyState();
+      const authorized = await proxy!.lease.authorizedPorts();
+      if (authorized.includes(proxy!.lease.port)) return this.inspectUnlocked();
+      // A first probe may cause the native runtime to reconcile durable WFP
+      // policy. Serialize it with setup so two fresh shells cannot publish
+      // competing port sets and both incorrectly mark themselves authorized.
+      return withWindowsProxyProvisioningLock(this.resolvedDataDir(), () => this.inspectUnlocked(),
+        this.limits.nativeSandboxSetupTimeoutMs + this.limits.sandboxStartupWindowsMs);
+    } catch (error) {
+      return this.result("setup_required", [errorMessage(error).slice(0, 2000)], true);
+    }
   }
 
   async setup(readiness?: SandboxReadiness): Promise<SandboxSetupResult> {
@@ -105,33 +150,40 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     if (process.platform !== "win32") return { status: "unavailable",
       message: "Install the platform dependency reported by the readiness check, then recheck. EASY CODE does not modify global kernel policy automatically.", readiness };
     await mkdir(home, { recursive: true, mode: 0o700 });
-    this.report("Requesting administrator-approved Windows native sandbox setup.");
-    try {
-      await this.runWindowsSetup(nativeSandboxEntrypoint(), home);
-    } catch (error) {
-      const primaryMessage = errorMessage(error);
-      const runtimeVersion = nativeSandboxRuntimeVersion();
-      if (!needsWindowsBootstrapCompatibility(error, runtimeVersion)) {
-        return this.setupFailure(primaryMessage, readiness);
-      }
-      this.report(`Native runtime ${runtimeVersion} hit its known fresh-install bootstrap regression; using the bundled compatibility bootstrap once.`);
+    this.report("Requesting one administrator-approved Windows sandbox setup for this EASY CODE process port.");
+    return withWindowsProxyProvisioningLock(this.resolvedDataDir(), async () => {
+      // Another CLI may have completed the same durable union while this process
+      // waited for the setup lock. Recheck before opening an elevation prompt.
+      const current = await this.inspectUnlocked();
+      if (current.status === "ready") return { status: "already_ready" as const,
+        message: "Native sandbox is already ready.", readiness: current };
       try {
-        // The directory is private, generated sandbox state. Resetting it here
-        // avoids retaining a partially locked directory owned by the elevated
-        // helper. Journal, configuration and project data live elsewhere.
-        await rm(home, { recursive: true, force: true });
-        await prepareWindowsSandboxStorage(home);
-        await mkdir(home, { recursive: true, mode: 0o700 });
-        await this.runWindowsSetup(nativeSandboxBootstrapEntrypoint(), home);
-      } catch (fallbackError) {
-        return this.setupFailure(
-          `${primaryMessage}; compatibility bootstrap failed: ${errorMessage(fallbackError)}`,
-          readiness,
-        );
+        await this.runWindowsSetup(nativeSandboxEntrypoint(), home);
+      } catch (error) {
+        const primaryMessage = errorMessage(error);
+        const runtimeVersion = nativeSandboxRuntimeVersion();
+        if (!needsWindowsBootstrapCompatibility(error, runtimeVersion)) {
+          return this.setupFailure(primaryMessage, current);
+        }
+        this.report(`Native runtime ${runtimeVersion} hit its known fresh-install bootstrap regression; using the bundled compatibility bootstrap once.`);
+        try {
+          // The directory is private, generated sandbox state. Resetting it here
+          // avoids retaining a partially locked directory owned by the elevated
+          // helper. Journal, configuration and project data live elsewhere.
+          await rm(home, { recursive: true, force: true });
+          await prepareWindowsSandboxStorage(home);
+          await mkdir(home, { recursive: true, mode: 0o700 });
+          await this.runWindowsSetup(nativeSandboxBootstrapEntrypoint(), home);
+        } catch (fallbackError) {
+          return this.setupFailure(
+            `${primaryMessage}; compatibility bootstrap failed: ${errorMessage(fallbackError)}`,
+            current,
+          );
+        }
       }
-    }
-    const after = await this.inspect();
-    return { status: after.status === "ready" ? "completed" : "failed",
-      message: after.status === "ready" ? "Windows native sandbox is ready." : "Windows setup completed but the enforcement probe did not pass.", readiness: after };
+      const after = await this.inspectUnlocked();
+      return { status: after.status === "ready" ? "completed" : "failed",
+        message: after.status === "ready" ? "Windows native sandbox is ready." : "Windows setup completed but the enforcement probe did not pass.", readiness: after };
+    }, this.limits.nativeSandboxSetupTimeoutMs + this.limits.sandboxStartupWindowsMs);
   }
 }
