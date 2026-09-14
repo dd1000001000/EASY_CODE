@@ -2889,8 +2889,10 @@ export class EasyCodeApp {
     if (request.signal?.aborted) return false;
     const threadId = this.state.threadId;
     const mode = this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual");
-    if (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk)) {
+    if (request.requiredReviewer !== "user" &&
+      (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))) {
       this.terminal.info(`Approved automatically: ${request.title}`);
+      request.observeDecision?.("allow_once");
       return true;
     }
 
@@ -2903,11 +2905,12 @@ export class EasyCodeApp {
       this.terminal.info(
         `Approved by this Thread's prefix grant: ${formatCommandApprovalPrefix(request.commandPrefix)}`,
       );
+      request.observeDecision?.("allow_prefix");
       return true;
     }
 
     let decision: import("./core/types.js").ApprovalDecision | undefined;
-    if (mode === "auto_approve") {
+    if (mode === "auto_approve" && request.requiredReviewer !== "user") {
       this.terminal.info(`Independent approval review: ${request.title}`);
       const review = await this.reviewApproval(request);
       this.threadStore.appendEvent(threadId, { type: "approval.reviewed", payload: { id: request.id, source: request.source, ...review } });
@@ -2928,11 +2931,15 @@ export class EasyCodeApp {
     if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
     this.threadStore.appendEvent(threadId, { type: "approval.decided", payload: { id: request.id, decision, source: request.source } });
     if (decision === "reject") {
+      request.observeDecision?.("reject");
       this.terminal.info("Command execution rejected.");
       return false;
     }
     if (decision === "allow_once") {
-      this.terminal.info("Approved once; starting the command.");
+      request.observeDecision?.("allow_once");
+      this.terminal.info(request.executionTiming === "future_resubmission"
+        ? "Approved once for the next exact resubmission; the stopped command was not replayed."
+        : "Approved once; starting the command.");
       return true;
     }
 
@@ -2950,8 +2957,9 @@ export class EasyCodeApp {
     );
     this.state.commandApprovalPrefixes = prefixes;
     this.dirty = true;
+    request.observeDecision?.("allow_prefix");
     this.terminal.info(
-      `Allowed for this Thread: ${formatCommandApprovalPrefix(request.commandPrefix)}`,
+      `${request.executionTiming === "future_resubmission" ? "Allowed for a future resubmission in this Thread" : "Allowed for this Thread"}: ${formatCommandApprovalPrefix(request.commandPrefix)}`,
     );
     return true;
   }
@@ -4137,6 +4145,7 @@ export class EasyCodeApp {
         limits: this.config.limits,
         quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspaceIdFromRoot(workspace.root)}.json`),
         lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspaceIdFromRoot(workspace.root)),
+        boundaryStatePath: path.join(this.config.dataDir, "command-boundary", `${workspaceIdFromRoot(workspace.root)}.json`),
         createOutputArchive: (commandId, context) => this.memoryManager.evidenceStore.createCommandArchive(
           workspaceIdFromRoot(this.workspace.root), context.threadId, commandId),
         recordLifecycle: (context, commandId, type, payload) => {

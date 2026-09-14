@@ -4,6 +4,19 @@ import { nativeSandboxEnvironment } from "./native-runtime.js";
 
 interface PendingRequest { resolve(value: any): void; reject(error: Error): void; timer: NodeJS.Timeout }
 
+/** Preserve JSON-RPC diagnostics so the command bridge can distinguish an
+ * enforced sandbox denial from an uncertain transport failure. */
+export class NativeAppServerRequestError extends Error {
+  constructor(
+    message: string,
+    readonly rpcCode: unknown,
+    readonly data: unknown,
+  ) {
+    super(message);
+    this.name = "NativeAppServerRequestError";
+  }
+}
+
 /** Minimal, model-free client for Codex's documented app-server command and
  * Windows setup APIs. It never starts a thread or sends a model request. */
 export class NativeAppServerClient {
@@ -93,7 +106,11 @@ export class NativeAppServerClient {
       const pending = this.pending.get(message.id);
       if (!pending) return;
       this.pending.delete(message.id); clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error(String(message.error.message ?? JSON.stringify(message.error))));
+      if (message.error) pending.reject(new NativeAppServerRequestError(
+        String(message.error.message ?? JSON.stringify(message.error)),
+        message.error.code,
+        message.error.data,
+      ));
       else pending.resolve(message.result);
       return;
     }

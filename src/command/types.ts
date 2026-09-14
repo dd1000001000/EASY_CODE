@@ -182,6 +182,19 @@ export interface RunCommandOutput {
     phase: "prepare" | "initialization" | "execution";
     retryable: boolean;
   };
+  /** Present only when the enforced sandbox explicitly rejected an operation
+   * beyond its boundary. This is a known terminal result, not quarantine. */
+  sandboxBoundary?: {
+    attempt: number;
+    modelCorrectionBudget: number;
+    action: "adjust_command" | "approved_once" | "approved_prefix" | "rejected" | "user_required" | "benchmark_allow_once" | "benchmark_rejected";
+    access: "read" | "write" | "delete" | "execute" | "unknown";
+    destination?: string;
+    destinationCategory: "outside_workspace" | "protected_path" | "unknown";
+    /** True only when the next exact invocation may consume a one-shot host grant. */
+    hostRetryAuthorized: boolean;
+    autoReplay: false;
+  };
   /** Present for every unsuccessful terminal execution result. */
   failure?: CommandFailure;
   executed: {

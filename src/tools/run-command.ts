@@ -118,10 +118,22 @@ function commandResult(
   const timeoutSummary = output.timeout
     ? `; ${formatCommandTimeoutBudget(output.timeout)}`
     : "";
+  const boundary = output.status !== "running" ? output.sandboxBoundary : undefined;
+  const boundarySummary = boundary
+    ? boundary.action === "adjust_command"
+      ? `The sandbox stopped this command at a known boundary (attempt ${boundary.attempt}). Cleanup is confirmed. Adjust paths or cache/temp environment to remain inside the workspace/sandbox, then submit a new command. Do not wrap or obfuscate the same operation to bypass enforcement.`
+      : boundary.action === "approved_once" || boundary.action === "approved_prefix"
+        ? `The sandbox stopped this command at a known boundary (attempt ${boundary.attempt}). The user approved ${boundary.action === "approved_once" ? "one exact host resubmission" : "the matching host permission prefix"}. Runtime did not replay the stopped command; submit the intended command again and the exact authorization will be applied.`
+        : boundary.action === "benchmark_allow_once"
+          ? `The benchmark sandbox stopped this command at a known boundary. Benchmark policy approved a new attempt inside the task container only; Runtime did not replay it and did not grant host or network escape.`
+          : boundary.action === "rejected" || boundary.action === "benchmark_rejected"
+            ? "The sandbox stopped this command at a known boundary and broader execution was rejected. Do not bypass or resubmit the same outside-sandbox operation."
+            : "The sandbox stopped this command at a known boundary. Human approval is still required; no broader permission was granted and Runtime did not replay it."
+    : undefined;
   const policyRecovery = output.policyDecision.recommendation
     ? ` Recovery: ${output.policyDecision.recommendation}`
     : "";
-  const baseSummary = outputLimited ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
+  const baseSummary = boundarySummary ?? (outputLimited ? "Command output exceeded the 32 MiB bridge limit. Cleanup and execution are reported separately; do not automatically rerun it."
     : output.status === "running"
     ? `Command ${output.commandId} is running; use poll_command with commandId and optional waitMs`
     : operation === "cancel" && output.status === "canceled"
@@ -144,7 +156,7 @@ function commandResult(
       (output.requestMetadata?.verificationKind && output.validation
         ? `; validation ${output.validation.status}: ${output.validation.reason}` +
           (output.validation.standard?.status === "changed" ? "; original tests/configuration changed: this result cannot resolve the original failure" :
-            output.validation.standard?.status === "unknown" ? "; testing-standard coverage is incomplete: no verified recovery can be claimed" : "") : "");
+            output.validation.standard?.status === "unknown" ? "; testing-standard coverage is incomplete: no verified recovery can be claimed" : "") : ""));
   const summary = cleanupUnsafe
     ? `${baseSummary}; cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
     : `${baseSummary}${timeoutSummary}`;
@@ -156,6 +168,12 @@ function commandResult(
       version: 1 as const, kind: "execution" as const, code: "command_environment_quarantined",
       execution: "unknown" as const, recovery: "none" as const, issues: [],
       instruction: "Pause the task. Execution and cleanup are separate outcomes; repair and verify the environment outside the agent before resuming. Do not retry commands or start review experiments.",
+    } } : boundary ? { failure: {
+      version: 1 as const, kind: "execution" as const, code: "sandbox_boundary_violation",
+      execution: "exited" as const,
+      recovery: boundary.action === "adjust_command" || boundary.action === "benchmark_allow_once" ? "adjust_request" as const
+        : boundary.action === "approved_once" || boundary.action === "approved_prefix" ? "resubmit_exact" as const : "none" as const,
+      issues: [], instruction: boundarySummary!,
     } } : {}),
     ...(successful ? {} : { error: summary }),
   };

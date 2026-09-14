@@ -44,6 +44,11 @@ export const runtimeLimitsSchema = z.object({
   // Retry counts exclude the initial attempt. Shared by every agent role.
   modelContentRetries: integer(0, 2),
   sandboxInitializationRetries: integer(0, 1),
+  /** Sandbox boundary violations are model-correctable before human escalation. */
+  sandboxBoundaryModelCorrections: integer(0, 5),
+  sandboxBoundaryApprovalThreshold: integer(1, 10),
+  benchmarkBoundaryApproval: z.enum(["allow_once", "reject"]),
+  sandboxBoundaryIncidentLimit: integer(1, 128),
   // Replaying effects or treating unfinished work as complete is never a recovery.
   commandExecutionRetries: z.literal(0),
   subagentFailureRetries: z.literal(0),
@@ -147,6 +152,8 @@ export const runtimeLimitsSchema = z.object({
   check(value.artifactChunkChars <= value.artifactIndexBatchChars, "artifactIndexBatchChars", "Index batch must contain a complete chunk");
   check(value.commandArchiveMaxBytes <= value.commandThreadArchiveMaxBytes, "commandThreadArchiveMaxBytes", "Thread quota must contain one command archive");
   check(value.reviewHandoffMaxTokens >= value.reviewSummaryMaxTokens * 2 + 1024, "reviewHandoffMaxTokens", "Reserve both summaries and at least 1024 tokens of Runtime metadata");
+  check(value.sandboxBoundaryApprovalThreshold === value.sandboxBoundaryModelCorrections + 1,
+    "sandboxBoundaryApprovalThreshold", "Approval threshold must immediately follow the model-correction budget");
   if (value.contextReferenceTargetRatio >= value.contextReferenceTriggerRatio) context.addIssue({
     code: "custom", path: ["contextReferenceTargetRatio"], message: "Reference target must be below trigger" });
   if (value.contextCompactionTargetRatio >= value.contextCompactionTriggerRatio) context.addIssue({

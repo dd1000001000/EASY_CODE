@@ -295,8 +295,8 @@ export interface ToolFailureInfo {
   version: 1;
   kind: "validation" | "protocol" | "execution";
   code: string;
-  execution: "not_started" | "unknown";
-  recovery: "correct_arguments" | "inspect_state" | "none";
+  execution: "not_started" | "unknown" | "exited";
+  recovery: "correct_arguments" | "adjust_request" | "resubmit_exact" | "inspect_state" | "none";
   issues: Array<{ path: string; code: string; expected?: string; message: string }>;
   issuesTruncated?: boolean;
   instruction: string;
@@ -457,6 +457,14 @@ export interface ApprovalRequest {
   /** Runtime cancellation of a pending approval (e.g. command timeout). */
   signal?: AbortSignal;
   source?: { agentId?: string; taskId?: string };
+  /** Skip the independent approval agent and require a user decision. Existing
+   * user-issued prefix grants may still satisfy the request. */
+  requiredReviewer?: "selected" | "user";
+  /** Approval is recorded now but a stopped command is never replayed. */
+  executionTiming?: "immediate" | "future_resubmission";
+  /** Ephemeral Runtime callback. Decisions remain authoritative in the app
+   * Journal; this only lets the caller report which choice was made. */
+  observeDecision?: (decision: ApprovalDecision) => void;
   command?: { executable: string; args: string[]; cwd: string; scope: "workspace" | "host" | "container"; network: boolean };
 }
 

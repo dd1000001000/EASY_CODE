@@ -97,4 +97,11 @@ export type SandboxWorkerControl =
         | "cleanup_start";
     }
   | { type: "sandbox_error"; message: string }
+  | {
+      type: "sandbox_boundary_violation";
+      access: "read" | "write" | "delete" | "execute" | "unknown";
+      destination?: string;
+      destinationCategory: "outside_workspace" | "protected_path" | "unknown";
+      message: string;
+    }
   | { type: "target_spawn_error"; message: string };

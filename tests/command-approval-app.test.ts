@@ -196,6 +196,24 @@ describe("application command approval decisions", () => {
       assert.equal(harness.threads.recover(harness.state.threadId).commandApprovalPrefixes.length, 1);
     } finally { harness.close(); }
   });
+  it("bypasses the approval agent for a required boundary decision and reports the user's choice", async () => {
+    const harness = approvalHarness("boundary_user_decision");
+    try {
+      harness.setMode("auto_approve"); harness.setReview("allow_once");
+      let observed: ApprovalDecision | undefined;
+      harness.terminal.decisions.push("reject");
+      assert.equal(await harness.request({ ...approvalRequest(), requiredReviewer: "user",
+        executionTiming: "future_resubmission", observeDecision: decision => { observed = decision; } }), false);
+      assert.equal(harness.terminal.requests.length, 1);
+      assert.equal(observed, "reject");
+
+      harness.terminal.decisions.push("allow_once");
+      assert.equal(await harness.request({ ...approvalRequest(), requiredReviewer: "user",
+        executionTiming: "future_resubmission", observeDecision: decision => { observed = decision; } }), true);
+      assert.equal(observed, "allow_once");
+      assert.match(harness.terminal.messages.at(-1) ?? "", /next exact resubmission/u);
+    } finally { harness.close(); }
+  });
   it("allows once without remembering and asks again next time", async () => {
     const harness = approvalHarness("thread_approval_once");
     try {

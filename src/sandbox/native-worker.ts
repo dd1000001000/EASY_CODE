@@ -3,7 +3,9 @@
 import { readFile } from "node:fs/promises";
 import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
+import path from "node:path";
 import { NativeAppServerClient } from "./app-server-client.js";
+import { sandboxBoundaryResultFromError } from "./native-command-error.js";
 import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
 import { encodeSandboxControl } from "./control.js";
 import { nativePermissionProfile } from "./native-policy.js";
@@ -30,8 +32,12 @@ async function authorization(expected: string, timeoutMs: number): Promise<void>
 }
 
 const environment: NodeJS.ProcessEnv = { ...payload.target.environment, TEMP: payload.tempRoot, TMP: payload.tempRoot,
-  TMPDIR: payload.tempRoot, ...nativeSandboxProxyEnvironment(payload.proxyURL, payload.proxyPorts) };
+  TMPDIR: payload.tempRoot, NPM_CONFIG_CACHE: path.join(payload.tempRoot, "npm-cache"),
+  npm_config_cache: path.join(payload.tempRoot, "npm-cache"), PIP_CACHE_DIR: path.join(payload.tempRoot, "pip-cache"),
+  XDG_CACHE_HOME: path.join(payload.tempRoot, "xdg-cache"), YARN_CACHE_FOLDER: path.join(payload.tempRoot, "yarn-cache"),
+  ...nativeSandboxProxyEnvironment(payload.proxyURL, payload.proxyPorts) };
 const permission = nativePermissionProfile(payload.readOnly);
+
 let service: NativeAppServerClient | undefined;
 let dispatched = false;
 let executionReported = false;
@@ -40,7 +46,9 @@ try {
   emit({ type: "stage", stage: "worker_started" });
   if (process.platform === "win32" && process.env.EASY_CODE_JOB_HANDSHAKE === "1")
     await authorization("GO", payload.startupMs);
-  service = new NativeAppServerClient(payload.entrypoint, payload.home, environment, payload.proxyURL, payload.proxyPorts);
+  // The target receives the approved proxy environment. The app-server itself
+  // is infrastructure and must not be attributed as target network traffic.
+  service = new NativeAppServerClient(payload.entrypoint, payload.home, environment, undefined, payload.proxyPorts);
   await service.initialize(payload.startupMs);
   const stopListening = service.onNotification(message => {
     if (message?.method !== "command/exec/outputDelta") return;
@@ -62,9 +70,15 @@ try {
       ...(streamOutput ? { processId: payload.commandId, streamStdoutStderr: true } : {}) },
       payload.timeoutMs + payload.cleanupMs);
   } catch (error) {
-    if (!/command timed out/iu.test(String(error))) throw error;
-    commandTimedOut = true;
-    result = { exitCode: 124, stdout: "", stderr: "" };
+    const violation = sandboxBoundaryResultFromError(error);
+    if (violation) {
+      emit(violation.event);
+      result = violation;
+    } else {
+      if (!/command timed out/iu.test(String(error))) throw error;
+      commandTimedOut = true;
+      result = { exitCode: 124, stdout: "", stderr: "" };
+    }
   } finally {
     stopListening();
   }
