@@ -47,7 +47,7 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
   ".easy_code",
   "node_modules",
 ]);
-const RUNTIME_SCRATCH_DIRECTORY = ".easy-code-srt-runtime";
+const RUNTIME_SCRATCH_DIRECTORY = ".easy-code-runtime";
 // Workspace snapshots are taken before and after every command. Hashing each
 // file serially makes otherwise instant commands pay the full repository scan
 // latency twice, which is especially visible on container overlay filesystems.

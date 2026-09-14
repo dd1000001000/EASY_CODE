@@ -18,11 +18,6 @@ const MENU_NAVIGATION_CONTEXT_KEY = "easyCode.menuNavigationEnabled";
 const BRIDGE_ENDPOINT_ENV = "EASY_CODE_VSCODE_BRIDGE_ENDPOINT";
 const BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 const PASTE_IMAGE_SEQUENCE = "\x1b]6973;easy-code;paste-image\x07";
-const TOGGLE_THINKING_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-thinking;";
-const TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX = "\x1b]6973;easy-code;toggle-adjustment;";
-// Deprecated compatibility export. New callers should use the toggle name;
-// the old symbol deliberately emits the new action as well.
-const SHOW_THINKING_SEQUENCE_PREFIX = TOGGLE_THINKING_SEQUENCE_PREFIX;
 const THINKING_LINK_PREFIX = "Thinking #";
 const ADJUSTMENT_LINK_PREFIX = "Queued adjustment #";
 const THINKING_ID_PATTERN = /^[1-9][0-9]{0,15}$/;
@@ -51,7 +46,7 @@ function findThinkingMarkers(line) {
   const markerPatterns = [
     /▶ Thinking #([1-9][0-9]{0,15}) · [^\r\n]*? · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
     /↕ Thinking #([1-9][0-9]{0,15}) · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
-    /↕ Thinking #([1-9][0-9]{0,15}) · (?:Ctrl\/Cmd\+click|Click again) to close · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
+    /↕ Thinking #([1-9][0-9]{0,15}) · Ctrl\/Cmd\+click to close · \/thinking ([1-9][0-9]{0,15})(?=$|[ \t])/g,
   ];
   for (const markerPattern of markerPatterns) {
     for (const match of line.matchAll(markerPattern)) {
@@ -100,50 +95,17 @@ function findAdjustmentMarkers(line) {
 }
 
 /**
- * @param {string | number} id
- */
-function toggleThinkingSequence(id) {
-  const value = String(id);
-  if (
-    !THINKING_ID_PATTERN.test(value) ||
-    !Number.isSafeInteger(Number(value))
-  ) {
-    throw new TypeError("EASY CODE thinking IDs must be positive decimal integers.");
-  }
-  return `${TOGGLE_THINKING_SEQUENCE_PREFIX}${value}\x07`;
-}
-
-/** @param {string | number} id */
-function toggleAdjustmentSequence(id) {
-  const value = String(id);
-  if (
-    !THINKING_ID_PATTERN.test(value) ||
-    !Number.isSafeInteger(Number(value))
-  ) {
-    throw new TypeError("EASY CODE adjustment IDs must be positive decimal integers.");
-  }
-  return `${TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX}${value}\x07`;
-}
-
-/**
- * @deprecated Use toggleThinkingSequence. Kept so older extension consumers
- * receive the new toggle action instead of retaining one-way show behavior.
- * @param {string | number} id
- */
-function showThinkingSequence(id) {
-  return toggleThinkingSequence(id);
-}
-
-/**
  * @param {(terminal: import('vscode').Terminal | undefined) => boolean} isEnabled
  * @param {(terminal: import('vscode').Terminal) => boolean} [tryRecover]
  * @param {(terminal: import('vscode').Terminal, kind: "thinking" | "adjustment", id: number) => boolean} [dispatchToggle]
+ * @param {(terminal: import('vscode').Terminal) => void} [onBridgeUnavailable]
  * @returns {import('vscode').TerminalLinkProvider}
  */
 function createThinkingLinkProvider(
   isEnabled,
   tryRecover = () => false,
   dispatchToggle = () => false,
+  onBridgeUnavailable = () => undefined,
 ) {
   // Metadata never comes from a command string and is retained only for link
   // objects created by this provider. A forged object passed to the handler is
@@ -183,24 +145,15 @@ function createThinkingLinkProvider(
     handleTerminalLink(link) {
       const metadata = linkMetadata.get(link);
       if (!metadata || !isEnabled(metadata.terminal)) return;
+      let dispatched = false;
       try {
-        if (dispatchToggle(
+        dispatched = dispatchToggle(
           metadata.terminal,
           metadata.kind,
           Number(metadata.id),
-        )) {
-          return;
-        }
-      } catch {
-        // Mixed installations and a transient bridge failure retain the
-        // legacy PTY path. It can move scrollback, but never loses the toggle.
-      }
-      metadata.terminal.sendText(
-        metadata.kind === "adjustment"
-          ? toggleAdjustmentSequence(metadata.id)
-          : toggleThinkingSequence(metadata.id),
-        false,
-      );
+        );
+      } catch { /* The unavailable callback presents the current-protocol fix. */ }
+      if (!dispatched) onBridgeUnavailable(metadata.terminal);
     },
   };
 }
@@ -449,6 +402,11 @@ async function activate(context) {
         isEnabled,
         tryRecover,
         dispatchDisclosureToggle,
+        () => {
+          void vscode.window.showWarningMessage(
+            "EASY CODE terminal bridge is unavailable. Restart this terminal after updating the EASY CODE extension.",
+          );
+        },
       ),
     ),
     vscode.window.onDidStartTerminalShellExecution((event) => {
@@ -656,12 +614,6 @@ module.exports = {
   findThinkingMarkers,
   findAdjustmentMarkers,
   PASTE_IMAGE_SEQUENCE,
-  showThinkingSequence,
-  SHOW_THINKING_SEQUENCE_PREFIX,
-  toggleThinkingSequence,
-  toggleAdjustmentSequence,
-  TOGGLE_THINKING_SEQUENCE_PREFIX,
-  TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX,
   BRIDGE_ENDPOINT_ENV,
   BRIDGE_TOKEN_ENV,
   MENU_NAVIGATION_CONTEXT_KEY,

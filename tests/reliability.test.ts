@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import type { CommandAuditEntry, SessionState } from "../src/core/types.js";
@@ -24,9 +24,10 @@ import type { ReviewParticipant } from "../src/review/driver.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { newDelivery, pendingDelivery } from "../src/review/delivery.js";
+import { baseSessionState } from "./session-state.js";
 
 export function reliabilityState(): SessionState {
-  return { threadId: "reliability", workspaceRoot: process.cwd(), mode: "code", provider: "qwen", model: "mock",
+  return { ...baseSessionState(), threadId: "reliability", workspaceRoot: process.cwd(), mode: "code", provider: "qwen", model: "mock",
     thinkingEffort: "none", messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [],
     commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" };
 }
@@ -108,7 +109,8 @@ describe("delivery reliability", () => {
       runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: true }; } });
     const result = await runtime.run(s, "Continue", { maxSteps: 4, maxContextChars: 100000, maxContextTokens: 34000,
       maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.equal(result.reason, "failed"); assert.equal(reviews, 1); assert.ok(s.delivery);
+    assert.equal(result.reason, "paused"); assert.equal(result.pause?.cause, "review");
+    assert.equal(reviews, 1); assert.ok(s.delivery);
   });
   it("a known failed target vetoes consensus citing another passing target", () => {
     const s = reliabilityState();

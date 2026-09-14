@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -25,8 +25,9 @@ import { estimatedTokens } from "../src/context/token-budget.js";
 import { foldReviewEvent } from "../src/review/session.js";
 import { recallThreadContext } from "../src/context/recall.js";
 import type { ChatMessage, SessionState, ToolContext } from "../src/core/types.js";
+import { baseSessionState } from "./session-state.js";
 
-const state = (): SessionState => ({ threadId: "thread_large", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
+const state = (): SessionState => ({ ...baseSessionState(), threadId: "thread_large", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
   thinkingEffort: "none", messages: [{ role: "user", content: "Fix the parser; preserve all user requirements." }], constraints: [],
   filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
   createdAt: "now", updatedAt: "now" });

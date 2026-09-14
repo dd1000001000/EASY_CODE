@@ -47,6 +47,7 @@ export type SubagentStatus =
   | "stopping"
   | "completed"
   | "blocked"
+  | "needs_parent_decision"
   | "failed"
   | "stopped"
   | "interrupted";
@@ -111,8 +112,6 @@ export type ManageSubagentsInput =
   | StopSubagentRequest
   | HandoffSubagentRequest;
 
-export type SubagentTaskResult = SubagentTaskReport;
-
 export interface SubagentRecord {
   id: string;
   childThreadId: string;
@@ -135,7 +134,7 @@ export interface SubagentRecord {
   revision: number;
   instructions: string;
   followUpCount: number;
-  result?: SubagentTaskResult;
+  result?: SubagentTaskReport;
   error?: string;
   resultObservedAt?: string;
   createdAt: string;
@@ -175,7 +174,7 @@ export interface SubagentView {
   status: SubagentStatus;
   revision: number;
   followUpCount: number;
-  result?: SubagentTaskResult;
+  result?: SubagentTaskReport;
   error?: string;
   createdAt: string;
   startedAt: string;
@@ -216,5 +215,3 @@ export interface SubagentControl {
     context: ToolContext,
   ): Promise<ToolExecutionResult>;
 }
-
-export type SubagentTaskReportExecutionResult = ToolExecutionResult;

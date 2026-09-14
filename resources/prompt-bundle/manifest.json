@@ -363,16 +363,16 @@
       "bytes": 950
     },
     "tools/manage_memory.json": {
-      "sha256": "sha256:479a6e9515d2189958340598172a969cf8dbef22328cf0564993741bdd55a214",
-      "bytes": 5159
+      "sha256": "sha256:c18652276590b349f1a165eb5052b61a37f234aae737a6f7141fd713dd8a9b27",
+      "bytes": 5306
     },
     "tools/manage_subagents.json": {
       "sha256": "sha256:ef69ed2a5f32fbade3062f9c8b2ede97f034c384b640532bc36d439fcd054877",
       "bytes": 3907
     },
     "tools/manage_tasks.json": {
-      "sha256": "sha256:3935bd2bb0bcfac12484957c761bc963716ca033d3a3af227213445f69d8b255",
-      "bytes": 3792
+      "sha256": "sha256:82081539755e809e1e6a3eb8ff15587bc37a710e9c53a2f9620e16382b7cc84c",
+      "bytes": 4137
     },
     "tools/poll_command.json": {
       "sha256": "sha256:4e48e7579fb56c263771bec620efd23f1ccf2a1f69adeaf35369c44a40cbb5eb",
@@ -456,7 +456,7 @@
     "manage_memory": {
       "path": "tools/manage_memory.json",
       "contractVersion": "1.2.0",
-      "contentHash": "sha256:479a6e9515d2189958340598172a969cf8dbef22328cf0564993741bdd55a214"
+      "contentHash": "sha256:c18652276590b349f1a165eb5052b61a37f234aae737a6f7141fd713dd8a9b27"
     },
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
@@ -466,7 +466,7 @@
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:3935bd2bb0bcfac12484957c761bc963716ca033d3a3af227213445f69d8b255"
+      "contentHash": "sha256:82081539755e809e1e6a3eb8ff15587bc37a710e9c53a2f9620e16382b7cc84c"
     },
     "poll_command": {
       "path": "tools/poll_command.json",
@@ -534,5 +534,5 @@
       "contentHash": "sha256:e05da57356f474f29d757cb79ec943ec4e46dcee02b77c7a7be0f5e4ec2f6cf0"
     }
   },
-  "bundleHash": "sha256:ef6166694fd262aaa6cb9181459c417dacdb9df8831bf89f6d7e0568647578fa"
+  "bundleHash": "sha256:2ed610b7f42e40a910544991b282be948b089c8301864f9a619f200a050c67dc"
 }

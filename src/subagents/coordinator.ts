@@ -19,7 +19,7 @@ import type {
 import {
   applySubagentTaskOperation,
   cloneTaskGraph,
-  type SubagentTaskTransitionOperation,
+  type SubagentTaskOperation,
 } from "../tasks/task-graph.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { createId } from "../utils/ids.js";
@@ -64,7 +64,7 @@ export interface SubagentExecutionRequest {
 
 export interface SubagentExecutionOutcome {
   readonly report?: SubagentTaskReport;
-  readonly reason: "completed" | "blocked" | "failed" | "stopped" | "interrupted";
+  readonly reason: "completed" | "blocked" | "needs_parent_decision" | "failed" | "stopped" | "interrupted";
   readonly error?: string;
   readonly changes: readonly FileChangeRecord[];
   readonly commands: readonly CommandAuditEntry[];
@@ -153,6 +153,7 @@ export interface RestoreSubagentOptions {
 const TERMINAL_STATUSES: ReadonlySet<SubagentStatus> = new Set([
   "completed",
   "blocked",
+  "needs_parent_decision",
   "failed",
   "stopped",
   "interrupted",
@@ -226,7 +227,7 @@ export class SubagentCoordinator implements SubagentControl {
     if (this.jobs.has(agentId)) throw new Error(`Duplicate subagent ID: ${agentId}`);
     let task: TaskNode;
     let nextGraph: TaskGraph | undefined;
-    let operation: SubagentTaskTransitionOperation | undefined;
+    let operation: SubagentTaskOperation | undefined;
     let assignmentKind: SubagentRecord["assignmentKind"];
     let taskGraphId: string | undefined;
     let timestamp: string;
@@ -691,17 +692,7 @@ export class SubagentCoordinator implements SubagentControl {
     input: RecoveredStandaloneSubagent,
     options: RestoreSubagentOptions = {},
   ): void {
-    this.restore({
-      ...input,
-      assignment: {
-        ...input.assignment,
-        childThreadId:
-          input.assignment.childThreadId ?? `thread_${input.assignment.agentId}`,
-        environmentId:
-          input.assignment.environmentId ?? `environment_${input.assignment.agentId}`,
-        requestedIsolation: input.assignment.requestedIsolation ?? "shared",
-      },
-    }, options);
+    this.restore(input, options);
   }
 
   /** Restore a durable DAG or standalone binding, resuming non-terminal children. */
@@ -712,9 +703,6 @@ export class SubagentCoordinator implements SubagentControl {
     const { assignment } = input;
     if (this.jobs.has(assignment.agentId)) {
       throw new Error(`Duplicate recovered subagent ID: ${assignment.agentId}`);
-    }
-    if (!assignment.childThreadId || !assignment.environmentId) {
-      throw new Error(`Recovered child ${assignment.agentId} has only a legacy binding`);
     }
     const task: TaskNode = input.task
       ? cloneTask(input.task)
@@ -757,7 +745,7 @@ export class SubagentCoordinator implements SubagentControl {
       provider: assignment.provider,
       model: assignment.model,
       thinkingEffort: assignment.thinkingEffort,
-      requestedIsolation: assignment.requestedIsolation ?? "shared",
+      requestedIsolation: assignment.requestedIsolation,
       status,
       revision: terminal ? 2 : 1,
       instructions: agentPromptText("agents/child-restored-instruction.md"),
@@ -1079,7 +1067,7 @@ export class SubagentCoordinator implements SubagentControl {
   }
 }
 
-function operationForObservedJob(job: SubagentJob): SubagentTaskTransitionOperation {
+function operationForObservedJob(job: SubagentJob): SubagentTaskOperation {
   const report = job.record.result;
   if (job.record.status === "completed" && report?.outcome === "completed") {
     return {
@@ -1310,6 +1298,7 @@ function statusForOutcome(
   if (aborted || outcome.reason === "stopped") return "stopped";
   if (outcome.report?.outcome === "completed") return "completed";
   if (outcome.report?.outcome === "blocked") return "blocked";
+  if (outcome.reason === "needs_parent_decision") return "needs_parent_decision";
   if (outcome.reason === "interrupted") return "interrupted";
   return "failed";
 }
@@ -1322,6 +1311,7 @@ function statusForRecovered(
   if (reason === "interrupted") return "interrupted";
   if (report?.outcome === "completed" && reason === "completed") return "completed";
   if (report?.outcome === "blocked" && reason === "blocked") return "blocked";
+  if (reason === "needs_parent_decision") return "needs_parent_decision";
   return "failed";
 }
 

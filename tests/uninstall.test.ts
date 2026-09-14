@@ -94,7 +94,7 @@ describe("EASY CODE uninstall cleanup", () => {
       });
 
       assert.equal(existsSync(path.join(test.home, ".easy_code")), false);
-      assert.equal(existsSync(path.join(test.home, ".easy-code")), false);
+      assert.equal(existsSync(path.join(test.home, ".easy-code", "legacy.txt")), true);
       for (const name of [
         "easy-code.db",
         "easy-code.db-journal",
@@ -132,7 +132,7 @@ describe("EASY CODE uninstall cleanup", () => {
         defaultPaths: test.paths,
         dataDirectories: [test.data],
       });
-      assert(again.absent.length >= 3);
+      assert(again.absent.length >= 1);
     } finally {
       rmSync(test.root, { recursive: true, force: true });
     }
@@ -176,7 +176,7 @@ describe("EASY CODE uninstall cleanup", () => {
     }
   });
 
-  it("recognizes an older custom data root through its exact storage signature", async () => {
+  it("does not infer ownership from a retired storage signature", async () => {
     const test = fixture();
     const custom = path.join(test.root, "legacy-custom-root");
     try {
@@ -188,7 +188,7 @@ describe("EASY CODE uninstall cleanup", () => {
         defaultPaths: test.paths,
         dataDirectories: [custom],
       });
-      assert.equal(existsSync(custom), false);
+      assert.equal(existsSync(custom), true);
     } finally {
       rmSync(test.root, { recursive: true, force: true });
     }

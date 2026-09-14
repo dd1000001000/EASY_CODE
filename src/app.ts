@@ -56,12 +56,12 @@ import type {
   FileChangeRecord,
   ImageAttachment,
   PlanProposal,
-  PromptBundleBinding,
   ProviderStreamEvent,
   ProviderName,
   SessionState,
   ThinkingEffort,
   ToolPresentation,
+  ToolContext,
   TurnSteeringBatch,
   TurnSteeringEntry,
   ResultArtifact,
@@ -88,6 +88,7 @@ import {
   ensurePromptBundle,
   loadPromptBundleCatalog,
 } from "./prompt-bundle/index.js";
+import { assertCurrentSessionBindings } from "./protocol/session-bindings.js";
 import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
@@ -152,6 +153,7 @@ import {
 } from "./tasks/task-graph.js";
 import { createId } from "./utils/ids.js";
 import { sha256 } from "./utils/hash.js";
+import { foldPendingOperations } from "./context/pending-operations.js";
 import {
   WorkspaceManager,
   type WorkspaceRestoreSummary,
@@ -267,25 +269,6 @@ function samePath(left: string, right: string): boolean {
     : normalizedLeft === normalizedRight;
 }
 
-/** Validate a persisted resource format and bind a compatible session to this build. */
-function bindPromptBundleForResume(
-  state: SessionState,
-  current: PromptBundleBinding,
-): boolean {
-  const previous = state.promptBundle;
-  if (previous && previous.formatVersion !== current.formatVersion) {
-    throw new Error(
-      `Thread ${state.threadId} uses unsupported Prompt Bundle format ` +
-        `${previous.formatVersion}; this Runtime requires ${current.formatVersion}.`,
-    );
-  }
-  const changed =
-    previous?.manifestHash !== current.manifestHash ||
-    previous?.toolCatalogHash !== current.toolCatalogHash;
-  state.promptBundle = { ...current };
-  return changed;
-}
-
 function messagePreview(message: ChatMessage): string {
   const role = message.role === "user" ? "User" : message.role === "assistant" ? "Assistant" : "Tool";
   let content = message.content ?? "";
@@ -395,7 +378,11 @@ export function releaseOrphanedSubagentTasks(
       .filter(
         (entry) =>
           Boolean(entry.assignment.childThreadId) &&
-          Boolean(entry.assignment.environmentId),
+          Boolean(entry.assignment.environmentId) &&
+          !threadStore.hasCommittedSubagentStop(
+            state.threadId,
+            entry.assignment.agentId,
+          ),
       )
       .map((entry) => entry.assignment.agentId),
   );
@@ -446,7 +433,7 @@ export function releaseOrphanedSubagentTasks(
     const next = applySubagentTaskOperation(state.taskGraph, operation, { turnId });
     threadStore.appendEvent(state.threadId, {
       turnId,
-      type: "subagent.recovery",
+      type: "subagent.reconciled",
       phase: "completed",
       payload: {
         taskGraph: next,
@@ -667,8 +654,7 @@ export class EasyCodeApp {
     try {
       const explicitWorkspace = Boolean(
         options.workspaceRoot ||
-        process.env.EASY_CODE_WORKSPACE_ROOT?.trim() ||
-        process.env.EASY_CODE_WORKSPACE?.trim(),
+        process.env.EASY_CODE_WORKSPACE_ROOT?.trim(),
       );
       if (options.resumeThreadId && !explicitWorkspace) {
         // The Thread journal is stored in the user data directory, so it can
@@ -716,23 +702,14 @@ export class EasyCodeApp {
             `Thread ${state.threadId} belongs to ${state.workspaceRoot}; launch EASY CODE with that --workspace first.`,
           );
         }
-        if (state.modelRegistryHash && state.modelRegistryHash !== config.modelRegistryHash) {
-          throw new Error(
-            `Thread ${state.threadId} is bound to a different ~/.easy_code/models.toml. ` +
-              "Restore that registry or start a new thread; endpoints and wire protocols are never changed silently on Resume.",
-          );
-        }
-        if (!state.modelRegistryHash) {
-          state.modelRegistryHash = config.modelRegistryHash;
-          shouldCheckpoint = true;
-        }
+        assertCurrentSessionBindings(state, {
+          promptBundle,
+          modelRegistryHash: config.modelRegistryHash,
+        });
         const previousMode = state.mode;
         const previousProvider = state.provider;
         const previousModel = state.model;
         const previousThinkingEffort = state.thinkingEffort;
-        // Compatible upgrades migrate the binding explicitly at the Resume
-        // checkpoint. Legacy sessions receive their first binding here.
-        const promptBundleMigrated = bindPromptBundleForResume(state, promptBundle);
         const resumedMode = options.mode ?? state.mode;
         if (
           resumedMode === "plan" &&
@@ -783,7 +760,6 @@ export class EasyCodeApp {
           previousProvider !== state.provider ||
           previousModel !== state.model ||
           previousThinkingEffort !== state.thinkingEffort ||
-          promptBundleMigrated ||
           restoredWorkspace.staleReadVersions > 0 ||
           JSON.stringify(state.changes) !== savedChanges ||
           repairedInterruptedTurn ||
@@ -799,6 +775,7 @@ export class EasyCodeApp {
           mode: selectedMode,
           provider: selectedProvider,
           model: selectedModel,
+          orchestrationEnabled: config.orchestrationEnabled,
           thinkingEffort: options.thinkingEffort ?? config.thinkingEffort,
           promptBundle,
           modelRegistryHash: config.modelRegistryHash,
@@ -1857,7 +1834,7 @@ export class EasyCodeApp {
         await this.contextArtifactIndex.checkpoint(workspaceId, state);
       },
       hasOpenCommandHandles: () => commandRuntime.hasOpenCommandHandles(commandOwner),
-      assertEnvironmentSafe: () => commandRuntime.assertEnvironmentSafe(),
+      getEnvironmentFault: () => commandRuntime.environmentFault(),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
           sourceState: input.sourceState,
@@ -1968,6 +1945,8 @@ export class EasyCodeApp {
       },
       getOutstandingSubagents: () =>
         this.subagentCoordinator.outstanding(this.state.threadId),
+      collectReadySubagents: (state, turnId, signal) =>
+        this.collectReadySubagentResults(state, turnId, signal),
       requestApproval: async (request) => {
         return this.requestToolApproval(request);
       },
@@ -2194,10 +2173,10 @@ export class EasyCodeApp {
           existingChild.changes,
         );
         childState = existingChild;
-        bindPromptBundleForResume(
-          childState,
-          this.state.promptBundle ?? activePromptBundleBinding(),
-        );
+        assertCurrentSessionBindings(childState, {
+          promptBundle: this.state.promptBundle,
+          modelRegistryHash: this.state.modelRegistryHash,
+        });
       } else {
         childState = this.threadStore.create({
           threadId: request.record.childThreadId,
@@ -2206,8 +2185,8 @@ export class EasyCodeApp {
           provider: request.record.provider,
           model: request.record.model,
           thinkingEffort: request.record.thinkingEffort,
-          promptBundle: this.state.promptBundle ?? activePromptBundleBinding(),
-          modelRegistryHash: this.state.modelRegistryHash ?? this.config.modelRegistryHash,
+          promptBundle: this.state.promptBundle,
+          modelRegistryHash: this.state.modelRegistryHash,
           goal: request.task.title,
           constraints: [
             `Parent thread: ${request.record.parentThreadId}`,
@@ -2351,7 +2330,7 @@ export class EasyCodeApp {
         contextManager: new ContextManager(),
         hasOpenCommandHandles: () =>
           childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
-        assertEnvironmentSafe: () => childCommandRuntime.assertEnvironmentSafe(),
+        getEnvironmentFault: () => childCommandRuntime.environmentFault(),
         buildSystemPrompt: async ({
           mode,
           workspaceSummary,
@@ -2552,7 +2531,9 @@ export class EasyCodeApp {
             ? "completed"
             : acceptedReport?.outcome === "blocked"
               ? "blocked"
-              : "failed",
+              : result.reason === "paused"
+                ? "needs_parent_decision"
+                : "failed",
         ...(!acceptedReport
           ? { error: redactSensitiveInformation(result.text).slice(0, 2_000) }
           : {}),
@@ -2742,6 +2723,87 @@ export class EasyCodeApp {
       },
     );
     if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
+  }
+
+  /**
+   * Collect terminal children at a Runtime boundary. This is intentionally not
+   * represented as a model-authored tool call: the child already completed,
+   * and collecting its durable result is control-plane bookkeeping.
+   */
+  private async collectReadySubagentResults(
+    state: SessionState,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    return this.workspaceMutationLock.runExclusive(async () => {
+      let collected = 0;
+      const terminal = new Set(["completed", "blocked", "needs_parent_decision", "failed", "stopped", "interrupted"]);
+      for (;;) {
+        const candidate = this.subagentCoordinator.outstanding(state.threadId)
+          .find(record => terminal.has(record.status));
+        if (!candidate) break;
+        const context: ToolContext = {
+          workspaceRoot: state.workspaceRoot,
+          mode: "code",
+          threadId: state.threadId,
+          turnId,
+          approvalPolicy: this.config.approvalPolicy,
+          commandExecutionMode: this.commandExecutionMode,
+          requestApproval: async () => false,
+          signal,
+          commandTimeoutMs: this.config.limits.commandTimeoutMs,
+          maxOutputChars: this.config.limits.maxOutputChars,
+          agentRole: "main_agent",
+          thinkingEffort: state.thinkingEffort,
+          limits: this.config.limits,
+          taskGraph: state.taskGraph,
+        };
+        const result = await this.subagentCoordinator.wait({
+          action: "wait",
+          agentIds: [candidate.id],
+          timeoutMs: 0,
+        }, context);
+        if (!result.ok || !result.subagentLifecycle || !result.subagentAssignment) break;
+        const data = result.data && typeof result.data === "object"
+          ? result.data as { result?: { summary?: string }; error?: string }
+          : undefined;
+        const message: ChatMessage = {
+          role: "user",
+          content: "RUNTIME_SUBAGENT_RESULT_COLLECTED (authoritative child lifecycle, not a new user requirement)\n" +
+            JSON.stringify({ agentId: candidate.id, taskId: candidate.taskId, status: candidate.status,
+              summary: data?.result?.summary, error: data?.error }),
+        };
+        const payload = {
+          tool: "manage_subagents",
+          subagentLifecycle: result.subagentLifecycle,
+          subagentAssignment: result.subagentAssignment,
+          ...(result.taskGraphUpdate ? { taskGraph: result.taskGraphUpdate } : {}),
+          ...(result.subagentTaskOperation ? { subagentTaskOperation: result.subagentTaskOperation } : {}),
+          message,
+        };
+        this.threadStore.appendEvent(state.threadId, {
+          type: "subagent.collected",
+          turnId,
+          phase: "completed",
+          payload,
+        });
+        foldPendingOperations(state, payload);
+        if (result.taskGraphUpdate) state.taskGraph = result.taskGraphUpdate;
+        state.messages.push(message);
+        const artifacts = this.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
+        if (artifacts) {
+          await this.mergeSubagentArtifacts(state, artifacts);
+          this.subagentCoordinator.finalizeArtifactMerge(artifacts.agentId);
+        }
+        collected += 1;
+        this.dirty = true;
+      }
+      if (collected > 0) {
+        this.syncWorkspaceState();
+        this.save();
+      }
+      return collected;
+    }, signal);
   }
 
   private async mergeSubagentArtifacts(
@@ -3192,7 +3254,7 @@ export class EasyCodeApp {
     if ((previousMode === "unrestricted") !== (selected === "unrestricted")) {
       this.hostAccessEpoch += 1;
     }
-    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode, selected, orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled ?? this.config.orchestrationEnabled } });
+    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode, selected, orchestrationEnabled: selected === "manual" ? false : this.state.orchestrationEnabled } });
     this.commandExecutionMode = selected;
     if (selected === "manual") this.state.orchestrationEnabled = false;
     this.dirty = true;
@@ -3392,8 +3454,7 @@ export class EasyCodeApp {
             )
           : undefined;
         if (assignment.kind === "dag" && !task && !entry.observed) {
-          // An observed or legacy-reconciled DAG transition is already
-          // authoritative; do not resurrect a child against a different graph.
+          // Do not resurrect a child against a different current graph.
           continue;
         }
         let durable = this.threadStore.latestSubagentResult(
@@ -3421,29 +3482,6 @@ export class EasyCodeApp {
             taskId: assignment.taskId,
             reason: "stopped",
             error: "The parent had durably requested cancellation before recovery.",
-            timestamp: event.timestamp,
-          };
-        } else if (
-          !durable &&
-          (!assignment.childThreadId || !assignment.environmentId)
-        ) {
-          const event = this.threadStore.recordSubagentResult(
-            this.state.threadId,
-            entry.createdByTurnId,
-            {
-              agentId: assignment.agentId,
-              taskId: assignment.taskId,
-              reason: "interrupted",
-              error:
-                "The previous EASY CODE process exited before this legacy child returned a durable result.",
-            },
-          );
-          durable = {
-            agentId: assignment.agentId,
-            taskId: assignment.taskId,
-            reason: "interrupted",
-            error:
-              "The previous EASY CODE process exited before this legacy child returned a durable result.",
             timestamp: event.timestamp,
           };
         }
@@ -3570,7 +3608,7 @@ export class EasyCodeApp {
   }
 
   private orchestrationEnabled(): boolean {
-    return this.commandExecutionMode !== "manual" && (this.state.orchestrationEnabled ?? this.config.orchestrationEnabled);
+    return this.commandExecutionMode !== "manual" && this.state.orchestrationEnabled;
   }
 
   private hasActiveOrchestration(): boolean {
@@ -3643,8 +3681,8 @@ export class EasyCodeApp {
       provider: this.state.provider,
       model: this.state.model,
       thinkingEffort: this.state.thinkingEffort,
-      promptBundle: this.state.promptBundle ?? activePromptBundleBinding(),
-      modelRegistryHash: this.state.modelRegistryHash ?? this.config.modelRegistryHash,
+      promptBundle: this.state.promptBundle,
+      modelRegistryHash: this.state.modelRegistryHash,
     });
     let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(
       nextState.threadId,
@@ -3717,7 +3755,6 @@ export class EasyCodeApp {
     let nextWorkspace: WorkspaceManager;
     let restoredWorkspace: WorkspaceRestoreSummary;
     let restoredChangesChanged = false;
-    let promptBundleMigrated = false;
     let repairedInterruptedTurn: boolean;
     let releasedOrphanedSubagents = 0;
     try {
@@ -3728,10 +3765,10 @@ export class EasyCodeApp {
       }
       nextLease = this.threadStore.acquireThreadLease(threadId);
       recovered = this.threadStore.recover(threadId);
-      promptBundleMigrated = bindPromptBundleForResume(
-        recovered,
-        activePromptBundleBinding(),
-      );
+      assertCurrentSessionBindings(recovered, {
+        promptBundle: activePromptBundleBinding(),
+        modelRegistryHash: this.config.modelRegistryHash,
+      });
       if (!samePath(recovered.workspaceRoot, this.workspace.root)) {
         throw new Error(
           `Thread ${threadId} belongs to ${recovered.workspaceRoot}; restart with --workspace for that directory.`,
@@ -3756,7 +3793,7 @@ export class EasyCodeApp {
       );
       recovered.changes = nextWorkspace.getChangeSet();
       restoredChangesChanged = JSON.stringify(recovered.changes) !== savedChanges;
-      if (restoredChangesChanged || promptBundleMigrated) {
+      if (restoredChangesChanged) {
         recovered.updatedAt = new Date().toISOString();
       }
     } catch (error) {
@@ -3821,7 +3858,6 @@ export class EasyCodeApp {
     this.dirty =
       restoredWorkspace.staleReadVersions > 0 ||
       restoredChangesChanged ||
-      promptBundleMigrated ||
       repairedInterruptedTurn ||
       releasedOrphanedSubagents > 0;
     const restoredReasoningBlocks = this.restoreReasoningHistory();

@@ -1,10 +1,9 @@
 import { z } from "zod";
 import type { SessionState, ToolExecutionResult } from "../core/types.js";
-import { legacyRunningCommands } from "./pending-operations.js";
 
 export interface ContextReconciliation { workspace: boolean; commands: string[]; children: string[]; dag: boolean }
 export function startReconciliation(state: Readonly<SessionState>): ContextReconciliation {
-  return { workspace: false, commands: Object.keys({ ...legacyRunningCommands(state), ...state.contextOperations?.commands }),
+  return { workspace: false, commands: Object.keys(state.contextOperations?.commands ?? {}),
     children: Object.keys(state.contextOperations?.children ?? {}), dag: !state.taskGraph };
 }
 export function reconciliationPending(state: Readonly<SessionState>): boolean {

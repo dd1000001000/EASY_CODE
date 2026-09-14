@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -13,10 +13,12 @@ import type {
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { TurnSteeringAttemptNotifier } from "../src/runtime/turn-steering-notifier.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 function runtimeState(): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_runtime_steering",
     mode: "code",
     provider: "deepseek",

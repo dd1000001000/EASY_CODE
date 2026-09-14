@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { z } from "zod";
 import type { AgentTool, ModelProvider, SessionState, TaskNode, ToolExecutionResult } from "../src/core/types.js";
@@ -10,15 +10,16 @@ import { SubmitTaskResultTool } from "../src/tools/submit-task-result.js";
 import { toolFailure } from "../src/tools/base.js";
 import { normalizeToolFailure, prepareToolInput, toolResultForModel } from "../src/tools/errors.js";
 import { deserializeSessionState, serializeSessionState } from "../src/threads/serialization.js";
-import { compactionV2Input } from "./compaction-fixture.js";
 import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
+import { baseSessionState } from "./session-state.js";
 
 const requestText = "网页端插件和vscode插件具体是怎么通信的";
 const options = { maxSteps: 4, maxContextChars: 400_000, maxOutputChars: 1_024, commandTimeoutMs: 1_000, approvalPolicy: "never" as const };
 
 function newState(pressure = false, mode: SessionState["mode"] = "code"): SessionState {
   return {
+    ...baseSessionState(),
     threadId: "thread_recovery_test", mode, provider: "qwen", model: "mock", thinkingEffort: "medium",
     workspaceRoot: process.cwd(), constraints: [],
     messages: pressure ? [{ role: "user", content: "previous context " + "x".repeat(205_000) }] : [],
@@ -34,14 +35,15 @@ function toolCall(name: string, value: unknown, id: number): Awaited<ReturnType<
   } };
 }
 
-function fixture(current: SessionState) {
+function retiredCompactionInput(current: SessionState) {
   const primary = current.contextIntentLedger?.latestRequest;
   assert.ok(primary);
-  const latest = current.messages.length - 1 - [...current.messages].reverse().findIndex((message) => message.role === "user" && !message.content.startsWith("RUNTIME_"));
-  return compactionV2Input({ primaryRequestIndex: primary.sourceMessageIndex, primaryRequestText: primary.text,
-    latestMessageIndex: latest, userCorrections: current.contextIntentLedger?.userCorrections,
-    supersededRequests: current.contextIntentLedger?.supersededRequests,
-  });
+  return {
+    primaryRequest: primary.text,
+    currentWork: "retired V2 candidate",
+    activeConstraints: [],
+    coverageCheck: { unresolvedErrorsPreserved: false },
+  };
 }
 
 function createRuntime(provider: ModelProvider, tools: AgentTool[], extra: Partial<AgentRuntimeDependencies> = {}) {
@@ -54,7 +56,7 @@ function createRuntime(provider: ModelProvider, tools: AgentTool[], extra: Parti
 
 describe("Runtime tool recovery", () => {
 
-  it("salvages semantic fields from the reported legacy failure without correction rounds", async () => {
+  it("rejects a retired compaction input through the bounded current-protocol correction budget", async () => {
     const current = newState();
     current.messages = [
       { role: "user", content: requestText },
@@ -67,7 +69,7 @@ describe("Runtime tool recovery", () => {
     const provider: ModelProvider = { name: "qwen", model: "mock", async complete(request) {
       requests.push(request);
       if (requests.length > 1) return { message: { role: "assistant", content: "Continue tracing communication" } };
-      const candidate = fixture(current);
+      const candidate = retiredCompactionInput(current);
       delete (candidate.coverageCheck as Partial<typeof candidate.coverageCheck>).unresolvedErrorsPreserved;
       delete (candidate as Partial<typeof candidate>).activeConstraints;
       return toolCall("compact_context", candidate, 1);
@@ -77,14 +79,12 @@ describe("Runtime tool recovery", () => {
     }).run(current, requestText,
       { ...options, maxContextChars: 100_000, maxContextTokens: 34_000 });
     assert.equal(result.reason, "success", result.text);
-    assert.equal(requests.length, 2);
-    assert.equal(current.compactionControl?.transaction?.attempts, 1);
+    assert.equal(requests.length, 4);
     assert.equal(JSON.stringify(current.messages.slice(0, 4)), raw);
     const summary = JSON.parse(current.workingSummary);
     assert.equal(summary.formatVersion, 3);
-    assert.ok(summary.semantic.currentWork);
-    assert.ok(summary.semantic.nextStep);
-    assert.equal(summary.coverageCheck, undefined);
+    assert.equal(typeof summary.mode, "string");
+    assert.doesNotMatch(current.workingSummary, /retired V2 candidate/u);
     assert.doesNotMatch(JSON.stringify(requests[1]?.messages), /RUNTIME_TOOL_REPAIR|unresolvedErrorsPreserved/);
   });
 
@@ -93,36 +93,40 @@ describe("Runtime tool recovery", () => {
       const current = newState(true, mode);
       const original = current.messages[0]?.content;
       let calls = 0;
+      let resumeCalls = 0;
+      let resuming = false;
       const events: Array<{ type: string; payload: unknown }> = [];
       const provider: ModelProvider = { name: "qwen", model: "mock", async complete() {
         calls++;
-        if (calls === 1) return toolCall("read_file", { path: "README.md" }, 1);
+        if (resuming && ++resumeCalls === 1) return toolCall("read_file", { path: "README.md" }, 1);
         return { message: { role: "assistant", content: "done" } };
       } };
       const result = await createRuntime(provider, [new CompactContextTool()], {
         appendEvent: async (event) => { events.push(event); },
       }).run(current, requestText, { ...options, maxContextChars: 100_000 });
-      assert.equal(calls, 0);
-      assert.equal(result.reason, "limit_reached", result.text);
-      assert.equal(result.failure?.code, "context_capacity_exhausted");
-      assert.equal(result.failure?.recoverable, true);
+      assert.equal(calls, 3);
+      assert.equal(result.reason, "paused", result.text);
+      assert.equal(result.pause?.cause, "completion_protocol");
+      assert.equal(result.failure, undefined);
       assert.equal(current.compactedMessageCount, 2);
       assert.ok(current.pressureRecovery?.serverReset);
       assert.equal(current.activeTurnId, undefined);
       const final = [...events].reverse().find((event) => event.type === "turn.completed");
-      assert.equal((final?.payload as { failure?: { code: string } }).failure?.code, "context_capacity_exhausted");
+      assert.equal((final?.payload as { reason?: string }).reason, "paused");
       const restored = deserializeSessionState(serializeSessionState(current));
       // Like ThreadStore recovery: restore event-authoritative projections, not only the checkpoint.
       restored.pressureRecovery = structuredClone(current.pressureRecovery);
       restored.userMessageIndices = [...current.userMessageIndices!];
       assert.equal(restored.messages[0]?.content, original);
       restored.mode = "code";
+      resuming = true;
       const read: AgentTool = { name: "read_file", mutating: false, definition: { type: "function", function: {
         name: "read_file", description: "Inspect current workspace", parameters: {} } }, execute: async () => ({ ok: true, summary: "Current source inspected" }) };
       const resumed = await createRuntime(provider, [new CompactContextTool(), read]).run(restored, requestText,
         { ...options, maxContextTokens: 256_000 });
       assert.equal(resumed.reason, "success", resumed.text);
-      assert.equal(calls, 2);
+      assert.equal(resumeCalls, 2);
+      assert.equal(calls, 5);
       assert.equal(restored.messages[0]?.content, original);
     });
   }

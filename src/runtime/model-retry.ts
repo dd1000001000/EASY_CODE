@@ -32,7 +32,7 @@ export async function completeWithApiRetries(provider: ModelProvider, request: M
   resetContext?: (request: ModelRequest) => Promise<ModelRequest>;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 } = {}): Promise<ProviderResponse> {
-  // A caller such as Auto/legacy reviewer can receive the main Runtime wrapper.
+  // Auxiliary callers such as Auto routing can receive the main Runtime wrapper.
   // Never layer another transport retry loop or duplicate its budget debit.
   if (managed.has(provider)) return provider.complete(request);
   const limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;

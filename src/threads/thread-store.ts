@@ -30,7 +30,7 @@ import {
   type TurnSteeringEntry,
 } from "../core/types.js";
 import type { EasyCodeStorage } from "../storage/database.js";
-import { isProviderIdentifier } from "../models/catalog.js";
+import { ACTIVE_MODEL_REGISTRY_HASH, isProviderIdentifier } from "../models/catalog.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { foldReviewEvent } from "../review/session.js";
 import { foldDelivery } from "../review/delivery.js";
@@ -59,6 +59,7 @@ import {
   serializeThreadCheckpointDelta,
   type SerializedThreadCheckpointDelta,
 } from "./serialization.js";
+import { CURRENT_PROTOCOL } from "../protocol/versions.js";
 import {
   clonePlanReviewState,
   returnPlanExecutionToReview,
@@ -73,7 +74,7 @@ import {
   normalizeCommandApprovalPrefix,
   validateCommandApprovalPrefixes,
 } from "../command/approval.js";
-import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
+import { activePromptBundleBinding, loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sha256 } from "../utils/hash.js";
 import {
@@ -85,6 +86,7 @@ import {
   foldProgressReviewEvent,
   isProgressReviewEventType,
 } from "../progress/lifecycle.js";
+import { foldCompletionControl } from "../runtime/completion-gate.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -92,6 +94,7 @@ export interface ThreadCreateInput {
   readonly mode: AgentMode;
   readonly provider: ProviderName;
   readonly model: string;
+  readonly orchestrationEnabled?: boolean;
   readonly thinkingEffort?: ThinkingEffort;
   readonly promptBundle?: PromptBundleBinding;
   readonly modelRegistryHash?: string;
@@ -136,7 +139,7 @@ export interface ThreadLease {
 export interface DurableSubagentResult {
   readonly agentId: string;
   readonly taskId: string;
-  readonly reason: "completed" | "blocked" | "failed" | "stopped" | "interrupted";
+  readonly reason: "completed" | "blocked" | "needs_parent_decision" | "failed" | "stopped" | "interrupted";
   readonly report?: SubagentTaskReport;
   readonly error?: string;
   readonly environment?: ExecutionEnvironmentSnapshot;
@@ -282,6 +285,10 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
     (input?.kind !== "standalone" && input?.kind !== "dag") ||
     typeof input.agentId !== "string" ||
     !input.agentId ||
+    typeof input.childThreadId !== "string" ||
+    !input.childThreadId ||
+    typeof input.environmentId !== "string" ||
+    !input.environmentId ||
     typeof input.taskId !== "string" ||
     !input.taskId ||
     typeof input.taskTitle !== "string" ||
@@ -300,13 +307,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
       input.thinkingEffort !== "high") ||
     typeof input.createdAt !== "string" ||
     !input.createdAt ||
-    (input.childThreadId !== undefined &&
-      (typeof input.childThreadId !== "string" || !input.childThreadId)) ||
-    (input.environmentId !== undefined &&
-      (typeof input.environmentId !== "string" || !input.environmentId)) ||
-    ((input.childThreadId === undefined) !== (input.environmentId === undefined)) ||
-    (input.requestedIsolation !== undefined &&
-      input.requestedIsolation !== "auto" &&
+    (input.requestedIsolation !== "auto" &&
       input.requestedIsolation !== "shared" &&
       input.requestedIsolation !== "worktree") ||
     (input.kind === "dag" &&
@@ -316,12 +317,8 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
   }
   const common = {
     agentId: input.agentId,
-    ...(typeof input.childThreadId === "string"
-      ? { childThreadId: input.childThreadId }
-      : {}),
-    ...(typeof input.environmentId === "string"
-      ? { environmentId: input.environmentId }
-      : {}),
+    childThreadId: input.childThreadId,
+    environmentId: input.environmentId,
     taskId: input.taskId,
     taskTitle: input.taskTitle,
     taskDescription: input.taskDescription,
@@ -329,16 +326,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
     provider: input.provider as ProviderName,
     model: input.model,
     thinkingEffort: input.thinkingEffort as ThinkingEffort,
-    ...(input.requestedIsolation === "auto" ||
-    input.requestedIsolation === "shared" ||
-    input.requestedIsolation === "worktree"
-      ? {
-          requestedIsolation: input.requestedIsolation as
-            | "auto"
-            | "shared"
-            | "worktree",
-        }
-      : {}),
+    requestedIsolation: input.requestedIsolation as "auto" | "shared" | "worktree",
     createdAt: input.createdAt,
   };
   return input.kind === "dag"
@@ -361,15 +349,7 @@ function sameStringArray(
     left.every((value, index) => value === right[index]);
 }
 
-/**
- * Observation events may only close the exact assignment activated earlier.
- *
- * Old journals did not persist a child thread, environment, or isolation. The
- * legacy recovery path deterministically synthesizes those two IDs and always
- * uses the shared workspace, so accept only that one unambiguous upgrade. All
- * modern bindings must match byte-for-byte across their immutable identity
- * fields.
- */
+/** Observation events may only close the exact Runtime-issued assignment. */
 function sameSubagentAssignmentIdentity(
   activated: Readonly<SubagentAssignmentSnapshot>,
   observed: Readonly<SubagentAssignmentSnapshot>,
@@ -384,8 +364,7 @@ function sameSubagentAssignmentIdentity(
     activated.provider !== observed.provider ||
     activated.model !== observed.model ||
     activated.thinkingEffort !== observed.thinkingEffort ||
-    (activated.requestedIsolation ?? "shared") !==
-      (observed.requestedIsolation ?? "shared") ||
+    activated.requestedIsolation !== observed.requestedIsolation ||
     activated.createdAt !== observed.createdAt
   ) {
     return false;
@@ -397,17 +376,8 @@ function sameSubagentAssignmentIdentity(
     return false;
   }
 
-  if (activated.childThreadId || activated.environmentId) {
-    return activated.childThreadId === observed.childThreadId &&
-      activated.environmentId === observed.environmentId;
-  }
-
-  const observationIsLegacy =
-    observed.childThreadId === undefined && observed.environmentId === undefined;
-  const observationIsDeterministicLegacyUpgrade =
-    observed.childThreadId === `thread_${activated.agentId}` &&
-    observed.environmentId === `environment_${activated.agentId}`;
-  return observationIsLegacy || observationIsDeterministicLegacyUpgrade;
+  return activated.childThreadId === observed.childThreadId &&
+    activated.environmentId === observed.environmentId;
 }
 
 function cloneMessage(message: ChatMessage): ChatMessage {
@@ -687,11 +657,11 @@ function createThreadCheckpointDelta(
   if (requested.createdAt !== durable.createdAt) {
     throw new Error("Thread checkpoint cannot change the durable creation time");
   }
-  if (
-    durable.modelRegistryHash !== undefined &&
-    requested.modelRegistryHash !== durable.modelRegistryHash
-  ) {
+  if (requested.modelRegistryHash !== durable.modelRegistryHash) {
     throw new Error("Thread checkpoint cannot change the bound model registry");
+  }
+  if (!sameJson(requested.promptBundle, durable.promptBundle)) {
+    throw new Error("Thread checkpoint cannot change the bound Prompt Bundle");
   }
 
   let requestedMessagesAreStale = false;
@@ -723,7 +693,7 @@ function createThreadCheckpointDelta(
       requested.model !== durable.model ||
       requested.thinkingEffort !== durable.thinkingEffort ||
       requested.orchestrationEnabled !== durable.orchestrationEnabled ||
-      !sameJson(requested.promptBundle ?? null, durable.promptBundle ?? null) ||
+      !sameJson(requested.promptBundle, durable.promptBundle) ||
       !sameJson(requested.constraints, durable.constraints) ||
       !sameFilesRead(requested.filesRead, durable.filesRead) ||
       requested.compactedMessageCount > durable.compactedMessageCount ||
@@ -751,8 +721,6 @@ function createThreadCheckpointDelta(
     provider?: CheckpointDeltaSettings["provider"];
     model?: string;
     thinkingEffort?: CheckpointDeltaSettings["thinkingEffort"];
-    promptBundle?: PromptBundleBinding | null;
-    modelRegistryHash?: string;
     goal?: string | null;
     constraints?: string[];
   } = {};
@@ -764,17 +732,6 @@ function createThreadCheckpointDelta(
   if (requested.model !== durable.model) settings.model = requested.model;
   if (requested.thinkingEffort !== durable.thinkingEffort) {
     settings.thinkingEffort = requested.thinkingEffort;
-  }
-  if (!sameJson(requested.promptBundle ?? null, durable.promptBundle ?? null)) {
-    settings.promptBundle = requested.promptBundle
-      ? { ...requested.promptBundle }
-      : null;
-  }
-  if (
-    durable.modelRegistryHash === undefined &&
-    requested.modelRegistryHash !== undefined
-  ) {
-    settings.modelRegistryHash = requested.modelRegistryHash;
   }
   if (
     !requestedMessagesAreStale &&
@@ -850,7 +807,7 @@ function createThreadCheckpointDelta(
   }
 
   return serializeThreadCheckpointDelta({
-    formatVersion: 1,
+    formatVersion: CURRENT_PROTOCOL.checkpointDelta,
     baseSequence,
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
     ...(messagesAppended.length > 0 ? { messagesAppended } : {}),
@@ -882,18 +839,6 @@ function applyThreadCheckpointDelta(
     if (settings.model !== undefined) state.model = settings.model;
     if (settings.thinkingEffort !== undefined) {
       state.thinkingEffort = settings.thinkingEffort;
-    }
-    if (settings.promptBundle !== undefined) {
-      if (settings.promptBundle === null) delete state.promptBundle;
-      else state.promptBundle = { ...settings.promptBundle };
-    }
-    if (settings.modelRegistryHash !== undefined) {
-      if (state.modelRegistryHash !== undefined) {
-        throw new Error(
-          `Thread checkpoint delta ${event.eventId} attempted to replace its model registry binding`,
-        );
-      }
-      state.modelRegistryHash = settings.modelRegistryHash;
     }
     if (settings.goal !== undefined) {
       if (settings.goal === null) delete state.goal;
@@ -1037,7 +982,7 @@ function artifactPayload(payload: Record<string, unknown>): {
 /** Locate a saved Thread without opening SQLite or mutating its projections. */
 export function peekThreadWorkspaceRoot(dataDir: string, threadId: string): string {
   const events = new EventJournal(dataDir, threadId, { createDirectory: false }).read();
-  const created = events.find((event) => event.type === "thread_created");
+  const created = events.find((event) => event.type === "thread.created");
   const payload = created ? asPayloadRecord(created.payload) : undefined;
   if (!payload || !("state" in payload)) {
     throw new Error(`Thread not found: ${threadId}`);
@@ -1070,13 +1015,16 @@ export class ThreadStore {
       mode: input.mode,
       provider: input.provider,
       model: input.model,
+      orchestrationEnabled: input.orchestrationEnabled ?? false,
       thinkingEffort: input.thinkingEffort ?? DEFAULT_THINKING_EFFORT,
       workspaceRoot: input.workspaceRoot,
-      ...(input.promptBundle ? { promptBundle: { ...input.promptBundle } } : {}),
-      ...(input.modelRegistryHash ? { modelRegistryHash: input.modelRegistryHash } : {}),
+      promptBundle: { ...(input.promptBundle ?? activePromptBundleBinding()) },
+      modelRegistryHash: input.modelRegistryHash ?? ACTIVE_MODEL_REGISTRY_HASH,
       goal: input.goal,
       constraints: [...(input.constraints ?? [])],
       messages: (input.messages ?? []).map(cloneMessage),
+      userMessageIndices: (input.messages ?? []).flatMap((message, messageIndex) =>
+        message.role === "user" ? [messageIndex] : []),
       filesRead: new Map(),
       changes: [],
       commands: [],
@@ -1087,6 +1035,8 @@ export class ThreadStore {
       workingSummary: "",
       compactedMessageCount: 0,
       progressGuard: createProgressGuardState(),
+      compactionControl: { phaseEnds: [] },
+      reviewSessions: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -1097,7 +1047,7 @@ export class ThreadStore {
         throw new Error(`Thread already exists: ${threadId}`);
       }
       event = journal.append({
-        type: "thread_created",
+        type: "thread.created",
         payload: { state: serializeSessionState(state) },
       });
       this.projectState(state, "active");
@@ -1138,12 +1088,12 @@ export class ThreadStore {
         args: [...command.args],
       })),
       commandApprovalPrefixes: [...state.commandApprovalPrefixes],
-      ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
+      promptBundle: { ...state.promptBundle },
       ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
       ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
-      pendingSteering: (state.pendingSteering ?? []).map(cloneSteeringEntry),
-      steeringSequence: state.steeringSequence ?? 0,
-      steeringWatermark: state.steeringWatermark ?? 0,
+      pendingSteering: state.pendingSteering.map(cloneSteeringEntry),
+      steeringSequence: state.steeringSequence,
+      steeringWatermark: state.steeringWatermark,
       ...(state.steeringSealedTurnId
         ? { steeringSealedTurnId: state.steeringSealedTurnId }
         : {}),
@@ -1164,12 +1114,12 @@ export class ThreadStore {
         if (!threadCheckpointDeltaHasChanges(delta)) return;
         const effective = deserializeSessionState(serializeSessionState(durable));
         applyThreadCheckpointDelta(effective, delta, {
-          eventId: "pending_thread_checkpoint_delta",
+          eventId: "pending_thread_checkpoint_update",
           sequence: baseSequence + 1,
         });
         effective.updatedAt = checkpointTimestamp;
         checkpointEvent = journal.append({
-          type: "thread_checkpoint_delta",
+          type: "thread.checkpoint.updated",
           payload: delta,
           turnId: effective.activeTurnId,
           timestamp: checkpointTimestamp,
@@ -1271,7 +1221,7 @@ export class ThreadStore {
     }
     const entry: TurnSteeringEntry = {
       id: createId("steering"),
-      sequence: (prior.steeringSequence ?? 0) + 1,
+      sequence: prior.steeringSequence + 1,
       targetTurnId: turnId,
       message: safeMessage,
       queuedAt: new Date().toISOString(),
@@ -1287,7 +1237,7 @@ export class ThreadStore {
 
   /** Read-only FIFO snapshot. No entry-count truncation is applied. */
   pendingTurnSteering(threadId: string): TurnSteeringEntry[] {
-    return (this.recover(threadId).pendingSteering ?? []).map(cloneSteeringEntry);
+    return this.recover(threadId).pendingSteering.map(cloneSteeringEntry);
   }
 
   hasPendingTurnSteering(threadId: string, turnId?: string): boolean {
@@ -1308,7 +1258,7 @@ export class ThreadStore {
     if (prior.activeTurnId !== turnId) {
       throw new Error(`Cannot drain steering for inactive turn ${turnId}`);
     }
-    const entries = (prior.pendingSteering ?? []).map(cloneSteeringEntry);
+    const entries = prior.pendingSteering.map(cloneSteeringEntry);
     if (entries.length === 0) return undefined;
     const message = mergeTurnSteeringEntries(entries);
     const throughSequence = entries[entries.length - 1]!.sequence;
@@ -1348,7 +1298,7 @@ export class ThreadStore {
         type: "turn.steering.sealed",
         turnId,
         phase: "completed",
-        payload: { throughSequence: prior.steeringWatermark ?? 0 },
+        payload: { throughSequence: prior.steeringWatermark },
       });
       return undefined;
     } catch (error) {
@@ -1369,11 +1319,11 @@ export class ThreadStore {
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
         if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.session.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
-            (input.type === "context.compacted" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
+            (input.type === "context.compaction.committed" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
           this.recoverFromEvents(threadId, [...priorEvents, { ...input, eventId: input.eventId ?? "pending_compaction",
-            schemaVersion: 1, sequence: priorEvents.at(-1)!.sequence + 1, threadId,
+            schemaVersion: CURRENT_PROTOCOL.journalEvent, sequence: priorEvents.at(-1)!.sequence + 1, threadId,
             timestamp: input.timestamp ?? new Date().toISOString() }]);
         }
         const payload = asPayloadRecord(input.payload);
@@ -1411,7 +1361,7 @@ export class ThreadStore {
         if (isProgressReviewEventType(input.type)) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
           foldProgressReviewEvent(
-            priorState.progressGuard ?? createProgressGuardState(),
+            priorState.progressGuard,
             input.type,
             input.payload,
           );
@@ -1638,7 +1588,7 @@ export class ThreadStore {
         : cloneMessage(userMessage) as UserChatMessage;
     const startedAt = new Date().toISOString();
     const event = this.appendEvent(threadId, {
-      type: "turn_started",
+      type: "turn.started",
       turnId,
       timestamp: startedAt,
       payload: { message },
@@ -1661,7 +1611,7 @@ export class ThreadStore {
     >;
     const completedAt = new Date().toISOString();
     const event = this.appendEvent(threadId, {
-      type: "turn_completed",
+      type: "turn.completed",
       turnId,
       timestamp: completedAt,
       phase: "completed",
@@ -1673,7 +1623,7 @@ export class ThreadStore {
   recordMessage(threadId: string, message: ChatMessage, turnId?: string, source?: "assignment"): EventRecord {
     if (!isChatMessage(message)) throw new Error("Invalid chat message");
     return this.appendEvent(threadId, {
-      type: "chat_message",
+      type: "message.recorded",
       payload: { message: cloneMessage(message), ...(source ? { source } : {}) },
       turnId,
     });
@@ -1685,7 +1635,7 @@ export class ThreadStore {
     entry: CommandAuditEntry,
   ): EventRecord {
     const event = this.appendEvent(threadId, {
-      type: "tool_audit",
+      type: "command.audit.recorded",
       payload: { entry: { ...entry, args: [...entry.args] } },
       turnId,
       phase: entry.status === "policy_denied" ? "denied" : "completed",
@@ -1794,6 +1744,7 @@ export class ThreadStore {
         payload.taskId !== taskId ||
         (payload.reason !== "completed" &&
           payload.reason !== "blocked" &&
+          payload.reason !== "needs_parent_decision" &&
           payload.reason !== "failed" &&
           payload.reason !== "stopped" &&
           payload.reason !== "interrupted")
@@ -1860,15 +1811,13 @@ export class ThreadStore {
   ): readonly DurableSubagentAssignment[] {
     const assignments = new Map<string, DurableSubagentAssignment>();
     for (const event of this.journal(threadId).read()) {
-      if (event.type !== "tool.result" || event.phase !== "completed") continue;
+      if ((event.type !== "tool.result" && event.type !== "subagent.collected") || event.phase !== "completed") continue;
       const payload = asPayloadRecord(event.payload);
       const lifecycle = asPayloadRecord(payload?.subagentLifecycle);
       if (payload?.tool !== "manage_subagents" || !lifecycle) continue;
       if (lifecycle.action === "activate") {
         const assignment = subagentAssignment(payload.subagentAssignment);
         if (!assignment || assignment.agentId !== lifecycle.agentId || !event.turnId) {
-          // Legacy DAG activations may not contain a recoverable descriptor.
-          if (payload.subagentAssignment === undefined) continue;
           throw new Error(`Invalid child activation in event ${event.eventId}`);
         }
         const existing = assignments.get(assignment.agentId);
@@ -1913,7 +1862,7 @@ export class ThreadStore {
     return this.subagentAssignments(threadId).filter((entry) => !entry.observed);
   }
 
-  /** Compatibility view used by mode guards and legacy callers. */
+  /** Standalone subset used by callers that do not manage DAG assignments. */
   unobservedStandaloneAssignments(
     threadId: string,
   ): readonly DurableStandaloneAssignment[] {
@@ -1988,11 +1937,10 @@ export class ThreadStore {
       const event = events[index];
       if (event?.turnId !== turnId) continue;
       if (
-        event.type === "thread_checkpoint" ||
-        event.type === "thread_checkpoint_delta" ||
+        event.type === "thread.checkpoint.updated" ||
         event.type === "subagent.artifact" ||
         event.type === "subagent.result" ||
-        event.type === "tool_audit"
+        event.type === "command.audit.recorded"
       ) {
         continue;
       }
@@ -2046,105 +1994,19 @@ export class ThreadStore {
     const interruptedPlanExecutions = new Map<string, PlanReviewState>();
     for (const event of events) {
       const payload = asPayloadRecord(event.payload);
-      if (event.type === "thread_created" || event.type === "thread_checkpoint") {
+      if (event.type === "thread.created") {
         if (!payload || !("state" in payload)) {
           throw new Error(`Missing state in ${event.type} event`);
         }
-        const checkpoint = deserializeSessionState(payload.state);
-        const durableProgress = state?.progressGuard;
-        const durableReviews = state?.reviewSessions;
-        const durableDelivery = state?.delivery;
-        const durableCompaction = state?.compactionControl;
-        if (event.type === "thread_checkpoint" && state) {
-          // Messages and the active-turn pointer advance through journal events.
-          // A derived checkpoint may add a legacy tail, but it must never erase
-          // or fork an event-replayed prefix.
-          if (messagePrefix(checkpoint.messages, state.messages)) {
-            checkpoint.messages = state.messages.map(cloneMessage);
-            checkpoint.goal = state.goal;
-          } else if (!messagePrefix(state.messages, checkpoint.messages)) {
-            throw new Error(
-              `Thread checkpoint ${event.eventId} diverged from durable message history`,
-            );
-          }
-          checkpoint.activeTurnId = state.activeTurnId;
-          if (state.taskGraph) {
-            // Checkpoints are derived snapshots. Only replayed model DAG or
-            // Runtime-owned subagent transitions may advance the authority.
-            checkpoint.taskGraph = cloneTaskGraph(state.taskGraph);
-          } else if (checkpoint.taskGraph) {
-            throw new Error(
-              `Thread checkpoint ${event.eventId} introduced a task DAG without a legal transition`,
-            );
-          }
-          if (state.planReview) {
-            checkpoint.planReview = clonePlanReviewState(state.planReview);
-          } else if (checkpoint.planReview) {
-            throw new Error(
-              `Thread checkpoint ${event.eventId} introduced a plan review without a legal event`,
-            );
-          }
-          // Context compaction is an event-authoritative monotonic boundary.
-          // A checkpoint may have been serialized before a background append;
-          // never let that derived snapshot expand already-compacted history.
-          if ((state.compactionControl?.transaction || state.pressureRecovery) && checkpoint.compactedMessageCount > state.compactedMessageCount) {
-            throw new Error(`Thread checkpoint ${event.eventId} cannot advance transaction-owned compaction`);
-          }
-          if (state.compactedMessageCount >= checkpoint.compactedMessageCount) {
-            if (state.compactedMessageCount > checkpoint.messages.length) {
-              checkpoint.messages = state.messages.map(cloneMessage);
-            }
-            checkpoint.workingSummary = state.workingSummary;
-            checkpoint.compactedMessageCount = state.compactedMessageCount;
-            checkpoint.contextIntentLedger = state.contextIntentLedger
-              ? {
-                  latestRequest: { ...state.contextIntentLedger.latestRequest },
-                  activeConstraints: state.contextIntentLedger.activeConstraints.map(
-                    (item) => ({ ...item }),
-                  ),
-                  userCorrections: state.contextIntentLedger.userCorrections.map(
-                    (item) => ({ ...item }),
-                  ),
-                  supersededRequests: state.contextIntentLedger.supersededRequests.map(
-                    (item) => ({ ...item }),
-                  ),
-                }
-              : undefined;
-            checkpoint.contextCompactionMetadata = state.contextCompactionMetadata
-              ? { ...state.contextCompactionMetadata }
-              : undefined;
-          }
-          // A background child can append artifacts between the caller taking
-          // its checkpoint snapshot and the checkpoint append. Durable
-          // side-effect/audit events must never be erased by that stale view.
-          mergeFileChanges(checkpoint.changes, state.changes);
-          mergeCommandAudits(checkpoint.commands, state.commands);
-          // Reusable grants are event-authoritative. A stale or forged derived
-          // checkpoint can neither erase a later grant nor introduce one.
-          checkpoint.commandApprovalPrefixes = [...state.commandApprovalPrefixes];
-          // Steering admission, FIFO sequence, and consumption are also
-          // event-authoritative. A stale checkpoint cannot lose a queued
-          // follow-up, reapply one, or forge a finalization seal.
-          checkpoint.pendingSteering = (state.pendingSteering ?? []).map(cloneSteeringEntry);
-          checkpoint.steeringSequence = state.steeringSequence ?? 0;
-          checkpoint.steeringWatermark = state.steeringWatermark ?? 0;
-          checkpoint.steeringSealedTurnId = state.steeringSealedTurnId;
-        }
-        // Progress evidence and reviewer budgets are event-authoritative. A
-        // derived checkpoint can neither erase nor manufacture them.
-        checkpoint.reviewSessions = durableReviews;
-        checkpoint.delivery = durableDelivery;
-        checkpoint.progressGuard = durableProgress
-          ? structuredClone(durableProgress)
-          : createProgressGuardState();
-        checkpoint.compactionControl = durableCompaction ? structuredClone(durableCompaction) : { phaseEnds: [] };
-        checkpoint.pressureRecovery = state?.pressureRecovery ? structuredClone(state.pressureRecovery) : undefined;
-        checkpoint.contextOperations = state?.contextOperations ? structuredClone(state.contextOperations) : undefined;
-        checkpoint.userMessageIndices = [...(state?.userMessageIndices ?? [])];
-        state = checkpoint;
+        if (state) throw new Error(`Duplicate thread creation event ${event.eventId}`);
+        const created = deserializeSessionState(payload.state);
+        created.progressGuard = createProgressGuardState();
+        created.compactionControl = { phaseEnds: [] };
+        created.reviewSessions = [];
+        state = created;
         continue;
       }
-      if (event.type === "thread_checkpoint_delta") {
+      if (event.type === "thread.checkpoint.updated") {
         if (!state) throw new Error(`Thread ${threadId} has no creation event`);
         const delta = deserializeThreadCheckpointDelta(event.payload);
         applyThreadCheckpointDelta(state, delta, event);
@@ -2163,9 +2025,13 @@ export class ThreadStore {
         foldContextMaintenance(state, payload);
       } else if (event.type === "context.history.evicted") {
         foldPressureRecovery(state, payload);
-      } else if (event.type === "context.phase.closed" || event.type.startsWith("context.compaction.")) {
+      } else if (
+        event.type === "context.phase.closed" ||
+        (event.type.startsWith("context.compaction.") &&
+          event.type !== "context.compaction.committed")
+      ) {
         foldCompactionControl(state, event.type, payload);
-      } else if (event.type === "turn_started") {
+      } else if (event.type === "turn.started") {
         state.activeTurnId = event.turnId;
         state.steeringSealedTurnId = undefined;
         if (payload && isChatMessage(payload.message) && payload.message.role === "user") {
@@ -2173,7 +2039,7 @@ export class ThreadStore {
           updateRecoveredLatestRequest(state, messageIndex, payload.message.content);
           if (payload.message.content.trim()) state.goal = payload.message.content;
         }
-      } else if (event.type === "turn_completed") {
+      } else if (event.type === "turn.completed") {
         state.activeTurnId = undefined;
         if (
           payload &&
@@ -2182,7 +2048,14 @@ export class ThreadStore {
         ) {
           appendMessageIfNew(state, payload.message);
         }
-      } else if (event.type === "chat_message") {
+        if ((payload?.reason === "success" || payload?.reason === "planned") && completeExchange(state.messages)) {
+          foldCompactionControl(state, "context.phase.closed", {
+            end: state.messages.length,
+            kind: "turn",
+            turnId: event.turnId,
+          });
+        }
+      } else if (event.type === "message.recorded") {
         if (payload && isChatMessage(payload.message)) {
           const index = appendMessageIfNew(state, payload.message);
           if (payload.source === "assignment" && payload.message.role === "user") recordUserRequirement(state, index);
@@ -2216,6 +2089,16 @@ export class ThreadStore {
         isChatMessage(event.payload)
       ) {
         appendMessageIfNew(state, event.payload);
+      } else if (event.type === "subagent.collected" && payload) {
+        if (event.phase !== "completed" || payload.tool !== "manage_subagents" ||
+            !isChatMessage(payload.message) || payload.message.role !== "user") {
+          throw new Error(`Invalid Runtime child collection in event ${event.eventId}`);
+        }
+        foldPendingOperations(state, payload);
+        if ("taskGraph" in payload) {
+          state.taskGraph = this.replayTaskGraphResult(state, event, payload);
+        }
+        appendMessageIfNew(state, payload.message);
       } else if (event.type === "tool.result" && payload) {
         foldPendingOperations(state, payload);
         if ("progressObservation" in payload) {
@@ -2239,7 +2122,7 @@ export class ThreadStore {
             throw new Error(`Invalid progress scope in event ${event.eventId}`);
           }
           const progressFold = foldProgressObservation(
-            state.progressGuard ?? createProgressGuardState(),
+            state.progressGuard,
             observation,
           );
           state.progressGuard = progressFold.state;
@@ -2263,7 +2146,7 @@ export class ThreadStore {
             content: JSON.stringify(payload.result ?? null).slice(0, 64_000),
           });
         }
-      } else if (event.type === "subagent.recovery" && payload && "taskGraph" in payload) {
+      } else if (event.type === "subagent.reconciled" && payload && "taskGraph" in payload) {
         state.taskGraph = this.replayTaskGraphResult(state, event, payload);
       } else if (event.type === "subagent.artifact" && payload) {
         const artifacts = artifactPayload(payload);
@@ -2322,12 +2205,7 @@ export class ThreadStore {
         if (isChatMessage(payload.message) && payload.message.role === "user") {
           appendMessageIfNew(state, payload.message);
         }
-      } else if (event.type === "turn.completed") {
-        state.activeTurnId = undefined;
-        if ((payload?.reason === "success" || payload?.reason === "planned") && completeExchange(state.messages)) {
-          foldCompactionControl(state, "context.phase.closed", { end: state.messages.length, kind: "turn", turnId: event.turnId });
-        }
-      } else if (event.type === "context.compacted" && payload) {
+      } else if (event.type === "context.compaction.committed" && payload) {
         const transaction = state.compactionControl?.transaction;
         if (payload.transactionId !== undefined) {
           if (!transaction || payload.transactionId !== transaction.id) throw new Error("Unknown compaction commit");
@@ -2373,7 +2251,7 @@ export class ThreadStore {
             state.compactionControl!.seed = undefined;
           }
         }
-      } else if (event.type === "tool_audit" && payload) {
+      } else if (event.type === "command.audit.recorded" && payload) {
         const entry = payload.entry as CommandAuditEntry | undefined;
         if (
           entry &&
@@ -2390,8 +2268,6 @@ export class ThreadStore {
         ) {
           throw new Error(`Invalid command approval prefix grant in event ${event.eventId}`);
         }
-        // Historical interpreter grants must remain recoverable, but the
-        // command permission check treats them as inert in the new policy.
         state.commandApprovalPrefixes = validateCommandApprovalPrefixes([
           ...state.commandApprovalPrefixes.filter((prefix) => prefix !== payload.commandPrefix),
           payload.commandPrefix,
@@ -2404,9 +2280,11 @@ export class ThreadStore {
         foldDelivery(state, event.payload);
       } else if (event.type === "review.session.event") {
         foldReviewEvent(state, event.payload);
+      } else if (event.type === "completion.rejected" || event.type === "completion.resolved") {
+        foldCompletionControl(state, event.type, event.payload);
       } else if (isProgressReviewEventType(event.type)) {
         state.progressGuard = foldProgressReviewEvent(
-          state.progressGuard ?? createProgressGuardState(),
+          state.progressGuard,
           event.type,
           event.payload,
         );
@@ -2418,7 +2296,6 @@ export class ThreadStore {
     if (state.threadId !== threadId) {
       throw new Error(`Recovered thread id ${state.threadId} does not match ${threadId}`);
     }
-    state.progressGuard ??= createProgressGuardState();
     return state;
   }
 
@@ -2435,9 +2312,9 @@ export class ThreadStore {
     ) {
       throw new Error(`Invalid steering transition in event ${event.eventId}`);
     }
-    const pending = state.pendingSteering ?? (state.pendingSteering = []);
-    const assigned = state.steeringSequence ?? 0;
-    const watermark = state.steeringWatermark ?? 0;
+    const pending = state.pendingSteering;
+    const assigned = state.steeringSequence;
+    const watermark = state.steeringWatermark;
 
     if (event.type === "turn.steering.queued") {
       const entry = steeringEntry(payload.entry);
@@ -2513,11 +2390,11 @@ export class ThreadStore {
     payload: Record<string, unknown>,
   ): NonNullable<SessionState["taskGraph"]> {
     if (
-      (event.type !== "tool.result" && event.type !== "subagent.recovery") ||
+      (event.type !== "tool.result" && event.type !== "subagent.reconciled" && event.type !== "subagent.collected") ||
       event.phase !== "completed" ||
       typeof event.turnId !== "string" ||
       !event.turnId ||
-      (event.type === "tool.result" &&
+      ((event.type === "tool.result" || event.type === "subagent.collected") &&
         payload.tool !== "manage_tasks" &&
         payload.tool !== "manage_subagents")
     ) {
@@ -2537,7 +2414,7 @@ export class ThreadStore {
         );
       }
       if (
-        (payload.tool === "manage_subagents" || event.type === "subagent.recovery") &&
+        (payload.tool === "manage_subagents" || event.type === "subagent.reconciled") &&
         "subagentTaskOperation" in payload
       ) {
         const parsed = subagentTaskOperationSchema.parse(payload.subagentTaskOperation);
@@ -2689,14 +2566,14 @@ export class ThreadStore {
 
   private projectAuxiliaryEvent(threadId: string, event: EventRecord): void {
     const payload = asPayloadRecord(event.payload);
-    if (event.type === "thread_checkpoint_delta") {
+    if (event.type === "thread.checkpoint.updated") {
       const delta = deserializeThreadCheckpointDelta(event.payload);
       for (const entry of delta.commandsAppended ?? []) {
         this.projectToolAudit(threadId, event.turnId, entry);
       }
       return;
     }
-    if (event.type === "turn_started" && event.turnId && payload) {
+    if (event.type === "turn.started" && event.turnId && payload) {
       if (isChatMessage(payload.message) && payload.message.role === "user") {
         this.projectTurnStarted(
           threadId,
@@ -2785,7 +2662,7 @@ export class ThreadStore {
         .run(threadId);
       return;
     }
-    if (event.type === "turn_completed" && event.turnId && payload) {
+    if (event.type === "turn.completed" && event.turnId && payload) {
       if (isChatMessage(payload.message) && payload.message.role === "assistant") {
         const reason = typeof payload.reason === "string" ? payload.reason : "success";
         this.projectTurnCompleted(
@@ -2801,7 +2678,7 @@ export class ThreadStore {
       }
       return;
     }
-    if (event.type === "tool_audit" && payload) {
+    if (event.type === "command.audit.recorded" && payload) {
       const entry = payload.entry as CommandAuditEntry | undefined;
       if (entry && typeof entry.id === "string" && Array.isArray(entry.args)) {
         this.projectToolAudit(threadId, event.turnId, entry);

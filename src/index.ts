@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import path from "node:path";
+import os from "node:os";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
@@ -17,7 +18,7 @@ import {
 } from "./prompt-bundle/index.js";
 import { registerUninstallCommand } from "./uninstall/index.js";
 import { registerInstallCommands } from "./install/index.js";
-import { assertNoUninstall, recordOwnedResource } from "./install/ownership.js";
+import { assertNoUninstall, beginOwnedResource, completeOwnedResource, recordOwnedResource } from "./install/ownership.js";
 import { registerRuntimeSession } from "./install/session.js";
 import {
   THINKING_EFFORTS,
@@ -110,8 +111,14 @@ async function withApp(
   try {
     const { loadEasyCodeConfig } = await import("./config/loader.js");
     const config = await loadEasyCodeConfig({ workspaceRoot: options.workspace, credentialStore: false });
-    for (const kind of ["data", "config", "cache"] as const) recordOwnedResource({ kind, path: config[(kind + "Dir") as "dataDir" | "configDir" | "cacheDir"] });
+    const resources = (["data", "config", "cache"] as const).map(kind => ({
+      kind,
+      path: config[(kind + "Dir") as "dataDir" | "configDir" | "cacheDir"],
+    }));
+    for (const resource of resources) beginOwnedResource(resource);
+    recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
     app = await EasyCodeApp.create(appOptions(options, startupInteraction));
+    for (const resource of resources) completeOwnedResource(resource);
     if (stopRequested) { app.requestUninstallShutdown(); return; }
     await action(app);
   } finally {
@@ -200,7 +207,6 @@ export async function main(argv = process.argv): Promise<void> {
   registerSweBenchCommands(program);
   registerInstallCommands(program);
   registerUninstallCommand(program);
-
   await program.parseAsync(argv);
 }
 

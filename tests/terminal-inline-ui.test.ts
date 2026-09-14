@@ -4,7 +4,6 @@ import { PassThrough } from "node:stream";
 import { Terminal } from "../src/cli/terminal.js";
 import {
   VSCODE_IMAGE_PASTE_SEQUENCE,
-  vscodeToggleThinkingSequence,
 } from "../src/cli/prompt-input.js";
 import type { ApprovalRequest, ImageAttachment } from "../src/core/types.js";
 import type { SubagentView } from "../src/subagents/types.js";
@@ -906,7 +905,7 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("toggles fragmented Thinking controls immediately while a request is busy", async () => {
+  it("toggles Thinking through the host action while a request is busy", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
       const output = new TtyOutput();
@@ -934,17 +933,14 @@ describe("Terminal retained inline shell", () => {
 
         const firstId = terminal.addReasoning("Inspect the authentication routes.");
         const secondId = terminal.addReasoning("Verify the registration form.");
-        const sequence = Buffer.from(vscodeToggleThinkingSequence(firstId));
-        input.write(sequence.subarray(0, 8));
-        input.write(sequence.subarray(8, 23));
-        input.write(sequence.subarray(23));
+        terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
 
-        input.write(vscodeToggleThinkingSequence(secondId));
+        terminal.handleDisclosureToggle("thinking", secondId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, secondId);
-        input.write(vscodeToggleThinkingSequence(secondId));
+        terminal.handleDisclosureToggle("thinking", secondId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
 
@@ -1013,7 +1009,8 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).overlay?.kind, "picker");
         assert.equal(input.isRaw, true);
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
-        input.write(`${vscodeToggleThinkingSequence(id)}\r`);
+        terminal.handleDisclosureToggle("thinking", id);
+        input.write("\r");
         assert.equal(await choice, "yes");
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
@@ -1025,7 +1022,7 @@ describe("Terminal retained inline shell", () => {
           viewerBefore,
         );
         assert.equal(input.listenerCount("data"), initialDataListeners + 1);
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, id);
         terminal.clearCurrentRequest();
@@ -1050,7 +1047,7 @@ describe("Terminal retained inline shell", () => {
         const thinkingId = terminal.addReasoning(
           "Keep this disclosure selected while modal input borrows stdin.",
         );
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
 
         const viewerBefore = (terminal as unknown as {
@@ -1588,7 +1585,7 @@ describe("Terminal retained inline shell", () => {
         input.write("draft");
         const exitsBeforeToggle =
           (captured().match(/\u001B\[\?1049l/gu) ?? []).length;
-        input.write(vscodeToggleThinkingSequence(firstId));
+        terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
@@ -1598,7 +1595,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
         assert.equal(lastCursorVisibility(captured()), "hidden");
 
-        input.write(vscodeToggleThinkingSequence(firstId));
+        terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
@@ -1612,22 +1609,22 @@ describe("Terminal retained inline shell", () => {
           "collapsing Thinking must not leave the persistent conversation view",
         );
 
-        input.write(vscodeToggleThinkingSequence(secondId));
+        terminal.handleDisclosureToggle("thinking", secondId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, secondId);
-        input.write(vscodeToggleThinkingSequence(firstId));
+        terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, firstId);
         assert.equal(terminalState(terminal).transcript.length, markerEntries);
 
         // Collapse the selected row before exercising ordinary readline
         // shortcuts and stale-ID fallback. The persistent viewer stays active.
-        input.write(vscodeToggleThinkingSequence(firstId));
+        terminal.handleDisclosureToggle("thinking", firstId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.ok(disclosureFrame(terminal));
 
-        input.write(vscodeToggleThinkingSequence(999));
+        terminal.handleDisclosureToggle("thinking", 999);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.ok(disclosureFrame(terminal));
@@ -1662,7 +1659,7 @@ describe("Terminal retained inline shell", () => {
         });
 
         input.write("before ");
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
         input.write("\u001B[200~A\nB\u001B[201~ after\r");
 
@@ -1707,7 +1704,7 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
         const thinkingId = terminal.addReasoning("Keep this complete while steering.");
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
 
         input.write(
@@ -1732,7 +1729,7 @@ describe("Terminal retained inline shell", () => {
           ["second adjustment"],
         );
 
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.equal(lastCursorVisibility(captured()), "hidden");
@@ -1757,7 +1754,7 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
         const id = terminal.addReasoning("Inspect the README before answering.");
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
         terminal.write("The complete answer remains stable.\n");
         terminal.clearCurrentRequest();
@@ -1831,7 +1828,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
         assert.equal(terminalState(terminal).composer.text, "draft");
 
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
 
         const openNode = disclosureNode(terminal, `thinking_${id}`);
@@ -1861,7 +1858,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(disclosureRegionText(terminal, "composer"), /│ > draft/u);
 
         // This is the same OSC emitted when the user clicks the expanded title.
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
 
         const restoredNode = disclosureNode(terminal, `thinking_${id}`);
@@ -1910,7 +1907,7 @@ describe("Terminal retained inline shell", () => {
         terminal.addReasoning("SECOND-THINKING-DETAIL");
         terminal.write("ASSISTANT-ROW-IN-CURRENT-TURN\n");
 
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
         const expandedThinking = disclosureNode(
           terminal,
@@ -1941,13 +1938,13 @@ describe("Terminal retained inline shell", () => {
         );
         assert.doesNotMatch(completeTurn, /Queued adjustment|\/adjustment 7/u);
 
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
 
         terminal.clearCurrentRequest();
         terminal.setCurrentRequest("Start the next task");
         const nextThinkingId = terminal.addReasoning("NEXT-TURN-THINKING");
-        input.write(vscodeToggleThinkingSequence(nextThinkingId));
+        terminal.handleDisclosureToggle("thinking", nextThinkingId);
         await settlePromptInput();
         const nextTurnNode = disclosureNode(
           terminal,
@@ -1955,7 +1952,7 @@ describe("Terminal retained inline shell", () => {
         );
         assert.equal(nextTurnNode.expanded, true);
         assert.match(nextTurnNode.body ?? "", /NEXT-TURN-THINKING/u);
-        input.write(vscodeToggleThinkingSequence(nextThinkingId));
+        terminal.handleDisclosureToggle("thinking", nextThinkingId);
         await settlePromptInput();
 
         assert.equal(terminal.showAdjustment(7), true);
@@ -2071,7 +2068,7 @@ describe("Terminal retained inline shell", () => {
         );
         assert.equal(secondThinking, firstThinking + 1);
 
-        input.write(vscodeToggleThinkingSequence(firstThinking));
+        terminal.handleDisclosureToggle("thinking", firstThinking);
         await settlePromptInput();
         input.write("next\r");
         assert.equal((await idlePrompt)?.text, "next");
@@ -2105,10 +2102,10 @@ describe("Terminal retained inline shell", () => {
         const next = terminal.readPrompt("> ", { captureImage: async (index) => steeringAttachment(index) });
         input.write("draft ");
         await settlePromptInput();
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking?.id, id);
-        input.write(vscodeToggleThinkingSequence(id));
+        terminal.handleDisclosureToggle("thinking", id);
         await settlePromptInput();
         assert.equal(terminalState(terminal).live.thinking, null);
         input.write("preserved\r");
@@ -2210,7 +2207,7 @@ describe("Terminal retained inline shell", () => {
           captureImage: async (index) => steeringAttachment(index),
         });
         await settlePromptInput();
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
         const completeTurn = disclosureNodes(terminal)
           .map(disclosureNodeText)
@@ -2220,7 +2217,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(completeTurn, /Revise the accepted plan/u);
         assert.doesNotMatch(completeTurn, /INTERNAL-REVISION-CONTROL-PROMPT/u);
 
-        input.write(vscodeToggleThinkingSequence(thinkingId));
+        terminal.handleDisclosureToggle("thinking", thinkingId);
         await settlePromptInput();
         input.write("next\r");
         assert.equal((await prompt)?.text, "next");
@@ -2300,7 +2297,7 @@ describe("Terminal retained inline shell", () => {
         shortTerminal.addReasoning("Inspect the README first.");
         shortTerminal.addQueuedAdjustment(1, "怎么部署");
         const targetId = shortTerminal.addReasoning("Summarize the deployment steps.");
-        shortInput.write(vscodeToggleThinkingSequence(targetId));
+        shortTerminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
 
         const frame = disclosureFrame(shortTerminal);
@@ -2341,7 +2338,7 @@ describe("Terminal retained inline shell", () => {
           Array.from({ length: 40 }, (_, index) => `complete detail ${index + 1}`)
             .join("\n"),
         );
-        longInput.write(vscodeToggleThinkingSequence(targetId));
+        longTerminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
 
         const frame = disclosureFrame(longTerminal);
@@ -2391,7 +2388,7 @@ describe("Terminal retained inline shell", () => {
             `STABLE-CONTEXT-${index + 1}`).join("\n")}\n`,
         );
         const targetId = terminal.addReasoning("TAIL-SHORT-BODY");
-        input.write(vscodeToggleThinkingSequence(targetId));
+        terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
 
         const initial = disclosureFrame(terminal);
@@ -2428,7 +2425,7 @@ describe("Terminal retained inline shell", () => {
           /TAIL-SHORT-BODY/u,
         );
 
-        input.write(vscodeToggleThinkingSequence(targetId));
+        terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
         terminal.clearCurrentRequest();
       } finally {
@@ -2482,7 +2479,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(completeBeforeExpand, /assistant row 25/u);
         assert.match(completeBeforeExpand, /answer tail 4/u);
 
-        input.write(vscodeToggleThinkingSequence(targetId));
+        terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
         const expandedNode = disclosureNode(terminal, `thinking_${targetId}`);
         assert.equal(expandedNode.expanded, true);
@@ -2497,7 +2494,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(completeTurn, /answer tail 1/u);
         assert.match(completeTurn, /answer tail 4/u);
 
-        input.write(vscodeToggleThinkingSequence(targetId));
+        terminal.handleDisclosureToggle("thinking", targetId);
         await settlePromptInput();
 
         input.write("\u001B[5~");
@@ -2596,7 +2593,7 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
-  it("falls back to legacy output and non-interactive choices on non-TTY streams", async () => {
+  it("uses plain output and non-interactive choices on non-TTY streams", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
     const captured = captureOutput(output);

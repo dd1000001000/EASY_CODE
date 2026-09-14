@@ -34,8 +34,8 @@ export function networkCommandApprovalPrefix(executable: string, args: string[],
 export function canGrantCommandPrefix(prefix: string): boolean {
   if (prefix.startsWith(ONCE_PREFIX)) return false;
   if (isCommandGrant(prefix)) { try { normalizeCommandApprovalPrefix(prefix); return true; } catch { return false; } }
-  // Legacy UI labels may be noncanonical; the application validates before
-  // persisting any actual grant. Encoded network capabilities must parse here.
+  // UI labels may be noncanonical; the application validates before persisting
+  // an actual grant. Encoded network capabilities must parse here.
   if (!prefix.startsWith(NETWORK_PREFIX)) return reusableExecutableGrant(prefix);
   try { normalizeCommandApprovalPrefix(prefix); return prefix.startsWith(NETWORK_PREFIX) || reusableExecutableGrant(prefix); }
   catch { return false; }
@@ -127,9 +127,6 @@ export function validateCommandApprovalPrefixes(
     if (typeof candidate !== "string") {
       throw new Error("Invalid command approval prefix list");
     }
-    // Retired container grants cannot authorize native execution. Drop them
-    // while loading old checkpoints instead of making the Thread unusable.
-    if (candidate.startsWith("podman:v1:")) continue;
     const normalized = normalizeCommandApprovalPrefix(candidate, platform);
     if (seen.has(normalized)) continue;
     seen.add(normalized);

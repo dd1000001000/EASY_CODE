@@ -6,7 +6,6 @@ import type { ApprovalRequest, CommandAuditEntry, ToolContext } from "../src/cor
 import {
   analyzeNpmInstall,
   buildCommandEnvironment,
-  buildUnrestrictedCommandEnvironment,
   CommandPolicy,
   CommandResolver,
   CommandRuntime,
@@ -987,7 +986,7 @@ describe("command runtime", () => {
   });
 
   it("does not expose the private VS Code navigation channel in dangerous mode", () => {
-    const environment = buildUnrestrictedCommandEnvironment({
+    const environment = buildCommandEnvironment({
       PATH: process.env.PATH,
       EASY_CODE_VSCODE_BRIDGE_ENDPOINT: "127.0.0.1:43123",
       EASY_CODE_VSCODE_BRIDGE_TOKEN: "a".repeat(64),

@@ -19,7 +19,7 @@ import {
   benchmarkEmbeddingModelDirectory,
   benchmarkEnvironment,
   buildHarborRunArgs,
-  consumeHarborGlmCodingPlanApiKeyFile,
+  consumeHarborProviderApiKeyFile,
   resolveHarborOuterSandbox,
   summarizeSweBenchContextMetrics,
   validateSweBenchRoot,
@@ -145,21 +145,21 @@ describe("SWE-bench Verified integration", () => {
     );
   });
 
-  it("consumes and removes Harbor's one-shot GLM Coding Plan credential", () => {
+  it("consumes and removes Harbor's provider-neutral one-shot credential", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-harbor-key-"));
     const secretPath = path.join(directory, "glm-coding-plan-api-key");
     try {
       writeFileSync(secretPath, "test-secret\n", { encoding: "utf8", mode: 0o600 });
       chmodSync(secretPath, 0o600);
       const env: NodeJS.ProcessEnv = {
-        EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE: secretPath,
+        EASY_CODE_PROVIDER_API_KEY_FILE: secretPath,
       };
 
       assert.equal(
-        consumeHarborGlmCodingPlanApiKeyFile("harbor", env, secretPath),
+        consumeHarborProviderApiKeyFile("harbor", env, secretPath),
         "test-secret",
       );
-      assert.equal(env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE, undefined);
+      assert.equal(env.EASY_CODE_PROVIDER_API_KEY_FILE, undefined);
       assert.equal(existsSync(secretPath), false);
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -266,7 +266,6 @@ describe("SWE-bench Verified integration", () => {
     ]);
     assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, [
       "EASY_CODE_GLM_CODING_PLAN_BASE_URL",
-      "GLM_CODING_PLAN_BASE_URL",
     ]);
     const adapterPath = fileURLToPath(new URL(
       "../../benchmarks/swebench_verified/easy_code_agent.py",

@@ -39,10 +39,3 @@ export function buildCommandEnvironment(source: NodeJS.ProcessEnv = process.env)
   environment.FORCE_COLOR = "0";
   return environment;
 }
-
-/** Legacy export: no posture may inherit the user's credential environment. */
-export function buildUnrestrictedCommandEnvironment(
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  return buildCommandEnvironment(source);
-}

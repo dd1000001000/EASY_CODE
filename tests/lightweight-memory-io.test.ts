@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
 import os from "node:os";
@@ -14,10 +14,11 @@ import { projectToolResult } from "../src/tools/output-projection.js";
 import { selectMemoryContext, optionalMemoryTokenBudget, expandedMemoryRecall } from "../src/context/memory-controller.js";
 import { assertDurableMemory } from "../src/memory/admission.js";
 import type { ChatMessage, LongTermMemory, SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
+import { baseSessionState } from "./session-state.js";
 
 const limits = defaultRuntimeLimits();
 function state(root = process.cwd()): SessionState {
-  return { threadId: "lightweight-io", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
+  return { ...baseSessionState(), threadId: "lightweight-io", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
     workspaceRoot: root, constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],
     commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };

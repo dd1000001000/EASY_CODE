@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { execa } from "execa";
 import { CommandPolicy } from "../src/command/policy.js";
 import { CommandResolver } from "../src/command/resolver.js";
 import { CommandRuntime } from "../src/command/runtime.js";
@@ -45,6 +46,25 @@ describe("command usability and boundaries", () => {
     await writeFile(script, "echo ok"); await chmod(script, 0o755);
     const resolved = await resolver.resolve({ program: `./${path.basename(script)}`, cwd: "tests", intent: "run" });
     assert.equal(resolved.executablePath, script);
+    if (process.platform === "win32") {
+      const shim = path.join(root, "tests", "package-tool");
+      const windowsShim = `${shim}.cmd`;
+      await writeFile(shim, "#!/bin/sh\necho wrong\n");
+      await writeFile(windowsShim, "@echo off\r\nif \"%~1\"==\"literal&value\" (exit /b 0) else (exit /b 9)\r\n");
+      const command = await resolver.resolve({ program: "./package-tool", args: ["literal&value"], cwd: "tests", intent: "run" });
+      assert.equal(command.executablePath, windowsShim, "PATHEXT launchers must win over adjacent POSIX shims");
+      assert.equal(command.launch?.kind, "windows-script");
+      assert.equal(command.launch?.usesCommandPayload, true);
+      assert.deepEqual(command.args, ["literal&value"], "policy and approval keep the original structured argv");
+      const payload = path.join(root, "tests", "launch-payload.json");
+      await writeFile(payload, JSON.stringify({ target: command }));
+      const launched = await execa(command.launch!.executablePath, command.launch!.args, {
+        cwd: command.cwdAbsolute, env: { ...command.environment, EASY_CODE_LAUNCH_SPEC: payload },
+        extendEnv: false, reject: false, windowsHide: true,
+      });
+      assert.equal(launched.exitCode, 0,
+        `the physical launcher must preserve structured arguments for the Windows script: ${launched.stderr || launched.stdout}`);
+    }
     await assert.rejects(() => resolver.resolve({ program: process.execPath, cwd: "../", intent: "run" }), /boundary/u);
     await assert.rejects(() => resolver.resolve({ program: process.execPath, args: ["bad\0argument"], intent: "run" }), /NUL/u);
     await assert.rejects(() => resolver.resolve({ program: process.execPath, cwd: "//server/share", intent: "run" }), /Network/u);

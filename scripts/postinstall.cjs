@@ -106,6 +106,17 @@ async function installBundledPromptResources(options = {}) {
   return promptBundle.ensurePromptBundle(options);
 }
 
+async function recordInstallResource(resource, options = {}) {
+  if (typeof options.recordResource === "function") {
+    await options.recordResource(resource);
+    return;
+  }
+  const modulePath = path.join(__dirname, "..", "dist", "install", "ownership.js");
+  if (!fs.existsSync(modulePath)) return;
+  const ownership = await import(pathToFileURL(modulePath).href);
+  ownership.recordOwnedResource(resource);
+}
+
 /** Validate the native sandbox resolved by this installation and perform the one-time Windows
  * elevated setup when required. No VM, container engine or global CLI is
  * installed or reconfigured. */
@@ -115,6 +126,8 @@ async function checkSandboxPrerequisites(options = {}) {
   const report = message => stdout.write(`EASY CODE: ${message}\n`);
   try {
     let service = options.service;
+    let installedConfig;
+    let recordOwnedResource;
     if (!service) {
       const compiled = path.join(__dirname, "..", "dist");
       if (shouldDeferLocalSourcePromptInstall()) {
@@ -124,14 +137,18 @@ async function checkSandboxPrerequisites(options = {}) {
       const { NativeSandboxStartupService } = await import(pathToFileURL(path.join(compiled, "sandbox", "native-startup.js")).href);
       const { loadEasyCodeConfig } = await import(pathToFileURL(path.join(compiled, "config", "loader.js")).href);
       // Load user configuration, never the project from which npm was launched.
-      const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
+      installedConfig = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
         workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
-      const { recordOwnedResource } = await import(pathToFileURL(path.join(compiled, "install", "ownership.js")).href);
-      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: config[kind + "Dir"] });
-      service = new NativeSandboxStartupService(config.limits, config.dataDir, report);
+      ({ recordOwnedResource } = await import(pathToFileURL(path.join(compiled, "install", "ownership.js")).href));
+      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
+      recordOwnedResource({ kind: "config", path: path.join(require("node:os").homedir(), ".easy_code") });
+      service = new NativeSandboxStartupService(installedConfig.limits, installedConfig.dataDir, report);
     }
     report("Verifying the installed native command sandbox.");
     const result = await service.setup();
+    if (installedConfig && recordOwnedResource) {
+      for (const kind of ["data", "config", "cache"]) recordOwnedResource({ kind, path: installedConfig[kind + "Dir"] });
+    }
     const ready = result.readiness.status === "ready";
     if (ready) report(`Native command sandbox ready: ${result.readiness.details[0] || "enforced filesystem/network probe passed."}`);
     else stderr.write(`EASY CODE: sandbox NOT ready: ${result.message}\n${result.readiness.details.join("\n")}\nComplete Windows authorization if requested, then run easy-code sandbox setup. No host fallback.\n`);
@@ -371,6 +388,7 @@ async function runPostinstall(options = {}) {
 
   try {
     const registry = installModelRegistry(options.modelRegistryOptions || {});
+    await recordInstallResource({ kind: "config", path: path.dirname(registry.path) }, options);
     stdout.write(`EASY CODE: user model registry ${registry.created ? "created" : "preserved"} at ${registry.path}.\n`);
   } catch (error) {
     stderr.write(`EASY CODE: model registry installation failed: ${errorMessage(error)}\n`);
@@ -459,6 +477,10 @@ async function runPostinstall(options = {}) {
 
   try {
     const result = await installExtension();
+    for (const program of result.installed) {
+      await recordInstallResource({ kind: "extension", name: "dd1000001000.easy-code-image-paste",
+        path: program, method: "vscode-cli" }, options);
+    }
     if (result.installed.length) {
       stdout.write(
         `EASY CODE: installed the bundled VS Code extension into ${result.installed.length} installation(s).\n`,
@@ -524,8 +546,12 @@ if (require.main === module) {
         process.exitCode = 1;
         return;
       }
-      const sandbox = await checkSandboxPrerequisites();
-      if (!sandbox.ready && !sandbox.deferred) process.exitCode = 1;
+      // Sandbox preparation is attempted eagerly, but OS authorization and
+      // package-manager installation have different transaction boundaries.
+      // A declined/deferred elevation must not leave npm reporting that EASY
+      // CODE itself failed to install. Runtime command execution remains
+      // fail-closed until `easy-code sandbox setup` succeeds.
+      await checkSandboxPrerequisites();
     })
     .catch((error) => {
       process.stderr.write(`EASY CODE: installation check failed: ${errorMessage(error)}\n`);

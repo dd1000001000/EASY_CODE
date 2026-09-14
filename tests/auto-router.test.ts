@@ -528,7 +528,7 @@ describe("tool-only Auto Router", () => {
   it("reports the original boundary of the exact prior-message suffix it projects", () => {
     const priorMessages: ChatMessage[] = [
       { role: "user", content: "omitted-old-user" },
-      { role: "tool", tool_call_id: "old-call", content: "omitted-old-tool" },
+      { role: "tool", name: "read_file", tool_call_id: "old-call", content: "omitted-old-tool" },
       ...Array.from({ length: 11 }, (_, index) => ({
         role: index % 2 === 0 ? ("assistant" as const) : ("user" as const),
         content: `projected-recent-${index}`,

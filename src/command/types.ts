@@ -32,8 +32,8 @@ export type VerificationKind = typeof VERIFICATION_KINDS[number];
 
 /**
  * Return the durable verification category for a validated command request.
- * Legacy test/build calls remain verification commands without requiring the
- * newer field; generic legacy tests use custom because Runtime cannot safely
+ * Test/build calls remain verification commands without requiring a subtype;
+ * generic checks use custom because Runtime cannot safely
  * infer whether they are unit, integration, smoke, or benchmark checks.
  */
 export function commandVerificationKind(
@@ -88,6 +88,16 @@ export interface ResolvedCommand {
   program: string;
   executablePath: string;
   args: string[];
+  /** Runtime-issued physical launch adapter. Policy, approvals, verification,
+   * and audit continue to use the logical executablePath/args above. */
+  launch?: {
+    kind: "windows-script";
+    executablePath: string;
+    args: string[];
+    /** The adapter reads the original structured target from the private
+     * per-command payload rather than interpolating model-controlled argv. */
+    usesCommandPayload: true;
+  };
   cwdAbsolute: string;
   cwdRelative: string;
   executableInsideWorkspace: boolean;

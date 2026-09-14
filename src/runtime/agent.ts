@@ -94,7 +94,7 @@ import {
   validateTaskGraphTransition,
   subagentTaskOperationSchema,
   validateSubagentTaskTransition,
-  type SubagentTaskTransitionOperation,
+  type SubagentTaskOperation,
   type TaskGraphTransitionOperation,
 } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
@@ -144,6 +144,13 @@ import {
   ToolExecutionGateway,
   type ToolExecutionAuthorizer,
 } from "../tools/execution-gateway.js";
+import {
+  evaluateCompletionGate,
+  foldCompletionControl,
+  nextCompletionAttempt,
+  renderCompletionCorrection,
+  reviewRemediationObligation,
+} from "./completion-gate.js";
 
 function runtimePromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -283,8 +290,8 @@ function contextRetrievalQuery(
           `cwd=${latestFailedCommand.cwd}`,
         ].join("\n")
       : "",
-    blockedTask?.blocker
-      ? `blockedTask=${blockedTask.id}\n${blockedTask.blocker}`
+    blockedTask?.blockerDetails
+      ? `blockedTask=${blockedTask.id}\n${blockedTask.blockerDetails.reason}`
       : "",
   ].filter(Boolean).join("\n\n").slice(0, 4_000);
   const diffAndPathEvidence = [
@@ -317,7 +324,7 @@ function contextRetrievalQuery(
       : "",
     task
       ? `[ACTIVE_TASK]\n${task.title}\n${task.description}\n` +
-        `${task.completionChecks.join("\n")}\n${task.blocker ?? ""}`
+        `${task.completionChecks.join("\n")}\n${task.blockerDetails?.reason ?? ""}`
       : "",
     latestFailure ? `[LATEST_FAILURE]\n${latestFailure}` : "",
     diffAndPathEvidence
@@ -348,7 +355,7 @@ function progressIntentRevision(state: Readonly<SessionState>): number {
   }
   return Math.max(
     latestUserIndex + 1,
-    (state.steeringWatermark ?? 0) + 1,
+    state.steeringWatermark + 1,
     (state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? -1) + 1,
   );
 }
@@ -550,6 +557,12 @@ interface RuntimeLayeredContext {
   evidence?: readonly Readonly<ContextSearchHit>[];
 }
 
+function commandEnvironmentFault(
+  dependencies: Pick<AgentRuntimeDependencies, "getEnvironmentFault">,
+): string | undefined {
+  return dependencies.getEnvironmentFault?.();
+}
+
 function pinCurrentState(
   state: Readonly<SessionState>,
   approvedPlanReview: Readonly<PlanReviewState> | undefined,
@@ -575,8 +588,8 @@ const CONTEXT_PRESSURE_SYSTEM_RESERVE_CHARS = 1_024;
 const MAX_AUDITED_TOOL_BINDINGS = 256;
 
 export interface AgentRuntimeDependencies {
-  /** Host-owned health gate shared by main and child runtimes. */
-  assertEnvironmentSafe?: () => void;
+  /** Read-only health projection; mutations remain gated by the tool layer. */
+  getEnvironmentFault?: () => string | undefined;
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   taskBudget?: import("./task-budget.js").TaskBudget;
   tokenCalibration?: TokenCalibration;
@@ -662,6 +675,8 @@ export interface AgentRuntimeDependencies {
     taskTitle: string;
     status: string;
   }[];
+  /** Runtime-owned collection of terminal child results; never fabricates a model tool call. */
+  collectReadySubagents?: (state: SessionState, turnId: string, signal?: AbortSignal) => Promise<number>;
   /** True until this actor has observed every supervised command's terminal result. */
   hasOpenCommandHandles?: () => boolean;
   onText?: (text: string) => void;
@@ -785,7 +800,7 @@ function taskGraphToolError(
   if (!metadata.taskWork) return undefined;
   const current = activeTask(graph);
   if (current) return undefined;
-  if (graph.status === "blocked") {
+  if (graph.status === "waiting_input" || graph.status === "terminal_blocked") {
     return "The task DAG is blocked. Resume its blocked node before using work tools.";
   }
   return "Start one unblocked DAG task with manage_tasks before using work tools.";
@@ -808,8 +823,9 @@ function incompleteTaskGraphReminder(graph: Readonly<TaskGraph>): string {
 
 function terminalTaskGraphText(graph: Readonly<TaskGraph> | undefined): string {
   const blockedTask = graph?.tasks.find((task) => task.status === "blocked");
-  return graph?.status === "blocked"
-    ? `The task DAG is blocked${blockedTask?.blocker ? `: ${blockedTask.blocker}` : "."}`
+  const blocker = blockedTask?.blockerDetails?.reason;
+  return graph?.status === "terminal_blocked"
+    ? `The task DAG is blocked${blocker ? `: ${blocker}` : "."}`
     : "The task DAG completed all declared tasks and completion checks.";
 }
 
@@ -1034,7 +1050,7 @@ export class AgentRuntime {
       payload,
     });
     state.progressGuard = foldProgressReviewEvent(
-      state.progressGuard ?? createProgressGuardState(),
+      state.progressGuard,
       type,
       payload,
     );
@@ -1079,7 +1095,6 @@ export class AgentRuntime {
     signal?: AbortSignal;
   }): Promise<number> {
     const { state, turnId } = input;
-    state.progressGuard ??= createProgressGuardState();
     const currentScopeKey = progressScopeKey(state, turnId);
     if (this.dependencies.runReviewSession) {
       const pending = state.progressGuard.incidents.find(incident => incident.scopeKey === currentScopeKey &&
@@ -1539,7 +1554,7 @@ export class AgentRuntime {
     if (!batch) return undefined;
     if (
       !Number.isSafeInteger(batch.throughSequence) ||
-      batch.throughSequence <= (state.steeringWatermark ?? 0) ||
+      batch.throughSequence <= state.steeringWatermark ||
       batch.entries.length === 0 ||
       batch.entries[batch.entries.length - 1]?.sequence !== batch.throughSequence ||
       batch.message.role !== "user"
@@ -1569,10 +1584,10 @@ export class AgentRuntime {
       steeringMessageIndex,
       batch.message.content,
     );
-    state.pendingSteering = (state.pendingSteering ?? [])
+    state.pendingSteering = state.pendingSteering
       .filter((entry) => entry.sequence > batch.throughSequence);
     state.steeringSequence = Math.max(
-      state.steeringSequence ?? 0,
+      state.steeringSequence,
       batch.throughSequence,
     );
     state.steeringWatermark = batch.throughSequence;
@@ -1599,7 +1614,6 @@ export class AgentRuntime {
     turnSignal: AbortSignal | undefined,
     operation: (signal: AbortSignal | undefined) => Promise<T>,
   ): Promise<{ kind: "completed"; value: T } | { kind: "steering_interrupted" }> {
-    this.dependencies.assertEnvironmentSafe?.();
     const steeringAttempt = this.dependencies.steeringNotifier?.openAttempt();
     const attemptSignal = createProviderAttemptSignal({
       turnSignal,
@@ -1645,7 +1659,7 @@ export class AgentRuntime {
     const turnId = createId("turn");
     this.retryContext = { state, turnId };
     const turnImages = [...inputImages];
-    this.dependencies.steeringNotifier?.consume(state.steeringWatermark ?? 0);
+    this.dependencies.steeringNotifier?.consume(state.steeringWatermark);
     const agentIdentity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
     if (agentIdentity.role === "subagent" && state.mode !== "code") {
       throw new Error("An isolated child runtime must remain in Code mode");
@@ -1780,7 +1794,13 @@ export class AgentRuntime {
       }
       const backgroundCommandHandleOpenAtRoute =
         this.dependencies.hasOpenCommandHandles?.() ?? false;
-      const fixedSelection = backgroundCommandHandleOpenAtRoute
+      const reconciliationPendingAtRoute = reconciliationPending(state);
+      const fixedSelection = reconciliationPendingAtRoute
+        ? {
+            mode: "code" as const,
+            reason: "Reconcile the reset context, workspace and original pending operations before finishing.",
+          }
+        : backgroundCommandHandleOpenAtRoute
         ? {
             mode: "code" as const,
             reason: backgroundCommandFinalizationInstruction(),
@@ -2006,8 +2026,6 @@ export class AgentRuntime {
             continue;
           }
           if (decision.kind === "direct_response") {
-            if (reconciliationPending(state)) return this.finish(state, turnId,
-              "Cannot finish directly after context reset before reconciling workspace and pending operations. No completion retry.", "failed", 0, memoryContext);
             if (await this.takeAndApplySteering(
               state,
               turnId,
@@ -2142,12 +2160,14 @@ export class AgentRuntime {
     const commandRetries = new CommandRetryTracker((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries);
     let lastContextPressureLevel: ContextPressureLevel = "normal";
     let progressReviewModelRequestsUsed = 0;
+    // Once execution becomes uncertain, this run never re-enables mutations.
+    // Recovery is an explicit external repair followed by Resume.
+    let runEnvironmentFault: string | undefined;
     for (
       let step = 1;
       step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed <= Math.min(stepLimit, options.maxSteps) && this.remainingRequests > 0;
       step += 1
     ) {
-      this.dependencies.assertEnvironmentSafe?.();
       if (options.signal?.aborted) {
         return this.finish(
           state,
@@ -2652,18 +2672,12 @@ export class AgentRuntime {
       invalidOutputAttempts = 0;
       const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
-        if (reconciliationPending(state)) return this.finish(state, turnId,
-          "Cannot finish before context-reset reconciliation. Inspect the current workspace and query original pending operations; no completion retry.", "failed", step, memoryContext);
-        if (this.dependencies.hasOpenCommandHandles?.()) {
-          const instruction = backgroundCommandFinalizationInstruction();
-          return this.finish(
-            state,
-            turnId,
-            instruction,
-            "failed",
-            step,
-            memoryContext,
-          );
+        if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
+          const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
+          if (collected > 0) {
+            this.dependencies.onStatus?.(`Runtime collected ${collected} terminal child result(s); returning them to the main agent.`);
+            continue;
+          }
         }
         const pendingExperiment = agentIdentity.role === "main_agent"
           ? requiredProgressExperiment(
@@ -2671,43 +2685,63 @@ export class AgentRuntime {
               progressScopeKey(state, turnId),
             )
           : undefined;
-        if (pendingExperiment) {
-          const instruction = progressRuntimeInstruction(
-            state,
-            pendingExperiment.scopeKey,
-          );
-          return this.finish(
-            state,
-            turnId,
-            "The required progress experiment was not executed with a real terminal verification result. No automatic completion retry.",
-            "failed",
-            step,
-            memoryContext,
-          );
+        const outstandingSubagents = agentIdentity.role === "main_agent"
+          ? this.dependencies.getOutstandingSubagents?.() ?? []
+          : [];
+        const obligations = evaluateCompletionGate({
+          state,
+          role: agentIdentity.role,
+          mode: effectiveMode,
+          reconciliationPending: reconciliationPending(state),
+          openCommandHandles: this.dependencies.hasOpenCommandHandles?.() ?? false,
+          ...(pendingExperiment ? { pendingExperiment } : {}),
+          outstandingSubagents,
+          commandEnvironmentFault: runEnvironmentFault ?? commandEnvironmentFault(this.dependencies),
+        });
+        if (obligations.length) {
+          const { signature, attempt } = nextCompletionAttempt(state, obligations);
+          const payload = { signature, attempt, obligations };
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+            type: "completion.rejected", phase: "completed", payload });
+          foldCompletionControl(state, "completion.rejected", payload);
+          const limits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+          // When several obligations coexist, stop as soon as the most
+          // restrictive configured correction budget is exhausted. Resolving
+          // that obligation creates a new signature and lets the remaining
+          // obligations use their own budget on Resume.
+          const maximum = Math.min(...obligations.map(item => item.kind === "command_environment"
+            ? limits.commandEnvironmentRecoveryRetries
+            : limits.prematureFinishRetries));
+          if (attempt <= maximum) {
+            const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
+              obligations, attempt, maximum - attempt) };
+            state.messages.push(feedback);
+            await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+              type: "message.user.synthetic", phase: "completed", payload: feedback });
+            this.dependencies.onStatus?.(`Completion deferred: ${obligations.length} Runtime obligation(s) remain.`);
+            continue;
+          }
+          return this.finish(state, turnId,
+            `Task paused after ${attempt} repeated invalid completion proposals. Pending obligations: ` +
+              obligations.map(item => item.description).join(" "),
+            "paused", step, memoryContext, undefined, undefined, undefined,
+            { cause: obligations.some(item => item.kind === "review_remediation") ? "review"
+              : obligations.some(item => item.kind === "command_environment") ? "command_environment"
+              : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents") ? "subagent"
+              : obligations.some(item => item.kind === "dag_active") ? "dag" : "completion_protocol",
+              resumable: true,
+              requiredAction: obligations.map(item => item.requiredAction).join(" "),
+              obligations });
+        }
+        if (state.completionControl?.active) {
+          const payload = { signature: state.completionControl.active.signature };
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+            type: "completion.resolved", phase: "completed", payload });
+          foldCompletionControl(state, "completion.resolved", payload);
         }
         const text =
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
-        if (agentIdentity.role === "subagent") {
-          return this.finish(state, turnId, "The child tried to finish without submit_task_result. No automatic retry; parent must decide how to continue.", "failed", step, memoryContext);
-        }
-        const outstandingSubagents = this.dependencies.getOutstandingSubagents?.() ?? [];
-        if (outstandingSubagents.length > 0) {
-          return this.finish(
-            state,
-            turnId,
-            "The main agent did not collect all outstanding child results.",
-            "failed",
-            step,
-            memoryContext,
-          );
-        }
-        if (state.taskGraph?.status === "active") {
-          return this.finish(state, turnId, "Cannot finish: the task DAG is incomplete. No automatic completion retry.", "failed", step, memoryContext);
-        }
-        if (effectiveMode === "plan") {
-          return this.finish(state, turnId, "Cannot finish Plan mode without a valid propose_plan submission. No automatic completion retry.", "failed", step, memoryContext);
-        }
         if (await this.takeAndApplySteering(
           state,
           turnId,
@@ -2718,8 +2752,7 @@ export class AgentRuntime {
         )) {
           continue;
         }
-        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && (state.changes.length > 0 || pendingDelivery(state)) &&
-            state.taskGraph?.status !== "blocked") {
+        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && (state.changes.length > 0 || pendingDelivery(state))) {
           if (!state.delivery || pendingDelivery(state) && state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied")) {
             const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
             await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
@@ -2731,17 +2764,45 @@ export class AgentRuntime {
             signal: options.signal });
           progressReviewModelRequestsUsed += review.requests;
           if (!review.approved) {
-            if (review.decision === "unavailable" || review.decision === "interrupted") return this.finish(state, turnId,
+            if (review.decision === "interrupted") return this.finish(state, turnId,
+              "Review was interrupted; work and the unverified delivery obligation are retained.",
+              "interrupted", step, memoryContext);
+            if (review.decision === "unavailable") return this.finish(state, turnId,
               `Review unavailable; work and the unverified delivery obligation are retained. ${review.reason ?? "No valid review could be completed."}`,
-              review.decision === "interrupted" ? "interrupted" : "blocked", step, memoryContext);
+              "paused", step, memoryContext, undefined, undefined, undefined,
+              { cause: "review", resumable: true,
+                requiredAction: "Restore reviewer availability or add independent evidence, then resume delivery review." });
+            const obligation = reviewRemediationObligation(state) ?? {
+              id: `review:${state.delivery!.id}:baseline:${state.changes.length}:${state.commands.length}`,
+              kind: "review_remediation" as const,
+              description: `Delivery review did not approve the current snapshot (${review.reason ?? "unresolved"}).`,
+              requiredAction: "Change the implementation or gather new independent evidence before proposing delivery again.",
+            };
+            const obligations = [obligation];
+            const { signature, attempt } = nextCompletionAttempt(state, obligations);
+            const payload = { signature, attempt, obligations };
+            await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+              type: "completion.rejected", phase: "completed", payload });
+            foldCompletionControl(state, "completion.rejected", payload);
+            const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).prematureFinishRetries;
+            if (attempt <= maximum) {
+              const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
+                obligations, attempt, maximum - attempt) };
+              state.messages.push(feedback);
+              await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+                type: "message.user.synthetic", phase: "completed", payload: feedback });
+              continue;
+            }
             return this.finish(state, turnId,
-              `Delivery remains unapproved: ${review.reason ?? "unresolved review"}. Opinions and evidence are retained. No automatic completion retry.`,
-              "failed", step, memoryContext);
+              `Delivery review remains unresolved after ${attempt} completion proposal(s). Work, both reviewer summaries and pending requirements are retained.`,
+              "paused", step, memoryContext, undefined, undefined, undefined,
+              { cause: "review", resumable: true,
+                requiredAction: "Address the retained reviewer objections or provide new independent evidence, then resume.", obligations });
           }
           if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         }
         this.dependencies.onText?.(text);
-        const reason = state.taskGraph?.status === "blocked"
+        const reason = state.taskGraph?.status === "terminal_blocked"
           ? "blocked"
           : "success";
         const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
@@ -2768,7 +2829,7 @@ export class AgentRuntime {
       let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
       let finishRejectedReason: string | undefined;
       let completedVerificationPhase = false;
-      let environmentFault: string | undefined;
+      let environmentFault = runEnvironmentFault;
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
         const call = calls[callIndex]!;
@@ -2826,7 +2887,7 @@ export class AgentRuntime {
               },
             });
             state.progressGuard = foldProgressObservation(
-              state.progressGuard ?? createProgressGuardState(),
+              state.progressGuard,
               skippedObservation,
             ).state;
             state.messages.push(skippedMessage);
@@ -2862,7 +2923,7 @@ export class AgentRuntime {
             )
           : undefined;
         let taskGraphOperation: TaskGraphTransitionOperation | undefined;
-        let subagentTaskOperation: SubagentTaskTransitionOperation | undefined;
+        let subagentTaskOperation: SubagentTaskOperation | undefined;
         let result: ToolExecutionResult;
         let preparedSubagentLifecycle: SubagentLifecycleUpdate | undefined;
         let preparedSubagentLifecycleRolledBack = false;
@@ -2878,7 +2939,7 @@ export class AgentRuntime {
 
         const journalRecall = tool && toolName === "manage_memory"
           ? recallCompactionEvidence(state, call.function.arguments, this.dependencies.limits) : undefined;
-        if (environmentFault) {
+        if (environmentFault && tool?.mutating) {
           result = toolFailure(new CommandEnvironmentQuarantined(environmentFault), "Tool skipped: environment quarantined; task paused.");
         } else if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
           result = { ok: false, summary: "compact_context cannot be batched with workspace tools; no call in this batch was executed.",
@@ -3279,8 +3340,27 @@ export class AgentRuntime {
           }
         }
         result = normalizeToolFailure(result);
+        if (toolName === "manage_memory" && !result.ok && result.failure) {
+          // Long-term memory is a best-effort projection of completed work. A
+          // malformed or unsupported proposal must never consume the shared
+          // tool-protocol budget or turn a successfully completed coding task
+          // into a paused task. Keep the per-call failure visible, skip only
+          // that proposal, and let the model deliver its result.
+          result = {
+            ...result,
+            failure: {
+              ...result.failure,
+              recovery: "none",
+              instruction:
+                `${result.failure.instruction} This memory proposal was skipped. ` +
+                "Do not retry it solely for memory maintenance; continue the task or provide the final answer.",
+            },
+          };
+          toolRecovery.succeed(toolName);
+        }
         if (result.failure?.code === "command_environment_quarantined") {
           environmentFault = result.error ?? result.failure.instruction;
+          runEnvironmentFault = environmentFault;
         }
         if (result.ok) toolRecovery.succeed(toolName);
         // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
@@ -3418,7 +3498,7 @@ export class AgentRuntime {
         }
         projectionHistory.push(toolMessage);
         const progressFold = foldProgressObservation(
-          state.progressGuard ?? createProgressGuardState(),
+          state.progressGuard,
           progressObservation,
         );
         state.progressGuard = progressFold.state;
@@ -3451,9 +3531,35 @@ export class AgentRuntime {
       }
 
       if (environmentFault) {
-        throw new CommandEnvironmentQuarantined(environmentFault);
+        const obligations = evaluateCompletionGate({
+          state,
+          role: agentIdentity.role,
+          mode: effectiveMode,
+          reconciliationPending: false,
+          openCommandHandles: false,
+          outstandingSubagents: [],
+          commandEnvironmentFault: environmentFault,
+        });
+        const { signature, attempt } = nextCompletionAttempt(state, obligations);
+        const payload = { signature, attempt, obligations };
+        await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+          type: "completion.rejected", phase: "completed", payload });
+        foldCompletionControl(state, "completion.rejected", payload);
+        const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).commandEnvironmentRecoveryRetries;
+        if (attempt <= maximum) {
+          const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
+            obligations, attempt, maximum - attempt) };
+          state.messages.push(feedback);
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+            type: "message.user.synthetic", phase: "completed", payload: feedback });
+          continue;
+        }
+        return this.finish(state, turnId,
+          `Task paused after the quarantined command environment remained unavailable for ${attempt} completion attempt(s). ${environmentFault}`,
+          "paused", step, memoryContext, undefined, undefined, undefined,
+          { cause: "command_environment", resumable: true,
+            requiredAction: "Repair the command environment and verify cleanup, then resume this task.", obligations });
       }
-      this.dependencies.assertEnvironmentSafe?.();
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
       else if (investigationExchangeStart(state.messages) !== undefined)
         await this.closeContextPhase(state, turnId, "investigation");
@@ -3474,7 +3580,30 @@ export class AgentRuntime {
       if (requiredProtocolExhaustion) {
         throw new ToolProtocolExhausted(requiredProtocolExhaustion.tool, requiredProtocolExhaustion.attempt, step);
       }
-      if (finishRejectedReason) return this.finish(state, turnId, finishRejectedReason, "failed", step, memoryContext);
+      if (finishRejectedReason) {
+        const obligations = evaluateCompletionGate({ state, role: agentIdentity.role, mode: effectiveMode,
+          reconciliationPending: reconciliationPending(state), openCommandHandles: true,
+          outstandingSubagents: agentIdentity.role === "main_agent"
+            ? this.dependencies.getOutstandingSubagents?.() ?? [] : [] });
+        const { signature, attempt } = nextCompletionAttempt(state, obligations);
+        const payload = { signature, attempt, obligations };
+        await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+          type: "completion.rejected", phase: "completed", payload });
+        foldCompletionControl(state, "completion.rejected", payload);
+        const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).prematureFinishRetries;
+        if (attempt <= maximum) {
+          const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
+            obligations, attempt, maximum - attempt) };
+          state.messages.push(feedback);
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+            type: "message.user.synthetic", phase: "completed", payload: feedback });
+          continue;
+        }
+        return this.finish(state, turnId, finishRejectedReason, "paused", step, memoryContext,
+          undefined, undefined, undefined,
+          { cause: "completion_protocol", resumable: true,
+            requiredAction: obligations.map(item => item.requiredAction).join(" "), obligations });
+      }
       if (submittedTaskReport) {
         const text = submittedTaskReport.summary;
         this.dependencies.onText?.(text);
@@ -3541,13 +3670,29 @@ export class AgentRuntime {
       }
       if (
         state.taskGraph &&
-        (state.taskGraph.status === "completed" || state.taskGraph.status === "blocked") &&
+        (state.taskGraph.status === "completed" || state.taskGraph.status === "terminal_blocked") &&
         state.taskGraph.updatedByTurnId === turnId && step === stepLimit
       ) {
         taskDagFinalizationOnly = true;
       }
     }
 
+    if (state.completionControl?.active) {
+      const obligations = state.completionControl.active.obligations;
+      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(item => item.kind === "review_remediation")
+        ? "review"
+        : obligations.some(item => item.kind === "command_environment")
+          ? "command_environment"
+          : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents")
+            ? "subagent"
+            : obligations.some(item => item.kind === "dag_active")
+              ? "dag"
+              : "completion_protocol";
+      return this.finish(state, turnId,
+        `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
+        "paused", options.maxSteps - this.remainingRequests, memoryContext, undefined, undefined, undefined,
+        { cause, resumable: true, requiredAction: obligations.map(item => item.requiredAction).join(" "), obligations });
+    }
     return this.finish(
       state,
       turnId,
@@ -3776,6 +3921,7 @@ export class AgentRuntime {
     planProposal?: PlanProposal,
     subagentTaskReport?: SubagentTaskReport,
     failure?: AgentRunResult["failure"],
+    pause?: AgentRunResult["pause"],
   ): Promise<AgentRunResult> {
     // A last-line seal for every completion path, not only the normal text branch.
     if (reason === "success" && this.dependencies.runReviewSession &&
@@ -3824,6 +3970,7 @@ export class AgentRuntime {
       ...(planProposal ? { planProposal } : {}),
       ...(subagentTaskReport ? { subagentTaskReport } : {}),
       ...(failure ? { failure } : {}),
+      ...(pause ? { pause } : {}),
     };
     if (completeExchange(state.messages) && (
       !lastMessage ||
@@ -3850,6 +3997,7 @@ export class AgentRuntime {
         reason,
         steps,
         ...(failure ? { failure } : {}),
+        ...(pause ? { pause } : {}),
         ...(planProposal
           ? { planId: planProposal.id, revision: planProposal.revision }
           : {}),

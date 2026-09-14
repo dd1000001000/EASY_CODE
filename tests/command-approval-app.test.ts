@@ -119,7 +119,7 @@ describe("approval retry journal integration", () => {
       await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
       const address = server.address(); assert.ok(address && typeof address !== "string");
       const config = createDefaultEasyCodeConfig(directory);
-      config.deepseek.apiKey = "mock-key"; config.deepseek.baseUrl = `http://127.0.0.1:${address.port}/v1`;
+      config.providers.deepseek!.apiKey = "mock-key"; config.providers.deepseek!.baseUrl = `http://127.0.0.1:${address.port}/v1`;
       const state = threads.create({ threadId: "approval-retry", workspaceRoot: directory, mode: "code", provider: "deepseek", model: "mock" });
       state.activeTurnId = "turn_approval_retry";
       const budget = new TaskBudget(20, 0);

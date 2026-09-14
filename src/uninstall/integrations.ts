@@ -2,8 +2,6 @@ import { createRequire } from "node:module";
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { parse as parseToml } from "toml";
-import { readFile } from "node:fs/promises";
 import { assertPlainAncestors } from "../install/ownership.js";
 import { addPath, children, identity, readJson, type UninstallPlan } from "./plan.js";
 import { checked, runSystem, type SystemRunner } from "./system.js";
@@ -12,19 +10,8 @@ const require = createRequire(import.meta.url);
 export const EXTENSION_ID = "dd1000001000.easy-code-image-paste";
 export function packageRoot(): string { return fileURLToPath(new URL("../../", import.meta.url)); }
 export async function addCredentials(plan: UninstallPlan, remove?: (slot: string) => Promise<void>): Promise<void> {
-  const slots = new Set(["qwen.api-key", "deepseek.api-key", "kimi.api-key", "glm.api-key", "glm-coding-plan.api-key"]);
+  const slots = new Set<string>();
   for (const record of plan.resources) if (record.kind === "credential" && record.name) slots.add(record.name);
-  for (const file of [path.join(packageRoot(), "resources", "models.default.toml"), path.join(plan.home, ".easy_code", "models.toml")]) {
-    if (!existsSync(file)) continue;
-    try {
-      assertPlainAncestors(file);
-      const parsed = parseToml(await readFile(file, "utf8"));
-      for (const [provider, entry] of Object.entries(parsed.providers ?? {}) as Array<[string, any]>) {
-        const slot = entry.credential_slot ?? provider;
-        if (/^[a-z][a-z0-9-]{0,63}$/u.test(slot)) slots.add(slot + ".api-key");
-      }
-    } catch { plan.warnings.push("Model registry unreadable; using recorded/built-in credential names: " + file); }
-  }
   for (const slot of slots) {
     if (!/^[a-z][a-z0-9-]{0,63}\.api-key$/u.test(slot)) { plan.blockers.push("Invalid credential identifier"); continue; }
     plan.actions.push({ id: "credential:" + slot, phase: 50, target: "keyring:easy-code-agent/" + slot, description: "Delete EASY CODE's stored API key (if present)",
@@ -37,11 +24,14 @@ export async function addCredentials(plan: UninstallPlan, remove?: (slot: string
   }
 }
 export async function addExtensions(plan: UninstallPlan, integration?: { programs: string[]; run: (program: string, args: string[]) => { status: number | null; stdout?: string; stderr?: string } }): Promise<void> {
-  const helper = integration ?? (() => {
+  const helper: { programs: string[]; run: (program: string, args: string[]) => { status: number | null; stdout?: string; stderr?: string } } = integration ?? (() => {
     const module = require(path.join(packageRoot(), "scripts", "install-vscode-extension.cjs"));
     return { programs: module.findVsCodeClis(), run: (program: string, args: string[]) => module.runVsCodeCli(program, args) };
   })();
-  for (const program of helper.programs) {
+  const registeredPrograms = new Set(plan.resources
+    .filter(record => record.kind === "extension" && record.name === EXTENSION_ID && record.path)
+    .map(record => record.path!));
+  for (const program of helper.programs.filter(candidate => registeredPrograms.has(candidate))) {
     const listed = helper.run(program, ["--list-extensions"]);
     if (listed.status !== 0) { plan.blockers.push("Cannot inspect VS Code extensions via " + program); continue; }
     if (!String(listed.stdout ?? "").split(/\r?\n/u).some(line => line.trim().toLowerCase() === EXTENSION_ID)) continue;
@@ -53,7 +43,7 @@ export async function addExtensions(plan: UninstallPlan, integration?: { program
         if (after.status !== 0 || String(after.stdout ?? "").split(/\r?\n/u).includes(EXTENSION_ID)) throw new Error("VS Code extension removal not confirmed");
       } });
   }
-  if (!helper.programs.length) {
+  if (registeredPrograms.size > 0 && !helper.programs.length) {
     for (const folder of [".vscode", ".vscode-insiders"]) {
       const entries = await children(path.join(plan.home, folder, "extensions"));
       if (entries.some(n => n.startsWith(EXTENSION_ID + "-"))) plan.blockers.push("VS Code CLI unavailable but its EASY CODE extension remains in " + folder);
@@ -61,8 +51,10 @@ export async function addExtensions(plan: UninstallPlan, integration?: { program
   }
   const appData = process.platform === "win32" ? path.join(plan.home, "AppData", "Roaming")
     : process.platform === "darwin" ? path.join(plan.home, "Library", "Application Support") : path.join(plan.home, ".config");
-  for (const name of ["Code", "Code - Insiders"])
-    await addPath(plan, path.join(appData, name, "User", "globalStorage", EXTENSION_ID), 46);
+  if (registeredPrograms.size > 0) {
+    for (const name of ["Code", "Code - Insiders"])
+      await addPath(plan, path.join(appData, name, "User", "globalStorage", EXTENSION_ID), 46);
+  }
 }
 export interface NpmInvocation { command: string; args: readonly string[]; shell: boolean }
 export async function addPackage(plan: UninstallPlan, invocation: NpmInvocation, remove: (invocation: NpmInvocation) => Promise<void>,

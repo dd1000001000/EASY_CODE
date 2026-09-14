@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 
@@ -12,6 +12,7 @@ import type {
 } from "../src/core/types.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 class TtyOutput extends PassThrough {
   readonly isTTY = true;
@@ -41,6 +42,7 @@ async function withoutAnimationSuppressors<T>(
 function runtimeState(mode: "auto" | "code"): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_loading_indicator",
     mode,
     provider: "deepseek",

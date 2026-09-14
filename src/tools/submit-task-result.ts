@@ -6,13 +6,13 @@ import type {
   TaskNode,
   ToolContext,
   ToolDefinition,
+  ToolExecutionResult,
 } from "../core/types.js";
 import {
   MAX_SUBAGENT_EVIDENCE_CHARS,
   MAX_SUBAGENT_SUMMARY_CHARS,
   sanitizeSubagentText,
   type SubagentTaskReport,
-  type SubagentTaskReportExecutionResult,
 } from "../subagents/types.js";
 import { toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
@@ -116,7 +116,7 @@ export class SubmitTaskResultTool implements AgentTool {
   async execute(
     input: unknown,
     context: ToolContext,
-  ): Promise<SubagentTaskReportExecutionResult> {
+  ): Promise<ToolExecutionResult> {
     try {
       if (context.mode === "plan") {
         throw new Error("submit_task_result is unavailable in Plan mode");

@@ -1,4 +1,5 @@
 import { createConnection, type Socket } from "node:net";
+import { CURRENT_PROTOCOL } from "../protocol/versions.js";
 
 import type {
   MenuNavigationDirection,
@@ -13,9 +14,8 @@ export const VSCODE_BRIDGE_TOKEN_ENV = "EASY_CODE_VSCODE_BRIDGE_TOKEN";
 const MAX_FRAME_CHARS = 16 * 1024;
 const TOKEN_PATTERN = /^[a-f0-9]{64}$/u;
 const ENDPOINT_PATTERN = /^127\.0\.0\.1:([1-9]\d{0,4})$/u;
-const BRIDGE_PROTOCOL_VERSION = 2;
+const BRIDGE_PROTOCOL_VERSION = CURRENT_PROTOCOL.vscodeBridge;
 export const VSCODE_DISCLOSURE_TOGGLE_CAPABILITY = "disclosure-toggle-v1";
-const DEFAULT_LEGACY_FALLBACK_MS = 300;
 const DEFAULT_READY_ACK_TIMEOUT_MS = 2_000;
 
 interface BridgeIdentity {
@@ -30,8 +30,6 @@ export interface VsCodeMenuBridgeOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly identity?: Readonly<BridgeIdentity>;
   readonly connect?: (port: number) => BridgeSocket;
-  /** Test/compatibility override for extensions that predate ready ACKs. */
-  readonly legacyFallbackMs?: number;
   /** Upper bound for a negotiated extension to install its key binding. */
   readonly readyAckTimeoutMs?: number;
 }
@@ -75,7 +73,6 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
     private readonly token: string,
     private readonly identity: Readonly<BridgeIdentity>,
     connect: (port: number) => BridgeSocket = defaultConnect,
-    private readonly legacyFallbackMs = DEFAULT_LEGACY_FALLBACK_MS,
     private readonly readyAckTimeoutMs = DEFAULT_READY_ACK_TIMEOUT_MS,
   ) {
     try {
@@ -286,16 +283,12 @@ export class VsCodeMenuBridge implements MenuSelectorNavigation {
   private armActivationFallback(): void {
     const activation = this.activation;
     if (!activation || activation.settled || activation.fallbackTimer) return;
-    const timeoutMs = !this.connected || this.protocolReady
-      ? this.readyAckTimeoutMs
-      : this.legacyFallbackMs;
     activation.fallbackTimer = setTimeout(() => {
       activation.fallbackTimer = undefined;
-      // A legacy extension never sends the immediate bridge-ready frame, so
-      // this short deadline falls back to Raw TTY input. A negotiated extension
-      // gets the longer ready-ACK deadline selected above.
+      // Protocol V2 did not acknowledge this activation. Raw TTY input remains
+      // available, but no older bridge behavior is inferred.
       this.settleActivation(false);
-    }, timeoutMs);
+    }, this.readyAckTimeoutMs);
   }
 
   private settleActivation(ready: boolean): void {
@@ -347,7 +340,6 @@ export function createVsCodeMenuBridge(
     token,
     identity,
     options.connect ?? defaultConnect,
-    normalizeTimeout(options.legacyFallbackMs, DEFAULT_LEGACY_FALLBACK_MS),
     normalizeTimeout(options.readyAckTimeoutMs, DEFAULT_READY_ACK_TIMEOUT_MS),
   );
 }

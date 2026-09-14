@@ -5,7 +5,7 @@ import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import { NativeAppServerClient } from "./app-server-client.js";
-import { sandboxBoundaryResultFromError } from "./native-command-error.js";
+import { sandboxBoundaryResultFromError, targetSpawnFailureFromError } from "./native-command-error.js";
 import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
 import { encodeSandboxControl } from "./control.js";
 import { nativePermissionProfile } from "./native-policy.js";
@@ -36,10 +36,16 @@ const environment: NodeJS.ProcessEnv = { ...payload.target.environment, TEMP: pa
   npm_config_cache: path.join(payload.tempRoot, "npm-cache"), PIP_CACHE_DIR: path.join(payload.tempRoot, "pip-cache"),
   XDG_CACHE_HOME: path.join(payload.tempRoot, "xdg-cache"), YARN_CACHE_FOLDER: path.join(payload.tempRoot, "yarn-cache"),
   ...nativeSandboxProxyEnvironment(payload.proxyURL, payload.proxyPorts) };
+const physicalTarget = payload.target.launch ?? {
+  executablePath: payload.target.executablePath,
+  args: payload.target.args,
+};
+if (payload.target.launch?.usesCommandPayload) environment.EASY_CODE_LAUNCH_SPEC = process.argv[2]!;
 const permission = nativePermissionProfile(payload.readOnly);
 
 let service: NativeAppServerClient | undefined;
-let dispatched = false;
+let requestSent = false;
+let targetStarted = false;
 let executionReported = false;
 let streamedStdout = false, streamedStderr = false;
 try {
@@ -54,30 +60,39 @@ try {
     if (message?.method !== "command/exec/outputDelta") return;
     const encoded = message.params?.deltaBase64;
     if (typeof encoded !== "string" || encoded.length > 16 * 1024 * 1024) return;
+    if (!targetStarted) { emit({ type: "target_started" }); targetStarted = true; }
     const output = Buffer.from(encoded, "base64");
     if (message.params?.stream === "stderr") { streamedStderr = true; writeSync(2, output); }
     else { streamedStdout = true; writeSync(1, output); }
   });
   emit({ type: "ready", backend: "native" });
   emit({ type: "stage", stage: "dispatch_start" });
-  emit({ type: "execution_dispatched" }); dispatched = true;
+  emit({ type: "execution_request_sent" }); requestSent = true;
   const streamOutput = process.platform !== "win32";
   let result: any;
   let commandTimedOut = false;
   try {
-    result = await service.request("command/exec", { command: [payload.target.executablePath, ...payload.target.args],
+    result = await service.request("command/exec", { command: [physicalTarget.executablePath, ...physicalTarget.args],
       cwd: payload.target.cwdAbsolute, env: environment, ...permission, timeoutMs: payload.timeoutMs,
       ...(streamOutput ? { processId: payload.commandId, streamStdoutStderr: true } : {}) },
       payload.timeoutMs + payload.cleanupMs);
   } catch (error) {
     const violation = sandboxBoundaryResultFromError(error);
     if (violation) {
+      if (!targetStarted) { emit({ type: "target_started" }); targetStarted = true; }
       emit(violation.event);
       result = violation;
     } else {
-      if (!/command timed out/iu.test(String(error))) throw error;
-      commandTimedOut = true;
-      result = { exitCode: 124, stdout: "", stderr: "" };
+      const spawnFailure = targetSpawnFailureFromError(error);
+      if (spawnFailure) {
+        emit(spawnFailure.event);
+        result = { ...spawnFailure, spawnFailed: true };
+      } else {
+        if (!/command timed out/iu.test(String(error))) throw error;
+        if (!targetStarted) { emit({ type: "target_started" }); targetStarted = true; }
+        commandTimedOut = true;
+        result = { exitCode: 124, stdout: "", stderr: "" };
+      }
     }
   } finally {
     stopListening();
@@ -85,7 +100,8 @@ try {
   if (!streamedStdout && typeof result?.stdout === "string") writeSync(1, result.stdout);
   if (!streamedStderr && typeof result?.stderr === "string") writeSync(2, result.stderr);
   const code = Number.isSafeInteger(result?.exitCode) ? result.exitCode : 125;
-  emit({ type: "execution_exited", exitCode: code, outcome: commandTimedOut ? "timed_out" : Number.isSafeInteger(result?.exitCode) ? "exited" : "unknown" });
+  if (!result?.spawnFailed && !targetStarted) { emit({ type: "target_started" }); targetStarted = true; }
+  emit({ type: "execution_exited", exitCode: code, outcome: result?.spawnFailed ? "spawn_failed" : commandTimedOut ? "timed_out" : Number.isSafeInteger(result?.exitCode) ? "exited" : "unknown" });
   executionReported = true;
   emit({ type: "stage", stage: "cleanup_start" });
   // The host created this command root and removes it only after this worker
@@ -93,9 +109,11 @@ try {
   // same native identity for one bounded fallback cleanup.
   process.exitCode = code;
 } catch (error) {
-  if (dispatched && !executionReported) emit({ type: "execution_exited", exitCode: 125, outcome: "unknown" });
+  if (requestSent && !executionReported) emit({ type: "execution_exited", exitCode: 125, outcome: "unknown" });
   else if (!executionReported) emit({ type: "sandbox_error", message: String(error).slice(0, 1200) });
-  emit({ type: "cleanup_error", message: String(error).slice(0, 1200) });
+  // Before request_sent, the target definitely did not run and the host-owned
+  // backend can remove its scratch directory after this worker exits.
+  if (requestSent) emit({ type: "cleanup_error", message: String(error).slice(0, 1200) });
   process.exitCode = 125;
 } finally {
   await service?.close(250).catch(() => undefined);

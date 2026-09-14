@@ -2,8 +2,6 @@ import { existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { createRequire } from "node:module";
-import { assertPlainAncestors } from "../install/ownership.js";
 
 import type { Command } from "commander";
 
@@ -89,23 +87,6 @@ export async function createUninstallPlan(options: UninstallOptions = {}): Promi
   for (const inspect of [addWorktrees, addCredentials, addExtensions]) {
     try { await inspect(plan); } catch (error) { plan.blockers.push(String(error)); }
   }
-  // Include unreadable legacy leases in the scope of the single confirmation.
-  // Independent runtime/command ownership checks still apply during execution.
-  for (const root of plan.roots.data) {
-    const file = path.join(root, "easy-code.db");
-    if (!existsSync(file)) continue;
-    let db;
-    try {
-      assertPlainAncestors(file);
-      const { Database } = createRequire(import.meta.url)("node-sqlite3-wasm");
-      db = new Database(file, { readOnly: true, fileMustExist: true });
-      db.get("SELECT name FROM sqlite_master LIMIT 1");
-    } catch {
-      plan.actions.push({ id: "corrupt-store:" + file, phase: 5, target: file,
-        description: "Remove corrupt store with unverifiable legacy leases (close all sessions first)",
-        confirmation: "corrupt-store:" + file, execute: async () => {} });
-    } finally { db?.close(); }
-  }
   if (!options.keepCli) await addPackage(plan, resolveNpmRemovalInvocation(), removeGlobalEasyCodePackage);
   return plan;
 }
@@ -141,10 +122,8 @@ export async function runUninstall(options: UninstallOptions, overrides: Partial
     for (const item of actions) io.write("- " + item.description + ": " + item.target);
   } else {
     for (const group of new Set(actions.map(actionGroup))) io.write("- " + group);
-    io.write("One confirmation removes all verified items, including legacy sandbox data and unintegrated managed Worktrees. No undo without a backup.");
+    io.write("One confirmation removes every resource in the current installation manifest, including unintegrated managed Worktrees. No undo without a backup.");
     io.write("User projects, linked source checkouts, shared software and unidentified resources are preserved. Details: easy-code uninstall --dry-run");
-    if (actions.some(item => item.id.startsWith("corrupt-store:")))
-      io.write("Some stores are unreadable. Close all other EASY CODE sessions before confirming their removal.");
   }
   for (const warning of plan.warnings) io.write("Preserved/notice: " + warning);
   for (const blocker of plan.blockers) io.write("BLOCKED: " + blocker);

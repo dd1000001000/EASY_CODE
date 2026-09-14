@@ -133,11 +133,7 @@ describe("ProgressGuard journal recovery", () => {
 
       const events = threads.journal(THREAD_ID).read();
       assert.equal(events.filter((event) => event.type === "tool.result").length, 1);
-      assert.equal(
-        events.some((event) => event.type === "progress.observed"),
-        false,
-        "Observation must share the tool.result durability boundary",
-      );
+      assert.equal(events.length, 2, "Observation must share the tool.result durability boundary");
 
       // Simulate a crash after the complete tool.result was fsynced but while a
       // later journal record was only partially written.

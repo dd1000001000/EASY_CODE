@@ -18,7 +18,7 @@ export const searchFilesInputSchema = z.object({
   mode: z.enum(["search", "list"]).optional(),
   maxDepth: z.number().int().min(1).max(256).optional(),
 }).strict();
-const ignored = new Set([".git", ".easycode", ".easy-code-srt-runtime", "node_modules", "dist", "dist-test",
+const ignored = new Set([".git", ".easycode", ".easy-code-runtime", "node_modules", "dist", "dist-test",
   "build", "coverage", "vendor", ".venv", "venv", "__pycache__", ".next", "target",
   "site-packages", "dist-packages", ".cache", "cache", ".pytest_cache", ".mypy_cache", ".ruff_cache"]);
 
@@ -170,7 +170,7 @@ export class SearchFilesTool implements AgentTool {
           if (excluded) {
             omissions.defaultExcluded += 1;
             // Listing may show ordinary excluded directories without entering them; never expose control paths.
-            if (mode !== "list" || [".git", ".easycode", ".easy-code-srt-runtime"].includes(entry.name.toLowerCase())) continue;
+            if (mode !== "list" || [".git", ".easycode", ".easy-code-runtime"].includes(entry.name.toLowerCase())) continue;
           }
           const filename = directory.workspaceRelative
             ? path.posix.join(directory.displayPath, entry.name) : path.join(directory.absolutePath, entry.name);

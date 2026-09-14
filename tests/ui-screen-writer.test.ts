@@ -30,7 +30,7 @@ describe("ScreenWriter", () => {
   it("clears scrollback and live-row accounting without resetting input modes", () => {
     const output = new CapturedOutput(true);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
     writer.commit("old answer\n");
     writer.renderLive("old prompt\nold footer", { row: 1, column: 3 });
     const before = transcript.read().length;
@@ -42,13 +42,13 @@ describe("ScreenWriter", () => {
     writer.close();
     const plain = new CapturedOutput(false);
     const captured = capture(plain);
-    new ScreenWriter(plain).clearScreen();
+    new ScreenWriter({ output: plain }).clearScreen();
     assert.equal(captured.read(), "");
   });
   it("commits sanitized stable output without letting text move the cursor", () => {
     const output = new CapturedOutput(true);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.commit("safe\u001B[2Jbad\u0007\rnext");
 
@@ -59,7 +59,7 @@ describe("ScreenWriter", () => {
   it("contains allowed SGR styling within one stable commit", () => {
     const output = new CapturedOutput(true);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.commit("\u001B[31mred");
 
@@ -70,7 +70,7 @@ describe("ScreenWriter", () => {
   it("erases and redraws only the bottom live region", () => {
     const output = new CapturedOutput(true, 20);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("old");
     writer.renderLive("new");
@@ -86,7 +86,7 @@ describe("ScreenWriter", () => {
   it("restores a visual live cursor and clears correctly from that position", () => {
     const output = new CapturedOutput(true, 5);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("中ab\nxy", { row: 1, column: 1 });
     writer.renderLive("next");
@@ -102,7 +102,7 @@ describe("ScreenWriter", () => {
   it("snaps a requested cursor away from the second cell of a wide glyph", () => {
     const output = new CapturedOutput(true, 10);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("a中b", { row: 0, column: 2 });
 
@@ -113,7 +113,7 @@ describe("ScreenWriter", () => {
   it("places commits above an existing live region and redraws it", () => {
     const output = new CapturedOutput(true, 20);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("busy");
     writer.commit("done");
@@ -145,7 +145,7 @@ describe("ScreenWriter", () => {
   it("falls back to safe plain snapshots on non-TTY output", () => {
     const output = new CapturedOutput(false, 20);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("loading\u001B[2J\rnext\u0007");
     writer.renderLive("loading\u001B[2J\rnext\u0007");
@@ -160,7 +160,7 @@ describe("ScreenWriter", () => {
   it("closes idempotently without ending stdout and ignores later writes", () => {
     const output = new CapturedOutput(true);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("temporary");
     writer.close();
@@ -180,7 +180,7 @@ describe("ScreenWriter", () => {
   it("never appends a scrolling line feed while refreshing a live region", () => {
     const output = new CapturedOutput(true, 80);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     for (let index = 0; index < 100; index += 1) {
       writer.renderLive(`Request ${index}`);
@@ -196,7 +196,7 @@ describe("ScreenWriter", () => {
   it("reserves blank rows before a live region grows", () => {
     const output = new CapturedOutput(true, 80);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("busy");
     writer.renderLive("approval\ncommand\nchoice 1\nchoice 2\nchoice 3");
@@ -216,7 +216,7 @@ describe("ScreenWriter", () => {
   it("bottom-aligns a shorter replacement inside existing reserved rows", () => {
     const output = new CapturedOutput(true, 80, 24);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("activity 1\nactivity 2\nactivity 3\nactivity 4\nstatus");
     const beforeOverlay = transcript.read().length;
@@ -251,7 +251,7 @@ describe("ScreenWriter", () => {
   it("keeps explicit composer cursors correct after a live block shrinks", () => {
     const output = new CapturedOutput(true, 20, 24);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("one\ntwo\nthree\nfour");
     const beforeComposer = transcript.read().length;
@@ -271,7 +271,7 @@ describe("ScreenWriter", () => {
   it("never paints a live block taller than the terminal viewport", () => {
     const output = new CapturedOutput(true, 80, 3);
     const transcript = capture(output);
-    const writer = new ScreenWriter(output);
+    const writer = new ScreenWriter({ output });
 
     writer.renderLive("one\ntwo\nthree\nfour\nfive");
 
@@ -284,8 +284,8 @@ describe("ScreenWriter", () => {
   });
 
   it("reserves the physical rightmost TTY cell to avoid pending autowrap", () => {
-    const tty = new ScreenWriter(new CapturedOutput(true, 80));
-    const plain = new ScreenWriter(new CapturedOutput(false, 80));
+    const tty = new ScreenWriter({ output: new CapturedOutput(true, 80) });
+    const plain = new ScreenWriter({ output: new CapturedOutput(false, 80) });
 
     assert.equal(tty.columns, 79);
     assert.equal(plain.columns, 80);

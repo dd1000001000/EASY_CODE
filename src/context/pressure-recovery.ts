@@ -11,7 +11,7 @@ import { assessCapacity, contextHistoryHash, recoveryScope } from "./capacity.js
 import { estimatedTokens } from "./token-budget.js";
 import { pressureProjectedMessages, toolOutputReference } from "./pressure-projection.js";
 
-const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]), start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
+const schema = z.object({ version: z.literal(2), start: z.number().int().nonnegative(), end: z.number().int().nonnegative(),
   historyHash: z.string(), factsHash: z.string(), previousSummary: z.string(), toolReferences: z.array(z.number().int().nonnegative()),
   summary: z.string(), reason: z.string().max(2000),
   mode: z.enum(["tool_references", "history_evicted", "minimal_rebase"]).optional(),
@@ -19,7 +19,7 @@ const schema = z.object({ version: z.union([z.literal(1), z.literal(2)]), start:
 }).strict();
 type Eviction = z.infer<typeof schema>;
 
-function evictionSummary(end: number, previousSummary: string, mode?: Eviction["mode"], state?: Readonly<SessionState>, version = 1): string {
+function evictionSummary(end: number, previousSummary: string, mode?: Eviction["mode"], state?: Readonly<SessionState>): string {
   if (mode === "tool_references") return previousSummary;
   const latest = mode === "minimal_rebase" ? state?.commands.at(-1) : undefined;
   const lastExchangeStart = state?.messages.map((message, index) => message.role === "assistant" ? index : -1)
@@ -31,9 +31,7 @@ function evictionSummary(end: number, previousSummary: string, mode?: Eviction["
     ...(mode === "minimal_rebase" ? { nextStep: "Continue the SAME task from pinned Runtime state. Recall the last exchange before repeating work. Prior thinking was archived whole, not rewritten.",
       lastExchangeRef: `journal_message_${lastExchangeStart}`,
       ...(latest ? { lastObservedCommand: { id: latest.id, status: latest.status, exitCode: latest.exitCode } } : {}) } : {}),
-    recovery: version === 1
-      ? "Use manage_memory action=recall with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted."
-      : "Use recall_context with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted.",
+    recovery: "Use recall_context with evidenceId, offset and limit to recover historical messages or the previous summary. User requirements, pending operations and experiments remain separately pinned. Raw logs were not deleted.",
   });
 }
 
@@ -52,7 +50,7 @@ export function foldPressureRecovery(state: SessionState, raw: unknown): void {
       !completeExchange(state.messages) || !completeExchange(state.messages, event.end) ||
       event.historyHash !== contextHistoryHash(state) || event.previousSummary !== state.workingSummary ||
       event.factsHash !== sha256(runtimeContinuityMessage(state)) ||
-      event.summary !== evictionSummary(event.end, event.previousSummary, event.mode, state, event.version) ||
+      event.summary !== evictionSummary(event.end, event.previousSummary, event.mode, state) ||
       event.toolReferences.some((index) => index < event.end || state.messages[index]?.role !== "tool"))
     throw new Error("Invalid or stale context eviction event");
   const recovery = state.pressureRecovery ??= { toolReferences: [], summaries: {} };
@@ -105,7 +103,7 @@ function preview(input: RecoveryInput, end: number, references: number[], mode: 
     historyHash: contextHistoryHash(state), factsHash: sha256(runtimeContinuityMessage(state)),
     previousSummary: state.workingSummary, toolReferences: references, mode,
     ...(mode === "minimal_rebase" ? { scope: recoveryScope(state) } : {}),
-    summary: evictionSummary(end, state.workingSummary, mode, state, 2), reason: input.reason.slice(0, 2000) };
+    summary: evictionSummary(end, state.workingSummary, mode, state), reason: input.reason.slice(0, 2000) };
   const candidate = structuredClone(state);
   foldPressureRecovery(candidate, event);
   return { event, capacity: assessCapacity(input.manager, candidate, input.maxContextChars, input.nextRequest, input.limits) };

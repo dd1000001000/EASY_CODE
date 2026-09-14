@@ -131,7 +131,7 @@ describe("unified sandbox compatibility", () => {
     const worker: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
       const frame = (event: Parameters<typeof encodeSandboxControl>[1]) => JSON.stringify(encodeSandboxControl(request.commandId, event));
       const ready = `fs.writeSync(3,${frame({ type: "ready", backend: "benchmark-container" })});`;
-      const result = `fs.writeSync(3,${frame({ type: "execution_dispatched" })});fs.writeSync(3,${frame({ type: "execution_exited", exitCode: 0 })});`;
+      const result = `fs.writeSync(3,${frame({ type: "execution_request_sent" })});fs.writeSync(3,${frame({ type: "target_started" })});fs.writeSync(3,${frame({ type: "execution_exited", exitCode: 0 })});`;
       const cleanup = `fs.writeSync(3,${frame({ type: "cleanup_complete" })});process.exit(0);`;
       const script = `const fs=require('fs');const go=()=>{${ready}${phase === "initialization" ? `setTimeout(()=>{${result}${cleanup}},220);` : `${result}setTimeout(()=>{${cleanup}},220);`}};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
       return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: root, environment: { ...process.env }, metadata, controlPipe: true, cleanup: async () => {} };

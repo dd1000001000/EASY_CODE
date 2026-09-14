@@ -58,8 +58,8 @@ describe("system prompt builder", () => {
         dataDir: path.join(temporary, "data"),
         cacheDir: path.join(temporary, "cache"),
       });
-      config.qwen.apiKey = "this-must-not-enter-the-prompt";
-      config.glm.apiKey = "glm-key-must-not-enter-the-prompt";
+      config.providers.qwen!.apiKey = "this-must-not-enter-the-prompt";
+      config.providers.glm!.apiKey = "glm-key-must-not-enter-the-prompt";
       const taskGraph = applyTaskGraphOperation(undefined, {
         action: "create",
         goal: "Implement and verify the feature",
@@ -149,6 +149,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /shared configured correction budget/);
       assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /manage_memory is the only way.*automatic long-term memory/);
+      assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
       assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
       assert.match(prompt, /propose_plan is the only valid way/u);
@@ -209,7 +210,7 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
       assert.doesNotMatch(prompt, /Supply currentWork and nextStep/u);
       assert.doesNotMatch(prompt, /manage_memory is the only way/u);
-      assert.doesNotMatch(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
+      assert.doesNotMatch(prompt, /best-effort housekeeping/u);
       assert.doesNotMatch(prompt, /Before your final answer.*durable memory/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -260,7 +261,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Use cancel_command only when a background command/u);
       assert.match(prompt, /Supply currentWork and nextStep/u);
       assert.match(prompt, /manage_memory is the only way/u);
-      assert.match(prompt, /Long-term-memory maintenance is your automatic responsibility/u);
+      assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/u);
       assert.match(prompt, /Before your final answer.*durable memory/u);
       assert.doesNotMatch(prompt, /propose_plan is the only valid way/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);

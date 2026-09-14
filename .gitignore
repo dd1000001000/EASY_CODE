@@ -11,7 +11,7 @@ __pycache__/
 /.easy-code-native-smoke-*/
 /.easy-code-sandbox-test-*/
 /.native-sandbox-probe-*/
-/.easy-code-srt-runtime/
+/.easy-code-runtime/
 .node16-install-test/
 .npm-cache-test/
 *.db

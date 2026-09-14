@@ -13,6 +13,17 @@ import {
 } from "../src/workspace/execution-environment.js";
 import { describe, it } from "./harness.js";
 
+function environmentBinding(agentId: string, environmentId: string) {
+  return {
+    agentId,
+    environmentId,
+    parentThreadId: "thread_parent",
+    childThreadId: `thread_${agentId}`,
+    taskId: environmentId.replace(/^environment_/u, "task_"),
+    requestedIsolation: "auto" as const,
+  };
+}
+
 interface GitFixture {
   readonly root: string;
   readonly dataDir: string;
@@ -44,8 +55,7 @@ describe("ExecutionEnvironmentManager", () => {
       });
 
       const active = await manager.provision({
-        agentId: "subagent_auto",
-        environmentId: "environment_auto",
+        ...environmentBinding("subagent_auto", "environment_auto"),
       });
 
       assert.equal(active.descriptor.kind, "shared");
@@ -71,8 +81,7 @@ describe("ExecutionEnvironmentManager", () => {
 
       await assert.rejects(
         manager.provision({
-          agentId: "subagent_required",
-          environmentId: "environment_required",
+          ...environmentBinding("subagent_required", "environment_required"),
           requestedIsolation: "worktree",
         }),
         /requires the workspace to be inside a Git repository/u,
@@ -92,8 +101,7 @@ describe("ExecutionEnvironmentManager", () => {
 
       await assert.rejects(
         manager.provision({
-          agentId: "subagent_nested_storage",
-          environmentId: "environment_nested_storage",
+          ...environmentBinding("subagent_nested_storage", "environment_nested_storage"),
           requestedIsolation: "worktree",
         }),
         /outside the complete Git repository/u,
@@ -103,17 +111,16 @@ describe("ExecutionEnvironmentManager", () => {
 
   it("rejects a repository that tracks the Runtime-reserved scratch path", async () => {
     await withGitFixture(async ({ root, dataDir }) => {
-      const reservedRoot = path.join(root, ".easy-code-srt-runtime");
+      const reservedRoot = path.join(root, ".easy-code-runtime");
       await mkdir(reservedRoot);
       await writeFile(path.join(reservedRoot, "tracked.txt"), "user data\n", "utf8");
-      await git(root, ["add", "-f", "--", ".easy-code-srt-runtime/tracked.txt"]);
+      await git(root, ["add", "-f", "--", ".easy-code-runtime/tracked.txt"]);
       await git(root, ["commit", "--no-gpg-sign", "-m", "track reserved collision"]);
       const manager = createManager(root, dataDir);
 
       await assert.rejects(
         manager.provision({
-          agentId: "subagent_reserved_collision",
-          environmentId: "environment_reserved_collision",
+          ...environmentBinding("subagent_reserved_collision", "environment_reserved_collision"),
           requestedIsolation: "worktree",
         }),
         /tracks the EASY CODE Runtime-reserved path/u,
@@ -141,8 +148,7 @@ describe("ExecutionEnvironmentManager", () => {
 
       await assert.rejects(
         manager.provision({
-          agentId: "subagent_path_preflight",
-          environmentId,
+          ...environmentBinding("subagent_path_preflight", environmentId),
           requestedIsolation: "worktree",
         }),
         /Worktree path preflight failed: predicted Windows path length/u,
@@ -171,8 +177,7 @@ describe("ExecutionEnvironmentManager", () => {
       const manager = createManager(root, dataDir);
 
       const active = await manager.provision({
-        agentId: "subagent_no_hooks",
-        environmentId: "environment_no_hooks",
+        ...environmentBinding("subagent_no_hooks", "environment_no_hooks"),
         requestedIsolation: "worktree",
       });
 
@@ -188,14 +193,13 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       await writeFile(path.join(root, "tracked.txt"), "parent dirty tracked\n", "utf8");
       await writeFile(path.join(root, "untracked.txt"), "parent untracked\n", "utf8");
-      const scratch = path.join(root, ".easy-code-srt-runtime", "command-fixture");
+      const scratch = path.join(root, ".easy-code-runtime", "command-fixture");
       await mkdir(scratch, { recursive: true });
       await writeFile(path.join(scratch, "worker-payload.json"), "private argv", "utf8");
       const manager = createManager(root, dataDir);
 
       const active = await manager.provision({
-        agentId: "subagent_snapshot",
-        environmentId: "environment_snapshot",
+        ...environmentBinding("subagent_snapshot", "environment_snapshot"),
         requestedIsolation: "worktree",
       });
 
@@ -218,13 +222,13 @@ describe("ExecutionEnvironmentManager", () => {
         "parent untracked\n",
       );
       assert.equal(
-        await fileExists(path.join(active.workspace.root, ".easy-code-srt-runtime")),
+        await fileExists(path.join(active.workspace.root, ".easy-code-runtime")),
         false,
       );
       assert.ok(active.descriptor.baseCommit);
       assert.ok(active.descriptor.baselineCommit);
       assert.notEqual(active.descriptor.baselineCommit, active.descriptor.baseCommit);
-      await rm(path.join(root, ".easy-code-srt-runtime"), { recursive: true, force: true });
+      await rm(path.join(root, ".easy-code-runtime"), { recursive: true, force: true });
       assert.equal(await git(root, ["status", "--porcelain"]), " M tracked.txt\n?? untracked.txt");
     });
   });
@@ -235,8 +239,7 @@ describe("ExecutionEnvironmentManager", () => {
       await writeFile(path.join(root, "parent-only.txt"), "included baseline\n", "utf8");
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_finalize",
-        environmentId: "environment_finalize",
+        ...environmentBinding("subagent_finalize", "environment_finalize"),
         requestedIsolation: "worktree",
       });
       await writeFile(
@@ -251,7 +254,7 @@ describe("ExecutionEnvironmentManager", () => {
       );
       const scratch = path.join(
         active.workspace.root,
-        ".easy-code-srt-runtime",
+        ".easy-code-runtime",
         "command-fixture",
       );
       await mkdir(scratch, { recursive: true });
@@ -286,13 +289,12 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_cleanup_scratch",
-        environmentId: "environment_cleanup_scratch",
+        ...environmentBinding("subagent_cleanup_scratch", "environment_cleanup_scratch"),
         requestedIsolation: "worktree",
       });
       const scratch = path.join(
         active.workspace.root,
-        ".easy-code-srt-runtime",
+        ".easy-code-runtime",
         "command-fixture",
       );
       await mkdir(scratch, { recursive: true });
@@ -314,7 +316,7 @@ describe("ExecutionEnvironmentManager", () => {
       await writeFile(path.join(logicalWorkspace, "parent-untracked.txt"), "parent\n", "utf8");
       const parentScratch = path.join(
         logicalWorkspace,
-        ".easy-code-srt-runtime",
+        ".easy-code-runtime",
         "command-parent",
       );
       await mkdir(parentScratch, { recursive: true });
@@ -328,8 +330,7 @@ describe("ExecutionEnvironmentManager", () => {
         worktreeRoot: path.join(dataDir, "worktrees"),
       });
       const active = await manager.provision({
-        agentId: "subagent_nested_workspace",
-        environmentId: "environment_nested_workspace",
+        ...environmentBinding("subagent_nested_workspace", "environment_nested_workspace"),
         taskId: "task_nested_workspace",
         requestedIsolation: "worktree",
       });
@@ -338,14 +339,14 @@ describe("ExecutionEnvironmentManager", () => {
         "parent\n",
       );
       assert.equal(
-        await fileExists(path.join(active.workspace.root, ".easy-code-srt-runtime")),
+        await fileExists(path.join(active.workspace.root, ".easy-code-runtime")),
         false,
       );
 
       await writeFile(path.join(active.workspace.root, "child.txt"), "child\n", "utf8");
       const childScratch = path.join(
         active.workspace.root,
-        ".easy-code-srt-runtime",
+        ".easy-code-runtime",
         "command-child",
       );
       await mkdir(childScratch, { recursive: true });
@@ -358,7 +359,7 @@ describe("ExecutionEnvironmentManager", () => {
         "--name-only",
         checkpoint.resultCommit!,
       ]);
-      assert.doesNotMatch(checkpointTree, /\.easy-code-srt-runtime/u);
+      assert.doesNotMatch(checkpointTree, /\.easy-code-runtime/u);
 
       const artifact = await manager.finalize(active, {
         agentId: "subagent_nested_workspace",
@@ -376,8 +377,7 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_resume",
-        environmentId: "environment_resume",
+        ...environmentBinding("subagent_resume", "environment_resume"),
         requestedIsolation: "worktree",
       });
       const expectedTracked = Buffer.from("checkpointed \u2603\r\nsecond line\r\n", "utf8");
@@ -408,7 +408,7 @@ describe("ExecutionEnvironmentManager", () => {
     });
   });
 
-  it("loads and cleans legacy full-ID Worktree paths", async () => {
+  it("rejects development records from the retired Worktree layout", async () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       await manager.initialize();
@@ -448,10 +448,11 @@ describe("ExecutionEnvironmentManager", () => {
         },
       });
 
-      const loaded = await manager.loadEnvironment(environmentId);
-      assert.equal(loaded.pathLayoutVersion, undefined);
-      assert.equal(loaded.worktreeRoot, legacyRoot);
-      assert.equal((await manager.cleanup(environmentId, true)).status, "removed");
+      await assert.rejects(
+        manager.loadEnvironment(environmentId),
+        /unsupported EASY CODE development format|protocol version/iu,
+      );
+      await git(repositoryRoot, ["worktree", "remove", "--force", legacyRoot]);
       assert.equal(await fileExists(legacyRoot), false);
     });
   });
@@ -460,8 +461,7 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_tampered_root",
-        environmentId: "environment_tampered_root",
+        ...environmentBinding("subagent_tampered_root", "environment_tampered_root"),
         requestedIsolation: "worktree",
       });
       const saved = await readEnvironmentRecord(dataDir, "environment_tampered_root");
@@ -496,8 +496,7 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_tampered_execution",
-        environmentId: "environment_tampered_execution",
+        ...environmentBinding("subagent_tampered_execution", "environment_tampered_execution"),
         requestedIsolation: "worktree",
       });
       const saved = await readEnvironmentRecord(dataDir, "environment_tampered_execution");
@@ -513,6 +512,8 @@ describe("ExecutionEnvironmentManager", () => {
         manager.cleanup("environment_tampered_execution", true),
         /execution root/iu,
       );
+      assert.equal(active.descriptor.kind, "worktree");
+      if (active.descriptor.kind !== "worktree") throw new Error("expected a worktree environment");
       await assert.rejects(
         manager.checkpoint({
           workspace: active.workspace,
@@ -537,8 +538,7 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const active = await manager.provision({
-        agentId: "subagent_handoff",
-        environmentId: "environment_handoff",
+        ...environmentBinding("subagent_handoff", "environment_handoff"),
         requestedIsolation: "worktree",
       });
       await writeFile(
@@ -599,8 +599,7 @@ describe("ExecutionEnvironmentManager", () => {
     await withGitFixture(async ({ root, dataDir }) => {
       const manager = createManager(root, dataDir);
       const upstream = await manager.provision({
-        agentId: "subagent_dag_upstream",
-        environmentId: "environment_dag_upstream",
+        ...environmentBinding("subagent_dag_upstream", "environment_dag_upstream"),
         taskId: "task_dag_upstream",
         requestedIsolation: "worktree",
       });
@@ -616,8 +615,7 @@ describe("ExecutionEnvironmentManager", () => {
       });
 
       const downstream = await manager.provision({
-        agentId: "subagent_dag_downstream",
-        environmentId: "environment_dag_downstream",
+        ...environmentBinding("subagent_dag_downstream", "environment_dag_downstream"),
         taskId: "task_dag_downstream",
         requestedIsolation: "worktree",
         dependencyArtifacts: [toResultArtifactRef(upstreamArtifact)],

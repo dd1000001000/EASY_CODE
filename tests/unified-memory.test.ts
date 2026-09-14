@@ -11,8 +11,9 @@ import { pressureProjectedMessages } from "../src/context/pressure-projection.js
 import { ContextManager } from "../src/context/manager.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { sharedReviewEvidenceOwner } from "../src/context/recall.js";
+import { baseSessionState } from "./session-state.js";
 
-function state(): SessionState { return { threadId: "test", mode: "code", provider: "glm", model: "test", thinkingEffort: "none",
+function state(): SessionState { return { ...baseSessionState(), threadId: "test", mode: "code", provider: "glm", model: "test", thinkingEffort: "none",
   workspaceRoot: process.cwd(), messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [],
   commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" }; }
 function fixture() {

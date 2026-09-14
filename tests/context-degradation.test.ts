@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import { ProviderError } from "../src/providers/errors.js";
 import { assessCapacity } from "../src/context/capacity.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "./harness.js";
 import { ContextManager } from "../src/context/manager.js";
-import { completeExchange, eligiblePhaseEnd, foldCompactionControl, investigationExchangeStart,
+import { completeExchange, retirementBoundary, foldCompactionControl, investigationExchangeStart,
   runCompactionTransaction } from "../src/context/compaction-transaction.js";
 import { compactionSnapshot, semanticDocument, conservativeDocument, recallCompactionEvidence } from "../src/context/semantic-compaction.js";
 import { foldPressureRecovery } from "../src/context/pressure-recovery.js";
@@ -65,11 +65,10 @@ function fixture(rounds = 6, tokens = true, recordBoundaries = true, resultChars
   const manager = new ContextManager();
   manager.configureTokenBudget(tokens ? 64_000 : undefined);
   const run = (overrides: Partial<Parameters<typeof runCompactionTransaction>[0]> = {}) => runCompactionTransaction({
-    state, manager, turnId: "turn", maxContextChars: 100_000, required: true, handlesOpen: false,
+    state, manager, turnId: "turn", maxContextChars: 100_000, required: true,
     maxRequests: 3, nextRequest: { systemPrompt: "rules", runtimeContext: "workspace", tools: [] },
     tool: tool.definition, inventory: () => "", append, complete: async () => candidate(),
-    execute: async () => ({ ok: true, summary: "semantic patch", contextCompaction: {
-      formatVersion: 3, summary: JSON.stringify(semantic) } }), ...overrides,
+    ...overrides,
   });
   return { state, store, manager, events, append, run, message,
     dispose() { storage.close(); rmSync(directory, { recursive: true, force: true }); } };

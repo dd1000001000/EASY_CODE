@@ -12,15 +12,15 @@ describe("process-incarnation ownership", () => {
     assert.equal(processOwnerState(owner, () => present("new-birth")), "inactive");
     assert.equal(processOwnerState(owner, () => ({ state: "absent" })), "inactive");
   });
-  it("handles legacy conhost reuse without treating unverified Node owners as dead", () => {
-    const legacy = { pid: owner.pid, hostname: owner.hostname };
-    assert.equal(processOwnerState(legacy, () => ({ state: "present", name: "conhost.exe", identity: { started: "new-birth", executable: "C:\\Windows\\System32\\conhost.exe" } })), "inactive");
-    assert.equal(processOwnerState(legacy, () => present("new-birth")), "unknown");
+  it("does not infer ownership from the executable name of an incomplete record", () => {
+    const incomplete = { pid: owner.pid, hostname: owner.hostname };
+    assert.equal(processOwnerState(incomplete, () => ({ state: "present", name: "conhost.exe", identity: { started: "new-birth", executable: "C:\\Windows\\System32\\conhost.exe" } })), "unknown");
+    assert.equal(processOwnerState(incomplete, () => present("new-birth")), "unknown");
   });
-  it("retires a missing legacy PID even when its old lease has no hostname", () => {
-    const legacy = { pid: owner.pid, hostname: undefined };
-    assert.equal(processOwnerState(legacy, () => ({ state: "absent" })), "inactive");
-    assert.equal(processOwnerState(legacy, () => present("unknown-birth")), "unknown");
+  it("retires a missing incomplete PID but keeps a present incarnation unknown", () => {
+    const incomplete = { pid: owner.pid, hostname: undefined };
+    assert.equal(processOwnerState(incomplete, () => ({ state: "absent" })), "inactive");
+    assert.equal(processOwnerState(incomplete, () => present("unknown-birth")), "unknown");
   });
   it("preserves unreadable, foreign-host and malformed ownership without signaling processes", () => {
     assert.equal(processOwnerState(owner, () => ({ state: "unknown" })), "unknown");

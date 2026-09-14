@@ -44,6 +44,8 @@ export const runtimeLimitsSchema = z.object({
   // Retry counts exclude the initial attempt. Shared by every agent role.
   modelContentRetries: integer(0, 2),
   sandboxInitializationRetries: integer(0, 1),
+  /** Model-visible recovery turns after the first quarantined-environment result. */
+  commandEnvironmentRecoveryRetries: integer(0, 5),
   /** Sandbox boundary violations are model-correctable before human escalation. */
   sandboxBoundaryModelCorrections: integer(0, 5),
   sandboxBoundaryApprovalThreshold: integer(1, 10),
@@ -52,7 +54,8 @@ export const runtimeLimitsSchema = z.object({
   // Replaying effects or treating unfinished work as complete is never a recovery.
   commandExecutionRetries: z.literal(0),
   subagentFailureRetries: z.literal(0),
-  prematureFinishRetries: z.literal(0),
+  /** Corrections after an invalid completion proposal; the initial proposal is not a retry. */
+  prematureFinishRetries: integer(0, 5),
   providerRetryWaitMs: integer(0, 60000),
   defaultReadLines: integer(1, 10000),
   maxReadLines: integer(1, 10000),

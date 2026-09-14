@@ -21,7 +21,6 @@ import {
   MAX_OVERLAY_ROWS,
   applyEvent,
   applyEvents,
-  createInitialUIState,
   createUIState,
   uiReducer,
 } from "../src/ui/store.js";
@@ -131,7 +130,6 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(withSession.header.session, session);
     assert.equal(renamed.header.title, "EASY CODE");
     assert.deepEqual(renamed.header.session, session);
-    assert.deepEqual(createInitialUIState(), createUIState());
   });
 
   it("appends every transcript category without evicting terminal history", () => {

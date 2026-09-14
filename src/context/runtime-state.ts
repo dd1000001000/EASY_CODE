@@ -1,18 +1,17 @@
 import type { CommandAuditEntry, SessionState } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { activeTask } from "../tasks/task-graph.js";
-import { legacyRunningCommands } from "./pending-operations.js";
 
 /** Exact invocation and owner, not merely the most recent shell command. */
 function commandTarget(command: CommandAuditEntry): string {
   // Redaction can make different invocations look identical. Fail closed for
-  // legacy audit entries rather than let an unrelated success erase evidence.
+  // redacted audit entries rather than let an unrelated success erase evidence.
   if (JSON.stringify([command.program, command.cwd, command.args]).includes("[REDACTED]")) {
     return command.id;
   }
   return JSON.stringify([
     command.sourceAgentRole ?? "main_agent", command.sourceAgentId ?? "",
-    // A new user turn is not a new validation target. Legacy records without
+    // A new user turn is not a new validation target. Records without
     // a structured target retain the conservative original scope binding.
     command.validation?.targetKey ? "" : command.sourceScopeKey ?? "", command.sourceTaskId ?? "",
     command.validation?.targetKey ?? JSON.stringify([command.cwd, command.program, command.args]),
@@ -47,7 +46,7 @@ export function unresolvedCommands(state: Readonly<SessionState>): CommandAuditE
  */
 export function runtimeContinuityMessage(state: Readonly<SessionState>): string {
   if (state.pressureRecovery?.serverReset) {
-    const commands = { ...legacyRunningCommands(state), ...state.contextOperations?.commands };
+    const commands = state.contextOperations?.commands ?? {};
     return "RUNTIME_CONTEXT_RESET: Older reasoning, outputs and summaries were retired after capacity recovery. " +
       "This is the SAME workspace, not a clean start. Inspect files before changing them; never replay unknown commands. " +
       JSON.stringify({ pendingCommandIds: Object.keys(commands), pendingChildIds: Object.keys(state.contextOperations?.children ?? {}),
@@ -59,7 +58,7 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
   const runs = state.progressGuard?.failureRuns ?? [];
   const current = state.taskGraph ? activeTask(state.taskGraph) : undefined;
   const fileChanges = [...new Map(state.changes.map((change) => [change.path, change])).values()];
-  const pendingOperations = { commands: { ...legacyRunningCommands(state), ...state.contextOperations?.commands },
+  const pendingOperations = { commands: state.contextOperations?.commands ?? {},
     children: state.contextOperations?.children ?? {} };
   const payload = {
     ...(state.delivery ? { deliveryObligation: state.delivery } : {}),

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import type {
-  ContextCompactionRequest,
   ContextIntentLedger,
   SessionState,
 } from "../src/core/types.js";
@@ -10,21 +9,18 @@ import {
   compactionCooldownSatisfied,
   evaluateCompactionBenefit,
 } from "../src/context/compaction-policy.js";
-import { validateCompactionIntegrity } from "../src/context/compaction-integrity.js";
 import {
   deserializeSessionState,
   serializeChatMessages,
   serializeSessionState,
 } from "../src/threads/serialization.js";
 import { sha256 } from "../src/utils/hash.js";
-import {
-  compactionV2Input,
-  persistedCompactionV2Summary,
-} from "./compaction-fixture.js";
+import { baseSessionState } from "./session-state.js";
 
 function makeState(messages: SessionState["messages"]): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_compaction_policy",
     mode: "code",
     provider: "qwen",
@@ -44,97 +40,7 @@ function makeState(messages: SessionState["messages"]): SessionState {
   };
 }
 
-function requestFromFixture(
-  fixture: ReturnType<typeof compactionV2Input>,
-): ContextCompactionRequest {
-  return {
-    formatVersion: 2,
-    summary: persistedCompactionV2Summary(fixture),
-    intentLedger: {
-      latestRequest: { ...fixture.primaryRequest },
-      activeConstraints: fixture.activeConstraints.map((item) => ({ ...item })),
-      userCorrections: fixture.intentLedger.userCorrections.map((item) => ({ ...item })),
-      supersededRequests: fixture.intentLedger.supersededRequests.map((item) => ({ ...item })),
-    },
-    coverageCheck: {
-      ...fixture.coverageCheck,
-      coveredMessageIndices: [...fixture.coverageCheck.coveredMessageIndices],
-    },
-  };
-}
-
 describe("context compaction acceptance policy", () => {
-  it("preserves a pinned primary request and a later steering correction separately", () => {
-    const state = makeState([
-      { role: "user", content: "Implement OAuth2 without removing JWT." },
-      { role: "assistant", content: "I will inspect the authentication flow." },
-      { role: "user", content: "Use authorization-code flow and keep JWT tests." },
-    ]);
-    state.contextIntentLedger = {
-      latestRequest: {
-        sourceMessageIndex: 0,
-        text: "Implement OAuth2 without removing JWT.",
-      },
-      activeConstraints: [],
-      userCorrections: [{
-        sourceMessageIndex: 2,
-        text: "Use authorization-code flow and keep JWT tests.",
-      }],
-      supersededRequests: [],
-    };
-    const fixture = compactionV2Input({
-      primaryRequestIndex: 0,
-      primaryRequestText: "Implement OAuth2 without removing JWT.",
-      latestMessageIndex: 2,
-      userCorrections: [{
-        sourceMessageIndex: 2,
-        text: "Use authorization-code flow and keep JWT tests.",
-      }],
-    });
-
-    const validation = validateCompactionIntegrity({
-      state,
-      request: requestFromFixture(fixture),
-      sourceEndMessageIndex: state.messages.length,
-    });
-
-    assert.equal(validation.ok, true);
-    assert.deepEqual(validation.intentLedger, state.contextIntentLedger);
-  });
-
-  it("rejects a summary that drops a correction or moves the pinned primary request", () => {
-    const state = makeState([
-      { role: "user", content: "Keep the existing API while adding OAuth2." },
-      { role: "user", content: "Do not remove JWT authentication." },
-    ]);
-    state.contextIntentLedger = {
-      latestRequest: {
-        sourceMessageIndex: 0,
-        text: "Keep the existing API while adding OAuth2.",
-      },
-      activeConstraints: [],
-      userCorrections: [{
-        sourceMessageIndex: 1,
-        text: "Do not remove JWT authentication.",
-      }],
-      supersededRequests: [],
-    };
-    const fixture = compactionV2Input({
-      primaryRequestIndex: 1,
-      primaryRequestText: "Do not remove JWT authentication.",
-    });
-
-    const validation = validateCompactionIntegrity({
-      state,
-      request: requestFromFixture(fixture),
-      sourceEndMessageIndex: state.messages.length,
-    });
-
-    assert.equal(validation.ok, false);
-    assert.ok(validation.errors.includes("latest_request_source_mismatch"));
-    assert.ok(validation.errors.includes("user_correction_ledger_incomplete"));
-  });
-
   it("accepts only a material reduction and reports the safe post-compaction waterline", () => {
     const state = makeState(Array.from({ length: 20 }, (_, index) => ({
       role: "assistant" as const,
@@ -185,7 +91,7 @@ describe("context compaction acceptance policy", () => {
     const candidateMessages: SessionState["messages"] = [
       ...largeState.messages,
       { role: "assistant", content: "compact" },
-      { role: "tool", tool_call_id: "compact_call", content: "ok" },
+      { role: "tool", name: "compact_context", tool_call_id: "compact_call", content: "ok" },
     ];
     const result = evaluateCompactionBenefit(new ContextManager(), {
       state: largeState,
@@ -232,6 +138,7 @@ describe("context compaction acceptance policy", () => {
       savingsRatio: 0.8,
       postCompactionUtilization: 0.2,
       safeWaterlineReached: true,
+      targetRatio: 0.6,
     };
     const serialized = serializeSessionState(state);
 

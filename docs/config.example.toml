@@ -1,163 +1,167 @@
 # Copy desired settings to .easycode/config.toml or the user config.toml.
 # Generate the current defaults with: easy-code config defaults
-# Keys inside [limits] use camelCase. Unknown/legacy limit keys are errors.
+# All TOML keys use snake_case. Unknown keys are errors.
 # Provider/model metadata lives in the fixed user file ~/.easy_code/models.toml.
 # It includes endpoints, credential environment names, wire protocols, exact
 # model IDs, labels and capabilities. EASY CODE validates it on every startup
 # and never overwrites an existing copy. API keys do not belong in that file.
-# This operational config may retain legacy user-level endpoint overrides;
-# workspace config may not redirect provider endpoints.
-orchestrationEnabled = false
-# Optional approvalModel belongs in USER config only; defaults to the active model.
-# approvalModel = "glm-5.3-flash"
+# Provider overrides use the single [providers.<id>] namespace. Workspace
+# config may not redirect provider endpoints.
+orchestration_enabled = false
+subagent_isolation = "auto"
+worktree_base_mode = "current-snapshot"
+# Optional approval_model belongs in USER config only; defaults to the active model.
+# approval_model = "glm-5.3-flash"
 
 [limits]
-maxContextChars = 250000
-maxActiveContextChars = 250000
+max_context_chars = 250000
+max_active_context_chars = 250000
 # Default 1M model window. Known catalog windows cap this value conservatively.
-# 0 selects legacy character mode; character limits do not cap reads in Token mode.
+# 0 selects the character-capacity fallback; character limits do not cap reads in Token mode.
 # Percentages use input capacity AFTER output/tool/safety reserves, not the raw window.
-maxContextTokens = 1000000
+max_context_tokens = 1000000
 # Captured raw tool evidence and model-facing results are separate budgets.
-maxOutputChars = 256000
-maxToolResultChars = 64000
-commandTimeoutMs = 120000
-sandboxStartupWindowsMs = 75000
-sandboxStartupPosixMs = 30000
-sandboxCleanupTimeoutMs = 45000
+max_output_chars = 256000
+max_tool_result_chars = 64000
+command_timeout_ms = 120000
+sandbox_startup_windows_ms = 75000
+sandbox_startup_posix_ms = 30000
+sandbox_cleanup_timeout_ms = 45000
 # Per-process Windows broker ports are leased from this bounded range.
-nativeSandboxProxyPortStart = 43179
-nativeSandboxProxyPortSlots = 32
+native_sandbox_proxy_port_start = 43179
+native_sandbox_proxy_port_slots = 32
 # A compatibility assumption, NOT a network permission. Use requiredCapabilities=[]
 # for a check known not to need IPC; the OS boundary remains unchanged.
-sandboxVerificationRequiresLoopback = true
+sandbox_verification_requires_loopback = true
 # Offer the exact host-scoped invocation to the existing approval flow.
 # No workspace grant authorizes host scope. Never applies to Benchmark.
-sandboxAllowHostEscalation = true
+sandbox_allow_host_escalation = true
 # One-time Windows elevated sandbox preparation may display an OS consent UI.
 # macOS Seatbelt and Linux bubblewrap/seccomp require no VM setup.
-nativeSandboxSetupTimeoutMs = 600000
-commandInspectTimeoutMaxMs = 60000
-commandExecuteTimeoutMaxMs = 900000
-commandInstallTimeoutMaxMs = 1200000
-maxManagedWorktrees = 15
-maxSubagentsPerTurn = 8
-maxSubagentFollowUps = 8
-maxDagNodes = 16
+native_sandbox_setup_timeout_ms = 600000
+command_inspect_timeout_max_ms = 60000
+command_execute_timeout_max_ms = 900000
+command_install_timeout_max_ms = 1200000
+max_managed_worktrees = 15
+max_subagents_per_turn = 8
+max_subagent_follow_ups = 8
+max_dag_nodes = 16
 # Shared by main agent, children, reviewer, routing and compaction; includes retries.
-maxModelRequests = 120
+max_model_requests = 120
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
-maxTaskTokens = 0
+max_task_tokens = 0
 # Local output reservation only. No output-token ceiling is sent to the server.
-maxResponseTokens = 32768
+max_response_tokens = 32768
 # Independent transport safety ceiling, not a summary/display limit (16 MiB).
-providerResponseMaxBytes = 16777216
+provider_response_max_bytes = 16777216
 # Live UI only: batch deltas and bound in-progress previews; final output is retained.
-streamFlushIntervalMs = 50
-streamPreviewMaxChars = 16000
+stream_flush_interval_ms = 50
+stream_preview_max_chars = 16000
 # Retry counts exclude the initial attempt. Shared by every agent role.
-maxProviderRetries = 5
-modelContentRetries = 2
-sandboxInitializationRetries = 1
-sandboxBoundaryModelCorrections = 1
-sandboxBoundaryApprovalThreshold = 2
-benchmarkBoundaryApproval = "allow_once"
-sandboxBoundaryIncidentLimit = 32
-# Non-replay invariants: these settings only accept 0.
-commandExecutionRetries = 0
-subagentFailureRetries = 0
-prematureFinishRetries = 0
-providerRetryWaitMs = 30000
-defaultReadLines = 100
-maxReadLines = 1000
-maxReadResultTokens = 24000
-memoryAutoTokens = 2000
-memoryRecallTokens = 12000
-memoryMaxItems = 6
-memoryMaxQueries = 3
-memorySearchLimit = 6
-memoryMinRelevantTerms = 1
-maxDurableMemoryTokens = 400
-searchMaxEntries = 10000
-searchMaxDepth = 64
-searchRepeatWarningCount = 3
-searchMaxFileBytes = 1048576
-searchMaxBytes = 16777216
-searchMaxMatches = 60
-searchContextLines = 2
-searchMaxResultTokens = 6000
-commandQueryChars = 24000
-commandMaxDiagnostics = 16
-commandSuccessChars = 2000
-commandFailureChars = 16000
-commandPollWaitMs = 120000
-compactionRetainRecentExchanges = 5
-contextReferenceTriggerRatio = 0.8
-contextReferenceTargetRatio = 0.6
-contextRecallProtectionExchanges = 2
-reviewMaxRounds = 5
-reviewMaxRequests = 32
-reviewMaxToolCalls = 20
-reviewTimeoutMs = 600000
-reviewSummaryTimeoutMs = 120000
-reviewSnapshotMaxBytes = 134217728
-reviewDependencyMaxBytes = 1073741824
-reviewDependencyMaxFiles = 100000
-reviewPreparationTimeoutMs = 120000
-reviewSummaryMaxTokens = 4096
-reviewMaxSessionsPerTask = 3
-contextCompactionTriggerRatio = 0.9
-contextCompactionTargetRatio = 0.6
-contextCompactionMinGrowthRatio = 0.1
-contextMaxRebasesPerRequest = 1
-contextMaxCapacityRetries = 1
+max_provider_retries = 5
+model_content_retries = 2
+sandbox_initialization_retries = 1
+sandbox_boundary_model_corrections = 1
+sandbox_boundary_approval_threshold = 2
+benchmark_boundary_approval = "allow_once"
+sandbox_boundary_incident_limit = 32
+# Effect-replay invariants: these settings only accept 0.
+command_execution_retries = 0
+subagent_failure_retries = 0
+# Correction counts exclude the initial attempt. Zero disables correction.
+premature_finish_retries = 2
+command_environment_recovery_retries = 1
+provider_retry_wait_ms = 30000
+default_read_lines = 100
+max_read_lines = 1000
+max_read_result_tokens = 24000
+memory_auto_tokens = 2000
+memory_recall_tokens = 12000
+memory_max_items = 6
+memory_max_queries = 3
+memory_search_limit = 6
+memory_min_relevant_terms = 1
+max_durable_memory_tokens = 400
+search_max_entries = 10000
+search_max_depth = 64
+search_repeat_warning_count = 3
+search_max_file_bytes = 1048576
+search_max_bytes = 16777216
+search_max_matches = 60
+search_context_lines = 2
+search_max_result_tokens = 6000
+command_query_chars = 24000
+command_max_diagnostics = 16
+command_success_chars = 2000
+command_failure_chars = 16000
+command_poll_wait_ms = 120000
+compaction_retain_recent_exchanges = 5
+context_reference_trigger_ratio = 0.8
+context_reference_target_ratio = 0.6
+context_recall_protection_exchanges = 2
+review_max_rounds = 5
+review_max_requests = 32
+review_max_tool_calls = 20
+review_timeout_ms = 600000
+review_summary_timeout_ms = 120000
+review_snapshot_max_bytes = 134217728
+review_dependency_max_bytes = 1073741824
+review_dependency_max_files = 100000
+review_preparation_timeout_ms = 120000
+review_summary_max_tokens = 4096
+review_max_sessions_per_task = 3
+context_compaction_trigger_ratio = 0.9
+context_compaction_target_ratio = 0.6
+context_compaction_min_growth_ratio = 0.1
+context_max_rebases_per_request = 1
+context_max_capacity_retries = 1
 # Retained summary estimate including JSON wrapper; not a generation limit.
-contextSummaryMaxTokens = 8192
-contextToolBatchTokens = 65536
-contextToolReferenceMinChars = 4096
+context_summary_max_tokens = 8192
+context_tool_batch_tokens = 65536
+context_tool_reference_min_chars = 4096
 # Reviewer remains enabled and independently restricted to its read-only profile.
-reviewerOutputTokens = 6144 # local report storage budget
+reviewer_output_tokens = 6144 # local report storage budget
 # Independent command approval agent: shared retries within one bounded deadline.
-approvalInputChars = 24000
-approvalOutputTokens = 1024 # local report storage budget
-approvalTimeoutMs = 60000
-validationBaselineMaxFiles = 8000
-validationScanMaxEntries = 50000
-validationScanMaxBytes = 67108864
-progressInvestigationMinSamples = 5
-progressInvestigationRepeatRatio = 0.7
-progressInvestigationWindowResponses = 12
+approval_input_chars = 24000
+approval_output_tokens = 1024 # local report storage budget
+approval_timeout_ms = 60000
+validation_baseline_max_files = 8000
+validation_scan_max_entries = 50000
+validation_scan_max_bytes = 67108864
+progress_investigation_min_samples = 5
+progress_investigation_repeat_ratio = 0.7
+progress_investigation_window_responses = 12
 # Set false for observation/reminders only; never enables automatic early exit.
-progressInvestigationReviewEnabled = true
-contextOutputReserveRatio = 0.2
-contextToolReserveTokens = 65536
-contextToolReserveRatio = 0.1
-contextSafetyReserveTokens = 512
-contextSafetyReserveRatio = 0.05
+progress_investigation_review_enabled = true
+context_output_reserve_ratio = 0.2
+context_tool_reserve_tokens = 65536
+context_tool_reserve_ratio = 0.1
+context_safety_reserve_tokens = 512
+context_safety_reserve_ratio = 0.05
 
 # Additional content budgets. Storage/display clipping never authorizes partial execution.
-commandArchiveMaxBytes = 33554432
-commandThreadArchiveMaxBytes = 268435456
-memoryContentMaxChars = 1200
-evidenceRecallDefaultChars = 8000
-evidenceRecallMaxChars = 32000
-artifactIndexBatchChars = 96000
-artifactChunkChars = 1400
-artifactChunkOverlapChars = 160
-subagentInstructionsMaxChars = 12000
-subagentFollowUpMaxChars = 8000
-subagentSummaryMaxChars = 12000
-contextForceRatio = 0.95
-contextMemoryResumeRatio = 0.6
-reviewBriefingMaxTokens = 6144
-reviewHandoffMaxTokens = 12288
-reviewClosingInputReserveTokens = 100000
-contextCompactionMaxGrowthTokens = 32768
-contextCompactionMinNewTokens = 8192
-contextCompactionMinSavedTokens = 8192
-contextCompactionMinSavingsRatio = 0.1
-contextSummaryMaxChars = 64000
-contextSemanticFieldMaxChars = 4000
+command_archive_max_bytes = 33554432
+command_thread_archive_max_bytes = 268435456
+memory_content_max_chars = 1200
+evidence_recall_default_chars = 8000
+evidence_recall_max_chars = 32000
+artifact_index_batch_chars = 96000
+artifact_chunk_chars = 1400
+artifact_chunk_overlap_chars = 160
+subagent_instructions_max_chars = 12000
+subagent_follow_up_max_chars = 8000
+subagent_summary_max_chars = 12000
+context_force_ratio = 0.95
+context_memory_resume_ratio = 0.6
+review_briefing_max_tokens = 6144
+review_handoff_max_tokens = 12288
+review_closing_input_reserve_tokens = 100000
+context_compaction_max_growth_tokens = 32768
+context_compaction_min_new_tokens = 8192
+context_compaction_min_saved_tokens = 8192
+context_compaction_min_savings_ratio = 0.1
+context_summary_max_chars = 64000
+context_semantic_field_max_chars = 4000
 
 [limits.steps]
 none = 40
@@ -166,14 +170,20 @@ medium = 40
 high = 80
 
 # Resolved from the current parent thinking effort, including after a switch.
-[limits.maxConcurrentSubagents]
+[limits.max_concurrent_subagents]
 none = 2
 low = 2
 medium = 4
 high = 8
 
-[limits.providerTimeoutMs]
+[limits.provider_timeout_ms]
 none = 300000
 low = 300000
 medium = 450000
 high = 600000
+
+# User-level provider overrides (credentials are better kept in the OS keyring).
+[providers.qwen]
+# base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+# model = "qwen3.7-plus"
+# timeout_ms = 300000

@@ -118,7 +118,7 @@ describe("single-agent task DAG", () => {
       reason: "The required external design token is unavailable",
     });
     assert.equal(blocked.ok, true);
-    assert.equal(graph?.status, "blocked");
+    assert.equal(graph?.status, "waiting_input");
     assert.equal((await call({ action: "start", taskId: "integration" })).ok, false);
     assert.equal((await call({ action: "resume", taskId: "frontend" })).ok, true);
     await call({ action: "start", taskId: "frontend" });

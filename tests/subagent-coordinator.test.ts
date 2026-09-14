@@ -196,7 +196,7 @@ describe("SubagentCoordinator", () => {
     const limits = defaultRuntimeLimits();
     limits.maxConcurrentSubagents.medium = 3;
     const coordinator = new SubagentCoordinator({
-      maxConcurrent: 1, // Actual Runtime limits take precedence over legacy injection.
+      maxConcurrent: 1, // Actual Runtime limits take precedence over constructor injection.
       createAgentId: idFactory([AGENT_ONE, AGENT_TWO, AGENT_THREE]),
       run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
     });
@@ -316,10 +316,17 @@ describe("SubagentCoordinator", () => {
         ...completedOutcome("inspect"),
         environment: {
           id: "environment_00000000-0000-4000-8000-000000000011",
+          agentId: AGENT_ONE,
+          parentThreadId: "thread",
+          childThreadId: `thread_${AGENT_ONE}`,
+          taskId: "inspect",
           kind: "worktree",
           status: "result_ready",
           logicalWorkspaceRoot: "C:\\private\\workspace",
           executionRoot: "C:\\private\\runtime-data\\worktree",
+          repositoryRoot: "C:\\private\\workspace",
+          worktreeRoot: "C:\\private\\runtime-data\\worktree",
+          pathLayoutVersion: 2,
           requestedIsolation: "worktree",
           baseMode: "current-snapshot",
           createdAt: "2026-08-27T10:00:00.000Z",

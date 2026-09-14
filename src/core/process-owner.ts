@@ -70,10 +70,8 @@ export function currentProcessIdentity(): ProcessIdentity | undefined {
 export function processOwnerState(owner: ProcessOwner, probe: (pid: number) => ProcessSnapshot = inspectProcess): OwnerState {
   if (!Number.isSafeInteger(owner.pid) || Number(owner.pid) <= 0) return "unknown";
   // A recorded foreign host must never be compared with this host's PID
-  // namespace. Older EASY CODE command leases did not record a hostname,
-  // however, so absence of that field is not itself evidence of a live owner.
-  // Probe those legacy PIDs: an absent PID is definitive and lets maintenance
-  // discard the stale lease, while a present Node process remains ambiguous.
+  // namespace. For an incomplete local record, an absent PID is definitive;
+  // a present PID remains unknown because its incarnation was not recorded.
   if (owner.hostname !== undefined && owner.hostname !== null && owner.hostname !== os.hostname()) return "unknown";
   const actual = probe(Number(owner.pid));
   if (actual.state === "absent") return "inactive";
@@ -87,11 +85,7 @@ export function processOwnerState(owner: ProcessOwner, probe: (pid: number) => P
     }
     return "active";
   }
-  // Legacy EASY CODE owners are Node processes. A reused conhost/Powershell PID
-  // is not its owner; another Node process remains ambiguous, never auto-killed.
-  const names = new Set(["node", "node.exe", "nodejs", path.basename(process.execPath).toLowerCase()]);
-  const executableName = actual.identity.executable ? path.basename(actual.identity.executable).toLowerCase() : undefined;
-  return names.has(actual.name.toLowerCase()) || executableName && names.has(executableName) ? "unknown" : "inactive";
+  return "unknown";
 }
 
 /** A fresh cache per inspection pass, not a process-lifetime PID cache. */

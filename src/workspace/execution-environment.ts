@@ -26,6 +26,7 @@ import type {
 } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 import { assertNoUninstall } from "../install/ownership.js";
+import { CURRENT_PROTOCOL, requireCurrentProtocol } from "../protocol/versions.js";
 import { WorkspaceManager } from "./manager.js";
 import { WorkspacePathGuard } from "./path-guard.js";
 import {
@@ -35,8 +36,8 @@ import {
 
 const MAX_INCLUDED_FILES = 2_000;
 const MAX_INCLUDED_BYTES = 128 * 1024 * 1024;
-const ENVIRONMENT_SCHEMA_VERSION = 1;
-const CURRENT_WORKTREE_PATH_LAYOUT = 2;
+const ENVIRONMENT_SCHEMA_VERSION = CURRENT_PROTOCOL.worktreeDescriptor;
+const CURRENT_WORKTREE_PATH_LAYOUT = CURRENT_PROTOCOL.worktreeDescriptor;
 function runtimeScratchGitExcludes(relativeWorkspace: string): readonly string[] {
   const normalizedWorkspace = relativeWorkspace.split(path.sep).join("/").replace(/^\.\//u, "");
   if (
@@ -47,8 +48,8 @@ function runtimeScratchGitExcludes(relativeWorkspace: string): readonly string[]
     throw new Error("Cannot build Runtime scratch exclusions outside the repository");
   }
   const reservedRoot = normalizedWorkspace
-    ? `${normalizedWorkspace}/.easy-code-srt-runtime`
-    : ".easy-code-srt-runtime";
+    ? `${normalizedWorkspace}/.easy-code-runtime`
+    : ".easy-code-runtime";
   // A literal directory pathspec applies recursively to its descendants while
   // keeping valid Windows filename characters such as '[' out of Git's glob parser.
   return [`:(top,exclude,literal)${reservedRoot}`];
@@ -75,11 +76,11 @@ export interface ExecutionEnvironmentManagerOptions {
 
 export interface ProvisionExecutionEnvironmentInput {
   readonly agentId: string;
-  readonly parentThreadId?: string;
-  readonly childThreadId?: string;
-  readonly taskId?: string;
-  readonly environmentId?: string;
-  readonly requestedIsolation?: SubagentIsolationMode;
+  readonly parentThreadId: string;
+  readonly childThreadId: string;
+  readonly taskId: string;
+  readonly environmentId: string;
+  readonly requestedIsolation: SubagentIsolationMode;
   /** Accepted dependency results. Divergent Worktree commits are merged before start. */
   readonly dependencyArtifacts?: readonly ResultArtifactRef[];
 }
@@ -119,7 +120,7 @@ export class WorktreeConflictError extends Error {
 /**
  * Runtime-owned execution environments for child agents.
  *
- * A shared environment preserves the legacy serialized-write behavior. A
+ * A shared environment serializes writes in the parent checkout. A
  * managed worktree is detached, bound to one child session, checkpointed with
  * hidden refs, and can be reconstructed after the directory is cleaned up.
  */
@@ -171,7 +172,7 @@ export class ExecutionEnvironmentManager {
     input: ProvisionExecutionEnvironmentInput,
   ): Promise<ActiveExecutionEnvironment> {
     await this.initialize();
-    const requestedIsolation = input.requestedIsolation ?? this.defaultIsolation;
+    const requestedIsolation = input.requestedIsolation;
     const repository = await discoverRepository(this.logicalWorkspaceRoot);
     const kind = requestedIsolation === "shared"
       ? "shared"
@@ -202,14 +203,14 @@ export class ExecutionEnvironmentManager {
     }
 
     const now = new Date().toISOString();
-    const id = input.environmentId ?? `environment_${randomUUID()}`;
+    const id = input.environmentId;
     if (kind === "shared") {
       const descriptor: ExecutionEnvironmentSnapshot = {
         id,
         agentId: input.agentId,
-        ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-        ...(input.childThreadId ? { childThreadId: input.childThreadId } : {}),
-        ...(input.taskId ? { taskId: input.taskId } : {}),
+        parentThreadId: input.parentThreadId,
+        childThreadId: input.childThreadId,
+        taskId: input.taskId,
         kind,
         status: "ready",
         logicalWorkspaceRoot: this.logicalWorkspaceRoot,
@@ -249,9 +250,9 @@ export class ExecutionEnvironmentManager {
     const descriptor: ExecutionEnvironmentSnapshot = {
       id,
       agentId: input.agentId,
-      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.childThreadId ? { childThreadId: input.childThreadId } : {}),
-      ...(input.taskId ? { taskId: input.taskId } : {}),
+      parentThreadId: input.parentThreadId,
+      childThreadId: input.childThreadId,
+      taskId: input.taskId,
       kind,
       status: "provisioning",
       logicalWorkspaceRoot: this.logicalWorkspaceRoot,
@@ -704,9 +705,9 @@ export class ExecutionEnvironmentManager {
   async loadEnvironment(environmentId: string): Promise<ExecutionEnvironmentSnapshot> {
     const filename = this.environmentFile(environmentId);
     const parsed = JSON.parse(await readFile(filename, "utf8")) as PersistedEnvironment;
+    requireCurrentProtocol("worktreeDescriptor", parsed?.schemaVersion);
     if (
-      parsed?.schemaVersion !== ENVIRONMENT_SCHEMA_VERSION ||
-      !isExecutionEnvironmentSnapshot(parsed.environment) ||
+      !isExecutionEnvironmentSnapshot(parsed?.environment) ||
       parsed.environment.id !== environmentId
     ) {
       throw new Error(`Invalid execution environment record: ${environmentId}`);
@@ -718,9 +719,9 @@ export class ExecutionEnvironmentManager {
 
   async loadArtifact(artifactId: string): Promise<ResultArtifact> {
     const parsed = JSON.parse(await readFile(this.artifactFile(artifactId), "utf8")) as PersistedArtifact;
+    requireCurrentProtocol("worktreeDescriptor", parsed?.schemaVersion);
     if (
-      parsed?.schemaVersion !== ENVIRONMENT_SCHEMA_VERSION ||
-      !isResultArtifact(parsed.artifact) ||
+      !isResultArtifact(parsed?.artifact) ||
       parsed.artifact.id !== artifactId
     ) {
       throw new Error(`Invalid result artifact record: ${artifactId}`);
@@ -791,9 +792,7 @@ export class ExecutionEnvironmentManager {
     }
 
     assertManagedPath(this.worktreeRoot, descriptor.worktreeRoot);
-    const expectedWorktreeRoot = descriptor.pathLayoutVersion === 2
-      ? compactManagedWorktreeRoot(this.worktreeRoot, repositoryRoot, descriptor.id)
-      : legacyManagedWorktreeRoot(this.worktreeRoot, repositoryRoot, descriptor.id);
+    const expectedWorktreeRoot = compactManagedWorktreeRoot(this.worktreeRoot, repositoryRoot, descriptor.id);
     if (
       normalizePathIdentity(descriptor.worktreeRoot) !==
       normalizePathIdentity(expectedWorktreeRoot)
@@ -860,7 +859,7 @@ export class ExecutionEnvironmentManager {
 }
 
 async function removeValidatedRuntimeScratch(executionRoot: string): Promise<void> {
-  const scratchRoot = path.join(executionRoot, ".easy-code-srt-runtime");
+  const scratchRoot = path.join(executionRoot, ".easy-code-runtime");
   let info;
   try {
     info = await lstat(scratchRoot);
@@ -892,8 +891,8 @@ async function assertRuntimeScratchIsUntracked(
     .split(path.sep)
     .join("/");
   const reservedRoot = relativeWorkspace
-    ? `${relativeWorkspace}/.easy-code-srt-runtime`
-    : ".easy-code-srt-runtime";
+    ? `${relativeWorkspace}/.easy-code-runtime`
+    : ".easy-code-runtime";
   const tracked = nulList(await git(repositoryRoot, [
     "ls-files",
     "-z",
@@ -1321,15 +1320,6 @@ function compactManagedWorktreeRoot(
   return path.join(root, `r-${repositoryKey}`, `e-${environmentKey}`);
 }
 
-function legacyManagedWorktreeRoot(
-  root: string,
-  repositoryRoot: string,
-  environmentId: string,
-): string {
-  const repositoryId = sha256(normalizePathIdentity(repositoryRoot)).slice(0, 24);
-  return path.join(root, repositoryId, safePathSegment(environmentId));
-}
-
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1469,10 +1459,10 @@ export function isExecutionEnvironmentSnapshot(value: unknown): value is Executi
   const input = value as Partial<ExecutionEnvironmentSnapshot>;
   return (
     typeof input.id === "string" &&
-    (input.agentId === undefined || typeof input.agentId === "string") &&
-    (input.parentThreadId === undefined || typeof input.parentThreadId === "string") &&
-    (input.childThreadId === undefined || typeof input.childThreadId === "string") &&
-    (input.taskId === undefined || typeof input.taskId === "string") &&
+    typeof input.agentId === "string" &&
+    typeof input.parentThreadId === "string" &&
+    typeof input.childThreadId === "string" &&
+    typeof input.taskId === "string" &&
     (input.kind === "shared" || input.kind === "worktree") &&
     (input.status === "provisioning" ||
       input.status === "ready" ||
@@ -1498,9 +1488,7 @@ export function isExecutionEnvironmentSnapshot(value: unknown): value is Executi
     (input.requestedIsolation === "auto" ||
       input.requestedIsolation === "shared" ||
       input.requestedIsolation === "worktree") &&
-    (input.pathLayoutVersion === undefined ||
-      input.pathLayoutVersion === 1 ||
-      input.pathLayoutVersion === 2) &&
+    (input.kind === "shared" ? input.pathLayoutVersion === undefined : input.pathLayoutVersion === 2) &&
     (input.provisioningCleanup === undefined ||
       isProvisioningCleanup(input.provisioningCleanup)) &&
     (input.baseMode === "fresh" || input.baseMode === "head" || input.baseMode === "current-snapshot") &&

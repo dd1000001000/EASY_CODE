@@ -12,16 +12,24 @@ import {
 import path from "node:path";
 import type { EventRecord } from "../core/types.js";
 import { createId } from "../utils/ids.js";
+import {
+  CURRENT_PROTOCOL,
+  isUnsupportedDevelopmentState,
+  requireCurrentProtocol,
+} from "../protocol/versions.js";
+import {
+  assertJournalEventType,
+  type JournalEventType,
+} from "./events.js";
 
 export interface AppendEventInput {
-  readonly type: string;
+  readonly type: JournalEventType;
   readonly payload: unknown;
   readonly turnId?: string;
   readonly stepId?: string;
   readonly phase?: EventRecord["phase"];
   readonly eventId?: string;
   readonly timestamp?: string;
-  readonly schemaVersion?: number;
 }
 
 export interface EventJournalOptions {
@@ -90,6 +98,8 @@ function parseEvent(value: string, expectedThreadId: string): EventRecord {
       `Journal event belongs to ${parsed.threadId}, expected ${expectedThreadId}`,
     );
   }
+  requireCurrentProtocol("journalEvent", parsed.schemaVersion);
+  assertJournalEventType(parsed.type);
   return parsed as EventRecord;
 }
 
@@ -184,7 +194,7 @@ export class EventJournal {
     }
 
     const record: EventRecord = {
-      schemaVersion: input.schemaVersion ?? 1,
+      schemaVersion: CURRENT_PROTOCOL.journalEvent,
       eventId,
       threadId: this.threadId,
       sequence: (previous?.sequence ?? 0) + 1,
@@ -322,6 +332,9 @@ export class EventJournal {
           eventIds.add(event.eventId);
           events.push(immutableEvent(event));
         } catch (error) {
+          // Unsupported development formats are complete records, not torn
+          // writes. Never classify or truncate them as a damaged tail.
+          if (isUnsupportedDevelopmentState(error)) throw error;
           const nextOffset = newline === -1 ? buffer.length : newline + 1;
           if (hasNonWhitespace(buffer, nextOffset)) {
             const message = error instanceof Error ? error.message : String(error);

@@ -46,7 +46,7 @@ describe("task DAG terminal UI", () => {
 
   it("distinguishes an explicitly blocked task from pending dependents", () => {
     const view = graph();
-    view.status = "blocked";
+    view.status = "waiting_input";
     view.currentTask = null;
     view.tasks[1] = {
       ...view.tasks[1]!,

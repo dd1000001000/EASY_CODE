@@ -8,48 +8,20 @@ const commandSchema = z.object({ commandId: z.string().min(1),
   exitCode: z.number().nullable(), program: z.string(), args: z.array(z.string()), cwd: z.string(),
   taskId: z.string().optional(),
 }).strict();
-const assignmentSchema = z.object({ agentId: z.string(), childThreadId: z.string().optional(),
-  kind: z.enum(["dag", "standalone"]), taskId: z.string(), taskGraphId: z.string().optional(),
-  taskTitle: z.string(), taskDescription: z.string(), completionChecks: z.array(z.string()),
+const assignmentBase = z.object({ agentId: z.string(), childThreadId: z.string(), environmentId: z.string(),
+  taskId: z.string(), taskTitle: z.string(), taskDescription: z.string(), completionChecks: z.array(z.string()),
+  provider: z.string(), model: z.string(), thinkingEffort: z.enum(["none", "low", "medium", "high"]),
+  requestedIsolation: z.enum(["auto", "shared", "worktree"]), createdAt: z.string(),
 });
+const assignmentSchema = z.discriminatedUnion("kind", [
+  assignmentBase.extend({ kind: z.literal("dag"), taskGraphId: z.string() }).strict(),
+  assignmentBase.extend({ kind: z.literal("standalone") }).strict(),
+]);
 export interface PendingOperations {
   commands: Record<string, z.infer<typeof commandSchema>>;
-  /** Includes observed terminals so legacy message scans cannot resurrect them. */
+  /** Includes terminal handles already observed by the Runtime. */
   knownCommandIds?: string[];
   children: Record<string, { assignment: z.infer<typeof assignmentSchema>; followUps: string[]; stopRequested?: string }>;
-}
-
-/** Older journals kept the returned handle in the model message rather than a
- * dedicated field. Read only actual command-tool results and their paired argv. */
-export function legacyRunningCommands(state: Readonly<SessionState>): PendingOperations["commands"] {
-  const calls = new Map<string, { name: string; arguments: string }>();
-  const running: PendingOperations["commands"] = {};
-  for (const message of state.messages) {
-    if (message.role === "assistant") {
-      for (const call of message.tool_calls ?? []) calls.set(call.id, call.function);
-      continue;
-    }
-    if (message.role !== "tool") continue;
-    const call = calls.get(message.tool_call_id);
-    if (!call || !["start_command", "poll_command", "cancel_command"].includes(call.name)) continue;
-    try {
-      const data = JSON.parse(message.content)?.data;
-      if (typeof data?.commandId !== "string" || typeof data.status !== "string") continue;
-      if (["exited", "timed_out", "canceled", "spawn_failed", "policy_denied", "sandbox_unavailable"].includes(data.status)) {
-        delete running[data.commandId]; continue;
-      }
-      if (data.status !== "running") continue;
-      const previous = running[data.commandId];
-      const args = JSON.parse(call.arguments);
-      const parsed = commandSchema.safeParse({ commandId: data.commandId, status: "running", exitCode: null,
-        program: data.executed?.program ?? previous?.program ?? args.program,
-        args: data.executed?.args ?? previous?.args ?? args.args ?? [],
-        cwd: data.executed?.cwd ?? previous?.cwd ?? args.cwd ?? state.workspaceRoot });
-      if (parsed.success) running[data.commandId] = parsed.data;
-    } catch { /* An opaque tool message is not evidence of a running command. */ }
-  }
-  for (const id of state.contextOperations?.knownCommandIds ?? []) delete running[id];
-  return running;
 }
 
 /** Take identity from raw Runtime output, before model-facing truncation. */
@@ -80,8 +52,7 @@ export function foldPendingOperations(state: SessionState, payload: Record<strin
     agentId: z.string(), message: z.string().optional(), reason: z.string().optional() }).parse(payload.subagentLifecycle);
   const operations = state.contextOperations ??= { commands: {}, children: {} };
   if (lifecycle.action === "activate") {
-    // Legacy activations without bindings remain represented by the DAG.
-    if (payload.subagentAssignment === undefined) return;
+    if (payload.subagentAssignment === undefined) throw new Error("Sub-agent activation is missing its durable assignment binding");
     const assignment = assignmentSchema.parse(payload.subagentAssignment);
     if (assignment.agentId !== lifecycle.agentId) throw new Error("Invalid child continuity binding");
     operations.children[lifecycle.agentId] = { assignment, followUps: [] };

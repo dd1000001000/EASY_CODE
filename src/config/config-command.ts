@@ -18,7 +18,6 @@ import {
   type ApiKeyCredentialStore,
 } from "./credentials.js";
 import { resolveEasyCodePaths } from "./defaults.js";
-import { hasLegacyUserApiKey } from "./loader.js";
 import {
   readSecretInput,
   type SecretInputStream,
@@ -60,12 +59,13 @@ export function registerConfigCommands(
     .allowExcessArguments(false)
     .action(() => {
       const { steps, maxConcurrentSubagents, providerTimeoutMs, ...limits } = defaultRuntimeLimits();
+      const snakeCase = (value: string) => value.replace(/[A-Z]/gu, character => `_${character.toLowerCase()}`);
       const table = (name: string, values: Record<string, unknown>) =>
-        `[${name}]\n` + Object.entries(values).map(([key, value]) => `${key} = ${JSON.stringify(value)}`).join("\n");
+        `[${name}]\n` + Object.entries(values).map(([key, value]) => `${snakeCase(key)} = ${JSON.stringify(value)}`).join("\n");
       writeLine(resolveRuntime(runtime).output,
-        "orchestrationEnabled = false\n\n" + table("limits", limits) + "\n\n" +
-        table("limits.steps", steps) + "\n\n" + table("limits.maxConcurrentSubagents", maxConcurrentSubagents) +
-        "\n\n" + table("limits.providerTimeoutMs", providerTimeoutMs));
+        "orchestration_enabled = false\n\n" + table("limits", limits) + "\n\n" +
+        table("limits.steps", steps) + "\n\n" + table("limits.max_concurrent_subagents", maxConcurrentSubagents) +
+        "\n\n" + table("limits.provider_timeout_ms", providerTimeoutMs));
     });
 
   config
@@ -209,9 +209,6 @@ async function apiKeyStatus(
     // supported native backends. Keep the public status deliberately ambiguous.
   }
 
-  if (await hasLegacyUserApiKey(runtime.userConfigPath, provider)) {
-    return { state: "configured", source: "legacy user config" };
-  }
   return { state: "unavailable-or-not-configured" };
 }
 
@@ -221,9 +218,7 @@ async function remainingExternalSource(
 ): Promise<string | undefined> {
   const environment = environmentApiKeySource(provider, runtime.env);
   if (environment) return `environment variable ${environment}`;
-  return (await hasLegacyUserApiKey(runtime.userConfigPath, provider))
-    ? "legacy user config"
-    : undefined;
+  return undefined;
 }
 
 function environmentApiKeySource(

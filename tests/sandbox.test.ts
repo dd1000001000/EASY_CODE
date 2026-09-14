@@ -23,7 +23,7 @@ import { describe, it } from "./harness.js";
 import { nativeSandboxEnvironment, nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
 
 describe("native sandbox runtime", () => {
-  it("resolves the latest runtime for user installs without publishing a shrinkwrap", async () => {
+  it("pins the single tested runtime without publishing a shrinkwrap", async () => {
     const packageManifest = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };
@@ -31,8 +31,8 @@ describe("native sandbox runtime", () => {
       packages?: Record<string, { dependencies?: Record<string, string> }>;
     };
 
-    assert.equal(packageManifest.dependencies?.["@openai/codex"], "latest");
-    assert.equal(developmentLock.packages?.[""]?.dependencies?.["@openai/codex"], "latest");
+    assert.equal(packageManifest.dependencies?.["@openai/codex"], "0.153.4");
+    assert.equal(developmentLock.packages?.[""]?.dependencies?.["@openai/codex"], "0.153.4");
     await assert.rejects(
       access(path.join(process.cwd(), "npm-shrinkwrap.json")),
       (error: NodeJS.ErrnoException) => error.code === "ENOENT",

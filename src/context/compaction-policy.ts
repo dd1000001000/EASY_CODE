@@ -34,13 +34,10 @@ export interface CompactionBenefitEvaluation {
   readonly savingsRatio: number;
   readonly postCompactionUtilization: number;
   readonly safeWaterlineReached: boolean;
-  readonly targetRatio?: number;
+  readonly targetRatio: number;
 }
 
 export interface CompactionBenefitInput {
-  /** Legacy call-site hint; every mode now uses the same capacity check. */
-  readonly allowConservativeHeadroom?: boolean;
-  readonly exactRequest?: boolean;
   readonly candidateIntentLedger?: SessionState["contextIntentLedger"];
   /** Next normal request, not the reduced compact-only tool surface. */
   readonly nextRequest?: { systemPrompt: string; runtimeContext: string; tools: readonly ToolDefinition[]; reservedTokens?: number };

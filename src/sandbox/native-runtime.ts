@@ -5,12 +5,6 @@ import { fileURLToPath } from "node:url";
 import { resolveEasyCodePaths } from "../config/defaults.js";
 
 export const NATIVE_SANDBOX_RUNTIME_PACKAGE = "@openai/codex";
-export const NATIVE_SANDBOX_BOOTSTRAP_VERSION = "0.153.4";
-
-const WINDOWS_BOOTSTRAP_PACKAGES: Readonly<Record<string, string>> = {
-  x64: "easy-code-codex-bootstrap-win32-x64",
-  arm64: "easy-code-codex-bootstrap-win32-arm64",
-};
 
 export interface NativeSandboxTarget {
   packageName: string;
@@ -43,31 +37,7 @@ export function nativeSandboxEntrypoint(): string {
   return path.join(packageRoot, "vendor", target.targetTriple, "bin", target.binaryName);
 }
 
-/**
- * Return the Windows-only compatibility runtime used to provision a brand-new
- * elevated sandbox when a known-broken current runtime cannot lock its initial
- * `.sandbox-bin` directory. Normal commands always use the current runtime.
- */
-export function nativeSandboxBootstrapEntrypoint(
-  platform: NodeJS.Platform = process.platform,
-  architecture: string = process.arch,
-): string {
-  if (platform !== "win32") {
-    throw new Error("The native sandbox bootstrap runtime is Windows-only");
-  }
-  const packageName = WINDOWS_BOOTSTRAP_PACKAGES[architecture];
-  if (!packageName) {
-    throw new Error(`No Windows sandbox bootstrap runtime is available for ${architecture}`);
-  }
-  const require = createRequire(import.meta.url);
-  const packageRoot = path.dirname(require.resolve(`${packageName}/package.json`));
-  const target = nativeSandboxTarget(platform, architecture);
-  return path.join(packageRoot, "vendor", target.targetTriple, "bin", target.binaryName);
-}
-
-/** Return the version npm actually installed for this EASY CODE installation.
- * The dependency is declared as `latest`; keeping the resolved value out of
- * source avoids silently reporting a stale, hard-coded sandbox version. */
+/** Return the version npm actually installed for this EASY CODE installation. */
 export function nativeSandboxRuntimeVersion(): string {
   const require = createRequire(import.meta.url);
   const manifestPath = require.resolve(`${NATIVE_SANDBOX_RUNTIME_PACKAGE}/package.json`);
@@ -79,7 +49,7 @@ export function nativeSandboxRuntimeVersion(): string {
 }
 
 export function nativeSandboxHome(dataDir = resolveEasyCodePaths().dataDir): string {
-  return path.join(dataDir, "native-sandbox", "runtime-home");
+  return path.join(dataDir, "native-sandbox", "runtime-home-v2");
 }
 
 export function nativeSandboxWorker(): string {

@@ -22,7 +22,7 @@ export const statementSchema = z.object({
 export type ReviewStatement = z.infer<typeof statementSchema>;
 export interface ReviewSession {
   environmentStarted?: boolean; environmentReady?: boolean;
-  changeCount?: number; requirements?: string[]; blockingChecks?: string[]; documentationOnly?: boolean; changedPaths?: string[];
+  changeCount?: number; commandCount?: number; requirements?: string[]; blockingChecks?: string[]; documentationOnly?: boolean; changedPaths?: string[];
   scope?: string;
   directory?: string; actorThreads?: Record<ReviewActor, string>;
   id: string; key: string; purpose: "stagnation" | "delivery"; snapshotId: string; requirementRevision: string;
@@ -43,6 +43,7 @@ export interface ReviewSession {
 const actor = z.enum(["reviewer", "author"]);
 const start = z.object({ type: z.literal("started"), id: z.string().min(1), key: z.string().min(1),
   changeCount: z.number().int().nonnegative().optional(), requirements: z.array(z.string().min(1).max(160)).max(128).optional(),
+  commandCount: z.number().int().nonnegative().optional(),
   blockingChecks: z.array(z.string().min(1)).optional(), documentationOnly: z.boolean().optional(),
   changedPaths: z.array(z.string()).optional(),
   scope: z.string().optional(),
@@ -85,7 +86,7 @@ export function agreed(session: ReviewSession): boolean {
 /** Validate on a clone BEFORE append; apply only after the event is durable. */
 export function foldReviewEvent(state: SessionState, raw: unknown): void {
   const event = eventSchema.parse(raw);
-  const sessions = state.reviewSessions ??= [];
+  const sessions = state.reviewSessions;
   if (event.type === "started") {
     if (sessions.some(s => s.id === event.id || s.key === event.key)) throw new Error("Duplicate review binding");
     const { type: _type, ...binding } = event;

@@ -1,5 +1,4 @@
 import {
-  DEFAULT_THINKING_EFFORT,
   THINKING_EFFORTS,
   type ThinkingEffort,
   type ChatMessage,
@@ -20,9 +19,13 @@ import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 import { validateCommandApprovalPrefixes } from "../command/approval.js";
 import { sha256 } from "../utils/hash.js";
+import { CURRENT_PROTOCOL, requireCurrentProtocol } from "../protocol/versions.js";
+import { userRequirementIndices } from "../context/user-requirements.js";
+import { createProgressGuardState } from "../progress/guard.js";
 
 export interface SerializedSessionState {
-  readonly orchestrationEnabled?: boolean;
+  readonly formatVersion: typeof CURRENT_PROTOCOL.sessionState;
+  readonly orchestrationEnabled: boolean;
   readonly threadId: string;
   readonly activeTurnId?: string;
   readonly mode: SessionState["mode"];
@@ -30,22 +33,21 @@ export interface SerializedSessionState {
   readonly model: string;
   readonly thinkingEffort: ThinkingEffort;
   readonly workspaceRoot: string;
-  /** Optional only for checkpoints created before Prompt Bundle binding. */
-  readonly promptBundle?: PromptBundleBinding;
-  readonly modelRegistryHash?: string;
+  readonly promptBundle: PromptBundleBinding;
+  readonly modelRegistryHash: string;
   readonly goal?: string;
   readonly constraints: string[];
+  readonly userMessageIndices: number[];
   readonly messages: ChatMessage[];
   readonly filesRead: Array<[string, FileVersion]>;
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
-  /** Optional only for checkpoint compatibility; new checkpoints always write it. */
-  readonly commandApprovalPrefixes?: string[];
+  readonly commandApprovalPrefixes: string[];
   readonly taskGraph?: TaskGraph;
   readonly planReview?: PlanReviewState;
-  readonly pendingSteering?: TurnSteeringEntry[];
-  readonly steeringSequence?: number;
-  readonly steeringWatermark?: number;
+  readonly pendingSteering: TurnSteeringEntry[];
+  readonly steeringSequence: number;
+  readonly steeringWatermark: number;
   readonly steeringSealedTurnId?: string;
   readonly workingSummary: string;
   readonly compactedMessageCount: number;
@@ -61,7 +63,7 @@ export interface SerializedSessionState {
  * steering state) deliberately have no representation here.
  */
 export interface SerializedThreadCheckpointDelta {
-  readonly formatVersion: 1;
+  readonly formatVersion: typeof CURRENT_PROTOCOL.checkpointDelta;
   readonly baseSequence: number;
   readonly settings?: {
     readonly orchestrationEnabled?: boolean;
@@ -69,9 +71,6 @@ export interface SerializedThreadCheckpointDelta {
     readonly provider?: SessionState["provider"];
     readonly model?: string;
     readonly thinkingEffort?: ThinkingEffort;
-    readonly promptBundle?: PromptBundleBinding | null;
-    /** One-time binding for sessions created before model registries were versioned. */
-    readonly modelRegistryHash?: string;
     readonly goal?: string | null;
     readonly constraints?: string[];
   };
@@ -148,7 +147,7 @@ function isContextCompactionMetadata(
   const savedChars = Number(value.savedChars);
   const savingsRatio = Number(value.savingsRatio);
   const postCompactionUtilization = Number(value.postCompactionUtilization);
-  const targetRatio = value.targetRatio === undefined ? 0.55 : value.targetRatio;
+  const targetRatio = value.targetRatio;
   return value.formatVersion === 2 &&
     Number.isSafeInteger(value.sourceStartMessageIndex) &&
     Number(value.sourceStartMessageIndex) >= 0 &&
@@ -334,7 +333,7 @@ export function isChatMessage(value: unknown): value is ChatMessage {
       hasOnlyKeys(value, ["role", "content", "tool_call_id", "name"]) &&
       typeof value.content === "string" &&
       typeof value.tool_call_id === "string" &&
-      (value.name === undefined || typeof value.name === "string")
+      typeof value.name === "string"
     );
   }
   if (value.role !== "assistant") return false;
@@ -394,9 +393,9 @@ function normalizedSteeringState(state: Readonly<SessionState>): {
   steeringWatermark: number;
   steeringSealedTurnId?: string;
 } {
-  const pendingSteering = state.pendingSteering ?? [];
-  const steeringSequence = state.steeringSequence ?? 0;
-  const steeringWatermark = state.steeringWatermark ?? 0;
+  const pendingSteering = state.pendingSteering;
+  const steeringSequence = state.steeringSequence;
+  const steeringWatermark = state.steeringWatermark;
   if (
     !Array.isArray(pendingSteering) ||
     !pendingSteering.every(isTurnSteeringEntry) ||
@@ -585,7 +584,7 @@ function validateThreadCheckpointDelta(
       "commandsAppended",
       "compaction",
     ]) ||
-    value.formatVersion !== 1 ||
+    value.formatVersion !== CURRENT_PROTOCOL.checkpointDelta ||
     !Number.isSafeInteger(value.baseSequence) ||
     Number(value.baseSequence) < 1
   ) {
@@ -602,8 +601,6 @@ function validateThreadCheckpointDelta(
         "provider",
         "model",
         "thinkingEffort",
-        "promptBundle",
-        "modelRegistryHash",
         "goal",
         "constraints",
       ]) ||
@@ -614,11 +611,6 @@ function validateThreadCheckpointDelta(
       (settings.model !== undefined && typeof settings.model !== "string") ||
       (settings.thinkingEffort !== undefined &&
         !THINKING_EFFORTS.includes(settings.thinkingEffort as ThinkingEffort)) ||
-      (settings.promptBundle !== undefined &&
-        settings.promptBundle !== null &&
-        !isPromptBundleBinding(settings.promptBundle)) ||
-      (settings.modelRegistryHash !== undefined &&
-        !/^sha256:[a-f0-9]{64}$/u.test(String(settings.modelRegistryHash))) ||
       (settings.goal !== undefined &&
         settings.goal !== null &&
         typeof settings.goal !== "string") ||
@@ -746,15 +738,12 @@ export function deserializeThreadCheckpointDelta(
 ): SerializedThreadCheckpointDelta {
   validateThreadCheckpointDelta(value);
   return {
-    formatVersion: 1,
+    formatVersion: CURRENT_PROTOCOL.checkpointDelta,
     baseSequence: value.baseSequence,
     ...(value.settings
       ? {
           settings: {
             ...value.settings,
-            ...(value.settings.promptBundle
-              ? { promptBundle: { ...value.settings.promptBundle } }
-              : {}),
             ...(value.settings.constraints
               ? { constraints: [...value.settings.constraints] }
               : {}),
@@ -816,8 +805,14 @@ export function deserializeThreadCheckpointDelta(
 
 export function serializeSessionState(state: SessionState): SerializedSessionState {
   const steering = normalizedSteeringState(state);
+  if (!state.promptBundle || !state.modelRegistryHash) {
+    throw new Error(
+      "Current session state requires immutable Prompt Bundle and model-registry bindings",
+    );
+  }
   return {
-    ...(state.orchestrationEnabled !== undefined ? { orchestrationEnabled: state.orchestrationEnabled } : {}),
+    formatVersion: CURRENT_PROTOCOL.sessionState,
+    orchestrationEnabled: state.orchestrationEnabled,
     threadId: state.threadId,
     activeTurnId: state.activeTurnId,
     mode: state.mode,
@@ -825,10 +820,11 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     model: state.model,
     thinkingEffort: state.thinkingEffort,
     workspaceRoot: state.workspaceRoot,
-    ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
-    ...(state.modelRegistryHash ? { modelRegistryHash: state.modelRegistryHash } : {}),
+    promptBundle: { ...state.promptBundle },
+    modelRegistryHash: state.modelRegistryHash,
     goal: state.goal,
     constraints: [...state.constraints],
+    userMessageIndices: userRequirementIndices(state),
     messages: deserializeChatMessages(serializeChatMessages(state.messages)),
     filesRead: [...state.filesRead.entries()].map(([filePath, version]) => [
       filePath,
@@ -865,20 +861,27 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
 
 export function deserializeSessionState(value: unknown): SessionState {
   if (!isRecord(value)) throw new Error("Invalid serialized session state");
+  requireCurrentProtocol("sessionState", value.formatVersion);
   if (
-    (value.orchestrationEnabled !== undefined && typeof value.orchestrationEnabled !== "boolean") ||
+    !hasOnlyKeys(value, ["formatVersion", "orchestrationEnabled", "threadId", "activeTurnId", "mode", "provider", "model",
+      "thinkingEffort", "workspaceRoot", "promptBundle", "modelRegistryHash", "goal", "constraints", "userMessageIndices", "messages",
+      "filesRead", "changes", "commands", "commandApprovalPrefixes", "taskGraph", "planReview", "pendingSteering",
+      "steeringSequence", "steeringWatermark", "steeringSealedTurnId", "workingSummary", "compactedMessageCount",
+      "contextIntentLedger", "contextCompactionMetadata", "createdAt", "updatedAt"]) ||
+    typeof value.orchestrationEnabled !== "boolean" ||
     typeof value.threadId !== "string" ||
     !["plan", "auto", "code"].includes(String(value.mode)) ||
     !isProviderIdentifier(value.provider) ||
     typeof value.model !== "string" ||
-    (value.thinkingEffort !== undefined &&
-      !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort)) ||
+    !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort) ||
     typeof value.workspaceRoot !== "string" ||
-    (value.promptBundle !== undefined && !isPromptBundleBinding(value.promptBundle)) ||
-    (value.modelRegistryHash !== undefined &&
-      (typeof value.modelRegistryHash !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(value.modelRegistryHash))) ||
+    !isPromptBundleBinding(value.promptBundle) ||
+    typeof value.modelRegistryHash !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.modelRegistryHash) ||
     !Array.isArray(value.constraints) ||
     !value.constraints.every((item) => typeof item === "string") ||
+    !Array.isArray(value.userMessageIndices) ||
+    !value.userMessageIndices.every((item) => Number.isSafeInteger(item) && Number(item) >= 0) ||
     !Array.isArray(value.messages) ||
     !value.messages.every(isChatMessage) ||
     !Array.isArray(value.filesRead) ||
@@ -886,23 +889,19 @@ export function deserializeSessionState(value: unknown): SessionState {
     !Array.isArray(value.commands) ||
     (value.taskGraph !== undefined && !isTaskGraph(value.taskGraph)) ||
     (value.planReview !== undefined && !isPlanReviewState(value.planReview)) ||
-    (value.pendingSteering !== undefined &&
-      (!Array.isArray(value.pendingSteering) ||
-        !value.pendingSteering.every(isTurnSteeringEntry))) ||
-    (value.steeringSequence !== undefined &&
-      (!Number.isSafeInteger(value.steeringSequence) ||
-        Number(value.steeringSequence) < 0)) ||
-    (value.steeringWatermark !== undefined &&
-      (!Number.isSafeInteger(value.steeringWatermark) ||
-        Number(value.steeringWatermark) < 0)) ||
+    !Array.isArray(value.pendingSteering) ||
+    !value.pendingSteering.every(isTurnSteeringEntry) ||
+    !Number.isSafeInteger(value.steeringSequence) ||
+    Number(value.steeringSequence) < 0 ||
+    !Number.isSafeInteger(value.steeringWatermark) ||
+    Number(value.steeringWatermark) < 0 ||
     (value.steeringSealedTurnId !== undefined &&
       (typeof value.steeringSealedTurnId !== "string" ||
         !/^[A-Za-z0-9._-]{1,256}$/u.test(value.steeringSealedTurnId))) ||
     typeof value.workingSummary !== "string" ||
-    (value.compactedMessageCount !== undefined &&
-      (!Number.isInteger(value.compactedMessageCount) ||
-        Number(value.compactedMessageCount) < 0 ||
-        Number(value.compactedMessageCount) > value.messages.length)) ||
+    !Number.isInteger(value.compactedMessageCount) ||
+    Number(value.compactedMessageCount) < 0 ||
+    Number(value.compactedMessageCount) > value.messages.length ||
     (value.contextIntentLedger !== undefined &&
       !isContextIntentLedger(value.contextIntentLedger)) ||
     (value.contextCompactionMetadata !== undefined &&
@@ -934,23 +933,15 @@ export function deserializeSessionState(value: unknown): SessionState {
 
   let commandApprovalPrefixes: string[];
   try {
-    // Checkpoints predating reusable per-Thread approvals omitted this field.
-    commandApprovalPrefixes = value.commandApprovalPrefixes === undefined
-      ? []
-      : validateCommandApprovalPrefixes(value.commandApprovalPrefixes);
+    if (!Array.isArray(value.commandApprovalPrefixes)) throw new Error("missing");
+    commandApprovalPrefixes = validateCommandApprovalPrefixes(value.commandApprovalPrefixes);
   } catch {
     throw new Error("Invalid command approval prefixes in serialized session state");
   }
 
-  const steeringSequence = typeof value.steeringSequence === "number"
-    ? value.steeringSequence
-    : 0;
-  const steeringWatermark = typeof value.steeringWatermark === "number"
-    ? value.steeringWatermark
-    : 0;
-  const pendingSteering = value.pendingSteering === undefined
-    ? []
-    : (value.pendingSteering as TurnSteeringEntry[]).map((entry) => ({
+  const steeringSequence = value.steeringSequence as number;
+  const steeringWatermark = value.steeringWatermark as number;
+  const pendingSteering = (value.pendingSteering as TurnSteeringEntry[]).map((entry) => ({
         ...entry,
         message: deserializeChatMessage(serializeChatMessage(entry.message)) as Extract<
           ChatMessage,
@@ -972,6 +963,13 @@ export function deserializeSessionState(value: unknown): SessionState {
   }
 
   const messages = deserializeChatMessages(JSON.stringify(value.messages));
+  const userMessageIndices = [...new Set(value.userMessageIndices as number[])];
+  if (
+    userMessageIndices.length !== value.userMessageIndices.length ||
+    userMessageIndices.some((messageIndex) => messages[messageIndex]?.role !== "user")
+  ) {
+    throw new Error("Invalid user requirement provenance in serialized session state");
+  }
   const compactionMetadata = isContextCompactionMetadata(
     value.contextCompactionMetadata,
   )
@@ -987,28 +985,23 @@ export function deserializeSessionState(value: unknown): SessionState {
   }
 
   return {
+    reviewSessions: [],
+    compactionControl: { phaseEnds: [] },
+    progressGuard: createProgressGuardState(),
     threadId: value.threadId,
-    ...(typeof value.orchestrationEnabled === "boolean" ? { orchestrationEnabled: value.orchestrationEnabled } : {}),
+    orchestrationEnabled: value.orchestrationEnabled as boolean,
     activeTurnId:
       typeof value.activeTurnId === "string" ? value.activeTurnId : undefined,
     mode: value.mode as SessionState["mode"],
     provider: value.provider as SessionState["provider"],
     model: value.model,
-    // Checkpoints written before thinking-effort selection was introduced do
-    // not contain this field, so upgrade them to the configured product default.
-    thinkingEffort:
-      value.thinkingEffort === undefined
-        ? DEFAULT_THINKING_EFFORT
-        : value.thinkingEffort as ThinkingEffort,
+    thinkingEffort: value.thinkingEffort as ThinkingEffort,
     workspaceRoot: value.workspaceRoot,
-    ...(isPromptBundleBinding(value.promptBundle)
-      ? { promptBundle: { ...value.promptBundle } }
-      : {}),
-    ...(typeof value.modelRegistryHash === "string"
-      ? { modelRegistryHash: value.modelRegistryHash }
-      : {}),
+    promptBundle: { ...value.promptBundle },
+    modelRegistryHash: value.modelRegistryHash,
     goal: typeof value.goal === "string" ? value.goal : undefined,
     constraints: [...value.constraints] as string[],
+    userMessageIndices,
     messages,
     filesRead,
     changes: (value.changes as unknown as FileChangeRecord[]).map((item) => ({
@@ -1031,13 +1024,8 @@ export function deserializeSessionState(value: unknown): SessionState {
     ...(typeof value.steeringSealedTurnId === "string"
       ? { steeringSealedTurnId: value.steeringSealedTurnId }
       : {}),
-    // Checkpoints created before model-controlled compaction used workingSummary as a
-    // transient overflow cache and had no boundary. Dropping that derived value avoids
-    // injecting it alongside the same full message history after an upgrade.
-    workingSummary:
-      typeof value.compactedMessageCount === "number" ? value.workingSummary : "",
-    compactedMessageCount:
-      typeof value.compactedMessageCount === "number" ? value.compactedMessageCount : 0,
+    workingSummary: value.workingSummary,
+    compactedMessageCount: value.compactedMessageCount as number,
     ...(isContextIntentLedger(value.contextIntentLedger)
       ? {
           contextIntentLedger: cloneContextIntentLedger(

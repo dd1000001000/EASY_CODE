@@ -40,7 +40,7 @@ export interface BuildSystemPromptOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   env?: NodeJS.ProcessEnv;
-  /** Tools exposed for this model request. Omit to retain the legacy all-tools prompt. */
+  /** Tools exposed for this model request. Omit to use the complete current catalog. */
   availableTools?: readonly ToolName[];
   commandExecutionMode?: CommandExecutionMode;
 }

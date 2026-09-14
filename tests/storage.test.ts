@@ -66,7 +66,7 @@ async function waitForOutput(
 }
 
 describe("storage", () => {
-  it("creates and migrates SQLite with the required safety pragmas", () => {
+  it("creates the current SQLite baseline with the required safety pragmas", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -107,15 +107,16 @@ describe("storage", () => {
       const reopened = createStorage(dataDir);
       try {
         assert.equal(reopened.databasePath, reopenedPath);
-        assert.equal(
-          reopened.db
-            .prepare<[], { count: number }>(
-              "SELECT COUNT(*) AS count FROM schema_migrations",
-            )
-            .get()?.count,
-            9,
-        );
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 9);
+        const identity = reopened.db
+          .prepare<[], { schema_version: number; schema_id: string }>(
+            "SELECT schema_version, schema_id FROM easy_code_schema",
+          )
+          .get();
+        assert.deepEqual(identity, {
+          schema_version: 1,
+          schema_id: "easy-code-0.1.0-baseline",
+        });
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 1);
       } finally {
         reopened.close();
       }
@@ -482,12 +483,12 @@ describe("storage", () => {
     const dataDir = temporaryDataDir();
     try {
       const journal = new EventJournal(dataDir, "thread_journal");
-      assert.equal(journal.append({ type: "one", payload: { value: 1 } }).sequence, 1);
-      assert.equal(journal.append({ type: "two", payload: { value: 2 } }).sequence, 2);
+      assert.equal(journal.append({ type: "reasoning", payload: { value: 1 } }).sequence, 1);
+      assert.equal(journal.append({ type: "message.recorded", payload: { value: 2 } }).sequence, 2);
       appendFileSync(journal.filePath, '{"schemaVersion":1,"broken":', "utf8");
 
-      assert.deepEqual(journal.read().map((event) => event.type), ["one", "two"]);
-      const third = journal.append({ type: "three", payload: null });
+      assert.deepEqual(journal.read().map((event) => event.type), ["reasoning", "message.recorded"]);
+      const third = journal.append({ type: "tool.call", payload: null });
       assert.equal(third.sequence, 3);
       assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
       assert.equal(journal.readAfter(1).length, 2);
@@ -501,7 +502,7 @@ describe("storage", () => {
     try {
       const journal = new EventJournal(dataDir, "thread_journal_cache");
       journal.append({
-        type: "one",
+        type: "reasoning",
         eventId: "event_cache_one",
         payload: { value: 1 },
       });
@@ -515,22 +516,22 @@ describe("storage", () => {
       );
 
       appendFileSync(journal.filePath, `${JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         eventId: "event_cache_external",
         threadId: "thread_journal_cache",
         sequence: 2,
         timestamp: "2026-09-06T12:00:00.000Z",
-        type: "external",
+        type: "tool.result",
         payload: { value: 2 },
       })}\n`, "utf8");
-      assert.deepEqual(journal.read().map((event) => event.type), ["one", "external"]);
+      assert.deepEqual(journal.read().map((event) => event.type), ["reasoning", "tool.result"]);
       assert.notStrictEqual(
         (journal as unknown as { cachedScan?: unknown }).cachedScan,
         firstCache,
       );
       assert.throws(
         () => journal.append({
-          type: "duplicate",
+          type: "tool.call",
           eventId: "event_cache_external",
           payload: null,
         }),
@@ -538,7 +539,7 @@ describe("storage", () => {
       );
 
       appendFileSync(journal.filePath, '{"schemaVersion":1,"broken":', "utf8");
-      const local = journal.append({ type: "local", payload: { value: 3 } });
+      const local = journal.append({ type: "message.recorded", payload: { value: 3 } });
       assert.equal(local.sequence, 3);
       assert.deepEqual(journal.read().map((event) => event.sequence), [1, 2, 3]);
     } finally {
@@ -573,7 +574,7 @@ describe("storage", () => {
       "const threads = new ThreadStore(storage);",
       "for (let index = 0; index < Number(process.argv[6]); index += 1) {",
       "  threads.appendEvent(process.argv[4], {",
-      "    type: 'concurrent_probe',",
+      "    type: 'reasoning',",
       "    payload: { worker: process.argv[5], index },",
       "  });",
       "}",
@@ -881,13 +882,13 @@ describe("storage", () => {
       assert.equal(recovered.thinkingEffort, "high");
       assert.equal(recovered.workingSummary, "verified summary");
       assert.equal(recovered.compactedMessageCount, 2);
-      const legacyCheckpoint = serializeSessionState(recovered) as unknown as Record<string, unknown>;
-      delete legacyCheckpoint.compactedMessageCount;
-      delete legacyCheckpoint.thinkingEffort;
-      const migratedLegacyCheckpoint = deserializeSessionState(legacyCheckpoint);
-      assert.equal(migratedLegacyCheckpoint.compactedMessageCount, 0);
-      assert.equal(migratedLegacyCheckpoint.workingSummary, "");
-      assert.equal(migratedLegacyCheckpoint.thinkingEffort, "medium");
+      const unsupportedCheckpoint = serializeSessionState(recovered) as unknown as Record<string, unknown>;
+      delete unsupportedCheckpoint.compactedMessageCount;
+      delete unsupportedCheckpoint.thinkingEffort;
+      assert.throws(
+        () => deserializeSessionState(unsupportedCheckpoint),
+        /Invalid serialized session state shape/u,
+      );
       assert.equal(recovered.filesRead.get("src/a.ts")?.hash, "abc");
       assert.deepEqual(recovered.messages.slice(-2), [
         { role: "user", content: "continue" },
@@ -1041,16 +1042,6 @@ describe("storage", () => {
         },
       });
       threads.appendEvent("thread_bounded_tool", {
-        type: "context.compacted",
-        turnId,
-        phase: "completed",
-        payload: {
-          summary: "Objective: finish after restoring this compacted thread.",
-          compactedMessageCount: 3,
-          summaryChars: 55,
-        },
-      });
-      threads.appendEvent("thread_bounded_tool", {
         type: "message.assistant",
         turnId,
         payload: { role: "assistant", content: "done" },
@@ -1063,11 +1054,8 @@ describe("storage", () => {
 
       const recovered = threads.recover("thread_bounded_tool");
       assert.deepEqual(recovered.messages[2], boundedToolMessage);
-      assert.equal(
-        recovered.workingSummary,
-        "Objective: finish after restoring this compacted thread.",
-      );
-      assert.equal(recovered.compactedMessageCount, 3);
+      assert.equal(recovered.workingSummary, "");
+      assert.equal(recovered.compactedMessageCount, 0);
       assert.equal(recovered.activeTurnId, undefined);
       assert.equal(
         storage.db
@@ -1214,7 +1202,7 @@ describe("storage", () => {
       threads.save(state);
 
       const checkpoints = threads.journal(state.threadId).read().filter(
-        (event) => event.type === "thread_checkpoint_delta",
+        (event) => event.type === "thread.checkpoint.updated",
       );
       assert.equal(checkpoints.length, 2);
       assert.deepEqual(
@@ -1343,15 +1331,9 @@ describe("storage", () => {
       threads.save(state);
 
       const checkpoints = threads.journal(state.threadId).read().filter(
-        (event) => event.type === "thread_checkpoint_delta",
+        (event) => event.type === "thread.checkpoint.updated",
       );
       assert.equal(checkpoints.length, 2);
-      assert.equal(
-        threads.journal(state.threadId).read().some(
-          (event) => event.type === "thread_checkpoint",
-        ),
-        false,
-      );
       const firstPayload = checkpoints[0]?.payload as Record<string, unknown>;
       const secondPayload = checkpoints[1]?.payload as Record<string, unknown>;
       assert.equal("state" in firstPayload, false);
@@ -1397,81 +1379,7 @@ describe("storage", () => {
     }
   });
 
-  it("replays a legacy full checkpoint, an incremental checkpoint, and later events", () => {
-    const dataDir = temporaryDataDir();
-    const storage = createStorage(dataDir);
-    try {
-      const threads = new ThreadStore(storage);
-      const initial = threads.create({
-        threadId: "thread_mixed_checkpoints",
-        workspaceRoot: path.join(dataDir, "workspace"),
-        mode: "auto",
-        provider: "deepseek",
-        model: "deepseek-v4-pro",
-        messages: [{ role: "user", content: "created history" }],
-      });
-      initial.messages.push({ role: "assistant", content: "legacy checkpoint history" });
-      initial.filesRead.set("legacy.ts", {
-        path: "legacy.ts",
-        hash: "legacy-hash",
-        readAt: "2026-09-06T11:00:00.000Z",
-      });
-      threads.journal(initial.threadId).append({
-        type: "thread_checkpoint",
-        payload: { state: serializeSessionState(initial) },
-      });
-
-      const incremental = threads.recover(initial.threadId);
-      incremental.mode = "code";
-      incremental.messages.push({ role: "user", content: "delta history" });
-      incremental.filesRead.delete("legacy.ts");
-      incremental.changes.push({
-        path: "delta.ts",
-        operation: "create",
-        afterHash: "delta-hash",
-        source: "file_tool",
-        status: "applied",
-        timestamp: "2026-09-06T11:00:01.000Z",
-      });
-      threads.save(incremental);
-      threads.appendEvent(initial.threadId, {
-        type: "message.assistant",
-        turnId: "turn_after_delta",
-        phase: "completed",
-        payload: { role: "assistant", content: "later journal event" },
-      });
-
-      const events = threads.journal(initial.threadId).read();
-      assert.deepEqual(events.map((event) => event.type), [
-        "thread_created",
-        "thread_checkpoint",
-        "thread_checkpoint_delta",
-        "message.assistant",
-      ]);
-      assert.equal(
-        (events[2]?.payload as { baseSequence?: number }).baseSequence,
-        events[1]?.sequence,
-      );
-      const recovered = threads.recover(initial.threadId);
-      assert.deepEqual(
-        recovered.messages.map((message) => message.content),
-        [
-          "created history",
-          "legacy checkpoint history",
-          "delta history",
-          "later journal event",
-        ],
-      );
-      assert.equal(recovered.mode, "code");
-      assert.equal(recovered.filesRead.size, 0);
-      assert.equal(recovered.changes[0]?.path, "delta.ts");
-    } finally {
-      storage.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects oversized or sequence-detached incremental checkpoints", () => {
+  it("rejects oversized or sequence-detached current checkpoints", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -1501,8 +1409,8 @@ describe("storage", () => {
         model: "qwen3.7-max",
       });
       threads.journal(detached.threadId).append({
-        type: "thread_checkpoint_delta",
-        payload: { formatVersion: 1, baseSequence: 2 },
+        type: "thread.checkpoint.updated",
+        payload: { formatVersion: 2, baseSequence: 2 },
       });
       assert.throws(
         () => threads.recover(detached.threadId),

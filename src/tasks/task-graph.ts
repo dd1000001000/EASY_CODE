@@ -110,6 +110,9 @@ export const taskGraphOperationSchema = z.discriminatedUnion("action", [
       action: z.literal("block"),
       taskId: taskIdSchema,
       reason: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
+      kind: z.enum(["dependency", "user_input", "environment", "review", "implementation"]).optional(),
+      recoverable: z.boolean().optional(),
+      evidenceRefs: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).max(MAX_TASK_LIST_ITEMS).optional(),
     })
     .strict(),
   z.object({ action: z.literal("resume"), taskId: taskIdSchema }).strict(),
@@ -149,7 +152,6 @@ export const subagentTaskOperationSchema = z.discriminatedUnion("action", [
 ]);
 
 export type SubagentTaskOperation = z.infer<typeof subagentTaskOperationSchema>;
-export type SubagentTaskTransitionOperation = SubagentTaskOperation;
 
 export interface TaskGraphTransitionOptions {
   readonly turnId: string;
@@ -163,6 +165,13 @@ const completionEvidenceSchema = z
     evidence: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
   })
   .strict();
+
+const taskBlockerSchema = z.object({
+  kind: z.enum(["dependency", "user_input", "environment", "review", "implementation"]),
+  reason: boundedTaskText(MAX_TASK_EVIDENCE_CHARS),
+  recoverable: z.boolean(),
+  evidenceRefs: z.array(boundedTaskText(MAX_TASK_EVIDENCE_CHARS)).max(MAX_TASK_LIST_ITEMS),
+}).strict();
 
 const persistedTaskNodeSchema = z
   .object({
@@ -179,7 +188,7 @@ const persistedTaskNodeSchema = z
     status: z.enum(["pending", "in_progress", "completed", "blocked"]),
     completionEvidence: z.array(completionEvidenceSchema).optional(),
     resultArtifact: resultArtifactRefSchema.optional(),
-    blocker: boundedTaskText(MAX_TASK_EVIDENCE_CHARS).optional(),
+    blockerDetails: taskBlockerSchema.optional(),
     startedAt: z.string().datetime().optional(),
     completedAt: z.string().datetime().optional(),
   })
@@ -189,7 +198,7 @@ const persistedTaskGraphSchema = z
   .object({
     id: z.string().regex(GRAPH_ID_PATTERN),
     goal: boundedTaskText(),
-    status: z.enum(["active", "completed", "blocked"]),
+    status: z.enum(["active", "waiting_input", "completed", "terminal_blocked"]),
     createdByTurnId: z.string().trim().min(1).max(128),
     updatedByTurnId: z.string().trim().min(1).max(128),
     tasks: z.array(persistedTaskNodeSchema).min(1).max(MAX_TASK_GRAPH_NODES),
@@ -227,9 +236,18 @@ function taskById(graph: TaskGraph, taskId: string): TaskNode {
   return task;
 }
 
+function blockerRecoverable(task: Readonly<TaskNode>): boolean {
+  return task.blockerDetails?.recoverable !== false;
+}
+
 function derivedGraphStatus(tasks: readonly Readonly<TaskNode>[]): TaskGraphStatus {
   if (tasks.every((task) => task.status === "completed")) return "completed";
-  return tasks.some((task) => task.status === "blocked") ? "blocked" : "active";
+  const byId = new Map(tasks.map(task => [task.id, task]));
+  const runnable = tasks.some(task => task.status === "in_progress" || task.status === "pending" &&
+    task.dependencies.every(id => byId.get(id)?.status === "completed"));
+  if (runnable) return "active";
+  const blockers = tasks.filter(task => task.status === "blocked");
+  return blockers.some(blockerRecoverable) ? "waiting_input" : "terminal_blocked";
 }
 
 function assertMainOwnedTask(task: Readonly<TaskNode>): void {
@@ -303,16 +321,11 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
   assertAcyclicTasks(graph.tasks);
   const byId = new Map(graph.tasks.map((task) => [task.id, task]));
   const inProgress = graph.tasks.filter((task) => task.status === "in_progress");
-  const blocked = graph.tasks.filter((task) => task.status === "blocked");
   const mainInProgress = graph.tasks.filter(
     (task) => task.status === "in_progress" && task.owner === "main_agent",
   );
   if (mainInProgress.length > 1) {
     throw new Error("Only one main-agent task may be in progress");
-  }
-  if (blocked.length > 1) throw new Error("Only one task may be blocked");
-  if (inProgress.length && blocked.length) {
-    throw new Error("A task graph cannot be blocked and in progress at the same time");
   }
   const assignedAgents = new Set<string>();
 
@@ -347,7 +360,10 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
           `${MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS} total characters`,
       );
     }
-    if (task.blocker) assertSafeText(task.blocker);
+    if (task.blockerDetails) {
+      assertSafeText(task.blockerDetails.reason);
+      for (const reference of task.blockerDetails.evidenceRefs) assertSafeText(reference);
+    }
     if (task.resultArtifact) {
       if (task.status !== "completed") {
         throw new Error(`Only completed task ${task.id} may contain a result artifact`);
@@ -411,10 +427,10 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
     } else if (task.completedAt || task.completionEvidence) {
       throw new Error(`Incomplete task ${task.id} cannot contain completion evidence`);
     }
-    if (task.status === "blocked" && !task.blocker) {
+    if (task.status === "blocked" && !task.blockerDetails) {
       throw new Error(`Blocked task ${task.id} must include a blocker`);
     }
-    if (task.status !== "blocked" && task.blocker) {
+    if (task.status !== "blocked" && task.blockerDetails) {
       throw new Error(`Only blocked tasks may include a blocker`);
     }
   }
@@ -450,6 +466,9 @@ export function cloneTaskGraph(graph: Readonly<TaskGraph>): TaskGraph {
         : {}),
       ...(task.resultArtifact
         ? { resultArtifact: cloneResultArtifact(task.resultArtifact) }
+        : {}),
+      ...(task.blockerDetails
+        ? { blockerDetails: { ...task.blockerDetails, evidenceRefs: [...task.blockerDetails.evidenceRefs] } }
         : {}),
     })),
   };
@@ -543,7 +562,8 @@ export function applyTaskGraphOperation(
     }
     assertSafeText(operation.reason);
     task.status = "blocked";
-    task.blocker = operation.reason;
+    task.blockerDetails = { kind: operation.kind ?? "implementation", reason: operation.reason,
+      recoverable: operation.recoverable ?? true, evidenceRefs: [...(operation.evidenceRefs ?? [])] };
     graph.status = derivedGraphStatus(graph.tasks);
   } else {
     assertMainOwnedTask(task);
@@ -551,7 +571,7 @@ export function applyTaskGraphOperation(
       throw new Error(`Task ${task.id} is not the blocked task`);
     }
     task.status = "pending";
-    delete task.blocker;
+    delete task.blockerDetails;
     graph.status = derivedGraphStatus(graph.tasks);
   }
 
@@ -567,7 +587,7 @@ export function applyTaskGraphOperation(
  */
 export function applySubagentTaskOperation(
   current: Readonly<TaskGraph> | undefined,
-  operation: SubagentTaskTransitionOperation,
+  operation: SubagentTaskOperation,
   options: TaskGraphTransitionOptions,
 ): TaskGraph {
   if (!current) throw new Error("No task DAG exists in this thread");
@@ -668,7 +688,7 @@ export function validateTaskGraphTransition(
 /** Validate a persisted Runtime-only subagent transition against prior state. */
 export function validateSubagentTaskTransition(
   current: Readonly<TaskGraph> | undefined,
-  operation: SubagentTaskTransitionOperation,
+  operation: SubagentTaskOperation,
   snapshot: unknown,
   turnId: string,
 ): TaskGraph {
@@ -735,7 +755,7 @@ export function taskGraphView(graph: Readonly<TaskGraph>): TaskGraphView {
       ...(task.completionEvidence
         ? { completionEvidence: task.completionEvidence.map((item) => ({ ...item })) }
         : {}),
-      ...(task.blocker ? { blocker: task.blocker } : {}),
+      ...(task.blockerDetails ? { blocker: task.blockerDetails.reason } : {}),
     };
   });
   return {

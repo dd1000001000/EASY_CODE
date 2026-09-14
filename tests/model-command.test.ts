@@ -1177,12 +1177,17 @@ describe("thread leases", () => {
       const canonicalWorkspace = (
         fixture.app as unknown as { workspace: { root: string } }
       ).workspace.root;
+      const currentBinding = (
+        fixture.app as unknown as { state: SessionState }
+      ).state;
       const target = threads.create({
         threadId: "thread_app_lease_target",
         workspaceRoot: canonicalWorkspace,
         mode: "auto",
         provider: "qwen",
         model: "qwen3.7-plus",
+        promptBundle: currentBinding.promptBundle,
+        modelRegistryHash: currentBinding.modelRegistryHash,
       });
       threads.startTurn(target.threadId, "unfinished request", "turn_unfinished");
       const blocker = threads.acquireThreadLease(target.threadId);

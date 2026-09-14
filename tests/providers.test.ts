@@ -9,8 +9,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
-  DEFAULT_BASE_MAX_CONTEXT_CHARS,
-  DEFAULT_BASE_MAX_STEPS,
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
   DEFAULT_GLM_BASE_URL,
@@ -19,12 +17,15 @@ import {
   DEFAULT_GLM_MODEL,
   DEFAULT_KIMI_BASE_URL,
   DEFAULT_KIMI_MODEL,
-  DEFAULT_PROVIDER_TIMEOUT_MS,
   DEFAULT_QWEN_BASE_URL,
   DEFAULT_QWEN_MODEL,
   createDefaultEasyCodeConfig,
   loadEasyCodeConfig,
 } from "../src/config/index.js";
+import {
+  DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
+  DEFAULT_BASE_STEP_LIMIT,
+} from "../src/models/thinking.js";
 import type { ToolDefinition } from "../src/core/types.js";
 import {
   HttpTransportError,
@@ -48,37 +49,33 @@ describe("configuration", () => {
         path.join(configDir, "config.toml"),
         `provider = "deepseek"
 mode = "plan"
+subagent_isolation = "shared"
+worktree_base_mode = "head"
+worktree_root = "${path.join(temporary, "user-worktrees").replace(/\\/gu, "\\\\")}"
 
 [limits]
-maxContextChars = 410000
-maxManagedWorktrees = 11
+max_context_chars = 410000
+max_managed_worktrees = 11
 [limits.steps]
 none = 12
 
-[subagents]
-isolation = "shared"
-
-[worktrees]
-base_mode = "head"
-root = "${path.join(temporary, "user-worktrees").replace(/\\/gu, "\\\\")}"
-
-[qwen]
+[providers.qwen]
 model = "user-qwen"
 base_url = "https://user-qwen.example/v1/"
 timeout_ms = 31000
 
-[deepseek]
+[providers.deepseek]
 model = "user-deepseek"
 
-[kimi]
+[providers.kimi]
 model = "user-kimi"
 base_url = "https://user-kimi.example/coding/v1/"
 
-[glm]
+[providers.glm]
 model = "user-glm"
 base_url = "https://user-glm.example/v4/"
 
-[glm-coding-plan]
+[providers.glm-coding-plan]
 model = "user-glm-coding-plan"
 base_url = "https://user-glm-coding-plan.example/v4/"
 `,
@@ -87,19 +84,15 @@ base_url = "https://user-glm-coding-plan.example/v4/"
       await writeFile(
         path.join(workspace, ".easycode", "config.toml"),
         `mode = "code"
+subagent_isolation = "auto"
+worktree_base_mode = "current-snapshot"
 [limits]
-maxContextChars = 420000
-maxManagedWorktrees = 17
+max_context_chars = 420000
+max_managed_worktrees = 17
 [limits.steps]
 none = 18
 
-[subagents]
-isolation = "auto"
-
-[worktrees]
-base_mode = "current-snapshot"
-
-[qwen]
+[providers.qwen]
 model = "workspace-qwen"
 timeout_ms = 41000
 `,
@@ -118,7 +111,7 @@ timeout_ms = 41000
           EASY_CODE_SUBAGENT_ISOLATION: "worktree",
           EASY_CODE_WORKTREE_BASE_MODE: "fresh",
           EASY_CODE_WORKTREE_ROOT: path.join(temporary, "environment-worktrees"),
-          QWEN_TIMEOUT_MS: "51000",
+          EASY_CODE_QWEN_TIMEOUT_MS: "51000",
           QWEN_API_KEY: "qwen-env-key",
           DASHSCOPE_API_KEY: "fallback-key",
           DEEPSEEK_API_KEY: "deepseek-env-key",
@@ -139,28 +132,28 @@ timeout_ms = 41000
       assert.equal(config.worktreeBaseMode, "fresh");
       assert.equal(config.worktreeRoot, path.join(temporary, "environment-worktrees"));
       assert.equal(config.limits.maxManagedWorktrees, 23);
-      assert.equal(config.qwen.apiKey, "qwen-env-key");
-      assert.equal(config.qwen.model, "workspace-qwen");
-      assert.equal(config.qwen.baseUrl, "https://user-qwen.example/v1");
-      assert.equal(config.qwen.timeoutMs, 51_000);
-      assert.equal(config.deepseek.model, "user-deepseek");
-      assert.equal(config.deepseek.apiKey, "deepseek-env-key");
-      assert.equal(config.kimi.model, "user-kimi");
-      assert.equal(config.kimi.baseUrl, "https://user-kimi.example/coding/v1");
-      assert.equal(config.kimi.apiKey, "kimi-env-key");
-      assert.equal(config.glm.model, "user-glm");
-      assert.equal(config.glm.baseUrl, "https://user-glm.example/v4");
-      assert.equal(config.glm.apiKey, "glm-env-key");
-      assert.equal(config["glm-coding-plan"].model, "user-glm-coding-plan");
+      assert.equal(config.providers.qwen!.apiKey, "qwen-env-key");
+      assert.equal(config.providers.qwen!.model, "workspace-qwen");
+      assert.equal(config.providers.qwen!.baseUrl, "https://user-qwen.example/v1");
+      assert.equal(config.providers.qwen!.timeoutMs, 51_000);
+      assert.equal(config.providers.deepseek!.model, "user-deepseek");
+      assert.equal(config.providers.deepseek!.apiKey, "deepseek-env-key");
+      assert.equal(config.providers.kimi!.model, "user-kimi");
+      assert.equal(config.providers.kimi!.baseUrl, "https://user-kimi.example/coding/v1");
+      assert.equal(config.providers.kimi!.apiKey, "kimi-env-key");
+      assert.equal(config.providers.glm!.model, "user-glm");
+      assert.equal(config.providers.glm!.baseUrl, "https://user-glm.example/v4");
+      assert.equal(config.providers.glm!.apiKey, "glm-env-key");
+      assert.equal(config.providers["glm-coding-plan"]!.model, "user-glm-coding-plan");
       assert.equal(
-        config["glm-coding-plan"].baseUrl,
+        config.providers["glm-coding-plan"]!.baseUrl,
         "https://user-glm-coding-plan.example/v4",
       );
       assert.equal(
-        config["glm-coding-plan"].apiKey,
+        config.providers["glm-coding-plan"]!.apiKey,
         "glm-coding-plan-env-key",
       );
-      assert.notEqual(config.glm.apiKey, config["glm-coding-plan"].apiKey);
+      assert.notEqual(config.providers.glm!.apiKey, config.providers["glm-coding-plan"]!.apiKey);
       assert.equal(config.workspaceRoot, path.resolve(workspace));
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -183,36 +176,35 @@ timeout_ms = 41000
         },
         credentialStore: false,
       });
-      assert.equal(config.qwen.baseUrl, DEFAULT_QWEN_BASE_URL);
+      assert.equal(config.providers.qwen!.baseUrl, DEFAULT_QWEN_BASE_URL);
       assert.equal(config.thinkingEffort, "medium");
-      assert.equal(config.limits.steps.none, DEFAULT_BASE_MAX_STEPS);
-      assert.equal(config.limits.maxContextChars, DEFAULT_BASE_MAX_CONTEXT_CHARS);
+      assert.equal(config.limits.steps.none, DEFAULT_BASE_STEP_LIMIT);
+      assert.equal(config.limits.maxContextChars, DEFAULT_BASE_CONTEXT_CHAR_LIMIT);
       assert.equal(config.subagentIsolation, "auto");
       assert.equal(config.worktreeBaseMode, "current-snapshot");
       assert.equal(config.worktreeRoot, path.join(temporary, "data", "worktrees"));
       assert.equal(config.limits.maxManagedWorktrees, 15);
-      assert.equal(config.qwen.model, DEFAULT_QWEN_MODEL);
-      assert.equal(DEFAULT_PROVIDER_TIMEOUT_MS, 300_000);
-      assert.equal(config.qwen.timeoutMs, undefined);
-      assert.equal(config.qwen.apiKey, "dashscope-key");
-      assert.equal(config.deepseek.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
-      assert.equal(config.deepseek.model, DEFAULT_DEEPSEEK_MODEL);
-      assert.equal(config.kimi.baseUrl, DEFAULT_KIMI_BASE_URL);
-      assert.equal(config.kimi.model, DEFAULT_KIMI_MODEL);
-      assert.equal(config.kimi.apiKey, "kimi-key");
-      assert.equal(config.glm.baseUrl, DEFAULT_GLM_BASE_URL);
-      assert.equal(config.glm.model, DEFAULT_GLM_MODEL);
-      assert.equal(config.glm.apiKey, "glm-alias-key");
+      assert.equal(config.providers.qwen!.model, DEFAULT_QWEN_MODEL);
+      assert.equal(config.providers.qwen!.timeoutMs, undefined);
+      assert.equal(config.providers.qwen!.apiKey, "dashscope-key");
+      assert.equal(config.providers.deepseek!.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
+      assert.equal(config.providers.deepseek!.model, DEFAULT_DEEPSEEK_MODEL);
+      assert.equal(config.providers.kimi!.baseUrl, DEFAULT_KIMI_BASE_URL);
+      assert.equal(config.providers.kimi!.model, DEFAULT_KIMI_MODEL);
+      assert.equal(config.providers.kimi!.apiKey, "kimi-key");
+      assert.equal(config.providers.glm!.baseUrl, DEFAULT_GLM_BASE_URL);
+      assert.equal(config.providers.glm!.model, DEFAULT_GLM_MODEL);
+      assert.equal(config.providers.glm!.apiKey, "glm-alias-key");
       assert.equal(
-        config["glm-coding-plan"].baseUrl,
+        config.providers["glm-coding-plan"]!.baseUrl,
         DEFAULT_GLM_CODING_PLAN_BASE_URL,
       );
-      assert.equal(config["glm-coding-plan"].model, DEFAULT_GLM_CODING_PLAN_MODEL);
+      assert.equal(config.providers["glm-coding-plan"]!.model, DEFAULT_GLM_CODING_PLAN_MODEL);
       assert.equal(
-        config["glm-coding-plan"].apiKey,
+        config.providers["glm-coding-plan"]!.apiKey,
         "glm-coding-plan-key",
       );
-      assert.notEqual(config.glm.apiKey, config["glm-coding-plan"].apiKey);
+      assert.notEqual(config.providers.glm!.apiKey, config.providers["glm-coding-plan"]!.apiKey);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
@@ -229,8 +221,8 @@ timeout_ms = 41000
         env: { ZAI_API_KEY: "standard-only-key" },
         credentialStore: false,
       });
-      assert.equal(standardOnly.glm.apiKey, "standard-only-key");
-      assert.equal(standardOnly["glm-coding-plan"].apiKey, undefined);
+      assert.equal(standardOnly.providers.glm!.apiKey, "standard-only-key");
+      assert.equal(standardOnly.providers["glm-coding-plan"]!.apiKey, undefined);
 
       const codingPlanOnly = await loadEasyCodeConfig({
         workspaceRoot: temporary,
@@ -240,9 +232,9 @@ timeout_ms = 41000
         env: { GLM_CODING_PLAN_API_KEY: "coding-plan-only-key" },
         credentialStore: false,
       });
-      assert.equal(codingPlanOnly.glm.apiKey, undefined);
+      assert.equal(codingPlanOnly.providers.glm!.apiKey, undefined);
       assert.equal(
-        codingPlanOnly["glm-coding-plan"].apiKey,
+        codingPlanOnly.providers["glm-coding-plan"]!.apiKey,
         "coding-plan-only-key",
       );
     } finally {
@@ -259,22 +251,22 @@ timeout_ms = 41000
         dataDir: path.join(temporary, "data"),
         cacheDir: path.join(temporary, "cache"),
         env: {
-          GLM_BASE_URL: "https://standard.example/v4",
-          GLM_MODEL: "glm-5.2",
-          GLM_TIMEOUT_MS: "11111",
-          GLM_MAX_RETRIES: "9",
+          EASY_CODE_GLM_BASE_URL: "https://standard.example/v4",
+          EASY_CODE_GLM_MODEL: "glm-5.2",
+          EASY_CODE_GLM_TIMEOUT_MS: "11111",
+          EASY_CODE_GLM_MAX_RETRIES: "9",
           GLM_CODING_PLAN_API_KEY: "plan-key",
         },
         credentialStore: false,
       });
-      assert.equal(config.glm.baseUrl, "https://standard.example/v4");
-      assert.equal(config.glm.model, "glm-5.2");
-      assert.equal(config.glm.timeoutMs, 11_111);
-      assert.equal(config.glm.maxRetries, 9);
-      assert.equal(config["glm-coding-plan"].baseUrl, DEFAULT_GLM_CODING_PLAN_BASE_URL);
-      assert.equal(config["glm-coding-plan"].model, DEFAULT_GLM_CODING_PLAN_MODEL);
-      assert.equal(config["glm-coding-plan"].timeoutMs, undefined);
-      assert.equal(config["glm-coding-plan"].maxRetries, config.limits.maxProviderRetries);
+      assert.equal(config.providers.glm!.baseUrl, "https://standard.example/v4");
+      assert.equal(config.providers.glm!.model, "glm-5.2");
+      assert.equal(config.providers.glm!.timeoutMs, 11_111);
+      assert.equal(config.providers.glm!.maxRetries, 9);
+      assert.equal(config.providers["glm-coding-plan"]!.baseUrl, DEFAULT_GLM_CODING_PLAN_BASE_URL);
+      assert.equal(config.providers["glm-coding-plan"]!.model, DEFAULT_GLM_CODING_PLAN_MODEL);
+      assert.equal(config.providers["glm-coding-plan"]!.timeoutMs, undefined);
+      assert.equal(config.providers["glm-coding-plan"]!.maxRetries, config.limits.maxProviderRetries);
       assert.equal(config.limits.maxProviderRetries, 5);
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -318,7 +310,7 @@ timeout_ms = 41000
       await mkdir(workspaceConfigDir, { recursive: true });
       await writeFile(
         path.join(workspaceConfigDir, "config.toml"),
-        `[glm]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
+        `[providers.glm]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
         "utf8",
       );
       await assert.rejects(
@@ -349,7 +341,7 @@ timeout_ms = 41000
       await mkdir(workspaceConfigDir, { recursive: true });
       await writeFile(
         path.join(workspaceConfigDir, "config.toml"),
-        `[glm-coding-plan]\napi_key = "workspace-plan-secret"\nbase_url = "https://attacker.invalid/coding"`,
+        `[providers.glm-coding-plan]\napi_key = "workspace-plan-secret"\nbase_url = "https://attacker.invalid/coding"`,
         "utf8",
       );
       await assert.rejects(
@@ -380,7 +372,7 @@ timeout_ms = 41000
 describe("OpenAI-compatible providers", () => {
   it("scales request timeouts with the selected thinking effort", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
+    config.providers.deepseek!.apiKey = "deepseek-key";
     const capturedTimeouts: number[] = [];
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async (request) => {
@@ -416,8 +408,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("preserves an explicit timeout as an exact override", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
-    config.deepseek.timeoutMs = 42_000;
+    config.providers.deepseek!.apiKey = "deepseek-key";
+    config.providers.deepseek!.timeoutMs = 42_000;
     const capturedTimeouts: number[] = [];
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async (request) => {
@@ -448,8 +440,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("reports the effective effort-based timeout in timeout errors", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
-    config.deepseek.maxRetries = 0;
+    config.providers.deepseek!.apiKey = "deepseek-key";
+    config.providers.deepseek!.maxRetries = 0;
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async () => {
         throw new HttpTransportError("timeout", "test timeout");
@@ -472,7 +464,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("sends and parses native Chat Completions tool_calls", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-qwen-key";
+    config.providers.qwen!.apiKey = "test-qwen-key";
     const captured: JsonPostRequest[] = [];
     const transport: JsonPostTransport = async (request) => {
       captured.push(request);
@@ -575,7 +567,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("round-trips all reasoning unchanged before provider serialization", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "test-deepseek-key";
+    config.providers.deepseek!.apiKey = "test-deepseek-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(config, "deepseek", undefined, {
       transport: async (request) => {
@@ -632,7 +624,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("rejects malformed negative provider token usage", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-qwen-key";
+    config.providers.qwen!.apiKey = "test-qwen-key";
     const provider = createProvider(config, "qwen", undefined, {
       transport: async () => ({
         statusCode: 200,
@@ -659,8 +651,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("normalizes DeepSeek top-level cache usage and nullable detail objects", async () => {
     const providerConfig = createDefaultEasyCodeConfig(process.cwd());
-    providerConfig.deepseek.apiKey = "test-deepseek-key";
-    providerConfig.deepseek.model = "deepseek-flash";
+    providerConfig.providers.deepseek!.apiKey = "test-deepseek-key";
+    providerConfig.providers.deepseek!.model = "deepseek-flash";
     const provider = createProvider(
       providerConfig,
       "deepseek",
@@ -693,7 +685,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("treats an empty provider usage object as unreported", async () => {
     const providerConfig = createDefaultEasyCodeConfig(process.cwd());
-    providerConfig.glm.apiKey = "test-glm-key";
+    providerConfig.providers.glm!.apiKey = "test-glm-key";
     const provider = createProvider(providerConfig, "glm", undefined, {
       transport: async () => ({
         statusCode: 200,
@@ -713,7 +705,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("leaves Chat Completions reasoning parameters to the provider default", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
+    config.providers.deepseek!.apiKey = "deepseek-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(
       config,
@@ -750,8 +742,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("retries only up to maxRetries and honors model overrides", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
-    config.deepseek.maxRetries = 2;
+    config.providers.deepseek!.apiKey = "deepseek-key";
+    config.providers.deepseek!.maxRetries = 2;
     let attempts = 0;
     const delays: number[] = [];
     const transport: JsonPostTransport = async (request) => {
@@ -796,8 +788,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("lets an isolated Runtime request suppress hidden Provider retries", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "deepseek-key";
-    config.deepseek.maxRetries = 3;
+    config.providers.deepseek!.apiKey = "deepseek-key";
+    config.providers.deepseek!.maxRetries = 3;
     let attempts = 0;
     const provider = createProvider(config, "deepseek", "deepseek-test-model", {
       transport: async () => {
@@ -825,7 +817,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("routes Kimi K3 through its registered endpoint without unsupported optional fields", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.kimi.apiKey = "kimi-test-key";
+    config.providers.kimi!.apiKey = "kimi-test-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(config, "kimi", "k3", {
       transport: async (request) => {
@@ -869,7 +861,7 @@ describe("OpenAI-compatible providers", () => {
 
   it("routes GLM through the official OpenAI-compatible endpoint", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.glm.apiKey = "glm-test-key";
+    config.providers.glm!.apiKey = "glm-test-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(config, "glm", "glm-5.3-flash", {
       transport: async (request) => {
@@ -935,8 +927,8 @@ describe("OpenAI-compatible providers", () => {
 
   it("routes GLM Coding Plan through its dedicated endpoint and credential", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.glm.apiKey = "standard-glm-key";
-    config["glm-coding-plan"].apiKey = "coding-plan-key";
+    config.providers.glm!.apiKey = "standard-glm-key";
+    config.providers["glm-coding-plan"]!.apiKey = "coding-plan-key";
     let captured: JsonPostRequest | undefined;
     const provider = createProvider(
       config,
@@ -975,8 +967,8 @@ describe("OpenAI-compatible providers", () => {
   it("redacts credentials from API and transport errors", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     const secret = "sk-super-secret-value";
-    config.qwen.apiKey = secret;
-    config.qwen.maxRetries = 0;
+    config.providers.qwen!.apiKey = secret;
+    config.providers.qwen!.maxRetries = 0;
     const provider = createProvider(config, "qwen", undefined, {
       transport: async () => ({
         statusCode: 401,

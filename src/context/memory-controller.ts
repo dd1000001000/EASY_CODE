@@ -73,7 +73,7 @@ export function selectMemoryContext(input: {
       (a.memory?.id ?? a.hit!.id).localeCompare(b.memory?.id ?? b.hit!.id));
   for (const candidate of candidates) {
     const { memory, hit } = candidate;
-    if (memory && (memory.status !== "active" || isTransientMemory(memory.content))) { dropped.stale += 1; continue; }
+    if (memory && (!["active", "needs_verification"].includes(memory.status) || isTransientMemory(memory.content))) { dropped.stale += 1; continue; }
     // Exact evidence is deduplicated; near-matches/negations/version changes are not merged.
     if (input.queries && candidate.relevance < limits.memoryMinRelevantTerms) { dropped.budget += 1; continue; }
     if (!hit?.metadata?.fileHash && candidate.content.length >= 16 && present.some((text) => text.includes(candidate.content))) {

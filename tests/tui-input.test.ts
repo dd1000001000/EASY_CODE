@@ -216,22 +216,17 @@ describe("raw TUI input decoder", () => {
     ]);
   });
 
-  it("decodes EASY CODE private OSC actions across arbitrary chunks", () => {
+  it("decodes the current image-paste OSC and ignores unknown host actions", () => {
     const decoder = new TuiInputDecoder();
     const source = Buffer.from(
       "\u001B]6973;easy-code;paste-image\u0007" +
-      "\u001B]6973;easy-code;toggle-thinking;42\u0007" +
-      "\u001B]6973;easy-code;toggle-adjustment;9\u001B\\",
+      "\u001B]6973;easy-code;unknown-host-action\u001B\\",
     );
     const events: TuiInputEvent[] = [];
     for (let index = 0; index < source.length; index += 2) {
       events.push(...decoder.feed(source.subarray(index, index + 2)));
     }
-    assert.deepEqual(events, [
-      { type: "paste-image" },
-      { type: "toggle-thinking", id: 42 },
-      { type: "toggle-adjustment", id: 9 },
-    ]);
+    assert.deepEqual(events, [{ type: "paste-image" }]);
   });
 });
 

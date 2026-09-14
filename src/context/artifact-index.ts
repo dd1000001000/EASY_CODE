@@ -381,7 +381,7 @@ async function artifactsForMessage(
     if (end < text.length && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end--;
     const batch = text.slice(offset, end);
     let parts: readonly { text: string; start: number; end: number }[] = [];
-    try { parts = provider.splitText ? await provider.splitText(batch) : []; } catch { /* lexical fallback */ }
+    try { parts = provider.splitText ? await provider.splitText(batch) : []; } catch { /* Deterministic character windows keep indexing available. */ }
     if (!parts.length) {
       let cursor = 0;
       parts = splitIntoChunks(batch, limits).map(content => {
@@ -402,7 +402,7 @@ async function artifactsForMessage(
       const evidenceId = payload?.evidenceId;
       sourceTruncated = payload?.data?.truncated === true || payload?.data?.stdout?.truncated === true || payload?.data?.stderr?.truncated === true;
       if (typeof evidenceId === "string") file = { evidenceId };
-    } catch { /* Legacy messages have no captured evidence locator. */ }
+    } catch { /* A current external tool may deliberately return opaque text. */ }
   }
   if (message.role === "tool" && message.name === "read_file") {
     try {
@@ -412,7 +412,7 @@ async function artifactsForMessage(
           ...(Number.isInteger(data.startLine) ? { startLine: data.startLine } : {}),
           ...(Number.isInteger(data.endLine) ? { endLine: data.endLine } : {}) };
       }
-    } catch { /* Opaque historical tool output remains searchable. */ }
+    } catch { /* Opaque current tool output remains searchable. */ }
   }
   return windows.map((window, chunkIndex) => {
     const content = window.text;
@@ -450,7 +450,7 @@ function taskGraphCheckpoint(state: Readonly<SessionState>): object | undefined 
       expectedArtifacts: task.expectedArtifacts.map((artifact) => boundedText(artifact, 1_000)),
       completionChecks: task.completionChecks.map((check) => boundedText(check, 1_000)),
       failureHandling: boundedText(task.failureHandling, 1_000),
-      ...(task.blocker ? { blocker: boundedText(task.blocker, 2_000) } : {}),
+      ...(task.blockerDetails ? { blocker: boundedText(task.blockerDetails.reason, 2_000) } : {}),
       ...(task.completionEvidence?.length
         ? { completionEvidence: task.completionEvidence.slice(-4) }
         : {}),
@@ -555,7 +555,7 @@ function latestFailureCheckpoint(
           task: {
             id: blockedTask.id,
             title: blockedTask.title,
-            blocker: boundedText(blockedTask.blocker ?? "Task is blocked.", 2_000),
+            blocker: boundedText(blockedTask.blockerDetails?.reason ?? "Task is blocked.", 2_000),
           },
         }
       : {}),

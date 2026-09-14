@@ -6,7 +6,7 @@ import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 /** Only a parent that owns this durable session can expand explicitly published
  * participant evidence. No arbitrary model-selected peer thread is accepted. */
 export function sharedReviewEvidenceOwner(state: Readonly<SessionState>, id: string): string {
-  for (const session of state.reviewSessions ?? []) {
+  for (const session of state.reviewSessions) {
     const owner = session.experiments.find(e => e.id === id)?.actor ?? session.statements.find(s => s.value.evidenceRefs.includes(id))?.actor;
     if (owner && session.actorThreads) return session.actorThreads[owner];
   }

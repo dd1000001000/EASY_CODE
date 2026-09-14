@@ -8,10 +8,24 @@ export interface NativeSandboxBoundaryResult {
   event: Extract<SandboxWorkerControl, { type: "sandbox_boundary_violation" }>;
 }
 
+export interface NativeTargetSpawnFailure {
+  exitCode: 125;
+  stdout: "";
+  stderr: string;
+  event: Extract<SandboxWorkerControl, { type: "target_spawn_error" }>;
+}
+
 function errorText(error: NativeAppServerRequestError): string {
   let data = "";
   try { data = JSON.stringify(error.data); } catch { /* The message remains usable if third-party data is malformed. */ }
   return `${error.message}\n${data}`.slice(0, 16_384);
+}
+
+export function windowsCreateProcessFailureCode(value: string): number | undefined {
+  const match = /runner failed during SpawnChild:\s*CreateProcessAsUserW failed:\s*(\d+)/iu.exec(value);
+  if (!match) return undefined;
+  const code = Number(match[1]);
+  return Number.isSafeInteger(code) ? code : undefined;
 }
 
 function findField(value: unknown, names: readonly string[]): unknown {
@@ -48,4 +62,16 @@ export function sandboxBoundaryResultFromError(error: unknown): NativeSandboxBou
       ...(typeof destination === "string" ? { destination: destination.slice(0, 4096) } : {}),
       destinationCategory: "unknown", message: error.message.slice(0, 1200) },
   };
+}
+
+/** CreateProcessAsUserW returning an error is authoritative proof that Windows
+ * did not create the requested target. Keep this deliberately narrow: generic
+ * RPC/permission errors may occur after execution and remain unknown. */
+export function targetSpawnFailureFromError(error: unknown): NativeTargetSpawnFailure | undefined {
+  if (!(error instanceof NativeAppServerRequestError)) return undefined;
+  const text = errorText(error);
+  const code = windowsCreateProcessFailureCode(text);
+  if (code === undefined) return undefined;
+  const message = `Windows could not start the target process (CreateProcessAsUserW error ${Number.isSafeInteger(code) ? code : "unknown"}). The command did not run; submit a corrected Windows executable or shell launcher.`;
+  return { exitCode: 125, stdout: "", stderr: message, event: { type: "target_spawn_error", message } };
 }

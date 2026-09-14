@@ -18,7 +18,7 @@ export const validationBaselineSchema = z.object({
   }
 });
 export type ValidationBaseline = z.infer<typeof validationBaselineSchema>;
-const ignored = new Set([".git", ".easycode", ".easy_code", ".easy-code-srt-runtime", "node_modules", ".venv", "venv", ".tox", "__pycache__", ".pytest_cache", ".mypy_cache", "site-packages", "dist", "dist-test", ".cache", "cache"]);
+const ignored = new Set([".git", ".easycode", ".easy_code", ".easy-code-runtime", "node_modules", ".venv", "venv", ".tox", "__pycache__", ".pytest_cache", ".mypy_cache", "site-packages", "dist", "dist-test", ".cache", "cache"]);
 function configFile(name: string): boolean {
   return /^(?:conftest\.py|pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|package\.json|(?:jest|vitest|playwright)\.config\.[^.]+|(?:run)?tests?\.[^.]+|manage\.py|Makefile)$/iu.test(name);
 }

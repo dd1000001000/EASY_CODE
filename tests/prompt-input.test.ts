@@ -6,9 +6,6 @@ import {
   readPrompt,
   type PromptInputSession,
   VSCODE_IMAGE_PASTE_SEQUENCE,
-  vscodeToggleAdjustmentSequence,
-  vscodeShowThinkingSequence,
-  vscodeToggleThinkingSequence,
 } from "../src/cli/prompt-input.js";
 import { Terminal } from "../src/cli/terminal.js";
 import { describe, it } from "./harness.js";
@@ -357,7 +354,7 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript, /\u001B\[\?2004l/u);
   });
 
-  it("falls back to legacy inline startup when an early session is not claimed", async () => {
+  it("continues inline startup when an early session is not claimed", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
     output.setEncoding("utf8");
@@ -929,93 +926,6 @@ describe("image-aware CLI prompt", () => {
     assert.equal(input.rawModeTransitions.at(-1), false);
   });
 
-  it("handles a fragmented legacy VS Code Thinking link as a toggle without leaking protocol bytes", async () => {
-    const input = new TtyInput();
-    const output = new TtyOutput();
-    output.resume();
-    const shown: Array<number | "last"> = [];
-    const toggled: number[] = [];
-    const promise = readPrompt({
-      input,
-      output,
-      prompt: "> ",
-      captureImage: async (index) => attachment(index),
-      onShowThinking: (id) => {
-        shown.push(id);
-      },
-      onToggleThinking: (id) => {
-        toggled.push(id);
-      },
-    });
-    const sequence = Buffer.from(vscodeShowThinkingSequence(42));
-
-    input.write("keep");
-    input.write(sequence.subarray(0, 9));
-    input.write(sequence.subarray(9, 24));
-    input.write(sequence.subarray(24));
-    input.write(" me\r");
-    const result = await promise;
-
-    assert.equal(result?.text, "keep me");
-    assert.deepEqual(shown, []);
-    assert.deepEqual(toggled, [42]);
-  });
-
-  it("keeps Ctrl+T expansion separate from new and legacy mouse toggles", async () => {
-    const input = new TtyInput();
-    const output = new TtyOutput();
-    output.resume();
-    const shown: Array<number | "last"> = [];
-    const toggled: number[] = [];
-    const promise = readPrompt({
-      input,
-      output,
-      prompt: "> ",
-      captureImage: async (index) => attachment(index),
-      onShowThinking: (id) => {
-        shown.push(id);
-      },
-      onToggleThinking: (id) => {
-        toggled.push(id);
-      },
-    });
-
-    input.write("draft");
-    input.write(Buffer.from([0x14]));
-    input.write(vscodeToggleThinkingSequence(7));
-    input.write(vscodeShowThinkingSequence(8));
-    input.write("!\r");
-    const result = await promise;
-
-    assert.equal(result?.text, "draft!");
-    assert.deepEqual(shown, ["last"]);
-    assert.deepEqual(toggled, [7, 8]);
-  });
-
-  it("routes queued-adjustment mouse toggles without inserting protocol bytes", async () => {
-    const input = new TtyInput();
-    const output = new TtyOutput();
-    output.resume();
-    const adjustments: number[] = [];
-    const promise = readPrompt({
-      input,
-      output,
-      prompt: "> ",
-      captureImage: async (index) => attachment(index),
-      onToggleAdjustment: (id) => {
-        adjustments.push(id);
-      },
-    });
-
-    input.write("keep");
-    input.write(vscodeToggleAdjustmentSequence(27));
-    input.write(" me\r");
-    const result = await promise;
-
-    assert.equal(result?.text, "keep me");
-    assert.deepEqual(adjustments, [27]);
-  });
-
   it("redraws a wrapped input buffer after expansion", async () => {
     const input = new TtyInput();
     const output = new TtyOutput(10);
@@ -1151,122 +1061,6 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript.slice(lastFooter), /\u001B\[0J/u);
   });
 
-  it("redraws dynamic Thinking content above Request without losing the draft", async () => {
-    const input = new TtyInput();
-    const output = new TtyOutput(80);
-    output.setEncoding("utf8");
-    let transcript = "";
-    output.on("data", (chunk: string) => {
-      transcript += chunk;
-    });
-    output.resume();
-    let expanded = false;
-    const request = "╭─ Request ─╮\n│ > ";
-    const prompt = readPrompt({
-      input,
-      output,
-      prompt: request,
-      renderPrompt: () => expanded
-        ? `╭─ Thinking #1 ─╮\nreasoning body\n╰────────────────╯\n${request}`
-        : request,
-      renderBelow: () => "╰─ Request ─╯\nfooter",
-      captureImage: async (index) => attachment(index),
-      onToggleThinking: (id) => {
-        assert.equal(id, 1);
-        expanded = !expanded;
-      },
-    });
-
-    input.write("draft");
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const openOffset = transcript.length;
-    input.write(vscodeToggleThinkingSequence(1));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    const openFrame = transcript.slice(openOffset);
-    assert.ok(openFrame.indexOf("reasoning body") >= 0);
-    assert.ok(openFrame.indexOf("reasoning body") < openFrame.indexOf("╭─ Request"));
-    assert.match(openFrame, /╭─ Request ─╮\n│ > draft/u);
-
-    const closeOffset = transcript.length;
-    input.write(vscodeToggleThinkingSequence(1));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const closeFrame = transcript.slice(closeOffset);
-    assert.equal(closeFrame.includes("reasoning body"), false);
-    assert.match(closeFrame, /╭─ Request ─╮\n│ > draft/u);
-
-    input.write("!\r");
-    assert.equal((await prompt)?.text, "draft!");
-  });
-
-  it("defers a resize redraw while an asynchronous Thinking toggle owns the prompt", async () => {
-    const input = new TtyInput();
-    const output = new TtyOutput(80);
-    output.setEncoding("utf8");
-    let transcript = "";
-    output.on("data", (chunk: string) => {
-      transcript += chunk;
-    });
-    output.resume();
-    let expanded = false;
-    let renderCalls = 0;
-    let toggleStarted!: () => void;
-    let releaseToggle!: () => void;
-    const started = new Promise<void>((resolve) => {
-      toggleStarted = resolve;
-    });
-    const release = new Promise<void>((resolve) => {
-      releaseToggle = resolve;
-    });
-    const request = "╭─ Request ─╮\n│ > ";
-    const prompt = readPrompt({
-      input,
-      output,
-      prompt: request,
-      renderPrompt: () => {
-        renderCalls += 1;
-        return expanded ? `THINKING\n${request}` : request;
-      },
-      renderBelow: () => "╰─ Request ─╯\nfooter",
-      captureImage: async (index) => attachment(index),
-      onToggleThinking: async () => {
-        expanded = true;
-        toggleStarted();
-        await release;
-      },
-    });
-
-    input.write("draft");
-    input.write(vscodeToggleThinkingSequence(1));
-    await started;
-    const callsBeforeResize = renderCalls;
-    const resizeOffset = transcript.length;
-    output.columns = 48;
-    output.emit("resize");
-    assert.equal(renderCalls, callsBeforeResize);
-    assert.match(transcript.slice(resizeOffset), /\u001B\[0J/u);
-    const secondResizeOffset = transcript.length;
-    output.columns = 64;
-    output.emit("resize");
-    assert.equal(renderCalls, callsBeforeResize);
-    assert.match(transcript.slice(secondResizeOffset), /\u001B\[0J/u);
-
-    const resumeOffset = transcript.length;
-    releaseToggle();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    const resumeFrame = transcript.slice(resumeOffset);
-    assert.equal((resumeFrame.match(/THINKING/gu) ?? []).length, 1);
-    assert.equal((resumeFrame.match(/╭─ Request/gu) ?? []).length, 1);
-    assert.ok(resumeFrame.indexOf("THINKING") < resumeFrame.indexOf("╭─ Request"));
-    assert.match(resumeFrame, /│ > draft/u);
-
-    input.write("!\r");
-    assert.equal((await prompt)?.text, "draft!");
-  });
-
   it("clears live rows below the prompt when Ctrl+C cancels input", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();
@@ -1300,15 +1094,13 @@ describe("image-aware CLI prompt", () => {
     assert.match(transcript, /\u001B\[\?2004l/u);
   });
 
-  it("swallows private disclosure OSC during approval and secret input", async () => {
+  it("swallows unknown private OSC during approval and secret input", async () => {
     const approvalInput = new TtyInput();
     const approvalOutput = new TtyOutput();
     approvalOutput.resume();
     const approvalTerminal = new Terminal(approvalInput, approvalOutput);
     const approval = approvalTerminal.question("Approve? ");
-    approvalInput.write(
-      `${vscodeToggleThinkingSequence(7)}${vscodeToggleAdjustmentSequence(9)}y\r`,
-    );
+    approvalInput.write("\u001B]6973;easy-code;unknown-action\u0007y\r");
     assert.equal(await approval, "y");
     approvalTerminal.close();
 
@@ -1317,7 +1109,7 @@ describe("image-aware CLI prompt", () => {
     secretOutput.resume();
     const secretTerminal = new Terminal(secretInput, secretOutput);
     const secret = secretTerminal.readSecret("Key: ");
-    secretInput.write(`${vscodeShowThinkingSequence(8)}actual-secret\r`);
+    secretInput.write("\u001B]6973;easy-code;unknown-action\u0007actual-secret\r");
     assert.equal(await secret, "actual-secret");
     assert.equal(secretInput.rawModeTransitions.at(-1), false);
     secretTerminal.close();

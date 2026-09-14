@@ -45,6 +45,8 @@ function standaloneAssignment(
   return {
     kind: "standalone",
     agentId: STANDALONE_AGENT_ID,
+    childThreadId: `thread_${STANDALONE_AGENT_ID}`,
+    environmentId: `environment_${STANDALONE_AGENT_ID}`,
     taskId: "standalone_recovery",
     taskTitle: "Inspect recovery state",
     taskDescription: "Inspect the saved thread and report a verified result.",
@@ -52,6 +54,7 @@ function standaloneAssignment(
     provider: "deepseek",
     model: "deepseek-v4-flash",
     thinkingEffort: "medium",
+    requestedIsolation: "shared",
     createdAt: "2026-08-27T13:00:00.000Z",
     ...overrides,
   };
@@ -329,6 +332,7 @@ describe("subagent task journal recovery", () => {
         baseMode: "current-snapshot",
         repositoryRoot: workspace.root,
         worktreeRoot: childWorkspace.root,
+        pathLayoutVersion: 2,
         baseCommit,
         baselineCommit: baseCommit,
         handoffBaseCommit: baseCommit,
@@ -395,8 +399,8 @@ describe("subagent task journal recovery", () => {
       config.provider = "deepseek";
       config.mode = "code";
       config.thinkingEffort = "high";
-      config.deepseek.apiKey = "test-key";
-      config.deepseek.model = "deepseek-v4-flash";
+      config.providers.deepseek!.apiKey = "test-key";
+      config.providers.deepseek!.model = "deepseek-v4-flash";
       const app = Object.create(EasyCodeApp.prototype) as EasyCodeApp;
       Object.defineProperties(app, {
         taskBudgets: { value: new Map() },
@@ -567,6 +571,9 @@ describe("subagent task journal recovery", () => {
       > = {
         kind: "dag",
         agentId,
+        childThreadId: `thread_${agentId}`,
+        environmentId: `environment_${agentId}`,
+        requestedIsolation: "shared",
         taskId: "inspect_dag",
         taskTitle: "Inspect the DAG",
         taskDescription: "Inspect only the Runtime-bound DAG task.",
@@ -813,7 +820,7 @@ describe("subagent task journal recovery", () => {
     }
   });
 
-  it("turns a standalone assignment without a durable result into one interrupted result", () => {
+  it("resumes a current standalone assignment that has no durable result", async () => {
     const dataDir = mkdtempSync(path.join(os.tmpdir(), "easy-code-standalone-interrupted-"));
     const storage = createStorage(dataDir);
     try {
@@ -856,45 +863,24 @@ describe("subagent task journal recovery", () => {
         },
       });
       assert.equal(restoreStandaloneViaApp(threads, state, coordinator), 1);
-      const interrupted = threads.latestSubagentResult(
+      await coordinator.wait(
+        { action: "wait", agentIds: [assignment.agentId], timeoutMs: 1_000 },
+        standaloneContext(state, "turn_wait_resumed_standalone"),
+      );
+      const durable = threads.latestSubagentResult(
         state.threadId,
         assignment.agentId,
         assignment.taskId,
       );
-      assert.equal(interrupted?.reason, "interrupted");
-      assert.match(interrupted?.error ?? "", /exited before.*durable result/u);
-      assert.equal(coordinator.snapshot(state.threadId)[0]?.status, "interrupted");
-      assert.equal(childRuns, 0);
+      assert.equal(durable, undefined);
+      assert.equal(coordinator.snapshot(state.threadId)[0]?.status, "failed");
+      assert.equal(childRuns, 1);
       assert.equal(
         threads.journal(state.threadId).read().filter(
           (event) => event.type === "subagent.result",
         ).length,
-        1,
+        0,
       );
-
-      // A later process receives a fresh coordinator. It restores the same
-      // durable interrupted result instead of appending another result or
-      // starting the old child execution again.
-      const secondCoordinator = new SubagentCoordinator({
-        run: async () => {
-          childRuns += 1;
-          return {
-            reason: "completed",
-            changes: [],
-            commands: [],
-            presentations: [],
-          };
-        },
-      });
-      assert.equal(restoreStandaloneViaApp(threads, state, secondCoordinator), 1);
-      assert.equal(childRuns, 0);
-      assert.equal(
-        threads.journal(state.threadId).read().filter(
-          (event) => event.type === "subagent.result",
-        ).length,
-        1,
-      );
-      assert.equal(secondCoordinator.snapshot(state.threadId)[0]?.status, "interrupted");
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });
@@ -1154,6 +1140,22 @@ describe("subagent task journal recovery", () => {
       const claimed = applySubagentTaskOperation(graph, claim, {
         turnId: "turn_claim_stop_race",
       });
+      const assignment: Extract<SubagentAssignmentSnapshot, { kind: "dag" }> = {
+        kind: "dag",
+        taskGraphId: graph.id,
+        agentId,
+        childThreadId: `thread_${agentId}`,
+        environmentId: `environment_${agentId}`,
+        taskId: "cancel_race",
+        taskTitle: "Exercise cancellation recovery",
+        taskDescription: "Do not complete after a committed stop",
+        completionChecks: ["Focused check passes"],
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+        thinkingEffort: "high",
+        requestedIsolation: "shared",
+        createdAt: claimed.updatedAt,
+      };
       threads.appendEvent(state.threadId, {
         type: "tool.result",
         turnId: "turn_claim_stop_race",
@@ -1169,6 +1171,7 @@ describe("subagent task journal recovery", () => {
           },
           taskGraph: claimed,
           subagentTaskOperation: claim,
+          subagentAssignment: assignment,
           subagentLifecycle: { action: "activate", agentId },
         },
       });

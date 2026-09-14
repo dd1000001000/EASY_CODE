@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import { projectText, displayTextSchema } from "../src/utils/bounded-text.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
-import { semanticSummarySchema, clipSemanticFields, parseSemanticCandidatePatch } from "../src/context/semantic-compaction.js";
+import { semanticSummarySchema, clipSemanticFields, parseSemanticRequestPatch } from "../src/context/semantic-compaction.js";
 import { progressReviewReportSchema } from "../src/progress/reviewer.js";
 import { proposePlanInputSchema } from "../src/tools/propose-plan.js";
 import { submitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
@@ -27,12 +27,12 @@ describe("storage-only output retention", () => {
 
   it("clips semantic lists only after validating every item, keeping evidence IDs strict", () => {
     const input = { currentWork: "x".repeat(150000), nextStep: "Verify", hypotheses: Array(35).fill("y".repeat(1400)) };
-    const normalized = semanticSummarySchema.parse(clipSemanticFields(parseSemanticCandidatePatch(input)).patch);
+    const normalized = semanticSummarySchema.parse(clipSemanticFields(parseSemanticRequestPatch(input)).patch);
     assert.equal(normalized.currentWork.length, DEFAULT_RUNTIME_LIMITS.contextSemanticFieldMaxChars);
     assert.equal(normalized.hypotheses.length, 32);
     assert.equal(normalized.hypotheses[0]!.length, 1400);
-    assert.throws(() => parseSemanticCandidatePatch({ ...input, hypotheses: [...input.hypotheses, 42] }));
-    assert.throws(() => parseSemanticCandidatePatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }));
+    assert.throws(() => parseSemanticRequestPatch({ ...input, hypotheses: [...input.hypotheses, 42] }));
+    assert.throws(() => parseSemanticRequestPatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }));
   });
 
   it("clips reviewer prose but never clips executable arguments", () => {

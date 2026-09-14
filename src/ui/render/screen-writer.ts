@@ -20,7 +20,7 @@ export interface ScreenOutput extends NodeJS.WritableStream {
 export type ScreenWidthSource = number | (() => number | undefined);
 
 export interface ScreenWriterOptions {
-  readonly output?: ScreenOutput;
+  readonly output: ScreenOutput;
   readonly columns?: ScreenWidthSource;
 }
 
@@ -30,9 +30,6 @@ export interface LiveCursor {
   /** Zero-based display-cell column, not a UTF-16 string offset. */
   readonly column: number;
 }
-
-/** Backwards-friendly alias for renderer code that calls this a screen cursor. */
-export type ScreenCursor = LiveCursor;
 
 /**
  * Owns only terminal output and maintains one redrawable region at the bottom
@@ -61,20 +58,9 @@ export class ScreenWriter {
   private renderedCursorRow = 0;
   private plainLastLive = "";
 
-  constructor();
-  constructor(output: ScreenOutput, columns?: ScreenWidthSource);
-  constructor(options: ScreenWriterOptions);
-  constructor(
-    outputOrOptions: ScreenOutput | ScreenWriterOptions = process.stdout,
-    columns?: ScreenWidthSource,
-  ) {
-    if (isScreenOutput(outputOrOptions)) {
-      this.output = outputOrOptions;
-      this.widthSource = columns;
-    } else {
-      this.output = outputOrOptions.output ?? process.stdout;
-      this.widthSource = outputOrOptions.columns ?? columns;
-    }
+  constructor(options: ScreenWriterOptions) {
+    this.output = options.output;
+    this.widthSource = options.columns;
     this.tty = Boolean(this.output.isTTY);
   }
 
@@ -295,10 +281,6 @@ export class ScreenWriter {
   private write(value: string): void {
     if (value) this.output.write(value);
   }
-}
-
-function isScreenOutput(value: ScreenOutput | ScreenWriterOptions): value is ScreenOutput {
-  return typeof (value as ScreenOutput).write === "function";
 }
 
 function safelyReadWidth(source: () => number | undefined): number | undefined {

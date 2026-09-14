@@ -32,9 +32,6 @@ const {
   createThinkingLinkProvider,
   findAdjustmentMarkers,
   findThinkingMarkers,
-  showThinkingSequence,
-  toggleThinkingSequence,
-  toggleAdjustmentSequence,
 } = require("../extension");
 
 const tests = [];
@@ -247,6 +244,7 @@ test("validates authenticated bridge protocol messages", () => {
     ppid: 42,
     cwd: "F:\\project",
     protocol: 2,
+    capabilities: [],
   };
   assert.equal(isHelloFrame(hello), true);
   assert.equal(isHelloFrame({
@@ -474,13 +472,6 @@ test("parses only paired EASY CODE thinking markers", () => {
     id: "42",
   }]);
 
-  const legacyExpanded = "prefix ↕ Thinking #42 · Click again to close · /thinking 42 suffix";
-  assert.deepEqual(findThinkingMarkers(legacyExpanded), [{
-    startIndex: legacyExpanded.indexOf("Thinking #42"),
-    length: "Thinking #42".length,
-    id: "42",
-  }]);
-
   assert.deepEqual(
     findThinkingMarkers("▶ Thinking #42 · completed · /thinking 43"),
     [],
@@ -508,23 +499,7 @@ test("parses only paired EASY CODE thinking markers", () => {
   );
 });
 
-test("builds a fixed toggle-thinking OSC sequence from numeric IDs", () => {
-  assert.equal(
-    toggleThinkingSequence("42"),
-    "\x1b]6973;easy-code;toggle-thinking;42\x07",
-  );
-  assert.equal(
-    showThinkingSequence("42"),
-    "\x1b]6973;easy-code;toggle-thinking;42\x07",
-    "the deprecated alias must not retain one-way show behavior",
-  );
-  assert.throws(() => toggleThinkingSequence("42;echo owned"), TypeError);
-  assert.throws(() => toggleThinkingSequence("0"), TypeError);
-  assert.throws(() => toggleThinkingSequence("9999999999999999"), TypeError);
-  assert.throws(() => toggleThinkingSequence("1".repeat(20)), TypeError);
-});
-
-test("parses paired queued-adjustment markers and builds a fixed toggle sequence", () => {
+test("parses paired queued-adjustment markers", () => {
   const collapsed =
     "▶ Queued adjustment #27 · 12 chars · 1 image · /adjustment 27 · VS Code Ctrl/Cmd+click to toggle";
   assert.deepEqual(findAdjustmentMarkers(collapsed), [{
@@ -546,21 +521,19 @@ test("parses paired queued-adjustment markers and builds a fixed toggle sequence
     findAdjustmentMarkers("▶ Queued adjustment #27 · 12 chars · /adjustment 28"),
     [],
   );
-  assert.equal(
-    toggleAdjustmentSequence(27),
-    "\x1b]6973;easy-code;toggle-adjustment;27\x07",
-  );
-  assert.throws(() => toggleAdjustmentSequence("27;echo owned"), TypeError);
 });
 
 test("queued-adjustment links toggle through the tracked EASY CODE terminal", () => {
-  const sends = [];
-  const terminal = {
-    sendText(text, addNewLine) {
-      sends.push({ text, addNewLine });
+  const terminal = {};
+  const dispatched = [];
+  const provider = createThinkingLinkProvider(
+    (candidate) => candidate === terminal,
+    () => false,
+    (candidate, kind, id) => {
+      dispatched.push({ candidate, kind, id });
+      return true;
     },
-  };
-  const provider = createThinkingLinkProvider((candidate) => candidate === terminal);
+  );
   const line =
     "▶ Queued adjustment #9 · 5 chars · /adjustment 9 · VS Code Ctrl/Cmd+click to toggle";
   const links = provider.provideTerminalLinks(
@@ -574,10 +547,7 @@ test("queued-adjustment links toggle through the tracked EASY CODE terminal", ()
   );
   assert.match(links[0].tooltip, /queued adjustment #9/u);
   provider.handleTerminalLink(links[0]);
-  assert.deepEqual(sends, [{
-    text: "\x1b]6973;easy-code;toggle-adjustment;9\x07",
-    addNewLine: false,
-  }]);
+  assert.deepEqual(dispatched, [{ candidate: terminal, kind: "adjustment", id: 9 }]);
 });
 
 test("thinking links use the authenticated bridge without writing to the PTY", () => {
@@ -605,32 +575,33 @@ test("thinking links use the authenticated bridge without writing to the PTY", (
   assert.deepEqual(dispatched, [{ candidate: terminal, kind: "thinking", id: 12 }]);
   assert.deepEqual(sends, [], "a successful bridge dispatch must never inject PTY input");
 
-  const fallbackProvider = createThinkingLinkProvider(
+  const unavailable = [];
+  const unavailableProvider = createThinkingLinkProvider(
     () => true,
     () => false,
     () => false,
+    (candidate) => unavailable.push(candidate),
   );
-  const fallbackLinks = fallbackProvider.provideTerminalLinks(
+  const unavailableLinks = unavailableProvider.provideTerminalLinks(
     { line, terminal },
     { isCancellationRequested: false },
   );
-  fallbackProvider.handleTerminalLink(fallbackLinks[0]);
-  assert.deepEqual(sends, [{
-    text: "\x1b]6973;easy-code;toggle-thinking;12\x07",
-    addNewLine: false,
-  }]);
+  unavailableProvider.handleTerminalLink(unavailableLinks[0]);
+  assert.deepEqual(unavailable, [terminal]);
+  assert.deepEqual(sends, [], "an unavailable V2 bridge must never fall back to PTY control bytes");
 });
 
 test("thinking links remain scoped to a tracked EASY CODE terminal", () => {
-  const terminal = {
-    sent: [],
-    sendText(text, addNewLine) {
-      this.sent.push({ text, addNewLine });
-    },
-  };
+  const terminal = {};
+  const dispatched = [];
   const enabledTerminals = new Set([terminal]);
-  const provider = createThinkingLinkProvider((candidate) =>
-    enabledTerminals.has(candidate)
+  const provider = createThinkingLinkProvider(
+    (candidate) => enabledTerminals.has(candidate),
+    () => false,
+    (candidate, kind, id) => {
+      dispatched.push({ candidate, kind, id });
+      return true;
+    },
   );
   const line = "▶ Thinking #7 · 315 tokens · /thinking 7";
 
@@ -644,15 +615,9 @@ test("thinking links remain scoped to a tracked EASY CODE terminal", () => {
 
   provider.handleTerminalLink(links[0]);
   provider.handleTerminalLink(links[0]);
-  assert.deepEqual(terminal.sent, [
-    {
-      text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
-      addNewLine: false,
-    },
-    {
-      text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
-      addNewLine: false,
-    },
+  assert.deepEqual(dispatched, [
+    { candidate: terminal, kind: "thinking", id: 7 },
+    { candidate: terminal, kind: "thinking", id: 7 },
   ], "the same historical marker must toggle on every click");
 
   const expandedLine = "↕ Thinking #7 · /thinking 7";
@@ -669,30 +634,23 @@ test("thinking links remain scoped to a tracked EASY CODE terminal", () => {
     "Thinking #7",
   );
   provider.handleTerminalLink(expandedLinks[0]);
-  assert.deepEqual(terminal.sent[2], {
-    text: "\x1b]6973;easy-code;toggle-thinking;7\x07",
-    addNewLine: false,
-  });
+  assert.deepEqual(dispatched[2], { candidate: terminal, kind: "thinking", id: 7 });
 
   enabledTerminals.delete(terminal);
   provider.handleTerminalLink(links[0]);
   assert.equal(
-    terminal.sent.length,
+    dispatched.length,
     3,
     "a stale link must be inert after EASY CODE exits",
   );
 
   provider.handleTerminalLink({ ...links[0] });
-  assert.equal(terminal.sent.length, 3, "a forged link object must be inert");
+  assert.equal(dispatched.length, 3, "a forged link object must be inert");
 });
 
 test("thinking links recover only after a strict marker proves a pre-existing terminal", () => {
-  const terminal = {
-    sent: [],
-    sendText(text, addNewLine) {
-      this.sent.push({ text, addNewLine });
-    },
-  };
+  const terminal = {};
+  const dispatched = [];
   let enabled = false;
   let recoveries = 0;
   const provider = createThinkingLinkProvider(
@@ -701,6 +659,10 @@ test("thinking links recover only after a strict marker proves a pre-existing te
       if (candidate !== terminal) return false;
       recoveries += 1;
       enabled = true;
+      return true;
+    },
+    (candidate, kind, id) => {
+      dispatched.push({ candidate, kind, id });
       return true;
     },
   );
@@ -721,14 +683,11 @@ test("thinking links recover only after a strict marker proves a pre-existing te
   assert.equal(recoveries, 1);
   assert.equal(links.length, 1);
   provider.handleTerminalLink(links[0]);
-  assert.deepEqual(terminal.sent, [{
-    text: "\x1b]6973;easy-code;toggle-thinking;8\x07",
-    addNewLine: false,
-  }]);
+  assert.deepEqual(dispatched, [{ candidate: terminal, kind: "thinking", id: 8 }]);
 
   enabled = false;
   provider.handleTerminalLink(links[0]);
-  assert.equal(terminal.sent.length, 1, "revocation must make a recovered link inert");
+  assert.equal(dispatched.length, 1, "revocation must make a recovered link inert");
 });
 
 test("thinking link provider ignores unrelated terminals and honors cancellation", () => {

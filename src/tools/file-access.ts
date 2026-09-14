@@ -11,9 +11,6 @@ export interface FileToolTarget {
   workspaceRelative?: string;
 }
 
-/** Legacy interface: approval posture never grants host filesystem authority. */
-export function hasUnrestrictedHostAccess(_context: ToolContext): boolean { return false; }
-
 function workspacePath(target: FileToolTarget): string {
   if (!target.workspaceRelative) throw new Error("Host file access is not permitted");
   return target.workspaceRelative;

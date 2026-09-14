@@ -26,14 +26,13 @@ function isHelloFrame(value) {
     isPositiveProcessId(value.ppid) &&
     typeof value.cwd === "string" &&
     Buffer.byteLength(value.cwd, "utf8") <= 4096 &&
-    (value.protocol === undefined ||
-      (Number.isSafeInteger(value.protocol) && value.protocol >= 1)) &&
+    value.protocol === BRIDGE_PROTOCOL_VERSION &&
     isCapabilitiesValue(value.capabilities),
   );
 }
 
 function isCapabilitiesValue(value) {
-  return value === undefined || Boolean(
+  return Boolean(
     Array.isArray(value) &&
     value.length <= MAX_CAPABILITIES &&
     value.every((capability) =>
@@ -136,7 +135,7 @@ function createMenuNavigationServer(options = {}) {
       pid: undefined,
       ppid: undefined,
       cwd: undefined,
-      protocol: 1,
+      protocol: BRIDGE_PROTOCOL_VERSION,
       capabilities: new Set(),
       menuActive: false,
       menuRequestId: undefined,
@@ -166,19 +165,17 @@ function createMenuNavigationServer(options = {}) {
           client.pid = frame.pid;
           client.ppid = frame.ppid;
           client.cwd = frame.cwd;
-          client.protocol = frame.protocol ?? 1;
+          client.protocol = frame.protocol;
           client.capabilities = new Set(
-            (frame.capabilities ?? []).filter((capability) =>
+            frame.capabilities.filter((capability) =>
               capability === DISCLOSURE_TOGGLE_CAPABILITY
             ),
           );
           client.lastActivity = Date.now();
-          if (client.protocol >= BRIDGE_PROTOCOL_VERSION) {
-            socket.write(encodeBridgeFrame({
-              type: "bridge-ready",
-              protocol: BRIDGE_PROTOCOL_VERSION,
-            }));
-          }
+          socket.write(encodeBridgeFrame({
+            type: "bridge-ready",
+            protocol: BRIDGE_PROTOCOL_VERSION,
+          }));
           options.onHello?.(client);
           continue;
         }

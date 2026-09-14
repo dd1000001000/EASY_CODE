@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -17,6 +17,7 @@ import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";
 import { sha256 } from "../src/utils/hash.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 function initialState(): SessionState {
   const now = new Date().toISOString();
@@ -63,6 +64,7 @@ function initialState(): SessionState {
     }).state;
   }
   return {
+    ...baseSessionState(),
     threadId: "thread_progress_runtime",
     mode: "code",
     provider: "qwen",
@@ -189,6 +191,14 @@ describe("AgentRuntime progress intervention", () => {
             stdout: { text: "ok" },
             stderr: { text: "" },
             executed: { program: "node", args: [], cwd: "." },
+            validation: {
+              status: "passed",
+              confidence: "high",
+              source: "framework_summary",
+              coverage: "terminal",
+              reason: "The narrow verification emitted a terminal pass summary.",
+              evidenceKey: `sha256:${"d".repeat(64)}`,
+            },
           },
         };
       },
@@ -243,7 +253,7 @@ describe("AgentRuntime progress intervention", () => {
     assert.ok(systemPrompts.some((prompt) => /system/u.test(prompt)));
   });
 
-  it("fails review closed when a complete workspace snapshot cannot be captured", async () => {
+  it("pauses review recovery when a complete workspace snapshot cannot be captured", async () => {
     const state = initialState();
     const events: Array<Omit<EventRecord, "schemaVersion" | "sequence" | "timestamp">> = [];
     let privateReviewRequests = 0;
@@ -304,7 +314,9 @@ describe("AgentRuntime progress intervention", () => {
       approvalPolicy: "never",
     });
 
-    assert.equal(result.reason, "blocked");
+    assert.equal(result.reason, "paused");
+    assert.equal(result.pause?.cause, "dag");
+    assert.equal(result.pause?.resumable, true);
     assert.equal(privateReviewRequests, 0);
     assert.equal(state.progressGuard?.incidents[0]?.phase, "review_unavailable");
     assert.ok(events.some((event) => event.type === "progress.review.unavailable"));

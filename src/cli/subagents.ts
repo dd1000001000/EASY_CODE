@@ -116,6 +116,7 @@ export function renderSubagents(
         statusLine = palette.green(`✓ ${label}`);
         break;
       case "blocked":
+      case "needs_parent_decision":
         statusLine = palette.yellow(`⊠ ${label}`);
         break;
       case "failed":
