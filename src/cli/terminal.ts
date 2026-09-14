@@ -180,6 +180,9 @@ interface ActiveModelStream {
   finalDisplay: boolean;
   renderedReasoning?: string;
   renderedAnswer?: string;
+  reasoningSourceChars: number;
+  reasoningLastDeltaAtMs?: number;
+  renderedReasoningProgressKey?: string;
 }
 
 interface DeferredTranscriptCommit {
@@ -1665,6 +1668,10 @@ export class Terminal {
     if (!state || state.completed || event.sequence <= state.sequence) return;
     state.sequence = event.sequence;
     if (event.kind === "reasoning_delta" || event.kind === "text_delta") {
+      if (event.kind === "reasoning_delta") {
+        state.reasoningSourceChars += countCodePoints(event.text);
+        state.reasoningLastDeltaAtMs = Date.now();
+      }
       (event.kind === "reasoning_delta" ? state.pendingReasoning : state.pendingText).push(event.text);
       this.scheduleModelStreamFlush();
       return;
@@ -1745,7 +1752,11 @@ export class Terminal {
     this.renderActivity();
   }
 
-  private liveStreamText(value: string, final: boolean): string {
+  private liveStreamText(
+    value: string,
+    final: boolean,
+    includeLimitNotice = true,
+  ): string {
     if (final) return this.safeStreamText(value);
     const prefix = value.slice(0, this.streamPreviewMaxChars);
     // Hold the unfinished lexical token (including credentials, data URLs and
@@ -1753,9 +1764,56 @@ export class Terminal {
     const boundary = Math.max(prefix.lastIndexOf(" "), prefix.lastIndexOf("\n"), prefix.lastIndexOf("\t"),
       ...["。", "，", "！", "？", "；"].map((mark) => prefix.lastIndexOf(mark)));
     const safe = this.safeStreamText(prefix.slice(0, Math.max(0, boundary + 1)));
-    return value.length > this.streamPreviewMaxChars
+    return includeLimitNotice && value.length > this.streamPreviewMaxChars
       ? `${safe}\n[Live preview limited; complete output will appear when the response finishes.]`
       : safe;
+  }
+
+  /**
+   * Update only the small Thinking marker after its body reaches the live
+   * preview cap. The complete provider text remains assembled in the stream
+   * state for final reconciliation, but is not repeatedly sanitized or
+   * projected into the terminal document.
+   */
+  private renderLiveReasoningProgress(
+    state: ActiveModelStream,
+    nowMs = Date.now(),
+  ): void {
+    if (
+      state.completed ||
+      state.finalDisplay ||
+      state.reasoningSourceChars <= this.streamPreviewMaxChars ||
+      state.reasoningLastDeltaAtMs === undefined ||
+      !state.reasoningId ||
+      !state.reasoningEntryId
+    ) return;
+    const ageBucket = Math.floor(Math.max(0, nowMs - state.reasoningLastDeltaAtMs) / 100);
+    const progressKey = `${state.reasoningSourceChars}:${ageBucket}`;
+    if (state.renderedReasoningProgressKey === progressKey) return;
+    const block = this.reasoning.get(state.reasoningId);
+    if (!block) return;
+    state.renderedReasoningProgressKey = progressKey;
+    this.retainedReasoningDisclosures.set(state.reasoningEntryId, block);
+    this.replaceTranscriptEntry(state.reasoningEntryId, {
+      kind: "raw",
+      id: state.reasoningEntryId,
+      text: renderReasoningMarker(block, {
+        color: this.colorEnabled(),
+        live: {
+          sourceChars: state.reasoningSourceChars,
+          previewLimitChars: this.streamPreviewMaxChars,
+          lastDeltaAtMs: state.reasoningLastDeltaAtMs,
+          nowMs,
+        },
+      }),
+      reasoning: block.text,
+    });
+  }
+
+  private refreshLiveReasoningProgress(nowMs = Date.now()): void {
+    for (const state of this.modelStreams.values()) {
+      this.renderLiveReasoningProgress(state, nowMs);
+    }
   }
 
   private applyModelStream(event: Readonly<ProviderStreamEvent>): void {
@@ -1783,6 +1841,7 @@ export class Terminal {
         pendingReasoning: [],
         pendingText: [],
         finalDisplay: false,
+        reasoningSourceChars: 0,
       });
       return;
     }
@@ -1793,9 +1852,18 @@ export class Terminal {
     if (event.kind === "reasoning_delta") {
       const previewWasFull = state.reasoningText.length > this.streamPreviewMaxChars;
       state.reasoningText += event.text;
-      if (previewWasFull && state.renderedReasoning && !state.finalDisplay) return;
-      const safeReasoning = this.liveStreamText(state.reasoningText, state.finalDisplay);
-      if (!safeReasoning || safeReasoning === state.renderedReasoning) return;
+      if (previewWasFull && state.reasoningId && !state.finalDisplay) {
+        this.renderLiveReasoningProgress(state);
+        return;
+      }
+      const safeReasoning = state.finalDisplay
+        ? this.liveStreamText(state.reasoningText, true)
+        : this.liveStreamText(state.reasoningText, false, false);
+      if (!safeReasoning && state.reasoningSourceChars <= this.streamPreviewMaxChars) return;
+      if (safeReasoning === state.renderedReasoning && state.reasoningId) {
+        this.renderLiveReasoningProgress(state);
+        return;
+      }
       state.renderedReasoning = safeReasoning;
       if (!state.reasoningId) {
         const block = this.reasoning.add(safeReasoning);
@@ -1805,7 +1873,16 @@ export class Terminal {
         this.retainCurrentTurnDisclosure({
           kind: "raw",
           id: entryId,
-          text: renderReasoningMarker(block, { color: this.colorEnabled() }),
+          text: renderReasoningMarker(block, {
+            color: this.colorEnabled(),
+            ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined ? {} : {
+              live: {
+                sourceChars: state.reasoningSourceChars,
+                previewLimitChars: this.streamPreviewMaxChars,
+                lastDeltaAtMs: state.reasoningLastDeltaAtMs,
+              },
+            }),
+          }),
           reasoning: block.text,
         }, block);
       } else {
@@ -1818,7 +1895,16 @@ export class Terminal {
           this.replaceTranscriptEntry(state.reasoningEntryId, {
             kind: "raw",
             id: state.reasoningEntryId,
-            text: renderReasoningMarker(block, { color: this.colorEnabled() }),
+            text: renderReasoningMarker(block, {
+              color: this.colorEnabled(),
+              ...(state.finalDisplay || state.reasoningLastDeltaAtMs === undefined ? {} : {
+                live: {
+                  sourceChars: state.reasoningSourceChars,
+                  previewLimitChars: this.streamPreviewMaxChars,
+                  lastDeltaAtMs: state.reasoningLastDeltaAtMs,
+                },
+              }),
+            }),
             reasoning: block.text,
           });
         }
@@ -1887,7 +1973,10 @@ export class Terminal {
         ? "[Interrupted model response; streamed tool arguments were incomplete and were not executed.]"
         : "[Interrupted model response; not a completed answer.]";
       if (state.reasoningId && state.reasoningEntryId) {
-        const block = this.reasoning.get(state.reasoningId);
+        const block = this.reasoning.replace(
+          state.reasoningId,
+          this.safeStreamText(state.reasoningText),
+        );
         if (block) this.replaceTranscriptEntry(state.reasoningEntryId, {
           kind: "raw", id: state.reasoningEntryId,
           text: `${renderReasoningMarker(block, { color: this.colorEnabled() })} [interrupted]`,
@@ -3268,8 +3357,18 @@ export class Terminal {
     block: Readonly<ReasoningBlock>,
     active: boolean,
   ): VirtualDocumentNode {
+    const activeStream = [...this.modelStreams.values()].find((state) =>
+      !state.completed && state.reasoningId === block.id
+    );
     const marker = stripAnsi(renderReasoningMarker(block, {
       color: false,
+      ...(activeStream?.reasoningLastDeltaAtMs === undefined ? {} : {
+        live: {
+          sourceChars: activeStream.reasoningSourceChars,
+          previewLimitChars: this.streamPreviewMaxChars,
+          lastDeltaAtMs: activeStream.reasoningLastDeltaAtMs,
+        },
+      }),
     })).trimEnd().split("\n");
     return {
       id: this.virtualDisclosureId("thinking", block.id),
@@ -3886,6 +3985,7 @@ export class Terminal {
 
   private renderActivity(): void {
     if (this.inlineShellActive) {
+      this.refreshLiveReasoningProgress();
       this.activityVisible = true;
       this.refresh();
       return;
@@ -3936,6 +4036,12 @@ function formatSubmittedRequest(value: string): string {
     .split("\n")
     .map((line, index) => `${index === 0 ? "> " : "  "}${line}`)
     .join("\n");
+}
+
+function countCodePoints(value: string): number {
+  let count = 0;
+  for (const _character of value) count += 1;
+  return count;
 }
 
 export function printBanner(terminal: Terminal): void {

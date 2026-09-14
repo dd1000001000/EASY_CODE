@@ -25,6 +25,13 @@ export interface ReasoningBlock {
 export interface ReasoningRenderOptions {
   readonly color?: boolean;
   readonly previewChars?: number;
+  /** Live transport metadata is kept separate from the bounded preview body. */
+  readonly live?: Readonly<{
+    readonly sourceChars: number;
+    readonly previewLimitChars: number;
+    readonly lastDeltaAtMs: number;
+    readonly nowMs?: number;
+  }>;
 }
 
 function boundedInteger(
@@ -70,6 +77,19 @@ function takeCodePoints(
     end += character.length;
   }
   return { text: value, truncated: false };
+}
+
+function formatCount(value: number): string {
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+  return normalized.toString().replace(/\B(?=(\d{3})+(?!\d))/gu, ",");
+}
+
+function formatLiveDeltaAge(lastDeltaAtMs: number, nowMs: number): string {
+  const elapsedMs = Math.max(0, nowMs - lastDeltaAtMs);
+  if (elapsedMs < 60_000) return `${(elapsedMs / 1_000).toFixed(1)}s`;
+  const elapsedSeconds = Math.floor(elapsedMs / 1_000);
+  const minutes = Math.floor(elapsedSeconds / 60);
+  return `${minutes}m ${String(elapsedSeconds % 60).padStart(2, "0")}s`;
 }
 
 /**
@@ -192,10 +212,22 @@ export function renderReasoningMarker(
   const retainedPreview = takeCodePoints(compactText, previewLimit);
   const preview = retainedPreview.text || "(No visible Thinking text.)";
   const omitted = retainedPreview.truncated || block.truncated;
+  const live = options.live;
+  const sourceChars = live ? live.sourceChars : block.sourceChars;
+  const liveStatus = live
+    ? ` · still receiving · last delta ${formatLiveDeltaAge(
+        live.lastDeltaAtMs,
+        live.nowMs ?? Date.now(),
+      )} ago`
+    : "";
+  const limitNotice = live && sourceChars > live.previewLimitChars
+    ? `  [Live preview limited to ${formatCount(live.previewLimitChars)} chars]\n`
+    : "";
   return palette.gray(
-    `▶ Thinking #${block.id} · ${block.sourceChars} chars · ` +
+    `▶ Thinking #${block.id} · ${formatCount(sourceChars)} chars${liveStatus} · ` +
       `/thinking ${block.id} · VS Code Ctrl/Cmd+click to toggle\n` +
-      `  ${preview}${omitted ? "..." : ""}\n`,
+      `  ${preview}${omitted ? "..." : ""}\n` +
+      limitNotice,
   );
 }
 

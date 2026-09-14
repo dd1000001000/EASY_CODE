@@ -445,6 +445,41 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("keeps live Thinking progress moving after its preview reaches the cap", async () => {
+    await withInteractiveEnvironment(() => {
+      const output = new TtyOutput(); output.resume();
+      const terminal = new Terminal(new TtyInput(), output);
+      const probe = terminal as unknown as { flushModelStreams(): void };
+      try {
+        terminal.configureStreaming({ streamFlushIntervalMs: 1000, streamPreviewMaxChars: 1024 });
+        terminal.beginShell(session()); terminal.setCurrentRequest("Long reasoning stream");
+        const activity = terminal.startActivity("Waiting for model response", "model");
+        terminal.modelStream({ kind: "started", streamId: "reasoning-burst", sequence: 1 });
+        terminal.modelStream({ kind: "reasoning_delta", streamId: "reasoning-burst", sequence: 2,
+          text: `${"a".repeat(1100)} ` });
+        probe.flushModelStreams();
+        let marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
+        assert.match(marker, /Thinking #1 · 1,101 chars · still receiving/u);
+        assert.match(marker, /\[Live preview limited to 1,024 chars\]/u);
+        assert.match(disclosureNodeText(disclosureNode(terminal, "thinking_1")),
+          /Thinking #1 · 1,101 chars · still receiving/u);
+        assert.ok(marker.length < 1300);
+
+        terminal.modelStream({ kind: "reasoning_delta", streamId: "reasoning-burst", sequence: 3,
+          text: "more reasoning" });
+        probe.flushModelStreams();
+        marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
+        assert.match(marker, /Thinking #1 · 1,115 chars · still receiving/u);
+        assert.ok(marker.length < 1300);
+
+        terminal.modelStream({ kind: "completed", streamId: "reasoning-burst", sequence: 4, finishReason: "stop" });
+        marker = terminalState(terminal).transcript.find((entry) => entry.id === "thinking_1")?.text ?? "";
+        assert.doesNotMatch(marker, /still receiving|Live preview limited/u);
+        terminal.stopActivity(activity);
+      } finally { terminal.close(); }
+    });
+  });
+
   it("isolates interrupted attempts and ignores duplicate or late delta events", async () => {
     await withInteractiveEnvironment(() => {
       const output = new TtyOutput(); output.resume();
