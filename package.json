@@ -82,6 +82,10 @@
     "toml": "5.0.0",
     "zod": "3.25.76"
   },
+  "optionalDependencies": {
+    "easy-code-codex-bootstrap-win32-arm64": "npm:@openai/codex@0.153.4-win32-arm64",
+    "easy-code-codex-bootstrap-win32-x64": "npm:@openai/codex@0.153.4-win32-x64"
+  },
   "devDependencies": {
     "@types/diff": "5.2.3",
     "@types/node": "20.19.43",

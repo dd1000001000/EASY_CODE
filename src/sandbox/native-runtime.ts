@@ -5,6 +5,12 @@ import { fileURLToPath } from "node:url";
 import { resolveEasyCodePaths } from "../config/defaults.js";
 
 export const NATIVE_SANDBOX_RUNTIME_PACKAGE = "@openai/codex";
+export const NATIVE_SANDBOX_BOOTSTRAP_VERSION = "0.153.4";
+
+const WINDOWS_BOOTSTRAP_PACKAGES: Readonly<Record<string, string>> = {
+  x64: "easy-code-codex-bootstrap-win32-x64",
+  arm64: "easy-code-codex-bootstrap-win32-arm64",
+};
 
 export interface NativeSandboxTarget {
   packageName: string;
@@ -34,6 +40,28 @@ export function nativeSandboxEntrypoint(): string {
   const require = createRequire(import.meta.url);
   const target = nativeSandboxTarget();
   const packageRoot = path.dirname(require.resolve(`${target.packageName}/package.json`));
+  return path.join(packageRoot, "vendor", target.targetTriple, "bin", target.binaryName);
+}
+
+/**
+ * Return the Windows-only compatibility runtime used to provision a brand-new
+ * elevated sandbox when a known-broken current runtime cannot lock its initial
+ * `.sandbox-bin` directory. Normal commands always use the current runtime.
+ */
+export function nativeSandboxBootstrapEntrypoint(
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+): string {
+  if (platform !== "win32") {
+    throw new Error("The native sandbox bootstrap runtime is Windows-only");
+  }
+  const packageName = WINDOWS_BOOTSTRAP_PACKAGES[architecture];
+  if (!packageName) {
+    throw new Error(`No Windows sandbox bootstrap runtime is available for ${architecture}`);
+  }
+  const require = createRequire(import.meta.url);
+  const packageRoot = path.dirname(require.resolve(`${packageName}/package.json`));
+  const target = nativeSandboxTarget(platform, architecture);
   return path.join(packageRoot, "vendor", target.targetTriple, "bin", target.binaryName);
 }
 
