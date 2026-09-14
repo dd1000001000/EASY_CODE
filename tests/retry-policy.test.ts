@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
@@ -17,13 +17,14 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { normalizeToolFailure } from "../src/tools/errors.js";
+import { baseSessionState } from "./session-state.js";
 
 const request: ModelRequest = { messages: [{ role: "system", content: "policy" }, { role: "user", content: "fix this" }] };
 const ok: ProviderResponse = { message: { role: "assistant", content: "done" }, usage: { totalTokens: 2 } };
 const apiFailure = () => new ProviderError("temporary API failure", { provider: "glm", code: "http_error", statusCode: 503, retryable: true, retryAfterMs: 0 });
 const capacityFailure = () => new ProviderError("maximum context length exceeded", { provider: "glm", code: "context_length_exceeded", statusCode: 400 });
 function provider(complete: ModelProvider["complete"]): ModelProvider { return { name: "glm", model: "test", complete }; }
-function state(): SessionState { return { threadId: "retry", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "test",
+function state(): SessionState { return { ...baseSessionState(), threadId: "retry", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "test",
   thinkingEffort: "none", messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [],
   workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" }; }
 const runOptions = { maxSteps: 10, maxContextChars: 200000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" as const };
@@ -99,7 +100,7 @@ describe("shared retry policy", () => {
       assert.equal(result.reason, "failed"); assert.equal(calls, 3); assert.ok(incompleteModelOutput(response));
     }
   });
-  it("does not give a premature final answer an automatic continuation", async () => {
+  it("gives premature completion a configured correction budget, then pauses", async () => {
     for (const mode of ["plan", "background", "children"] as const) {
       const s = state(); if (mode === "plan") s.mode = "plan";
       let calls = 0;
@@ -107,8 +108,17 @@ describe("shared retry policy", () => {
         hasOpenCommandHandles: () => mode === "background",
         getOutstandingSubagents: () => mode === "children" ? [{ agentId: "child", status: "running" } as any] : [],
       }).run(s, "work", runOptions);
-      assert.equal(calls, 1); assert.equal(result.reason, "failed");
+      assert.equal(calls, 3); assert.equal(result.reason, "paused");
+      assert.equal(result.pause?.resumable, true);
     }
+
+    let calls = 0;
+    const result = await runtime(provider(async () => { calls++; return ok; }), {
+      limits: { ...defaultRuntimeLimits(), prematureFinishRetries: 0 },
+      hasOpenCommandHandles: () => true,
+    }).run(state(), "work", runOptions);
+    assert.equal(calls, 1);
+    assert.equal(result.reason, "paused");
   });
   it("never dispatches a tool attached to truncated output and durably closes its protocol", async () => {
     let calls = 0, executions = 0; const events: string[] = []; const current = state();
@@ -144,7 +154,8 @@ describe("shared retry policy", () => {
       if (++calls === 1) throw capacityFailure();
       assert.doesNotMatch(JSON.stringify(r.messages), /old assistant result/); return ok;
     })).run(s, "new user requirement", runOptions);
-    assert.equal(calls, 2); assert.equal(result.reason, "failed"); assert.match(result.text, /reconciliation/);
+    assert.equal(calls, 4); assert.equal(result.reason, "paused");
+    assert.match(result.pause?.requiredAction ?? "", /query every original pending/iu);
     assert.ok(s.pressureRecovery?.serverReset);
   });
 });

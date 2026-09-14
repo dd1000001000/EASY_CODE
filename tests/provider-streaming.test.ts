@@ -68,7 +68,7 @@ describe("provider streaming", () => {
   it("assembles Chat Completions deltas and emits ordered transient events", async () => {
     activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged streaming registry");
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     let sent: JsonPostRequest | undefined;
     const wire = [
       'data: {"choices":[{"delta":{"reasoning_content":"检查"}}]}\n\n',
@@ -113,7 +113,7 @@ describe("provider streaming", () => {
   it("sends configured tool_stream only for streamed Chat Completions requests with tools", async () => {
     activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged tool streaming registry");
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     const bodies: Array<Record<string, unknown>> = [];
     const provider = createProvider(config, "qwen", undefined, {
       transport: async (request) => {
@@ -211,8 +211,8 @@ describe("provider streaming", () => {
   it("honors maxRetries=0 after a visible stream and leaves retry ownership to Runtime", async () => {
     activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged streaming registry");
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
-    config.qwen.maxRetries = 3;
+    config.providers.qwen!.apiKey = "test-key";
+    config.providers.qwen!.maxRetries = 3;
     let attempts = 0;
     const events: ProviderStreamEvent[] = [];
     const provider = createProvider(config, "qwen", undefined, {

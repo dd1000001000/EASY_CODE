@@ -1,7 +1,8 @@
 import { z } from "zod";
-import type { ChatMessage, EventRecord, SessionState, ToolDefinition, ToolExecutionResult } from "../core/types.js";
+import type { ChatMessage, EventRecord, SessionState, ToolDefinition } from "../core/types.js";
+import type { ContextCompactionJournalEventType } from "../threads/events.js";
 import { MAX_CONTEXT_SUMMARY_CHARS, type ContextManager } from "./manager.js";
-import { createCompactionMetadata } from "./compaction-integrity.js";
+import { createCompactionMetadata } from "./compaction-metadata.js";
 import { evaluateCompactionBenefit } from "./compaction-policy.js";
 import { exactContext, type NormalRequestEnvelope } from "./context-request.js";
 import { budgetedRequest, estimatedTokens } from "./token-budget.js";
@@ -19,13 +20,13 @@ import { assessCapacity, contextHistoryHash, contextRequestKey, type CapacityPau
 import { resetServerContext, capacityResetUsed } from "./server-reset.js";
 import { reconciliationPending } from "./reconciliation.js";
 import { compactionSnapshot, compactionSnapshotSchema, semanticPatchSchema, semanticSummarySchema, createSemanticSummarySchema,
-  inspectSemanticPatch, parseSemanticRequestPatch, parseSemanticCandidatePatch, clipSemanticFields, semanticDocument, conservativeDocument, boundedSummaryDocument, runtimeIntent } from "./semantic-compaction.js";
+  inspectSemanticPatch, parseSemanticRequestPatch, clipSemanticFields, semanticDocument, conservativeDocument, boundedSummaryDocument, runtimeIntent } from "./semantic-compaction.js";
 
 const index = z.number().int().nonnegative();
 const transactionSchema = z.object({
   id: z.string().min(1).max(256), start: index, end: index,
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/u), attempts: index.max(MAX_TOOL_PROTOCOL_ATTEMPTS),
-  maxAttempts: z.number().int().min(1).max(MAX_TOOL_PROTOCOL_ATTEMPTS).optional(),
+  maxAttempts: z.number().int().min(1).max(MAX_TOOL_PROTOCOL_ATTEMPTS),
   status: z.enum(["pending", "committed", "superseded"]),
   snapshot: compactionSnapshotSchema.optional(),
 }).strict();
@@ -67,7 +68,7 @@ export function investigationExchangeStart(messages: readonly ChatMessage[], end
 /** The live Runtime and journal replay use the same strict reducer. Checkpoints
  * deliberately have no authority over this projection or its retry budget. */
 export function foldCompactionControl(state: SessionState, type: string, payload: unknown): void {
-  const control = state.compactionControl ??= { phaseEnds: [] };
+  const control = state.compactionControl;
   if (type === "context.compaction.requested") {
     const p = z.object({ patch: z.unknown().transform(value => parseSemanticRequestPatch(value)) }).strict().parse(payload);
     control.requested = true;
@@ -129,7 +130,8 @@ export function foldCompactionControl(state: SessionState, type: string, payload
     return;
   }
   if (type === "context.compaction.accepted") {
-    const fieldMax = p.semanticFieldMaxChars ?? 1200; // Legacy events predate configurable semantic budgets.
+    if (p.semanticFieldMaxChars === undefined) throw new Error("Missing semantic field budget");
+    const fieldMax = p.semanticFieldMaxChars;
     if (!tx.semantic || !p.semantic || JSON.stringify(p.semantic) !== JSON.stringify(clipSemanticFields(tx.semantic, fieldMax).patch))
       throw new Error("Invalid deterministic semantic repair");
     createSemanticSummarySchema(fieldMax).parse(p.semantic);
@@ -143,7 +145,7 @@ export function foldCompactionControl(state: SessionState, type: string, payload
     return;
   }
   if (type === "context.compaction.attempt") {
-    if (p.attempt !== tx.attempts + 1 || p.attempt > (tx.maxAttempts ?? MAX_TOOL_PROTOCOL_ATTEMPTS)) throw new Error("Invalid compaction attempt ordinal");
+    if (p.attempt !== tx.attempts + 1 || p.attempt > tx.maxAttempts) throw new Error("Invalid compaction attempt ordinal");
     tx.attempts = p.attempt;
     // Keep the previous candidate for field-level correction after a crash.
   } else if (type === "context.compaction.candidate") {
@@ -171,8 +173,7 @@ export function foldCompactionControl(state: SessionState, type: string, payload
   } else throw new Error(`Unknown compaction event: ${type}`);
 }
 
-/** Compatibility name: semantic phases no longer control eligibility. */
-export function eligiblePhaseEnd(state: Readonly<SessionState>, _handlesOpen: boolean,
+export function retirementBoundary(state: Readonly<SessionState>,
   retainRecentExchanges = DEFAULT_RUNTIME_LIMITS.compactionRetainRecentExchanges): number | undefined {
   return retirementBoundaries(state, retainRecentExchanges)[0];
 }
@@ -182,8 +183,7 @@ export interface CompactionResult { requests: number; committed: boolean; paused
 export async function runCompactionTransaction(input: {
   state: SessionState; manager: ContextManager; turnId: string; maxContextChars: number;
   required: boolean; maxRequests: number; retainRecentExchanges?: number;
-  /** Legacy caller hints; recovery is now bounded by request budget and structural exchanges. */
-  handlesOpen?: boolean; maxAttempts?: number;
+  maxAttempts?: number;
   limits?: Readonly<RuntimeLimits>; signal?: AbortSignal; skipSummary?: boolean; forceRecovery?: boolean;
   nextRequest: NormalRequestEnvelope; tool?: ToolDefinition; inventory?: () => string;
   append: (event: Omit<EventRecord, "schemaVersion" | "sequence" | "timestamp" | "eventId">) => Promise<unknown>;
@@ -191,8 +191,6 @@ export async function runCompactionTransaction(input: {
   complete: (messages: ChatMessage[], attempt: number, tools: ToolDefinition[]) => Promise<Extract<ChatMessage, { role: "assistant" }> | undefined>;
   /** Durable steering application must remain outside the auxiliary-provider catch. */
   afterComplete?: () => Promise<void>;
-  /** Legacy adapter, never invoked: isolated candidates cannot execute tools. */
-  execute?: (candidate: Extract<ChatMessage, { role: "assistant" }>) => Promise<ToolExecutionResult>;
 }): Promise<CompactionResult> {
   const { state, manager } = input;
   if (input.signal?.aborted) throw input.signal.reason ?? new Error("Request aborted");
@@ -201,7 +199,7 @@ export async function runCompactionTransaction(input: {
   let committed = false;
   const assess = () => assessCapacity(manager, state, input.maxContextChars, input.nextRequest, limits);
   const requestKey = contextRequestKey(manager, input.maxContextChars, input.nextRequest, limits);
-  const emit = async (type: string, payload: unknown) => {
+  const emit = async (type: ContextCompactionJournalEventType, payload: unknown) => {
     await input.append({ threadId: state.threadId, turnId: input.turnId, type, payload });
     foldCompactionControl(state, type, payload);
   };
@@ -312,7 +310,7 @@ export async function runCompactionTransaction(input: {
 
   let summary: string | undefined;
   const clippingDiagnostics: string[] = [];
-  const maximum = Math.min(current.maxAttempts ?? limits.modelContentRetries + 1, limits.modelContentRetries + 1);
+  const maximum = Math.min(current.maxAttempts, limits.modelContentRetries + 1);
   let lastBody = current.lastBody ?? (current.candidate?.content?.trim() || undefined);
   // A durable dispatch without its response must not be silently re-issued on Resume.
   let stopRequests = current.attempts > (current.candidateAttempt ?? current.attempts);
@@ -325,7 +323,7 @@ export async function runCompactionTransaction(input: {
       try {
         formal = extractSummaryEnvelope(current.candidate.content);
         if (calls.length === 1 && calls[0]!.function.name === "compact_context") {
-          const patch = parseSemanticCandidatePatch(JSON.parse(calls[0]!.function.arguments), limits.contextSemanticFieldMaxChars);
+          const patch = parseSemanticRequestPatch(JSON.parse(calls[0]!.function.arguments), limits.contextSemanticFieldMaxChars);
           semantic = { ...(current.semantic as object ?? {}), ...(patch as object) };
           createSemanticSummarySchema(limits.contextSemanticFieldMaxChars).parse(clipSemanticFields(semantic, limits.contextSemanticFieldMaxChars).patch);
           validSemantic = true;
@@ -426,7 +424,7 @@ export async function runCompactionTransaction(input: {
         semanticFieldMaxChars: limits.contextSemanticFieldMaxChars });
       const metadata = createCompactionMetadata({ state, sourceStartMessageIndex: current.start,
         sourceEndMessageIndex: end, compactedMessageCount: end, benefit });
-      await input.append({ threadId: state.threadId, turnId: input.turnId, type: "context.compacted", phase: "completed",
+      await input.append({ threadId: state.threadId, turnId: input.turnId, type: "context.compaction.committed", phase: "completed",
         payload: { transactionId: current.id, snapshotDigest: snapshot.digest, mode: "semantic",
           coverage: { sourceUnchanged: true, runtimeFactsPinned: true, protectedTailIntact: true,
             evidencePolicy: "observations_only", capacityChecked: true },

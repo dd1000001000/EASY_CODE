@@ -43,12 +43,6 @@ export const easyCodeConfigSchema = z.object({
   worktreeRoot: nonEmptyString,
   providers: z.record(nonEmptyString, providerConfigSchema),
   modelRegistryHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-  // Compatibility aliases remain during the persisted-config migration.
-  qwen: providerConfigSchema,
-  deepseek: providerConfigSchema,
-  kimi: providerConfigSchema,
-  glm: providerConfigSchema,
-  "glm-coding-plan": providerConfigSchema,
 });
 
 export function validateEasyCodeConfig(value: unknown): EasyCodeConfig {

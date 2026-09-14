@@ -78,7 +78,7 @@ export const MAX_MEMORY_REASON_CHARS = 500;
 export const MAX_MEMORY_SEARCH_CHARS = 500;
 
 export interface ApplyModelMemoryMutationsInput {
-  /** Runtime supplied, never a model argument. Legacy importers may omit it. */
+  /** Runtime supplied, never a model argument. Internal non-model callers may omit it. */
   readonly sourceState?: Readonly<SessionState>;
   readonly workspaceId?: string;
   readonly workspaceRoot?: string;
@@ -115,9 +115,14 @@ interface MemoryRow {
 
 interface MemoryProvenance {
   version: 1;
-  verification: "user_stated" | "observed";
+  verification: "user_stated" | "observed" | "runtime_verified" | "model_observed";
   refs: string[];
   files: Array<{ path: string; hash: string }>;
+}
+
+interface MemoryAdmission {
+  confidence: number;
+  status: "active" | "needs_verification";
 }
 
 type MemoryAuditAction =
@@ -147,7 +152,6 @@ interface MemoryAuditEntry {
 interface MemoryEvidenceDocument {
   readonly version: 1;
   readonly history: readonly MemoryAuditEntry[];
-  readonly legacy?: string;
   readonly compacted?: {
     readonly count: number;
     readonly firstTimestamp?: string;
@@ -159,7 +163,6 @@ interface MemoryEvidenceDocument {
 export const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 const SAFE_CONTEXT_ID = /^[\p{L}\p{N}._:-]{1,160}$/u;
-const MAX_LEGACY_EVIDENCE_CHARS = 8_000;
 const MAX_EVIDENCE_HISTORY_ENTRIES = 24;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
 const TENTATIVE_MEMORY = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;
@@ -228,9 +231,6 @@ function memoryContent(value: string, maximum = MAX_MEMORY_CONTENT_CHARS): strin
   ) {
     throw new Error("Memory content contains sensitive information and was not stored");
   }
-  if (TENTATIVE_MEMORY.test(content)) {
-    throw new Error("Tentative or unverified statements cannot be stored as long-term memory");
-  }
   return content;
 }
 
@@ -245,10 +245,25 @@ function memoryReason(value: string): string {
   ) {
     throw new Error("Memory evidence contains sensitive information and was not stored");
   }
-  if (TENTATIVE_MEMORY.test(reason)) {
-    throw new Error("Tentative or unverified evidence cannot support long-term memory");
-  }
   return reason;
+}
+
+function memoryAdmission(provenance: MemoryProvenance | undefined): MemoryAdmission {
+  switch (provenance?.verification) {
+    case "runtime_verified":
+      return { confidence: 0.9, status: "active" };
+    case "observed":
+      return { confidence: 0.82, status: "active" };
+    case "user_stated":
+      return { confidence: 0.8, status: "active" };
+    case "model_observed":
+      return { confidence: 0.55, status: "needs_verification" };
+    default:
+      // Direct/internal callers without a captured model turn retain the
+      // historical trusted behavior. Agent-originated mutations always carry
+      // a provenance document, even when no source reference was supplied.
+      return { confidence: 0.8, status: "active" };
+  }
 }
 
 function snapshot(row: MemoryRow): MemorySnapshot {
@@ -266,7 +281,6 @@ function evidenceDocument(value: string | null): MemoryEvidenceDocument {
     const parsed = JSON.parse(value) as {
       version?: unknown;
       history?: unknown;
-      legacy?: unknown;
       compacted?: MemoryEvidenceDocument["compacted"];
     };
     if (parsed.version === 1 && Array.isArray(parsed.history)) {
@@ -275,20 +289,14 @@ function evidenceDocument(value: string | null): MemoryEvidenceDocument {
         // Evidence emitted by this module is immutable audit data. Newer
         // detailed events are retained and older ones are compacted below.
         history: parsed.history as MemoryAuditEntry[],
-        ...(typeof parsed.legacy === "string"
-          ? { legacy: redactSensitiveInformation(parsed.legacy) }
-          : {}),
         ...(parsed.compacted ? { compacted: parsed.compacted } : {}),
       };
     }
   } catch {
-    // Legacy or damaged evidence is retained below as inert, redacted text.
+    // Unsupported development data remains untouched in SQLite until a current
+    // mutation replaces it; it never enters current prompts or audit history.
   }
-  return {
-    version: 1,
-    history: [],
-    legacy: redactSensitiveInformation(value).slice(0, MAX_LEGACY_EVIDENCE_CHARS),
-  };
+  return { version: 1, history: [] };
 }
 
 function appendEvidence(
@@ -316,7 +324,6 @@ function appendEvidence(
   const document = (): MemoryEvidenceDocument => ({
     version: 1,
     history,
-    ...(previous.legacy ? { legacy: previous.legacy } : {}),
     ...(compacted.count > 0 ? { compacted } : {}),
   });
   while (
@@ -460,7 +467,10 @@ export class MemoryManager {
         limit: candidateLimit,
         minimumSimilarity: 0.1,
         minimumConfidence,
-        includeInactive,
+        // Retrieve tentative candidates from the derived index too. The
+        // authoritative status filter below still excludes expired and
+        // superseded memories unless the caller explicitly requests them.
+        includeInactive: true,
       });
     } catch (error) {
       this.reportVectorError(error);
@@ -483,7 +493,7 @@ export class MemoryManager {
       const memory = this.get(workspaceId, hit.id);
       if (
         !memory ||
-        (!includeInactive && memory.status !== "active") ||
+        (!includeInactive && memory.status !== "active" && memory.status !== "needs_verification") ||
         memory.confidence < minimumConfidence
       ) {
         continue;
@@ -572,36 +582,53 @@ export class MemoryManager {
     const state = input.sourceState;
     if (state.threadId !== input.threadId) throw new Error("Memory evidence belongs to another thread");
     const refs = [...new Set(mutation.sourceRefs ?? [])];
-    if (!refs.length) throw new Error("Durable memory requires sourceRefs; use user or captured evidence IDs, never an unsupported reason alone");
     const files: MemoryProvenance["files"] = [];
-    let userStated = false;
+    let verification: MemoryProvenance["verification"] = "model_observed";
+    const promote = (candidate: MemoryProvenance["verification"]): void => {
+      const rank: Record<MemoryProvenance["verification"], number> = {
+        model_observed: 0,
+        user_stated: 1,
+        observed: 2,
+        runtime_verified: 3,
+      };
+      if (rank[candidate] > rank[verification]) verification = candidate;
+    };
     for (const ref of refs) {
       if (ref === "user") {
-        if (!input.userInput?.trim() || !EXPLICIT_DURABLE_USER_CUE.test(input.userInput)) {
-          throw new Error("User memory evidence must explicitly state a durable preference or convention");
+        if (input.userInput?.trim() && EXPLICIT_DURABLE_USER_CUE.test(input.userInput) &&
+            (mutation.category === "preference" || mutation.category === "convention" || mutation.category === "decision")) {
+          promote("user_stated");
         }
-        if (mutation.category !== "preference" && mutation.category !== "convention" && mutation.category !== "decision") {
-          throw new Error("Repository/environment facts require observed tool evidence");
-        }
-        userStated = true;
         continue;
       }
       const workspaceId = input.workspaceId ?? workspaceIdFromRoot(input.workspaceRoot ?? state.workspaceRoot);
       const row = this.storage.db.prepare<[string, string, string], { content: string; truncated: number; tool: string }>(
         "SELECT content, truncated, tool FROM context_evidence WHERE id = ? AND thread_id = ? AND workspace_id = ?"
       ).get(ref, input.threadId, workspaceId);
-      if (!row || row.truncated) throw new Error("Memory source is missing or truncated");
-      const observed = JSON.parse(row.content);
-      if (observed.ok !== true) throw new Error("Failed tools do not establish a durable project fact");
-      if (row.tool === "read_file" && typeof observed.data?.path === "string" && typeof observed.data?.contentHash === "string") {
+      if (!row || row.truncated) continue;
+      let observed: any;
+      try { observed = JSON.parse(row.content); } catch { continue; }
+      if (observed?.ok !== true) continue;
+      if (["read_file", "create_file", "update_file"].includes(row.tool) &&
+          typeof observed.data?.path === "string" && typeof observed.data?.contentHash === "string") {
         const relative = path.relative(state.workspaceRoot, path.resolve(state.workspaceRoot, observed.data.path));
-        if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Memory source is outside the workspace");
+        if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
         files.push({ path: relative, hash: observed.data.contentHash });
-      } else {
-        throw new Error("Durable project facts currently require versioned read_file evidence; keep other observations in task history");
+        promote("observed");
+        continue;
+      }
+      const validation = observed.data?.validation;
+      const lifecycle = observed.data?.lifecycle;
+      if (["run_command", "poll_command"].includes(row.tool) &&
+          validation?.status === "passed" && validation?.confidence === "high" &&
+          lifecycle?.cleanup === "confirmed") {
+        promote("runtime_verified");
       }
     }
-    return { version: 1, verification: userStated ? "user_stated" : "observed", refs, files };
+    if (TENTATIVE_MEMORY.test(mutation.content) || TENTATIVE_MEMORY.test(mutation.reason)) {
+      verification = "model_observed";
+    }
+    return { version: 1, verification, refs, files };
   }
 
   private searchLexical(
@@ -631,7 +658,7 @@ export class MemoryManager {
                JOIN memories AS m ON m.rowid = memories_fts.rowid
               WHERE memories_fts MATCH ?
                 AND m.workspace_id = ?
-                AND (? = 1 OR m.status = 'active')
+                AND (? = 1 OR m.status IN ('active', 'needs_verification'))
                 AND m.confidence >= ?
               ORDER BY bm25(memories_fts), m.confidence DESC
               LIMIT ?`,
@@ -654,7 +681,7 @@ export class MemoryManager {
       .prepare<[string, number, number], MemoryRow>(
         `SELECT * FROM memories
           WHERE workspace_id = ?
-            AND (? = 1 OR status = 'active')
+            AND (? = 1 OR status IN ('active', 'needs_verification'))
             AND confidence >= ?
           ORDER BY confidence DESC, updated_at DESC
           LIMIT 200`,
@@ -845,12 +872,12 @@ export class MemoryManager {
       `INSERT INTO memories(
          id, workspace_id, category, content, normalized_content, confidence,
          status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const updateActive = this.storage.db.prepare(
       `UPDATE memories
           SET category = ?, content = ?, normalized_content = ?, confidence = ?,
-              status = 'active', evidence = ?, source_thread_id = ?,
+              status = ?, evidence = ?, source_thread_id = ?,
               source_turn_id = ?, updated_at = ?
         WHERE workspace_id = ? AND id = ?`,
     );
@@ -908,6 +935,7 @@ export class MemoryManager {
     this.storage.db.transaction(() => {
       for (const mutation of input.mutations) {
         activeProvenance = provenanceByMutation.get(mutation);
+        const admission = memoryAdmission(activeProvenance);
         const now = new Date().toISOString();
         if (mutation.action === "remember") {
           const category = assertCategory(mutation.category);
@@ -932,10 +960,10 @@ export class MemoryManager {
             continue;
           }
           if (existing) {
-            const confidence = Math.min(
-              0.95,
-              Math.max(existing.confidence, 0.8) + 0.03,
-            );
+            const confidence = admission.status === "active"
+              ? Math.min(0.95, Math.max(existing.confidence, admission.confidence) + 0.03)
+              : Math.max(existing.confidence, admission.confidence);
+            const status = existing.status === "active" ? "active" : admission.status;
             const evidence = appendEvidence(
               existing.evidence,
               modelEvidence(evidenceSource(reason), "upsert", now, {
@@ -947,6 +975,7 @@ export class MemoryManager {
               content,
               normalized,
               confidence,
+              status,
               evidence,
               threadId,
               turnId,
@@ -974,7 +1003,8 @@ export class MemoryManager {
             category,
             content,
             normalized,
-            0.8,
+            admission.confidence,
+            admission.status,
             evidence,
             threadId,
             turnId,
@@ -1032,7 +1062,10 @@ export class MemoryManager {
         if (conflict && conflict.id !== existing.id) {
           throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
         }
-        const confidence = Math.max(existing.confidence, 0.8);
+        const confidence = Math.max(existing.confidence, admission.confidence);
+        const status = existing.status === "active" && normalized === existing.normalized_content
+          ? "active"
+          : admission.status;
 
         if (normalized === existing.normalized_content) {
           const evidence = appendEvidence(
@@ -1046,6 +1079,7 @@ export class MemoryManager {
             content,
             normalized,
             confidence,
+            status,
             evidence,
             threadId,
             turnId,
@@ -1091,6 +1125,7 @@ export class MemoryManager {
           content,
           normalized,
           confidence,
+          admission.status,
           newEvidence,
           threadId,
           turnId,

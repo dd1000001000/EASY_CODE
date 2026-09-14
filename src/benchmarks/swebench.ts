@@ -46,8 +46,6 @@ const HARBOR_AGENT_SETUP_TIMEOUT_MULTIPLIER = "4";
 const HARBOR_MAX_RESUME_RETRIES = "1";
 export const HARBOR_PROVIDER_API_KEY_FILE =
   "/tmp/easy-code-secrets/provider-api-key";
-/** @deprecated Use HARBOR_PROVIDER_API_KEY_FILE. */
-export const HARBOR_GLM_CODING_PLAN_API_KEY_FILE = HARBOR_PROVIDER_API_KEY_FILE;
 export const EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV =
   "EASY_CODE_BENCHMARK_CHECKPOINT_ROOT";
 export const EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV =
@@ -257,19 +255,6 @@ export function consumeHarborProviderApiKeyFile(
       }
     }
   }
-}
-
-/** Compatibility bridge for older Harbor adapters. */
-export function consumeHarborGlmCodingPlanApiKeyFile(
-  trustedOuterSandbox: TrustedOuterSandbox | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-  expectedPath = HARBOR_PROVIDER_API_KEY_FILE,
-): string | undefined {
-  if (!env.EASY_CODE_PROVIDER_API_KEY_FILE && env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE) {
-    env.EASY_CODE_PROVIDER_API_KEY_FILE = env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE;
-    delete env.EASY_CODE_GLM_CODING_PLAN_API_KEY_FILE;
-  }
-  return consumeHarborProviderApiKeyFile(trustedOuterSandbox, env, expectedPath);
 }
 
 export interface HarborRunOptions {

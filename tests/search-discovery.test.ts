@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -13,6 +13,7 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { ContextManager } from "../src/context/manager.js";
 import type { SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 const data = (result: ToolExecutionResult) => result.data as Record<string, any>;
 async function fixture(run: (root: string, search: SearchFilesTool, context: ToolContext) => Promise<void>) {
@@ -121,7 +122,7 @@ describe("project discovery regression", () => {
     assert.ok(validateCommandRequest({ program: "cmd", args: ["/k", "dir"] }));
   });
   it("injects the search hint into the next model request without a reviewer or task termination", async () => fixture(async (root, tool) => {
-    const current: SessionState = { threadId: "discovery", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
+    const current: SessionState = { ...baseSessionState(), threadId: "discovery", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
       workspaceRoot: root, constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],
       commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };

@@ -92,7 +92,7 @@ export class WorkspacePathGuard {
     if (segments.some((segment) => segment.toLowerCase() === ".git")) {
       throw new Error("Git control paths are reserved for the EASY CODE Runtime");
     }
-    if (significantSegments[0]?.toLowerCase() === ".easy-code-srt-runtime") {
+    if (significantSegments[0]?.toLowerCase() === ".easy-code-runtime") {
       throw new Error("Sandbox scratch paths are reserved for the EASY CODE Runtime");
     }
     if (

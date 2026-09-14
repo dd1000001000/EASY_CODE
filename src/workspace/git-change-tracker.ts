@@ -20,7 +20,7 @@ const MAX_CAPTURE_CONCURRENCY = 128;
 // file remains source-controlled project state and must still be audited.
 const TRANSIENT_UNTRACKED_SEGMENTS = new Set([
   ".cache",
-  ".easy-code-srt-runtime",
+  ".easy-code-runtime",
   ".gradle",
   ".mypy_cache",
   ".next",

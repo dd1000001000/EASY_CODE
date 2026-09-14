@@ -90,7 +90,7 @@ describe("per-Thread command approval prefixes", () => {
     );
   });
 
-  it("serializes and clones grants while migrating legacy checkpoints to an empty list", () => {
+  it("serializes and clones grants while rejecting checkpoints outside the current protocol", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -118,7 +118,10 @@ describe("per-Thread command approval prefixes", () => {
 
       const legacy = { ...serialized } as Record<string, unknown>;
       delete legacy.commandApprovalPrefixes;
-      assert.deepEqual(deserializeSessionState(legacy).commandApprovalPrefixes, []);
+      assert.throws(
+        () => deserializeSessionState(legacy),
+        /Invalid command approval prefixes/u,
+      );
     } finally {
       storage.close();
       rmSync(dataDir, { recursive: true, force: true });

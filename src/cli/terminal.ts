@@ -373,13 +373,20 @@ export class Terminal {
     // xterm scrolling the primary buffer to the input cursor before opening
     // or closing the alternate-screen disclosure viewer.
     this.vscodeMenuBridge?.onDisclosureToggle((kind, id) => {
-      // A modal owns both the pixels and the input decision until it closes.
-      // VS Code terminal links are delivered out of band, so they must obey
-      // the same ownership boundary as physical key/mouse input instead of
-      // replacing an approval or picker frame behind the selector.
-      if (this.uiState.overlay || this.guardedInputActive) return;
-      this.openDisclosureViewer(kind, id);
+      this.handleDisclosureToggle(kind, id);
     });
+  }
+
+  /**
+   * Current host-integration boundary for opening a retained disclosure.
+   * VS Code invokes it through the authenticated bridge; tests and future UI
+   * hosts can invoke the same semantic action without injecting terminal bytes.
+   */
+  handleDisclosureToggle(kind: DisclosureKind, id: number): boolean {
+    if (!Number.isSafeInteger(id) || id <= 0) return false;
+    // A modal owns both the pixels and the input decision until it closes.
+    if (this.uiState.overlay || this.guardedInputActive) return false;
+    return this.openDisclosureViewer(kind, id);
   }
 
   isInteractive(): boolean {
@@ -411,10 +418,10 @@ export class Terminal {
       type: "session.set",
       session,
     });
-    this.screen = new ScreenWriter(
-      this.output as NodeJS.WriteStream,
-      () => (this.output as NodeJS.WriteStream).columns,
-    );
+    this.screen = new ScreenWriter({
+      output: this.output as NodeJS.WriteStream,
+      columns: () => (this.output as NodeJS.WriteStream).columns,
+    });
     this.inlineShellActive = true;
     this.output.on("resize", this.onResize);
     return true;
@@ -1049,12 +1056,6 @@ export class Terminal {
                 : `Thinking block #${id} is not available in this thread.`,
             );
           }
-        },
-        onToggleThinking: (id) => {
-          this.openDisclosureViewer("thinking", id);
-        },
-        onToggleAdjustment: (id) => {
-          this.openDisclosureViewer("adjustment", id);
         },
       });
       if (result === null) this.closed = true;
@@ -2166,12 +2167,6 @@ export class Terminal {
           this.setTerminalCursorVisible(true);
         }
       },
-      onToggleThinking: (id) => {
-        this.openDisclosureViewer("thinking", id);
-      },
-      onToggleAdjustment: (id) => {
-        this.openDisclosureViewer("adjustment", id);
-      },
       onShowThinking: (id) => {
         const shown = id === "last"
           ? this.showLatestReasoning()
@@ -2233,18 +2228,6 @@ export class Terminal {
     };
     filter = new PrivateOscInputFilter(
       this.input,
-      (id) => {
-        if (
-          this.busyInputOwner?.filter !== filter ||
-          !this.currentRequestOptions ||
-          this.guardedInputActive ||
-          this.promptActive ||
-          this.rl
-        ) {
-          return;
-        }
-        this.openDisclosureViewer("thinking", id);
-      },
       () => {
         if (
           this.busyInputOwner?.filter !== filter ||
@@ -2256,18 +2239,6 @@ export class Terminal {
           return;
         }
         this.signalCurrentRequestInterrupt();
-      },
-      (id) => {
-        if (
-          this.busyInputOwner?.filter !== filter ||
-          !this.currentRequestOptions ||
-          this.guardedInputActive ||
-          this.promptActive ||
-          this.rl
-        ) {
-          return;
-        }
-        this.openDisclosureViewer("adjustment", id);
       },
     );
     this.busyInputOwner = { filter, wasRaw, wasFlowing, onError };
@@ -2980,14 +2951,6 @@ export class Terminal {
   ): void {
     if (event.type === "input-error") {
       this.writeStableStatus(event.message, "warning");
-      return;
-    }
-    if (event.type === "toggle-thinking") {
-      this.toggleDisclosureFromViewer(viewer, "thinking", event.id);
-      return;
-    }
-    if (event.type === "toggle-adjustment") {
-      this.toggleDisclosureFromViewer(viewer, "adjustment", event.id);
       return;
     }
     if (event.type === "mouse") {

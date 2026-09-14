@@ -141,13 +141,15 @@ export function normalizeToolFailure(result: ToolExecutionResult): ToolExecution
   if (command && typeof command.code === "string" && typeof command.processStarted === "boolean") {
     const execution = data?.lifecycle?.execution ?? command.executionState ?? (command.processStarted ? "unknown" : "not_started");
     const parameter = command.kind === "parameter" && execution === "not_started";
+    const correctableLaunch = execution === "not_started" && command.code === "command_spawn_not_started";
     const denied = command.kind === "policy" || command.kind === "approval";
     return { ...result, failure: {
       version: 1, kind: parameter ? "validation" : "execution", code: safeText(command.code, 80),
       execution: execution === "not_started" ? "not_started" : "unknown",
-      recovery: parameter ? "correct_arguments" : denied ? "none" : "inspect_state",
+      recovery: parameter || correctableLaunch ? "correct_arguments" : denied ? "none" : "inspect_state",
       issues: [], instruction: parameter
         ? "Correct command parameters according to the schema; the process did not start."
+        : correctableLaunch ? "The target process did not start. Correct the executable or launcher and submit a new command; Runtime did not replay it."
         : denied ? "The action was denied. Do not bypass the denial or automatically retry it."
           : "Inspect command status and recorded output before deciding whether to retry. A process may already have produced effects.",
     } };

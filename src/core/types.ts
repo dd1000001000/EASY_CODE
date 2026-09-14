@@ -40,7 +40,7 @@ export type BuiltinToolName =
 export type ToolName = string;
 // Artifact transfer has its own capability; normal command networking stays off.
 
-export type ToolSourceKind = "builtin" | "external" | "legacy";
+export type ToolSourceKind = "builtin" | "external";
 export type ToolEffect =
   | "workspace_read"
   | "workspace_write"
@@ -136,7 +136,7 @@ export type ChatMessage =
       tool_calls?: FunctionToolCall[];
       reasoning_content?: string | null;
     }
-  | { role: "tool"; content: string; tool_call_id: string; name?: string };
+  | { role: "tool"; content: string; tool_call_id: string; name: string };
 
 export interface ToolDefinition {
   type: "function";
@@ -282,12 +282,6 @@ export interface EasyCodeConfig {
   providers: Record<ProviderName, ProviderConfig>;
   /** Hash of the exact model registry used to create/resume the session. */
   modelRegistryHash: string;
-  /** @deprecated Compatibility aliases; new code must use providers. */
-  qwen: ProviderConfig;
-  deepseek: ProviderConfig;
-  kimi: ProviderConfig;
-  glm: ProviderConfig;
-  "glm-coding-plan": ProviderConfig;
 }
 
 /** Shared, bounded failure contract. A correction is not authorization to replay. */
@@ -310,7 +304,7 @@ export interface ToolExecutionResult {
   data?: unknown;
   error?: string;
   failure?: ToolFailureInfo;
-  /** Provider-neutral rich result content. Legacy summary/data remain authoritative during migration. */
+  /** Provider-neutral rich result content; summary/data remain the compact model-facing projection. */
   content?: ToolContent[];
   /** Local-only terminal presentation. AgentRuntime deliberately excludes it from model messages and events. */
   presentation?: ToolPresentation;
@@ -346,15 +340,7 @@ export type ToolContent =
 
 export interface ContextCompactionRequest {
   summary: string;
-  /** Present for structured V2 summaries; omitted only by legacy recovered results. */
-  formatVersion?: 2 | 3;
-  /** Structured user-intent lineage validated and persisted separately by Runtime. */
-  intentLedger?: ContextIntentLedger;
-  /**
-   * Runtime-only coverage attestation used before accepting a compaction.
-   * It is never written into workingSummary or exposed in a tool result.
-   */
-  coverageCheck?: ContextCompactionCoverageCheck;
+  formatVersion: 3;
 }
 
 export interface ContextSourceQuote {
@@ -385,19 +371,7 @@ export interface ContextCompactionMetadata {
   postCompactionUtilization: number;
   safeWaterlineReached: boolean;
   /** Recorded diagnostic target, independent of the hard capacity acceptance. */
-  targetRatio?: number;
-}
-
-export interface ContextCompactionCoverageCheck {
-  coveredMessageIndices: number[];
-  latestMessageIndex: number;
-  latestRequestPreserved: boolean;
-  activeConstraintsPreserved: boolean;
-  activePlanOrTaskPreserved: boolean;
-  unresolvedErrorsPreserved: boolean;
-  currentWorkPreserved: boolean;
-  nextStepPreserved: boolean;
-  note: string;
+  targetRatio: number;
 }
 
 export type LongTermMemoryCategory =
@@ -490,7 +464,7 @@ export interface ToolContext {
   threadId: string;
   turnId: string;
   approvalPolicy: ApprovalPolicyName;
-  /** Omitted by legacy callers; Runtime treats omission as the normal policy-controlled mode. */
+  /** Optional for non-command tools; command tools receive the effective Runtime mode. */
   commandExecutionMode?: CommandExecutionMode;
   /**
    * Process-owned revocation check for unrestricted host access. A background
@@ -530,9 +504,9 @@ export interface AgentTool {
   readonly name: ToolName;
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
-  /** Omitted only by legacy/test tools; Runtime resolves a conservative compatibility profile. */
+  /** Built-ins receive Runtime-owned metadata; every external tool must provide it. */
   readonly metadata?: Readonly<ToolRuntimeMetadata>;
-  /** Legacy/custom tools may omit this; built-in tools validate before execution. */
+  /** Optional when validation is performed by a built-in or adapter-owned boundary. */
   readonly inputSchema?: { parse(input: unknown): unknown };
   execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult>;
 }
@@ -582,7 +556,7 @@ export interface CommandAuditEntry {
     failureKind?: string;
     processStarted?: boolean;
   };
-  /** Runtime task/intent scope; absent in legacy command journals. */
+  /** Runtime task/intent scope when the command belongs to a validation cycle. */
   sourceScopeKey?: string;
   /** Runtime attribution for commands executed by an isolated child worker. */
   sourceAgentRole?: AgentRole;
@@ -613,23 +587,18 @@ export type WorktreeBaseMode = "fresh" | "head" | "current-snapshot";
  * Durable binding between an agent session and its physical checkout. Paths are
  * local-only runtime data and are never copied into model-facing task text.
  */
-export interface ExecutionEnvironmentSnapshot {
+interface ExecutionEnvironmentSnapshotBase {
   id: string;
-  /** Durable V2 identity binding; absent only on legacy environment records. */
-  agentId?: string;
-  parentThreadId?: string;
-  childThreadId?: string;
-  taskId?: string;
-  kind: ExecutionEnvironmentKind;
+  agentId: string;
+  parentThreadId: string;
+  childThreadId: string;
+  taskId: string;
   status: ExecutionEnvironmentStatus;
   logicalWorkspaceRoot: string;
   executionRoot: string;
   requestedIsolation: SubagentIsolationMode;
   baseMode: WorktreeBaseMode;
   repositoryRoot?: string;
-  worktreeRoot?: string;
-  /** Worktree directory layout. Missing means the legacy full-ID layout. */
-  pathLayoutVersion?: 1 | 2;
   /** Best-effort cleanup result retained when provisioning fails. */
   provisioningCleanup?: {
     status: "completed" | "failed";
@@ -644,6 +613,25 @@ export interface ExecutionEnvironmentSnapshot {
   createdAt: string;
   updatedAt: string;
 }
+
+/** Shared execution uses the main checkout and therefore has no Worktree layout. */
+export interface SharedExecutionEnvironmentSnapshot extends ExecutionEnvironmentSnapshotBase {
+  kind: "shared";
+  worktreeRoot?: never;
+  pathLayoutVersion?: never;
+}
+
+/** Every managed Worktree is durably bound to the one current path protocol. */
+export interface WorktreeExecutionEnvironmentSnapshot extends ExecutionEnvironmentSnapshotBase {
+  kind: "worktree";
+  repositoryRoot: string;
+  worktreeRoot: string;
+  pathLayoutVersion: 2;
+}
+
+export type ExecutionEnvironmentSnapshot =
+  | SharedExecutionEnvironmentSnapshot
+  | WorktreeExecutionEnvironmentSnapshot;
 
 export type ResultArtifactStatus =
   | "ready"
@@ -664,7 +652,7 @@ export interface ResultArtifact {
   baseCommit?: string;
   resultCommit?: string;
   snapshotRef?: string;
-  /** Optional on legacy artifacts; Runtime fills the DAG reference with an empty list. */
+  /** Omitted only when the result has no parent artifact lineage. */
   parentArtifactIds?: string[];
   changedFiles: string[];
   createdAt: string;
@@ -697,7 +685,14 @@ export interface ResultArtifactRef {
 }
 
 export type TaskNodeStatus = "pending" | "in_progress" | "completed" | "blocked";
-export type TaskGraphStatus = "active" | "completed" | "blocked";
+export type TaskGraphStatus = "active" | "waiting_input" | "completed" | "terminal_blocked";
+
+export interface TaskBlocker {
+  kind: "dependency" | "user_input" | "environment" | "review" | "implementation";
+  reason: string;
+  recoverable: boolean;
+  evidenceRefs: string[];
+}
 
 export interface TaskCompletionEvidence {
   check: string;
@@ -732,10 +727,9 @@ export type SubagentTaskReport =
 
 interface SubagentAssignmentSnapshotBase {
   agentId: string;
-  /** Present for durable child sessions; absent only on legacy journal events. */
-  childThreadId?: string;
+  childThreadId: string;
   /** Runtime-preallocated physical environment binding. */
-  environmentId?: string;
+  environmentId: string;
   taskId: string;
   taskTitle: string;
   taskDescription: string;
@@ -743,8 +737,7 @@ interface SubagentAssignmentSnapshotBase {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
-  /** Present for worktree-aware assignments; legacy assignments imply shared. */
-  requestedIsolation?: SubagentIsolationMode;
+  requestedIsolation: SubagentIsolationMode;
   createdAt: string;
 }
 
@@ -777,7 +770,8 @@ export interface TaskNode {
   completionEvidence?: TaskCompletionEvidence[];
   /** Runtime-issued result accepted into the DAG lineage. */
   resultArtifact?: ResultArtifactRef;
-  blocker?: string;
+  /** Structured recovery metadata for blocked nodes. */
+  blockerDetails?: TaskBlocker;
   startedAt?: string;
   completedAt?: string;
 }
@@ -845,16 +839,18 @@ export type TurnSteeringBoundary =
 
 export interface SessionState {
   /** Review events are authoritative; never reconstructed from a prose summary. */
-  reviewSessions?: import("../review/session.js").ReviewSession[];
+  reviewSessions: import("../review/session.js").ReviewSession[];
+  /** Runtime-authored completion obligations and their durable correction count. */
+  completionControl?: import("../runtime/completion-gate.js").CompletionControlState;
   delivery?: import("../review/delivery.js").DeliveryObligation;
-  orchestrationEnabled?: boolean;
+  orchestrationEnabled: boolean;
   /** Event-authoritative phase boundaries and compaction transaction budget. */
-  compactionControl?: import("../context/compaction-transaction.js").CompactionControl;
+  compactionControl: import("../context/compaction-transaction.js").CompactionControl;
   /** Journal-authoritative lossy projection; raw history is never deleted. */
   pressureRecovery?: import("../context/pressure-projection.js").PressureRecoveryState;
   contextOperations?: import("../context/pending-operations.js").PendingOperations;
   /** Derived from user/steering/assignment events, never from role names or summary text. */
-  userMessageIndices?: number[];
+  userMessageIndices: number[];
   threadId: string;
   activeTurnId?: string;
   mode: AgentMode;
@@ -863,9 +859,9 @@ export interface SessionState {
   thinkingEffort: ThinkingEffort;
   workspaceRoot: string;
   /** Exact trusted prompt/tool resource identity used for this session. */
-  promptBundle?: PromptBundleBinding;
-  /** Exact user model registry identity; absent only on legacy sessions. */
-  modelRegistryHash?: string;
+  promptBundle: PromptBundleBinding;
+  /** Exact user model registry identity required before a task can resume. */
+  modelRegistryHash: string;
   goal?: string;
   constraints: string[];
   messages: ChatMessage[];
@@ -878,12 +874,12 @@ export interface SessionState {
   taskGraph?: TaskGraph;
   /** Runtime-owned proposal awaiting a user review or an already-approved execution turn. */
   planReview?: PlanReviewState;
-  /** Event-authoritative main-turn steering inbox; legacy checkpoints omit it. */
-  pendingSteering?: TurnSteeringEntry[];
+  /** Event-authoritative main-turn steering inbox. */
+  pendingSteering: TurnSteeringEntry[];
   /** Highest sequence assigned to a durable steering entry. */
-  steeringSequence?: number;
+  steeringSequence: number;
   /** Highest FIFO sequence durably applied to model context. */
-  steeringWatermark?: number;
+  steeringWatermark: number;
   /** Admission seal used to close the enqueue/final-response race. */
   steeringSealedTurnId?: string;
   workingSummary: string;
@@ -894,7 +890,7 @@ export interface SessionState {
   /** Atomic provenance for the currently accepted structured compaction. */
   contextCompactionMetadata?: ContextCompactionMetadata;
   /** Event-authoritative projection of bounded progress evidence and interventions. */
-  progressGuard?: ProgressGuardState;
+  progressGuard: ProgressGuardState;
   createdAt: string;
   updatedAt: string;
 }
@@ -907,7 +903,7 @@ export interface EventRecord {
   stepId?: string;
   sequence: number;
   timestamp: string;
-  type: string;
+  type: import("../threads/events.js").JournalEventType;
   phase?: "requested" | "started" | "completed" | "failed" | "denied" | "interrupted";
   payload: unknown;
 }
@@ -926,7 +922,13 @@ export interface LongTermMemory {
 
 export interface AgentRunResult {
   text: string;
-  reason: "success" | "planned" | "needs_input" | "blocked" | "limit_reached" | "interrupted" | "failed";
+  reason: "success" | "planned" | "needs_input" | "paused" | "blocked" | "limit_reached" | "interrupted" | "failed";
+  pause?: {
+    cause: "completion_protocol" | "review" | "command_environment" | "subagent" | "dag";
+    resumable: true;
+    requiredAction: string;
+    obligations?: import("../runtime/completion-gate.js").CompletionObligation[];
+  };
   /** A recoverable control-plane failure, not evidence that the coding task failed. */
   failure?: { code: "command_environment_quarantined" | "context_compaction_failed" | "context_capacity_insufficient" | "context_capacity_exhausted" | "tool_protocol_failed" | "task_budget_exhausted"; tool: string; attempts: number; recoverable: true };
   steps: number;

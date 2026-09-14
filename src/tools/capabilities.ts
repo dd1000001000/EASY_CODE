@@ -118,30 +118,6 @@ export function builtinToolMetadata(name: BuiltinToolName): Readonly<ToolRuntime
   });
 }
 
-function legacyToolMetadata(tool: Readonly<AgentTool>): Readonly<ToolRuntimeMetadata> {
-  return freezeMetadata({
-    identity: {
-      id: `legacy:${tool.name}`,
-      name: tool.name,
-      displayName: tool.name,
-      sourceId: "legacy",
-      sourceKind: "legacy",
-    },
-    effects: tool.mutating ? ["workspace_write"] : [],
-    // Preserve the old fallback: an unknown custom tool was main-agent work-only.
-    allowedModes: WORK_MODES,
-    allowedRoles: MAIN,
-    taskWork: false,
-    progressExperiment: false,
-    requiresOrchestration: false,
-    requiresVision: false,
-    validationSensitive: tool.mutating,
-    idempotent: !tool.mutating,
-    controlPlane: false,
-    resultClass: "generic",
-  });
-}
-
 export function validateToolMetadata(
   tool: Readonly<AgentTool>,
   metadata: Readonly<ToolRuntimeMetadata>,
@@ -188,8 +164,8 @@ export function validateToolMetadata(
 }
 
 export function toolMetadata(tool: Readonly<AgentTool>): Readonly<ToolRuntimeMetadata> {
-  const metadata = tool.metadata ??
-    (isBuiltinToolName(tool.name) ? builtinToolMetadata(tool.name) : legacyToolMetadata(tool));
+  const metadata = tool.metadata;
+  if (!metadata) throw new Error(`Tool ${tool.name} is missing Runtime metadata`);
   validateToolMetadata(tool, metadata);
   return metadata;
 }

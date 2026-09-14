@@ -19,7 +19,7 @@ import { describe, it } from "./harness.js";
 import { RunCommandTool } from "../src/tools/run-command.js";
 import { benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
 import { NativeAppServerRequestError } from "../src/sandbox/app-server-client.js";
-import { sandboxBoundaryResultFromError } from "../src/sandbox/native-command-error.js";
+import { sandboxBoundaryResultFromError, targetSpawnFailureFromError } from "../src/sandbox/native-command-error.js";
 import { SandboxBoundaryStore } from "../src/command/sandbox-boundary.js";
 
 function context(root: string): ToolContext { return { workspaceRoot: root, mode: "code", threadId: "thread", turnId: "turn", approvalPolicy: "safe", requestApproval: async () => true, commandExecutionMode: "auto_approve", commandTimeoutMs: 10000, maxOutputChars: 256 }; }
@@ -29,7 +29,8 @@ function boundaryDenyingBackend(workspaceRoot: string, backend: "native" | "benc
   return { describe: () => metadata, async prepare(request) {
     const events: SandboxWorkerControl[] = [
       { type: "ready", backend },
-      { type: "execution_dispatched" },
+      { type: "execution_request_sent" },
+      { type: "target_started" },
       { type: "sandbox_boundary_violation", access: "write", destinationCategory: "outside_workspace",
         destination: path.join(workspaceRoot, "..", "cache"), message: "sandbox denied write outside workspace" },
       { type: "execution_exited", exitCode: 1, outcome: "exited" },
@@ -52,7 +53,8 @@ describe("command security floor", () => {
       const metadata = { backend: "benchmark-container" as const, enforced: true, filesystem: "container" as const, network: "denied" as const };
       const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
         const outcome = ++calls === 1 ? "output_limit" : "exited";
-        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "benchmark-container" }, { type: "execution_dispatched" },
+        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "benchmark-container" },
+          { type: "execution_request_sent" }, { type: "target_started" },
           ...benchmarkResultControls({ version: 2, exitCode: 0, outcome, cleanup: "confirmed", workerRestored: true })];
         const frames = events.map(e => encodeSandboxControl(request.commandId, e)).join("");
         const script = `const fs=require('fs');const go=()=>{process.stdout.write('46 passed\\n');fs.writeSync(3,${JSON.stringify(frames)});process.exit(0)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
@@ -114,13 +116,22 @@ describe("command security floor", () => {
     const stream = new SandboxControlStream("owned", event => seen.push(event), true);
     const ready = encodeSandboxControl("owned", { type: "ready", backend: "native" });
     stream.push(ready.slice(0, 10)); stream.push(ready.slice(10));
-    stream.push(encodeSandboxControl("owned", { type: "execution_dispatched" }));
+    stream.push(encodeSandboxControl("owned", { type: "execution_request_sent" }));
+    stream.push(encodeSandboxControl("owned", { type: "target_started" }));
     stream.push(encodeSandboxControl("owned", { type: "sandbox_boundary_violation", access: "write",
       destinationCategory: "outside_workspace", message: "sandbox denied write" }));
     stream.push(encodeSandboxControl("owned", { type: "execution_exited", exitCode: 0 }));
-    assert.equal(seen.length, 4);
+    assert.equal(seen.length, 5);
     assert.throws(() => stream.push(ready), /transition/u);
     assert.throws(() => new SandboxControlStream("owned", () => {}, true).push("untrusted text\n"), /Malformed/u);
+
+    const spawnFailure: SandboxWorkerControl[] = [];
+    const failed = new SandboxControlStream("failed", event => spawnFailure.push(event), true);
+    failed.push(encodeSandboxControl("failed", { type: "ready", backend: "native" }));
+    failed.push(encodeSandboxControl("failed", { type: "execution_request_sent" }));
+    failed.push(encodeSandboxControl("failed", { type: "target_spawn_error", message: "CreateProcess failed" }));
+    failed.push(encodeSandboxControl("failed", { type: "execution_exited", exitCode: 125, outcome: "spawn_failed" }));
+    assert.equal(spawnFailure.some(event => event.type === "target_started"), false);
   });
 
   it("classifies only structured app-server sandbox denials as known boundary exits", () => {
@@ -136,6 +147,53 @@ describe("command security floor", () => {
     assert.equal(sandboxBoundaryResultFromError(new NativeAppServerRequestError(
       "transport closed", -32001, { exitCode: 7 },
     )), undefined);
+    const spawnFailure = targetSpawnFailureFromError(new NativeAppServerRequestError(
+      "runner failed during SpawnChild: CreateProcessAsUserW failed: 193", -32000, {},
+    ));
+    assert.equal(spawnFailure?.exitCode, 125);
+    assert.equal(spawnFailure?.event.type, "target_spawn_error");
+    assert.equal(targetSpawnFailureFromError(new NativeAppServerRequestError(
+      "transport closed after dispatch", -32001, {},
+    )), undefined, "ambiguous transport errors must remain fail-closed");
+  });
+
+  it("does not quarantine a deterministic target spawn failure and permits a corrected command", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-target-spawn-"));
+    try {
+      const workspaceRoot = path.join(root, "workspace"); await mkdir(workspaceRoot);
+      const manager = await WorkspaceManager.create(workspaceRoot);
+      let calls = 0;
+      const metadata = { backend: "native" as const, enforced: true, filesystem: "host" as const, network: "denied" as const };
+      const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
+        const failed = ++calls === 1;
+        const events: SandboxWorkerControl[] = failed
+          ? [{ type: "ready", backend: "native" }, { type: "execution_request_sent" },
+            { type: "target_spawn_error", message: "Windows could not start the target process" },
+            { type: "execution_exited", exitCode: 125, outcome: "spawn_failed" }]
+          : [{ type: "ready", backend: "native" }, { type: "execution_request_sent" }, { type: "target_started" },
+            { type: "execution_exited", exitCode: 0, outcome: "exited" }];
+        const frames = events.map(event => encodeSandboxControl(request.commandId, event)).join("");
+        const script = `const fs=require('fs');const go=()=>{fs.writeSync(3,${JSON.stringify(frames)});process.exit(${failed ? 125 : 0})};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
+        return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot,
+          environment: { ...process.env }, metadata, controlPipe: true, cleanupAfterWorkerExit: true,
+          cleanup: async () => undefined };
+      } };
+      const options = { quarantinePath: path.join(root, "quarantine.json"), lifecycleDirectory: path.join(root, "leases") };
+      const runtime = new CommandRuntime(manager, undefined, backend, undefined, options);
+      const first = await new RunCommandTool(manager, runtime).execute(
+        { program: "node", args: ["--version"], intent: "inspect" }, context(workspaceRoot));
+      const firstData = first.data as import("../src/command/types.js").RunCommandOutput;
+      assert.equal(first.ok, false);
+      assert.equal(firstData.lifecycle?.execution, "not_started");
+      assert.equal(firstData.lifecycle?.cleanup, "confirmed");
+      assert.equal(firstData.failure?.code, "command_spawn_not_started");
+      assert.match(first.summary, /did not start/u);
+      assert.doesNotThrow(() => runtime.assertEnvironmentSafe());
+      const second = await new RunCommandTool(manager, runtime).execute(
+        { program: "node", args: ["--version"], intent: "inspect" }, context(workspaceRoot));
+      assert.equal(second.ok, true);
+      assert.equal(calls, 2, "Runtime must not replay the failed command; only the explicit second request runs");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("persists boundary attempts and consumes an exact host grant only once", async () => {
@@ -170,7 +228,9 @@ describe("command security floor", () => {
       const manager = await WorkspaceManager.create(workspaceRoot);
       const metadata = { backend: "native" as const, enforced: true, filesystem: "host" as const, network: "denied" as const };
       const backend: CommandExecutionBackend = { describe: () => metadata, async prepare(request) {
-        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "native" }, { type: "execution_dispatched" }, { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "Native cleanup was not confirmed" }];
+        const events: SandboxWorkerControl[] = [{ type: "ready", backend: "native" },
+          { type: "execution_request_sent" }, { type: "target_started" },
+          { type: "execution_exited", exitCode: 0 }, { type: "cleanup_error", message: "Native cleanup was not confirmed" }];
         const records = events.map(event => encodeSandboxControl(request.commandId, event)).join("");
         const script = `const fs=require('fs');const go=()=>{process.stdout.write('noise'.repeat(10000));fs.writeSync(3,${JSON.stringify(records)});process.exit(0)};if(process.platform==='win32')process.stdin.once('data',go);else go();`;
         return { executablePath: process.execPath, args: ["-e", script], cwdAbsolute: workspaceRoot, environment: { ...process.env }, metadata, controlPipe: true, cleanup: async () => { throw new Error("Should not release a failed cleanup lease"); } };

@@ -77,8 +77,6 @@ export interface ContextInspection {
   durableActiveChars: number;
   /** Provider projection before the rolling working-set selector is applied. */
   projectedActiveChars: number;
-  /** Backwards-compatible alias for durableHistoryChars. */
-  estimatedChars: number;
   configuredBudgetChars: number;
   budgetChars: number;
   summaryChars: number;
@@ -87,8 +85,6 @@ export interface ContextInspection {
   imageCount: number;
   imageBytes: number;
   estimatedVisionTokens: number;
-  /** Backwards-compatible alias for projectedActiveChars. */
-  estimatedShortTermChars: number;
   estimatedShortTermTokens: number;
   utilization: number;
   pressure: ContextPressureLevel;
@@ -463,7 +459,6 @@ export class ContextManager {
       durableHistoryChars,
       durableActiveChars,
       projectedActiveChars: estimatedShortTermChars,
-      estimatedChars: durableHistoryChars,
       configuredBudgetChars: maxContextChars,
       budgetChars,
       summaryChars: state.workingSummary.length,
@@ -476,7 +471,6 @@ export class ContextManager {
           total + Math.ceil(image.width / 32) * Math.ceil(image.height / 32) + 2,
         0,
       ),
-      estimatedShortTermChars,
       estimatedShortTermTokens: this.estimateShortTermTokens(state),
       utilization,
       pressure: contextPressureLevel(utilization, this.limits),

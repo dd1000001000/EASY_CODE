@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 
 import { ContextManager } from "../src/context/manager.js";
@@ -21,6 +21,7 @@ import {
 } from "../src/runtime/agent.js";
 import { SubmitTaskResultTool } from "../src/tools/submit-task-result.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 const CHILD_AGENT_ID = "subagent_00000000-0000-4000-8000-000000000001";
 
@@ -61,6 +62,7 @@ function state(
 ): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: `thread_subagent_runtime_${suffix}`,
     mode: "code",
     provider: "qwen",
@@ -180,6 +182,8 @@ function standaloneAssignment(
   return {
     kind: "standalone",
     agentId: CHILD_AGENT_ID,
+    childThreadId: `thread_${CHILD_AGENT_ID}`,
+    environmentId: `environment_${CHILD_AGENT_ID}`,
     taskId: "child_00000000000040008000000000000001",
     taskTitle: "Inspect authentication",
     taskDescription: "Inspect authentication without a DAG.",
@@ -187,6 +191,7 @@ function standaloneAssignment(
     provider: "qwen",
     model: "mock",
     thinkingEffort,
+    requestedIsolation: "shared",
     createdAt: "2026-08-27T10:00:00.000Z",
   };
 }
@@ -518,10 +523,9 @@ describe("AgentRuntime subagent boundaries", () => {
       },
     }).run(collectionState, "Use a child", options(3));
 
-    assert.equal(request, 1);
-    assert.equal(result.reason, "failed");
-    assert.match(result.text, /collect all outstanding child/);
-    assert.equal(outstanding, true);
+    assert.equal(request, 3);
+    assert.equal(result.reason, "success");
+    assert.equal(outstanding, false);
   });
 
   it("gives a child only its Code-mode worker tools and hides parent controls and memory", async () => {
@@ -555,7 +559,7 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(visibleTools.includes("read_image"), false);
   });
 
-  it("fails a plain child final and reports the unmet protocol without retry", async () => {
+  it("corrects a plain child final before accepting its structured result", async () => {
     const taskId = "child_plain_final";
     const currentState = state("high", "plain_final");
     let requests = 0;
@@ -573,7 +577,7 @@ describe("AgentRuntime subagent boundaries", () => {
       }
       correctionWasVisible = request.messages.some(
         (message) => message.role === "user" &&
-          message.content.includes("RUNTIME_SUBAGENT_RESULT_PROTOCOL"),
+          message.content.includes("RUNTIME_COMPLETION_REQUIRED"),
       );
       return submitCall("submit_after_runtime_correction", "Verified child result.");
     });
@@ -588,12 +592,11 @@ describe("AgentRuntime subagent boundaries", () => {
       },
     }).run(currentState, "Complete the assigned task", options(2));
 
-    assert.equal(requests, 1);
-    assert.equal(correctionWasVisible, false);
-    assert.equal(result.reason, "failed");
-    assert.equal(result.steps, 1);
-    assert.equal(result.subagentTaskReport, undefined);
-    assert.match(result.text, /without submit_task_result/);
+    assert.equal(requests, 2);
+    assert.equal(correctionWasVisible, true);
+    assert.equal(result.reason, "success");
+    assert.equal(result.steps, 2);
+    assert.equal(result.subagentTaskReport?.outcome, "completed");
   });
 
   it("rejects submit_task_result until the child's command is terminal", async () => {
@@ -661,13 +664,12 @@ describe("AgentRuntime subagent boundaries", () => {
       hasOpenCommandHandles: () => running,
     }).run(currentState, "Complete the assigned task", options(3));
 
-    assert.equal(requests, 1);
-    assert.equal(submitExecutions, 0);
-    assert.equal(sawRuntimeRejection, false);
-    assert.equal(result.reason, "failed");
-    assert.equal(result.subagentTaskReport, undefined);
-    assert.equal(running, true);
-    assert.match(result.text, /BACKGROUND_COMMAND_FINALIZATION_REQUIRED/);
+    assert.equal(requests, 3);
+    assert.equal(submitExecutions, 1);
+    assert.equal(sawRuntimeRejection, true);
+    assert.equal(result.reason, "success");
+    assert.equal(result.subagentTaskReport?.outcome, "completed");
+    assert.equal(running, false);
   });
 
   it("rejects a forged structured result before accepting the bound task report", async () => {

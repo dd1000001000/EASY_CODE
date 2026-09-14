@@ -17,7 +17,7 @@ function decodeControl(payload: string): SandboxWorkerControl | undefined {
     const value = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
     if (!value || typeof value !== "object" || !("type" in value)) return undefined;
     const type = (value as { type?: unknown }).type;
-    if (["execution_dispatched", "cleanup_complete", "cleanup_requested"].includes(String(type))) return value as SandboxWorkerControl;
+    if (["execution_request_sent", "target_started", "cleanup_complete", "cleanup_requested"].includes(String(type))) return value as SandboxWorkerControl;
     if (type === "execution_exited" && Number.isSafeInteger((value as { exitCode?: unknown }).exitCode) &&
         ((value as { outcome?: unknown }).outcome === undefined ||
           ["exited", "timed_out", "canceled", "output_limit", "spawn_failed", "unknown"].includes(String((value as { outcome?: unknown }).outcome)))) return value as SandboxWorkerControl;
@@ -45,7 +45,8 @@ export class SandboxControlStream {
   private pending = "";
   readonly controls: SandboxWorkerControl[] = [];
   private ready = false;
-  private dispatched = false;
+  private requested = false;
+  private started = false;
   private exited = false;
   private cleaned = false;
   constructor(private readonly commandId: string, private readonly observe: (event: SandboxWorkerControl) => void, private readonly strict = false) {}
@@ -61,8 +62,14 @@ export class SandboxControlStream {
         if (this.controls.length >= 64) throw new Error("Sandbox control event bound exceeded");
         if (this.strict) {
           if (control.type === "ready") { if(this.ready||this.cleaned)throw new Error("Invalid ready transition");this.ready=true; }
-          if (control.type === "execution_dispatched") {if(!this.ready||this.dispatched||this.cleaned)throw new Error("Invalid dispatch transition");this.dispatched=true;}
-          if (control.type === "execution_exited") {if(!this.dispatched||this.exited||this.cleaned)throw new Error("Invalid exit transition");this.exited=true;}
+          if (control.type === "execution_request_sent") {if(!this.ready||this.requested||this.cleaned)throw new Error("Invalid request transition");this.requested=true;}
+          if (control.type === "target_started") {if(!this.requested||this.started||this.cleaned)throw new Error("Invalid target-start transition");this.started=true;}
+          if (control.type === "target_spawn_error") {if(!this.requested||this.started||this.exited||this.cleaned)throw new Error("Invalid target-spawn-error transition");}
+          if (control.type === "execution_exited") {
+            if(!this.requested||this.exited||this.cleaned)throw new Error("Invalid exit transition");
+            if(control.outcome !== "spawn_failed" && control.outcome !== "unknown" && !this.started)throw new Error("Exit reported before target start");
+            this.exited=true;
+          }
           if (control.type === "cleanup_complete"||control.type === "cleanup_error") {if(this.cleaned)throw new Error("Duplicate cleanup transition");this.cleaned=true;}
         }
         this.controls.push(control);

@@ -50,13 +50,9 @@ An expanded panel includes its own control line, so it can be closed without scr
   VS Code Ctrl/Cmd+click the Thinking label to close
 ```
 
-The extension makes the first `Thinking #42` span a VS Code terminal link in both forms. Hold the platform modifier while clicking it: by default that is `Ctrl+click` on Windows and Linux, or `Cmd+click` on macOS. Every activation of a current marker, historical marker, or expanded-panel control sends its paired numeric ID back to the same terminal with no trailing newline:
+The extension makes the first `Thinking #42` span a VS Code terminal link in both forms. Hold the platform modifier while clicking it: by default that is `Ctrl+click` on Windows and Linux, or `Cmd+click` on macOS. Every activation sends the paired numeric ID to the same EASY CODE process through the authenticated V2 loopback bridge; it never injects terminal input. If the installed extension and CLI cannot negotiate that bridge, the link reports that the terminal must be restarted after updating the extension instead of falling back to a retired PTY control protocol.
 
-```text
-ESC ] 6973 ; easy-code ; toggle-thinking ; 42 BEL
-```
-
-Use the same modifier+click action again to toggle the panel closed; there is no separate Esc shortcut. Links are offered while the terminal is tracked as running EASY CODE or after the explicit enable command. If the extension host reloads during an already-running session, only a terminal that existed before activation can recover from a strict paired marker; its next shell start/end event revokes that recovered state. For compatibility, the extension also recognizes the older expanded hints. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`. The link handler is bound to the terminal that supplied the marker and emits only the fixed private OSC sequence above; marker text can never become a shell command.
+Use the same modifier+click action again to toggle the panel closed; there is no separate Esc shortcut. Links are offered while the terminal is tracked as running EASY CODE or after the explicit enable command. If the extension host reloads during an already-running session, only a terminal that existed before activation can recover from a strict paired marker; its next shell start/end event revokes that recovered state. A collapsed marker or expanded control must use its exact EASY CODE format and repeat the same positive decimal ID after `/thinking`.
 
 ## Development
 

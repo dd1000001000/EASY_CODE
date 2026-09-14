@@ -1,14 +1,22 @@
 import type { SqliteDatabase } from "./sqlite-database.js";
 
-interface Migration {
-  readonly version: number;
+interface SchemaSection {
   readonly sql: string;
 }
 
-const MIGRATIONS: readonly Migration[] = [
+const CURRENT_SCHEMA_VERSION = 1;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-baseline";
+
+const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
-    version: 1,
     sql: `
+      CREATE TABLE easy_code_schema (
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 1),
+        schema_id TEXT NOT NULL UNIQUE
+      );
+      INSERT INTO easy_code_schema(schema_version, schema_id)
+      VALUES (1, 'easy-code-0.1.0-baseline');
+
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         workspace_root TEXT NOT NULL,
@@ -114,27 +122,32 @@ const MIGRATIONS: readonly Migration[] = [
         exit_code INTEGER,
         duration_ms INTEGER NOT NULL,
         timestamp TEXT NOT NULL,
-        summary TEXT NOT NULL
+        summary TEXT NOT NULL,
+        source_agent_role TEXT,
+        source_agent_id TEXT,
+        source_task_id TEXT
       );
 
       CREATE INDEX tool_audit_thread_timestamp_idx
         ON tool_audit(thread_id, timestamp);
+
+      CREATE INDEX tool_audit_source_agent_idx
+        ON tool_audit(thread_id, source_agent_id, timestamp);
     `,
   },
   {
-    version: 2,
     sql: `
       CREATE TABLE thread_leases (
         thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
         owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
         owner_hostname TEXT NOT NULL,
         owner_token TEXT NOT NULL UNIQUE,
-        acquired_at TEXT NOT NULL
+        acquired_at TEXT NOT NULL,
+        owner_process_identity TEXT
       );
     `,
   },
   {
-    version: 3,
     sql: `
       CREATE TABLE memory_embeddings (
         memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
@@ -226,18 +239,6 @@ const MIGRATIONS: readonly Migration[] = [
     `,
   },
   {
-    version: 4,
-    sql: `
-      ALTER TABLE tool_audit ADD COLUMN source_agent_role TEXT;
-      ALTER TABLE tool_audit ADD COLUMN source_agent_id TEXT;
-      ALTER TABLE tool_audit ADD COLUMN source_task_id TEXT;
-
-      CREATE INDEX tool_audit_source_agent_idx
-        ON tool_audit(thread_id, source_agent_id, timestamp);
-    `,
-  },
-  {
-    version: 5,
     sql: `
       CREATE TABLE context_artifacts (
         id TEXT PRIMARY KEY,
@@ -253,6 +254,7 @@ const MIGRATIONS: readonly Migration[] = [
         importance REAL NOT NULL CHECK(importance >= 0 AND importance <= 1),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
+        metadata_json TEXT,
         UNIQUE(thread_id, source_key)
       );
 
@@ -398,35 +400,7 @@ const MIGRATIONS: readonly Migration[] = [
     `,
   },
   {
-    version: 6,
     sql: `
-      DROP TRIGGER context_artifacts_vector_state_delete;
-      CREATE TRIGGER context_artifacts_vector_state_delete
-      AFTER DELETE ON context_artifacts BEGIN
-        INSERT INTO context_vector_state(thread_id, generation, updated_at)
-        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
-        ON CONFLICT(thread_id) DO UPDATE SET
-          generation = context_vector_state.generation + 1,
-          updated_at = excluded.updated_at;
-      END;
-
-      DROP TRIGGER context_embeddings_vector_state_delete;
-      CREATE TRIGGER context_embeddings_vector_state_delete
-      AFTER DELETE ON context_artifact_embeddings BEGIN
-        INSERT INTO context_vector_state(thread_id, generation, updated_at)
-        SELECT old.thread_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE EXISTS (SELECT 1 FROM threads WHERE id = old.thread_id)
-        ON CONFLICT(thread_id) DO UPDATE SET
-          generation = context_vector_state.generation + 1,
-          updated_at = excluded.updated_at;
-      END;
-    `,
-  },
-  {
-    version: 7,
-    sql: `
-      ALTER TABLE context_artifacts ADD COLUMN metadata_json TEXT;
       CREATE TABLE memory_provenance (
         memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
         document_json TEXT NOT NULL
@@ -457,42 +431,42 @@ const MIGRATIONS: readonly Migration[] = [
     `,
   },
   {
-    version: 8,
     sql: `CREATE TABLE context_token_samples (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT,
       scope TEXT NOT NULL, ratio REAL NOT NULL CHECK(ratio > 0)
     );
     CREATE INDEX context_token_samples_scope_idx ON context_token_samples(scope, sequence);`,
   },
-  {
-    version: 9,
-    sql: "ALTER TABLE thread_leases ADD COLUMN owner_process_identity TEXT;",
-  },
 ];
 
-export function runMigrations(db: SqliteDatabase): void {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      version INTEGER PRIMARY KEY,
-      applied_at TEXT NOT NULL
-    );
-  `);
-
-  const appliedRows = db
-    .prepare<[], { version: number }>("SELECT version FROM schema_migrations")
-    .all();
-  const applied = new Set(appliedRows.map((row) => row.version));
-  const insertMigration = db.prepare(
-    "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
-  );
-
-  for (const migration of MIGRATIONS) {
-    if (applied.has(migration.version)) continue;
-
+export function initializeCurrentSchema(db: SqliteDatabase): void {
+  const objects = db.prepare<[], { name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+  ).all();
+  if (objects.length === 0) {
     db.transaction(() => {
-      db.exec(migration.sql);
-      insertMigration.run(migration.version, new Date().toISOString());
-      db.pragma(`user_version = ${migration.version}`);
+      for (const section of CURRENT_SCHEMA_SECTIONS) db.exec(section.sql);
+      db.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`);
     })();
+    return;
+  }
+
+  if (!objects.some((object) => object.name === "easy_code_schema")) {
+    throw new Error(
+      "Unsupported EASY CODE development database. Remove the local data directory and create a new task.",
+    );
+  }
+  const identity = db.prepare<[], { schema_version: number; schema_id: string }>(
+    "SELECT schema_version, schema_id FROM easy_code_schema",
+  ).get();
+  const userVersion = db.pragma("user_version", { simple: true });
+  if (
+    identity?.schema_version !== CURRENT_SCHEMA_VERSION ||
+    identity.schema_id !== CURRENT_SCHEMA_ID ||
+    userVersion !== CURRENT_SCHEMA_VERSION
+  ) {
+    throw new Error(
+      "Unsupported EASY CODE development database. Remove the local data directory and create a new task.",
+    );
   }
 }

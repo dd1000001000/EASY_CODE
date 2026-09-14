@@ -1,10 +1,11 @@
 import { execa } from "execa";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { containWindowsWorker, type WindowsCommandJob } from "./windows-job.js";
 import { ExecutionJournal } from "./execution-journal.js";
 import type { CommandOutputArchive } from "./output-archive.js";
 import type { ToolContext } from "../core/types.js";
+import type { CommandJournalEventType } from "../threads/events.js";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -36,6 +37,7 @@ import { resolveCommandTimeoutBudget } from "./timeout.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import { assertExecutionCapabilities, SandboxCapabilityError } from "../sandbox/capabilities.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
+import { windowsCreateProcessFailureCode } from "../sandbox/native-command-error.js";
 import {
   summarizeWorkspaceDelta,
   type CommandExecutionOutput,
@@ -67,7 +69,12 @@ export interface CommandRuntimeOptions {
   /** Runtime-owned state; persists correction counts and exact one-shot grants across Resume. */
   boundaryStatePath?: string;
   createOutputArchive?: (commandId: string, context: ToolContext) => CommandOutputArchive;
-  recordLifecycle?: (context: ToolContext, commandId: string, type: string, payload: unknown) => void;
+  recordLifecycle?: (
+    context: ToolContext,
+    commandId: string,
+    type: CommandJournalEventType,
+    payload: unknown,
+  ) => void;
 }
 
 interface BackgroundCommandOwner {
@@ -160,10 +167,29 @@ export class CommandRuntime {
   private readonly boundaryStore: SandboxBoundaryStore;
 
   assertEnvironmentSafe(backend: CommandExecutionBackend = this.executionBackend): void {
-    backend.assertEnvironmentSafe?.();
-    this.executionJournal.assertRecovered();
+    this.reconcileDeterministicSpawnFailures();
+    try {
+      backend.assertEnvironmentSafe?.();
+      this.executionJournal.assertRecovered();
+    } catch (error) {
+      if (error instanceof CommandEnvironmentQuarantined) throw error;
+      throw new CommandEnvironmentQuarantined(
+        `Command environment is not safe for mutations: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     if (this.quarantineReason || (this.options.quarantinePath && existsSync(this.options.quarantinePath))) {
       throw new CommandEnvironmentQuarantined(`Command environment quarantined; inspect cleanup before resuming mutations: ${this.quarantineReason ?? this.options.quarantinePath}`);
+    }
+  }
+
+  /** Health projection may reconcile authoritative not-started evidence. It
+   * never runs/replays a command or guesses an unknown outcome. */
+  environmentFault(): string | undefined {
+    try {
+      this.assertEnvironmentSafe();
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -175,6 +201,28 @@ export class CommandRuntime {
       writeFileSync(this.options.quarantinePath, JSON.stringify({ version: 2, code, workspace: this.workspace.root,
         backend: backend.describe().backend, reason: sanitizeCommandOutput(reason).slice(0, 2048), at: new Date().toISOString() }), { mode: 0o600 });
     }
+  }
+
+  private reconcileDeterministicSpawnFailures(): void {
+    const recovered = this.executionJournal.reconcileDeterministicNotStarted();
+    if (this.executionJournal.hasUnfinishedLeases()) return;
+    const markerPath = this.options.quarantinePath;
+    if (!recovered.length && (!markerPath || !existsSync(markerPath))) return;
+    if (markerPath && existsSync(markerPath)) {
+      try {
+        const marker = JSON.parse(readFileSync(markerPath, "utf8")) as {
+          version?: unknown; backend?: unknown; workspace?: unknown; reason?: unknown;
+        };
+        if (marker.version !== 2 || marker.backend !== "native" || typeof marker.workspace !== "string" ||
+          path.resolve(marker.workspace) !== path.resolve(this.workspace.root) || typeof marker.reason !== "string" ||
+          windowsCreateProcessFailureCode(marker.reason) === undefined) return;
+        unlinkSync(markerPath);
+      } catch {
+        // Malformed or concurrently changed recovery state stays fail-closed.
+        return;
+      }
+    }
+    this.quarantineReason = undefined;
   }
 
   constructor(
@@ -679,7 +727,7 @@ export class CommandRuntime {
     const timeoutMs = timeout.effectiveMs;
     let timeoutPhase: "initialization" | "command" | "cleanup" | undefined;
     const workerStartedAt = Date.now();
-    let dispatchedAt: number | undefined;
+    let requestSentAt: number | undefined;
     let executionEndedAt: number | undefined;
     let canceled = false;
     let result: ProcessResult = {};
@@ -737,7 +785,7 @@ export class CommandRuntime {
           if (process.platform === "win32") subprocess.stdin?.write("TERMINATE\n");
           else if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
         }
-      } else if (windowsJob && dispatched && !protocolError && !cleanupError) {
+      } else if (windowsJob && requestSent && !protocolError && !cleanupError) {
         if (!cooperativeStop) {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
@@ -763,7 +811,8 @@ export class CommandRuntime {
     };
     let readyProbe = "";
     let readyObserved = !prepared.metadata.enforced && !prepared.controlPipe;
-    let dispatched = !prepared.metadata.enforced && !prepared.controlPipe;
+    let requestSent = !prepared.metadata.enforced && !prepared.controlPipe;
+    let targetStarted = !prepared.metadata.enforced && !prepared.controlPipe;
     let targetExitCode: number | undefined;
     let targetOutcome: Extract<SandboxWorkerControl, { type: "execution_exited" }>["outcome"];
     let cleanupConfirmed = !prepared.metadata.enforced && !prepared.controlPipe;
@@ -813,11 +862,15 @@ export class CommandRuntime {
       this.executionJournal.record(commandId, control.type, control);
       this.options.recordLifecycle?.(context, commandId, `command.${control.type}`, control);
       if (control.type === "ready") { readyObserved = true; if (!prepared.controlPipe) armTimeout("command", timeoutMs); }
-      if (control.type === "execution_dispatched") {
-        dispatched = true; dispatchedAt = Date.now(); armTimeout("command", timeoutMs); announceStarted();
+      if (control.type === "execution_request_sent") {
+        requestSent = true; requestSentAt = Date.now(); armTimeout("command", timeoutMs); announceStarted();
+      }
+      if (control.type === "target_started") {
+        targetStarted = true;
       }
       if (control.type === "execution_exited") {
         targetExitCode = control.exitCode; targetOutcome = control.outcome; executionEndedAt = Date.now();
+        if (!["spawn_failed", "unknown"].includes(control.outcome ?? "exited")) targetStarted = true;
         // Cleanup latency must not turn a completed target into a test timeout.
         armTimeout("cleanup", this.limits.sandboxCleanupTimeoutMs);
       }
@@ -840,11 +893,7 @@ export class CommandRuntime {
     subprocess.stderr?.on("data", (chunk: Buffer | string) => {
       verification.push("stderr", chunk);
       stderr.push(chunk);
-      if (!prepared.controlPipe) {
-        observeReady(chunk);
-        // Legacy/test workers: remember controls independently from clipped output.
-        try { controlStream.push(chunk); } catch { /* Untrusted legacy stdout cannot prove an unstarted target. */ }
-      }
+      if (!prepared.controlPipe) observeReady(chunk);
     });
 
     const onAbort = (): void => {
@@ -864,7 +913,7 @@ export class CommandRuntime {
       prepared.metadata.enforced || prepared.controlPipe ? "initialization" : "command",
       prepared.metadata.enforced || prepared.controlPipe ? sandboxStartupTimeoutMs : timeoutMs,
     );
-    if (!prepared.metadata.enforced && !prepared.controlPipe) { dispatchedAt = Date.now(); announceStarted(); }
+    if (!prepared.metadata.enforced && !prepared.controlPipe) { requestSentAt = Date.now(); announceStarted(); }
 
     if (prepared.controlPipe && !prepared.externalLifecycle && process.platform === "win32" &&
       prepared.windowsJobContainment !== false) {
@@ -898,6 +947,7 @@ export class CommandRuntime {
       this.quarantine(cleanupError, executionBackend);
     }
 
+    const targetSpawnReported = lifecycleEvents.some(control => control.type === "target_spawn_error");
     let pendingCleanupFiles: string[] | undefined;
     try {
       if (prepared.externalLifecycle) {
@@ -908,9 +958,14 @@ export class CommandRuntime {
         // recover cleanup certainty. Execution remains unknown/non-retryable.
         cleanupConfirmed = true;
         cleanupError = undefined;
-        if (dispatched && targetExitCode === undefined) targetOutcome = "unknown";
+        if (requestSent && targetExitCode === undefined) targetOutcome = "unknown";
       } else if (prepared.cleanupAfterWorkerExit &&
-        (targetOutcome === "exited" || targetOutcome === "timed_out" || targetOutcome === "canceled")) {
+        (targetOutcome === "exited" || targetOutcome === "timed_out" || targetOutcome === "canceled" ||
+          targetOutcome === "spawn_failed" && targetSpawnReported && !targetStarted)) {
+        await prepared.cleanup(); cleanupConfirmed = true; cleanupError = undefined;
+      } else if (prepared.cleanupAfterWorkerExit && !requestSent && !protocolError) {
+        // Initialization ended before the target request. The backend owns the
+        // scratch directory, so no target-process cleanup is required.
         await prepared.cleanup(); cleanupConfirmed = true; cleanupError = undefined;
       } else if (prepared.cleanupAfterTermination && terminationResult?.confirmed &&
         (cleanupError !== undefined || !cleanupConfirmed)) {
@@ -952,7 +1007,8 @@ export class CommandRuntime {
       control.type === "stage"
     );
     const sandboxReady = readyObserved;
-    const provenNotStarted = !dispatched && !readyObserved && !protocolError && cleanupConfirmed &&
+    const provenSpawnNotStarted = targetSpawnError?.type === "target_spawn_error" && !targetStarted && cleanupConfirmed;
+    const provenNotStarted = provenSpawnNotStarted || !requestSent && !protocolError && cleanupConfirmed &&
       (!prepared.externalLifecycle || sandboxError?.type === "sandbox_error");
     const retryableInitialization = provenNotStarted && timeoutPhase === "initialization";
     const sandboxUnavailableMessage = protocolError ?? (sandboxError?.type === "sandbox_error"
@@ -1036,11 +1092,13 @@ export class CommandRuntime {
           : status === "spawn_failed"
             ? {
                 kind: "runtime",
-                code: "target_spawn_failed",
-                message: dispatched ? "Execution was dispatched but its target outcome is unknown; do not rerun automatically" : targetSpawnError?.type === "target_spawn_error"
+                code: provenNotStarted ? "command_spawn_not_started" : "target_spawn_failed",
+                message: provenSpawnNotStarted && targetSpawnError?.type === "target_spawn_error"
                   ? targetSpawnError.message
-                  : "Runtime could not start the target process",
-                processStarted: dispatched,
+                  : requestSent ? "The target outcome is unknown; do not rerun automatically"
+                    : "Runtime could not start the target process",
+                processStarted: targetStarted,
+                executionState: provenNotStarted ? "not_started" : "unknown",
                 retryable: false,
               }
             : sandboxUnavailableMessage
@@ -1096,12 +1154,12 @@ export class CommandRuntime {
       exitCode: targetExitCode ?? (typeof result.exitCode === "number" ? result.exitCode : null),
       lifecycle: {
         timings: { preparationMs: workerStartedAt - preparingAt,
-          initializationMs: (dispatchedAt ?? executionEndedAt) - workerStartedAt,
-          executionMs: dispatchedAt === undefined ? 0 : executionEndedAt - dispatchedAt,
+          initializationMs: (requestSentAt ?? executionEndedAt) - workerStartedAt,
+          executionMs: requestSentAt === undefined ? 0 : executionEndedAt - requestSentAt,
           cleanupMs: Date.now() - executionEndedAt },
         ...(timeoutPhase ? { timeoutPhase } : {}),
         ...(targetOutcome ? { outcome: targetOutcome } : {}),
-        execution: targetOutcome === "unknown" || targetOutcome === "spawn_failed" ? "unknown" :
+        execution: provenNotStarted ? "not_started" : targetOutcome === "unknown" || targetOutcome === "spawn_failed" ? "unknown" :
           targetExitCode !== undefined || !prepared.controlPipe && !prepared.metadata.enforced && typeof result.exitCode === "number" ? "exited" : provenNotStarted ? "not_started" : "unknown",
         cleanup: cleanupError ? "failed" : !prepared.metadata.enforced && !prepared.controlPipe ? "not_required" : cleanupConfirmed ? "confirmed" : "unconfirmed",
         ...(cleanupError ? { cleanupError } : {}),

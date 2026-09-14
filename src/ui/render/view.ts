@@ -39,27 +39,21 @@ export const ACTIVITY_SPINNER_FRAMES = [
 
 /** Shared, process-independent settings for all pure terminal views. */
 export interface RenderViewOptions {
-  /** Terminal display cells. `width` is accepted as a descriptive alias. */
+  /** Terminal display cells. */
   readonly columns?: number;
-  readonly width?: number;
   /** Physical terminal rows used to keep modal controls visible. */
   readonly rows?: number;
-  /** Emit EASY CODE-owned SGR styles. `colors` is accepted as an alias. */
+  /** Emit EASY CODE-owned SGR styles. */
   readonly color?: boolean;
-  readonly colors?: boolean;
   /** Both compact lists have a hard safety ceiling of five detail entries. */
-  readonly maxTasks?: number;
   readonly maxTaskRows?: number;
-  readonly maxAgents?: number;
   readonly maxAgentRows?: number;
-  readonly maxProgress?: number;
   readonly maxProgressRows?: number;
   readonly maxThinkingLines?: number;
   readonly maxThinkingRows?: number;
   readonly maxOverlayRows?: number;
   /** Override the effort-derived child capacity shown in the Agents heading. */
   readonly agentConcurrencyLimit?: number;
-  readonly concurrencyLimit?: number;
   /** Deterministic spinner override, useful for a renderer-owned animation tick. */
   readonly spinnerFrame?: number | string;
   readonly busyPlaceholder?: string;
@@ -85,10 +79,6 @@ export interface FixedBottomRegions {
   /** Contiguous rows in the required status -> Tasks -> Agents order. */
   readonly lines: readonly string[];
 }
-
-/** Naming aliases for integrations that group these helpers under the UI view. */
-export type ViewRenderOptions = RenderViewOptions;
-export type UIViewRenderOptions = RenderViewOptions;
 
 /** Render the stable EASY CODE session card shown above terminal scrollback. */
 export function renderSessionHeader(
@@ -572,7 +562,7 @@ function renderProgress(
   const palette = viewPalette(options);
   const columns = viewColumns(options);
   const maximum = boundedOption(
-    options.maxProgressRows ?? options.maxProgress,
+    options.maxProgressRows,
     8,
     1,
     20,
@@ -616,7 +606,7 @@ export function renderTaskStatusLines(
   const columns = viewColumns(options);
   const position = taskPosition(graph);
   const maximum = boundedOption(
-    options.maxTaskRows ?? options.maxTasks,
+    options.maxTaskRows,
     MAX_COMPACT_TASK_ROWS,
     1,
     MAX_COMPACT_TASK_ROWS,
@@ -690,14 +680,14 @@ export function renderAgentStatusLines(
   const palette = viewPalette(options);
   const columns = viewColumns(options);
   const maximum = boundedOption(
-    options.maxAgentRows ?? options.maxAgents,
+    options.maxAgentRows,
     MAX_COMPACT_AGENT_ROWS,
     1,
     MAX_COMPACT_AGENT_ROWS,
   );
   const active = agents.filter((agent) => isActiveAgent(agent.status)).length;
   const capacity = boundedOption(
-    options.agentConcurrencyLimit ?? options.concurrencyLimit,
+    options.agentConcurrencyLimit,
     state.header.session?.agentConcurrencyLimit ?? effortAgentCapacity(state.header.session?.thinkingEffort),
     1,
     99,
@@ -1015,6 +1005,7 @@ function agentIcon(status: SubagentStatus): string {
     case "stopping": return "◌";
     case "completed": return "✓";
     case "blocked": return "⊠";
+    case "needs_parent_decision": return "?";
     case "failed": return "✗";
     case "stopped": return "■";
     case "interrupted": return "!";
@@ -1030,6 +1021,7 @@ function styleAgentStatus(
     case "running": return palette.cyan(text);
     case "stopping":
     case "blocked": return palette.yellow(text);
+    case "needs_parent_decision": return palette.yellow(text);
     case "completed": return palette.green(text);
     case "failed":
     case "interrupted": return palette.red(text);
@@ -1049,6 +1041,7 @@ function agentDetail(agent: Readonly<SubagentView>): string {
     case "completed":
       return safeInline(agent.result?.summary ?? "Completed");
     case "blocked":
+    case "needs_parent_decision":
       return safeInline(
         agent.result?.outcome === "blocked"
           ? agent.result.blocker
@@ -1166,11 +1159,11 @@ function viewPalette(options: RenderViewOptions): ChalkInstance {
 }
 
 function viewColor(options: RenderViewOptions): boolean {
-  return options.color ?? options.colors ?? false;
+  return options.color ?? false;
 }
 
 function viewColumns(options: RenderViewOptions): number {
-  return boundedOption(options.columns ?? options.width, DEFAULT_VIEW_COLUMNS, 1, 10_000);
+  return boundedOption(options.columns, DEFAULT_VIEW_COLUMNS, 1, 10_000);
 }
 
 function viewRows(options: RenderViewOptions): number {

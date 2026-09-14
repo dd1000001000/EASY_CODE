@@ -267,6 +267,12 @@ class SplitBenchmarkEnvironment:
             argv += [data["program"], *data["args"]]
             with (directory / "stdout").open("wb") as stdout, (directory / "stderr").open("wb") as stderr:
                 proc = subprocess.Popen(argv, stdout=stdout, stderr=stderr)
+                # This marker is written only after Popen returned a process.
+                # The Node worker uses it as backend-independent proof that the
+                # target crossed the operating-system spawn boundary.
+                marker = directory / "target-started.pending"
+                marker.write_text(str(data.get("commandId", "")), encoding="utf-8")
+                marker.replace(directory / "target-started")
                 deadline = time.monotonic() + min(max(data.get("timeoutMs", 120000), 1), 1200000) / 1000
                 while proc.poll() is None:
                     oversized = stdout.tell() + stderr.tell() > 32 * 1024 * 1024
@@ -418,7 +424,7 @@ class SplitBenchmarkEnvironment:
                     continue
                 if member.name.startswith("/") or ".." in parts or "\\" in member.name:
                     raise RuntimeError("Unsafe workspace archive path")
-                if any(p in (".git", ".easycode", ".easy-code-srt-runtime") for p in parts):
+                if any(p in (".git", ".easycode", ".easy-code-runtime") for p in parts):
                     continue
                 # Dependencies stay in the private worker; never copy their links
                 # or large contents back into the controller's source snapshot.

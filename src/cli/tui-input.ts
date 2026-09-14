@@ -64,8 +64,6 @@ export type TuiInputEvent =
   | { readonly type: "key"; readonly key: TuiKey }
   | TuiMouseEvent
   | { readonly type: "paste-image" }
-  | { readonly type: "toggle-thinking"; readonly id: number }
-  | { readonly type: "toggle-adjustment"; readonly id: number }
   | {
       readonly type: "input-error";
       readonly code: TuiInputErrorCode;
@@ -363,8 +361,6 @@ export type TuiInputEffect =
     }
   | { readonly type: "mouse"; readonly event: TuiMouseEvent }
   | { readonly type: "paste-image" }
-  | { readonly type: "toggle-thinking"; readonly id: number }
-  | { readonly type: "toggle-adjustment"; readonly id: number }
   | {
       readonly type: "input-error";
       readonly code: TuiInputErrorCode;
@@ -402,14 +398,6 @@ export function reduceTuiInput(
   }
   if (event.type === "paste-image") {
     effects.push({ type: "paste-image" });
-    return { state: next, effects };
-  }
-  if (event.type === "toggle-thinking") {
-    effects.push({ type: "toggle-thinking", id: event.id });
-    return { state: next, effects };
-  }
-  if (event.type === "toggle-adjustment") {
-    effects.push({ type: "toggle-adjustment", id: event.id });
     return { state: next, effects };
   }
   if (event.type === "mouse") {
@@ -664,16 +652,6 @@ function isPrintableUnicodeScalar(codePoint: number): boolean {
 
 function parsePrivateAction(payload: string): TuiInputEvent | undefined {
   if (payload === "paste-image") return { type: "paste-image" };
-  const thinking = /^(?:toggle|show)-thinking;([1-9][0-9]{0,15})$/u.exec(payload);
-  if (thinking) {
-    const id = Number(thinking[1]);
-    if (Number.isSafeInteger(id)) return { type: "toggle-thinking", id };
-  }
-  const adjustment = /^toggle-adjustment;([1-9][0-9]{0,15})$/u.exec(payload);
-  if (adjustment) {
-    const id = Number(adjustment[1]);
-    if (Number.isSafeInteger(id)) return { type: "toggle-adjustment", id };
-  }
   return undefined;
 }
 

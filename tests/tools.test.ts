@@ -211,14 +211,8 @@ describe("workspace file tools", () => {
     const persisted = JSON.parse(accepted.contextCompaction?.summary ?? "{}") as {
       formatVersion?: number;
       activeConstraints?: Array<{ sourceMessageIndex: number; text: string }>;
-      coverageCheck?: unknown;
-      intentLedger?: unknown;
     };
     assert.deepEqual(persisted, input);
-    assert.equal(persisted.coverageCheck, undefined);
-    assert.equal(persisted.intentLedger, undefined);
-    assert.equal(accepted.contextCompaction?.intentLedger, undefined);
-    assert.equal(accepted.contextCompaction?.coverageCheck, undefined);
     assert.equal(accepted.contextCompaction?.formatVersion, 3);
     assert.deepEqual(accepted.data, { formatVersion: 3 });
     assert.match(accepted.summary, /Runtime has not committed/);
@@ -514,7 +508,7 @@ describe("workspace file tools", () => {
 
   it("always hides Runtime sandbox scratch data from file tools and snapshots", async () => {
     await withWorkspace(async (root, manager) => {
-      const scratch = path.join(root, ".easy-code-srt-runtime", "command-fixture");
+      const scratch = path.join(root, ".easy-code-runtime", "command-fixture");
       await mkdir(scratch, { recursive: true });
       await writeFile(path.join(scratch, "worker-payload.json"), "secret argv", "utf8");
       await writeFile(path.join(root, "visible.txt"), "workspace content\n", "utf8");
@@ -525,13 +519,13 @@ describe("workspace file tools", () => {
       assert.deepEqual([...snapshot.files.keys()], ["visible.txt"]);
 
       const result = await new ReadFileTool(manager).execute(
-        { path: ".easy-code-srt-runtime/command-fixture/worker-payload.json" },
+        { path: ".easy-code-runtime/command-fixture/worker-payload.json" },
         context(root),
       );
       assert.equal(result.ok, false);
       assert.match(result.error ?? "", /Sandbox scratch paths are reserved/iu);
       const dotted = await new ReadFileTool(manager).execute(
-        { path: "./.easy-code-srt-runtime/command-fixture/worker-payload.json" },
+        { path: "./.easy-code-runtime/command-fixture/worker-payload.json" },
         context(root),
       );
       assert.equal(dotted.ok, false);

@@ -4,6 +4,7 @@ import { Command } from "commander";
 
 import {
   registerSandboxCommands,
+  sandboxRecoveryOptions,
   type SandboxReadiness,
   type SandboxSetupResult,
   type SandboxStartupService,
@@ -56,6 +57,16 @@ async function runSandboxCommand(
 }
 
 describe("sandbox CLI commands", () => {
+  it("reads recovery workspace from the merged global/local option namespace", async () => {
+    const program = new Command().option("--workspace <path>");
+    const sandbox = program.command("sandbox");
+    const recover = sandbox.command("recover").option("--workspace <path>").option("--apply");
+    let options: ReturnType<typeof sandboxRecoveryOptions> | undefined;
+    recover.action(() => { options = sandboxRecoveryOptions(recover, "fallback"); });
+    await program.parseAsync(["node", "easy-code", "sandbox", "recover", "--workspace", "F:\\project", "--apply"]);
+    assert.deepEqual(options, { workspace: "F:\\project", apply: true });
+  });
+
   it("prints a successful doctor report without setting a failure code", async () => {
     const ready = readiness("ready");
     const result = await runSandboxCommand(

@@ -18,6 +18,14 @@ export interface SandboxCommandRegistrationOptions {
   readonly setExitCode?: (code: number) => void;
 }
 
+export function sandboxRecoveryOptions(
+  command: Command,
+  fallbackWorkspace = process.cwd(),
+): { workspace: string; apply: boolean } {
+  const flags = command.optsWithGlobals<{ workspace?: string; apply?: boolean }>();
+  return { workspace: flags.workspace ?? fallbackWorkspace, apply: flags.apply === true };
+}
+
 export function registerSandboxCommands(
   program: Command,
   options: SandboxCommandRegistrationOptions = {},
@@ -48,14 +56,18 @@ export function registerSandboxCommands(
   const sandbox = program
     .command("sandbox")
     .description("set up or diagnose the native operating-system command sandbox");
-  sandbox.command("recover").description("inspect interrupted native commands; never replays commands or guesses an unknown outcome")
-    .option("--workspace <path>", "workspace to inspect", process.cwd())
-    .option("--apply", "clear only leases proven inactive by recorded identity and engine inspection")
-    .action(async (flags: { workspace: string; apply?: boolean }) => {
+  const recover = sandbox.command("recover").description("inspect interrupted native commands; never replays commands or guesses an unknown outcome")
+    .option("--workspace <path>", "workspace to inspect")
+    .option("--apply", "clear only leases with authoritative final/cleanup or proven-not-started evidence");
+  recover.action(async () => {
+      // The top-level CLI also owns --workspace. Commander routes duplicate
+      // global/local options to the parent, so read the merged view and apply
+      // the cwd default only after parsing.
+      const flags = sandboxRecoveryOptions(recover);
       if (resolveHarborOuterSandbox() === "harbor") throw new Error("Harbor owns benchmark command recovery");
       const config = await loadEasyCodeConfig({ credentialStore: false });
       const result = await new SandboxRecovery(config.dataDir, config.limits).inspect(flags.workspace, flags.apply);
-      writeLine(JSON.stringify(result, null, 2));
+      writeLine(JSON.stringify({ workspace: flags.workspace, ...result }, null, 2));
       if (result.items.some(item => item.status === "blocked") || result.quarantine === "preserved") setExitCode(2);
     });
   sandbox.command("capabilities")

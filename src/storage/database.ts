@@ -3,7 +3,7 @@ import path from "node:path";
 import { sha256 } from "../utils/hash.js";
 import { ensureEasyCodeDataRootMarker } from "./data-root.js";
 import { assertNoUninstall } from "../install/ownership.js";
-import { runMigrations } from "./migrations.js";
+import { initializeCurrentSchema } from "./schema.js";
 import { SqliteDatabase } from "./sqlite-database.js";
 
 export interface EasyCodeStorage {
@@ -43,7 +43,7 @@ export function createStorage(dataDir: string): EasyCodeStorage {
   db.pragma("foreign_keys = ON");
   db.pragma("busy_timeout = 5000");
   db.pragma("synchronous = NORMAL");
-  runMigrations(db);
+  initializeCurrentSchema(db);
 
   let closed = false;
   return {

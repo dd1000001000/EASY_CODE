@@ -427,8 +427,8 @@ export function selectMenuIndex(
       const navigationReady = navigationActivation?.ready;
       if (navigationReady) {
         // Keep the overlay invisible until VS Code confirms that Up/Down have
-        // been rebound. TTY input is already in Raw Mode, so a unavailable or
-        // legacy extension can safely resolve `false` and use the normal path.
+        // been rebound. TTY input is already in Raw Mode, so an unavailable
+        // host can safely resolve `false` and use the normal terminal path.
         void navigationReady.catch(() => false).then(() => {
           if (settled) return;
           renderEnabled = true;

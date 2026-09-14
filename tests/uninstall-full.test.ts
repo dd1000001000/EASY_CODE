@@ -13,9 +13,9 @@ async function fixture(run: (value: { root: string; home: string; data: string; 
   plan(): Promise<UninstallPlan> }) => Promise<void>) {
   const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-native-uninstall-"));
   const home = path.join(root, "home"), data = path.join(root, "data"), config = path.join(root, "config"), cache = path.join(root, "cache");
-  mkdirSync(home); const temporaryRoot = path.join(root, "tmp"); mkdirSync(temporaryRoot);
+  mkdirSync(home);
   try { await run({ root, home, data, config, cache,
-    plan: () => buildFilePlan({ home, paths: { data, config, cache }, env: {}, temporaryRoot }) }); }
+    plan: () => buildFilePlan({ home, paths: { data, config, cache } }) }); }
   finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -28,7 +28,7 @@ describe("native full uninstall", () => {
     const project = path.join(f.root, "project", "source.ts"); put(project, "keep");
     const plan = await f.plan();
     assert.equal(plan.blockers.length, 0, plan.blockers.join("\n"));
-    assert.ok(plan.actions.some(action => action.target.includes("native-sandbox")));
+    assert.ok(plan.actions.some(action => path.resolve(action.target) === path.resolve(f.data)));
     assert.ok(plan.actions.every(action => !/machine|container|podman|wsl/iu.test(action.description)));
     await executeUninstall(plan, { activity: async () => [] });
     assert.ok(!existsSync(f.data)); assert.ok(!existsSync(f.config)); assert.ok(!existsSync(f.cache));
@@ -43,7 +43,7 @@ describe("native full uninstall", () => {
     assert.ok(owners.some(value => value === `Command PID ${process.pid}`));
   }));
 
-  it("does not let an absent PID in a legacy command lease block uninstall", async () => fixture(async f => {
+  it("does not let an absent PID in an incomplete command lease block uninstall", async () => fixture(async f => {
     const absentPid = 999_999_999;
     put(path.join(f.data, "command-leases", "workspace-id", "legacy-command.lease"), JSON.stringify({
       commandId: "legacy-command", ownerPid: absentPid, state: "preparing",

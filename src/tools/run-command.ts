@@ -147,7 +147,9 @@ function commandResult(
           ? ""
           : "Run `easy-code sandbox doctor` outside the agent.")
     : output.status === "spawn_failed"
-      ? `Command execution could not be confirmed: ${output.failure?.message ?? output.stderr.text}`
+      ? output.lifecycle?.execution === "not_started"
+        ? `Command did not start: ${output.failure?.message ?? output.stderr.text}. Correct the executable or Windows launcher and submit a new command; Runtime did not replay it.`
+        : `Command execution could not be confirmed: ${output.failure?.message ?? output.stderr.text}`
     : output.status === "timed_out"
       ? "Command timed out and its process tree was terminated"
     : output.status === "canceled"

@@ -10,6 +10,7 @@ import {
   estimateToolDefinitionsChars,
 } from "../src/context/manager.js";
 import type { SessionState, ToolDefinition } from "../src/core/types.js";
+import { baseSessionState } from "./session-state.js";
 
 function contextChars(messages: ReturnType<ContextManager["build"]>): number {
   return estimateMessagesChars(messages);
@@ -18,6 +19,7 @@ function contextChars(messages: ReturnType<ContextManager["build"]>): number {
 function makeState(): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_context",
     mode: "code",
     provider: "qwen",

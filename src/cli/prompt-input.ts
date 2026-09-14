@@ -104,14 +104,6 @@ export interface ReadPromptOptions {
   readonly onShowThinking?: (
     id: number | "last",
   ) => void | Promise<void>;
-  /** Toggle one live Thinking panel from the private VS Code mouse protocol. */
-  readonly onToggleThinking?: (
-    id: number,
-  ) => void | Promise<void>;
-  /** Toggle one live queued-adjustment disclosure from the VS Code protocol. */
-  readonly onToggleAdjustment?: (
-    id: number,
-  ) => void | Promise<void>;
   readonly onSessionReady?: (
     session: PromptInputSession | undefined,
   ) => void;
@@ -119,7 +111,7 @@ export interface ReadPromptOptions {
    * Offer the editor to `onSessionReady` before readline connects physical
    * stdin, changes terminal modes, or paints prompt pixels. A full-screen
    * owner claims the offered lease by synchronously calling `suspendInput()`;
-   * if it does not, the editor automatically continues with the legacy
+   * if it does not, the editor automatically continues with the ordinary
    * inline startup path.
    */
   readonly startSuspended?: boolean;
@@ -164,39 +156,10 @@ const DISABLE_BRACKETED_PASTE = "\u001B[?2004l";
 /**
  * Private input sequence sent by the bundled VS Code extension. It is framed
  * like an OSC message so it cannot be confused with text or a real key emitted
- * by a legacy terminal. The extension only sends it while an EASY CODE process
+ * by ordinary terminal input. The extension only sends it while an EASY CODE process
  * owns the active integrated terminal.
  */
 export const VSCODE_IMAGE_PASTE_SEQUENCE = "\u001B]6973;easy-code;paste-image\u0007";
-export const VSCODE_SHOW_THINKING_SEQUENCE_PREFIX =
-  "\u001B]6973;easy-code;show-thinking;";
-export const VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX =
-  "\u001B]6973;easy-code;toggle-thinking;";
-export const VSCODE_TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX =
-  "\u001B]6973;easy-code;toggle-adjustment;";
-
-export function vscodeToggleThinkingSequence(id: number): string {
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error("Thinking block ID must be a positive safe integer");
-  }
-  return `${VSCODE_TOGGLE_THINKING_SEQUENCE_PREFIX}${id}\u0007`;
-}
-
-export function vscodeToggleAdjustmentSequence(id: number): string {
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error("Adjustment ID must be a positive safe integer");
-  }
-  return `${VSCODE_TOGGLE_ADJUSTMENT_SEQUENCE_PREFIX}${id}\u0007`;
-}
-
-/** @deprecated Compatibility helper for already-installed VS Code clients. */
-export function vscodeShowThinkingSequence(id: number): string {
-  if (!Number.isSafeInteger(id) || id <= 0) {
-    throw new Error("Thinking block ID must be a positive safe integer");
-  }
-  return `${VSCODE_SHOW_THINKING_SEQUENCE_PREFIX}${id}\u0007`;
-}
-
 const IMAGE_PASTE_SEQUENCES = [
   Buffer.from("\u001B[118;5u"), // Ctrl+V
   Buffer.from("\u001B[118;6u"), // Ctrl+Shift+V
@@ -213,8 +176,6 @@ type PrivateOscParseResult =
       readonly length: number;
       readonly action:
         | { readonly type: "paste-image" }
-        | { readonly type: "toggle-thinking"; readonly id: number }
-        | { readonly type: "toggle-adjustment"; readonly id: number }
         | { readonly type: "ignore" };
     };
 
@@ -250,28 +211,6 @@ function parsePrivateOsc(input: Buffer, offset: number): PrivateOscParseResult {
   if (payload === "paste-image") {
     return { status: "complete", length, action: { type: "paste-image" } };
   }
-  const thinking = /^(?:toggle|show)-thinking;([1-9][0-9]{0,15})$/u.exec(payload);
-  if (thinking) {
-    const id = Number(thinking[1]);
-    if (Number.isSafeInteger(id)) {
-      return {
-        status: "complete",
-        length,
-        action: { type: "toggle-thinking", id },
-      };
-    }
-  }
-  const adjustment = /^toggle-adjustment;([1-9][0-9]{0,15})$/u.exec(payload);
-  if (adjustment) {
-    const id = Number(adjustment[1]);
-    if (Number.isSafeInteger(id)) {
-      return {
-        status: "complete",
-        length,
-        action: { type: "toggle-adjustment", id },
-      };
-    }
-  }
   return { status: "complete", length, action: { type: "ignore" } };
 }
 
@@ -287,9 +226,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
 
   constructor(
     private readonly source: PromptInput,
-    private readonly onToggleThinking?: (id: number) => void,
     private readonly onInterrupt?: () => void,
-    private readonly onToggleAdjustment?: (id: number) => void,
   ) {
     super();
   }
@@ -339,14 +276,7 @@ export class PrivateOscInputFilter extends Transform implements PromptInput {
       if (byte === ESCAPE) {
         const privateOsc = parsePrivateOsc(input, offset);
         if (privateOsc.status === "complete") {
-          if (privateOsc.action.type === "toggle-thinking") {
-            this.onToggleThinking?.(privateOsc.action.id);
-          } else if (privateOsc.action.type === "toggle-adjustment") {
-            this.onToggleAdjustment?.(privateOsc.action.id);
-          }
-          // Private messages are always consumed. Callers without a toggle
-          // callback intentionally swallow them while another input UI owns
-          // stdin; the busy request owner handles only its narrow callback.
+          // Private messages are always consumed while a modal owns stdin.
           offset += privateOsc.length;
           continue;
         }
@@ -450,12 +380,6 @@ class ImagePasteInputProxy extends Transform {
     private readonly textOnlyPaste = false,
     private readonly onShowThinking?: (
       id: number | "last",
-    ) => void | Promise<void>,
-    private readonly onToggleThinking?: (
-      id: number,
-    ) => void | Promise<void>,
-    private readonly onToggleAdjustment?: (
-      id: number,
     ) => void | Promise<void>,
     private readonly onAtomicBackspace?: () => boolean,
     private readonly onReplaceMarker?: (
@@ -775,10 +699,6 @@ class ImagePasteInputProxy extends Transform {
         if (privateOsc.status === "complete") {
           if (privateOsc.action.type === "paste-image") {
             output.push(...Buffer.from(this.beginCaptureMarker(), "utf8"));
-          } else if (privateOsc.action.type === "toggle-thinking") {
-            await this.onToggleThinking?.(privateOsc.action.id);
-          } else if (privateOsc.action.type === "toggle-adjustment") {
-            await this.onToggleAdjustment?.(privateOsc.action.id);
           }
           offset += privateOsc.length;
           continue;
@@ -1325,7 +1245,7 @@ export function readPrompt(
         suspendedCursor = rl.cursor;
         inputSuspendedWithPreservedDisplay = true;
       } else if (!suspendPrompt()) {
-        // The legacy OSC path reaches this method from a prompt callback that
+        // A private terminal control path can reach this method from a callback that
         // has already suspended and erased the editor. Nest that suspension
         // instead of rejecting the disclosure open; resumeInput() and the
         // callback's finally block will unwind the two levels in order.
@@ -1450,26 +1370,6 @@ export function readPrompt(
         }
       }
     : undefined;
-  const toggleThinking = options.onToggleThinking
-    ? async (id: number): Promise<void> => {
-        if (!suspendPrompt()) return;
-        try {
-          await options.onToggleThinking?.(id);
-        } finally {
-          resumePrompt();
-        }
-      }
-    : undefined;
-  const toggleAdjustment = options.onToggleAdjustment
-    ? async (id: number): Promise<void> => {
-        if (!suspendPrompt()) return;
-        try {
-          await options.onToggleAdjustment?.(id);
-        } finally {
-          resumePrompt();
-        }
-      }
-    : undefined;
   const deleteAtomicMarker = (): boolean => {
     const collapsed = proxy.collapseMarkerBefore(rl.line, rl.cursor);
     if (!collapsed || !suspendPrompt()) return false;
@@ -1523,8 +1423,6 @@ export function readPrompt(
     options.captureText,
     options.textOnlyPaste ?? false,
     showThinking,
-    toggleThinking,
-    toggleAdjustment,
     deleteAtomicMarker,
     replaceAtomicMarker,
     Boolean(options.keepOpen && options.onInterrupt),
@@ -1817,8 +1715,8 @@ export function readPrompt(
       startupSuspensionPending = false;
       if (settled) return;
       if (!startupSuspensionClaimed && inputSuspended) {
-        // Backwards-compatible fallback: merely observing the early session
-        // does not require a caller to implement terminal ownership.
+        // Merely observing the early session does not require a caller to
+        // implement terminal ownership.
         promptSession.resumeInput();
       }
       notifyDraft();

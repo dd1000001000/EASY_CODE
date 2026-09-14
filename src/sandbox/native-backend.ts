@@ -81,7 +81,7 @@ export class NativeSandboxBackend implements CommandExecutionBackend {
       }
     }
     await mkdir(this.home, { recursive: true, mode: 0o700 });
-    const scratch = path.join(this.workspace.root, ".easy-code-srt-runtime");
+    const scratch = path.join(this.workspace.root, ".easy-code-runtime");
     await mkdir(scratch, { recursive: true, mode: 0o700 });
     const root = await mkdtemp(path.join(scratch, "command-"));
     const tempRoot = path.join(root, "tmp"); await mkdir(tempRoot, { mode: 0o700 });

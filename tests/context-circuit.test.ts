@@ -18,9 +18,10 @@ import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
 import type { SessionState } from "../src/core/types.js";
+import { baseSessionState } from "./session-state.js";
 
 function state(): SessionState {
-  return { threadId: "circuit", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "test", thinkingEffort: "none",
+  return { ...baseSessionState(), threadId: "circuit", workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "test", thinkingEffort: "none",
     messages: [{ role: "user", content: "Original request. Preserve compatibility." }], userMessageIndices: [0], constraints: [],
     filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
     createdAt: "now", updatedAt: "now" };
@@ -109,7 +110,11 @@ describe("requirements-only circuit breaker", () => {
   });
   it("requires workspace and original operation observations before a mutation, not just a prompt", async () => {
     const s = state(); s.contextOperations = { commands: { cmd: { commandId: "cmd", program: "python", args: ["test.py"], cwd: ".", status: "running", exitCode: null } },
-      children: { child: { assignment: { agentId: "child", kind: "standalone", taskId: "task", taskTitle: "task", taskDescription: "task", completionChecks: [] }, followUps: [] } } };
+      children: { child: { assignment: { agentId: "child", childThreadId: "thread_child",
+        environmentId: "environment_child", requestedIsolation: "shared", kind: "standalone",
+        taskId: "task", taskTitle: "task", taskDescription: "task", completionChecks: [],
+        provider: "deepseek", model: "test", thinkingEffort: "medium",
+        createdAt: new Date().toISOString() }, followUps: [] } } };
     await resetServerContext(s, "one", async () => {});
     assert.equal(reconciliationGate(s, "run_command", {})?.failure?.execution, "not_started");
     assert.equal(reconciliationGate(s, "update_file", {})?.failure?.recovery, "inspect_state");
@@ -120,7 +125,7 @@ describe("requirements-only circuit breaker", () => {
     foldReconciliation(s, "poll_command", { command: "cmd" });
     foldReconciliation(s, "manage_subagents", { children: ["child"] });
     assert.equal(reconciliationPending(s), false); assert.equal(reconciliationGate(s, "run_command", {}), undefined);
-    assert.equal(s.contextOperations.commands.cmd?.status, "running"); // querying never manufactures completion
+    assert.equal(s.contextOperations!.commands.cmd?.status, "running"); // querying never manufactures completion
   });
   it("does not resend an already minimal identical rejected request", async () => {
     let calls = 0;

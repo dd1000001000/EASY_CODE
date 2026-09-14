@@ -8,6 +8,8 @@ import { PassThrough, Readable } from "node:stream";
 import { Command } from "commander";
 import { parse as parseToml } from "toml";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
+import { normalizeCurrentTomlConfig } from "../src/config/toml-format.js";
+import { PROVIDER_CATALOG } from "../src/models/catalog.js";
 
 import {
   SystemKeyringCredentialStore,
@@ -75,7 +77,11 @@ describe("config commands", () => {
   it("prints a complete parseable limits template without touching credentials", async () => {
     const command = commandRun(["config", "defaults"], {});
     await command.run;
-    const parsed = parseToml(command.output.value) as { limits: unknown; orchestrationEnabled: boolean };
+    const parsed = normalizeCurrentTomlConfig(
+      parseToml(command.output.value),
+      PROVIDER_CATALOG.map(({ provider }) => provider),
+      defaultRuntimeLimits(),
+    );
     assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), defaultRuntimeLimits());
     assert.equal(parsed.orchestrationEnabled, false);
     assert.doesNotMatch(command.output.value, /apiKey|api_key/u);
@@ -319,15 +325,15 @@ describe("config commands", () => {
       );
 
       store.values.delete("qwen");
-      const legacy = commandRun(["config", "get", "qwen.api-key"], {
+      const unsupportedTomlCredential = commandRun(["config", "get", "qwen.api-key"], {
         credentialStore: store,
         env: {},
         userConfigPath,
       });
-      await legacy.run;
-      assert.match(legacy.output.value, /\(legacy user config\)/u);
+      await unsupportedTomlCredential.run;
+      assert.match(unsupportedTomlCredential.output.value, /unavailable or not configured/u);
 
-      const transcript = listed.output.value + listed.errorOutput.value + legacy.output.value;
+      const transcript = listed.output.value + listed.errorOutput.value + unsupportedTomlCredential.output.value;
       for (const secret of secrets) assert.doesNotMatch(transcript, new RegExp(secret, "u"));
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -379,7 +385,7 @@ describe("config commands", () => {
 });
 
 describe("credential configuration loading", () => {
-  it("loads environment over keyring over legacy user TOML", async () => {
+  it("loads environment over keyring over current user TOML", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-key-precedence-"));
     const configDir = path.join(temporary, "config");
     const store = new MemoryCredentialStore();
@@ -387,7 +393,7 @@ describe("credential configuration loading", () => {
       await mkdir(configDir, { recursive: true });
       await writeFile(
         path.join(configDir, "config.toml"),
-        `[qwen]\napi_key = "legacy-qwen"\n[deepseek]\napi_key = "legacy-deepseek"\n[glm]\napi_key = "legacy-glm"\n[glm-coding-plan]\napi_key = "legacy-glm-coding-plan"\n`,
+        `[providers.qwen]\napi_key = "toml-qwen"\n[providers.deepseek]\napi_key = "toml-deepseek"\n[providers.glm]\napi_key = "toml-glm"\n[providers.glm-coding-plan]\napi_key = "toml-glm-coding-plan"\n`,
         "utf8",
       );
       store.values.set("qwen", "keyring-qwen");
@@ -407,16 +413,16 @@ describe("credential configuration loading", () => {
         },
         credentialStore: store,
       });
-      assert.equal(withEnvironment.qwen.apiKey, "environment-qwen");
-      assert.equal(withEnvironment.deepseek.apiKey, "keyring-deepseek");
-      assert.equal(withEnvironment.glm.apiKey, "environment-glm");
+      assert.equal(withEnvironment.providers.qwen!.apiKey, "environment-qwen");
+      assert.equal(withEnvironment.providers.deepseek!.apiKey, "keyring-deepseek");
+      assert.equal(withEnvironment.providers.glm!.apiKey, "environment-glm");
       assert.equal(
-        withEnvironment["glm-coding-plan"].apiKey,
+        withEnvironment.providers["glm-coding-plan"]!.apiKey,
         "environment-glm-coding-plan",
       );
       assert.notEqual(
-        withEnvironment.glm.apiKey,
-        withEnvironment["glm-coding-plan"].apiKey,
+        withEnvironment.providers.glm!.apiKey,
+        withEnvironment.providers["glm-coding-plan"]!.apiKey,
       );
 
       const withoutEnvironment = await loadEasyCodeConfig({
@@ -427,11 +433,11 @@ describe("credential configuration loading", () => {
         env: {},
         credentialStore: store,
       });
-      assert.equal(withoutEnvironment.qwen.apiKey, "keyring-qwen");
-      assert.equal(withoutEnvironment.deepseek.apiKey, "keyring-deepseek");
-      assert.equal(withoutEnvironment.glm.apiKey, "keyring-glm");
+      assert.equal(withoutEnvironment.providers.qwen!.apiKey, "keyring-qwen");
+      assert.equal(withoutEnvironment.providers.deepseek!.apiKey, "keyring-deepseek");
+      assert.equal(withoutEnvironment.providers.glm!.apiKey, "keyring-glm");
       assert.equal(
-        withoutEnvironment["glm-coding-plan"].apiKey,
+        withoutEnvironment.providers["glm-coding-plan"]!.apiKey,
         "keyring-glm-coding-plan",
       );
     } finally {

@@ -57,16 +57,6 @@ export function parseSemanticRequestPatch(value: unknown, maxChars = SEMANTIC_FI
   throw parsed.error;
 }
 
-/** Auxiliary historical handoffs only. The public tool continues to reject V2. */
-export function parseSemanticCandidatePatch(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): unknown {
-  // Historical V2 responses carried Runtime-owned coverage/intent declarations.
-  // Preserve only their semantic fields; never promote those old declarations.
-  if (value && typeof value === "object" && !Array.isArray(value) && (value as { formatVersion?: unknown }).formatVersion === 2) {
-    value = Object.fromEntries(Object.entries(value).filter(([key]) => Object.prototype.hasOwnProperty.call(semanticPatchSchema.shape, key)));
-  }
-  return parseSemanticRequestPatch(value, maxChars);
-}
-
 export function clipSemanticFields(value: unknown, maxChars = SEMANTIC_FIELD_MAX_CHARS): { patch: unknown; diagnostics: string[] } {
   const inspection = inspectSemanticPatch(value, maxChars);
   const patch: any = structuredClone(value);

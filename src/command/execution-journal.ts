@@ -1,8 +1,9 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../core/types.js";
 import { currentProcessIdentity } from "../core/process-owner.js";
+import { deterministicNotStartedEvidence, type RecordedCommandLifecycleEvent } from "../sandbox/lifecycle-evidence.js";
 
 const ownedLeases = new Set<string>();
 
@@ -15,6 +16,37 @@ export class ExecutionJournal {
     if (existsSync(path.join(this.directory, "recovery.lock")) || readdirSync(this.directory).some(name => name.endsWith(".lease") && !ownedLeases.has(path.join(this.directory!, name)))) {
       throw new Error("Unfinished command lease found; execution/cleanup is unknown. Inspect the environment before resuming mutations");
     }
+  }
+
+  hasUnfinishedLeases(): boolean {
+    return Boolean(this.directory && existsSync(this.directory) && readdirSync(this.directory).some(name => name.endsWith(".lease")));
+  }
+
+  /** Repair only records that contain authoritative proof that Windows never
+   * created the target. This never guesses an unknown outcome or replays work. */
+  reconcileDeterministicNotStarted(): string[] {
+    if (!this.directory || !existsSync(this.directory)) return [];
+    const recovered: string[] = [];
+    for (const name of readdirSync(this.directory).filter(value => value.endsWith(".lease"))) {
+      const commandId = name.slice(0, -6);
+      if (!/^[a-zA-Z0-9_-]+$/u.test(commandId)) continue;
+      const eventFile = this.file(commandId)!;
+      let source: string;
+      try { source = readFileSync(eventFile, "utf8"); } catch { continue; }
+      if (!source.endsWith("\n")) continue;
+      let events: RecordedCommandLifecycleEvent[];
+      try { events = source.split("\n").filter(Boolean).map(line => JSON.parse(line)); } catch { continue; }
+      if (events.some(event => event.commandId !== commandId)) continue;
+      const evidence = deterministicNotStartedEvidence(events);
+      if (!evidence) continue;
+      this.record(commandId, "not_started_reconciled", evidence);
+      this.record(commandId, "cleanup_not_required", { targetStarted: false });
+      this.record(commandId, "recovered", { backend: "native", replayed: false });
+      unlinkSync(path.join(this.directory, name));
+      ownedLeases.delete(path.join(this.directory, name));
+      recovered.push(commandId);
+    }
+    return recovered;
   }
 
   begin(commandId: string, context: ToolContext): void {

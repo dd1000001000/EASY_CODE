@@ -50,8 +50,8 @@ flowchart TD
 | TypeScript、Node.js ≥ 20.11、ESM | 严格类型、NodeNext 模块解析；编译到 `dist/` 的 CLI |
 | Commander、TOML、Zod | 命令行解析、配置读取、运行时 Schema 与工具参数校验 |
 | Node HTTP / HTTPS | 模型传输、取消、时间和大小限制、受控代理连接 |
-| execa、安装时最新版 `@openai/codex` 原生 Runtime | 宿主进程控制，以及 Windows elevated、macOS Seatbelt、Linux bubblewrap/seccomp 隔离 |
-| node-sqlite3-wasm、SQLite FTS5 | 持久化仓储、全文检索和数据库迁移，避免 Node SQLite ABI 编译依赖 |
+| execa、lockfile 固定的 `@openai/codex` 原生 Runtime | 宿主进程控制，以及 Windows elevated、macOS Seatbelt、Linux bubblewrap/seccomp 隔离 |
+| node-sqlite3-wasm、SQLite FTS5 | 持久化仓储、全文检索和单一严格当前 Schema 基线，避免 Node SQLite ABI 编译依赖 |
 | ONNX Runtime、Hugging Face tokenizers | 本地文本向量生成 |
 | Orama | 派生的向量检索缓存，不是长期记忆的权威存储 |
 | env-paths、系统 Keyring | 跨平台配置目录、数据目录和供应商凭据存储 |
@@ -131,9 +131,9 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 | `tool_calling`、`reasoning` | 声明的模型能力。 |
 | `profiles.swe_bench_verified_50` | Benchmark 使用的模型别名、模式和 effort。 |
 
-供应商和模型 ID 都是数据，不再是 TypeScript 枚举。只要新供应商实现两种受支持协议之一，就能直接修改 TOML 接入，不需要增加 Provider 子类或 Factory 分支。未知字段、未知供应商引用、同一供应商重复 Wire Model ID、非 HTTPS 注册表端点都会失败关闭。旧用户配置/环境变量的端点覆盖仍作为兼容层保留，但项目配置不能重定向模型流量或注入凭据。
+供应商和模型 ID 都是数据，不再是 TypeScript 枚举。只要新供应商实现两种受支持协议之一，就能直接修改当前的 `[providers.<id>]` TOML 配置，不需要增加 Provider 子类或 Factory 分支。未知字段、未知供应商引用、同一供应商重复 Wire Model ID、非 HTTPS 注册表端点都会失败关闭。项目配置不能重定向模型流量或注入凭据；旧的顶层供应商表和废弃环境变量不再由运行主路径解释。
 
-新 Thread 会绑定当前注册表哈希。Resume 遇到不同绑定会拒绝继续，避免把旧会话静默发送到已变化的端点或协议；旧 Thread 在首次恢复时写入一次性绑定 Checkpoint。SWE-bench Launcher 读取选定 Profile，把同一份注册表送入隔离 Controller，并根据目标供应商端点生成网络 Allowlist。
+新 Thread 会绑定当前注册表哈希。Resume 遇到缺失或不同绑定会拒绝继续，并保留原文件，避免把开发期旧会话静默发送到已变化的端点或协议。SWE-bench Launcher 读取选定 Profile，把同一份注册表送入隔离 Controller，并根据目标供应商端点生成网络 Allowlist。
 
 ### 5.2 协议驱动与 reasoning
 
@@ -166,7 +166,7 @@ CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复�
 
 `BuiltinToolSource` 现在是可信进程内工具唯一的装配入口。应用为每个主 Thread 保留一个目录；子 Agent 运行和隔离 reviewer 各自持有独立目录。`/tools`、普通回合和子 Agent 因而查看同一种来源模型，不再分别重建工具数组。`AgentRuntime` 只接收目录快照，不再同时接受裸 `tools`，并在捕获的快照上统一执行角色、模式、编排和视觉能力过滤。
 
-内置工具的可用范围集中在一张声明式策略表中。未知旧工具使用保守的主 Agent 兼容配置。动态外部工具必须携带由宿主维护的元数据，且不能声明 Agent 控制、上下文控制或记忆写入等控制面权限；外部写入、进程、网络写入和破坏性效果在没有显式 Runtime 授权桥时失败关闭。模型可见名称或稳定身份冲突会在构建请求前被拒绝。每个目录只启动来源一次，由应用或子 Agent 生命周期负责关闭；目录加载中途失败时，会先关闭已经创建的来源再返回错误。
+内置工具的可用范围集中在一张声明式策略表中。动态外部工具必须携带由宿主维护的完整 Runtime 元数据；缺少元数据的工具拒绝注册。外部工具不能声明 Agent 控制、上下文控制或记忆写入等控制面权限；外部写入、进程、网络写入和破坏性效果在没有显式 Runtime 授权桥时失败关闭。模型可见名称或稳定身份冲突会在构建请求前被拒绝。每个目录只启动来源一次，由应用或子 Agent 生命周期负责关闭；目录加载中途失败时，会先关闭已经创建的来源再返回错误。
 
 这只是**扩展接缝，不是 MCP 接入**。仓库当前没有 MCP SDK、MCP 传输、服务发现、MCP 配置、凭据交换或 Resource/Prompt 适配器。应用已经提供带角色、Thread 和工作区上下文的内部来源工厂接缝。未来 MCP Client 可以实现 `ToolSource` 与授权桥，而无需在 Agent 循环里增加供应商专属分支；连接监管、服务器信任、命名和凭据配置仍由应用层负责。
 
@@ -184,7 +184,7 @@ CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复�
 
 源码：[tools/](../src/tools)、[workspace/](../src/workspace)。
 
-Git 感知的变更追踪处理相关已跟踪、暂存、未暂存及未跟踪文件；非 Git 工作区使用快照退化方案。受管理的子 Agent Worktree 可以从包含本地变更的当前快照启动，交接结果前检查基线及冲突。新 Worktree 使用哈希化短目录，完整环境身份仍保存在持久化记录中，旧版完整 ID 路径继续支持恢复。Windows 上的 Runtime Git 调用显式开启长路径，并在检出前预检已跟踪文件、当前快照与配置包含文件；创建失败只清理经过验证的受管路径并保留清理证据，不会静默降低隔离级别。
+Git 感知的变更追踪处理相关已跟踪、暂存、未暂存及未跟踪文件；非 Git 工作区使用快照退化方案。受管理的子 Agent Worktree 可以从包含本地变更的当前快照启动，交接结果前检查基线及冲突。当前 Worktree 只使用 V2 哈希短目录，完整环境身份保存在持久化记录中；开发期旧布局不会在 Runtime 中猜测恢复。Windows 上的 Runtime Git 调用显式开启长路径，并在检出前预检已跟踪文件、当前快照与配置包含文件；创建失败只清理经过验证的受管路径并保留清理证据，不会静默降低隔离级别。
 
 Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问围绕工作区边界；显式宿主机/完全访问能力是另一种权限，不能与普通工作区权限混为一谈。
 
@@ -225,7 +225,7 @@ Worktree 提供变更隔离，**不是操作系统沙箱**。默认文件访问�
 
 ### 7.3 三平台原生沙箱与命令生命周期
 
-[NativeSandboxBackend](../src/sandbox/native-backend.ts) 是普通 CLI 的命令后端。EASY CODE 在用户安装时解析 `@openai/codex@latest`，并在该次安装的生命周期内使用实际安装的版本；仓库自身的 `package-lock.json` 只用于保持开发和测试可复现，不会锁定下游用户安装。EASY CODE 通过 [app-server-client.ts](../src/sandbox/app-server-client.ts) 调用不涉及模型的 app-server `command/exec` API。它不会读取用户的 Codex 配置、创建 Codex 对话或请求模型。当前架构包提供对应平台可执行文件：Windows elevated 沙箱、macOS Seatbelt、Linux bubblewrap/seccomp。
+[NativeSandboxBackend](../src/sandbox/native-backend.ts) 是普通 CLI 的命令后端。EASY CODE 使用仓库中经过验收并由 lockfile 固定的 `@openai/codex` 版本；升级必须作为显式依赖变更经过三平台测试，安装时不会追逐未经验证的最新版。EASY CODE 通过 [app-server-client.ts](../src/sandbox/app-server-client.ts) 调用不涉及模型的 app-server `command/exec` API。它不会读取用户的 Codex 配置、创建 Codex 对话或请求模型。当前架构包提供对应平台可执行文件：Windows elevated 沙箱、macOS Seatbelt、Linux bubblewrap/seccomp。
 
 Runtime 只传结构化 argv 和私有子进程环境，供应商密钥及控制面 capability 不会进入目标命令。`:workspace` 权限配置允许写命令工作区和沙箱临时区，拒绝写工作区外路径，并阻止直接外网 socket。获批 HTTP(S) 仍是独立的[网络门](../src/command/network-gate.ts)决策。Windows 上，每个 EASY CODE 进程从 `limits.nativeSandboxProxyPortStart` 与 `nativeSandboxProxyPortSlots` 配置的范围内租用一个回环端口；监听器在进程启动时绑定，并由该进程中的主 Agent、子 Agent 和 reviewer 共享。带跨进程锁的 Runtime 注册表区分“已分配端口”和“已写入 Codex 持久 WFP 策略的端口”；新并发进程通过串行 setup 把自己的端口加入策略，因此至多在首次增加并发槽位时授权一次，之后可复用空闲的已授权槽位。所有沙箱调用（包括离线命令）都携带完整的已授权端口集合，避免策略来回变化。每条命令仍使用独立、不可猜测的代理凭据和审批会话；共享或预授权端口本身不授予任何外网目标权限。完全访问显式使用 [UnrestrictedHostBackend](../src/sandbox/unrestricted-host-backend.ts)，沙箱失败不会导致自动回退。
 
@@ -235,9 +235,9 @@ app-server 客户端会保留结构化 JSON-RPC 错误。明确的沙箱拒绝�
 
 [sandbox-boundary.ts](../src/command/sandbox-boundary.ts) 按用户回合/子任务、cwd 与越界访问类别保存有界、持久的 incident 计数；改变 argv 或给同一操作套一层 Shell 不会重置计数。第一次拒绝给模型一次调整机会；同一 incident 第二次拒绝时跳过独立审批 Agent，强制由用户选择单次允许、该 Thread 前缀允许或拒绝。审批只会在命令终态与清理已经持久化后发生，Runtime 绝不自动重放停止的命令。单次允许生成一个十分钟有效、绑定精确命令的宿主能力，并在下次派发前一次性消费。Benchmark 在相同阈值使用配置中的确定性选择，但重试仍只能发生在离线任务容器内，永远不会转换成宿主授权。
 
-[执行日志](../src/command/execution-journal.ts)记录准备、派发、终态和清理。非零退出、超时、取消或派发不确定都不会自动重放。[SandboxRecovery](../src/sandbox/recovery.ts) 只有在持久事件已证明终态与清理、且所有者不活跃时才能删除 lease；不能从死 PID 推断命令结果。Runtime scratch 位于工作区受保护的 `.easy-code-srt-runtime`，worker 退出后再删除；Windows ACL 继承导致宿主删除失败时，才用同一原生身份做一次有界兜底清理。
+[执行日志](../src/command/execution-journal.ts)记录准备、派发、终态和清理。非零退出、超时、取消或派发不确定都不会自动重放。[SandboxRecovery](../src/sandbox/recovery.ts) 只有在持久事件已证明终态与清理、且所有者不活跃时才能删除 lease；不能从死 PID 推断命令结果。Runtime scratch 位于工作区受保护的 `.easy-code-runtime`，worker 退出后再删除；Windows ACL 继承导致宿主删除失败时，才用同一原生身份做一次有界兜底清理。
 
-[NativeSandboxStartupService](../src/sandbox/native-startup.ts) 检查本次安装实际解析到的最新版可执行文件并运行真实受限命令探针。Windows 另用 `windowsSandbox/readiness` 和一次性 elevated setup；macOS、Linux 不创建 EASY CODE 专用虚拟机。安装和启动不会改 Docker、Podman 或 WSL 配置。Windows 离线身份属于上游共享 OS 基础设施，不是 EASY CODE 拥有的卸载资源。
+[NativeSandboxStartupService](../src/sandbox/native-startup.ts) 检查本次安装精确解析到的可执行文件并运行真实受限命令探针。Windows 另用 `windowsSandbox/readiness` 和一次性 elevated setup；macOS、Linux 不创建 EASY CODE 专用虚拟机。安装和启动不会改 Docker、Podman 或 WSL 配置。Windows 离线身份属于上游共享 OS 基础设施，不是 EASY CODE 拥有的卸载资源。
 
 Benchmark 是独立边界：可信适配器选择 [BenchmarkContainerBackend](../src/sandbox/benchmark-backend.ts)，命令只在离线 Harbor/Docker worker 内拥有完全能力。它不嵌套普通 CLI 原生沙箱，也不能静默选择宿主完全访问。
 
@@ -253,13 +253,13 @@ Benchmark 是独立边界：可信适配器选择 [BenchmarkContainerBackend](..
 
 [uninstall/](../src/uninstall) 先生成只读清单。维护入口绕过模型注册表初始化，因此模型配置损坏不会导致检查时重建文件。CLI 只询问一次 `y`；`--yes` 表示相同授权，`--dry-run` 不执行删除。用户项目、源码工作区和共享软件不属于删除范围。
 
-[install/ownership.ts](../src/install/ownership.ts) 把当前用户的数据、配置、缓存、凭据和插件记录 fsync 到私有 `install-resources.jsonl`。旧容器时代的 receipt 只作为惰性迁移输入被识别，不能授权删除引擎、Machine、镜像或连接。旧 EASY CODE 数据目录只会沿普通有界应用数据清单删除。
+[install/ownership.ts](../src/install/ownership.ts) 使用原子替换维护私有 `installation-manifest.json`。资源先登记为 `creating`，创建并核验身份后变为 `ready`；卸载只处理当前 V2 清单中已登记的资源，不通过目录扫描猜测所有权。
 
 确认后取得维护锁，阻止新会话并等待现有任务、命令和快照所有者退出，不凭记录随意杀 PID。沙箱某步失败后可以继续独立的资源/集成清理，但只要仍有未完成项，就保留数据、配置、归属记录和 CLI。用户目录下、不在删除目标中的 `.easy-code-uninstall-state.json` 记录已完成及失败步骤。再次执行先重新盘点并检查实际结果，不盲信旧完成列表。
 
-[process-owner.ts](../src/core/process-owner.ts) 以主机、PID、操作系统进程启动身份及可用的可执行文件信息判断所有者，不再只检查 PID 是否存在。Runtime 会话、线程租约、命令/快照租约和安装锁共用此判断；SQLite 迁移 9 为线程租约增加可空的进程身份字段，卸载仍能只读检查旧表而不执行迁移。PID 被其他进程复用，不代表旧任务仍存活。旧记录若指向另一个 Node 进程、元数据无法读取或属于其他主机，则仍保留未知/阻断状态；检查本身不终止进程、不删除记录。
+[process-owner.ts](../src/core/process-owner.ts) 以主机、PID、操作系统进程启动身份及可用的可执行文件信息判断所有者，不再只检查 PID 是否存在。Runtime 会话、线程租约、命令/快照租约和安装锁共用此判断。PID 被其他进程复用，不代表当前租约仍存活。记录若指向另一个 Node 进程、元数据无法读取或属于其他主机，则保持未知/阻断状态；检查本身不终止进程、不删除记录。
 
-Worktree 通过 Git 删除，只处理核验通过的托管目录，不删除用户分支或主工作区。插件和凭据删除只限 EASY CODE。拒绝祖先目录的符号链接/junction；叶子链接仅删除链接本身。全局 npm junction 由已核验 prefix 对应的 npm 卸载，不递归进入源码目录。归属不明的旧数据和无法核查的维护锁需要检查。
+Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，不删除用户分支或主工作区。插件和凭据删除只限 EASY CODE。拒绝祖先目录的符号链接/junction；叶子链接仅删除链接本身。全局 npm junction 由已核验 prefix 对应的 npm 卸载，不递归进入源码目录。不支持的开发期协议数据会原样保留，需要用户手动删除；正常 Runtime 和卸载路径不发现、不解释已退役布局。
 
 卸载不再枚举或修改容器引擎、WSL 发行版、Docker context 或 Podman 连接。它删除 EASY CODE 私有的原生 Runtime 数据，但保留上游 Windows 沙箱账户和所有共享系统软件。原生沙箱验收与卸载单元测试相互独立；命令探针通过不等于获得删除 OS 基础设施的权限。
 
@@ -267,7 +267,9 @@ Worktree 通过 Git 删除，只处理核验通过的托管目录，不删除用
 
 [threads/](../src/threads) 以追加式 JSONL 保存事件序号、身份和控制记录，并执行持久化追加。事件折叠恢复会话/控制状态；租约与回合所有权防止竞争写入。恢复会保守处理损坏尾记录，而不是随意忽略日志中间的损坏。
 
-[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、版本迁移、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。仓储包括线程索引/检查点、项目记忆、来源记录、证据、摘要快照和检索状态。
+[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、严格基线 Schema、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。非空数据库只有在 Schema 身份和版本与当前基线完全一致时才会打开；Runtime 不迁移开发期数据库。仓储包括线程索引/检查点、项目记忆、来源记录、证据、摘要快照和检索状态。
+
+当前开发协议在 [protocol/versions.ts](../src/protocol/versions.ts) 统一声明：Journal Event V2、Session State V2、Checkpoint Delta V2、语义摘要 V3、压缩元数据 V2、Worktree Descriptor V2、VS Code Bridge V2、安装清单 V2。运行路径只解析这些当前格式；版本缺失或不匹配时保留原始文件并明确拒绝恢复，不在 Agent 循环中迁移、猜测或补写不受支持的开发期状态。正常 CLI 中不存在兼容或旧路径发现模块。
 
 不同存储的数据地位不同：
 
@@ -330,7 +332,7 @@ Worktree 通过 Git 删除，只处理核验通过的托管目录，不删除用
 
 默认配置窗口为 1,000,000 Token，并受模型元数据上限约束。有效输入额度还要扣除回答、工具结果和安全预留。按当前默认预留，1M 窗口约有 **851,696 输入 Token**，并非能直接放入一百万 Token 的历史。
 
-Token 计数使用保守本地估算、图片计量和供应商用量校准，不是所有模型的精确分词器。旧的 250,000 字符配置用于字符模式退化路径；启用 Token 模式时，它不是额外的 25 万字符硬上限。
+Token 计数使用保守本地估算、图片计量和供应商用量校准，不是所有模型的精确分词器。当前字符模式保留 250,000 字符作为无法获得 Token 容量时的退化预算；启用 Token 模式时，它不是额外的 25 万字符硬上限。
 
 压力比例相对于有效容量计算：
 

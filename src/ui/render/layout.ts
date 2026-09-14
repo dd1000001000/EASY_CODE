@@ -152,9 +152,6 @@ export function displayWidth(value: string): number {
   return width;
 }
 
-/** Alias for callers accustomed to the `string-width` naming convention. */
-export const stringWidth = displayWidth;
-
 /** Width of the widest visual line in a possibly multiline value. */
 export function maxLineWidth(value: string): number {
   let widest = 0;
@@ -179,15 +176,12 @@ export function maxLineWidth(value: string): number {
 export function truncateToWidth(
   value: string,
   columns: number,
-  options: TruncateToWidthOptions | string = {},
+  options: TruncateToWidthOptions = {},
 ): string {
   const limit = normalizeColumns(columns, 0);
   if (limit === 0) return "";
 
-  const normalizedOptions = typeof options === "string"
-    ? { ellipsis: options }
-    : options;
-  const preserveAnsi = normalizedOptions.preserveAnsi ?? true;
+  const preserveAnsi = options.preserveAnsi ?? true;
   const source = sanitizeTerminalText(value, { allowSgr: preserveAnsi })
     .replace(/\n/gu, " ");
   const sourceTokens = layoutSanitizedTokens(source, preserveAnsi);
@@ -195,7 +189,7 @@ export function truncateToWidth(
   if (sourceWidth <= limit) return finishSgr(sourceTokens, preserveAnsi);
 
   const rawEllipsis = sanitizeTerminalText(
-    normalizedOptions.ellipsis ?? "…",
+    options.ellipsis ?? "…",
     { allowSgr: false },
   ).replace(/\n/gu, " ");
   const ellipsis = takePlainWidth(rawEllipsis, limit);
@@ -221,9 +215,6 @@ export function truncateToWidth(
 
   return finishSgr(output, preserveAnsi, ellipsis);
 }
-
-/** Alias retained for concise renderer call sites. */
-export const truncate = truncateToWidth;
 
 /**
  * Hard-wrap text by terminal display cells. Explicit newlines and empty lines
@@ -290,9 +281,6 @@ export function wrapToWidth(
   pushLine();
   return lines;
 }
-
-/** Alias that makes the hard-wrapping behaviour explicit at call sites. */
-export const wrapText = wrapToWidth;
 
 /** Number of terminal rows occupied after hard wrapping at `columns`. */
 export function countVisualRows(value: string, columns: number): number {

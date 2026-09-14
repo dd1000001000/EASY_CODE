@@ -15,7 +15,7 @@ export interface EmbeddingProvider {
   readonly revision: string;
   readonly pooling: string;
   readonly version: number;
-  /** Token-aware source windows. Legacy/custom providers may omit this. */
+  /** Optional token-aware source windows; deterministic character windows are the interface fallback. */
   splitText?(text: string): Promise<readonly import("./text-windows.js").TextWindow[]>;
   embed(texts: readonly string[]): Promise<readonly Float32Array[]>;
 }

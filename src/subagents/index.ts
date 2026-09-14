@@ -24,7 +24,7 @@ export type {
   SubagentRecord,
   SubagentStatus,
   SubagentStatusRequest,
-  SubagentTaskResult,
+  SubagentTaskReport,
   SubagentView,
   WaitForSubagentsRequest,
 } from "./types.js";

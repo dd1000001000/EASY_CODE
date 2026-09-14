@@ -11,7 +11,6 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import {
   availableAgentTools,
   builtinToolMetadata,
-  isToolAvailable,
   evaluateToolPolicy,
   toolMetadata,
 } from "../src/tools/capabilities.js";
@@ -22,16 +21,28 @@ import {
 } from "../src/tools/catalog.js";
 import { ToolExecutionGateway } from "../src/tools/execution-gateway.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 function definition(name: string, description = name) {
   return {
+    ...baseSessionState(),
     type: "function" as const,
     function: { name, description, parameters: { type: "object", additionalProperties: false } },
   };
 }
 
 function builtin(name: string, mutating = false): AgentTool {
-  return { name, mutating, definition: definition(name), execute: async () => ({ ok: true, summary: name }) };
+  const tool: AgentTool = {
+    name,
+    mutating,
+    definition: definition(name),
+    execute: async () => ({ ok: true, summary: name }),
+  };
+  try {
+    return { ...tool, metadata: builtinToolMetadata(name as never) };
+  } catch {
+    return tool;
+  }
 }
 
 function externalMetadata(name: string, sourceId = "fixture"): ToolRuntimeMetadata {
@@ -62,6 +73,7 @@ function external(
 function state(): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_dynamic_tool", mode: "code", provider: "fixture", model: "fixture",
     thinkingEffort: "low", workspaceRoot: process.cwd(), constraints: [], messages: [], filesRead: new Map(),
     changes: [], commands: [], commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
@@ -86,16 +98,16 @@ describe("extensible tool capabilities", () => {
     assert.equal(builtinToolMetadata("read_file").progressExperiment, true);
   });
 
-  it("requires host-owned metadata for an external source and defaults legacy tools conservatively", async () => {
+  it("requires host-owned metadata for every non-builtin tool", async () => {
     const catalog = new ToolCatalog();
     catalog.registerSource(new StaticToolSource("fixture", [builtin("untrusted_dynamic")], "external"));
     await assert.rejects(() => catalog.snapshot(), /must have Runtime-owned capability metadata/u);
 
-    const legacy = builtin("legacy_custom");
-    assert.equal(toolMetadata(legacy).identity.sourceKind, "legacy");
-    assert.equal(isToolAvailable(legacy, { mode: "plan", role: "main_agent", orchestrationAvailable: true }), false);
-    assert.equal(isToolAvailable(legacy, { mode: "code", role: "subagent", orchestrationAvailable: true }), false);
-    assert.equal(isToolAvailable(legacy, { mode: "code", role: "main_agent", orchestrationAvailable: true }), true);
+    const unregistered = builtin("unregistered_custom");
+    assert.throws(
+      () => toolMetadata(unregistered),
+      /missing Runtime metadata/u,
+    );
     const writeTool = external("write_remote", "fixture", "write_remote", ["external_write"]);
     assert.equal(evaluateToolPolicy(writeTool, {
       mode: "code", role: "main_agent", orchestrationAvailable: true,

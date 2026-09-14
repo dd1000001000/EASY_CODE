@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { access, lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { sha256 } from "../utils/hash.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import { buildCommandEnvironment } from "./environment.js";
@@ -48,7 +49,10 @@ function executableExtensions(program: string, environment: NodeJS.ProcessEnv): 
   if (process.platform !== "win32") return [""];
   if (path.extname(program)) return [""];
   const pathExt = getEnvironmentValue(environment, "PATHEXT") ?? ".COM;.EXE;.BAT;.CMD";
-  return ["", ...pathExt.split(";").filter(Boolean).map((entry) => entry.toLowerCase())];
+  // Match Windows command lookup semantics. An extensionless POSIX shim often
+  // sits beside npm.cmd; choosing the shim first makes CreateProcess fail with
+  // ERROR_BAD_EXE_FORMAT even though the Windows launcher is available.
+  return [...pathExt.split(";").filter(Boolean).map((entry) => entry.toLowerCase()), ""];
 }
 
 async function isExecutable(filename: string): Promise<boolean> {
@@ -133,6 +137,7 @@ export class CommandResolver {
     // Bind executable bytes as well as npm/config material across approval waits.
     const executableHash = sha256(await readFile(executablePath));
     approvalMaterialHash = sha256(JSON.stringify([approvalMaterialHash ?? null, executableHash]));
+    const launch = await this.windowsScriptLaunch(executablePath);
     return {
       program: input.program,
       executablePath,
@@ -144,6 +149,7 @@ export class CommandResolver {
       trustedExecutable: trustedExecutableLocation(executablePath, this.workspace.root),
       environment,
       environmentKeys: Object.keys(environment).sort((left, right) => left.localeCompare(right)),
+      ...(launch ? { launch } : {}),
       ...(approvalMaterialHash ? { approvalMaterialHash } : {}),
     };
   }
@@ -211,41 +217,46 @@ export class CommandResolver {
     environment: NodeJS.ProcessEnv,
   ): Promise<string> {
     if (path.isAbsolute(requested)) {
-      const canonical = await resolveLocalCommandPath(requested, cwd);
-      if (!await isExecutable(canonical)) throw new Error("Program is not executable");
-      return canonical;
+      for (const extension of executableExtensions(requested, environment)) {
+        const candidate = `${requested}${extension}`;
+        if (!await isExecutable(candidate)) continue;
+        const canonical = await resolveLocalCommandPath(candidate, cwd);
+        if (await isExecutable(canonical)) return canonical;
+      }
+      throw new Error("Program is not executable");
     }
     if (requested.includes("/") || requested.includes("\\")) {
-      let relative: string;
-      try {
-        const lexical = path.resolve(cwd, requested);
-        this.workspace.pathGuard.assertInside(lexical);
-        relative = this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(lexical));
-      } catch (error) {
-        throw new CommandPolicyBoundaryError(
-          error instanceof Error ? error.message : String(error),
-          "policy.executable_boundary",
-        );
-      }
-      let target: string;
-      try {
-        target = await resolveLocalCommandPath(relative, this.workspace.root);
-        if (isInsideWorkspace(this.workspace, target)) {
-          this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(target));
-        } else if (!trustedExecutableLocation(target, this.workspace.root)) {
-          throw new Error("Executable link escapes the workspace boundary to an untrusted tool location");
-        }
-      } catch (error) {
-        if (policyBoundaryMessage(error)) {
+      for (const extension of executableExtensions(requested, environment)) {
+        let relative: string;
+        try {
+          const lexical = path.resolve(cwd, `${requested}${extension}`);
+          this.workspace.pathGuard.assertInside(lexical);
+          relative = this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(lexical));
+        } catch (error) {
           throw new CommandPolicyBoundaryError(
             error instanceof Error ? error.message : String(error),
             "policy.executable_boundary",
           );
         }
-        throw error;
+        try {
+          const target = await resolveLocalCommandPath(relative, this.workspace.root);
+          if (isInsideWorkspace(this.workspace, target)) {
+            this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(target));
+          } else if (!trustedExecutableLocation(target, this.workspace.root)) {
+            throw new Error("Executable link escapes the workspace boundary to an untrusted tool location");
+          }
+          if (await isExecutable(target)) return target;
+        } catch (error) {
+          if (policyBoundaryMessage(error)) {
+            throw new CommandPolicyBoundaryError(
+              error instanceof Error ? error.message : String(error),
+              "policy.executable_boundary",
+            );
+          }
+          // A missing PATHEXT candidate is normal; continue to the next one.
+        }
       }
-      if (!(await isExecutable(target))) throw new Error("Workspace program is not executable");
-      return target;
+      throw new Error("Workspace program is not executable");
     }
 
     const extensions = executableExtensions(requested, environment);
@@ -290,6 +301,21 @@ export class CommandResolver {
     } catch {
       return cwdAbsolute;
     }
+  }
+
+  private async windowsScriptLaunch(
+    executablePath: string,
+  ): Promise<ResolvedCommand["launch"]> {
+    if (process.platform !== "win32" || !/\.(?:cmd|bat|ps1)$/iu.test(executablePath)) return undefined;
+    const node = await realpath(process.execPath).catch(() => process.execPath);
+    const launcher = fileURLToPath(new URL("./windows-script-launcher.js", import.meta.url));
+    if (!await isExecutable(node)) throw new Error("Node.js executable is unavailable for Windows script launch");
+    return {
+      kind: "windows-script",
+      executablePath: path.normalize(node),
+      args: [launcher],
+      usesCommandPayload: true,
+    };
   }
 
   private hardenNpmEnvironment(environment: NodeJS.ProcessEnv): void {

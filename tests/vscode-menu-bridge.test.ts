@@ -152,7 +152,7 @@ describe("VS Code out-of-band menu navigation", () => {
     bridge.close();
   });
 
-  it("falls back to Raw TTY when a legacy extension does not acknowledge readiness", async () => {
+  it("falls back to Raw TTY when the extension does not acknowledge readiness", async () => {
     const socket = new FakeSocket();
     const bridge = createVsCodeMenuBridge({
       environment: {
@@ -161,7 +161,6 @@ describe("VS Code out-of-band menu navigation", () => {
       },
       identity: { pid: 321, ppid: 123, cwd: "C:\\workspace" },
       connect: () => socket as unknown as Socket,
-      legacyFallbackMs: 5,
       readyAckTimeoutMs: 20,
     });
     assert.ok(bridge);
@@ -173,7 +172,7 @@ describe("VS Code out-of-band menu navigation", () => {
     bridge.close();
   });
 
-  it("does not use the short legacy timeout before the socket connects", async () => {
+  it("does not start the acknowledgement timeout before the socket connects", async () => {
     const socket = new FakeSocket();
     const bridge = createVsCodeMenuBridge({
       environment: {
@@ -182,7 +181,6 @@ describe("VS Code out-of-band menu navigation", () => {
       },
       identity: { pid: 321, ppid: 123, cwd: "C:\\workspace" },
       connect: () => socket as unknown as Socket,
-      legacyFallbackMs: 5,
       readyAckTimeoutMs: 100,
     });
     assert.ok(bridge);

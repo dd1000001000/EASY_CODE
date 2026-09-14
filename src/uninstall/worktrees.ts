@@ -2,6 +2,7 @@ import path from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { assertPlainAncestors } from "../install/ownership.js";
+import { CURRENT_PROTOCOL } from "../protocol/versions.js";
 import { children, identity, inside, readJson, type UninstallPlan } from "./plan.js";
 import { checked, runSystem, type SystemRunner } from "./system.js";
 
@@ -17,7 +18,7 @@ export async function addWorktrees(plan: UninstallPlan, run: SystemRunner = runS
       try {
         const persisted = await readJson(path.join(data, "subagent-environments", file));
         const env = persisted.environment;
-        if (persisted.schemaVersion !== 1 || !env || env.kind !== "worktree") continue;
+        if (persisted.schemaVersion !== CURRENT_PROTOCOL.worktreeDescriptor || !env || env.kind !== "worktree") continue;
         const root = env.worktreeRoot, repository = env.repositoryRoot;
         if (typeof root !== "string" || typeof repository !== "string" || !path.isAbsolute(root) || !path.isAbsolute(repository) ||
           identity(root) === identity(repository) || inside(root, repository) || inside(repository, root))
@@ -28,8 +29,7 @@ export async function addWorktrees(plan: UninstallPlan, run: SystemRunner = runS
         const parent = path.basename(path.dirname(root));
         const child = path.basename(root);
         const compact = parent === "r-" + hash(repoIdentity).slice(0, 16) && child === "e-" + hash(env.id).slice(0, 20);
-        const legacy = parent === hash(repoIdentity).slice(0, 24) && child === env.id;
-        if (!compact && !legacy) throw new Error("Worktree path does not match its Runtime layout: " + root);
+        if (!compact) throw new Error("Worktree path does not match the current Runtime layout: " + root);
         if (seen.has(identity(root))) continue; seen.add(identity(root));
         assertPlainAncestors(root); assertPlainAncestors(repository);
         if (!existsSync(repository)) throw new Error("Original repository unavailable: " + repository);

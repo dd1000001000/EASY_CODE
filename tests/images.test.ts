@@ -805,7 +805,7 @@ describe("image attachments", () => {
 
   it("hydrates a vision request only at the provider boundary", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000000",
       label: "Image #1",
@@ -851,7 +851,7 @@ describe("image attachments", () => {
 
   it("preserves inline image-marker order for multi-image comparisons", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     const images: ImageAttachment[] = [1, 2].map((index) => ({
       id: `image_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
       label: `Image #${index}`,
@@ -892,7 +892,7 @@ describe("image attachments", () => {
 
   it("sends images and thinking together to DeepSeek V4.1 Flash", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "test-key";
+    config.providers.deepseek!.apiKey = "test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000001",
       label: "Image #1",
@@ -931,7 +931,7 @@ describe("image attachments", () => {
 
   it("sends images only with the GLM-5.3-Flash vision model", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.glm.apiKey = "test-key";
+    config.providers.glm!.apiKey = "test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000005",
       label: "Image #1",
@@ -980,7 +980,7 @@ describe("image attachments", () => {
 
   it("sends Kimi K3 images without a provider-specific thinking dialect", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.kimi.apiKey = "kimi-test-key";
+    config.providers.kimi!.apiKey = "kimi-test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000007",
       label: "Image #1",
@@ -1018,7 +1018,7 @@ describe("image attachments", () => {
 
   it("never sends direct image input through GLM Coding Plan", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config["glm-coding-plan"].apiKey = "coding-plan-test-key";
+    config.providers["glm-coding-plan"]!.apiKey = "coding-plan-test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000006",
       label: "Image #1",
@@ -1053,7 +1053,7 @@ describe("image attachments", () => {
 
   it("validates Qwen image constraints before loading bytes", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     let loaded = false;
     const provider = createProvider(config, "qwen", "qwen3.7-plus", {
       loadImage: async () => {
@@ -1090,7 +1090,7 @@ describe("image attachments", () => {
 
   it("omits provider-incompatible historical images without mutating thread messages", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     const historicalGif: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000003",
       label: "Image #1",
@@ -1160,7 +1160,7 @@ describe("image attachments", () => {
 
   it("redacts image data URLs returned in model content and API errors", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.deepseek.apiKey = "test-key";
+    config.providers.deepseek!.apiKey = "test-key";
     const success = createProvider(config, "deepseek", "deepseek-flash", {
       transport: async () => ({
         statusCode: 200,
@@ -1202,7 +1202,7 @@ describe("image attachments", () => {
 
   it("does not load historical images when the selected model is text-only", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
-    config.qwen.apiKey = "test-key";
+    config.providers.qwen!.apiKey = "test-key";
     const attachment: ImageAttachment = {
       id: "image_00000000-0000-4000-8000-000000000000",
       label: "Image #1",

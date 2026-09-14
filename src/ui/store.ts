@@ -294,11 +294,6 @@ export function createUIState(options: CreateUIStateOptions = {}): UIState {
   };
 }
 
-/** Descriptive alias for call sites that prefer an explicit initial-state name. */
-export function createInitialUIState(options: CreateUIStateOptions = {}): UIState {
-  return createUIState(options);
-}
-
 /** Apply exactly one structured UI event without mutating the prior state. */
 export function applyEvent(
   state: Readonly<UIState>,

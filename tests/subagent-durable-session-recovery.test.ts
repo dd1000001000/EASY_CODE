@@ -353,54 +353,6 @@ describe("durable child session recovery", () => {
     }
   });
 
-  it("accepts only the deterministic shared identity upgrade for a legacy binding", () => {
-    const dataDir = mkdtempSync(path.join(os.tmpdir(), "easy-code-legacy-binding-upgrade-"));
-    const storage = createStorage(dataDir);
-    try {
-      const threads = new ThreadStore(storage);
-      const createParent = (suffix: string) => threads.create({
-        threadId: `thread_legacy_binding_${suffix}`,
-        workspaceRoot: path.join(dataDir, `workspace-${suffix}`),
-        mode: "code",
-        provider: "deepseek",
-        model: "deepseek-v4-flash",
-        thinkingEffort: "high",
-      });
-      const {
-        childThreadId: _childThreadId,
-        environmentId: _environmentId,
-        requestedIsolation: _requestedIsolation,
-        ...legacy
-      } = standaloneAssignment();
-
-      const accepted = createParent("accepted");
-      appendLifecycle(threads, accepted.threadId, "turn_activate_legacy", legacy, "activate");
-      appendLifecycle(threads, accepted.threadId, "turn_observe_legacy", {
-        ...legacy,
-        childThreadId: `thread_${legacy.agentId}`,
-        environmentId: `environment_${legacy.agentId}`,
-        requestedIsolation: "shared",
-      }, "observe");
-      assert.equal(threads.subagentAssignments(accepted.threadId)[0]?.observed, true);
-
-      const rejected = createParent("rejected");
-      appendLifecycle(threads, rejected.threadId, "turn_activate_legacy_bad", legacy, "activate");
-      appendLifecycle(threads, rejected.threadId, "turn_observe_legacy_bad", {
-        ...legacy,
-        childThreadId: "thread_attacker_selected",
-        environmentId: "environment_attacker_selected",
-        requestedIsolation: "shared",
-      }, "observe");
-      assert.throws(
-        () => threads.subagentAssignments(rejected.threadId),
-        /Invalid child observation/u,
-      );
-    } finally {
-      storage.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
   it("resumes a non-terminal V2 binding with the same child session, environment, and task", async () => {
     const assignment = standaloneAssignment();
     let received: SubagentExecutionRequest | undefined;
@@ -534,54 +486,4 @@ describe("durable child session recovery", () => {
     );
   });
 
-  it("keeps a legacy standalone binding safely terminal through restoreStandalone", async () => {
-    const durable = standaloneAssignment({
-      agentId: "subagent_00000000-0000-4000-8000-000000000304",
-    });
-    const {
-      childThreadId: _childThreadId,
-      environmentId: _environmentId,
-      requestedIsolation: _requestedIsolation,
-      ...legacy
-    } = durable;
-    let childRuns = 0;
-    const coordinator = new SubagentCoordinator({
-      run: async () => {
-        childRuns += 1;
-        throw new Error("A legacy interrupted child must not be restarted");
-      },
-    });
-    coordinator.restoreStandalone({
-      parentThreadId: "thread_parent_legacy_restore",
-      createdByTurnId: "turn_activate_legacy_restore",
-      assignment: legacy,
-      reason: "interrupted",
-      error: "The previous process exited before the legacy child returned.",
-      finishedAt: "2026-08-28T12:10:00.000Z",
-    });
-
-    const state = {
-      threadId: "thread_parent_legacy_restore",
-      workspaceRoot: "C:\\workspace",
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
-      thinkingEffort: "high",
-    } as SessionState;
-    const waited = await coordinator.wait(
-      { action: "wait", agentIds: [legacy.agentId], timeoutMs: 0 },
-      context(state, "turn_observe_legacy_restore"),
-    );
-
-    assert.equal(childRuns, 0);
-    assert.equal((waited.data as { timedOut?: boolean }).timedOut, false);
-    assert.equal(coordinator.snapshot(state.threadId)[0]?.status, "interrupted");
-    assert.equal(
-      coordinator.snapshot(state.threadId)[0]?.childThreadId,
-      `thread_${legacy.agentId}`,
-    );
-    assert.equal(
-      coordinator.snapshot(state.threadId)[0]?.environmentId,
-      `environment_${legacy.agentId}`,
-    );
-  });
 });

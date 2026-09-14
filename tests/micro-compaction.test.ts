@@ -6,10 +6,10 @@ import {
   MICRO_COMPACTION_PLACEHOLDER_PREFIX,
   microCompactToolResults,
   projectModelInputMessages,
-  pruneConsumedReasoning,
 } from "../src/context/micro-compaction.js";
 import { ContextManager } from "../src/context/manager.js";
 import { sha256 } from "../src/utils/hash.js";
+import { baseSessionState } from "./session-state.js";
 
 function call(id: string, name: string): ChatMessage {
   return {
@@ -30,6 +30,7 @@ function longResult(label: string): string {
 function stateWith(messages: ChatMessage[]): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_micro_compaction",
     mode: "code",
     provider: "qwen",
@@ -77,10 +78,10 @@ describe("MicroCompaction", () => {
     assert.deepEqual(messages, durableSnapshot);
   });
 
-  it("preserves tool protocol fields and resolves legacy results without a name", () => {
+  it("preserves the required current tool protocol fields", () => {
     const messages: ChatMessage[] = [
-      call("call_legacy", "read_file"),
-      { role: "tool", tool_call_id: "call_legacy", content: longResult("legacy") },
+      call("call_read", "read_file"),
+      { role: "tool", tool_call_id: "call_read", name: "read_file", content: longResult("current") },
       { role: "assistant", content: "consumed", reasoning_content: "private reasoning" },
     ];
 
@@ -89,19 +90,19 @@ describe("MicroCompaction", () => {
 
     assert.equal(projectedResult?.role, "tool");
     if (projectedResult?.role !== "tool") throw new Error("expected a tool result");
-    assert.equal(projectedResult.tool_call_id, "call_legacy");
-    assert.equal(projectedResult.name, undefined);
+    assert.equal(projectedResult.tool_call_id, "call_read");
+    assert.equal(projectedResult.name, "read_file");
     assert.match(projectedResult.content, /tool=read_file/u);
     assert.deepEqual(
       projected.filter((message) => message.role === "tool").map((message) => message.tool_call_id),
-      ["call_legacy"],
+      ["call_read"],
     );
     assert.deepEqual(
       projected.flatMap((message) =>
         message.role === "assistant"
           ? (message.tool_calls ?? []).map((toolCall) => toolCall.id)
           : []),
-      ["call_legacy"],
+      ["call_read"],
     );
   });
 
@@ -281,13 +282,14 @@ describe("MicroCompaction", () => {
     assert.doesNotMatch(reference, /super-secret-value|not-json/u);
   });
 
-  it("sanitizes untrusted legacy tool-call identifiers in a reference", () => {
+  it("sanitizes untrusted current tool-call identifiers in a reference", () => {
     const messages: ChatMessage[] = [
       call("call\u001b[2J password=super-secret-value", "read_file"),
       {
         role: "tool",
+        name: "read_file",
         tool_call_id: "call\u001b[2J password=super-secret-value",
-        content: longResult("legacy"),
+        content: longResult("current"),
       },
       { role: "assistant", content: "consumed" },
     ];
@@ -343,7 +345,7 @@ describe("MicroCompaction", () => {
     ];
     const durableSnapshot = structuredClone(messages);
 
-    const projected = pruneConsumedReasoning(messages);
+    const projected = projectModelInputMessages(messages);
 
     assert.equal(
       projected[1]?.role === "assistant" ? projected[1].reasoning_content : undefined,

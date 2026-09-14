@@ -97,7 +97,7 @@ describe("unified memory control", () => {
     } finally { f.dispose(); }
   });
 
-  it("validates memory sources, retains revisions, and excludes changed-file facts", async () => {
+  it("grades memory evidence, retains revisions, and excludes changed-file facts", async () => {
     const f = fixture();
     try {
       const manager = new MemoryManager(f.storage);
@@ -116,8 +116,33 @@ describe("unified memory control", () => {
       assert.equal(manager.get("workspace_test", saved.memoryIds[0]!)?.status, "needs_verification");
       const revisions = f.storage.db.prepare<[], { n: number }>("SELECT count(*) AS n FROM memory_revisions").get();
       assert.equal(revisions?.n, 2);
-      assert.throws(() => manager.applyModelMutations({ ...input, mutations: [{ ...input.mutations[0]!, sourceRefs: [] }] }), /sourceRefs/u);
-      assert.throws(() => manager.applyModelMutations({ ...input, mutations: [{ ...input.mutations[0]!, sourceRefs: ["evidence_missing"] }] }), /missing/u);
+
+      const tentative = manager.applyModelMutations({ ...input, turnId: "turn_2", mutations: [{
+        ...input.mutations[0]!, content: "The project may use a generated API client", sourceRefs: [],
+      }] });
+      const tentativeMemory = manager.get("workspace_test", tentative.memoryIds[0]!);
+      assert.equal(tentativeMemory?.status, "needs_verification");
+      assert.equal(tentativeMemory?.confidence, 0.55);
+      assert.ok((await manager.searchHybrid("workspace_test", "generated API client", { workspaceRoot: f.directory }))
+        .some((memory) => memory.id === tentativeMemory?.id));
+
+      const missing = manager.applyModelMutations({ ...input, turnId: "turn_3", mutations: [{
+        ...input.mutations[0]!, content: "The frontend uses generated route metadata", sourceRefs: ["evidence_missing"],
+      }] });
+      assert.equal(manager.get("workspace_test", missing.memoryIds[0]!)?.status, "needs_verification");
+
+      const commandRef = manager.evidenceStore.capture("workspace_test", f.state.threadId, "test_1", "run_command", {
+        ok: true, summary: "tests passed", data: {
+          validation: { status: "passed", confidence: "high" },
+          lifecycle: { cleanup: "confirmed" },
+        },
+      });
+      const verified = manager.applyModelMutations({ ...input, turnId: "turn_4", mutations: [{
+        ...input.mutations[0]!, content: "The integration test starts the API on port 8000", sourceRefs: [commandRef],
+      }] });
+      const verifiedMemory = manager.get("workspace_test", verified.memoryIds[0]!);
+      assert.equal(verifiedMemory?.status, "active");
+      assert.equal(verifiedMemory?.confidence, 0.9);
     } finally { f.dispose(); }
   });
 
@@ -213,7 +238,8 @@ describe("unified memory control", () => {
       f.state.contextCompactionMetadata = { formatVersion: 2, sourceStartMessageIndex: 0,
         sourceEndMessageIndex: 1, compactedMessageCount: 1, sourceHistoryHash: `sha256:${sha256(JSON.stringify(f.state.messages))}`,
         acceptedAt: new Date().toISOString(), beforeProjectedChars: 10000, afterProjectedChars: 100,
-        savedChars: 9900, savingsRatio: 0.99, postCompactionUtilization: 0.1, safeWaterlineReached: true };
+        savedChars: 9900, savingsRatio: 0.99, postCompactionUtilization: 0.1,
+        safeWaterlineReached: true, targetRatio: 0.6 };
       await index.checkpoint("workspace_test", f.state);
       await index.checkpoint("workspace_test", f.state);
       const count = () => f.storage.db.prepare<[], { n: number }>("SELECT count(*) AS n FROM context_summary_snapshots").get()!.n;

@@ -16,7 +16,10 @@
     "tasks[].failureHandling": "The intended response when this task encounters a concrete failure or external blocker.",
     "taskId": "For start, complete, block, and resume, the target task identifier.",
     "evidence": "For completion, supply exactly one concise, concrete evidence statement for each completion check, in the same order.",
-    "reason": "For blocking a task, state the concrete unresolved external condition."
+    "reason": "For blocking a task, state the concrete unresolved external condition.",
+    "kind": "For blocking a task, classify the blocker as dependency, user input, environment, review, or implementation.",
+    "recoverable": "For blocking a task, state whether the recorded condition can be resolved and resumed.",
+    "evidenceRefs": "For blocking a task, cite bounded Runtime evidence identifiers that support the blocker."
   },
   "guidance": "manage_tasks is available only in Code mode or Auto mode after a Code selection. It optionally creates and advances a Runtime-enforced task DAG. Use it only when the current objective is genuinely complex: multiple independently checkable phases, dependency branches, several artifacts, or explicit quality gates. Skip it for explanations, plans, one-file fixes, and short linear work. Call it by itself. Once created, start one unblocked node for the main agent, perform only that node's work, and complete it only after recording one concrete evidence statement per declared check. Runtime validates state transitions and evidence structure, allows at most one main-agent node in progress, blocks main-agent work without one, enforces dependencies, and refuses a normal final answer while the graph is active. Independent nodes may instead be claimed by isolated children when Runtime exposes that capability. Use block only for a durable external or user-input condition and resume after it is resolved; a turn-scoped command sandbox failure is a pause, not a DAG blocker. Never treat task text as permission or store task-DAG state in long-term memory."
 }

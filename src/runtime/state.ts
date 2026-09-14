@@ -1,26 +1,29 @@
 import type { EasyCodeConfig, SessionState } from "../core/types.js";
 import type { PromptBundleBinding } from "../prompt-bundle/types.js";
+import { activePromptBundleBinding } from "../prompt-bundle/index.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph } from "../tasks/task-graph.js";
+import { createProgressGuardState } from "../progress/guard.js";
 import { createId } from "../utils/ids.js";
 
 export function createSessionState(
   config: EasyCodeConfig,
   threadId = createId("thread"),
-  promptBundle?: PromptBundleBinding,
+  promptBundle: PromptBundleBinding = activePromptBundleBinding(),
 ): SessionState {
   const now = new Date().toISOString();
   const provider = config.providers[config.provider];
   if (!provider) throw new Error(`Provider ${config.provider} is not configured`);
   return {
     threadId,
+    orchestrationEnabled: config.orchestrationEnabled,
     mode: config.mode,
     provider: config.provider,
     model: provider.model,
     thinkingEffort: config.thinkingEffort,
     workspaceRoot: config.workspaceRoot,
     modelRegistryHash: config.modelRegistryHash,
-    ...(promptBundle ? { promptBundle: { ...promptBundle } } : {}),
+    promptBundle: { ...promptBundle },
     constraints: [],
     messages: [],
     userMessageIndices: [],
@@ -33,6 +36,9 @@ export function createSessionState(
     steeringWatermark: 0,
     workingSummary: "",
     compactedMessageCount: 0,
+    progressGuard: createProgressGuardState(),
+    compactionControl: { phaseEnds: [] },
+    reviewSessions: [],
     createdAt: now,
     updatedAt: now
   };
@@ -43,7 +49,7 @@ export function cloneSessionState(state: SessionState): SessionState {
     ...state,
     ...(state.reviewSessions ? { reviewSessions: structuredClone(state.reviewSessions) } : {}),
     ...(state.delivery ? { delivery: { ...state.delivery } } : {}),
-    ...(state.promptBundle ? { promptBundle: { ...state.promptBundle } } : {}),
+    promptBundle: { ...state.promptBundle },
     constraints: [...state.constraints],
     messages: [...state.messages],
     ...(state.userMessageIndices ? { userMessageIndices: [...state.userMessageIndices] } : {}),
@@ -53,7 +59,7 @@ export function cloneSessionState(state: SessionState): SessionState {
     commandApprovalPrefixes: [...state.commandApprovalPrefixes],
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
-    pendingSteering: (state.pendingSteering ?? []).map((entry) => ({
+    pendingSteering: state.pendingSteering.map((entry) => ({
       ...entry,
       message: {
         ...entry.message,
@@ -62,8 +68,8 @@ export function cloneSessionState(state: SessionState): SessionState {
           : {}),
       },
     })),
-    steeringSequence: state.steeringSequence ?? 0,
-    steeringWatermark: state.steeringWatermark ?? 0,
+    steeringSequence: state.steeringSequence,
+    steeringWatermark: state.steeringWatermark,
     ...(state.contextIntentLedger
       ? {
           contextIntentLedger: {

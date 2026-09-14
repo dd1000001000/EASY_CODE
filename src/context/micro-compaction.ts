@@ -14,7 +14,7 @@ export const MICRO_COMPACTION_PLACEHOLDER_PREFIX =
 
 /**
  * Tools whose results commonly contain reconstructable source, search, edit,
- * or command output. Some names are reserved for compatible future tools so
+ * or command output. Some names are reserved for planned external tools so
  * adding one does not silently reintroduce unbounded historical output.
  */
 const COMPACTABLE_TOOL_NAMES = new Set<string>([
@@ -328,20 +328,11 @@ export function microCompactToolResults(
   messages: readonly ChatMessage[],
 ): ChatMessage[] {
   const toolNamesByResultIndex = new Map<number, string>();
-  const precedingToolCalls = new Map<string, string>();
-
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (!message) continue;
-    if (message.role === "assistant") {
-      for (const call of message.tool_calls ?? []) {
-        precedingToolCalls.set(call.id, call.function.name);
-      }
-      continue;
-    }
     if (message.role === "tool") {
-      const name = message.name ?? precedingToolCalls.get(message.tool_call_id);
-      if (name) toolNamesByResultIndex.set(index, name);
+      toolNamesByResultIndex.set(index, message.name);
     }
   }
 
@@ -370,18 +361,6 @@ export function microCompactToolResults(
   }
 
   return projection;
-}
-
-/**
- * Compatibility entry point. Reasoning is an opaque provider continuation,
- * not disposable prose: GLM preserved thinking and DeepSeek tool use require
- * unchanged blocks in their original order. Only an accepted conversation
- * compaction may retire the containing messages.
- */
-export function pruneConsumedReasoning(
-  messages: readonly ChatMessage[],
-): ChatMessage[] {
-  return [...messages];
 }
 
 /**

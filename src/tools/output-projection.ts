@@ -21,7 +21,7 @@ function previousCommand(messages: readonly ChatMessage[], id: string): Record<s
     try {
       const value = JSON.parse(message.content);
       if (record(value?.data) && value.data.commandId === id) return value.data;
-    } catch { /* Legacy/clipped output is not a cursor. */ }
+    } catch { /* A clipped or non-JSON projection is not a command cursor. */ }
   }
   return undefined;
 }

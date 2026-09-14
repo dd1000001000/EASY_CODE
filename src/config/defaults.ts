@@ -15,11 +15,6 @@ import {
   DEFAULT_MODEL_IDS,
   providerCatalogEntry,
 } from "../models/catalog.js";
-import {
-  DEFAULT_BASE_CONTEXT_CHAR_LIMIT,
-  DEFAULT_BASE_STEP_LIMIT,
-  THINKING_EFFORT_TIMEOUT_MS,
-} from "../models/thinking.js";
 
 export const DEFAULT_QWEN_BASE_URL = providerCatalogEntry("qwen").defaultBaseUrl;
 export const DEFAULT_QWEN_MODEL = DEFAULT_MODEL_IDS.qwen!;
@@ -35,13 +30,7 @@ export const DEFAULT_GLM_MODEL = DEFAULT_MODEL_IDS.glm!;
 export const DEFAULT_GLM_CODING_PLAN_MODEL =
   DEFAULT_MODEL_IDS["glm-coding-plan"]!;
 
-/** Backward-compatible name for the default none/low request timeout. */
-export const DEFAULT_PROVIDER_TIMEOUT_MS = THINKING_EFFORT_TIMEOUT_MS.none;
 export const DEFAULT_PROVIDER_MAX_RETRIES = defaultRuntimeLimits().maxProviderRetries;
-/** Configurable none/low thinking-effort step budget. */
-export const DEFAULT_BASE_MAX_STEPS = DEFAULT_BASE_STEP_LIMIT;
-/** Configurable none/low thinking-effort context-character budget. */
-export const DEFAULT_BASE_MAX_CONTEXT_CHARS = DEFAULT_BASE_CONTEXT_CHAR_LIMIT;
 
 export interface EasyCodePaths {
   configDir: string;
@@ -79,8 +68,6 @@ export function createDefaultEasyCodeConfig(
   );
   const defaultProvider = DEFAULT_PROVIDER_NAME;
   if (!defaultProvider) throw new Error("The model registry does not define a provider");
-  const compatibility = (provider: string): ProviderConfig =>
-    providers[provider] ?? providers[defaultProvider]!;
   return {
     provider: defaultProvider,
     mode: "auto",
@@ -97,10 +84,5 @@ export function createDefaultEasyCodeConfig(
     worktreeRoot: path.join(path.resolve(paths.dataDir), "worktrees"),
     providers,
     modelRegistryHash: ACTIVE_MODEL_REGISTRY_HASH,
-    qwen: compatibility("qwen"),
-    deepseek: compatibility("deepseek"),
-    kimi: compatibility("kimi"),
-    glm: compatibility("glm"),
-    "glm-coding-plan": compatibility("glm-coding-plan"),
   };
 }

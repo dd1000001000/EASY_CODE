@@ -6,6 +6,7 @@ import { assertNoUninstall, assertPlainAncestors } from "../install/ownership.js
 import { ExecutionJournal } from "../command/execution-journal.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import { currentProcessIdentity, processOwnerProbe } from "../core/process-owner.js";
+import { deterministicNotStartedEvidence } from "./lifecycle-evidence.js";
 
 export interface RecoveryItem {
   commandId: string;
@@ -60,10 +61,6 @@ export class SandboxRecovery {
         if (!/^[a-zA-Z0-9_-]+$/u.test(commandId)) continue;
         const lease = await optionalJson(leasePath);
         if (!lease || lease.version !== 2 || lease.commandId !== commandId) continue;
-        if (probe({ ...lease, pid: lease.ownerPid }) !== "inactive") {
-          item.reason = "Owner process is alive or unknown; no lease was removed";
-          continue;
-        }
         const eventFile = path.join(lifecycle, `${commandId}.events.jsonl`);
         const source = await readFile(eventFile, "utf8").catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return "";
@@ -76,8 +73,26 @@ export class SandboxRecovery {
         const events = source.split("\n").filter(Boolean).map(line => JSON.parse(line));
         if (events.some(event => event.commandId !== commandId)) throw new Error("Mismatched command lifecycle evidence");
         const reverseEvents = [...events].reverse();
-        const cleanup = reverseEvents.find((event: any) => event.type === "cleanup_complete");
+        const notStarted = deterministicNotStartedEvidence(events);
+        const cleanup = reverseEvents.find((event: any) => event.type === "cleanup_complete" || event.type === "cleanup_not_required");
         const final = reverseEvents.find((event: any) => event.type === "finished" || event.type === "finalized");
+        if (notStarted) {
+          item.status = "recoverable";
+          item.reason = "Trusted spawn evidence proves the target never started; cleanup is not required and the command will not be replayed";
+          if (apply) {
+            const journal = new ExecutionJournal(lifecycle);
+            journal.record(commandId, "not_started_reconciled", notStarted);
+            journal.record(commandId, "cleanup_not_required", { targetStarted: false });
+            journal.record(commandId, "recovered", { backend: "native", replayed: false });
+            await rm(leasePath);
+            item.status = "recovered";
+          }
+          continue;
+        }
+        if (probe({ ...lease, pid: lease.ownerPid }) !== "inactive") {
+          item.reason = "Owner process is alive or unknown; no lease was removed";
+          continue;
+        }
         if (!cleanup || !final) {
           item.reason = "The command outcome or cleanup is unknown; inspect the workspace before resuming mutations";
           continue;

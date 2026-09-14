@@ -13,6 +13,7 @@ import {
   serializeSessionState,
 } from "../src/threads/serialization.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 function review(): PlanReviewState {
   return {
@@ -36,6 +37,7 @@ function review(): PlanReviewState {
 function stateWithReview(): SessionState {
   const now = new Date().toISOString();
   return {
+    ...baseSessionState(),
     threadId: "thread_plan_serialization",
     mode: "auto",
     provider: "deepseek",
@@ -57,7 +59,7 @@ function stateWithReview(): SessionState {
 }
 
 describe("plan review persistence", () => {
-  it("serializes and deep-clones review state while accepting legacy checkpoints", () => {
+  it("serializes and deep-clones optional review state", () => {
     const original = stateWithReview();
     const restored = deserializeSessionState(serializeSessionState(original));
     const cloned = cloneSessionState(original);

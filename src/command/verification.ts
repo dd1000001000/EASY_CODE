@@ -234,11 +234,9 @@ export class CommandVerificationCollector {
   }
 }
 
-/** Historical tool results lack streaming evidence; never reinterpret clipped logs as new proof. */
-export function legacyCommandValidation(data: { executed?: unknown; exitCode: number | null; stdout?: unknown; stderr?: unknown }): CommandValidation {
-  const command = data.executed as Partial<Command> | undefined;
-  const unknown = !command || typeof command.program !== "string" || !Array.isArray(command.args) ||
-    opaque(command as Command);
-  return { status: unknown ? "unknown" : data.exitCode === 0 ? "passed" : "failed", confidence: unknown ? "low" : "high",
-    source: unknown ? "unavailable" : "process_exit", coverage: unknown ? "incomplete" : "terminal", reason: "Legacy direct-command exit evidence; no reconstructed framework evidence." };
+/** Missing structured validation is missing evidence, never an invitation to
+ * reconstruct a verdict from clipped output or the outer process exit code. */
+export function unavailableCommandValidation(): CommandValidation {
+  return { status: "unknown", confidence: "low", source: "unavailable", coverage: "incomplete",
+    reason: "Structured validation evidence is unavailable." };
 }

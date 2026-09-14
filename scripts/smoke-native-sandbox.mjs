@@ -143,6 +143,14 @@ try {
   assert.match(followUp.stdout.text, /FOLLOW_UP_OK/u);
   assert.ok(followUp.durationMs < 15_000, `follow-up command took ${followUp.durationMs}ms`);
   console.log(`runtime: follow-up completed in ${followUp.durationMs}ms (${JSON.stringify(followUp.lifecycle?.timings)})`);
+  if (process.platform === "win32") {
+    const packageShim = await runtime.run({ program: "npm", args: ["--version"], intent: "inspect", timeoutMs: 10_000 }, context);
+    assert.equal(packageShim.status, "exited", JSON.stringify({ failure: packageShim.failure,
+      lifecycle: packageShim.lifecycle, stdout: packageShim.stdout.text, stderr: packageShim.stderr.text }));
+    assert.equal(packageShim.exitCode, 0);
+    assert.match(packageShim.stdout.text, /\d+\.\d+/u);
+    console.log("runtime: Windows package-manager shim launched through structured adapter");
+  }
   await access(outsideSentinel);
   console.log(`Native sandbox smoke test passed on ${process.platform}.`);
 } finally {

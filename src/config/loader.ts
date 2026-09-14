@@ -23,39 +23,14 @@ import {
   type EasyCodePaths,
 } from "./defaults.js";
 import { validateEasyCodeConfig } from "./schema.js";
+import {
+  normalizeCurrentTomlConfig,
+  type EasyCodeConfigLayer,
+  type ProviderConfigLayer,
+} from "./toml-format.js";
+import { DEFAULT_RUNTIME_LIMITS } from "./runtime-limits.js";
 
 type UnknownRecord = Record<string, unknown>;
-
-interface ProviderConfigLayer extends UnknownRecord {
-  apiKey?: unknown;
-  baseUrl?: unknown;
-  model?: unknown;
-  /** Exact provider request timeout override for every thinking effort. */
-  timeoutMs?: unknown;
-  maxRetries?: unknown;
-}
-
-interface EasyCodeConfigLayer {
-  approvalModel?: unknown;
-  provider?: unknown;
-  mode?: unknown;
-  thinkingEffort?: unknown;
-  approvalPolicy?: unknown;
-  dataDir?: unknown;
-  configDir?: unknown;
-  cacheDir?: unknown;
-  limits?: UnknownRecord;
-  orchestrationEnabled?: unknown;
-  subagentIsolation?: unknown;
-  worktreeBaseMode?: unknown;
-  worktreeRoot?: unknown;
-  providers?: Record<string, ProviderConfigLayer>;
-  qwen?: ProviderConfigLayer;
-  deepseek?: ProviderConfigLayer;
-  kimi?: ProviderConfigLayer;
-  glm?: ProviderConfigLayer;
-  "glm-coding-plan"?: ProviderConfigLayer;
-}
 
 export interface LoadEasyCodeConfigOptions {
   /** Workspace selection is resolved before workspace-local configuration is read. */
@@ -84,120 +59,6 @@ export class EasyCodeConfigError extends Error {
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function recordAt(record: UnknownRecord, key: string): UnknownRecord {
-  const value = record[key];
-  return isRecord(value) ? value : {};
-}
-
-function firstDefined(...values: unknown[]): unknown {
-  return values.find((value) => value !== undefined);
-}
-
-function field(record: UnknownRecord, camel: string, snake: string): unknown {
-  return firstDefined(record[camel], record[snake]);
-}
-
-function providerLayer(raw: UnknownRecord): ProviderConfigLayer {
-  return compact({
-    apiKey: field(raw, "apiKey", "api_key"),
-    baseUrl: field(raw, "baseUrl", "base_url"),
-    model: raw.model,
-    timeoutMs: field(raw, "timeoutMs", "timeout_ms"),
-    maxRetries: field(raw, "maxRetries", "max_retries"),
-  });
-}
-
-function normalizeConfigLayer(value: unknown): EasyCodeConfigLayer {
-  if (!isRecord(value)) {
-    throw new EasyCodeConfigError("Configuration root must be a TOML table");
-  }
-
-  const limits = { ...recordAt(value, "limits") };
-  // Retired host-ACL traversal budgets have no meaning for container cleanup.
-  // Ignore only these exact saved settings so upgrading does not break startup.
-  delete limits.sandboxCleanupMaxEntries;
-  delete limits.sandboxCleanupMaxDepth;
-  if (value.limits !== undefined && !isRecord(value.limits)) {
-    throw new EasyCodeConfigError("limits must be a TOML table");
-  }
-  const removed = ["maxSteps", "max_steps", "maxContextChars", "max_context_chars",
-    "maxContextTokens", "max_context_tokens", "maxOutputChars", "max_output_chars",
-    "commandTimeoutMs", "command_timeout_ms", "maxManagedWorktrees", "max_managed_worktrees"];
-  if (removed.some((key) => value[key] !== undefined) ||
-      recordAt(value, "worktrees").max_managed !== undefined || recordAt(value, "worktrees").maxManaged !== undefined) {
-    throw new EasyCodeConfigError("Legacy limit fields are no longer supported. Use the [limits] table and [limits.steps]; see docs/config.example.toml.");
-  }
-  const paths = recordAt(value, "paths");
-  const providers = recordAt(value, "providers");
-  const subagents = recordAt(value, "subagents");
-  const worktrees = recordAt(value, "worktrees");
-  const nestedQwen = recordAt(providers, "qwen");
-  const nestedDeepSeek = recordAt(providers, "deepseek");
-  const directQwen = recordAt(value, "qwen");
-  const directDeepSeek = recordAt(value, "deepseek");
-  const nestedKimi = recordAt(providers, "kimi");
-  const directKimi = recordAt(value, "kimi");
-  const nestedGlm = recordAt(providers, "glm");
-  const directGlm = recordAt(value, "glm");
-  const nestedGlmCodingPlan = {
-    ...recordAt(providers, "glmCodingPlan"),
-    ...recordAt(providers, "glm-coding-plan"),
-  };
-  const directGlmCodingPlan = {
-    ...recordAt(value, "glmCodingPlan"),
-    ...recordAt(value, "glm-coding-plan"),
-  };
-
-  const dynamicProviders = Object.fromEntries(
-    PROVIDER_CATALOG.map(({ provider }) => [
-      provider,
-      providerLayer({ ...recordAt(providers, provider), ...recordAt(value, provider) }),
-    ]),
-  );
-  return compact({
-    provider: value.provider,
-    approvalModel: field(value, "approvalModel", "approval_model"),
-    mode: value.mode,
-    thinkingEffort: field(value, "thinkingEffort", "thinking_effort"),
-    approvalPolicy: field(value, "approvalPolicy", "approval_policy"),
-    dataDir: firstDefined(
-      field(value, "dataDir", "data_dir"),
-      field(paths, "dataDir", "data_dir"),
-    ),
-    configDir: firstDefined(
-      field(value, "configDir", "config_dir"),
-      field(paths, "configDir", "config_dir"),
-    ),
-    cacheDir: firstDefined(
-      field(value, "cacheDir", "cache_dir"),
-      field(paths, "cacheDir", "cache_dir"),
-    ),
-    limits,
-    orchestrationEnabled: field(value, "orchestrationEnabled", "orchestration_enabled"),
-    subagentIsolation: firstDefined(
-      field(value, "subagentIsolation", "subagent_isolation"),
-      field(subagents, "isolation", "isolation"),
-    ),
-    worktreeBaseMode: firstDefined(
-      field(value, "worktreeBaseMode", "worktree_base_mode"),
-      field(worktrees, "baseMode", "base_mode"),
-    ),
-    worktreeRoot: firstDefined(
-      field(value, "worktreeRoot", "worktree_root"),
-      field(worktrees, "root", "root"),
-    ),
-    providers: dynamicProviders,
-    qwen: providerLayer({ ...nestedQwen, ...directQwen }),
-    deepseek: providerLayer({ ...nestedDeepSeek, ...directDeepSeek }),
-    kimi: providerLayer({ ...nestedKimi, ...directKimi }),
-    glm: providerLayer({ ...nestedGlm, ...directGlm }),
-    "glm-coding-plan": providerLayer({
-      ...nestedGlmCodingPlan,
-      ...directGlmCodingPlan,
-    }),
-  });
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {
@@ -239,8 +100,6 @@ function applyLayer(
       applyProviderLayer(providerConfig, layer.providers?.[provider]),
     ]),
   );
-  const compatibility = (provider: string): ProviderConfig =>
-    providers[provider] ?? providers[base.provider] ?? Object.values(providers)[0]!;
   return {
     ...base,
     ...topLevel,
@@ -257,11 +116,6 @@ function applyLayer(
           : layer.limits.providerTimeoutMs,
     },
     providers,
-    qwen: compatibility("qwen"),
-    deepseek: compatibility("deepseek"),
-    kimi: compatibility("kimi"),
-    glm: compatibility("glm"),
-    "glm-coding-plan": compatibility("glm-coding-plan"),
   } as EasyCodeConfig;
 }
 
@@ -279,7 +133,11 @@ async function readTomlLayer(configPath: string): Promise<EasyCodeConfigLayer> {
   }
 
   try {
-    return normalizeConfigLayer(parseToml(source) as unknown);
+    return normalizeCurrentTomlConfig(
+      parseToml(source) as unknown,
+      PROVIDER_CATALOG.map(({ provider }) => provider),
+      DEFAULT_RUNTIME_LIMITS,
+    );
   } catch (error) {
     if (error instanceof EasyCodeConfigError) throw error;
     // Parser messages can echo source lines, which could contain an API key.
@@ -297,8 +155,8 @@ function assertSafeWorkspaceLayer(
   const forbidden: string[] = [];
   if (layer.approvalModel !== undefined) forbidden.push("approval_model");
   for (const [provider, providerLayer] of Object.entries(layer.providers ?? {})) {
-    if (providerLayer.apiKey !== undefined) forbidden.push(`${provider}.api_key`);
-    if (providerLayer.baseUrl !== undefined) forbidden.push(`${provider}.base_url`);
+    if (providerLayer.apiKey !== undefined) forbidden.push(`providers.${provider}.api_key`);
+    if (providerLayer.baseUrl !== undefined) forbidden.push(`providers.${provider}.base_url`);
   }
   if (layer.configDir !== undefined) forbidden.push("config_dir");
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
@@ -342,11 +200,6 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
   const orchestrationValue = envValue(env, "EASY_CODE_ORCHESTRATION_ENABLED");
   if (orchestrationValue !== undefined && orchestrationValue !== "true" && orchestrationValue !== "false") {
     throw new EasyCodeConfigError("EASY_CODE_ORCHESTRATION_ENABLED must be true or false");
-  }
-  const oldLimits = ["EASY_CODE_MAX_STEPS", "EASY_CODE_MAX_CONTEXT_CHARS", "EASY_CODE_MAX_CONTEXT_TOKENS",
-    "EASY_CODE_MAX_OUTPUT_CHARS", "EASY_CODE_COMMAND_TIMEOUT_MS", "EASY_CODE_MAX_MANAGED_WORKTREES"];
-  if (oldLimits.some((key) => env[key] !== undefined)) {
-    throw new EasyCodeConfigError("Legacy limit environment variables are no longer supported; use EASY_CODE_LIMITS_JSON or [limits].");
   }
   let limits: UnknownRecord | undefined;
   const encodedLimits = envValue(env, "EASY_CODE_LIMITS_JSON");
@@ -424,8 +277,6 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
       baseUrl: providerConfig.baseUrl.replace(/\/+$/, ""),
     }],
   ));
-  const compatibility = (provider: string): ProviderConfig =>
-    providers[provider] ?? providers[config.provider] ?? Object.values(providers)[0]!;
   return {
     ...config,
     workspaceRoot: path.resolve(cwd, config.workspaceRoot),
@@ -434,11 +285,6 @@ function absoluteConfig(config: EasyCodeConfig, cwd: string): EasyCodeConfig {
     cacheDir: path.resolve(cwd, config.cacheDir),
     worktreeRoot: path.resolve(cwd, config.worktreeRoot),
     providers,
-    qwen: compatibility("qwen"),
-    deepseek: compatibility("deepseek"),
-    kimi: compatibility("kimi"),
-    glm: compatibility("glm"),
-    "glm-coding-plan": compatibility("glm-coding-plan"),
   };
 }
 
@@ -478,7 +324,7 @@ export async function loadEasyCodeConfig(
   };
   const workspaceRoot = path.resolve(
     options.workspaceRoot ??
-      envValue(env, "EASY_CODE_WORKSPACE_ROOT", "EASY_CODE_WORKSPACE") ??
+      envValue(env, "EASY_CODE_WORKSPACE_ROOT") ??
       cwd,
   );
 
@@ -528,17 +374,4 @@ export async function loadEasyCodeConfig(
     }
     throw error;
   }
-}
-
-/**
- * Inspect whether a legacy user TOML contains a provider API key without
- * returning that key to callers. Configuration commands never modify this file.
- */
-export async function hasLegacyUserApiKey(
-  configPath: string,
-  provider: ProviderName,
-): Promise<boolean> {
-  const layer = await readTomlLayer(path.resolve(configPath));
-  const value = layer.providers?.[provider]?.apiKey;
-  return typeof value === "string" && value.trim().length > 0;
 }

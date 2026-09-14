@@ -154,7 +154,7 @@ describe("Prompt Bundle infrastructure", () => {
     );
   });
 
-  it("persists the exact Bundle identity while accepting legacy sessions", () => {
+  it("persists the exact Bundle identity in storage snapshots", () => {
     const binding = activePromptBundleBinding();
     const state = createSessionState(
       createDefaultEasyCodeConfig(process.cwd(), {
@@ -168,9 +168,12 @@ describe("Prompt Bundle infrastructure", () => {
     const serialized = serializeSessionState(state);
     assert.deepEqual(deserializeSessionState(serialized).promptBundle, binding);
 
-    const legacy = { ...serialized } as Record<string, unknown>;
-    delete legacy.promptBundle;
-    assert.equal(deserializeSessionState(legacy).promptBundle, undefined);
+    const missingBinding = { ...serialized } as Record<string, unknown>;
+    delete missingBinding.promptBundle;
+    assert.throws(
+      () => deserializeSessionState(missingBinding),
+      /Invalid serialized session state/u,
+    );
     assert.throws(
       () => deserializeSessionState({
         ...serialized,

@@ -83,7 +83,11 @@ export interface CommandExecutionBackend {
 
 export type SandboxWorkerControl =
   | { type: "cleanup_requested" }
-  | { type: "execution_dispatched" }
+  /** The RPC/worker accepted the request. This is not proof that the model's
+   * target process crossed the operating-system spawn boundary. */
+  | { type: "execution_request_sent" }
+  /** Trusted evidence that the requested target process started. */
+  | { type: "target_started" }
   | { type: "execution_exited"; exitCode: number; outcome?: "exited" | "timed_out" | "canceled" | "output_limit" | "spawn_failed" | "unknown" }
   | { type: "cleanup_complete" }
   | { type: "cleanup_error"; message: string }

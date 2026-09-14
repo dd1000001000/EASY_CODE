@@ -26,13 +26,28 @@ const pump = async () => {
   }
 };
 await emit({ type: "ready", backend: "benchmark-container" });
-await emit({ type: "execution_dispatched" });
+await emit({ type: "execution_request_sent" });
+let targetStarted = false;
 try {
   for (;;) {
     await pump();
+    if (!targetStarted) {
+      const marker = await readFile(path.join(directory, "target-started"), "utf8").catch(() => undefined);
+      if (marker === commandId) {
+        emit({ type: "target_started" });
+        targetStarted = true;
+      }
+    }
     const result = await readFile(path.join(directory, "result.json"), "utf8").catch(() => undefined);
     if (result) {
       const terminal = benchmarkResultSchema.parse(JSON.parse(result));
+      if (!targetStarted) {
+        const marker = await readFile(path.join(directory, "target-started"), "utf8").catch(() => undefined);
+        if (marker === commandId) {
+          emit({ type: "target_started" });
+          targetStarted = true;
+        }
+      }
       await pump();
       for (const control of benchmarkResultControls(terminal)) emit(control);
       process.exitCode = canceled ? 130 : terminal.exitCode;

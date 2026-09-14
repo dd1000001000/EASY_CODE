@@ -119,7 +119,9 @@ describe("model-managed long-term memory", () => {
       );
       assert.equal(semantic[0]?.id, deploymentId);
       assert.equal(vectorOptions?.minimumConfidence, 0.55);
-      assert.equal(vectorOptions?.includeInactive, false);
+      // The derived index must return both active and low-confidence candidates;
+      // MemoryManager applies the authoritative active/needs_verification filter.
+      assert.equal(vectorOptions?.includeInactive, true);
 
       let reportedError = false;
       const fallbackManager = new MemoryManager(storage, {

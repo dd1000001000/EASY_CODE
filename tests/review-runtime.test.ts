@@ -22,8 +22,9 @@ import type { ContextArtifactIndex } from "../src/context/artifact-index.js";
 import { ProviderError } from "../src/providers/errors.js";
 import { mock } from "node:test";
 import { NativeSandboxBackend } from "../src/sandbox/native-backend.js";
+import { baseSessionState } from "./session-state.js";
 
-function state(threadId: string): SessionState { return { threadId, workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
+function state(threadId: string): SessionState { return { ...baseSessionState(), threadId, workspaceRoot: process.cwd(), mode: "code", provider: "glm", model: "mock",
   thinkingEffort: "none", messages: [], constraints: [], filesRead: new Map(), changes: [], commands: [], commandApprovalPrefixes: [],
   workingSummary: "", compactedMessageCount: 0, createdAt: "now", updatedAt: "now" }; }
 function setup(provider: ModelProvider, limits = defaultRuntimeLimits(), maxTaskTokens = 0) {
@@ -112,6 +113,7 @@ describe("review runtime isolation and recovery", () => {
     } });
     const p = f.participants.reviewer;
     p.state.messages.push({ role: "user", content: "Bound review requirements" }, { role: "assistant", content: "OLD_PRIVATE_HISTORY".repeat(2000) });
+    p.state.userMessageIndices = [0];
     p.optionalMemory = async () => calls < 3 ? "OLD_OPTIONAL_MEMORY" : "";
     p.tools.push({ name: "read_file", mutating: false, definition: { type: "function", function: {
       name: "read_file", description: "Read", parameters: {} } }, execute: async () => ++reads === 1
@@ -305,7 +307,7 @@ describe("review runtime isolation and recovery", () => {
         lifecycleDirectory: path.join(directory, "leases"), offline: false, approve: async () => false, status: () => {} };
       const request = { state: main, turnId: "turn", userInput: "Fix the module", purpose: "delivery" as const, remainingModelRequests: 32 };
       const tooLate = await runWorkspaceReview({ ...request, remainingModelRequests: 2 }, deps);
-      assert.equal(tooLate.approved, false); assert.equal(calls, 0); assert.equal(Boolean(main.reviewSessions), false);
+      assert.equal(tooLate.approved, false); assert.equal(calls, 0); assert.equal(main.reviewSessions.length, 0);
       const first = await runWorkspaceReview(request, deps);
       assert.equal(first.approved, false); assert.equal(first.requests, 13);
       assert.equal(main.reviewSessions?.[0]?.status, "applied");

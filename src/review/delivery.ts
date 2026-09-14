@@ -8,7 +8,7 @@ export const deliverySchema = z.object({ id: z.string().min(1), request: z.strin
 export type DeliveryObligation = z.infer<typeof deliverySchema>;
 /** A task obligation survives turn IDs, summary changes and Resume. */
 export function pendingDelivery(state: Readonly<SessionState>): boolean {
-  const last = [...(state.reviewSessions ?? [])].reverse().find(s => s.purpose === "delivery");
+  const last = [...state.reviewSessions].reverse().find(s => s.purpose === "delivery");
   return Boolean(last && (!last.approval || last.status !== "applied")) || state.changes.length > (last?.changeCount ?? 0) || Boolean(state.delivery &&
     !state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.purpose === "delivery" && s.approval && s.status === "applied"));
 }

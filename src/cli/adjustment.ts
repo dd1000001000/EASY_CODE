@@ -23,8 +23,6 @@ export interface AdjustmentRenderOptions {
   readonly color?: boolean;
   readonly previewChars?: number;
   readonly columns?: number;
-  /** @deprecated Disclosure bodies are never presentation-truncated. */
-  readonly maxRows?: number;
 }
 
 function boundedInteger(

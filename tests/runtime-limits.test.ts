@@ -1,4 +1,4 @@
-import { snapshotToolSet } from "../src/tools/catalog.js";
+import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { parse as parseToml } from "toml";
@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { defaultRuntimeLimits, runtimeLimitsSchema } from "../src/config/runtime-limits.js";
 import { loadEasyCodeConfig } from "../src/config/loader.js";
+import { normalizeCurrentTomlConfig } from "../src/config/toml-format.js";
+import { PROVIDER_CATALOG } from "../src/models/catalog.js";
 import { TaskBudget, TaskBudgetExceeded } from "../src/runtime/task-budget.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { ContextManager } from "../src/context/manager.js";
@@ -22,9 +24,10 @@ import { WorkspaceManager } from "../src/workspace/manager.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { describe, it } from "./harness.js";
+import { baseSessionState } from "./session-state.js";
 
 function state(): SessionState {
-  return { threadId: "limits-test", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
+  return { ...baseSessionState(), threadId: "limits-test", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
     workspaceRoot: process.cwd(), constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],
     commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -37,7 +40,11 @@ const context = (root: string): ToolContext => ({ workspaceRoot: root, mode: "co
 
 describe("central runtime limits", () => {
   it("documents every shipped operational default and applies per-tool correction ceilings", async () => {
-    const example = parseToml(await readFile(path.resolve("docs/config.example.toml"), "utf8")) as { limits: unknown };
+    const example = normalizeCurrentTomlConfig(
+      parseToml(await readFile(path.resolve("docs/config.example.toml"), "utf8")),
+      PROVIDER_CATALOG.map(({ provider }) => provider),
+      defaultRuntimeLimits(),
+    );
     assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), defaultRuntimeLimits());
     const budget = new ToolRecoveryBudget(3, { compact_context: 1 });
     assert.equal(budget.fail("compact_context").remaining, 0);
@@ -48,7 +55,7 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestrationEnabled = true\n[limits]\nmaxTaskTokens = 90000\n[limits.steps]\nhigh = 60\n[limits.providerTimeoutMs]\nhigh = 10000\n[limits.maxConcurrentSubagents]\nmedium = 3\n");
+        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\n[limits.steps]\nhigh = 60\n[limits.provider_timeout_ms]\nhigh = 10000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
@@ -67,8 +74,8 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, "config"));
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, "config", "config.toml"), "[limits.maxConcurrentSubagents]\nlow = 3\nmedium = 5\n");
-      await writeFile(path.join(root, ".easycode", "config.toml"), "[limits.maxConcurrentSubagents]\nmedium = 6\n");
+      await writeFile(path.join(root, "config", "config.toml"), "[limits.max_concurrent_subagents]\nlow = 3\nmedium = 5\n");
+      await writeFile(path.join(root, ".easycode", "config.toml"), "[limits.max_concurrent_subagents]\nmedium = 6\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         env: { EASY_CODE_LIMITS_JSON: '{"maxConcurrentSubagents":{"high":10}}' }, credentialStore: false });
       assert.deepEqual(config.limits.maxConcurrentSubagents, { none: 2, low: 3, medium: 6, high: 10 });
@@ -83,16 +90,17 @@ describe("central runtime limits", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  it("rejects legacy/unknown limits instead of ignoring them", async () => {
+  it("accepts only current limit inputs and ignores unrelated environment names", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-limits-invalid-"));
     try {
       const load = (env: NodeJS.ProcessEnv = {}) => loadEasyCodeConfig({ workspaceRoot: root,
         configDir: path.join(root, "config"), env, credentialStore: false });
-      await assert.rejects(load({ EASY_CODE_MAX_STEPS: "90" }), /Legacy limit environment/u);
+      const unrelated = await load({ EASY_CODE_MAX_STEPS: "90" });
+      assert.deepEqual(unrelated.limits.steps, defaultRuntimeLimits().steps);
       await assert.rejects(load({ EASY_CODE_LIMITS_JSON: '{"maxStep":90}' }), /Unrecognized key/u);
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"), "max_steps = 90\n");
-      await assert.rejects(load(), /Legacy limit fields/u);
+      await assert.rejects(load(), /Unable to parse TOML configuration file/u);
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 10001 }));
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(), defaultReadLines: 150, maxReadLines: 50 }));
       assert.throws(() => runtimeLimitsSchema.parse({ ...defaultRuntimeLimits(),
@@ -108,9 +116,9 @@ describe("central runtime limits", () => {
       assert.equal((await load()).orchestrationEnabled, false);
       assert.equal((await load({ EASY_CODE_ORCHESTRATION_ENABLED: "true" })).orchestrationEnabled, true);
       await mkdir(path.join(root, ".easycode"));
-      await writeFile(path.join(root, ".easycode", "config.toml"), "orchestrationEnabled = true\n");
+      await writeFile(path.join(root, ".easycode", "config.toml"), "orchestration_enabled = true\n");
       assert.equal((await load({ EASY_CODE_ORCHESTRATION_ENABLED: "false" })).orchestrationEnabled, false);
-      await writeFile(path.join(root, ".easycode", "config.toml"), "orchestrationEnabled = false\n");
+      await writeFile(path.join(root, ".easycode", "config.toml"), "orchestration_enabled = false\n");
       const enabled = await load({ EASY_CODE_ORCHESTRATION_ENABLED: "true" });
       assert.equal(enabled.orchestrationEnabled, true);
       assert.deepEqual(enabled.limits, defaultRuntimeLimits());

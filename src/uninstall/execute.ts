@@ -66,7 +66,7 @@ export async function executeUninstall(plan: UninstallPlan, options: ExecuteOpti
   // A stale lock is never silently erased based on an unreliable PID match.
   const lock = await open(lockPath, "wx", 0o600).catch(() => { throw new Error("Another uninstall or an unfinished uninstall lock exists: " + lockPath); });
   const completed: string[] = [];
-  const state = { product: "easy-code-agent", version: 1, token,
+  const state = { product: "easy-code-agent", version: 2, token,
     resources: [...plan.resources, ...(["data", "config", "cache"] as const).flatMap(kind => plan.roots[kind].map(value => ({ kind, path: value })))],
     completed, failed: "", failures: [] as Array<{ id: string; reason: string }> };
   const persist = async () => {

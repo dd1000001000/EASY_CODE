@@ -5,7 +5,7 @@ import {
 } from "../command/types.js";
 import { sha256 } from "../utils/hash.js";
 import { z } from "zod";
-import { legacyCommandValidation, type CommandValidation } from "../command/verification.js";
+import { unavailableCommandValidation, type CommandValidation } from "../command/verification.js";
 import {
   PROGRESS_OBSERVATION_SCHEMA_VERSION,
   type ProgressObservation,
@@ -283,7 +283,7 @@ function commandObservation(
   const targetKey = commandTargetKey(data, input.targetKey);
   const validation = isRecord(data.validation) && ["passed", "failed", "unknown"].includes(String(data.validation.status)) &&
     ["high", "low"].includes(String(data.validation.confidence))
-    ? data.validation as unknown as CommandValidation : legacyCommandValidation(data);
+    ? data.validation as unknown as CommandValidation : unavailableCommandValidation();
   const outcomeClass: ProgressOutcomeClass = data.status === "timed_out"
     ? "timed_out"
     : validation.status;

@@ -45,7 +45,6 @@ const memoryContentSchema = z
   .min(MIN_MEMORY_CONTENT_CHARS);
 const memoryReasonSchema = displayTextSchema(MAX_MEMORY_REASON_CHARS);
 const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
-const tentativeMemory = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;
 const MAX_SEARCHED_MEMORY_IDS_PER_TURN = 100;
 
 function memoryForModel(memory: Readonly<LongTermMemory>): object {
@@ -216,7 +215,7 @@ export class ManageMemoryTool implements AgentTool {
           ? this.manager.get(workspaceId, parsed.query)
           : undefined;
         const memories = exact
-          ? exact.status === "active" || parsed.includeInactive === true
+          ? exact.status === "active" || exact.status === "needs_verification" || parsed.includeInactive === true
             ? [exact]
             : []
           : await this.manager.searchHybrid(workspaceId, parsed.query, {
@@ -334,12 +333,6 @@ export class ManageMemoryTool implements AgentTool {
       redactSensitiveInformation(reason) !== reason
     ) {
       throw new Error("Sensitive information cannot be staged as long-term memory");
-    }
-    if (
-      (content !== undefined && tentativeMemory.test(content)) ||
-      tentativeMemory.test(reason)
-    ) {
-      throw new Error("Tentative or unverified evidence cannot be staged as long-term memory");
     }
   }
 

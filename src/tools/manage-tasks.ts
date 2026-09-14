@@ -138,6 +138,16 @@ export class ManageTasksTool implements AgentTool {
             minLength: 1,
             maxLength: MAX_TASK_EVIDENCE_CHARS,
           },
+          kind: {
+            type: "string",
+            enum: ["dependency", "user_input", "environment", "review", "implementation"],
+          },
+          recoverable: { type: "boolean" },
+          evidenceRefs: {
+            type: "array",
+            maxItems: 16,
+            items: { type: "string", minLength: 1, maxLength: MAX_TASK_EVIDENCE_CHARS },
+          },
         },
         required: ["action"],
       }),

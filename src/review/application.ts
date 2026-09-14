@@ -45,18 +45,24 @@ export interface WorkspaceReviewDependencies {
 
 /** The app holds its workspace mutation lease for this entire call. */
 export async function runWorkspaceReview(input: WorkspaceReviewRequest, deps: WorkspaceReviewDependencies): Promise<WorkspaceReviewResult> {
-  const startedRequests = (input.state.reviewSessions ?? []).reduce((total, s) => total + s.requests, 0);
+  const startedRequests = input.state.reviewSessions.reduce((total, s) => total + s.requests, 0);
   try {
     const result = await runWorkspaceReviewAttempt(input, deps);
     const reason = result.reason ?? "";
+    const latest = [...input.state.reviewSessions].reverse()
+      .find(session => session.purpose === input.purpose && session.status === "applied");
+    const lastStatements = latest?.statements.slice(-2) ?? [];
+    const requestedChanges = lastStatements.some(statement =>
+      statement.value.vote !== "agree" || statement.value.unresolved.length > 0);
     return { ...result, decision: result.approved ? "approved" : input.signal?.aborted ? "interrupted" :
-      /unavailable|Insufficient|budget exhausted|time_limit|request_limit/iu.test(reason) ? "unavailable" : "inconclusive" };
+      /unavailable|Insufficient|budget exhausted|time_limit|request_limit/iu.test(reason) ? "unavailable" :
+      requestedChanges || latest?.closeReason === "agreement" ? "changes_requested" : "inconclusive" };
   } catch (error) {
     if (error instanceof ReviewFatalError) throw error;
     const reason = redactSensitiveInformation(String(error)).slice(0, 1800);
     durableReviewWrite(() => deps.store.appendEvent(input.state.threadId, { type: "review.unavailable", turnId: input.turnId,
       payload: { code: "review_setup_unavailable", reason, deliveryId: input.state.delivery?.id } }));
-    return { approved: false, requests: Math.max(0, (input.state.reviewSessions ?? []).reduce((total, s) => total + s.requests, 0) - startedRequests),
+    return { approved: false, requests: Math.max(0, input.state.reviewSessions.reduce((total, s) => total + s.requests, 0) - startedRequests),
       reused: true, decision: input.signal?.aborted ? "interrupted" : "unavailable", reason };
   }
 }
@@ -98,6 +104,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       state.progressGuard?.validationBaseline, { readBaseline: deps.readBaseline, limits: deps.limits, signal: input.signal, offline: deps.offline }); } catch (error) { setupError = error; }
     await emit({ type: "started", id, key, scope, purpose: input.purpose, snapshotId, requirementRevision,
       changeCount: state.changes.length,
+      commandCount: state.commands.length,
       changedPaths: [...new Set(state.changes.slice(state.delivery?.changeStart ?? 0).map(c => c.path.replaceAll("\\", "/")))],
       requirements: [...new Set([`request:${sha256(input.userInput)}`, ...state.constraints.map(c => `constraint:${sha256(c)}`),
         ...corrections.map(c => `correction:${sha256(c ?? "")}`)])],
@@ -239,7 +246,11 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
         },
         append: async (type, payload) => {
           durableReviewWrite(() => type === "message" ? deps.store.recordMessage(threadId, payload as ChatMessage, reviewId)
-            : deps.store.appendEvent(threadId, { type, turnId: reviewId, payload }));
+            : deps.store.appendEvent(threadId, {
+                type: "review.actor.event",
+                turnId: reviewId,
+                payload: { kind: type, value: payload },
+              }));
         },
         capture: (callId, tool, result) => durableReviewWrite(() => deps.memory.evidenceStore.capture(workspaceId, threadId, callId, tool, result)),
         // Ignore newly created experimental files, but any original source/test

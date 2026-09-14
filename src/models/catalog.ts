@@ -108,14 +108,13 @@ const providerSchema = z.object({
     return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
   }, "must be an HTTPS URL without credentials, query, or fragment"),
   env_key: envSchema,
-  env_key_aliases: z.array(envSchema).default([]),
+  accepted_env_keys: z.array(envSchema).default([]),
   wire_api: z.enum(["chat_completions", "responses"]),
-  // Missing means disabled for compatibility with existing user registries.
-  // The packaged registry declares this explicitly for every endpoint.
+  // Optional wire features are disabled unless the registry explicitly opts in.
   supports_streaming: z.boolean().default(false),
   supports_stream_usage: z.boolean().default(false),
   // Non-standard Chat Completions extension. Missing stays disabled so an
-  // existing/custom OpenAI-compatible endpoint never receives an unknown key.
+  // a custom OpenAI-compatible endpoint never receives an unknown key.
   tool_stream: z.boolean().default(false),
   request_timeout_ms: z.number().int().positive().optional(),
   max_retries: z.number().int().min(0).max(10).default(3),
@@ -203,7 +202,7 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
 
   const credentialEnvironmentOwners = new Map<string, string>();
   for (const [provider, value] of Object.entries(parsed.data.providers)) {
-    for (const environmentName of [value.env_key, ...value.env_key_aliases]) {
+    for (const environmentName of [value.env_key, ...value.accepted_env_keys]) {
       const owner = credentialEnvironmentOwners.get(environmentName);
       if (owner) throw new Error(`Credential environment variable ${environmentName} is shared by providers ${owner} and ${provider}`);
       credentialEnvironmentOwners.set(environmentName, provider);
@@ -248,11 +247,11 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
           }
         : {}),
       environment: Object.freeze({
-        apiKey: Object.freeze([value.env_key, ...value.env_key_aliases]),
-        baseUrl: Object.freeze([`EASY_CODE_${prefix}_BASE_URL`, `${prefix}_BASE_URL`]),
-        model: Object.freeze([`EASY_CODE_${prefix}_MODEL`, `${prefix}_MODEL`]),
-        timeoutMs: Object.freeze([`EASY_CODE_${prefix}_TIMEOUT_MS`, `${prefix}_TIMEOUT_MS`]),
-        maxRetries: Object.freeze([`EASY_CODE_${prefix}_MAX_RETRIES`, `${prefix}_MAX_RETRIES`]),
+        apiKey: Object.freeze([value.env_key, ...value.accepted_env_keys]),
+        baseUrl: Object.freeze([`EASY_CODE_${prefix}_BASE_URL`]),
+        model: Object.freeze([`EASY_CODE_${prefix}_MODEL`]),
+        timeoutMs: Object.freeze([`EASY_CODE_${prefix}_TIMEOUT_MS`]),
+        maxRetries: Object.freeze([`EASY_CODE_${prefix}_MAX_RETRIES`]),
       }),
       models: Object.freeze(models),
     });
@@ -312,9 +311,6 @@ export function activateModelRegistry(source: string, sourceName = USER_MODEL_RE
   DEFAULT_PROVIDER_NAME = providerForDefaultModel(parsed);
   return parsed;
 }
-
-/** Compatibility alias retained for old embedders. The input is now TOML. */
-export function activateInstalledModelCatalog(sourceText: string): void { activateModelRegistry(sourceText, "installed model registry"); }
 
 export async function ensureUserModelRegistry(registryPath = USER_MODEL_REGISTRY_PATH): Promise<string> {
   await mkdir(path.dirname(registryPath), { recursive: true, mode: 0o700 });

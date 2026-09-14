@@ -21,6 +21,14 @@ function commandOutput(
     stdout: { text: output },
     stderr: { text: status === "exited" ? "" : output },
     executed: { program: "npm", args: ["test"], cwd: "." },
+    validation: {
+      status: exitCode === 0 ? "passed" : "failed",
+      confidence: "high",
+      source: "framework_summary",
+      coverage: "terminal",
+      reason: "The test framework emitted a terminal summary.",
+      evidenceKey: `sha256:${"a".repeat(64)}`,
+    },
     ...(status === "exited" && exitCode !== 0
       ? { failure: { kind: "exit", code: "nonzero_exit" } }
       : {}),

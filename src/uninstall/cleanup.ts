@@ -1,4 +1,4 @@
-import { lstat, open, readFile, readdir, rm, rmdir, unlink } from "node:fs/promises";
+import { lstat, readFile, readdir, rm, rmdir, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -223,31 +223,9 @@ async function dataRootIsOwned(
       if (isEasyCodeDataRootMarker(
         JSON.parse(await readFile(path.join(root, EASY_CODE_DATA_ROOT_MARKER), "utf8")) as unknown,
       )) return true;
-    } catch {
-      // Continue to the legacy ownership proof below.
-    }
+    } catch { /* A malformed current marker grants no deletion authority. */ }
   }
-
-  // Before ownership markers existed, createStorage always created this exact
-  // SQLite/threads/artifacts triple. Verify the SQLite magic and real directory
-  // entries so an upgraded installation can still erase its older custom root
-  // without treating an arbitrary configured folder as recursively owned.
-  const database = entries.find((entry) => entry.name === "easy-code.db");
-  const threads = entries.find((entry) => entry.name === "threads");
-  const artifacts = entries.find((entry) => entry.name === "artifacts");
-  if (
-    !database?.isFile() || database.isSymbolicLink() ||
-    !threads?.isDirectory() || threads.isSymbolicLink() ||
-    !artifacts?.isDirectory() || artifacts.isSymbolicLink()
-  ) return false;
-  const descriptor = await open(path.join(root, "easy-code.db"), "r");
-  try {
-    const header = Buffer.alloc(16);
-    const { bytesRead } = await descriptor.read(header, 0, header.length, 0);
-    return bytesRead === header.length && header.equals(Buffer.from("SQLite format 3\0", "binary"));
-  } finally {
-    await descriptor.close();
-  }
+  return false;
 }
 
 async function preflightDataDirectory(
@@ -319,9 +297,6 @@ export async function cleanupEasyCodeUserData(
 
   const mutable = { removed, absent };
   await removeExactEntry(promptHome, home, ".easy_code", mutable);
-  // Remove an early/design spelling as well, but never migrate or create it.
-  await removeExactEntry(path.join(home, ".easy-code"), home, ".easy-code", mutable);
-
   for (const dataDirectory of readyDataDirectories) {
     await cleanupDataDirectory(dataDirectory, defaultPaths.dataDir, {
       removed,
