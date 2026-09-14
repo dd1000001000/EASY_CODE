@@ -43,6 +43,15 @@ describe("native full uninstall", () => {
     assert.ok(owners.some(value => value === `Command PID ${process.pid}`));
   }));
 
+  it("does not let an absent PID in a legacy command lease block uninstall", async () => fixture(async f => {
+    const absentPid = 999_999_999;
+    put(path.join(f.data, "command-leases", "workspace-id", "legacy-command.lease"), JSON.stringify({
+      commandId: "legacy-command", ownerPid: absentPid, state: "preparing",
+    }));
+    const owners = await activeOwners(await f.plan());
+    assert.ok(!owners.includes(`Command PID ${absentPid}`));
+  }));
+
   it("uses one confirmation and never invents a separate sandbox prompt", async () => {
     const seen: string[] = []; let executed = false;
     const plan: UninstallPlan = { actions: [{ id: "data", phase: 60, target: "fixture", description: "delete", execute: async () => {} }],
