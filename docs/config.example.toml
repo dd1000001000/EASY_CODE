@@ -176,7 +176,13 @@ low = 2
 medium = 4
 high = 8
 
-[limits.provider_timeout_ms]
+[limits.provider_stream_idle_timeout_ms]
+none = 60000
+low = 60000
+medium = 60000
+high = 60000
+
+[limits.provider_buffered_timeout_ms]
 none = 300000
 low = 300000
 medium = 450000

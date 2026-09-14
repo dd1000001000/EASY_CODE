@@ -58,14 +58,16 @@ export function registerConfigCommands(
     .description("print the complete operational limits as TOML (no credentials)")
     .allowExcessArguments(false)
     .action(() => {
-      const { steps, maxConcurrentSubagents, providerTimeoutMs, ...limits } = defaultRuntimeLimits();
+      const { steps, maxConcurrentSubagents, providerStreamIdleTimeoutMs,
+        providerBufferedTimeoutMs, ...limits } = defaultRuntimeLimits();
       const snakeCase = (value: string) => value.replace(/[A-Z]/gu, character => `_${character.toLowerCase()}`);
       const table = (name: string, values: Record<string, unknown>) =>
         `[${name}]\n` + Object.entries(values).map(([key, value]) => `${snakeCase(key)} = ${JSON.stringify(value)}`).join("\n");
       writeLine(resolveRuntime(runtime).output,
         "orchestration_enabled = false\n\n" + table("limits", limits) + "\n\n" +
         table("limits.steps", steps) + "\n\n" + table("limits.max_concurrent_subagents", maxConcurrentSubagents) +
-        "\n\n" + table("limits.provider_timeout_ms", providerTimeoutMs));
+        "\n\n" + table("limits.provider_stream_idle_timeout_ms", providerStreamIdleTimeoutMs) +
+        "\n\n" + table("limits.provider_buffered_timeout_ms", providerBufferedTimeoutMs));
     });
 
   config

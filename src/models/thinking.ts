@@ -30,7 +30,10 @@ export const THINKING_EFFORT_CONTEXT_LIMIT_MULTIPLIERS: Readonly<
 
 export const DEFAULT_BASE_STEP_LIMIT = DEFAULT_RUNTIME_LIMITS.steps.none;
 export const DEFAULT_BASE_CONTEXT_CHAR_LIMIT = DEFAULT_RUNTIME_LIMITS.maxContextChars;
-export const THINKING_EFFORT_TIMEOUT_MS = DEFAULT_RUNTIME_LIMITS.providerTimeoutMs;
+export const THINKING_EFFORT_STREAM_IDLE_TIMEOUT_MS =
+  DEFAULT_RUNTIME_LIMITS.providerStreamIdleTimeoutMs;
+export const THINKING_EFFORT_BUFFERED_TIMEOUT_MS =
+  DEFAULT_RUNTIME_LIMITS.providerBufferedTimeoutMs;
 
 export const THINKING_EFFORT_STEP_LIMITS = DEFAULT_RUNTIME_LIMITS.steps;
 
@@ -73,11 +76,18 @@ export function thinkingEffortContextCharLimit(
   return budget;
 }
 
-/** Return the default provider request timeout for the selected effort. */
-export function thinkingEffortTimeoutMs(
+/** Return the maximum idle interval between valid events in a streamed response. */
+export function thinkingEffortStreamIdleTimeoutMs(
   effort: ThinkingEffort,
 ): number {
-  return THINKING_EFFORT_TIMEOUT_MS[effort];
+  return THINKING_EFFORT_STREAM_IDLE_TIMEOUT_MS[effort];
+}
+
+/** Return the total wall-clock deadline for a buffered response. */
+export function thinkingEffortBufferedTimeoutMs(
+  effort: ThinkingEffort,
+): number {
+  return THINKING_EFFORT_BUFFERED_TIMEOUT_MS[effort];
 }
 
 /** Whether EASY CODE can translate this exact selection into documented API fields. */

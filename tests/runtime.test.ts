@@ -483,6 +483,7 @@ describe("AgentRuntime", () => {
                 requestCount += 1;
                 if (requestCount === 1) {
                     assert.equal(request.onStreamEvent, undefined);
+                    assert.equal(request.responseMode, "stream");
                     return {
                         message: {
                             role: "assistant",
@@ -498,6 +499,7 @@ describe("AgentRuntime", () => {
                         },
                     };
                 }
+                assert.equal(request.responseMode, "stream");
                 request.onStreamEvent?.({ kind: "started", streamId: "stream", sequence: 1 });
                 request.onStreamEvent?.({ kind: "text_delta", streamId: "stream", sequence: 2, text: "done" });
                 request.onStreamEvent?.({ kind: "completed", streamId: "stream", sequence: 3, finishReason: "stop" });

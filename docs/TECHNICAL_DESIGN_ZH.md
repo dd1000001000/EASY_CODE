@@ -98,7 +98,8 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 | `steps` | none/low/medium：40；high：80 | Agent 逻辑步数预算 |
 | `maxModelRequests` | 120 | 共享模型请求次数上限 |
 | `maxTaskTokens` | 0 | 不单独限制累计 Token；其他预算仍生效 |
-| `providerTimeoutMs` | 300,000 / 300,000 / 450,000 / 600,000 | none/low/medium/high 请求超时，毫秒 |
+| `provider_stream_idle_timeout_ms` | 所有 effort 均为 60,000 | 主 Agent 流式请求可续期的空闲超时，毫秒 |
+| `provider_buffered_timeout_ms` | 300,000 / 300,000 / 450,000 / 600,000 | none/low/medium/high 非流式请求固定总超时，毫秒 |
 | `providerResponseMaxBytes` | 16 MiB | 本地 HTTP 响应大小保护 |
 | `commandTimeoutMs` | 120,000 | 默认命令超时，毫秒 |
 | `maxManagedWorktrees` | 15 | 受管理 Worktree 数量上限 |
@@ -143,9 +144,11 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 
 当 `supports_streaming = true` 时，对应协议驱动请求 SSE，每次实际请求使用唯一 ID 和有序的瞬态事件。若 Chat Completions 端点还明确声明 `tool_stream = true`，驱动会在请求包含工具时要求函数名称和参数增量返回；不支持该扩展的端点以及不含工具的请求完全省略此字段。增量解码支持 UTF-8、LF/CRLF/CR 和 SSE 记录。Chat Completions 接受空用量字段及纯用量块，要求选定 choice 的结束原因和 `[DONE]` 均已到达；Responses 必须收到并校验 completed/incomplete 终态事件。HTTP EOF 不代表模型完成，流内错误不能忽略。只有完整响应被接受、原始参数通过校验后才执行工具。若成功端点返回 JSON，仍在同一次请求内完整解析，不另发请求。
 
+所有 Runtime 模型调用——包括主 Agent、子 Agent、reviewer、审批、路由和上下文压缩——都优先使用同一套流式 Provider 传输，并使用 `limits.provider_stream_idle_timeout_ms` 中按 effort 选择的可续期空闲期限，默认所有 effort 均为 60 秒。收到响应头或响应字节即证明流仍有活动并重新计时，因此持续输出的长 thinking 或大型工具调用可以运行超过一分钟。不声明流式能力的端点自动退回完整响应，并使用 `limits.provider_buffered_timeout_ms` 的固定总期限，默认依次为 5/5/7.5/10 分钟。共享 CLI 只展示主 Agent 的增量；辅助 Agent 的私有流仅在内部组装。两种传输仍受用户取消、共享请求和任务预算约束。
+
 网络故障和缺失终态沿用统一 API 重试额度（默认重试五次），每次尝试重新分配 ID 和缓冲区；部分响应不进入模型历史，也不执行。取消、认证失败和损坏的协议数据不会获得额外自动重试。长度截断及 incomplete 输出进入现有内容纠正流程。真实用量仅结算一次，缺失时沿用既有估算。独立适配器调用保留显式重试上限；Runtime 调用将其设为零，由 Runtime 统一拥有重试预算。
 
-CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复用未变化节点的布局缓存。`limits.streamPreviewMaxChars`（默认 16,000 字符）只限制生成过程中的预览；末尾未完成词片段暂不展示以便完整过滤，接受后的正文和 thinking 仍完整保留。完成/中断立即刷新，重试时旧预览标记为中断。清屏、切换 Thread 和关闭会取消待执行刷新，重复或迟到的增量不能更新新尝试。已有用户 `models.toml` 不会被覆盖；只有端点实际支持时，才应在其中开启 `supports_stream_usage = true` 和 `tool_stream = true`。
+CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复用未变化节点的布局缓存。`limits.streamPreviewMaxChars`（默认 16,000 字符）只限制生成过程中的预览；末尾未完成词片段暂不展示以便完整过滤，接受后的正文和 thinking 仍完整保留。工具调用增量只展示工具名称和累计参数大小，不显示原始参数内容。完成/中断立即刷新，重试时旧预览标记为中断。清屏、切换 Thread 和关闭会取消待执行刷新，重复或迟到的增量不能更新新尝试。已有用户 `models.toml` 不会被覆盖；只有端点实际支持时，才应在其中开启 `supports_stream_usage = true` 和 `tool_stream = true`。
 
 终端以稳定 ID 原位替换虚拟文档中的 Thinking/回答节点，保持 reasoning、正文和工具调用的真实先后顺序。只有最终组装后的 Assistant Message 写入 Journal，逐片段事件不持久化；完成结果与已有节点对齐，不会重复打印答案。非交互终端及无法启用固定视窗的小终端继续使用完整原子输出。本地输出/上下文预留**绝不会**序列化成 `max_tokens`、`max_completion_tokens` 或 `max_output_tokens`；HTTP 响应字节上限只保护本地进程，不改变生成语义。
 

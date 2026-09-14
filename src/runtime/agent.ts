@@ -2490,6 +2490,10 @@ export class AgentRuntime {
             `Waiting for ${this.dependencies.provider.model} response`,
             () => this.dependencies.provider.complete({
               messages,
+              // Every actor prefers the same streaming provider transport.
+              // Presentation remains main-agent-only so private child context
+              // cannot leak into the parent's terminal.
+              responseMode: "stream",
               currentTurnImageIds: turnImages.map((image) => image.id),
               tools: enabledTools.map((tool) => tool.definition),
               signal: attemptSignal,
@@ -3770,7 +3774,7 @@ export class AgentRuntime {
         this.dependencies.onStatus?.("Context maintenance: complete response, local summary projection; length overflow needs no model retry.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
           "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
-            tools, signal, thinkingEffort: "none",
+            tools, signal, thinkingEffort: "none", responseMode: "stream",
             currentTurnImageIds: images.map((image) => image.id) })));
         if (attempted.kind === "steering_interrupted") {
           return undefined;

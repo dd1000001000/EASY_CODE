@@ -388,6 +388,7 @@ async function completeReviewRequest(
     // suppress hidden transport retries so accounting remains exact.
     maxRetries: 0,
     thinkingEffort: request.thinkingEffort,
+    responseMode: "stream",
   };
   try {
     const response = await completeWithApiRetries(options.provider, modelRequest, { limits: options.limits,
