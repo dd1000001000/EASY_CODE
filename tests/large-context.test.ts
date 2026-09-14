@@ -12,7 +12,6 @@ import { CompactContextTool } from "../src/tools/compact-context.js";
 import { createManageSubagentsInputSchema } from "../src/tools/manage-subagents.js";
 import { createSubmitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
 import { createRecallContextSchema } from "../src/tools/context-read.js";
-import { createManageMemoryInputSchema } from "../src/tools/manage-memory.js";
 import { runCompactionTransaction, foldCompactionControl } from "../src/context/compaction-transaction.js";
 import { foldMemoryGate } from "../src/context/pressure-recovery.js";
 import { toolResultForModel } from "../src/tools/errors.js";
@@ -155,7 +154,7 @@ describe("configurable 1M context", () => {
       assert.doesNotMatch(collector.finish().text, /MIDDLE_EVIDENCE/);
       archive.finish();
       const id = archive.reference("stdout").evidenceId;
-      assert.equal(createManageMemoryInputSchema(limits).safeParse({ action: "recall", evidenceId: id, limit: 32000 }).success, true);
+      assert.equal(createRecallContextSchema(limits).safeParse({ evidenceId: id, limit: 32000 }).success, true);
       const page = evidence.read("workspace", "thread", id, 3900, 500) as any;
       assert.match(page.content, /MIDDLE_EVIDENCE/); assert.equal(page.complete, true);
       assert.throws(() => evidence.read("workspace", "other", id, 0, 100));

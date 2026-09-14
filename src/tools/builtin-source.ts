@@ -16,7 +16,8 @@ import { RecallContextTool, SearchContextTool } from "./context-read.js";
 import { CreateFileTool } from "./create-file.js";
 import { DeleteFileTool } from "./delete-file.js";
 import { FetchArtifactTool } from "./fetch-artifact.js";
-import { ManageMemoryTool } from "./manage-memory.js";
+import { MemoryToolSession } from "./memory-tool-session.js";
+import { ReadMemoryTool } from "./read-memory.js";
 import { ManageSubagentsTool } from "./manage-subagents.js";
 import { ManageTasksTool } from "./manage-tasks.js";
 import { ProposePlanTool } from "./propose-plan.js";
@@ -31,6 +32,7 @@ import {
 import { SearchFilesTool } from "./search-files.js";
 import { SubmitTaskResultTool } from "./submit-task-result.js";
 import { UpdateFileTool } from "./update-file.js";
+import { WriteMemoryTool } from "./write-memory.js";
 
 type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks">;
 
@@ -61,6 +63,7 @@ export class BuiltinToolSource implements ToolSource {
 
   private createTools(): AgentTool[] {
     const { workspace } = this.options;
+    const memorySession = new MemoryToolSession();
     const commandRuntime = this.options.commandRuntime ?? new CommandRuntime(workspace, undefined, undefined, undefined, {
       limits: this.options.limits,
     });
@@ -84,7 +87,10 @@ export class BuiltinToolSource implements ToolSource {
       new CompactContextTool(this.options.limits),
       new RecallContextTool(this.options.limits),
       new SearchContextTool(),
-      ...(this.options.memoryManager ? [new ManageMemoryTool(this.options.memoryManager, workspace)] : []),
+      new ReadMemoryTool(workspace, memorySession),
+      ...(this.options.memoryManager
+        ? [new WriteMemoryTool(this.options.memoryManager, workspace, memorySession)]
+        : []),
       ...(this.options.boundTask ? [new SubmitTaskResultTool(this.options.boundTask, this.options.limits)] : []),
     ].map((tool) => {
       bindBuiltinToolMetadata(tool);

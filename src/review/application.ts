@@ -205,7 +205,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       }));
       toolCatalogs.push(toolCatalog);
       const tools = (await toolCatalog.snapshot()).tools.filter(t =>
-        ["read_file", "search_files", "run_command", "search_context", "recall_context"].includes(t.name));
+        ["read_file", "search_files", "run_command", "read_memory", "search_context", "recall_context"].includes(t.name));
       const context: ToolContext = {
         workspaceRoot: root, mode: "code", threadId, turnId: reviewId, approvalPolicy: "ask",
         commandExecutionMode: "auto_approve", isUnrestrictedHostAccessActive: () => false,
@@ -213,7 +213,10 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
         signal: input.signal, commandTimeoutMs: deps.limits.commandTimeoutMs, maxOutputChars: deps.limits.maxOutputChars,
         validationBaseline: state.progressGuard?.validationBaseline,
         requestApproval: async request => deps.approve(context, request),
-        searchProjectMemory: query => deps.memory.searchHybrid(workspaceId, query, { workspaceRoot: root, readOnly: true, limit: deps.limits.memorySearchLimit }),
+        searchProjectMemory: (query, options) => deps.memory.searchHybrid(workspaceId, query, {
+          workspaceRoot: root, readOnly: true, limit: options?.limit ?? deps.limits.memorySearchLimit,
+          includeInactive: options?.includeInactive,
+        }),
         recallContext: async value => {
           try {
             if (value.evidenceId === `review:${reviewId}:briefing`) return { ok: true, summary: "Opening brief, unverified",

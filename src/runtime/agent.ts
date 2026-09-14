@@ -51,7 +51,7 @@ import type { TokenCalibration } from "../context/token-calibration.js";
 import { runCompactionTransaction, foldCompactionControl, completeExchange, investigationExchangeStart, type CompactionResult } from "../context/compaction-transaction.js";
 import type { NormalRequestEnvelope } from "../context/context-request.js";
 import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
-import { parseSemanticRequestPatch, recallCompactionEvidence } from "../context/semantic-compaction.js";
+import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
 import { recallThreadContext } from "../context/recall.js";
 import { captureValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
@@ -617,7 +617,10 @@ export interface AgentRuntimeDependencies {
     planReview?: Readonly<PlanReviewState>;
   }) => Promise<string>;
   getWorkspaceSummary: () => Promise<string>;
-  searchMemories: (query: string) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
+  searchMemories: (
+    query: string,
+    options?: { readonly limit?: number; readonly includeInactive?: boolean },
+  ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   /**
    * Builds derived, Thread-private context layers. Failures must never replace
    * the event journal or prevent an otherwise valid model request.
@@ -794,7 +797,7 @@ function taskGraphToolError(
     }
     return undefined;
   }
-  if (tool.name === "manage_memory") {
+  if (tool.name === "write_memory") {
     return "Long-term memory maintenance must wait until the task DAG is completed.";
   }
   if (!metadata.taskWork) return undefined;
@@ -2271,7 +2274,7 @@ export class AgentRuntime {
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const ordinaryEnabledTools = taskDagFinalizationOnly
         ? state.taskGraph?.status === "completed"
-          ? [...toolGateway.catalog.tools].filter((tool) => tool.name === "manage_memory")
+          ? [...toolGateway.catalog.tools].filter((tool) => tool.name === "write_memory")
           : []
         : [...toolGateway.catalog.tools].filter((tool) =>
             tool.name !== "compact_context"
@@ -2621,7 +2624,7 @@ export class AgentRuntime {
         !(
           state.taskGraph?.status === "completed" &&
           response.message.tool_calls?.every(
-            (call) => call.function.name === "manage_memory",
+            (call) => call.function.name === "write_memory",
           )
         );
       const executionToolCalls = suppressFinalizationToolCalls
@@ -2963,16 +2966,12 @@ export class AgentRuntime {
           payload: durableToolCall(call)
         });
 
-        const journalRecall = tool && toolName === "manage_memory"
-          ? recallCompactionEvidence(state, call.function.arguments, this.dependencies.limits) : undefined;
         if (environmentFault && tool?.mutating) {
           result = toolFailure(new CommandEnvironmentQuarantined(environmentFault), "Tool skipped: environment quarantined; task paused.");
         } else if (!compactContextIsExclusive && calls.some((item) => item.function.name === "compact_context")) {
           result = { ok: false, summary: "compact_context cannot be batched with workspace tools; no call in this batch was executed.",
             error: "context_compaction_must_be_exclusive",
             failure: protocolToolFailure("context_compaction_must_be_exclusive", "Continue normal work without compact_context; Runtime manages context maintenance.") };
-        } else if (journalRecall) {
-          result = journalRecall;
         } else if (toolName === "compact_context") {
           result = { ok: false, summary: "No valid semantic compaction request was parsed." };
           let patch: ReturnType<typeof parseSemanticRequestPatch> | undefined;
@@ -3196,7 +3195,7 @@ export class AgentRuntime {
 
 
         if (
-          toolName === "manage_memory" &&
+          toolName === "write_memory" &&
           result.ok &&
           result.memoryMutation &&
           memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
@@ -3366,7 +3365,7 @@ export class AgentRuntime {
           }
         }
         result = normalizeToolFailure(result);
-        if (toolName === "manage_memory" && !result.ok && result.failure) {
+        if (toolName === "write_memory" && !result.ok && result.failure) {
           // Long-term memory is a best-effort projection of completed work. A
           // malformed or unsupported proposal must never consume the shared
           // tool-protocol budget or turn a successfully completed coding task
@@ -3401,7 +3400,7 @@ export class AgentRuntime {
           if (recovery.remaining === 0) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
         }
 
-        if (this.dependencies.captureToolEvidence && toolName !== "compact_context" && toolName !== "manage_memory") {
+        if (this.dependencies.captureToolEvidence && toolName !== "compact_context" && toolName !== "write_memory") {
           try {
             result = { ...result, evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result) };
           } catch {
@@ -3544,7 +3543,7 @@ export class AgentRuntime {
         if (result.ok && result.imageAttachments?.length) {
           stepImageAttachments.push(...result.imageAttachments);
         }
-        if (toolName === "manage_memory" && result.ok && result.memoryMutation) {
+        if (toolName === "write_memory" && result.ok && result.memoryMutation) {
           memoryContext.mutations.push(result.memoryMutation);
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);

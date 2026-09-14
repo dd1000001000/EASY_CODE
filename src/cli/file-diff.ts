@@ -9,7 +9,11 @@ import type { FileDiffPresentation } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 
 const DEFAULT_CONTEXT_LINES = 3;
-const DEFAULT_MAX_RENDERED_LINES = 400;
+// UI safety boundary, deliberately not configurable. A diff is a preview;
+// complete content remains available through read_file. Keeping this local to
+// the renderer prevents runtime configuration from turning one large edit
+// into an unresponsive terminal frame.
+const MAX_RENDERED_DIFF_LINES = 100;
 const MAX_EDIT_LENGTH = 10_000;
 const MAX_RENDERED_LINE_CHARS = 500;
 
@@ -29,6 +33,19 @@ interface DiffRow {
 interface SensitiveLineMap {
   before: ReadonlySet<number>;
   after: ReadonlySet<number>;
+}
+
+function limitDiffBlock(value: string): string {
+  const normalized = value.replace(/\r\n?/gu, "\n");
+  const trailingNewline = normalized.endsWith("\n");
+  const lines = normalized.split("\n");
+  if (trailingNewline) lines.pop();
+  if (lines.length <= MAX_RENDERED_DIFF_LINES) return value;
+  return [
+    ...lines.slice(0, MAX_RENDERED_DIFF_LINES - 1),
+    "… Diff preview limited to 100 lines. Use read_file to view the complete file.",
+    "",
+  ].join("\n");
 }
 
 function isUnsafeTerminalCodePoint(codePoint: number): boolean {
@@ -217,7 +234,10 @@ export function renderFileDiff(
 ): string {
   const palette = new Chalk({ level: options.color ? 1 : 0 });
   const context = Math.max(0, Math.min(options.contextLines ?? DEFAULT_CONTEXT_LINES, 20));
-  const maxLines = Math.max(1, Math.min(options.maxLines ?? DEFAULT_MAX_RENDERED_LINES, 2_000));
+  const maxLines = Math.max(
+    1,
+    Math.min(options.maxLines ?? MAX_RENDERED_DIFF_LINES, MAX_RENDERED_DIFF_LINES),
+  );
   const safePath = sanitizeDiffText(presentation.path);
   const sensitiveLines: SensitiveLineMap = {
     before: privateKeyLineNumbers(presentation.before),
@@ -231,7 +251,7 @@ export function renderFileDiff(
       : presentation.operation === "update"
         ? "[Empty file unchanged]"
         : "[Empty file created]";
-    return output + palette.dim(`${description}\n\n`);
+    return limitDiffBlock(output + palette.dim(`${description}\n\n`));
   }
 
   let patch: ParsedDiff | undefined;
@@ -254,10 +274,14 @@ export function renderFileDiff(
   output += palette.dim(`${"─".repeat(width)} ${"─".repeat(width)} ┼ ${"─".repeat(24)}\n`);
 
   if (!patch) {
-    return `${output}${renderFallback(presentation, palette, maxLines, sensitiveLines)}\n`;
+    return limitDiffBlock(
+      `${output}${renderFallback(presentation, palette, maxLines, sensitiveLines)}\n`,
+    );
   }
   if (patch.hunks.length === 0) {
-    return `${output}${palette.dim("Only the final newline or line separators changed.\n")}\n`;
+    return limitDiffBlock(
+      `${output}${palette.dim("Only the final newline or line separators changed.\n")}\n`,
+    );
   }
 
   const totalRows = patch.hunks.reduce((sum, hunk) => sum + hunk.lines.length, 0);
@@ -278,5 +302,5 @@ export function renderFileDiff(
       `… Diff truncated; ${totalRows - renderedRows} lines omitted. Use read_file to view the complete file.\n`,
     );
   }
-  return `${output}\n`;
+  return limitDiffBlock(`${output}\n`);
 }

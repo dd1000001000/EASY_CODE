@@ -73,6 +73,7 @@ import type {
 import { applyEvent, createUIState } from "../ui/store.js";
 import { ScreenWriter } from "../ui/render/screen-writer.js";
 import {
+  FULL_SCREEN_EXIT_SEQUENCE,
   FullScreenWriter,
   applyDisclosureViewCommand,
   clearDisclosureViewTarget,
@@ -165,6 +166,8 @@ interface CurrentTurnDisclosure {
 
 interface ActiveModelStream {
   readonly streamId: string;
+  /** Activity that owned this provider request when streaming began. */
+  readonly activityId?: string;
   reasoningText: string;
   answerText: string;
   reasoningId?: number;
@@ -207,7 +210,7 @@ interface ActiveDisclosureViewer {
   readonly wasRaw: boolean;
   readonly wasFlowing: boolean;
   readonly onData: (chunk: Buffer | string) => void;
-  readonly onError: () => void;
+  readonly onError: (error: Error) => void;
   readonly deferredCommits: DeferredTranscriptCommit[];
   /** Primary prompt/composer changed while hidden by the alternate buffer. */
   primaryDisplayDirty: boolean;
@@ -281,7 +284,11 @@ export class Terminal {
     "⠇",
     "⠏",
   ] as const;
-  private static readonly ACTIVITY_INTERVAL_MS = 80;
+  // Human-readable elapsed time does not need an 80 ms repaint cadence. This
+  // fixed UI cadence reduces ConPTY work without becoming runtime config.
+  private static readonly ACTIVITY_INTERVAL_MS = 160;
+  private static readonly INPUT_OWNER_WATCHDOG_INTERVAL_MS = 250;
+  private static readonly INPUT_OWNER_GRACE_MS = 1_500;
 
   private rl?: readline.Interface;
   private closed = false;
@@ -363,6 +370,15 @@ export class Terminal {
   private agentConcurrencyLimit?: number;
   /** Track DEC cursor visibility while EASY CODE owns the inline shell. */
   private terminalCursorVisible = true;
+  private fatalUiFailure?: Error;
+  private inputOwnerWatchdog?: NodeJS.Timeout;
+  private inputOwnerMissingSince?: number;
+  private readonly onOutputError = (error: Error): void => {
+    this.failTerminalUi("terminal output", error);
+  };
+  private readonly onInputError = (error: Error): void => {
+    this.failTerminalUi("terminal input", error);
+  };
   private readonly vscodeMenuBridge = createVsCodeMenuBridge();
   private readonly onResize = (): void => {
     if (this.disclosureViewer) this.resizeDisclosureViewer();
@@ -426,9 +442,12 @@ export class Terminal {
     this.screen = new ScreenWriter({
       output: this.output as NodeJS.WriteStream,
       columns: () => (this.output as NodeJS.WriteStream).columns,
+      onFailure: (error) => this.failTerminalUi("inline renderer", error),
     });
     this.inlineShellActive = true;
     this.output.on("resize", this.onResize);
+    this.output.on("error", this.onOutputError);
+    this.input.on("error", this.onInputError);
     return true;
   }
 
@@ -532,6 +551,7 @@ export class Terminal {
     }
     if (options.onSteer) this.startBusyComposer();
     else this.startBusyInputOwner();
+    this.startInputOwnerWatchdog();
   }
 
   clearCurrentRequest(): void {
@@ -541,6 +561,7 @@ export class Terminal {
     this.steeringAdmissionPaused = false;
     this.stopBusyComposer();
     this.stopBusyInputOwner();
+    this.stopInputOwnerWatchdog();
     if (!this.inlineShellActive) return;
     this.currentTurnCompleted = true;
     this.currentTurnTranscriptEnd = this.uiState.transcript.length;
@@ -1425,6 +1446,7 @@ export class Terminal {
   }
 
   write(text: string): void {
+    if (this.closed) return;
     if (this.inlineShellActive) {
       this.commitTranscript({ kind: "raw", text });
       this.refresh();
@@ -1462,7 +1484,7 @@ export class Terminal {
     }
     try {
       this.renderActivity();
-    } catch {
+    } catch (error) {
       if (this.inlineShellActive) {
         this.uiState = applyEvent(this.uiState, {
           type: "activity.stop",
@@ -1471,6 +1493,7 @@ export class Terminal {
       }
       this.resetActivityState();
       this.activeActivityId = undefined;
+      this.failTerminalUi("activity renderer", error);
       return undefined;
     }
 
@@ -1484,13 +1507,8 @@ export class Terminal {
         this.activityFrameIndex =
           (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
         this.renderActivity();
-      } catch {
-        try {
-          this.stopActivity(activityId);
-        } catch {
-          this.resetActivityState();
-          this.activeActivityId = undefined;
-        }
+      } catch (error) {
+        this.failTerminalUi("activity renderer", error);
       }
     }, Terminal.ACTIVITY_INTERVAL_MS);
     this.activityTimer.unref();
@@ -1689,12 +1707,11 @@ export class Terminal {
     if (this.streamFlushTimer) return;
     this.streamFlushTimer = setTimeout(() => {
       try { this.flushModelStreams(); }
-      catch {
-        // Rendering is optional, including when it runs outside the
-        // provider observer's synchronous error boundary.
+      catch (error) {
         this.resetModelStreams();
         this.streamedAnswerCandidate = undefined;
         this.streamedReasoningCandidate = undefined;
+        this.failTerminalUi("stream renderer", error);
       }
     }, this.streamFlushIntervalMs);
     this.streamFlushTimer.unref();
@@ -1730,7 +1747,11 @@ export class Terminal {
   private renderStreamToolProgress(state: ActiveModelStream): void {
     state.toolProgressDirty = false;
     const calls = [...state.toolCalls.entries()].sort(([left], [right]) => left - right);
-    if (!calls.length || !this.activeActivityId) return;
+    if (
+      !calls.length ||
+      !this.activeActivityId ||
+      state.activityId !== this.activeActivityId
+    ) return;
     const parts = calls.slice(0, 2).map(([index, call]) => {
       const name = this.safeInline(call.name || "tool", 48);
       const size = call.argumentChars < 1024
@@ -1831,6 +1852,7 @@ export class Terminal {
       this.streamedAnswerCandidate = undefined;
       this.modelStreams.set(event.streamId, {
         streamId: event.streamId,
+        ...(this.activeActivityId ? { activityId: this.activeActivityId } : {}),
         reasoningText: "",
         answerText: "",
         toolCallSeen: false,
@@ -2106,6 +2128,10 @@ export class Terminal {
     this.activeApprovalController?.abort();
     this.vscodeMenuBridge?.close();
     if (this.closed) return;
+    // Latch first so viewer/editor cleanup cannot reacquire input while the
+    // terminal is being dismantled.
+    this.closed = true;
+    this.stopInputOwnerWatchdog();
     this.closeDisclosureViewer();
     this.currentRequestOptions = undefined;
     this.stopBusyComposer();
@@ -2113,6 +2139,8 @@ export class Terminal {
     this.stopActivity();
     if (this.inlineShellActive) {
       this.output.removeListener("resize", this.onResize);
+      this.output.removeListener("error", this.onOutputError);
+      this.input.removeListener("error", this.onInputError);
       this.screen?.close();
       this.screen = undefined;
       this.inlineShellActive = false;
@@ -2123,7 +2151,6 @@ export class Terminal {
         // The terminal may already be gone; cleanup is best effort.
       }
     }
-    this.closed = true;
     this.activePromptController?.abort();
     this.activePromptController = undefined;
     const rl = this.rl;
@@ -2358,7 +2385,10 @@ export class Terminal {
     let filter!: PrivateOscInputFilter;
     const onError = (): void => {
       if (this.busyInputOwner?.filter !== filter) return;
-      this.stopBusyInputOwner();
+      this.failTerminalUi(
+        "request input owner",
+        new Error("The busy input stream failed."),
+      );
     };
     filter = new PrivateOscInputFilter(
       this.input,
@@ -2385,8 +2415,9 @@ export class Terminal {
       // drains ordinary keys after the filter has inspected private controls.
       filter.resume();
       this.input.resume();
-    } catch {
+    } catch (error) {
       this.stopBusyInputOwner();
+      this.failTerminalUi("request input owner", error);
     }
   }
 
@@ -2716,6 +2747,7 @@ export class Terminal {
       output: this.output as import("../ui/render/screen-writer.js").ScreenOutput,
       columns: () => this.physicalColumns(),
       rows: () => this.physicalRows(),
+      onFailure: (error) => this.failTerminalUi("full-screen renderer", error),
     });
     const tuiInput = new TuiInputCore({ focus: "viewer", mouseWheelLines: 3 });
     let viewer!: ActiveDisclosureViewer;
@@ -2728,11 +2760,13 @@ export class Terminal {
           this.handleDisclosureInput(viewer, event);
           if (this.disclosureViewer !== viewer) break;
         }
-      } catch {
-        this.closeDisclosureViewer();
+      } catch (error) {
+        this.failTerminalUi("conversation input", error);
       }
     };
-    const onError = (): void => this.closeDisclosureViewer();
+    const onError = (error: Error): void => {
+      this.failTerminalUi("conversation input", error);
+    };
     const rendered = this.renderDisclosureFrameWithPosition(state);
     state = rendered.state;
     const frame = rendered.frame;
@@ -2779,6 +2813,7 @@ export class Terminal {
       this.input.on("error", onError);
       writer.render(frame.rows);
       writer.enter();
+      if (this.closed) return false;
       // FullScreenWriter owns DEC cursor visibility while the alternate
       // buffer is active. Keep our cache synchronized with its hidden cursor.
       this.terminalCursorVisible = false;
@@ -2911,11 +2946,13 @@ export class Terminal {
       // committed exactly once. When an editor session survived, route it
       // through that session after restoration so its preserved draft is
       // erased/redrawn around the output instead of being overwritten.
-      for (const commit of viewer.deferredCommits) {
-        if (this.activePromptSession) {
-          this.activePromptSession.writeAbove(commit.text);
-        } else {
-          this.screen?.commit(commit.text);
+      if (!this.closed) {
+        for (const commit of viewer.deferredCommits) {
+          if (this.activePromptSession) {
+            this.activePromptSession.writeAbove(commit.text);
+          } else {
+            this.screen?.commit(commit.text);
+          }
         }
       }
       // With an untouched primary prompt there is nothing to redraw. Avoiding
@@ -2997,20 +3034,8 @@ export class Terminal {
       viewer.state = rendered.state;
       viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
-    } catch {
-      if (this.guardedInputActive || this.uiState.overlay) {
-        // A selector still owns stdin. Closing the viewer here would resume
-        // its suspended readline session before the modal filter is removed,
-        // delivering the same approval key to two consumers. Keep ownership
-        // intact and show a minimal recoverable frame until the modal ends.
-        viewer.writer.clear();
-        viewer.writer.render([
-          chalk.cyan("EASY CODE"),
-          chalk.yellow("Enlarge the terminal to continue this selection."),
-        ]);
-        return;
-      }
-      this.closeDisclosureViewer();
+    } catch (error) {
+      this.failTerminalUi("conversation renderer", error);
     }
   }
 
@@ -3056,16 +3081,8 @@ export class Terminal {
       viewer.state = rendered.state;
       viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
-    } catch {
-      if (this.guardedInputActive || this.uiState.overlay) {
-        viewer.writer.clear();
-        viewer.writer.render([
-          chalk.cyan("EASY CODE"),
-          chalk.yellow("Enlarge the terminal to continue this selection."),
-        ]);
-        return;
-      }
-      this.closeDisclosureViewer();
+    } catch (error) {
+      this.failTerminalUi("conversation resize", error);
     }
   }
 
@@ -3217,6 +3234,61 @@ export class Terminal {
     interrupt();
   }
 
+  /**
+   * Every active request must have exactly one semantic input path (editor,
+   * viewer, modal, or the Ctrl+C-only busy owner). Catching a lost hand-off is
+   * safer than leaving a live Runtime behind an inert terminal.
+   */
+  private startInputOwnerWatchdog(): void {
+    this.stopInputOwnerWatchdog();
+    if (!this.inlineShellActive || !this.currentRequestOptions || this.closed) return;
+    this.inputOwnerWatchdog = setInterval(() => {
+      if (this.closed || !this.currentRequestOptions) {
+        this.stopInputOwnerWatchdog();
+        return;
+      }
+      if (this.guardedInputActive) {
+        this.inputOwnerMissingSince = undefined;
+        return;
+      }
+      const hasOwner = Boolean(
+        this.disclosureViewer ||
+        this.promptActive ||
+        this.busyInputOwner ||
+        this.rl,
+      );
+      if (hasOwner) {
+        this.inputOwnerMissingSince = undefined;
+        if (
+          (this.disclosureViewer || this.busyInputOwner) &&
+          this.input.readableFlowing !== true
+        ) {
+          try {
+            this.input.resume();
+          } catch (error) {
+            this.failTerminalUi("input ownership", error);
+          }
+        }
+        return;
+      }
+      const now = Date.now();
+      this.inputOwnerMissingSince ??= now;
+      if (now - this.inputOwnerMissingSince >= Terminal.INPUT_OWNER_GRACE_MS) {
+        this.failTerminalUi(
+          "input ownership",
+          new Error("No terminal input owner remained for the active request."),
+        );
+      }
+    }, Terminal.INPUT_OWNER_WATCHDOG_INTERVAL_MS);
+    this.inputOwnerWatchdog.unref();
+  }
+
+  private stopInputOwnerWatchdog(): void {
+    if (this.inputOwnerWatchdog) clearInterval(this.inputOwnerWatchdog);
+    this.inputOwnerWatchdog = undefined;
+    this.inputOwnerMissingSince = undefined;
+  }
+
   private switchDisclosureViewer(
     viewer: ActiveDisclosureViewer,
     kind: DisclosureKind,
@@ -3266,7 +3338,8 @@ export class Terminal {
       viewer.frame = rendered.frame;
       viewer.writer.render(viewer.frame.rows);
       return true;
-    } catch {
+    } catch (error) {
+      this.failTerminalUi("disclosure renderer", error);
       return false;
     }
   }
@@ -3897,8 +3970,12 @@ export class Terminal {
 
   private setTerminalCursorVisible(visible: boolean): void {
     if (!this.inlineShellActive || this.terminalCursorVisible === visible) return;
-    this.output.write(visible ? "\u001B[?25h" : "\u001B[?25l");
-    this.terminalCursorVisible = visible;
+    try {
+      this.output.write(visible ? "\u001B[?25h" : "\u001B[?25l");
+      this.terminalCursorVisible = visible;
+    } catch (error) {
+      this.failTerminalUi("cursor renderer", error);
+    }
   }
 
   private composerPromptPrefix(): string {
@@ -4027,6 +4104,53 @@ export class Terminal {
     this.activityText = "";
     this.activityStartedAt = 0;
     this.activityFrameIndex = 0;
+  }
+
+  /**
+   * A broken terminal is not a recoverable presentation downgrade: continuing
+   * would leave an apparently active task with neither input nor Ctrl+C. Abort
+   * the request, restore terminal modes, and let the normal application
+   * shutdown persist Runtime/Journal state for a later `/resume`.
+   */
+  private failTerminalUi(stage: string, value: unknown): void {
+    if (this.closed || this.fatalUiFailure) return;
+    const cause = value instanceof Error ? value : new Error(String(value));
+    const error = new Error(`CLI ${stage} failed: ${cause.message}`);
+    this.fatalUiFailure = error;
+    process.exitCode = 1;
+
+    if (!this.currentRequestInterruptSignaled) {
+      try {
+        this.signalCurrentRequestInterrupt();
+      } catch {
+        // Shutdown must continue even if a request-specific abort hook fails.
+      }
+    }
+    const restoreAlternateScreen = Boolean(this.disclosureViewer?.writer.isActive);
+    this.close();
+
+    if (restoreAlternateScreen) {
+      try {
+        // The writer that reported the failure may have disabled its own
+        // output path. Queue one final paired restore directly as a best-effort
+        // equivalent of `/exit`.
+        this.output.write(FULL_SCREEN_EXIT_SEQUENCE);
+      } catch {
+        // The stderr diagnostic below is the final available channel.
+      }
+    }
+
+    const detail = redactSensitiveInformation(sanitizeCommandOutput(error.message))
+      .replace(/[\r\n]+/gu, " ")
+      .trim();
+    try {
+      process.stderr.write(
+        `\nEASY CODE UI failed and the CLI exited safely. ` +
+          `The task state was preserved and can be resumed.\n${detail}\n`,
+      );
+    } catch {
+      // There is no further safe UI channel when stderr is unavailable.
+    }
   }
 }
 

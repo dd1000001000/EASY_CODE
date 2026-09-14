@@ -1,0 +1,14 @@
+{
+  "id": "write_memory",
+  "contractVersion": "1.0.0",
+  "description": "Propose one best-effort long-term memory mutation. The proposal is staged and commits only after a successful turn. This tool never reads historical evidence and does not accept evidenceId; cite supporting current-turn evidence with sourceRefs.",
+  "propertyDescriptions": {
+    "operation": "remember creates one durable fact; revise supersedes a memory returned by read_memory in this turn; forget expires such a memory.",
+    "memoryId": "Required for revise and forget. Use an ID returned by read_memory in this turn.",
+    "content": "Required for remember and revise. One short, self-contained durable fact, not a paragraph or task diary.",
+    "category": "Required for remember and optional for revise: preference, convention, architecture, decision, or environment.",
+    "reason": "A brief current-turn reason for the change, without secrets.",
+    "sourceRefs": "Optional current-turn evidence references supporting remember or revise. Do not use evidenceId here."
+  },
+  "guidance": "write_memory is the only model tool that changes automatic long-term memory. Treat it as best-effort housekeeping, never as a delivery gate. It is not a user-editing interface. New remember proposals do not require a preliminary read. Search with read_memory first only for revise or forget. Store one atomic, self-contained fact per call, at most 120 characters; several independent facts may be submitted as parallel write_memory calls, with at most eight staged changes per turn. Remember only durable user preferences, project conventions, architecture, established decisions, and stable environment facts. Never store secrets, transient task state, raw conversation summaries, raw tool output, or information already represented accurately. In Plan mode, only explicit durable user preferences or conventions may be remembered. Before your final answer, evaluate once whether the completed turn established, changed, or invalidated useful durable memory. If a proposal is skipped or rejected, do not retry solely for memory maintenance; continue to the final answer."
+}

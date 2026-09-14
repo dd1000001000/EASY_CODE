@@ -3,6 +3,7 @@ import {
   truncateToWidth,
 } from "../render/layout.js";
 import type { ScreenOutput } from "../render/screen-writer.js";
+import { OutputDrainMonitor } from "../render/output-drain-monitor.js";
 
 const DEFAULT_COLUMNS = 80;
 const DEFAULT_ROWS = 24;
@@ -61,6 +62,7 @@ export interface FullScreenWriterOptions {
   readonly output?: ScreenOutput;
   readonly columns?: FullScreenDimensionSource;
   readonly rows?: FullScreenDimensionSource;
+  readonly onFailure?: (error: Error) => void;
 }
 
 /**
@@ -84,6 +86,8 @@ export class FullScreenWriter {
   private readonly output: ScreenOutput;
   private readonly columnsSource?: FullScreenDimensionSource;
   private readonly rowsSource?: FullScreenDimensionSource;
+  private readonly onFailure?: (error: Error) => void;
+  private readonly outputDrain: OutputDrainMonitor;
   private readonly tty: boolean;
 
   private active = false;
@@ -91,6 +95,20 @@ export class FullScreenWriter {
   private currentSize: FullScreenSize;
   private sourceRows: readonly string[] = [];
   private renderedRows: readonly string[] = [];
+  private pendingPaint = false;
+  private pendingFullRepaint = false;
+  private readonly onDrain = (): void => {
+    if (this.closed) return;
+    if (this.pendingFullRepaint) {
+      this.pendingFullRepaint = false;
+      this.renderedRows = blankRows(this.currentSize.rows);
+      if (!this.write(CLEAR_SCREEN + HOME)) return;
+    }
+    if (this.pendingPaint) {
+      this.pendingPaint = false;
+      this.paint();
+    }
+  };
 
   constructor();
   constructor(output: ScreenOutput);
@@ -104,8 +122,13 @@ export class FullScreenWriter {
       this.output = outputOrOptions.output ?? process.stdout;
       this.columnsSource = outputOrOptions.columns;
       this.rowsSource = outputOrOptions.rows;
+      this.onFailure = outputOrOptions.onFailure;
     }
     this.tty = Boolean(this.output.isTTY);
+    this.outputDrain = new OutputDrainMonitor(this.output, {
+      onDrain: this.onDrain,
+      onFailure: this.onFailure,
+    });
     this.currentSize = this.readSize();
   }
 
@@ -127,7 +150,10 @@ export class FullScreenWriter {
     this.currentSize = this.readSize();
     this.active = true;
     this.renderedRows = blankRows(this.currentSize.rows);
-    this.write(FULL_SCREEN_ENTER_SEQUENCE);
+    if (!this.write(FULL_SCREEN_ENTER_SEQUENCE)) {
+      this.pendingPaint = true;
+      return;
+    }
     this.paint();
   }
 
@@ -191,7 +217,15 @@ export class FullScreenWriter {
     this.currentSize = nextSize;
     this.renderedRows = blankRows(nextSize.rows);
     if (this.active) {
-      this.write(CLEAR_SCREEN + HOME);
+      if (this.outputDrain.isBlocked) {
+        this.pendingFullRepaint = true;
+        this.pendingPaint = true;
+        return true;
+      }
+      if (!this.write(CLEAR_SCREEN + HOME)) {
+        this.pendingPaint = true;
+        return true;
+      }
       this.paint();
     }
     return true;
@@ -221,9 +255,14 @@ export class FullScreenWriter {
     if (this.closed) return;
     this.exit();
     this.closed = true;
+    this.outputDrain.close();
   }
 
   private paint(): void {
+    if (this.outputDrain.isBlocked) {
+      this.pendingPaint = true;
+      return;
+    }
     const nextRows = normalizeFrame(this.sourceRows, this.currentSize);
     let output = "";
 
@@ -234,6 +273,7 @@ export class FullScreenWriter {
       output += cursorPosition(index + 1, 1) + ERASE_LINE + next;
     }
 
+    if (!output) return;
     this.renderedRows = nextRows;
     this.write(output);
   }
@@ -253,8 +293,15 @@ export class FullScreenWriter {
     };
   }
 
-  private write(value: string): void {
-    if (value) this.output.write(value);
+  private write(value: string): boolean {
+    if (!value) return !this.outputDrain.isBlocked;
+    // The exit sequence is best-effort even when ordinary frame production is
+    // paused, otherwise a failed UI can leave the user's terminal in the
+    // alternate buffer with the cursor hidden.
+    return this.outputDrain.write(
+      value,
+      value === FULL_SCREEN_EXIT_SEQUENCE,
+    );
   }
 }
 

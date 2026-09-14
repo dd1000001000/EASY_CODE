@@ -130,7 +130,7 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
   const recalled = new Set<string>();
   for (const message of state.messages.slice(recalledStart)) {
     if (message.role !== "assistant") continue;
-    for (const call of message.tool_calls ?? []) if (call.function.name === "recall_context" || call.function.name === "manage_memory") {
+    for (const call of message.tool_calls ?? []) if (call.function.name === "recall_context") {
       try { const value = JSON.parse(call.function.arguments); if (typeof value.evidenceId === "string") recalled.add(value.evidenceId); } catch { /* not a recall */ }
     }
   }

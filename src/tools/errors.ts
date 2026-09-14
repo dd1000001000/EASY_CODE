@@ -99,7 +99,9 @@ export function describeToolFailure(error: unknown): ToolFailureInfo {
         // Zod messages may contain enum/input values. Do not echo those values.
         message: issue.code === "invalid_type" && issue.received === "undefined"
           ? "Required field is missing."
-          : "Value does not satisfy the declared tool schema.",
+          : issue.code === "unrecognized_keys"
+            ? `Unsupported field(s): ${issue.keys.slice(0, 8).map((key) => JSON.stringify(safeText(key, 64))).join(", ")}.`
+            : "Value does not satisfy the declared tool schema.",
       })),
       ...(error.issues.length > MAX_ISSUES ? { issuesTruncated: true } : {}),
       instruction: preflight

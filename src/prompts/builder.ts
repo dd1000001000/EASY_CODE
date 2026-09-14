@@ -62,7 +62,8 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "manage_subagents",
   "submit_task_result",
   "compact_context",
-  "manage_memory",
+  "read_memory",
+  "write_memory",
   "search_context",
   "recall_context",
 ];

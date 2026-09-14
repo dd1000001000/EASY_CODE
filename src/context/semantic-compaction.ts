@@ -188,7 +188,7 @@ export function conservativeDocument(state: Readonly<SessionState>, snapshot: Co
       investigationPolicy: "Investigation remains unfinished. Recover hypotheses and pending validation from retired history; reads/searches do not verify conclusions or complete the task." } : {}),
     snapshotDigest: snapshot.digest, previousAcceptedSummary: state.workingSummary,
     retiredHistory: { start: state.compactedMessageCount, end: snapshot.end, hash: snapshot.sourceHash },
-    nextStep: "Semantic compaction was unavailable. Recover retired messages using manage_memory recall with evidenceId journal_message_<index> in the retiredHistory range before changing strategy. Do not infer unobserved success.",
+    nextStep: "Semantic compaction was unavailable. Recover retired messages using recall_context with evidenceId journal_message_<index> in the retiredHistory range before changing strategy. Do not infer unobserved success.",
     evidenceCatalogueRef: snapshot.digest,
     note: snapshot.investigation
       ? "Runtime facts and user requests remain pinned outside this summary; protected recent exchanges and the live tool chain remain verbatim. Raw retired history is preserved, not deleted."

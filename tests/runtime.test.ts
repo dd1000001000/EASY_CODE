@@ -942,7 +942,7 @@ describe("AgentRuntime", () => {
             "manage_tasks",
             "propose_plan",
             "compact_context",
-            "manage_memory",
+            "write_memory",
         ].map((name) => name === "propose_plan" ? new ProposePlanTool() : ({
             name: name,
             mutating: name !== "read_file",
@@ -981,7 +981,7 @@ describe("AgentRuntime", () => {
             "create_file", "update_file", "delete_file",
             "run_command", "start_command", "poll_command", "cancel_command",
             "propose_plan",
-            "manage_memory",
+            "write_memory",
         ]);
     });
     it("enforces a model-created task DAG and refuses a premature final answer", async () => {
@@ -2370,7 +2370,7 @@ describe("AgentRuntime", () => {
                                 id: `call_memory_${index}`,
                                 type: "function",
                                 function: {
-                                    name: "manage_memory",
+                                    name: "write_memory",
                                     arguments: JSON.stringify({ action: "remember", index }),
                                 },
                             })),
@@ -2381,12 +2381,12 @@ describe("AgentRuntime", () => {
             },
         };
         const memoryTool = {
-            name: "manage_memory",
+            name: "write_memory",
             mutating: true,
             definition: {
                 type: "function",
                 function: {
-                    name: "manage_memory",
+                    name: "write_memory",
                     description: "memory",
                     parameters: { type: "object" },
                 },
@@ -2469,7 +2469,7 @@ describe("AgentRuntime", () => {
                             tool_calls: [0, 1, 2].map((index) => ({
                                 id: `call_invalid_memory_${index}`,
                                 type: "function",
-                                function: { name: "manage_memory", arguments: JSON.stringify({ index }) },
+                                function: { name: "write_memory", arguments: JSON.stringify({ index }) },
                             })),
                         },
                     };
@@ -2478,10 +2478,10 @@ describe("AgentRuntime", () => {
             },
         };
         const memoryTool = {
-            name: "manage_memory",
+            name: "write_memory",
             mutating: true,
             definition: { type: "function", function: {
-                    name: "manage_memory", description: "memory", parameters: { type: "object" },
+                    name: "write_memory", description: "memory", parameters: { type: "object" },
                 } },
             async execute() {
                 return { ok: false, summary: "Memory proposal skipped.", failure: {
@@ -2512,7 +2512,7 @@ describe("AgentRuntime", () => {
         assert.equal(result.reason, "success", result.text);
         assert.equal(requestCount, 2);
         assert.equal(result.failure, undefined);
-        const failures = currentState.messages.filter((message) => message.role === "tool" && message.name === "manage_memory");
+        const failures = currentState.messages.filter((message) => message.role === "tool" && message.name === "write_memory");
         assert.equal(failures.length, 3);
         assert.ok(failures.every((message) => typeof message.content === "string" &&
             message.content.includes("Do not retry it solely for memory maintenance")));
@@ -2534,7 +2534,7 @@ describe("AgentRuntime", () => {
                                 id: `call_atomic_memory_${index}`,
                                 type: "function",
                                 function: {
-                                    name: "manage_memory",
+                                    name: "write_memory",
                                     arguments: JSON.stringify({ index }),
                                 },
                             })),
@@ -2545,12 +2545,12 @@ describe("AgentRuntime", () => {
             },
         };
         const memoryTool = {
-            name: "manage_memory",
+            name: "write_memory",
             mutating: true,
             definition: {
                 type: "function",
                 function: {
-                    name: "manage_memory",
+                    name: "write_memory",
                     description: "memory",
                     parameters: { type: "object" },
                 },
@@ -2651,7 +2651,7 @@ describe("AgentRuntime", () => {
                             tool_calls: [{
                                     id: "call_memory_before_failure",
                                     type: "function",
-                                    function: { name: "manage_memory", arguments: "{}" },
+                                    function: { name: "write_memory", arguments: "{}" },
                                 }],
                         },
                     };
@@ -2660,12 +2660,12 @@ describe("AgentRuntime", () => {
             },
         };
         const memoryTool = {
-            name: "manage_memory",
+            name: "write_memory",
             mutating: true,
             definition: {
                 type: "function",
                 function: {
-                    name: "manage_memory",
+                    name: "write_memory",
                     description: "memory",
                     parameters: { type: "object" },
                 },
