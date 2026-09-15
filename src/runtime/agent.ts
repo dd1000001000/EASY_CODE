@@ -2792,7 +2792,7 @@ export class AgentRuntime {
           turnId,
           "before_final",
           turnImages,
-          true,
+          false,
           memoryContext,
         )) {
           continue;
@@ -2823,8 +2823,11 @@ export class AgentRuntime {
           if (!review.approved) text += `\n\nReview note: ${review.decision ?? "inconclusive"}; ` +
             `${review.reason ?? "the current patch has not been independently confirmed"}. ` +
             "Report only checks actually run; this is not an official benchmark verdict.";
-          if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         }
+        // Keep the adjustment editor live throughout review. The one final
+        // admission barrier belongs after review, so late steering invalidates
+        // this answer and is handled by a fresh model attempt.
+        if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         const unresolvedVerification = unresolvedCommands(state).filter(command => Boolean(command.verificationKind));
         if (agentIdentity.role === "main_agent" && unresolvedVerification.length) text +=
           `\n\nVerification note: ${unresolvedVerification.length} recorded verification target(s) still have a failed or uncertain terminal outcome. ` +

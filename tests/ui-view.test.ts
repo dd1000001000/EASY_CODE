@@ -142,6 +142,22 @@ function assertBoundedLines(value: string, columns: number): void {
 }
 
 describe("pure terminal UI views", () => {
+  it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
+    const review = { id: "review_ui", purpose: "delivery" as const, startedAt: 1_000,
+      phase: "discussion" as const, round: 2, maxRounds: 5 };
+    const state = applyEvents(createUIState(), [
+      { type: "review.set", review },
+      { type: "activity.start", activity: { id: "model", label: "requesting model", startedAt: 60_000 } },
+    ]);
+    const footer = renderFixedBottomRegions(state, { columns: 100, color: false }, 65_000,
+      { totalRows: 2, detailRows: 0 });
+    assert.equal(footer.status.length, 2);
+    assert.match(stripAnsi(footer.status[0] ?? ""), /Review \[.*\] delivery · discussion 3\/5 · 1m/u);
+    assert.equal(state.live.activity?.id, "model");
+    const stopped = applyEvent(state, { type: "activity.stop", id: "model" });
+    assert.equal(stopped.live.review?.id, review.id);
+    assert.equal(applyEvent(stopped, { type: "review.clear", id: review.id }).live.review, null);
+  });
   it("renders a safe CJK-aware EASY CODE session card without color", () => {
     const initial = createUIState({
       header: { title: "EASY\u001B[2J CODE" },

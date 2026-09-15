@@ -98,6 +98,7 @@ describe("pure terminal UI state", () => {
     assert.deepEqual(initial.transcript, []);
     assert.deepEqual(initial.live, {
       activity: null,
+      review: null,
       progress: [],
       thinking: null,
       tasks: null,

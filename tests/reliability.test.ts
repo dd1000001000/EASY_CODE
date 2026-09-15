@@ -1,7 +1,7 @@
 import { snapshotToolSet } from "./tool-set.js";
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
-import type { CommandAuditEntry, SessionState } from "../src/core/types.js";
+import type { CommandAuditEntry, SessionState, TurnSteeringBatch } from "../src/core/types.js";
 import { unresolvedCommands, runtimeContinuityMessage } from "../src/context/runtime-state.js";
 import { CommandVerificationCollector } from "../src/command/verification.js";
 import { expandedMemoryRecall } from "../src/context/memory-controller.js";
@@ -68,7 +68,7 @@ describe("verification reliability", () => {
 
 describe("delivery reliability", () => {
   it("schedules one advisory reviewer for a changed component.test.ts without making its opinion a completion gate", async () => {
-    const s = reliabilityState(); let calls = 0; let reviews = 0;
+    const s = reliabilityState(); let calls = 0; let reviews = 0; let seals = 0;
     const tool = { name: "read_file" as const, mutating: false,
       definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
       execute: async () => ({ ok: true, summary: "read" }) };
@@ -80,15 +80,63 @@ describe("delivery reliability", () => {
     }) }, toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+      takeSteering: async () => undefined,
+      sealSteering: async () => { seals++; return undefined; },
       onToolCompleted: async state => { state.changes.push({ path: "src/component.test.ts", operation: "update",
         source: "file_tool", status: "applied", timestamp: "now" }); },
-      runReviewSession: async () => { reviews++; return { approved: false, decision: "unavailable", requests: 0,
+      runReviewSession: async () => { reviews++; assert.equal(seals, 0, "the editor must stay open during review"); return { approved: false, decision: "unavailable", requests: 0,
         reused: false, reason: "reviewer unavailable" }; } });
     const result = await runtime.run(s, "change the component test", { maxSteps: 4,
       maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
       commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.equal(reviews, 1); assert.equal(result.reason, "success");
+    assert.equal(reviews, 1); assert.equal(seals, 1); assert.equal(result.reason, "success");
     assert.match(result.text, /Review note: unavailable/u);
+  });
+  it("applies an adjustment arriving during review before delivering a new model answer", async () => {
+    const state = reliabilityState();
+    let calls = 0;
+    let reviews = 0;
+    let seals = 0;
+    let pending: TurnSteeringBatch | undefined;
+    const tool = { name: "read_file" as const, mutating: false,
+      definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      execute: async () => ({ ok: true, summary: "read" }) };
+    const runtime = new AgentRuntime({
+      provider: { name: "qwen", model: "mock", complete: async request => {
+        calls++;
+        if (calls === 3) assert.ok(request.messages.some(message => message.role === "user" &&
+          message.content.includes("late adjustment")));
+        return { message: calls === 1
+          ? { role: "assistant" as const, content: "", tool_calls: [{ id: "read", type: "function" as const,
+            function: { name: "read_file", arguments: "{}" } }] }
+          : { role: "assistant" as const, content: calls === 2 ? "stale answer" : "adjusted answer" } };
+      } },
+      toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+      takeSteering: async () => undefined,
+      sealSteering: async () => { seals++; const won = pending; pending = undefined; return won; },
+      onToolCompleted: async s => { s.changes.push({ path: "src/component.test.ts", operation: "update",
+        source: "file_tool", status: "applied", timestamp: "now" }); },
+      runReviewSession: async () => {
+        reviews++;
+        if (reviews === 1) {
+          assert.equal(seals, 0);
+          pending = { entries: [{ id: "late", sequence: 1, targetTurnId: "turn_active",
+            message: { role: "user", content: "late adjustment" }, queuedAt: "now" }],
+            throughSequence: 1, message: { role: "user", content: "late adjustment" } };
+        }
+        return { approved: true, requests: 0, reused: false, decision: "approved" };
+      },
+    });
+    const result = await runtime.run(state, "original request", { maxSteps: 5,
+      maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
+      commandTimeoutMs: 1000, approvalPolicy: "never" });
+    assert.equal(result.reason, "success");
+    assert.match(result.text, /adjusted answer/u);
+    assert.doesNotMatch(result.text, /stale answer/u);
+    assert.equal(calls, 3);
+    assert.equal(seals, 2, "one attempt lost to steering; the next answer seals once");
   });
   it("degrades incomplete snapshots without calling a model, but does not swallow journal failure", async () => {
     const state = reliabilityState(), events: string[] = [];

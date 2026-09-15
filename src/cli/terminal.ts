@@ -66,6 +66,7 @@ import type {
   UIActivityKind,
   UIOverlayState,
   UIProgressItem,
+  UIReviewPhase,
   UISessionInfo,
   UITranscriptKind,
   UITranscriptEntry,
@@ -349,6 +350,7 @@ export class Terminal {
     text: string;
   }>;
   private activityTimer?: NodeJS.Timeout;
+  private lastReviewElapsedSecond = -1;
   private activityStartedAt = 0;
   private activityFrameIndex = 0;
   private activityText = "";
@@ -479,6 +481,7 @@ export class Terminal {
     images: readonly Readonly<ImageAttachment>[] = [],
     options: Readonly<CurrentRequestOptions> = {},
   ): void {
+    this.stopReview();
     this.activeApprovalController?.abort();
     this.stopBusyComposer();
     this.stopBusyInputOwner();
@@ -555,6 +558,7 @@ export class Terminal {
   }
 
   clearCurrentRequest(): void {
+    this.stopReview();
     this.activeApprovalController?.abort();
     this.currentRequestOptions = undefined;
     this.currentRequestInterruptSignaled = false;
@@ -1456,7 +1460,40 @@ export class Terminal {
     this.output.write(text);
   }
 
-  /** Show a transient TTY spinner until the pending operation completes. */
+  /** Begin an independently tracked review without taking over the editor. */
+  startReview(purpose: "stagnation" | "delivery"): string {
+    const id = `review_ui_${Date.now()}_${++this.activitySequence}`;
+    this.uiState = applyEvent(this.uiState, {
+      type: "review.set",
+      review: { id, purpose, startedAt: Date.now(), phase: "snapshot", round: 0, maxRounds: 5 },
+    });
+    this.lastReviewElapsedSecond = -1;
+    this.refresh();
+    this.ensureUiTicker();
+    return id;
+  }
+
+  updateReview(id: string, phase: UIReviewPhase, round: number, maxRounds: number): void {
+    const prior = this.uiState.live.review;
+    if (!prior || prior.id !== id) return;
+    this.uiState = applyEvent(this.uiState, {
+      type: "review.set",
+      review: { ...prior, phase, round, maxRounds },
+    });
+    this.refresh();
+  }
+
+  stopReview(id?: string): void {
+    if (!this.uiState.live.review || id && this.uiState.live.review.id !== id) return;
+    this.uiState = applyEvent(this.uiState, { type: "review.clear", ...(id ? { id } : {}) });
+    this.lastReviewElapsedSecond = -1;
+    if (!this.activeActivityId && this.activityTimer) {
+      clearInterval(this.activityTimer);
+      this.activityTimer = undefined;
+    }
+    this.refresh();
+  }
+
   startActivity(
     text: string,
     kind: UIActivityKind = "model",
@@ -1497,22 +1534,35 @@ export class Terminal {
       return undefined;
     }
 
-    const activityId = this.activeActivityId;
+    this.ensureUiTicker();
+    return this.activeActivityId;
+  }
+
+  /** One refresh clock serves model/tool activity and review elapsed time. */
+  private ensureUiTicker(): void {
+    if (this.activityTimer || !this.canAnimateActivity()) return;
     this.activityTimer = setInterval(() => {
       try {
         if (!this.canAnimateActivity()) {
-          this.stopActivity(activityId);
+          this.stopActivity();
           return;
         }
-        this.activityFrameIndex =
-          (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
-        this.renderActivity();
+        if (this.activeActivityId) {
+          this.activityFrameIndex =
+            (this.activityFrameIndex + 1) % Terminal.ACTIVITY_FRAMES.length;
+          this.renderActivity();
+        } else if (this.inlineShellActive && this.uiState.live.review) {
+          const elapsed = Math.max(0, Math.floor((Date.now() - this.uiState.live.review.startedAt) / 1_000));
+          if (elapsed !== this.lastReviewElapsedSecond) {
+            this.lastReviewElapsedSecond = elapsed;
+            this.refresh();
+          }
+        }
       } catch (error) {
         this.failTerminalUi("activity renderer", error);
       }
     }, Terminal.ACTIVITY_INTERVAL_MS);
     this.activityTimer.unref();
-    return activityId;
   }
 
   /** Clear the transient spinner without adding a blank line. */
@@ -2136,6 +2186,7 @@ export class Terminal {
     this.currentRequestOptions = undefined;
     this.stopBusyComposer();
     this.stopBusyInputOwner();
+    this.stopReview();
     this.stopActivity();
     if (this.inlineShellActive) {
       this.output.removeListener("resize", this.onResize);
@@ -4096,7 +4147,7 @@ export class Terminal {
   }
 
   private resetActivityState(): void {
-    if (this.activityTimer) {
+    if (this.activityTimer && !this.uiState.live.review) {
       clearInterval(this.activityTimer);
       this.activityTimer = undefined;
     }
