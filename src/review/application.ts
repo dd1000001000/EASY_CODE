@@ -29,6 +29,8 @@ import { createReviewDriver, type ReviewParticipant } from "./driver.js";
 
 export interface WorkspaceReviewRequest {
   state: SessionState; turnId: string; userInput: string; purpose: "stagnation" | "delivery";
+  /** The main Agent's already-produced final answer, reviewed before finalization. */
+  draftAnswer?: string;
   incidentId?: string; remainingModelRequests: number; signal?: AbortSignal;
   maxContextTokens?: number;
 }
@@ -97,8 +99,9 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   const previous = state.reviewSessions.find(session => session.key === key);
   if (previous?.status === "applied") return { decision: previous.report && previous.fresh ? "reported" : "inconclusive",
     requests: 0, reused: true, reason: previous.reason, report: previous.report };
-  if (!previous && input.remainingModelRequests < 2) return { decision: "unavailable", requests: 0, reused: true,
-    reason: "The shared task budget does not leave a model request for both investigation and the main Agent's follow-up." };
+  if (!previous && input.remainingModelRequests < 2)
+    return { decision: "unavailable", requests: 0, reused: true,
+      reason: "The shared task budget does not leave enough requests for independent review and any required follow-up." };
 
   const emit = async (event: ReviewEvent) => {
     const candidate = structuredClone(state);
@@ -164,7 +167,11 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     const opening: ChatMessage = { role: "user", content: `Original user request:\n${input.userInput}\n` +
       `Constraints: ${JSON.stringify(state.constraints)}\nUser corrections: ${JSON.stringify(corrections)}\n` +
       `Snapshot identity: ${snapshotId}\nMain Agent handoff (unverified): ${get().brief}\n` +
-      "Read the project yourself. Provide a single independent conclusion and concrete next action; no consensus or approval is required." };
+      (input.purpose === "delivery" ? input.draftAnswer?.trim()
+        ? `Main-Agent delivery draft:\n${bounded(input.draftAnswer, 30000)}\n`
+        : "No main-Agent delivery draft was provided.\n"
+        : "") +
+      "Read the project yourself. Give pass only if this exact complete draft needs no correction; otherwise give revise and one concrete next action." };
     durableReviewWrite(() => deps.store.recordMessage(threadId, opening, undefined, "assignment"));
     reviewer.messages.push(opening);
     recordUserRequirement(reviewer, reviewer.messages.length - 1);

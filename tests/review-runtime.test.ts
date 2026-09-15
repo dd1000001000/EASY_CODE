@@ -33,7 +33,7 @@ describe("one-way review runtime", () => {
     emit({ type: "brief_ready", id: "r", text: "Fallible handoff" });
     emit({ type: "review_started", id: "r" });
     for (let index = 0; index < 250; index++) emit({ type: "tool", id: "r" });
-    emit({ type: "reported", id: "r", report: { conclusion: "Not yet proven", nextAction: "Check the edge case",
+    emit({ type: "reported", id: "r", report: { verdict: "revise", conclusion: "Not yet proven", nextAction: "Check the edge case",
       evidenceRefs: [], uncertainties: ["One branch unknown"] } });
     emit({ type: "applied", id: "r", fresh: true });
     assert.equal(main.reviewSessions[0]!.tools, 250);
@@ -56,7 +56,7 @@ describe("one-way review runtime", () => {
         requirementRevision: "req", reviewerThreadId: "private" });
       emit({ type: "brief_ready", id: "r", text: "Fallible handoff" });
       emit({ type: "review_started", id: "r" });
-      emit({ type: "reported", id: "r", report: { conclusion: "Review finding", nextAction: "Inspect branch",
+      emit({ type: "reported", id: "r", report: { verdict: "revise", conclusion: "Review finding", nextAction: "Inspect branch",
         evidenceRefs: [], uncertainties: [] } });
       emit({ type: "applied", id: "r", fresh: true });
       const recovered = store.recover(initial.threadId);
@@ -106,7 +106,7 @@ describe("one-way review runtime", () => {
     const driver = createReviewDriver({ participant, provider: { name: "glm", model: "mock",
       complete: async () => ({ message: { role: "assistant", content: "",
         tool_calls: [{ id: `call_${++calls}`, type: "function", function: { name: calls === 1 ? "read_file" : "submit_review_result",
-          arguments: calls === 1 ? JSON.stringify({ path: "module.py" }) : JSON.stringify({ conclusion: "Fix branch",
+          arguments: calls === 1 ? JSON.stringify({ path: "module.py" }) : JSON.stringify({ verdict: "revise", conclusion: "Fix branch",
             nextAction: "Test it", evidenceRefs: [id], uncertainties: [] }) } }] } }) }, budget,
       limits: defaultRuntimeLimits(), get: () => main.reviewSessions[0]!,
       emit: async event => foldReviewEvent(main, event), usage: async () => {} });
@@ -127,7 +127,7 @@ describe("one-way review runtime", () => {
       thinkingEffort: "none" });
     main.workingSummary = "Investigating a boundary.\n```python\nSECRET_SOURCE = 1\n```";
     const request = { state: main, turnId: "turn", userInput: "Fix the module", purpose: "delivery" as const,
-      remainingModelRequests: 12 };
+      draftAnswer: "Implementation complete; UI behavior remains unverified.", remainingModelRequests: 12 };
     const brief = createMainReviewBrief(main, request);
     assert.doesNotMatch(brief, /SECRET_SOURCE/);
     let calls = 0;
@@ -138,7 +138,7 @@ describe("one-way review runtime", () => {
         calls++;
         assert.ok(value.tools?.some(tool => tool.function.name === "submit_review_result"));
         return { message: { role: "assistant" as const, content: "", tool_calls: [{ id: "report", type: "function" as const,
-          function: { name: "submit_review_result", arguments: JSON.stringify({ conclusion: "Need an edge-case test",
+          function: { name: "submit_review_result", arguments: JSON.stringify({ verdict: "revise", conclusion: "Need an edge-case test",
             nextAction: "Inspect branch", evidenceRefs: [], uncertainties: [] }) } }] } };
       } }, budget: new TaskBudget(12, 0), limits: defaultRuntimeLimits(), sensitivePaths: [path.join(directory, "data")],
       lifecycleDirectory: path.join(directory, "leases"), offline: false, approve: async () => false, status: () => {} };
@@ -149,9 +149,14 @@ describe("one-way review runtime", () => {
       assert.equal(session.status, "applied");
       const opening = store.recover(session.reviewerThreadId).messages.find(message => message.role === "user")!.content;
       assert.doesNotMatch(opening, /SECRET_SOURCE|Changed paths|Full immutable diff/u);
+      assert.match(opening, /Main-Agent delivery draft/u);
+      assert.match(opening, /UI behavior remains unverified/u);
       assert.equal(main.messages.filter(message => message.content?.startsWith("RUNTIME_REVIEW_ADVICE")).length, 1);
       const second = await runWorkspaceReview(request, deps);
       assert.equal(second.reused, true); assert.equal(calls, 1);
+      const revised = await runWorkspaceReview({ ...request, draftAnswer: "Revised answer with the same requirement." }, deps);
+      assert.equal(revised.reused, true, "a revised answer must not start a second reviewer");
+      assert.equal(calls, 1);
     } finally {
       for (const session of main.reviewSessions) if (session.directory) await rm(session.directory, { recursive: true, force: true });
       storage.close(); await rm(directory, { recursive: true, force: true });

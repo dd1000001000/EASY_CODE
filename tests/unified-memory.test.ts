@@ -67,7 +67,7 @@ describe("unified memory and one-way review", () => {
       snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "private_reviewer" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });
-    foldReviewEvent(s, { type: "reported", id: "r", report: { conclusion: "A boundary remains untested",
+    foldReviewEvent(s, { type: "reported", id: "r", report: { verdict: "revise", conclusion: "A boundary remains untested",
       nextAction: "Run a discriminating experiment", evidenceRefs: [], uncertainties: ["No official result"] } });
     foldReviewEvent(s, { type: "applied", id: "r", fresh: true });
     const recalled = recallThreadContext(s, { evidenceId: "review:r:report", offset: 0, limit: 8000 });
