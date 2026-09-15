@@ -201,7 +201,7 @@ export function renderFixedBottomRegions(
 
   const statusText = renderComposerFooter(state, options, nowMs);
   const reviewText = totalRows >= 2
-    ? renderReviewProgress(state, options, nowMs)
+    ? renderReviewStage(state, options, nowMs)
     : "";
   const status = [reviewText, statusText].filter(Boolean);
   const totalDetailCapacity = Math.max(0, totalRows - status.length);
@@ -843,21 +843,18 @@ function renderActivity(
   return palette.gray(line);
 }
 
-function renderReviewProgress(
+function renderReviewStage(
   state: Readonly<UIState>,
   options: RenderViewOptions,
   nowMs: number,
 ): string {
   const review = state.live.review;
   if (!review) return "";
-  const phases = ["snapshot", "environment", "briefing", "discussion", "summaries", "decision", "applied"] as const;
-  const position = Math.max(0, phases.indexOf(review.phase));
-  const bar = phases.map((_, index) => index < position ? "█" : index === position ? "▣" : "░").join("");
-  const stage = review.phase === "discussion"
-    ? `discussion ${Math.min(review.round + 1, review.maxRounds)}/${review.maxRounds}`
-    : review.phase.replaceAll("_", " ");
+  const stage = review.phase === "main_brief"
+    ? "Main agent preparing review handoff"
+    : "Reviewer independently investigating";
   const elapsed = formatElapsed(Math.max(0, finiteNumber(nowMs, review.startedAt) - review.startedAt));
-  const label = `Review [${bar}] ${review.purpose} · ${stage} · ${elapsed}`;
+  const label = `Review · ${stage} · ${elapsed}`;
   return viewPalette(options).cyan(truncateToWidth(label, viewColumns(options), {
     preserveAnsi: false,
   }));

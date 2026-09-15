@@ -114,8 +114,8 @@ describe("delivery reliability", () => {
       toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
-      takeSteering: async () => undefined,
-      sealSteering: async () => { seals++; const won = pending; pending = undefined; return won; },
+      takeSteering: async () => { const won = pending; pending = undefined; return won; },
+      sealSteering: async () => { seals++; return undefined; },
       onToolCompleted: async s => { s.changes.push({ path: "src/component.test.ts", operation: "update",
         source: "file_tool", status: "applied", timestamp: "now" }); },
       runReviewSession: async () => {
@@ -126,17 +126,18 @@ describe("delivery reliability", () => {
             message: { role: "user", content: "late adjustment" }, queuedAt: "now" }],
             throughSequence: 1, message: { role: "user", content: "late adjustment" } };
         }
-        return { approved: true, requests: 0, reused: false, decision: "approved" };
+        return { requests: 0, reused: reviews > 1, decision: "reported" as const,
+          report: { conclusion: "Check the adjustment", nextAction: "Answer the adjusted request", evidenceRefs: [], uncertainties: [] } };
       },
     });
     const result = await runtime.run(state, "original request", { maxSteps: 5,
       maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
       commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.equal(result.reason, "success");
+    assert.equal(result.reason, "success", JSON.stringify(result));
     assert.match(result.text, /adjusted answer/u);
     assert.doesNotMatch(result.text, /stale answer/u);
     assert.equal(calls, 3);
-    assert.equal(seals, 2, "one attempt lost to steering; the next answer seals once");
+    assert.equal(seals, 1, "review drains the adjustment without prematurely sealing; only delivery seals");
   });
   it("degrades incomplete snapshots without calling a model, but does not swallow journal failure", async () => {
     const state = reliabilityState(), events: string[] = [];
@@ -144,7 +145,7 @@ describe("delivery reliability", () => {
       store: { appendEvent: (_: string, e: { type: string }) => { events.push(e.type); } } } as unknown as WorkspaceReviewDependencies;
     const input = { state, turnId: "turn", userInput: "fix", purpose: "delivery" as const, remainingModelRequests: 32 };
     const result = await runWorkspaceReview(input, deps);
-    assert.equal(result.approved, false); assert.equal(result.decision, "unavailable"); assert.equal(result.requests, 0);
+    assert.equal(result.decision, "unavailable"); assert.equal(result.requests, 0);
     assert.deepEqual(events, ["review.unavailable"]);
     deps.store.appendEvent = () => { throw new Error("disk full"); };
     await assert.rejects(() => runWorkspaceReview(input, deps), ReviewPersistenceError);
@@ -160,11 +161,10 @@ describe("delivery reliability", () => {
       const workspace = await WorkspaceManager.create(root);
       const copies = await createReviewCopies(workspace, createId("review"), reviewFingerprint(await workspace.captureSnapshot()), 100000);
       copy = copies.directory;
-      await assert.rejects(() => readFile(path.join(copies.roots.reviewer, "test_original.py"), "utf8"), { code: "ENOENT" });
-      assert.equal(await readFile(path.join(copies.roots.reviewer, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
+      await assert.rejects(() => readFile(path.join(copies.root, "test_original.py"), "utf8"), { code: "ENOENT" });
+      assert.equal(await readFile(path.join(copies.root, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
       assert.equal(await readFile(path.join(root, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
-      assert.equal(await readFile(path.join(copies.roots.author, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
-      assert.equal(copies.dependencyLinks.author.node_modules, await realpath(path.join(root, "node_modules")));
+      assert.equal(copies.dependencyLinks.node_modules, await realpath(path.join(root, "node_modules")));
     } finally { if (copy) await rm(copy, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
   });
   it("does not pause a new turn just because a prior advisory review was unresolved", async () => {
@@ -173,22 +173,23 @@ describe("delivery reliability", () => {
     const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => ({ message: { role: "assistant", content: "Done" } }) },
       toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(), buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
       searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
-      runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: true }; } });
+      runReviewSession: async () => { reviews++; return { decision: "unavailable", requests: 0, reused: true }; } });
     const result = await runtime.run(s, "Continue", { maxSteps: 4, maxContextChars: 100000, maxContextTokens: 34000,
       maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" });
     assert.equal(result.reason, "success"); assert.equal(reviews, 0);
   });
-  it("a known failed target vetoes consensus citing another passing target", () => {
+  it("keeps a failed target in Runtime evidence without treating reviewer advice as approval", () => {
     const s = reliabilityState();
     const emit = (e: ReviewEvent) => foldReviewEvent(s, e);
-    emit({ type: "started", id: "r", key: "k", purpose: "delivery", snapshotId: "snapshot", requirementRevision: "req",
-      requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
-    emit({ type: "experiment", id: "r", actor: "reviewer", evidenceId: "bad", checkKey: "target", outcome: "failed", passed: false, unchanged: true, standard: "unchanged" });
-    emit({ type: "experiment", id: "r", actor: "reviewer", evidenceId: "good", checkKey: "other", method: "test", outcome: "passed", passed: true, unchanged: true, standard: "unchanged" });
-    for (const actor of ["reviewer", "author"] as const) emit({ type: "statement", id: "r", actor, value: { proposal: "ready", kind: "delivery", vote: "agree", evidenceRefs: ["good"], unresolved: [],
-      checks: [{ requirementId: "request", evidenceId: "good", method: "test", rationale: "test", counterexample: "edge case" }] } });
-    for (const actor of ["author", "reviewer"] as const) emit({ type: "summary", id: "r", actor, text: "ready", unavailable: false });
-    emit({ type: "decided", id: "r", fresh: true }); assert.equal(s.reviewSessions![0]!.approval, false);
+    s.commands.push(command("failed"));
+    emit({ type: "started", id: "r", key: "k", scope: "task", purpose: "delivery", snapshotId: "snapshot",
+      requirementRevision: "req", reviewerThreadId: "private" });
+    emit({ type: "brief_ready", id: "r", text: "fallible handoff" });
+    emit({ type: "review_started", id: "r" });
+    emit({ type: "reported", id: "r", report: { conclusion: "ready", nextAction: "deliver", evidenceRefs: [], uncertainties: [] } });
+    emit({ type: "applied", id: "r", fresh: true });
+    assert.equal(unresolvedCommands(s).length, 1);
+    assert.match(s.messages.at(-1)!.content ?? "", /not user instructions or verified facts/);
   });
   it("attributes a simple npm script but refuses dynamic scripts and hidden hooks", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-script-test-"));
@@ -229,22 +230,17 @@ describe("delivery reliability", () => {
       await assert.rejects(() => preflightReviewEnvironment(p), /preflight unavailable/); assert.equal(calls, 1);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("records a fresh reviewer opinion without turning inventory coverage into a correctness gate", () => {
-    const fixture = (vote: "agree" | "needs_evidence", fresh: boolean) => {
-      const s = reliabilityState(); foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "delivery",
-        snapshotId: "s", requirementRevision: "q", maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
-      for (const actor of ["reviewer", "author"] as const) foldReviewEvent(s, { type: "statement", id: "r", actor, value: {
-        proposal: "ready", kind: "delivery", vote: actor === "reviewer" ? vote : "agree",
-        evidenceRefs: [], unresolved: vote === "needs_evidence" && actor === "reviewer" ? ["Boundary not checked"] : [],
-      } });
-      if (s.reviewSessions[0]!.status === "discussing") foldReviewEvent(s, { type: "close", id: "r", reason: "review_complete" });
-      for (const actor of ["author", "reviewer"] as const) foldReviewEvent(s,
-        { type: "summary", id: "r", actor, text: "Recorded finding", unavailable: false, raw: true });
-      foldReviewEvent(s, { type: "decided", id: "r", fresh });
-      return s.reviewSessions[0]!;
-    };
-    assert.equal(fixture("agree", true).approval, true);
-    assert.equal(fixture("needs_evidence", true).approval, false);
-    assert.equal(fixture("agree", false).approval, false);
+  it("injects a single one-way recommendation and refuses duplicate application", () => {
+    const s = reliabilityState();
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "delivery",
+      snapshotId: "s", requirementRevision: "q", reviewerThreadId: "private" });
+    foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible handoff" });
+    foldReviewEvent(s, { type: "review_started", id: "r" });
+    foldReviewEvent(s, { type: "reported", id: "r", report: { conclusion: "Boundary is untested",
+      nextAction: "Try a counterexample", evidenceRefs: [], uncertainties: ["No official verdict"] } });
+    foldReviewEvent(s, { type: "applied", id: "r", fresh: false });
+    assert.equal(s.messages.length, 1);
+    assert.match(s.messages[0]!.content ?? "", /"fresh":false/);
+    assert.throws(() => foldReviewEvent(s, { type: "applied", id: "r", fresh: true }), /already applied/);
   });
 });

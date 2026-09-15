@@ -7,8 +7,7 @@ import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
  * participant evidence. No arbitrary model-selected peer thread is accepted. */
 export function sharedReviewEvidenceOwner(state: Readonly<SessionState>, id: string): string {
   for (const session of state.reviewSessions) {
-    const owner = session.experiments.find(e => e.id === id)?.actor ?? session.statements.find(s => s.value.evidenceRefs.includes(id))?.actor;
-    if (owner && session.actorThreads) return session.actorThreads[owner];
+    if (session.evidenceIds.includes(id)) return session.reviewerThreadId;
   }
   return state.threadId;
 }
@@ -22,17 +21,15 @@ export function recallThreadContext(state: Readonly<SessionState>,
   if (!Number.isSafeInteger(input.offset) || input.offset < 0 || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > limits.evidenceRecallMaxChars)
     throw new Error("Invalid evidence page");
   if (id.startsWith("review:")) {
-    const match = /^review:([^:]+):(author|reviewer|briefing|evidence)$/u.exec(id);
+    const match = /^review:([^:]+):(brief|report)$/u.exec(id);
     const session = match && state.reviewSessions?.find(session => session.id === match[1]);
-    const summary = session && (match![2] === "evidence" ? { full: JSON.stringify({ statements: session.statements,
-      experiments: session.experiments, requirements: session.requirements, blockingChecks: session.blockingChecks }) }
-      : match![2] === "briefing" ? session.briefing : session.summaries[match![2] as "author" | "reviewer"]);
-    if (!summary) throw new Error("Review summary not found in this thread");
-    if (input.offset > summary.full.length) throw new Error("Evidence offset exceeds captured content");
+    const content = session && (match![2] === "brief" ? session.brief : session.report && JSON.stringify(session.report));
+    if (!content) throw new Error("Review material not found in this thread");
+    if (input.offset > content.length) throw new Error("Evidence offset exceeds captured content");
     return { ok: true, summary: "Independent historical review opinion, not a verified fact.", data: {
-      evidenceId: id, content: summary.full.slice(input.offset, input.offset + input.limit),
-      nextOffset: input.offset + input.limit < summary.full.length ? input.offset + input.limit : null,
-      totalChars: summary.full.length, historical: true } };
+      evidenceId: id, content: content.slice(input.offset, input.offset + input.limit),
+      nextOffset: input.offset + input.limit < content.length ? input.offset + input.limit : null,
+      totalChars: content.length, historical: true } };
   }
   if (id.startsWith("artifact:")) {
     const prefix = id.slice(9);

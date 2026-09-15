@@ -41,7 +41,7 @@ describe("environment quarantine", () => {
                 } }, toolCatalog: snapshotToolSet([command, read]), contextManager: new ContextManager(),
             buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
             appendEvent: async () => { }, requestApproval: async () => false,
-            runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: false }; }, });
+            runReviewSession: async () => { reviews++; return { decision: "unavailable", requests: 0, reused: false }; }, });
         const result = await runtime.run(current, "inspect", degradationOptions);
         assert.equal(result.reason, "paused");
         assert.equal(result.pause?.cause, "command_environment");

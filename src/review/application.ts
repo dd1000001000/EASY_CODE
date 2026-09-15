@@ -1,6 +1,7 @@
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { recordUserRequirement } from "../context/user-requirements.js";
-import type { ModelProvider, SessionState, ToolContext, ChatMessage, ToolExecutionResult } from "../core/types.js";
+import type { ModelProvider, SessionState, ToolContext, ChatMessage, EventRecord } from "../core/types.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
@@ -19,310 +20,238 @@ import { memoryQueries, selectMemoryContext, optionalMemoryTokenBudget } from ".
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { unresolvedCommands } from "../context/runtime-state.js";
 import { ReviewFatalError, ReviewCleanupError, durableReviewWrite } from "./errors.js";
-import { readFile } from "node:fs/promises";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
-import { createReviewCopies, restoreReviewCopies, reviewDiff, reviewFingerprint } from "./workspace.js";
-import { foldReviewEvent, runReviewDiscussion, type ReviewActor, type ReviewEvent, type ReviewSession } from "./session.js";
+import { createReviewCopies, restoreReviewCopies, reviewFingerprint } from "./workspace.js";
+import { foldReviewEvent, type ReviewEvent, type ReviewReport, type ReviewSession } from "./session.js";
 import type { UIReviewPhase } from "../ui/contracts.js";
 import { createReviewDriver, type ReviewParticipant } from "./driver.js";
-import { preflightReviewEnvironment } from "./preflight.js";
 
 export interface WorkspaceReviewRequest {
   state: SessionState; turnId: string; userInput: string; purpose: "stagnation" | "delivery";
   incidentId?: string; remainingModelRequests: number; signal?: AbortSignal;
   maxContextTokens?: number;
 }
-export interface WorkspaceReviewResult { approved: boolean; requests: number; reused: boolean; reason?: string;
-  decision?: "approved" | "changes_requested" | "inconclusive" | "unavailable" | "interrupted" }
+export interface WorkspaceReviewResult {
+  decision: "reported" | "inconclusive" | "unavailable" | "interrupted";
+  requests: number; reused: boolean; reason?: string; report?: ReviewReport;
+}
 export interface WorkspaceReviewDependencies {
   workspace: WorkspaceManager; store: ThreadStore; memory: MemoryManager; index: ContextArtifactIndex;
   provider: ModelProvider; budget: TaskBudget; limits: Readonly<RuntimeLimits>;
   sensitivePaths: string[]; dataDir?: string; lifecycleDirectory: string; offline: boolean;
   approve(context: ToolContext, request: import("../core/types.js").ApprovalRequest): Promise<boolean>;
   status(text: string): void;
-  onProgress?: (progress: Readonly<{ phase: UIReviewPhase; round: number; maxRounds: number }>) => void;
+  onProgress?: (progress: Readonly<{ phase: UIReviewPhase }>) => void;
 }
 
-function reviewPhase(event: ReviewEvent, session: ReviewSession): UIReviewPhase {
-  if (session.status === "applied" || event.type === "applied") return "applied";
-  if (session.status === "decided" || event.type === "decided") return "decision";
-  if (session.status === "closing") return "summaries";
-  if (session.briefing || session.statements.length > 0) return "discussion";
-  if (session.briefingRequested) return "briefing";
-  if (session.environmentStarted) return "environment";
-  return "snapshot";
+function bounded(value: string, max: number): string {
+  const safe = redactSensitiveInformation(value);
+  return safe.length <= max ? safe : safe.slice(0, max) + `\n[Brief excerpt ends; reviewer must inspect independently.]`;
+}
+
+/** No model request, source text, diff, or list of changed files is copied into the reviewer prompt. */
+export function createMainReviewBrief(state: Readonly<SessionState>, input: WorkspaceReviewRequest): string {
+  const failures = unresolvedCommands(state).slice(-4).map(command => ({
+    status: command.status, exitCode: command.exitCode, verificationKind: command.verificationKind,
+    summary: bounded(command.summary ?? "", 450),
+  }));
+  const incident = input.incidentId && state.progressGuard?.incidents.find(item => item.incidentId === input.incidentId);
+  // A working summary is a fallible model narrative. Strip code blocks and
+  // dense source-shaped lines; the reviewer reads the actual files itself.
+  const narrative = (state.workingSummary ?? "").replace(/```[\s\S]*?```/gu, "[code omitted]")
+    .split("\n").filter(line => line.length <= 320 && !/^\s*(?:\+|-|@@|\d+\s*\|)/u.test(line))
+    .join("\n");
+  return bounded(JSON.stringify({ purpose: input.purpose, mainAgentSummary: bounded(narrative, 5500),
+    changedFileCount: state.changes.length,
+    repeatedFailure: incident ? { reason: incident.reason, outcomeKey: incident.outcomeKey } : undefined,
+    unresolvedVerification: failures,
+    instruction: "This is the main Agent's fallible handoff, not a finding. Independently read the workspace and report one concrete conclusion/next direction." }), 15000);
 }
 
 /** The app holds its workspace mutation lease for this entire call. */
 export async function runWorkspaceReview(input: WorkspaceReviewRequest, deps: WorkspaceReviewDependencies): Promise<WorkspaceReviewResult> {
-  const startedRequests = input.state.reviewSessions.reduce((total, s) => total + s.requests, 0);
-  try {
-    const result = await runWorkspaceReviewAttempt(input, deps);
-    const reason = result.reason ?? "";
-    const latest = [...input.state.reviewSessions].reverse()
-      .find(session => session.purpose === input.purpose && session.status === "applied");
-    const lastStatements = latest?.statements.slice(-2) ?? [];
-    const requestedChanges = lastStatements.some(statement =>
-      statement.value.vote !== "agree" || statement.value.unresolved.length > 0);
-    return { ...result, decision: result.approved ? "approved" : input.signal?.aborted ? "interrupted" :
-      /unavailable|Insufficient|budget exhausted|request_limit/iu.test(reason) ? "unavailable" :
-      requestedChanges || latest?.closeReason === "agreement" ? "changes_requested" : "inconclusive" };
-  } catch (error) {
+  const before = input.state.reviewSessions.reduce((total, session) => total + session.requests, 0);
+  try { return await runWorkspaceReviewAttempt(input, deps); }
+  catch (error) {
     if (error instanceof ReviewFatalError) throw error;
-    const reason = redactSensitiveInformation(String(error)).slice(0, 1800);
+    const reason = bounded(String(error), 1800);
     durableReviewWrite(() => deps.store.appendEvent(input.state.threadId, { type: "review.unavailable", turnId: input.turnId,
       payload: { code: "review_setup_unavailable", reason, deliveryId: input.state.delivery?.id } }));
-    return { approved: false, requests: Math.max(0, input.state.reviewSessions.reduce((total, s) => total + s.requests, 0) - startedRequests),
-      reused: true, decision: input.signal?.aborted ? "interrupted" : "unavailable", reason };
+    return { decision: input.signal?.aborted ? "interrupted" : "unavailable", requests: Math.max(0,
+      input.state.reviewSessions.reduce((total, session) => total + session.requests, 0) - before), reused: false, reason };
   }
 }
 
 async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: WorkspaceReviewDependencies): Promise<WorkspaceReviewResult> {
   const { state } = input;
   const scope = state.delivery?.id ?? recoveryScope(state);
-  const snapshot = await deps.workspace.captureSnapshot();
-  const snapshotId = reviewFingerprint(snapshot);
-  const correctionRefs = [...(state.contextIntentLedger?.userCorrections ?? [])];
-  const latest = state.contextIntentLedger?.latestRequest;
-  if (latest && state.delivery && latest.sourceMessageIndex > state.delivery.sourceMessageIndex) correctionRefs.push(latest);
-  const corrections = [...new Set(correctionRefs.map(c => state.messages[c.sourceMessageIndex]?.content ?? c.text))];
+  const snapshotId = reviewFingerprint(await deps.workspace.captureSnapshot());
+  const corrections = (state.contextIntentLedger?.userCorrections ?? [])
+    .map(item => state.messages[item.sourceMessageIndex]?.content ?? item.text);
   const requirementRevision = sha256(JSON.stringify([input.userInput, state.constraints, corrections]));
-  // Cache by material, not by command IDs or review label. Repeating an
-  // unchanged check must not purchase a second review of the same patch.
-  const environmentRevision = sha256(JSON.stringify([process.platform, process.arch]));
-  const evidenceRevisions = [...new Set(state.commands.map(c => sha256(JSON.stringify([
-    c.program, c.args, c.exitCode, c.status, c.summary,
+  const evidenceRevisions = [...new Set(state.commands.map(command => sha256(JSON.stringify([
+    command.program, command.args, command.exitCode, command.status, command.summary,
   ]))))].sort();
-  const key = sha256(JSON.stringify([snapshotId, requirementRevision, environmentRevision, evidenceRevisions]));
-  const previous = state.reviewSessions?.find(s => s.key === key);
-  if (previous?.status === "applied") return { approved: previous.approval && !deps.store.hasPendingTurnSteering(state.threadId, input.turnId), requests: 0, reused: true, reason: previous.closeReason };
-  let session = previous ?? state.reviewSessions?.find(s => s.status !== "applied");
-  if (!session && input.remainingModelRequests < 3) return { approved: false, requests: 0, reused: true,
-    reason: "Insufficient remaining task requests to start review and reserve both closing summaries." };
+  const key = sha256(JSON.stringify([input.purpose, snapshotId, requirementRevision, process.platform, process.arch, evidenceRevisions]));
+  const previous = state.reviewSessions.find(session => session.key === key);
+  if (previous?.status === "applied") return { decision: previous.report && previous.fresh ? "reported" : "inconclusive",
+    requests: 0, reused: true, reason: previous.reason, report: previous.report };
+  if (!previous && input.remainingModelRequests < 2) return { decision: "unavailable", requests: 0, reused: true,
+    reason: "The shared task budget does not leave a model request for both investigation and the main Agent's follow-up." };
+
   const emit = async (event: ReviewEvent) => {
-    const candidate = structuredClone(state); foldReviewEvent(candidate, event);
-    durableReviewWrite(() => deps.store.appendEvent(state.threadId, { type: "review.session.event", turnId: input.turnId, payload: event }));
+    const candidate = structuredClone(state);
+    foldReviewEvent(candidate, event);
+    durableReviewWrite(() => deps.store.appendEvent(state.threadId, { type: "review.assignment.event", turnId: input.turnId, payload: event }));
     foldReviewEvent(state, event);
-    const current = state.reviewSessions.find(session => session.id === event.id);
-    if (current) {
-      try {
-        deps.onProgress?.({ phase: reviewPhase(event, current), round: current.round, maxRounds: current.maxRounds });
-      } catch {
-        // A presentation failure cannot undo a durable review event.
-      }
+    if (event.type === "review_started") {
+      try { deps.onProgress?.({ phase: "independent_review" }); }
+      catch { /* Presentation cannot undo a durable reviewer transition. */ }
     }
   };
-  if (!session && (state.reviewSessions?.filter(s => s.scope === scope).length ?? 0) >= deps.limits.reviewMaxSessionsPerTask)
-    return { approved: false, requests: 0, reused: true, reason: "Review session budget exhausted; no new review was started." };
   let copies: Awaited<ReturnType<typeof createReviewCopies>> | undefined;
-  let setupError: unknown;
+  let session = previous;
   if (!session) {
-    const id = createId("review");
+    const id = createId("review"), reviewerThreadId = createId("thread");
+    let copyError: unknown;
     try { copies = await createReviewCopies(deps.workspace, id, snapshotId, deps.limits.reviewSnapshotMaxBytes,
-      { limits: deps.limits, signal: input.signal,
-        offline: deps.offline,
-        changedPaths: state.changes.slice(state.delivery?.changeStart ?? 0).map(change => change.path) }); } catch (error) { setupError = error; }
+      { limits: deps.limits, signal: input.signal, offline: deps.offline,
+        changedPaths: state.changes.slice(state.delivery?.changeStart ?? 0).map(change => change.path) }); }
+    catch (error) { copyError = error; }
     await emit({ type: "started", id, key, scope, purpose: input.purpose, snapshotId, requirementRevision,
-      changeCount: state.changes.length,
-      commandCount: state.commands.length,
-      changedPaths: [...new Set(state.changes.slice(state.delivery?.changeStart ?? 0).map(c => c.path.replaceAll("\\", "/")))],
-      requirements: [...new Set([`request:${sha256(input.userInput)}`, ...state.constraints.map(c => `constraint:${sha256(c)}`),
-        ...corrections.map(c => `correction:${sha256(c ?? "")}`)])],
-      blockingChecks: unresolvedCommands(state).filter(c => c.validation?.status === "failed" || c.verificationKind && c.exitCode !== 0)
-        .map(c => c.validation?.checkKey ?? c.validation?.targetKey ?? c.id),
-      documentationOnly: state.changes.length > 0 && state.changes.slice(state.delivery?.changeStart ?? 0)
-        .every(c => /\.(?:md|rst|txt)$/iu.test(c.path)) && state.changes.slice(state.delivery?.changeStart ?? 0).length > 0,
-      incidentId: input.incidentId, directory: copies?.directory,
-      actorThreads: { author: createId("thread"), reviewer: createId("thread") },
-      maxRounds: deps.limits.reviewMaxRounds, maxRequests: Math.max(2, Math.min(deps.limits.reviewMaxRequests, input.remainingModelRequests)),
-      maxTools: deps.limits.reviewMaxToolCalls,
-      summaryTokens: deps.limits.reviewSummaryMaxTokens,
-      briefingTokens: deps.limits.reviewBriefingMaxTokens, handoffTokens: deps.limits.reviewHandoffMaxTokens });
-    session = state.reviewSessions!.at(-1)!;
-  } else if (session.directory) {
-    try { copies = await restoreReviewCopies(session.directory, session.id, session.snapshotId); } catch (error) { setupError = error; }
+      reviewerThreadId, incidentId: input.incidentId, directory: copies?.directory });
+    session = state.reviewSessions.at(-1)!;
+    if (copyError) { await emit({ type: "unavailable", id, reason: bounded(String(copyError), 1800) });
+      await emit({ type: "applied", id, fresh: false });
+      return { decision: "unavailable", requests: 0, reused: false, reason: session.reason }; }
+  } else {
+    if (session.status === "reported" || session.status === "unavailable") {
+      await emit({ type: "applied", id: session.id, fresh: snapshotId === session.snapshotId && !input.signal?.aborted &&
+        !deps.store.hasPendingTurnSteering(state.threadId, input.turnId) });
+      return { decision: session.report ? "reported" : "unavailable", requests: 0, reused: true,
+        report: session.report, reason: session.reason };
+    }
+    // An interrupted provider call may have been charged. Resume the parent,
+    // not an unknown reviewer effect or a second paid investigation.
+    if (session.status === "reviewing" && session.requests > 0) {
+      await emit({ type: "unavailable", id: session.id, reason: "Interrupted reviewer request has an unknown outcome; it will not be replayed." });
+      await emit({ type: "applied", id: session.id, fresh: false });
+      return { decision: "unavailable", requests: 0, reused: true, reason: session.reason };
+    }
+    if (session.directory) copies = await restoreReviewCopies(session.directory, session.id, session.snapshotId);
   }
-  const reviewId = session.id;
-  const get = () => state.reviewSessions!.find(s => s.id === reviewId)!;
-  const beforeRequests = session.requests;
-  const fresh = async () => !input.signal?.aborted && !deps.store.hasPendingTurnSteering(state.threadId, input.turnId) && requirementRevision === get().requirementRevision &&
-    get().key === key &&
-    reviewFingerprint(await deps.workspace.captureSnapshot()) === get().snapshotId;
-  if (session.status === "decided") {
-    await emit({ type: "applied", id: reviewId, fresh: await fresh() });
-    return { approved: session.approval && await fresh(), requests: 0, reused: true };
+  const id = session.id;
+  const get = (): ReviewSession => state.reviewSessions.find(item => item.id === id)!;
+  const fresh = async () => !input.signal?.aborted && !deps.store.hasPendingTurnSteering(state.threadId, input.turnId) &&
+    reviewFingerprint(await deps.workspace.captureSnapshot()) === session!.snapshotId;
+  if (!copies) { await emit({ type: "unavailable", id, reason: "Reviewer snapshot is unavailable" });
+    await emit({ type: "applied", id, fresh: false });
+    return { decision: "unavailable", requests: 0, reused: false, reason: session.reason }; }
+  const root = copies.root, workspaceId = workspaceIdFromRoot(deps.workspace.root);
+  const workspace = await WorkspaceManager.create(root, { ignoredDirectoryNames: new Set([
+    ".git", ".easycode", ".easy_code", "node_modules", ".venv", "venv", "dist", "build",
+  ]) });
+  for (const target of [...deps.sensitivePaths, deps.workspace.root]) workspace.pathGuard.protect(target);
+  const threadId = session.reviewerThreadId;
+  let reviewer = deps.store.get(threadId);
+  if (!reviewer) reviewer = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root, mode: "code", provider: state.provider,
+    model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: state.promptBundle,
+    modelRegistryHash: state.modelRegistryHash, goal: `Independent review ${id}`,
+    constraints: ["Private review history. Project memory is read-only."] }));
+  if (!session.brief) await emit({ type: "brief_ready", id, text: createMainReviewBrief(state, input) });
+  if (!reviewer.messages.some(message => message.role === "user")) {
+    const opening: ChatMessage = { role: "user", content: `Original user request:\n${input.userInput}\n` +
+      `Constraints: ${JSON.stringify(state.constraints)}\nUser corrections: ${JSON.stringify(corrections)}\n` +
+      `Snapshot identity: ${snapshotId}\nMain Agent handoff (unverified): ${get().brief}\n` +
+      "Read the project yourself. Provide a single independent conclusion and concrete next action; no consensus or approval is required." };
+    durableReviewWrite(() => deps.store.recordMessage(threadId, opening, undefined, "assignment"));
+    reviewer.messages.push(opening);
+    recordUserRequirement(reviewer, reviewer.messages.length - 1);
   }
-  if (!copies || setupError || session.key !== key || session.snapshotId !== snapshotId || session.requirementRevision !== requirementRevision) {
-    if (get().status === "discussing") await emit({ type: "close", id: reviewId,
-      reason: `Review environment unavailable or stale: ${String(setupError ?? "snapshot changed").slice(0, 1500)}` });
-    await runReviewDiscussion(get, emit, { canSummarize: false, discuss: async () => { throw new Error("No snapshot"); },
-      summarize: async () => undefined, fresh: async () => false });
-    await emit({ type: "applied", id: reviewId });
-    return { approved: false, requests: 0, reused: false, reason: get().closeReason };
-  }
-  const workspaceId = workspaceIdFromRoot(deps.workspace.root);
-  const commands: CommandRuntime[] = [];
-  const toolCatalogs: ToolCatalog[] = [];
-  const leases: ReturnType<ThreadStore["acquireThreadLease"]>[] = [];
-  let driver: ReturnType<typeof createReviewDriver> | undefined;
+  if (session.status === "preparing") await emit({ type: "review_started", id });
+  try { deps.status(`Review ${id}: reviewer is independently inspecting the workspace.`); }
+  catch { /* The persistent reviewer state remains authoritative. */ }
+
+  const lease = deps.store.acquireThreadLease(threadId);
+  const backend = deps.offline ? new BenchmarkContainerBackend({ id, actor: "reviewer", root })
+    : new NativeSandboxBackend(workspace, { limits: deps.limits, dataDir: deps.dataDir ?? path.resolve(deps.lifecycleDirectory, "..") });
+  const runtime = new CommandRuntime(workspace, undefined, backend, undefined, {
+    networkProfile: deps.offline ? "review_offline" : "development", limits: deps.limits,
+    lifecycleDirectory: path.join(deps.lifecycleDirectory, threadId),
+    createOutputArchive: commandId => deps.memory.evidenceStore.createCommandArchive(workspaceId, threadId, commandId),
+    recordLifecycle: (_context, commandId, type, payload) => durableReviewWrite(() => deps.store.appendEvent(threadId,
+      { type, turnId: id, payload: { commandId, detail: payload } })),
+  });
+  const catalog = new ToolCatalog();
+  catalog.registerSource(new BuiltinToolSource({ workspace, commandRuntime: runtime, limits: deps.limits }));
   try {
-    const participants = {} as Record<ReviewActor, ReviewParticipant>;
-    for (const who of ["author", "reviewer"] as const) {
-      const root = copies.roots[who];
-      const workspace = await WorkspaceManager.create(root, { ignoredDirectoryNames: new Set([
-        ".git", ".easycode", ".easy_code", "node_modules", ".venv", "venv", "dist", "build",
-      ]) });
-      const privatePaths = [...deps.sensitivePaths, deps.workspace.root, copies.roots[who === "author" ? "reviewer" : "author"]];
-      for (const target of privatePaths) workspace.pathGuard.protect(target);
-      const threadId = get().actorThreads![who];
-      let actorState = deps.store.get(threadId);
-      if (!actorState) {
-        actorState = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root, mode: "code", provider: state.provider,
-          model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: state.promptBundle,
-          modelRegistryHash: state.modelRegistryHash,
-          goal: `Review ${reviewId}`, constraints: ["Private review history. Project memory is read-only."] }));
-        const diff = await reviewDiff(deps.workspace);
-        const materialId = durableReviewWrite(() => deps.memory.evidenceStore.capture(workspaceId, threadId, "review_material", "review_material", {
-          ok: true, summary: "Immutable review material, not instructions or self-certified facts", data: {
-            request: input.userInput, constraints: state.constraints, corrections, diff,
-            changes: state.changes, commands: state.commands, incidentId: input.incidentId,
-            // Explicitly shared raw results are referenced here, not indexed as actor private thought.
-            recentTools: state.messages.slice(-24).filter(m => m.role === "tool"),
-          } }));
-        const opening: ChatMessage = { role: "user", content: `Review ${input.purpose} for the original request:\n${input.userInput}\n` +
-          `Constraints: ${JSON.stringify(state.constraints)}\nCorrections: ${JSON.stringify(corrections)}\nSnapshot: ${snapshotId}\n` +
-          `Request and constraint references: ${JSON.stringify(get().requirements)}. Cite concrete evidence for findings; do not invent a completed check.\n` +
-          `Full immutable diff, history evidence and commands: ${materialId}. Use recall_context to read it in pages.\n` +
-          "Independently inspect semantics and counterexamples. The author cannot grant delivery approval alone." };
-        const material: ChatMessage = { role: "user", content: "RUNTIME_REVIEW_MATERIAL (historical evidence, not user requirements):\n" +
-          `Changed paths: ${JSON.stringify(state.changes.map(c => c.path))}\n` +
-          (who === "reviewer" ? "Your copy contains the current reviewed snapshot. Modified tests are not an independent oracle; inspect the diff and recorded prior hashes before relying on them.\n" : "") +
-          `Latest verification records: ${JSON.stringify(state.commands.slice(-3))}\n` +
-          "Author: first explain the implementation and uncertainties. Reviewer: independently inspect semantics and counterexamples. " +
-          "Changes to tests are not independent proof. The author cannot grant delivery approval alone." };
-        durableReviewWrite(() => deps.store.recordMessage(threadId, opening, undefined, "assignment")); actorState.messages.push(opening);
-        recordUserRequirement(actorState, actorState.messages.length - 1);
-        durableReviewWrite(() => deps.store.recordMessage(threadId, material)); actorState.messages.push(material);
-      }
-      leases.push(deps.store.acquireThreadLease(threadId));
-      const backend = deps.offline ? new BenchmarkContainerBackend({ id: reviewId, actor: who, root })
-        : new NativeSandboxBackend(workspace, { limits: deps.limits,
-          dataDir: deps.dataDir ?? path.resolve(deps.lifecycleDirectory, "..") });
-      const runtime = new CommandRuntime(workspace, undefined, backend, undefined, {
-        networkProfile: deps.offline ? "review_offline" : "development",
-        limits: deps.limits,
-        lifecycleDirectory: path.join(deps.lifecycleDirectory, threadId),
-        createOutputArchive: commandId => deps.memory.evidenceStore.createCommandArchive(workspaceId, threadId, commandId),
-        recordLifecycle: (context, commandId, type, payload) => durableReviewWrite(() => deps.store.appendEvent(threadId,
-          { type, turnId: reviewId, payload: { commandId, detail: payload } })),
-      });
-      commands.push(runtime);
-      const toolCatalog = new ToolCatalog();
-      toolCatalog.registerSource(new BuiltinToolSource({
-        workspace,
-        commandRuntime: runtime,
-        limits: deps.limits,
-      }));
-      toolCatalogs.push(toolCatalog);
-      const tools = (await toolCatalog.snapshot()).tools.filter(t =>
-        ["read_file", "search_files", "run_command", "read_memory", "search_context", "recall_context"].includes(t.name));
-      const context: ToolContext = {
-        workspaceRoot: root, mode: "code", threadId, turnId: reviewId, approvalPolicy: "ask",
-        commandExecutionMode: "auto_approve", isUnrestrictedHostAccessActive: () => false,
-        limits: deps.limits, agentRole: "subagent", agentId: `${reviewId}_${who}`, assignedTaskId: reviewId,
-        signal: input.signal, commandTimeoutMs: deps.limits.commandTimeoutMs, maxOutputChars: deps.limits.maxOutputChars,
-        requestApproval: async request => deps.approve(context, request),
-        searchProjectMemory: (query, options) => deps.memory.searchHybrid(workspaceId, query, {
-          workspaceRoot: root, readOnly: true, limit: options?.limit ?? deps.limits.memorySearchLimit,
-          includeInactive: options?.includeInactive,
-        }),
-        recallContext: async value => {
-          try {
-            if (value.evidenceId === `review:${reviewId}:briefing`) return { ok: true, summary: "Opening brief, unverified",
-              data: { content: get().briefing?.full.slice(value.offset, value.offset + value.limit) ?? "" } };
-            return recallThreadContext(actorState!, value, (id, offset, limit) => {
-            // Peer command evidence is explicitly shared in Runtime experiments; no blanket parent/peer history read.
-            const owner = get().experiments.find(e => e.id === id)?.actor ??
-              get().statements.find(s => s.value.evidenceRefs.includes(id))?.actor;
-            return deps.memory.evidenceStore.read(workspaceId, owner ? get().actorThreads![owner] : threadId, id, offset, limit);
-          }, deps.limits); } catch (error) { return { ok: false, summary: "Historical evidence unavailable", error: String(error) }; }
-        },
-        searchHistory: async (query, limit) => {
-          await deps.index.checkpoint(workspaceId, actorState!);
-          return (await deps.index.search(workspaceId, threadId, query, { limit, beforeMessageIndex: actorState!.messages.length }))
-            .map(hit => ({ id: hit.id, title: hit.title, preview: hit.content.slice(0, 400), historical: true as const }));
-        },
-        recordCommand: command => { durableReviewWrite(() => deps.store.recordToolAudit(threadId, reviewId, command)); actorState!.commands.push(command); },
-      };
-      participants[who] = { state: actorState, tools, context,
-        assertEnvironmentSafe: () => runtime.assertEnvironmentSafe(),
-        optionalMemory: async () => {
-          const queries = memoryQueries(actorState!, input.userInput);
-          await deps.index.checkpoint(workspaceId, actorState!);
-          const memories = (await Promise.all(queries.map(query => context.searchProjectMemory!(query)))).flat();
-          const evidence = (await Promise.all(queries.map(query => deps.index.search(workspaceId, threadId, query,
-            { limit: deps.limits.memorySearchLimit, beforeMessageIndex: actorState!.compactedMessageCount })))).flat();
-          const selected = selectMemoryContext({ state: actorState!, memories, evidence, queries, limits: deps.limits,
-            tokenBudget: optionalMemoryTokenBudget(deps.limits.maxContextChars, deps.limits.maxContextTokens, deps.limits) });
-          return JSON.stringify({ memories: selected.memories, historicalEvidence: selected.evidence });
-        },
-        append: async (type, payload) => {
-          durableReviewWrite(() => type === "message" ? deps.store.recordMessage(threadId, payload as ChatMessage, reviewId)
-            : deps.store.appendEvent(threadId, {
-                type: "review.actor.event",
-                turnId: reviewId,
-                payload: { kind: type, value: payload },
-              }));
-        },
-        capture: (callId, tool, result) => durableReviewWrite(() => deps.memory.evidenceStore.capture(workspaceId, threadId, callId, tool, result)),
-        // Ignore newly created experimental files, but any original source/test
-        // modification or deletion makes the experiment non-independent.
-        unchanged: async () => {
-          // Only immutable baseline files are proof inputs. A generated file
-          // must not make a large dependency tree overflow source inventory.
-          for (const [name, hash] of Object.entries(copies!.baselines[who])) {
-            try { if (sha256(await readFile(await workspace.pathGuard.resolveExisting(name))) !== hash) return false; }
-            catch { return false; }
-          }
-          // The native sandbox can write only this participant's private copy;
-          // source baseline hashes remain the authoritative freshness check.
-          return true;
-        },
-      };
-    }
-    driver = createReviewDriver({ participants, briefSource: state, provider: deps.provider, budget: deps.budget,
+    const tools = (await catalog.snapshot()).tools.filter(tool =>
+      ["read_file", "search_files", "run_command", "read_memory", "search_context", "recall_context"].includes(tool.name));
+    const context: ToolContext = {
+      workspaceRoot: root, mode: "code", threadId, turnId: id, approvalPolicy: "ask",
+      commandExecutionMode: "auto_approve", isUnrestrictedHostAccessActive: () => false,
+      limits: deps.limits, agentRole: "subagent", agentId: `${id}_reviewer`, assignedTaskId: id,
+      signal: input.signal, commandTimeoutMs: deps.limits.commandTimeoutMs, maxOutputChars: deps.limits.maxOutputChars,
+      requestApproval: async request => deps.approve(context, request),
+      searchProjectMemory: (query, options) => deps.memory.searchHybrid(workspaceId, query, {
+        workspaceRoot: root, readOnly: true, limit: options?.limit ?? deps.limits.memorySearchLimit,
+        includeInactive: options?.includeInactive,
+      }),
+      recallContext: async value => {
+        try { return recallThreadContext(reviewer!, value, (evidenceId, offset, limit) =>
+          deps.memory.evidenceStore.read(workspaceId, threadId, evidenceId, offset, limit), deps.limits); }
+        catch (error) { return { ok: false, summary: "Reviewer evidence unavailable", error: String(error) }; }
+      },
+      searchHistory: async (query, limit) => {
+        await deps.index.checkpoint(workspaceId, reviewer!);
+        return (await deps.index.search(workspaceId, threadId, query, { limit, beforeMessageIndex: reviewer!.messages.length }))
+          .map(hit => ({ id: hit.id, title: hit.title, preview: hit.content.slice(0, 400), historical: true as const }));
+      },
+      recordCommand: command => { durableReviewWrite(() => deps.store.recordToolAudit(threadId, id, command)); reviewer!.commands.push(command); },
+    };
+    const participant: ReviewParticipant = { state: reviewer, tools, context,
+      assertEnvironmentSafe: () => runtime.assertEnvironmentSafe(),
+      optionalMemory: async () => {
+        const queries = memoryQueries(reviewer!, input.userInput);
+        await deps.index.checkpoint(workspaceId, reviewer!);
+        const memories = (await Promise.all(queries.map(query => context.searchProjectMemory!(query)))).flat();
+        const evidence = (await Promise.all(queries.map(query => deps.index.search(workspaceId, threadId, query,
+          { limit: deps.limits.memorySearchLimit, beforeMessageIndex: reviewer!.compactedMessageCount })))).flat();
+        const selected = selectMemoryContext({ state: reviewer!, memories, evidence, queries, limits: deps.limits,
+          tokenBudget: optionalMemoryTokenBudget(deps.limits.maxContextChars, deps.limits.maxContextTokens, deps.limits) });
+        return JSON.stringify({ memories: selected.memories, historicalEvidence: selected.evidence });
+      },
+      append: async (type, payload) => {
+        durableReviewWrite(() => type === "message" ? deps.store.recordMessage(threadId, payload as ChatMessage, id)
+          : type.startsWith("context.") ? deps.store.appendEvent(threadId, { type: type as EventRecord["type"], turnId: id, payload })
+          : deps.store.appendEvent(threadId, { type: "review.actor.event", turnId: id, payload: { kind: type, value: payload } }));
+      },
+      capture: (callId, tool, result) => durableReviewWrite(() => deps.memory.evidenceStore.capture(workspaceId, threadId, callId, tool, result)),
+      unchanged: async () => {
+        for (const [name, hash] of Object.entries(copies!.baseline)) {
+          try { if (sha256(await readFile(await workspace.pathGuard.resolveExisting(name))) !== hash) return false; }
+          catch { return false; }
+        }
+        return true;
+      },
+    };
+    const driver = createReviewDriver({ participant, provider: deps.provider, budget: deps.budget,
       limits: { ...deps.limits, maxContextTokens: input.maxContextTokens ?? deps.limits.maxContextTokens },
-      get, emit, fresh, signal: input.signal,
-      usage: async (who, usage, attempt) => { durableReviewWrite(() => deps.store.appendEvent(state.threadId, { type: "model.usage", turnId: input.turnId,
+      get, emit, signal: input.signal,
+      usage: async (usage, attempt) => { durableReviewWrite(() => deps.store.appendEvent(state.threadId, { type: "model.usage", turnId: input.turnId,
         phase: "completed", payload: { actor: "reviewer", purpose: "progress_review", provider: deps.provider.name,
-          model: deps.provider.model, turnId: input.turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt, sourceAgentId: `${reviewId}_${who}`, usage } })); },
+          model: deps.provider.model, turnId: input.turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt,
+          sourceAgentId: `${id}_reviewer`, usage } })); },
     });
-    if (get().status === "discussing" && !get().environmentReady) {
-      if (get().environmentStarted) throw new Error("Review environment preflight was unavailable or interrupted; no blind retry");
-      await emit({ type: "environment_started", id: reviewId });
-      for (const participant of Object.values(participants)) {
-        await emit({ type: "tool", id: reviewId });
-        await preflightReviewEnvironment(participant);
-      }
-      await emit({ type: "environment_checked", id: reviewId, ready: true });
-    }
-    deps.status(`Review ${reviewId}: ${input.purpose}; maximum five rounds, independent closing summaries.`);
-    await runReviewDiscussion(get, emit, driver);
-  } catch (error) {
-    if (error instanceof ReviewFatalError) throw error;
-    if (get().status === "discussing") await emit({ type: "close", id: reviewId, reason: `review_unavailable: ${String(error).slice(0, 1700)}` });
-    await runReviewDiscussion(get, emit, { canSummarize: false, discuss: async () => { throw error; }, summarize: async () => undefined, fresh: async () => false });
+    try { await emit({ type: "reported", id, report: await driver.investigate() }); }
+    catch (error) { if (error instanceof ReviewFatalError) throw error;
+      await emit({ type: "unavailable", id, reason: bounded(String(error), 1800) }); }
   } finally {
-    try { driver?.release(); } finally {
-      try { await Promise.all(commands.map(runtime => runtime.cancelAll())); }
-      catch (error) { throw new ReviewCleanupError(error); }
-      finally {
-        await Promise.all(toolCatalogs.map((catalog) => catalog.close()));
-        for (const lease of leases) durableReviewWrite(() => deps.store.releaseThreadLease(lease));
-      }
-    }
+    try { await runtime.cancelAll(); } catch (error) { throw new ReviewCleanupError(error); }
+    finally { await catalog.close(); durableReviewWrite(() => deps.store.releaseThreadLease(lease)); }
   }
-  if (get().status === "decided") await emit({ type: "applied", id: reviewId, fresh: await fresh() });
-  return { approved: get().approval && await fresh(), requests: get().requests - beforeRequests, reused: false, reason: get().closeReason };
+  await emit({ type: "applied", id, fresh: await fresh().catch(() => false) });
+  return { decision: input.signal?.aborted ? "interrupted" : get().report ? get().fresh ? "reported" : "inconclusive" : "unavailable",
+    requests: get().requests, reused: false, reason: get().reason, report: get().report };
 }

@@ -16,7 +16,7 @@ export function foldDelivery(state: SessionState, value: unknown): void {
   // A later explicit user request starts new review material. A same-request
   // replacement still cannot erase an unresolved durable review.
   if (state.delivery && next.sourceMessageIndex <= state.delivery.sourceMessageIndex &&
-      !state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied"))
+      !state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.status === "applied"))
     throw new Error("An unresolved delivery obligation cannot be replaced");
   if (next.changeStart > state.changes.length || next.sourceMessageIndex >= state.messages.length)
     throw new Error("Invalid delivery source binding");

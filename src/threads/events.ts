@@ -87,7 +87,7 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "progress.review.unavailable",
   "reasoning",
   "review.actor.event",
-  "review.session.event",
+  "review.assignment.event",
   "review.unavailable",
   "runtime.task_budget",
   "subagent.artifact",

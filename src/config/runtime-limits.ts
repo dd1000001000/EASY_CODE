@@ -98,18 +98,10 @@ export const runtimeLimitsSchema = z.object({
   contextForceRatio: z.number().min(0.5).max(1),
   contextMemoryResumeRatio: z.number().min(0.2).max(0.8),
   contextRecallProtectionExchanges: integer(1, 10),
-  reviewMaxRounds: integer(1, 5),
-  reviewMaxRequests: integer(4, 200),
-  reviewMaxToolCalls: integer(0, 100),
   reviewSnapshotMaxBytes: integer(1024, 1073741824),
   reviewDependencyMaxBytes: integer(1024, 4294967296),
   reviewDependencyMaxFiles: integer(100, 1000000),
   reviewPreparationTimeoutMs: integer(1000, 1200000),
-  reviewSummaryMaxTokens: integer(256, 32768),
-  reviewBriefingMaxTokens: integer(256, 32768),
-  reviewHandoffMaxTokens: integer(1024, 65536),
-  reviewClosingInputReserveTokens: integer(1024, 2000000),
-  reviewMaxSessionsPerTask: integer(1, 10),
   contextCompactionTriggerRatio: z.number().min(0.5).max(0.9),
   contextCompactionTargetRatio: z.number().min(0.2).max(0.8),
   contextCompactionMinGrowthRatio: z.number().min(0.01).max(0.3),
@@ -151,7 +143,6 @@ export const runtimeLimitsSchema = z.object({
   check(value.artifactChunkOverlapChars < value.artifactChunkChars, "artifactChunkOverlapChars", "Overlap must be smaller than chunk size");
   check(value.artifactChunkChars <= value.artifactIndexBatchChars, "artifactIndexBatchChars", "Index batch must contain a complete chunk");
   check(value.commandArchiveMaxBytes <= value.commandThreadArchiveMaxBytes, "commandThreadArchiveMaxBytes", "Thread quota must contain one command archive");
-  check(value.reviewHandoffMaxTokens >= value.reviewSummaryMaxTokens * 2 + 1024, "reviewHandoffMaxTokens", "Reserve both summaries and at least 1024 tokens of Runtime metadata");
   check(value.sandboxBoundaryApprovalThreshold === value.sandboxBoundaryModelCorrections + 1,
     "sandboxBoundaryApprovalThreshold", "Approval threshold must immediately follow the model-correction budget");
   if (value.contextReferenceTargetRatio >= value.contextReferenceTriggerRatio) context.addIssue({
