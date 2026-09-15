@@ -52,6 +52,27 @@ class SplitBenchmarkEnvironment:
             raise RuntimeError(f"Docker control operation {args[0]} failed: {result.stderr[-2000:]}")
         return result
 
+    def split_labels(self, role):
+        # docker commit retains the source image's Compose labels. Every
+        # docker create from that image must override them or Compose may
+        # mistake a reviewer/worker for Harbor's main service.
+        return ("--label", f"com.docker.compose.project={self.name}",
+                "--label", f"com.docker.compose.service={role}")
+
+    def assert_split_labels(self, info, role):
+        labels = info.get("Config", {}).get("Labels") or {}
+        if (labels.get("com.docker.compose.project") != self.name or
+            labels.get("com.docker.compose.service") != role):
+            raise RuntimeError(f"Split {role} container retained Harbor Compose labels")
+
+    async def copy_checkpoint_from_main(self, target):
+        if not re.fullmatch(r"[a-f0-9]{12,64}", getattr(self, "main", "")):
+            raise RuntimeError("The Harbor main container binding is unavailable")
+        target = Path(target)
+        if not target.is_dir():
+            raise RuntimeError("Checkpoint download target must already exist")
+        await self.docker("cp", f"{self.main}:/tmp/easy-code-checkpoint/.", target)
+
     @classmethod
     async def create(cls, original, resource_limits=None):
         obj = cls(original, resource_limits)
@@ -62,6 +83,10 @@ class SplitBenchmarkEnvironment:
                 raise RuntimeError("Cannot bind split environment to one Harbor main container")
             obj.main = main
             main_info = json.loads((await obj.docker("inspect", main)).stdout)[0]
+            main_labels = main_info.get("Config", {}).get("Labels") or {}
+            if (not main_labels.get("com.docker.compose.project") or
+                main_labels.get("com.docker.compose.service") != "main"):
+                raise RuntimeError("Harbor main container has no unique Compose service binding")
             for entry in main_info.get("Config", {}).get("Env", []):
                 key, _, value = entry.partition("=")
                 if value and re.search(r"(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", key, re.I):
@@ -71,12 +96,14 @@ class SplitBenchmarkEnvironment:
             await obj.docker("volume", "create", obj.volume)
             await obj.docker("volume", "create", obj.git_volume)
             mount = f"type=volume,source={obj.volume},target=/testbed"
-            await obj.docker("create", "--name", obj.controller, "--network", f"container:{main}",
+            await obj.docker("create", "--name", obj.controller, *obj.split_labels("controller"),
+                "--network", f"container:{main}",
                 "--volumes-from", main, "--mount", mount,
                 "--mount", f"type=volume,source={obj.git_volume},target=/testbed/.git",
                 "--mount", f"type=bind,source={obj.bridge},target=/opt/easy-code-command-bridge",
                 "--entrypoint", "/bin/sh", obj.image, "-c", "while :; do sleep 3600; done")
-            await obj.docker("create", "--name", obj.worker, "--network", "none", "--ipc", "private",
+            await obj.docker("create", "--name", obj.worker, *obj.split_labels("worker"),
+                "--network", "none", "--ipc", "private",
                 "--shm-size", f'{obj.resources["shmMiB"]}m', "--pids-limit", str(obj.resources["pidsLimit"]),
                 "--security-opt", "no-new-privileges:true", "--mount", mount,
                 "--entrypoint", "/bin/sh", obj.image, "-c", "while :; do sleep 3600; done")
@@ -89,7 +116,13 @@ class SplitBenchmarkEnvironment:
             # worker. Its own copy is hidden behind a private nested volume.
             await asyncio.to_thread(obj.copy_archive_in, obj.worker, obj.initial)
             info = json.loads((await obj.docker("inspect", obj.worker)).stdout)[0]
+            obj.assert_split_labels(info, "worker")
             obj.validate_worker(info, obj.volume, obj.resources)
+            controller_info = json.loads((await obj.docker("inspect", obj.controller)).stdout)[0]
+            obj.assert_split_labels(controller_info, "controller")
+            selected = await original._run_docker_compose_command(["ps", "-q", "main"], timeout_sec=30)
+            if str(selected.stdout or "").strip() != main:
+                raise RuntimeError("Harbor main Compose binding changed after split setup")
             obj.worker_id = info["Id"]
             (obj.bridge / "binding.json").write_text(json.dumps({"version": 1,
                 "workerId": obj.worker_id, "network": "none", "resources": obj.resources}), encoding="utf-8")
@@ -202,7 +235,8 @@ class SplitBenchmarkEnvironment:
             environment["digest"] = self.dependency_digest(environment["dependencies"])
         item["dependency_digest"] = environment["digest"]
         await self.docker("volume", "create", item["volume"])
-        await self.docker("create", "--name", name, "--network", "none", "--ipc", "private",
+        await self.docker("create", "--name", name, *self.split_labels(review["actor"]),
+            "--network", "none", "--ipc", "private",
             "--shm-size", f'{self.resources["shmMiB"]}m', "--pids-limit", str(self.resources["pidsLimit"]),
             "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev", "--tmpfs", "/run:rw,nosuid,nodev",
             "--security-opt", "no-new-privileges:true", "--mount", f'type=volume,source={item["volume"]},target=/testbed',
@@ -211,6 +245,7 @@ class SplitBenchmarkEnvironment:
         await asyncio.to_thread(self.copy_archive_in, name, environment["dependencies"])
         await asyncio.to_thread(self.copy_archive_in, name, item["initial"])
         info = json.loads((await self.docker("inspect", name)).stdout)[0]
+        self.assert_split_labels(info, review["actor"])
         self.validate_worker(info, item["volume"], self.resources)
         item["id"] = info["Id"]
         return item

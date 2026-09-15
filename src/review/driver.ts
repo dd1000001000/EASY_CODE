@@ -205,9 +205,14 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       const markerIndex = p.state.messages.map((m, index) => m.role === "user" && m.content.startsWith(marker) ? index : -1).filter(index => index >= 0).at(-1)!;
       const tail = p.state.messages.slice(markerIndex + 1);
       let contentFailures = tail.filter(m => m.role === "user" && m.content.startsWith("RUNTIME_REVIEW_FORMAT:")).length;
+      let lastContentError = [...tail].reverse().find(m => m.role === "user" &&
+        m.content?.startsWith("RUNTIME_REVIEW_FORMAT:"))?.content?.slice("RUNTIME_REVIEW_FORMAT:".length).trim() ?? "unknown format error";
+      const exhausted = () => new Error(`Review content corrections exhausted (${contentFailures}/${input.limits.modelContentRetries + 1}); ` +
+        `last rejected response: ${lastContentError}. Close with independent unverified summaries.`);
       const contentError = async (reason: string) => {
-        await recordMessage(p, { role: "user", content: "RUNTIME_REVIEW_FORMAT: " + reason });
-        if (++contentFailures > input.limits.modelContentRetries) throw new Error("Review content corrections exhausted; close with independent unverified summaries.");
+        lastContentError = redactSensitiveInformation(reason).slice(0, 500);
+        await recordMessage(p, { role: "user", content: "RUNTIME_REVIEW_FORMAT: " + lastContentError });
+        if (++contentFailures > input.limits.modelContentRetries) throw exhausted();
       };
       const lastAssistant = [...tail].reverse().find(m => m.role === "assistant");
       if (lastAssistant?.role === "assistant") {
@@ -218,7 +223,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       }
       const definitions = [...p.tools.map(t => t.definition), statementTool];
       while (input.get().status === "discussing") {
-        if (contentFailures > input.limits.modelContentRetries) throw new Error("Review content corrections were already exhausted before Resume");
+        if (contentFailures > input.limits.modelContentRetries) throw exhausted();
         const response = await request(who, { messages: await build(who, definitions),
           tools: definitions, responseMode: "stream" });
         await recordMessage(p, response.message);
@@ -231,7 +236,7 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
         }
         if (!calls.length) {
           try { return await validateStatement(JSON.parse(response.message.content ?? "")); }
-          catch { await contentError("Submit a valid post_review. No executable action is inferred from prose."); continue; }
+          catch (error) { await contentError(`Submit a valid post_review, not prose or an invalid report: ${String(error)}`); continue; }
         }
         let statement: ReturnType<typeof statementSchema.parse> | undefined;
         let invalidResponse = false;

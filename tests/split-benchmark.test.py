@@ -19,6 +19,25 @@ Split = module.SplitBenchmarkEnvironment
 
 
 class WorkerBoundaryTests(unittest.TestCase):
+    def test_split_containers_override_inherited_compose_main_labels(self):
+        split = Split(None)
+        try:
+            for role in ("controller", "worker", "author", "reviewer"):
+                labels = split.split_labels(role)
+                self.assertEqual(labels, ("--label", f"com.docker.compose.project={split.name}",
+                                          "--label", f"com.docker.compose.service={role}"))
+                split.assert_split_labels({"Config": {"Labels": {
+                    "com.docker.compose.project": split.name,
+                    "com.docker.compose.service": role,
+                }}}, role)
+                with self.assertRaisesRegex(RuntimeError, "retained Harbor Compose labels"):
+                    split.assert_split_labels({"Config": {"Labels": {
+                        "com.docker.compose.project": "harbor-trial",
+                        "com.docker.compose.service": "main",
+                    }}}, role)
+        finally:
+            split._temp.cleanup()
+
     def test_resource_settings_are_bounded_and_verified(self):
         limits = {"shmMiB": 256, "pidsLimit": 512}
         self.assertEqual(Split.validate_resources(limits), limits)
@@ -218,6 +237,8 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
                 item = next(iter(split.review_workers.values()))
                 result = json.dumps([{"Id": "a" * 64, "HostConfig": {"NetworkMode": "none", "IpcMode": "private",
                     "ShmSize": split.resources["shmMiB"] * 1024 * 1024, "PidsLimit": split.resources["pidsLimit"], "SecurityOpt": ["no-new-privileges:true"]},
+                    "Config": {"Labels": {"com.docker.compose.project": split.name,
+                                          "com.docker.compose.service": review["actor"]}},
                     "Mounts": [{"Type": "volume", "Name": split.volume if args[1] == "main-worker" else item["volume"], "Destination": "/testbed"}]}])
             return SimpleNamespace(returncode=0, stdout=result, stderr="")
 
@@ -232,6 +253,8 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
             self.assertIs(await split.review_worker(review), worker)
             self.assertEqual(len(calls), count)
             create = next(call for call in calls if call[0] == "create")
+            self.assertIn(f"com.docker.compose.project={split.name}", create)
+            self.assertIn("com.docker.compose.service=author", create)
             self.assertEqual(create[create.index("--network") + 1], "none")
             self.assertEqual(create[create.index("--ipc") + 1], "private")
             self.assertEqual(create[create.index("--mount") + 1], f'type=volume,source={worker["volume"]},target=/testbed')
@@ -274,6 +297,27 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
                 await split.close()
             self.assertEqual(len(calls), 5)
             self.assertTrue(split.root.exists())
+        finally:
+            split._temp.cleanup()
+
+    async def test_checkpoint_copy_targets_bound_harbor_main_id_not_compose_service(self):
+        split = Split(None)
+        split.main = "a" * 64
+        calls = []
+
+        async def docker(*args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        split.docker = docker
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                target = Path(temporary)
+                await split.copy_checkpoint_from_main(target)
+                self.assertEqual(calls, [("cp", f"{split.main}:/tmp/easy-code-checkpoint/.", target)])
+            split.main = "main"
+            with self.assertRaisesRegex(RuntimeError, "binding is unavailable"):
+                await split.copy_checkpoint_from_main(Path(temporary))
         finally:
             split._temp.cleanup()
 
