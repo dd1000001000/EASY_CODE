@@ -67,6 +67,41 @@ describe("verification reliability", () => {
 });
 
 describe("delivery reliability", () => {
+  it("delivers on the Reviewer's pass without a second main-Agent model request", async () => {
+    const s = reliabilityState(); let calls = 0; let reviews = 0; let seals = 0;
+    const tool = { name: "read_file" as const, mutating: false,
+      definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      execute: async () => ({ ok: true, summary: "read" }) };
+    const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => ({
+      message: ++calls === 1
+        ? { role: "assistant" as const, content: "", tool_calls: [{ id: "read", type: "function" as const,
+          function: { name: "read_file", arguments: "{}" } }] }
+        : { role: "assistant" as const, content: "Implementation complete; frontend interaction remains unverified." },
+    }) }, toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+      takeSteering: async () => undefined,
+      sealSteering: async () => { seals++; return undefined; },
+      onToolCompleted: async state => { state.changes.push({ path: "src/component.test.ts", operation: "update",
+        source: "file_tool", status: "applied", timestamp: "now" }); },
+      runReviewSession: async input => {
+        reviews++;
+        assert.equal(input.draftAnswer, "Implementation complete; frontend interaction remains unverified.");
+        assert.equal(seals, 0);
+        const report = { verdict: "pass" as const, conclusion: "The caveated draft is ready",
+          nextAction: "Deliver unchanged", evidenceRefs: [],
+          uncertainties: ["Frontend interaction has not been tested"] };
+        return { decision: "reported" as const, requests: 1, reused: false, report };
+      },
+    });
+    const result = await runtime.run(s, "change the component test", { maxSteps: 4,
+      maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
+      commandTimeoutMs: 1000, approvalPolicy: "never" });
+    assert.equal(result.reason, "success");
+    assert.match(result.text, /frontend interaction remains unverified/u);
+    assert.equal(calls, 2, "the main Agent must not be called again after a passing review");
+    assert.equal(reviews, 1); assert.equal(seals, 1);
+  });
   it("schedules one advisory reviewer for a changed component.test.ts without making its opinion a completion gate", async () => {
     const s = reliabilityState(); let calls = 0; let reviews = 0; let seals = 0;
     const tool = { name: "read_file" as const, mutating: false,
@@ -127,7 +162,7 @@ describe("delivery reliability", () => {
             throughSequence: 1, message: { role: "user", content: "late adjustment" } };
         }
         return { requests: 0, reused: reviews > 1, decision: "reported" as const,
-          report: { conclusion: "Check the adjustment", nextAction: "Answer the adjusted request", evidenceRefs: [], uncertainties: [] } };
+          report: { verdict: "revise", conclusion: "Check the adjustment", nextAction: "Answer the adjusted request", evidenceRefs: [], uncertainties: [] } };
       },
     });
     const result = await runtime.run(state, "original request", { maxSteps: 5,
@@ -186,7 +221,7 @@ describe("delivery reliability", () => {
       requirementRevision: "req", reviewerThreadId: "private" });
     emit({ type: "brief_ready", id: "r", text: "fallible handoff" });
     emit({ type: "review_started", id: "r" });
-    emit({ type: "reported", id: "r", report: { conclusion: "ready", nextAction: "deliver", evidenceRefs: [], uncertainties: [] } });
+    emit({ type: "reported", id: "r", report: { verdict: "revise", conclusion: "ready", nextAction: "deliver", evidenceRefs: [], uncertainties: [] } });
     emit({ type: "applied", id: "r", fresh: true });
     assert.equal(unresolvedCommands(s).length, 1);
     assert.match(s.messages.at(-1)!.content ?? "", /not user instructions or verified facts/);
@@ -236,7 +271,7 @@ describe("delivery reliability", () => {
       snapshotId: "s", requirementRevision: "q", reviewerThreadId: "private" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });
-    foldReviewEvent(s, { type: "reported", id: "r", report: { conclusion: "Boundary is untested",
+    foldReviewEvent(s, { type: "reported", id: "r", report: { verdict: "revise", conclusion: "Boundary is untested",
       nextAction: "Try a counterexample", evidenceRefs: [], uncertainties: ["No official verdict"] } });
     foldReviewEvent(s, { type: "applied", id: "r", fresh: false });
     assert.equal(s.messages.length, 1);

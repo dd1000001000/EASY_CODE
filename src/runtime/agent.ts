@@ -2814,6 +2814,7 @@ export class AgentRuntime {
             foldDelivery(state, obligation);
           }
           const review = await this.dependencies.runReviewSession({ state, turnId, userInput: state.delivery!.request,
+            draftAnswer: text,
             maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
             purpose: "delivery", remainingModelRequests: Math.max(0, stepLimit - step - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed),
             signal: options.signal });
@@ -2826,10 +2827,12 @@ export class AgentRuntime {
           // finalization is sealed only when an answer is actually delivered.
           const reviewSteering = await this.takeAndApplySteering(state, turnId, "before_final", turnImages, false, memoryContext);
           if (reviewSteering) continue;
-          // One-way review advice is injected into the parent's context. Let
-          // the main Agent assess it in its next response, never deliver the
-          // pre-review answer as though it had already considered the report.
-          if (review.report && !review.reused) continue;
+          // The Reviewer may clear the prepared answer for immediate delivery.
+          // A revise verdict returns advice to the main Agent instead. The
+          // normal final steering seal still follows either path.
+          const fastDelivery = review.decision === "reported" &&
+            review.report?.verdict === "pass";
+          if (review.report && !fastDelivery && !review.reused) continue;
           if (review.decision === "unavailable" || review.decision === "inconclusive") text += `\n\nReview note: ${review.decision}; ` +
             `${review.reason ?? "independent advice was not available or is stale"}. ` +
             "Report only checks actually run; this is not an official benchmark verdict.";

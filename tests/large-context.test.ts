@@ -193,7 +193,7 @@ describe("configurable 1M context", () => {
       snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "reviewer_thread" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "Main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });
-    foldReviewEvent(s, { type: "reported", id: "r", report: { conclusion: "Unverified",
+    foldReviewEvent(s, { type: "reported", id: "r", report: { verdict: "revise", conclusion: "Unverified",
       nextAction: "Verify named IntFlag separately from unnamed composites", evidenceRefs: [], uncertainties: [] } });
     foldReviewEvent(s, { type: "applied", id: "r", fresh: true });
     const handoff = s.reviewSessions![0]!.handoff!;
