@@ -1,9 +1,9 @@
 import path from "node:path";
 import os from "node:os";
-import { mkdir, readFile, writeFile, lstat, realpath, symlink } from "node:fs/promises";
+import { mkdir, readFile, writeFile, lstat, readlink, realpath, symlink } from "node:fs/promises";
 import { execa } from "execa";
 import { WorkspaceManager } from "../workspace/manager.js";
-import type { WorkspaceSnapshot } from "../workspace/snapshot.js";
+import type { WorkspaceSnapshot, WorkspaceSnapshotEntry } from "../workspace/snapshot.js";
 import { sha256 } from "../utils/hash.js";
 import type { ValidationBaseline } from "../progress/validation-standard.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
@@ -20,12 +20,59 @@ function isInside(root: string, candidate: string): boolean {
   return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
+function reviewPathKey(value: string): string {
+  const normalized = value.replace(/\\/gu, "/");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+async function readSnapshotEntry(
+  workspace: WorkspaceManager,
+  entry: WorkspaceSnapshotEntry,
+  changedPaths: ReadonlySet<string>,
+): Promise<{ content: Buffer; mode: number; materializedSymlink: boolean }> {
+  if (entry.kind === "file") {
+    const source = await workspace.pathGuard.resolveExisting(entry.path, { kind: "file" });
+    const content = await readFile(source);
+    if (sha256(content) !== entry.hash) throw new Error("Source changed while copying review snapshot");
+    return { content, mode: (await lstat(source)).mode & 0o111 ? 0o700 : 0o600, materializedSymlink: false };
+  }
+
+  if (changedPaths.has(reviewPathKey(entry.path))) {
+    throw new Error(`Changed symbolic links cannot enter a review snapshot: ${entry.path}`);
+  }
+  const lexical = workspace.pathGuard.resolveLexical(entry.path);
+  const canonicalParent = path.normalize(await realpath(path.dirname(lexical)));
+  workspace.pathGuard.assertInside(canonicalParent);
+  const linkPath = path.join(canonicalParent, path.basename(lexical));
+  const linkInfo = await lstat(linkPath);
+  if (!linkInfo.isSymbolicLink()) throw new Error(`Review snapshot link changed type: ${entry.path}`);
+  const linkTarget = await readlink(linkPath);
+  if (sha256(`symlink:${linkTarget}`) !== entry.hash) throw new Error(`Review snapshot link changed: ${entry.path}`);
+  if (path.isAbsolute(linkTarget) || /^[a-zA-Z]:[\\/]/u.test(linkTarget) || /^(?:\\\\|\/\/)/u.test(linkTarget)) {
+    throw new Error(`Review snapshot link must use a relative workspace target: ${entry.path}`);
+  }
+  const target = path.resolve(canonicalParent, linkTarget);
+  workspace.pathGuard.assertInside(target);
+  const canonicalTarget = path.normalize(await realpath(target));
+  workspace.pathGuard.assertInside(canonicalTarget);
+  const targetInfo = await lstat(canonicalTarget);
+  if (!targetInfo.isFile() || targetInfo.isSymbolicLink()) {
+    throw new Error(`Review snapshot link must resolve to an internal regular file: ${entry.path}`);
+  }
+  return {
+    content: await readFile(canonicalTarget),
+    mode: targetInfo.mode & 0o111 ? 0o700 : 0o600,
+    materializedSymlink: true,
+  };
+}
+
 /** No shared checkout and no git control files. Explicit temporary copies are
  * retained for recovery; never use a model-selected path or silently recopy a
  * modified experiment as the original baseline. */
 export async function createReviewCopies(workspace: WorkspaceManager, id: string, expected: string,
   maxBytes = 128 * 1024 * 1024, validationBaseline?: ValidationBaseline,
-  options: { readBaseline?: (hash: string) => Promise<Buffer | undefined>; limits?: Readonly<RuntimeLimits>; signal?: AbortSignal; offline?: boolean } = {}) {
+  options: { readBaseline?: (hash: string) => Promise<Buffer | undefined>; limits?: Readonly<RuntimeLimits>; signal?: AbortSignal;
+    offline?: boolean; changedPaths?: readonly string[] } = {}) {
   if (!/^review_[a-f0-9-]{36}$/u.test(id)) throw new Error("Invalid Runtime review identity");
   const snapshot = await workspace.captureSnapshot();
   if (reviewFingerprint(snapshot) !== expected) throw new Error("Workspace changed before review snapshot");
@@ -35,18 +82,17 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
   await Promise.all(Object.values(roots).map(root => mkdir(root, { mode: 0o700 })));
   let bytes = 0;
   const restoredTests: string[] = [];
+  const materializedSymlinks: string[] = [];
+  const changedPaths = new Set((options.changedPaths ?? []).map(reviewPathKey));
   const baselines = { author: {} as Record<string, string>, reviewer: {} as Record<string, string> };
   for (const entry of snapshot.files.values()) {
-    if (entry.kind !== "file") throw new Error(`Review snapshot requires an ordinary file: ${entry.path}`);
-    const source = await workspace.pathGuard.resolveExisting(entry.path);
-    const content = await readFile(source);
-    const mode = (await lstat(source)).mode & 0o111 ? 0o700 : 0o600;
-    if (sha256(content) !== entry.hash) throw new Error("Source changed while copying review snapshot");
+    const { content, mode, materializedSymlink } = await readSnapshotEntry(workspace, entry, changedPaths);
+    if (materializedSymlink) materializedSymlinks.push(entry.path);
     bytes += content.byteLength;
     if (bytes > maxBytes) throw new Error("Review snapshot exceeds configured copy budget");
     let originalTest: Buffer | undefined;
     const gitPath = entry.path.replace(/\\/gu, "/");
-    const originalHash = validationBaseline?.files.find(file => file.path === gitPath)?.hash;
+    const originalHash = entry.kind === "file" ? validationBaseline?.files.find(file => file.path === gitPath)?.hash : undefined;
     if (originalHash && originalHash !== entry.hash) {
       originalTest = await options.readBaseline?.(originalHash);
       if (originalTest && sha256(originalTest) !== originalHash) throw new Error("Invalid archived test baseline");
@@ -97,8 +143,9 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
     }
   }
   if (reviewFingerprint(await workspace.captureSnapshot()) !== expected) throw new Error("Workspace changed during review copy");
-  await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, roots, baselines, restoredTests, dependencyLinks }), { flag: "wx", mode: 0o600 });
-  return { directory, roots, baselines, restoredTests, dependencyLinks };
+  await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, roots, baselines,
+    restoredTests, materializedSymlinks, dependencyLinks }), { flag: "wx", mode: 0o600 });
+  return { directory, roots, baselines, restoredTests, materializedSymlinks, dependencyLinks };
 }
 
 export async function restoreReviewCopies(directory: string, id: string, snapshotId: string) {
@@ -108,7 +155,8 @@ export async function restoreReviewCopies(directory: string, id: string, snapsho
   if (binding.id !== id || binding.snapshotId !== snapshotId) throw new Error("Review snapshot binding mismatch");
   const roots = { author: path.join(directory, "author"), reviewer: path.join(directory, "reviewer") };
   for (const root of Object.values(roots)) if (await realpath(root) !== root) throw new Error("Redirected review copy");
-  if (!binding.baselines?.author || !binding.baselines?.reviewer || !Array.isArray(binding.restoredTests)) throw new Error("Missing review baseline manifest");
+  if (!binding.baselines?.author || !binding.baselines?.reviewer || !Array.isArray(binding.restoredTests) ||
+    !Array.isArray(binding.materializedSymlinks)) throw new Error("Missing review baseline manifest");
   const dependencyLinks = (binding.dependencyLinks ?? { author: {}, reviewer: {} }) as Record<"author" | "reviewer", Record<string, string>>;
   for (const who of ["author", "reviewer"] as const) for (const [name, expected] of Object.entries(dependencyLinks[who] ?? {})) {
     if (!REVIEW_DEPENDENCY_DIRECTORIES.includes(name as typeof REVIEW_DEPENDENCY_DIRECTORIES[number]) ||
@@ -116,7 +164,7 @@ export async function restoreReviewCopies(directory: string, id: string, snapsho
       throw new Error("Review dependency binding mismatch");
   }
   return { directory, roots, baselines: binding.baselines as Record<"author" | "reviewer", Record<string, string>>,
-    restoredTests: binding.restoredTests as string[], dependencyLinks };
+    restoredTests: binding.restoredTests as string[], materializedSymlinks: binding.materializedSymlinks as string[], dependencyLinks };
 }
 
 export async function reviewDiff(workspace: WorkspaceManager): Promise<string> {

@@ -101,7 +101,9 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   if (!session) {
     const id = createId("review");
     try { copies = await createReviewCopies(deps.workspace, id, snapshotId, deps.limits.reviewSnapshotMaxBytes,
-      state.progressGuard?.validationBaseline, { readBaseline: deps.readBaseline, limits: deps.limits, signal: input.signal, offline: deps.offline }); } catch (error) { setupError = error; }
+      state.progressGuard?.validationBaseline, { readBaseline: deps.readBaseline, limits: deps.limits, signal: input.signal,
+        offline: deps.offline,
+        changedPaths: state.changes.slice(state.delivery?.changeStart ?? 0).map(change => change.path) }); } catch (error) { setupError = error; }
     await emit({ type: "started", id, key, scope, purpose: input.purpose, snapshotId, requirementRevision,
       changeCount: state.changes.length,
       commandCount: state.commands.length,

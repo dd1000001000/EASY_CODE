@@ -16,7 +16,7 @@ import { completeWithApiRetries } from "../src/runtime/model-retry.js";
 import { foldReconciliation, reconciliationGate, reconciliationObservation, reconciliationPending } from "../src/context/reconciliation.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import { benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
+import { benchmarkCleanupControl, benchmarkExecutionControl, benchmarkResultControls } from "../src/sandbox/benchmark-result.js";
 import type { SessionState } from "../src/core/types.js";
 import { baseSessionState } from "./session-state.js";
 
@@ -137,6 +137,12 @@ describe("requirements-only circuit breaker", () => {
 });
 
 describe("benchmark execution and cleanup are independent", () => {
+  it("publishes target completion independently from later worker restoration", () => {
+    assert.deepEqual(benchmarkExecutionControl({ version: 2, exitCode: 0, outcome: "exited" }),
+      { type: "execution_exited", exitCode: 0, outcome: "exited" });
+    assert.deepEqual(benchmarkCleanupControl({ version: 2, exitCode: 0, outcome: "exited",
+      cleanup: "confirmed", workerRestored: true }), { type: "cleanup_complete" });
+  });
   it("does not quarantine output limits when worker restoration is confirmed", () => {
     assert.deepEqual(benchmarkResultControls({ version: 2, exitCode: 137, outcome: "output_limit", cleanup: "confirmed", workerRestored: true,
       executionError: "32 MiB output" }), [{ type: "execution_exited", exitCode: 137, outcome: "output_limit" }, { type: "cleanup_complete" }]);

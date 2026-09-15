@@ -1,5 +1,6 @@
 """Host boundary unit tests, without Docker, Harbor, network or model calls."""
 import ast
+import asyncio
 import importlib.util
 from pathlib import Path
 import io
@@ -100,6 +101,40 @@ class WorkerBoundaryTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_publishes_target_exit_before_worker_restoration_finishes(self):
+        split = Split(None)
+        split.worker_id = "worker"
+        restart_started = asyncio.Event()
+        finish_restart = asyncio.Event()
+
+        async def docker(*args, **kwargs):
+            if args[0] == "restart":
+                restart_started.set()
+                await finish_restart.wait()
+            info = [{"State": {"Running": True}, "HostConfig": {"NetworkMode": "none", "IpcMode": "private"},
+                     "Mounts": [{"Type": "volume", "Name": split.volume, "Destination": "/testbed"}]}]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(info), stderr="")
+
+        split.docker = docker
+        process = SimpleNamespace(poll=lambda: 0, wait=lambda *args: 0)
+        try:
+            directory = split.bridge / "commands" / "request-lifecycle"
+            directory.mkdir()
+            (directory / "request.json").write_text(json.dumps({"version": 1, "commandId": "command-test",
+                "program": "node", "args": ["--version"], "cwd": "/testbed"}), encoding="utf-8")
+            with patch.object(module.subprocess, "Popen", return_value=process):
+                task = asyncio.create_task(split.execute_worker(directory))
+                await asyncio.wait_for(restart_started.wait(), 1)
+                execution = json.loads((directory / "execution.json").read_text(encoding="utf-8"))
+                self.assertEqual(execution, {"version": 2, "exitCode": 0, "outcome": "exited"})
+                self.assertFalse((directory / "result.json").exists())
+                finish_restart.set()
+                await task
+            self.assertTrue((directory / "result.json").is_file())
+        finally:
+            finish_restart.set()
+            split._temp.cleanup()
+
     async def test_output_limit_is_execution_failure_and_restored_worker_accepts_next_command(self):
         split = Split(None)
         split.worker_id = "worker"
@@ -129,7 +164,9 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
                 with patch.object(module.subprocess, "Popen", Process):
                     await split.execute_worker(directory)
                 result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+                execution = json.loads((directory / "execution.json").read_text(encoding="utf-8"))
                 self.assertEqual(result["outcome"], "output_limit")
+                self.assertEqual(execution["outcome"], "output_limit")
                 self.assertEqual(result["cleanup"], "confirmed")
                 self.assertTrue(result["workerRestored"])
                 self.assertNotIn("cleanupError", result)

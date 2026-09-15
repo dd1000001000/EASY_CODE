@@ -3,7 +3,8 @@ import { writeSync } from "node:fs";
 import path from "node:path";
 import { encodeSandboxControl } from "./control.js";
 import { BENCHMARK_BRIDGE_ROOT } from "./benchmark-backend.js";
-import { benchmarkResultControls, benchmarkResultSchema } from "./benchmark-result.js";
+import { benchmarkCleanupControl, benchmarkExecutionControl, benchmarkExecutionSchema,
+  benchmarkResultSchema } from "./benchmark-result.js";
 
 const [directory, commandId] = process.argv.slice(2);
 if (!directory?.startsWith(`${BENCHMARK_BRIDGE_ROOT}/commands/request-`) || !/^command_[a-f0-9-]{36}$/u.test(commandId ?? "")) throw new Error("Invalid controller request");
@@ -28,6 +29,7 @@ const pump = async () => {
 await emit({ type: "ready", backend: "benchmark-container" });
 await emit({ type: "execution_request_sent" });
 let targetStarted = false;
+let targetExited = false;
 try {
   for (;;) {
     await pump();
@@ -36,6 +38,13 @@ try {
       if (marker === commandId) {
         emit({ type: "target_started" });
         targetStarted = true;
+      }
+    }
+    if (!targetExited) {
+      const execution = await readFile(path.join(directory, "execution.json"), "utf8").catch(() => undefined);
+      if (execution) {
+        emit(benchmarkExecutionControl(benchmarkExecutionSchema.parse(JSON.parse(execution))));
+        targetExited = true;
       }
     }
     const result = await readFile(path.join(directory, "result.json"), "utf8").catch(() => undefined);
@@ -49,7 +58,9 @@ try {
         }
       }
       await pump();
-      for (const control of benchmarkResultControls(terminal)) emit(control);
+      if (!targetExited) emit(benchmarkExecutionControl({ version: terminal.version, exitCode: terminal.exitCode,
+        outcome: terminal.outcome, ...(terminal.executionError ? { executionError: terminal.executionError } : {}) }));
+      emit(benchmarkCleanupControl(terminal));
       process.exitCode = canceled ? 130 : terminal.exitCode;
       break;
     }

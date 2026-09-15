@@ -16,9 +16,11 @@ import re
 import shlex
 import shutil
 import sqlite3
+import stat as statlib
 import subprocess
+import tempfile
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -40,7 +42,7 @@ _REMOTE_CACHE_DIR = "/tmp/easy-code-cache"
 _REMOTE_MODEL_DIR = (
     f"{_REMOTE_CACHE_DIR}/models/paraphrase-multilingual-MiniLM-L12-v2"
 )
-_REMOTE_CHECKPOINT_STAGE = "/logs/agent/easy-code-checkpoint"
+_REMOTE_CHECKPOINT_STAGE = "/tmp/easy-code-checkpoint"
 _REMOTE_SECRETS_DIR = "/tmp/easy-code-secrets"
 _REMOTE_API_KEY_FILE = f"{_REMOTE_SECRETS_DIR}/provider-api-key"
 _REMOTE_MODEL_REGISTRY = "/root/.easy_code/models.toml"
@@ -50,6 +52,19 @@ _MODEL_DIRECTORY_ENV = "EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR"
 _CHECKPOINT_SCHEMA_VERSION = 1
 _BENCHMARK_ORCHESTRATION_ENABLED = True
 _MAX_CHECKPOINT_GENERATIONS = 3
+_WORKSPACE_CHECKPOINT_FILES = (
+    "workspace.base",
+    "workspace.json",
+    "workspace.patch",
+    "untracked.tar.gz",
+    "easy-code-refs.tsv",
+    "easy-code-refs.bundle",
+)
+_REQUIRED_WORKSPACE_CHECKPOINT_FILES = {
+    "workspace.base",
+    "workspace.json",
+    "workspace.patch",
+}
 _BENCHMARK_DATASET_REF = (
     "sha256:b934b0cc3dc800fe945eaf9f1623329db97ee3133c706d20644524c7759fb341"
 )
@@ -375,10 +390,10 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
         workspace_base_commit = await self._workspace_base_commit(environment)
         binding = self._trial_binding(instruction, workspace_base_commit)
         restored = self._prepare_trial(binding)
-        resume_thread_id = self._discover_parent_thread_id() if restored else None
+        resume_thread_id = self._discover_main_thread_id() if restored else None
         if restored and resume_thread_id is None:
             raise RuntimeError(
-                "The restored benchmark checkpoint has no resumable parent Thread."
+                "The restored benchmark checkpoint has no resumable main Thread bound to /testbed."
             )
         if restored:
             await self._restore_workspace(environment)
@@ -507,8 +522,8 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                         )
 
                 try:
-                    parent_thread_id = self._discover_parent_thread_id()
-                    metrics = self._collect_context_metrics(parent_thread_id)
+                    main_thread_id = self._discover_main_thread_id()
+                    metrics = self._collect_context_metrics(main_thread_id)
                     usage = self._collect_model_usage()
                     metrics.update(usage)
                     if usage["reportedInputRequests"] > 0:
@@ -523,7 +538,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                             "checkpointGeneration": checkpoint_generation,
                             "checkpointError": checkpoint_error,
                             "resumedFromCheckpoint": restored,
-                            "resumeThreadAvailable": parent_thread_id is not None,
+                            "resumeThreadAvailable": main_thread_id is not None,
                             "trialKey": binding["trialKey"],
                         }
                     )
@@ -653,6 +668,8 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
         return True
 
     async def _restore_workspace(self, environment: BaseEnvironment) -> None:
+        local_stage = self._adapter_logs_dir / "easy-code-checkpoint"
+        await self._remove_remote_checkpoint_stage(environment)
         script = f"""
 set -euo pipefail
 stage={shlex.quote(_REMOTE_CHECKPOINT_STAGE)}
@@ -693,17 +710,22 @@ if [ -f "$stage/untracked.tar.gz" ]; then
   tar -C "$testbed" --keep-old-files --no-same-owner --no-same-permissions -xzf "$stage/untracked.tar.gz"
 fi
 """.strip()
-        result = await self.exec_as_agent(
-            environment,
-            command=self._bash(script),
-            timeout_sec=180,
-        )
-        self._record_output("checkpoint-restore.log", result)
-        self._require_success("SWE-bench checkpoint workspace restore", result)
+        try:
+            await environment.upload_dir(local_stage, _REMOTE_CHECKPOINT_STAGE)
+            result = await self.exec_as_agent(
+                environment,
+                command=self._bash(script),
+                timeout_sec=180,
+            )
+            self._record_output("checkpoint-restore.log", result)
+            self._require_success("SWE-bench checkpoint workspace restore", result)
+        finally:
+            await self._remove_remote_checkpoint_stage(environment)
 
     async def _capture_workspace(
         self, environment: BaseEnvironment, workspace_base_commit: str
     ) -> None:
+        await self._remove_remote_checkpoint_stage(environment)
         script = f"""
 set -euo pipefail
 stage={shlex.quote(_REMOTE_CHECKPOINT_STAGE)}
@@ -750,13 +772,68 @@ printf '%s\n' "$base" > "$stage/workspace.base.tmp"
 mv "$stage/workspace.base.tmp" "$stage/workspace.base"
 rm -f "$stage/changed.list" "$stage/untracked.list"
 """.strip()
-        result = await self.exec_as_agent(
+        try:
+            result = await self.exec_as_agent(
+                environment,
+                command=self._bash(script),
+                timeout_sec=180,
+            )
+            self._record_output("checkpoint-capture.log", result)
+            self._require_success("SWE-bench checkpoint workspace capture", result)
+            with tempfile.TemporaryDirectory(
+                prefix="easy-code-checkpoint-download-"
+            ) as temporary:
+                downloaded = Path(temporary)
+                await environment.download_dir(
+                    _REMOTE_CHECKPOINT_STAGE, downloaded
+                )
+                self._install_workspace_checkpoint(downloaded)
+        finally:
+            await self._remove_remote_checkpoint_stage(environment)
+
+    async def _remove_remote_checkpoint_stage(
+        self, environment: BaseEnvironment
+    ) -> None:
+        result = await self.exec_as_root(
             environment,
-            command=self._bash(script),
-            timeout_sec=180,
+            command=self._bash(
+                f"rm -rf {shlex.quote(_REMOTE_CHECKPOINT_STAGE)}"
+            ),
+            timeout_sec=30,
         )
-        self._record_output("checkpoint-capture.log", result)
-        self._require_success("SWE-bench checkpoint workspace capture", result)
+        self._require_success("SWE-bench checkpoint staging cleanup", result)
+
+    def _install_workspace_checkpoint(self, downloaded: Path) -> None:
+        """Atomically replace only the adapter-owned workspace checkpoint files."""
+
+        self._assert_regular_tree(downloaded)
+        found = {item.name for item in downloaded.iterdir()}
+        allowed = set(_WORKSPACE_CHECKPOINT_FILES)
+        if not found.issubset(allowed):
+            unexpected = ", ".join(sorted(found - allowed))
+            raise RuntimeError(
+                f"Unexpected file in downloaded workspace checkpoint: {unexpected}"
+            )
+        missing = _REQUIRED_WORKSPACE_CHECKPOINT_FILES - found
+        if missing:
+            raise RuntimeError(
+                "Downloaded workspace checkpoint is incomplete: "
+                + ", ".join(sorted(missing))
+            )
+        if any(not item.is_file() for item in downloaded.iterdir()):
+            raise RuntimeError("Workspace checkpoint entries must be regular files.")
+
+        local_stage = self._adapter_logs_dir / "easy-code-checkpoint"
+        local_stage.mkdir(parents=True, exist_ok=True)
+        for name in _WORKSPACE_CHECKPOINT_FILES:
+            destination = local_stage / name
+            source = downloaded / name
+            if source.is_file():
+                temporary = local_stage / f"{name}.download"
+                shutil.copy2(source, temporary)
+                temporary.replace(destination)
+            elif destination.exists():
+                destination.unlink()
 
     def _persist_checkpoint(self, binding: dict[str, Any]) -> str | None:
         data_dir = self._adapter_logs_dir / "easy-code-data"
@@ -764,7 +841,9 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
         if not data_dir.is_dir() or not (stage_dir / "workspace.json").is_file():
             return None
         self._require_binding(stage_dir / "binding.json", binding)
-        self._assert_regular_tree(data_dir, excluded_top_level={"worktrees"})
+        self._assert_regular_tree(
+            data_dir, ignored_path=self._checkpoint_path_ignored
+        )
         checkpoint_dir = self._checkpoint_directory(binding)
         generations_dir = checkpoint_dir / "g"
         generations_dir.mkdir(parents=True, exist_ok=True)
@@ -839,11 +918,11 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
         if actual_files != expected_files:
             raise RuntimeError("The benchmark checkpoint failed integrity validation.")
 
-    def _discover_parent_thread_id(self) -> str | None:
+    def _discover_main_thread_id(self) -> str | None:
         threads_dir = self._adapter_logs_dir / "easy-code-data" / "threads"
         if not threads_dir.is_dir():
             return None
-        parents: list[str] = []
+        main_threads: list[str] = []
         for directory in sorted(threads_dir.iterdir(), key=lambda item: item.name):
             if not directory.is_dir() or not _THREAD_ID_PATTERN.fullmatch(directory.name):
                 continue
@@ -851,22 +930,30 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
             if not journal.is_file():
                 continue
             is_child = False
+            workspace_root: str | None = None
             with journal.open("rb") as handle:
                 for line in handle:
                     try:
                         event = json.loads(line)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
+                    if event.get("type") == "thread.created":
+                        state = event.get("payload", {}).get("state", {})
+                        if isinstance(state, dict) and isinstance(
+                            state.get("workspaceRoot"), str
+                        ):
+                            workspace_root = state["workspaceRoot"]
                     if event.get("type") == "subagent.session_bound":
                         is_child = True
-                        break
-            if not is_child:
-                parents.append(directory.name)
-        if len(parents) > 1:
+            # Review participants use private /tmp workspaces. Subagents have
+            # an explicit session binding even when they share /testbed.
+            if not is_child and workspace_root == _TESTBED:
+                main_threads.append(directory.name)
+        if len(main_threads) > 1:
             raise RuntimeError(
-                "The benchmark checkpoint contains multiple parent Threads; refusing ambiguous resume."
+                "The benchmark checkpoint contains multiple main Threads bound to /testbed; refusing ambiguous resume."
             )
-        return parents[0] if parents else None
+        return main_threads[0] if main_threads else None
 
     def _collect_context_metrics(self, thread_id: str | None) -> dict[str, Any]:
         metrics: dict[str, Any] = {
@@ -996,15 +1083,23 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
     def _checkpoint_copy_ignores(
         data_root: Path, directory: Path, names: list[str]
     ) -> set[str]:
-        ignored = {
+        return {
             name
             for name in names
-            if name == "easy-code.db.lock"
-            or name.startswith("easy-code.db.easy-code-advisory-lock")
+            if EasyCodeAgent._checkpoint_path_ignored(
+                (directory / name).relative_to(data_root)
+            )
         }
-        if directory.resolve() == data_root.resolve() and "worktrees" in names:
-            ignored.add("worktrees")
-        return ignored
+
+    @staticmethod
+    def _checkpoint_path_ignored(relative: Path) -> bool:
+        if not relative.parts:
+            return False
+        return (
+            relative.parts[0] == "worktrees"
+            or relative.name == "easy-code.db.lock"
+            or relative.name.startswith("easy-code.db.easy-code-advisory-lock")
+        )
 
     def _prepare_restored_data(self, data_dir: Path) -> None:
         worktrees = data_dir / "worktrees"
@@ -1106,17 +1201,40 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
 
     @staticmethod
     def _assert_regular_tree(
-        root: Path, excluded_top_level: set[str] | None = None
+        root: Path,
+        ignored_path: Callable[[Path], bool] | None = None,
     ) -> None:
-        excluded_top_level = excluded_top_level or set()
-        for path_value in root.rglob("*"):
-            relative = path_value.relative_to(root)
-            if relative.parts and relative.parts[0] in excluded_top_level:
+        changed_path: Path | None = None
+        for _attempt in range(2):
+            changed_path = None
+            try:
+                candidates = sorted(root.rglob("*"), key=lambda item: item.as_posix())
+            except FileNotFoundError:
                 continue
-            if path_value.is_symlink():
-                raise RuntimeError("Symlinks are not allowed in benchmark checkpoints.")
-            if not path_value.is_dir() and not path_value.is_file():
-                raise RuntimeError("Special files are not allowed in benchmark checkpoints.")
+            for path_value in candidates:
+                relative = path_value.relative_to(root)
+                if ignored_path is not None and ignored_path(relative):
+                    continue
+                try:
+                    mode = path_value.lstat().st_mode
+                except FileNotFoundError:
+                    changed_path = relative
+                    break
+                if statlib.S_ISLNK(mode):
+                    raise RuntimeError(
+                        f"Symlinks are not allowed in benchmark checkpoints: {relative.as_posix()}"
+                    )
+                if not (statlib.S_ISDIR(mode) or statlib.S_ISREG(mode)):
+                    raise RuntimeError(
+                        "Special files are not allowed in benchmark checkpoints: "
+                        f"{relative.as_posix()} (mode={oct(statlib.S_IFMT(mode))})"
+                    )
+            if changed_path is None:
+                return
+        detail = changed_path.as_posix() if changed_path is not None else "tree traversal"
+        raise RuntimeError(
+            f"Benchmark checkpoint data changed while it was being validated: {detail}"
+        )
 
     @staticmethod
     def _prune_generations(generations_dir: Path, current: str) -> None:
@@ -1205,12 +1323,16 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
     ) -> None:
         script = f"""
 set -euo pipefail
-for directory in {shlex.quote(_REMOTE_DATA_DIR + '/command-leases')} {shlex.quote(_REMOTE_DATA_DIR + '/command-quarantine')}; do
-  if [ -d "$directory" ] && [ -n "$(find "$directory" -type f -print -quit)" ]; then
-    echo 'Unfinished command or cleanup quarantine; verifier networking stays restricted' >&2
-    exit 79
-  fi
-done
+lease_directory={shlex.quote(_REMOTE_DATA_DIR + '/command-leases')}
+quarantine_directory={shlex.quote(_REMOTE_DATA_DIR + '/command-quarantine')}
+if [ -d "$lease_directory" ] && {{ [ -f "$lease_directory/recovery.lock" ] || [ -n "$(find "$lease_directory" -type f -name '*.lease' -print -quit)" ]; }}; then
+  echo 'Unfinished command lease; verifier networking stays restricted' >&2
+  exit 79
+fi
+if [ -d "$quarantine_directory" ] && [ -n "$(find "$quarantine_directory" -type f -name '*.json' -print -quit)" ]; then
+  echo 'Command cleanup quarantine; verifier networking stays restricted' >&2
+  exit 79
+fi
 """.strip()
         checked = await environment.exec(command=self._bash(script), user="root", cwd="/", timeout_sec=30)
         code = getattr(checked, "return_code", getattr(checked, "exit_code", None))

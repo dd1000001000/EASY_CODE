@@ -134,6 +134,10 @@ class NetworkRestorationTests(unittest.IsolatedAsyncioTestCase):
         async def execute(**kwargs):
             self.assertIn("command-leases", kwargs["command"])
             self.assertIn("command-quarantine", kwargs["command"])
+            self.assertIn("-name '*.lease'", kwargs["command"])
+            self.assertIn("recovery.lock", kwargs["command"])
+            self.assertIn("-name '*.json'", kwargs["command"])
+            self.assertNotIn('find "$directory" -type f', kwargs["command"])
             self.assertEqual(kwargs["timeout_sec"], 30)
             self.assertEqual(kwargs["user"], "root")
             if error:

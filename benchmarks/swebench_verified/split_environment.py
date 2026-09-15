@@ -290,6 +290,14 @@ class SplitBenchmarkEnvironment:
                     result["executionError"] = "Command output exceeded the 32 MiB bridge limit; do not automatically replay it"
                 elif result["outcome"] == "unknown":
                     result["outcome"] = "exited"
+                execution = {
+                    key: result[key]
+                    for key in ("version", "exitCode", "outcome", "executionError")
+                    if key in result
+                }
+                execution_pending = directory / "execution.pending"
+                execution_pending.write_text(json.dumps(execution), encoding="utf-8")
+                execution_pending.replace(directory / "execution.json")
             # Docker owns the cgroup: restarting kills even detached descendants.
             # The writable layer and /testbed persist; process state does not.
             if not self.stopping:
