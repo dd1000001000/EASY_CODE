@@ -502,7 +502,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                         await split_environment.export_workspace()
                         workspace_exported = True
                     await self._capture_workspace(
-                        original_environment, workspace_base_commit
+                        original_environment, workspace_base_commit, split_environment
                     )
                     capture_succeeded = True
                 except Exception as capture_error:
@@ -723,7 +723,8 @@ fi
             await self._remove_remote_checkpoint_stage(environment)
 
     async def _capture_workspace(
-        self, environment: BaseEnvironment, workspace_base_commit: str
+        self, environment: BaseEnvironment, workspace_base_commit: str,
+        split_environment: SplitBenchmarkEnvironment,
     ) -> None:
         await self._remove_remote_checkpoint_stage(environment)
         script = f"""
@@ -784,9 +785,11 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
                 prefix="easy-code-checkpoint-download-"
             ) as temporary:
                 downloaded = Path(temporary)
-                await environment.download_dir(
-                    _REMOTE_CHECKPOINT_STAGE, downloaded
-                )
+                # Compose service names are not a trustworthy copy target if
+                # another container retains the main image's Compose labels.
+                # Bind the copy to the exact Harbor main ID captured before
+                # any split worker or reviewer was created.
+                await split_environment.copy_checkpoint_from_main(downloaded)
                 self._install_workspace_checkpoint(downloaded)
         finally:
             await self._remove_remote_checkpoint_stage(environment)

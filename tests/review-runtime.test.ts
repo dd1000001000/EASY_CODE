@@ -177,6 +177,18 @@ describe("review runtime isolation and recovery", () => {
       assert.equal(f.records.filter(m => m.role === "user" && m.content.startsWith("RUNTIME_REVIEW_FORMAT:")).length, 2);
     } finally { f.driver.release(); }
   });
+  it("reports the final rejected review format without adding retries or weakening closure", async () => {
+    let calls = 0;
+    const f = setup({ name: "glm", model: "mock", complete: async () => {
+      calls++;
+      return { message: { role: "assistant", content: "not a review report" } };
+    } });
+    try {
+      await assert.rejects(f.driver.discuss("reviewer", f.get()), /Review content corrections exhausted \(3\/3\).*invalid report/u);
+      assert.equal(calls, 3);
+      assert.equal(f.records.filter(m => m.role === "user" && m.content.startsWith("RUNTIME_REVIEW_FORMAT:")).length, 3);
+    } finally { f.driver.release(); }
+  });
   it("protects two closing calls from other agents and restores unused holds without invented spend", () => {
     const budget = new TaskBudget(3, 0);
     const held = budget.hold(2, 100);
