@@ -55,7 +55,7 @@ export async function runWorkspaceReview(input: WorkspaceReviewRequest, deps: Wo
     const requestedChanges = lastStatements.some(statement =>
       statement.value.vote !== "agree" || statement.value.unresolved.length > 0);
     return { ...result, decision: result.approved ? "approved" : input.signal?.aborted ? "interrupted" :
-      /unavailable|Insufficient|budget exhausted|time_limit|request_limit/iu.test(reason) ? "unavailable" :
+      /unavailable|Insufficient|budget exhausted|request_limit/iu.test(reason) ? "unavailable" :
       requestedChanges || latest?.closeReason === "agreement" ? "changes_requested" : "inconclusive" };
   } catch (error) {
     if (error instanceof ReviewFatalError) throw error;
@@ -117,7 +117,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       incidentId: input.incidentId, directory: copies?.directory,
       actorThreads: { author: createId("thread"), reviewer: createId("thread") },
       maxRounds: deps.limits.reviewMaxRounds, maxRequests: Math.max(2, Math.min(deps.limits.reviewMaxRequests, input.remainingModelRequests)),
-      maxTools: deps.limits.reviewMaxToolCalls, deadline: Date.now() + deps.limits.reviewTimeoutMs,
+      maxTools: deps.limits.reviewMaxToolCalls,
       summaryTokens: deps.limits.reviewSummaryMaxTokens,
       briefingTokens: deps.limits.reviewBriefingMaxTokens, handoffTokens: deps.limits.reviewHandoffMaxTokens });
     session = state.reviewSessions!.at(-1)!;

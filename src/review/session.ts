@@ -28,7 +28,7 @@ export interface ReviewSession {
   id: string; key: string; purpose: "stagnation" | "delivery"; snapshotId: string; requirementRevision: string;
   incidentId?: string; round: number; maxRounds: number; next: ReviewActor;
   status: "discussing" | "closing" | "decided" | "applied";
-  closeReason?: string; requests: number; tools: number; maxRequests: number; maxTools: number; deadline: number;
+  closeReason?: string; requests: number; tools: number; maxRequests: number; maxTools: number;
   summaryTokens: number; requestedSummaries: ReviewActor[];
   briefingTokens?: number; handoffTokens?: number;
   briefingRequested?: boolean; briefing?: { full: string; projected: string };
@@ -51,7 +51,7 @@ const start = z.object({ type: z.literal("started"), id: z.string().min(1), key:
   purpose: z.enum(["stagnation", "delivery"]), snapshotId: z.string().min(1), requirementRevision: z.string().min(1),
   incidentId: z.string().optional(), maxRounds: z.number().int().min(1).max(5),
   maxRequests: z.number().int().min(2).max(200), maxTools: z.number().int().min(0).max(100),
-  deadline: z.number().positive(), summaryTokens: z.number().int().min(256).max(32768),
+  summaryTokens: z.number().int().min(256).max(32768),
   briefingTokens: z.number().int().min(256).max(32768).optional(),
   handoffTokens: z.number().int().min(1024).max(65536).optional() }).strict();
 const eventSchema = z.discriminatedUnion("type", [start,
@@ -254,8 +254,8 @@ export async function runReviewDiscussion(get: () => ReviewSession,
   }
   while (get().status === "discussing") {
     const s = get();
-    if (Date.now() >= s.deadline || s.requests >= s.maxRequests - 2) {
-      await emit({ type: "close", id: s.id, reason: Date.now() >= s.deadline ? "time_limit" : "request_limit" }); break;
+    if (s.requests >= s.maxRequests - 2) {
+      await emit({ type: "close", id: s.id, reason: "request_limit" }); break;
     }
     let value: ReviewStatement;
     try {

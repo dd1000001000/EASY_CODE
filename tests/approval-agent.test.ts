@@ -25,7 +25,7 @@ describe("independent approval agent", () => {
       provider: provider(async () => {
         if (++calls <= 5) throw new ProviderError("busy", { provider: "glm", code: "http_error", statusCode: 503, retryable: true, retryAfterMs: 0 });
         return { message: { role: "assistant", content: calls <= 7 ? "bad json" : '{"decision":"allow_once","reason":"ordinary read"}' } };
-      }), budget, maxInputChars: 24000, maxOutputTokens: 512, timeoutMs: 2000,
+      }), budget, maxInputChars: 24000, maxOutputTokens: 512,
     });
     assert.equal(calls, 8); assert.equal(budget.snapshot().requests, 8); assert.equal(result.decision, "allow_once");
   });
@@ -34,7 +34,7 @@ describe("independent approval agent", () => {
       let calls = 0;
       const result = await reviewCommandApproval(request(), "Inspect", {
         provider: provider(async () => { calls++; return { message: { role: "assistant", content: "bad" } }; }),
-        limits: { ...defaultRuntimeLimits(), modelContentRetries: count }, budget: new TaskBudget(10, 0), maxInputChars: 24000, maxOutputTokens: 512, timeoutMs: 1000,
+        limits: { ...defaultRuntimeLimits(), modelContentRetries: count }, budget: new TaskBudget(10, 0), maxInputChars: 24000, maxOutputTokens: 512,
       });
       assert.equal(calls, count + 1); assert.equal(result.decision, "reject"); assert.equal(result.unavailable, true);
     }
@@ -46,7 +46,7 @@ describe("independent approval agent", () => {
       provider: provider(async () => { calls++; return { message: { role: "assistant",
         content: JSON.stringify({ decision: "allow_once", reason: "中文".repeat(5000) }),
         reasoning_content: "DO NOT USE THIS AS THE DECISION" } }; }),
-      budget: new TaskBudget(2, 0), maxInputChars: 24000, maxOutputTokens: 256, timeoutMs: 1000,
+      budget: new TaskBudget(2, 0), maxInputChars: 24000, maxOutputTokens: 256,
       onResponse: response => { original = response.message.content ?? ""; },
     });
     assert.equal(calls, 1);
@@ -62,7 +62,7 @@ describe("independent approval agent", () => {
       let captured: ModelRequest | undefined;
       const result = await reviewCommandApproval(request(), "Inspect project", {
         provider: provider(async input => { captured = input; return { message: { role: "assistant", content: JSON.stringify({ decision, reason: "Evidence checked" }) }, usage: { totalTokens: 50 } }; }),
-        budget, maxInputChars: 24000, maxOutputTokens: 512, timeoutMs: 1000,
+        budget, maxInputChars: 24000, maxOutputTokens: 512,
       });
       assert.equal(result.decision, decision); assert.equal(result.unavailable, undefined);
       assert.equal(captured!.tools, undefined); assert.equal(captured!.thinkingEffort, "none");
@@ -72,27 +72,39 @@ describe("independent approval agent", () => {
     }
     assert.equal(budget.snapshot().requests, 3); assert.equal(budget.snapshot().tokens, 150);
   });
-  it("escalates malformed output, provider errors, timeouts and exhausted budget without retry", async () => {
+  it("escalates malformed output, provider errors and exhausted budget without a role-local timeout", async () => {
     for (const complete of [
       async () => ({ message: { role: "assistant" as const, content: '{"decision":"allow_once"}' } }),
       async () => { throw new Error("provider unavailable"); },
-      async () => new Promise<never>(() => undefined),
     ]) {
       const result = await reviewCommandApproval(request(), "Inspect", { provider: provider(complete), budget: new TaskBudget(1, 0),
-        maxInputChars: 24000, maxOutputTokens: 128, timeoutMs: 20 });
+        maxInputChars: 24000, maxOutputTokens: 128 });
       assert.equal(result.decision, "reject"); assert.equal(result.unavailable, true);
     }
     const exhausted = new TaskBudget(1, 1);
     const result = await reviewCommandApproval(request(), "Inspect", { provider: provider(async () => { throw Error("must not call"); }),
-      budget: exhausted, maxInputChars: 24000, maxOutputTokens: 128, timeoutMs: 20 });
+      budget: exhausted, maxInputChars: 24000, maxOutputTokens: 128 });
     assert.match(result.reason, /budget/); assert.equal(exhausted.snapshot().requests, 0);
+  });
+  it("forwards only the caller cancellation signal and delegates response timing to the provider", async () => {
+    const controller = new AbortController();
+    let captured: ModelRequest | undefined;
+    const result = await reviewCommandApproval({ ...request(), signal: controller.signal }, "Inspect", {
+      provider: provider(async input => { captured = input; return { message: { role: "assistant",
+        content: '{"decision":"allow_once","reason":"ordinary read"}' } }; }),
+      budget: new TaskBudget(1, 0), maxInputChars: 24000, maxOutputTokens: 128,
+    });
+    assert.equal(result.decision, "allow_once");
+    assert.equal(captured!.signal, controller.signal);
+    assert.equal(captured!.responseMode, "stream");
+    assert.equal(captured!.thinkingEffort, "none");
   });
   it("does not dispatch oversized or canceled approval evidence", async () => {
     const controller = new AbortController(); controller.abort();
     for (const [req, chars] of [[request(), 10], [{ ...request(), signal: controller.signal }, 24000]] as const) {
       let calls = 0;
       const result = await reviewCommandApproval(req, "inspect", { provider: provider(async () => { calls++; throw Error("unreachable"); }),
-        budget: new TaskBudget(1, 0), maxInputChars: chars, maxOutputTokens: 128, timeoutMs: 20 });
+        budget: new TaskBudget(1, 0), maxInputChars: chars, maxOutputTokens: 128 });
       assert.equal(result.unavailable, true); assert.equal(calls, 0);
     }
   });
