@@ -64,10 +64,8 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
   const payload = {
     ...(state.delivery ? { advisoryReviewMaterial: state.delivery } : {}),
     ...(state.reviewSessions?.length ? { reviews: state.reviewSessions.filter(s => s.status !== "applied" || s === state.reviewSessions!.at(-1)).map(s => ({ id: s.id,
-      snapshotId: s.snapshotId, purpose: s.purpose, status: s.status, reason: s.closeReason,
-      rounds: s.round, reviewerWithoutObjection: s.approval,
-      unresolved: s.statements.slice(-2).flatMap(item => item.value.unresolved),
-      experiments: s.experiments })) } : {}),
+      snapshotId: s.snapshotId, purpose: s.purpose, status: s.status, reason: s.reason,
+      report: s.report, evidenceIds: s.evidenceIds })) } : {}),
     // Preserve complete retired user messages, not a model-generated paraphrase
     // or the bounded display quote in the intent ledger. Never truncate to fit.
     retiredUserMessages: state.messages.slice(0, state.compactedMessageCount)

@@ -187,18 +187,18 @@ describe("configurable 1M context", () => {
     } finally { storage.close(); rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it("keeps exact review proposals with bounded independent summaries and pageable full evidence", () => {
+  it("keeps one reviewer report and makes its full content recallable", () => {
     const s = state();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "stagnation", snapshotId: "snapshot", requirementRevision: "req",
-      maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 4096, briefingTokens: 6144, handoffTokens: 12288 });
-    for (const who of ["reviewer", "author"] as const) foldReviewEvent(s, { type: "statement", id: "r", actor: who,
-      value: { proposal: "Verify named IntFlag separately from unnamed composites", kind: "next_action", vote: "agree", evidenceRefs: [], unresolved: [] } });
-    for (const who of ["author", "reviewer"] as const) foldReviewEvent(s, { type: "summary", id: "r", actor: who,
-      text: "<summary>" + `${who} unverified facts `.repeat(5000) + "</summary>", unavailable: false });
-    foldReviewEvent(s, { type: "decided", id: "r", fresh: true });
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "stagnation",
+      snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "reviewer_thread" });
+    foldReviewEvent(s, { type: "brief_ready", id: "r", text: "Main handoff" });
+    foldReviewEvent(s, { type: "review_started", id: "r" });
+    foldReviewEvent(s, { type: "reported", id: "r", report: { conclusion: "Unverified",
+      nextAction: "Verify named IntFlag separately from unnamed composites", evidenceRefs: [], uncertainties: [] } });
+    foldReviewEvent(s, { type: "applied", id: "r", fresh: true });
     const handoff = s.reviewSessions![0]!.handoff!;
-    assert.ok(estimatedTokens(handoff) <= 12288);
+    assert.ok(estimatedTokens(handoff) < 10000);
     assert.match(handoff, /Verify named IntFlag/);
-    assert.equal(recallThreadContext(s, { evidenceId: "review:r:evidence", offset: 0, limit: 32000 }).ok, true);
+    assert.equal(recallThreadContext(s, { evidenceId: "review:r:report", offset: 0, limit: 32000 }).ok, true);
   });
 });

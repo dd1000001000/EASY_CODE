@@ -1465,7 +1465,7 @@ export class Terminal {
     const id = `review_ui_${Date.now()}_${++this.activitySequence}`;
     this.uiState = applyEvent(this.uiState, {
       type: "review.set",
-      review: { id, purpose, startedAt: Date.now(), phase: "snapshot", round: 0, maxRounds: 5 },
+      review: { id, purpose, startedAt: Date.now(), phase: "main_brief" },
     });
     this.lastReviewElapsedSecond = -1;
     this.refresh();
@@ -1473,12 +1473,12 @@ export class Terminal {
     return id;
   }
 
-  updateReview(id: string, phase: UIReviewPhase, round: number, maxRounds: number): void {
+  updateReview(id: string, phase: UIReviewPhase): void {
     const prior = this.uiState.live.review;
     if (!prior || prior.id !== id) return;
     this.uiState = applyEvent(this.uiState, {
       type: "review.set",
-      review: { ...prior, phase, round, maxRounds },
+      review: { ...prior, phase },
     });
     this.refresh();
   }

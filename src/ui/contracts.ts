@@ -77,9 +77,7 @@ export interface UIActivityState {
   readonly startedAt?: number;
 }
 
-export type UIReviewPhase =
-  | "snapshot" | "environment" | "briefing" | "discussion"
-  | "summaries" | "decision" | "applied";
+export type UIReviewPhase = "main_brief" | "independent_review";
 
 /** Review is independent of transient model/tool spinners. */
 export interface UIReviewState {
@@ -87,8 +85,6 @@ export interface UIReviewState {
   readonly purpose: "stagnation" | "delivery";
   readonly startedAt: number;
   readonly phase: UIReviewPhase;
-  readonly round: number;
-  readonly maxRounds: number;
 }
 
 export type UIProgressKind = "step" | "tool" | "status";

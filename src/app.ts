@@ -1953,7 +1953,7 @@ export class EasyCodeApp {
       },
       runReviewSession: async (input) => this.workspaceMutationLock.runExclusive(async () => {
         // A background writer outlives its run_command lock; do not snapshot it.
-        if (this.hasRunningCommands()) return { approved: false, requests: 0, reused: true,
+        if (this.hasRunningCommands()) return { decision: "unavailable" as const, requests: 0, reused: true,
           reason: "A supervised command is still running; observe its terminal result before review." };
         const reviewUiId = this.terminal.startReview(input.purpose);
         try {
@@ -1964,7 +1964,7 @@ export class EasyCodeApp {
             dataDir: this.config.dataDir,
             lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
             status: text => this.terminal.status(text),
-            onProgress: progress => this.terminal.updateReview(reviewUiId, progress.phase, progress.round, progress.maxRounds),
+            onProgress: progress => this.terminal.updateReview(reviewUiId, progress.phase),
             approve: async (context, request) => this.approvalQueue.run(async () => {
               if (request.signal?.aborted || request.command?.scope === "host") return false;
               const saved = this.threadStore.recover(context.threadId);

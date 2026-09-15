@@ -1330,7 +1330,7 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
-        if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.session.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+        if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.assignment.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
             (input.type === "context.compaction.committed" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
@@ -2290,7 +2290,7 @@ export class ThreadStore {
         state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(p => normalizeCommandApprovalPrefix(p) !== prefix);
       } else if (event.type === "delivery.required") {
         foldDelivery(state, event.payload);
-      } else if (event.type === "review.session.event") {
+      } else if (event.type === "review.assignment.event") {
         foldReviewEvent(state, event.payload);
       } else if (event.type === "completion.rejected" || event.type === "completion.resolved") {
         foldCompletionControl(state, event.type, event.payload);

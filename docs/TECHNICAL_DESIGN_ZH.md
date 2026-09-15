@@ -248,7 +248,7 @@ Benchmark 是独立边界：可信适配器选择 [BenchmarkContainerBackend](..
 
 测试运行器发现通过普通路径保护和后端工作区映射读取清单。无法归属的 npm/yarn/pnpm 脚本得到 unknown 验证，不会仅因外层退出码为 0 就判成功；管道输出与进程状态分别解释。
 
-[review/workspace.ts](../src/review/workspace.ts) 为 author 和 reviewer 创建两份当前源码的私有副本。两者都拿不到主 Agent 的私有短期历史，也不能写主工作区。原生审查通过有记录、可复核的链接复用既有 `node_modules`、`.venv` 或 `venv`，避免重复安装依赖；原生路径策略会拒绝通过这些链接越出私有副本的写入。普通 CLI 审查使用相同原生命令后端和独立自动审批；Benchmark 审查使用独立离线 worker 副本。快照哈希、已修改测试的来源记录和独立反例仍是审查材料的一部分。
+[review/workspace.ts](../src/review/workspace.ts) 只创建一份 reviewer 私有源码副本。Reviewer 接收主 Agent 的有界、待核实交接说明，而不是源码、完整 Diff 或改动文件清单；它自行读取项目，不能写主工作区。原生审查通过有记录、可复核的链接复用既有 `node_modules`、`.venv` 或 `venv`，避免重复安装依赖；原生路径策略会拒绝通过这些链接越出私有副本的写入。Benchmark 审查使用离线 reviewer worker 副本。快照哈希和独立调查的反例仍是审查材料的一部分。
 
 `npm run test:native-sandbox` 会编译项目并运行 [smoke-native-sandbox.mjs](../scripts/smoke-native-sandbox.mjs)，检查原生身份、工作区写入、工作区外写入拒绝、直接外网阻断、超时清理和后续命令恢复。Windows 已通过真实 elevated 沙箱验证；macOS 和 Linux 在发布认证前仍需各自真机/OS CI。
 
@@ -296,7 +296,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 | --- | --- | --- |
 | 主 Agent | 自己的 Thread | 读取；经暂存、校验后写入 |
 | 子 Agent | 自己的任务、工具交互和结果 | 只读 |
-| 审查 Author / Reviewer | 自己的审查 Thread 和显式共享材料 | 只读 |
+| Reviewer | 私有审查 Thread 和主 Agent 的有界交接说明 | 只读 |
 | 命令审批 Agent | 有界的一次性审批材料包 | 不开放普通记忆管理工具 |
 
 子 Agent 不能隐式搜索父 Agent 的私有会话。任务说明、结果提交和审查材料包是显式交接边界。
@@ -378,17 +378,15 @@ Token 计数使用保守本地估算、图片计量和供应商用量校准，�
 
 调查检测还观察窗口内的重复读取/搜索；只有“很久没修改文件”不足以证明停滞。读／搜弱提示对每个任务范围最多发送一次，之后只保留遥测。会话不再于工具调用或验证前扫描整个仓库建立测试基线；记录真实运行的终态检查。文件变更记录与命令差异只识别实际修改过的已有测试／配置，不扫描无关文件；新增测试只是补充证据，不会冒充原始验证标准。旧整仓验证基线事件与归档格式不再回放或迁移。
 
-### 11.2 隔离审查讨论
+### 11.2 单向独立审查
 
 正常应用将 [runWorkspaceReview](../src/review/application.ts) 接入 Runtime，用于停滞及风险触发的交付审查（例如修改测试／配置或重复验证失败）。Progress 模块还保留在未提供此回调时使用的有界结构化审查路径；二者都不是命令审批 Agent。
 
-准备稳定快照和审查期间暂停主线程修改。独立的 Author / Reviewer 获取显式简报、证据、各自私有历史和独立工作副本。双方可以读取、搜索、运行经批准的命令，但不开放普通编辑工具、DAG、子 Agent 管理或长期记忆写入。命令可能改变一次性审查副本，不代表允许修改主 Agent 的实时工作区。
+准备稳定快照和审查期间暂停主线程修改。Runtime 只建立一个私有 Reviewer Thread 和主 Agent 的有界交接说明；交接包含需求与已观察到的验证失败，不注入源码、完整 Diff 或改动文件清单。Reviewer 自行读取、搜索私有副本并可运行经批准的命令，但不开放普通编辑工具、DAG、子 Agent 管理或长期记忆写入。命令可能改变一次性审查副本，不代表允许修改主 Agent 的实时工作区。
 
-提案及投票绑定需求版本和工作区指纹。同一材料的审查共用缓存键；重复执行相同命令不会仅因新 commandId 而让缓存失效。Runtime 保留新鲜审查意见、真实命令结果与已知修改测试的证据，但不再依赖完整仓库基线或逐条需求的形式化检查来认证修复语义。审查不可用或结论不明确时附上“未验证”说明，不作为交付硬否决；沙箱、审批、清理不确定及命令／DAG 持久义务仍是硬门槛。实际测试、reviewer 意见和官方 Benchmark 分数分别报告。
+单份 Reviewer 报告绑定需求版本和工作区指纹。同一材料的审查共用缓存键；重复执行相同命令不会仅因新 commandId 而让缓存失效。报告包含结论、下一步行动、已捕获证据引用与不确定点，以注明来源的建议注入主 Agent 下一轮上下文；不再有 Author 投票、达成一致环节或 Runtime 正确性认证。审查不可用或结论不明确时附上“未验证”说明，不作为交付硬否决；沙箱、审批、清理不确定及命令／DAG 持久义务仍是硬门槛。实际测试、Reviewer 意见和官方 Benchmark 分数分别报告。
 
-默认最多讨论五轮，另受 32 次模型请求、20 次工具调用和十分钟上限约束。未达成有效共识时，双方分别输出摘要，由有界交接材料将分歧和不确定性返回主 Agent。完整讨论保留供召回，不整段注入主上下文。
-
-简报、单方摘要、交接材料默认分别为 6,144 / 4,096 / 12,288 Token。收尾请求占用预留的共享预算，不拥有无限额外预算。审查通过 discussing、closing、decided、applied 等状态持久化，避免 Resume 时重新讨论或重复应用。
+不设置审查专用的轮数、模型请求数或工具调用上限。Reviewer 的每次模型请求仍消耗全任务共享预算；命令仍受沙箱、审批、超时和输出限制。CLI 只显示英文的 `Main agent preparing review handoff` 或 `Reviewer independently investigating` 和已用时间，不绘制审查进度条。状态按 preparing、reviewing、reported/unavailable、applied 持久化，避免 Resume 重跑已付费的审查或重复注入；旧讨论记录不迁移。
 
 ## 12. 重试与截断规则
 
@@ -432,7 +430,7 @@ Worker 不获得供应商密钥、Docker Socket 或宿主机桥接程序。共�
 
 [split_environment.py](../benchmarks/swebench_verified/split_environment.py) 管理 Docker 监督和恢复，[benchmark-worker.ts](../src/sandbox/benchmark-worker.ts) 将命令事件转换为 Runtime 结果。执行失败、输出超限、清理失败分别记录，不需要开启特权 Docker 来强行支持嵌套 OS 沙箱。
 
-离线执行减少外部查找渠道，但不证明补丁正确，也不能消除模型已有知识。本地测试通过、Reviewer 同意和官方分数必须分别报告。
+离线执行减少外部查找渠道，但不证明补丁正确，也不能消除模型已有知识。本地测试通过、Reviewer 建议和官方分数必须分别报告。
 
 ## 15. 构建、验证与扩展方式
 

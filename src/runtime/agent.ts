@@ -2807,7 +2807,8 @@ export class AgentRuntime {
           if (!state.delivery || (state.delivery.sourceMessageIndex < turnHistoryStart &&
               state.delivery.request !== memoryContext.userInput &&
               !/^(?:continue|resume|继续|继续执行)$/iu.test(memoryContext.userInput.trim())) ||
-              state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied")) {
+              state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.status === "applied" &&
+                state.delivery!.request !== memoryContext.userInput)) {
             const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
             await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
             foldDelivery(state, obligation);
@@ -2820,8 +2821,17 @@ export class AgentRuntime {
           if (review.decision === "interrupted") return this.finish(state, turnId,
             "Review was interrupted; work and the review state are retained.",
             "interrupted", step, memoryContext);
-          if (!review.approved) text += `\n\nReview note: ${review.decision ?? "inconclusive"}; ` +
-            `${review.reason ?? "the current patch has not been independently confirmed"}. ` +
+          // The editor stayed open during investigation. Drain any adjustment
+          // before handing the advisory report to the next model request;
+          // finalization is sealed only when an answer is actually delivered.
+          const reviewSteering = await this.takeAndApplySteering(state, turnId, "before_final", turnImages, false, memoryContext);
+          if (reviewSteering) continue;
+          // One-way review advice is injected into the parent's context. Let
+          // the main Agent assess it in its next response, never deliver the
+          // pre-review answer as though it had already considered the report.
+          if (review.report && !review.reused) continue;
+          if (review.decision === "unavailable" || review.decision === "inconclusive") text += `\n\nReview note: ${review.decision}; ` +
+            `${review.reason ?? "independent advice was not available or is stale"}. ` +
             "Report only checks actually run; this is not an official benchmark verdict.";
         }
         // Keep the adjustment editor live throughout review. The one final

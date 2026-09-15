@@ -248,7 +248,7 @@ Benchmark is deliberately separate: its trusted adapter selects [BenchmarkContai
 
 Test-runner discovery reads manifests through the backend's workspace mapping and the ordinary path guard. Unattributed npm/yarn/pnpm scripts produce unknown validation, not success inferred solely from exit zero. Pipeline output is interpreted independently from the outer process status.
 
-[review/workspace.ts](../src/review/workspace.ts) creates two private copies of the current source snapshot for the author and reviewer. Neither participant receives the main agent's private short-term history or a writable main checkout. Native reviews expose existing `node_modules`, `.venv` or `venv` directories through recorded, verified links to avoid reinstalling dependencies; the native path policy denies writes that traverse those links outside the private copy. Both use the same native command backend and independent auto-approval path; Benchmark reviews instead use separate offline worker copies. Snapshot hashes, changed-test provenance and independent counterexamples remain part of the review material.
+[review/workspace.ts](../src/review/workspace.ts) creates one private reviewer copy of the current source snapshot. The reviewer receives a bounded, fallible main-agent handoff rather than source text, a diff, or a changed-file list, and reads the project independently. It cannot write the main checkout. Native reviews expose existing `node_modules`, `.venv` or `venv` directories through recorded, verified links to avoid reinstalling dependencies; the native path policy denies writes that traverse those links outside the private copy. Benchmark reviews use an offline reviewer worker copy. Snapshot hashes and independently investigated counterexamples remain part of the review material.
 
 `npm run test:native-sandbox` builds the project and runs [smoke-native-sandbox.mjs](../scripts/smoke-native-sandbox.mjs). It checks the active native identity, workspace writing, rejection of an outside write, direct-network denial, timeout cleanup and a successful follow-up command. Windows is validated on a real elevated sandbox; macOS and Linux still require their own hardware/OS CI before release certification.
 
@@ -296,7 +296,7 @@ Clearing active context does not delete these stores. `/clear` affects terminal 
 | --- | --- | --- |
 | Main agent | Own thread | Read; staged, validated writes |
 | Child agent | Own assignment, tools and results | Read only |
-| Review author / reviewer | Own review thread plus explicitly shared material | Read only |
+| Reviewer | Private review thread and bounded main-agent handoff | Read only |
 | Command-approval agent | Bounded one-shot approval packet | No normal memory-management tools |
 
 Children cannot implicitly search the parent's private conversation. Assignments, submitted results and review packets are explicit handoff boundaries.
@@ -378,17 +378,15 @@ Repeated high-confidence failures across distinct validation cycles can trigger 
 
 Investigation detection also considers repeated reads/searches over observation windows; elapsed time without an edit alone is insufficient. Weak read/search hints are emitted at most once per task scope and then remain telemetry. Sessions do not scan the whole repository for a test baseline before tools or validation. Actual terminal checks are recorded; recorded file changes and command deltas identify modified existing tests/configuration without scanning unrelated files. An added test is supplementary evidence, not an original oracle. The retired global validation-baseline event and archive formats are not replayed or migrated.
 
-### 11.2 Isolated review discussions
+### 11.2 One-way independent review
 
 The normal application wires [runWorkspaceReview](../src/review/application.ts) into Runtime for stagnation and risk-triggered delivery review (for example, changed tests/configuration or repeated verified failures). The progress module also retains a bounded structured-review path for Runtime configurations without that callback; these are not the command-approval agent.
 
-Main-thread mutation is suspended while preparing/reviewing a stable workspace snapshot. Independent author/reviewer participants receive explicit briefing and evidence, their own private histories and separate working copies. They can read/search and run approved commands, but are not given ordinary file-edit, DAG, child-management or long-term-memory-write tools. Commands may alter a disposable review copy; this does not authorize editing the live main workspace.
+Main-thread mutation is suspended while preparing/reviewing a stable workspace snapshot. Runtime creates one private reviewer thread and a bounded main-agent handoff. The handoff contains request context and observed verification failures, not the source, full diff, or changed-file inventory; the reviewer reads and searches its private copy and may run approved commands. Ordinary file-edit, DAG, child-management and long-term-memory-write tools are unavailable. Commands may alter the disposable review copy, not the live main workspace.
 
-Proposals and votes bind to the requirement revision and workspace fingerprint. Review sessions for the same material share a cache key; repeated identical commands do not invalidate it merely by obtaining a new command ID. Runtime preserves fresh reviewer findings, factual command outcomes and known changed-test evidence, but does not certify patch semantics from a complete-test inventory or require one formal check for every requirement. An unavailable or inconclusive reviewer produces an explicit unverified note, not a hard delivery veto. Sandbox, approval, uncertain cleanup and durable command/DAG obligations remain hard gates. Local tests, reviewer opinions and official benchmark scores are reported separately.
+The one reviewer report binds to the requirement revision and workspace fingerprint. Review assignments for the same material share a cache key; repeated identical commands do not invalidate it merely by obtaining a new command ID. The report carries a conclusion, next action, captured evidence references and uncertainties. It is injected as attributed advice for the main Agent's next response; there is no author vote, consensus round, or Runtime correctness certificate. An unavailable or inconclusive reviewer produces an explicit unverified note, not a hard delivery veto. Sandbox, approval, uncertain cleanup and durable command/DAG obligations remain hard gates. Local tests, reviewer opinions and official benchmark scores are reported separately.
 
-The default discussion lasts at most five rounds, with additional limits of 32 model requests, 20 tool calls and ten minutes. If no valid agreement is reached, each participant supplies an independent summary; a bounded combined handoff returns disagreement and uncertainty to the main agent. The full discussion is retained for recall, not copied wholesale into main context.
-
-Briefing/participant-summary/handoff budgets are 6,144/4,096/12,288 Tokens. Closing requests use reserved shared budget, not a separate unlimited allowance. Review state persists through discussing, closing, decided and applied phases so Resume does not silently rerun or reapply a review.
+There are no review-specific round, model-request or tool-call ceilings. Every reviewer model request still debits the shared task budget, and commands retain sandbox, approval, timeout and output limits. The CLI shows either `Main agent preparing review handoff` or `Reviewer independently investigating`, with elapsed time and no review progress bar. Assignment state persists through preparing, reviewing, reported/unavailable and applied phases so Resume does not silently rerun or reapply a charged review. Legacy discussion records are not migrated.
 
 ## 12. Retry and truncation rules
 
@@ -432,7 +430,7 @@ The worker does not receive provider keys, a Docker socket or the host bridge. S
 
 [split_environment.py](../benchmarks/swebench_verified/split_environment.py) owns Docker supervision and restoration; [benchmark-worker.ts](../src/sandbox/benchmark-worker.ts) maps command events into Runtime. Execution failure, output overflow and cleanup failure remain separate. The design does not require privileged Docker to create a nested OS sandbox.
 
-Offline execution reduces external lookup channels; it does not prove patch correctness or eliminate knowledge already present in the model. Local test success, reviewer agreement and official benchmark score must remain separately reported.
+Offline execution reduces external lookup channels; it does not prove patch correctness or eliminate knowledge already present in the model. Local test success, reviewer advice and official benchmark score must remain separately reported.
 
 ## 15. Build, verification and extension points
 

@@ -1531,12 +1531,12 @@ describe("Terminal retained inline shell", () => {
           onSteer: async submission => { submitted.push(submission.text); },
         });
         const reviewId = terminal.startReview("delivery");
-        terminal.updateReview(reviewId, "discussion", 1, 5);
+        terminal.updateReview(reviewId, "independent_review");
         await settlePromptInput();
         input.write("new adjustment during review\r");
         await settlePromptInput();
         assert.deepEqual(submitted, ["new adjustment during review"]);
-        assert.equal(terminalState(terminal).live.review?.phase, "discussion");
+        assert.equal(terminalState(terminal).live.review?.phase, "independent_review");
         const activityId = terminal.startActivity("review model request", "model");
         terminal.stopActivity(activityId);
         assert.equal(terminalState(terminal).live.review?.id, reviewId);
