@@ -11,7 +11,6 @@ import { createReviewDriver, type ReviewParticipant } from "../src/review/driver
 import { foldReviewEvent, runReviewDiscussion, type ReviewEvent } from "../src/review/session.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { createReviewCopies, restoreReviewCopies, reviewFingerprint } from "../src/review/workspace.js";
-import { captureValidationBaseline } from "../src/progress/validation-standard.js";
 import { createStorage, workspaceIdFromRoot } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
 import { EvidenceStore } from "../src/context/evidence-store.js";
@@ -287,7 +286,7 @@ describe("review runtime isolation and recovery", () => {
       assert.throws(() => emit({ type: "applied", id: "r" }), /already applied/u);
     } finally { db.close(); await rm(directory, { recursive: true, force: true }); }
   });
-  it("copies source without touching the checkout and restores hash-verified original tests only for reviewer", async () => {
+  it("copies the current source without touching the checkout or restoring old test content", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-review-source-"));
     let reviewDirectory: string | undefined;
     try {
@@ -296,12 +295,11 @@ describe("review runtime isolation and recovery", () => {
       await writeFile(path.join(directory, "module.py"), "value = 1\n");
       for (const args of [["init"], ["add", "."], ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "baseline"]])
         await execa("git", args, { cwd: directory });
-      const baseline = await captureValidationBaseline(directory);
       await writeFile(path.join(directory, "tests", "test_original.py"), "assert False\n");
       const workspace = await WorkspaceManager.create(directory), fingerprint = reviewFingerprint(await workspace.captureSnapshot());
-      const id = createId("review"), copies = await createReviewCopies(workspace, id, fingerprint, 100000, baseline);
+      const id = createId("review"), copies = await createReviewCopies(workspace, id, fingerprint, 100000);
       reviewDirectory = copies.directory;
-      assert.equal(await readFile(path.join(copies.roots.reviewer, "tests", "test_original.py"), "utf8"), "assert True\n");
+      assert.equal(await readFile(path.join(copies.roots.reviewer, "tests", "test_original.py"), "utf8"), "assert False\n");
       assert.equal(await readFile(path.join(copies.roots.author, "tests", "test_original.py"), "utf8"), "assert False\n");
       assert.equal(reviewFingerprint(await workspace.captureSnapshot()), fingerprint);
       assert.deepEqual((await restoreReviewCopies(copies.directory, id, fingerprint)).baselines, copies.baselines);
@@ -324,7 +322,7 @@ describe("review runtime isolation and recovery", () => {
       const workspace = await WorkspaceManager.create(directory);
       const fingerprint = reviewFingerprint(await workspace.captureSnapshot());
       const id = createId("review");
-      const copies = await createReviewCopies(workspace, id, fingerprint, 100000, undefined, { changedPaths: [] });
+      const copies = await createReviewCopies(workspace, id, fingerprint, 100000, { changedPaths: [] });
       createdCopies.push(copies.directory);
       const copiedLink = path.join(copies.roots.reviewer, "linked.txt");
       assert.equal((await lstat(copiedLink)).isSymbolicLink(), false);
@@ -335,7 +333,7 @@ describe("review runtime isolation and recovery", () => {
       const rejectedId = createId("review");
       createdCopies.push(path.join(await realpath(os.tmpdir()), `easy-code-${rejectedId}`));
       await assert.rejects(
-        () => createReviewCopies(workspace, rejectedId, fingerprint, 100000, undefined, { changedPaths: ["linked.txt"] }),
+        () => createReviewCopies(workspace, rejectedId, fingerprint, 100000, { changedPaths: ["linked.txt"] }),
         /Changed symbolic links cannot enter/u,
       );
     } finally {
@@ -349,6 +347,9 @@ describe("review runtime isolation and recovery", () => {
     await writeFile(path.join(root, "module.py"), "value = 1\n");
     const db = createStorage(path.join(directory, "data")), store = new ThreadStore(db);
     const main = store.create({ threadId: "main", workspaceRoot: root, mode: "code", provider: "glm", model: "mock", thinkingEffort: "none" });
+    const recordedCheck = { id: "check-one", program: "python", args: ["-m", "compileall"], cwd: ".",
+      status: "exited" as const, exitCode: 0, durationMs: 1, timestamp: "now", summary: "Command exited with code 0" };
+    main.commands.push(recordedCheck);
     // This message-only fixture must never dispatch commands to the real engine.
     const noCommands = mock.method(NativeSandboxBackend.prototype, "prepare", async () => {
       throw new Error("Review message fixture must not launch sandbox commands");
@@ -378,6 +379,9 @@ describe("review runtime isolation and recovery", () => {
       assert.equal(main.messages.length, 1); assert.match(main.messages[0]!.content!, /RUNTIME_REVIEW_HANDOFF/u);
       const second = await runWorkspaceReview(request, deps);
       assert.equal(second.reused, true); assert.equal(calls, 13);
+      main.commands.push({ ...recordedCheck, id: "check-two" });
+      const crossPurpose = await runWorkspaceReview({ ...request, purpose: "stagnation" }, deps);
+      assert.equal(crossPurpose.reused, true); assert.equal(calls, 13);
     } finally {
       noCommands.mock.restore();
       for (const session of main.reviewSessions ?? []) if (session.directory) await rm(session.directory, { recursive: true, force: true });

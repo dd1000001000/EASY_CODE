@@ -206,7 +206,6 @@ export interface ProgressGuardState {
     sources: Array<{ key: string; hash: string; ranges: Array<[number, number]> }>;
     searches: string[];
   }>;
-  validationBaseline?: import("./validation-standard.js").ValidationBaseline;
   schemaVersion: typeof PROGRESS_GUARD_STATE_SCHEMA_VERSION;
   acceptedObservations: number;
   duplicateObservations: number;
@@ -223,6 +222,8 @@ export interface ProgressGuardState {
   readWarning?: ProgressReadWarning;
   recentSearches?: ProgressRecentRead[];
   searchWarning?: { scopeKey: string; sourceEventId: string; count: number };
+  /** Durable one-shot weak hints; weak signals never block execution. */
+  presentedWeakHintScopes?: string[];
   /** Durable intervention state. Reviewer attempts never enter the task DAG. */
   incidents: ProgressIncident[];
   saturated: boolean;

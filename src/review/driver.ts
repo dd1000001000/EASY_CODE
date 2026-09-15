@@ -181,13 +181,13 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       const validateStatement = async (value: unknown) => {
         if (reconciliationPending(p.state)) throw new Error("Context-reset reconciliation must finish before a review conclusion.");
         const statement = statementSchema.parse(value);
-        if (statement.kind === "delivery" && statement.vote === "agree" && !statement.checks?.length)
-          throw new Error("Delivery requires checks binding each supplied requirement ID to actual evidence and a discriminating counterexample (or why not applicable).");
+        // Checks are useful reviewer evidence, not a mandatory proof object
+        // for every user requirement. Only validate links actually supplied.
         for (const check of statement.checks ?? []) {
           if (!session.requirements?.includes(check.requirementId) || !statement.evidenceRefs.includes(check.evidenceId))
             throw new Error("Unknown requirement or uncited acceptance evidence");
-          if (check.method === "custom") {
-            if (!check.contractEvidenceId || !statement.evidenceRefs.includes(check.contractEvidenceId)) throw new Error("Custom validation requires a cited read of its assertion/exit contract");
+          if (check.method === "custom" && check.contractEvidenceId) {
+            if (!statement.evidenceRefs.includes(check.contractEvidenceId)) throw new Error("Uncited custom contract evidence");
             const contract = await p.context.recallContext!({ evidenceId: check.contractEvidenceId, offset: 0, limit: 1 });
             if (!contract.ok || (contract.data as { tool?: string })?.tool !== "read_file") throw new Error("Custom contract evidence must be a captured source read");
           }

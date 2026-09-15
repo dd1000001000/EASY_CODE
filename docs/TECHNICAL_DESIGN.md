@@ -72,7 +72,7 @@ A normal turn follows these stages:
 5. Check shared budget and context capacity, then call the provider.
 6. Validate the response and complete tool arguments; run only the capabilities available to that actor and mode.
 7. Persist results, capture evidence, update workspace/progress state, and continue the loop.
-8. Before completion, check pending commands, DAG/child work, submission contracts and applicable delivery review.
+8. Before completion, enforce pending-command cleanup, DAG/child work and submission contracts; attach any advisory review findings and unresolved verification evidence.
 
 Source: [agent.ts](../src/runtime/agent.ts), [auto-router.ts](../src/runtime/auto-router.ts), [core contracts](../src/core/types.ts).
 
@@ -248,7 +248,7 @@ Benchmark is deliberately separate: its trusted adapter selects [BenchmarkContai
 
 Test-runner discovery reads manifests through the backend's workspace mapping and the ordinary path guard. Unattributed npm/yarn/pnpm scripts produce unknown validation, not success inferred solely from exit zero. Pipeline output is interpreted independently from the outer process status.
 
-[review/workspace.ts](../src/review/workspace.ts) creates two private source snapshots for the author and reviewer. The reviewer copy restores original tests from the validation baseline where available. Neither participant receives the main agent's private short-term history or a writable main checkout. Native reviews expose existing `node_modules`, `.venv` or `venv` directories through recorded, verified links to avoid reinstalling dependencies; the native path policy denies writes that traverse those links outside the private copy. Both use the same native command backend and independent auto-approval path; Benchmark reviews instead use separate offline worker copies. Snapshot hashes, accepted requirement IDs and independent counterexamples remain part of the review contract.
+[review/workspace.ts](../src/review/workspace.ts) creates two private copies of the current source snapshot for the author and reviewer. Neither participant receives the main agent's private short-term history or a writable main checkout. Native reviews expose existing `node_modules`, `.venv` or `venv` directories through recorded, verified links to avoid reinstalling dependencies; the native path policy denies writes that traverse those links outside the private copy. Both use the same native command backend and independent auto-approval path; Benchmark reviews instead use separate offline worker copies. Snapshot hashes, changed-test provenance and independent counterexamples remain part of the review material.
 
 `npm run test:native-sandbox` builds the project and runs [smoke-native-sandbox.mjs](../scripts/smoke-native-sandbox.mjs). It checks the active native identity, workspace writing, rejection of an outside write, direct-network denial, timeout cleanup and a successful follow-up command. Windows is validated on a real elevated sandbox; macOS and Linux still require their own hardware/OS CI before release certification.
 
@@ -376,15 +376,15 @@ The final reset removes historical model context while retaining real user requi
 
 Repeated high-confidence failures across distinct validation cycles can trigger intervention. Target/outcome signatures distinguish validation intent and failure cases from volatile output. New evidence differs from verified improvement. An opaque successful command is not proof of passing tests.
 
-Investigation detection also considers repeated reads/searches over observation windows; elapsed time without an edit alone is insufficient. Test-baseline changes are tracked separately: an agent-modified test can supplement evidence but cannot be the sole independent proof that its own patch is correct.
+Investigation detection also considers repeated reads/searches over observation windows; elapsed time without an edit alone is insufficient. Weak read/search hints are emitted at most once per task scope and then remain telemetry. Sessions do not scan the whole repository for a test baseline before tools or validation. Actual terminal checks are recorded; recorded file changes and command deltas identify modified existing tests/configuration without scanning unrelated files. An added test is supplementary evidence, not an original oracle. The retired global validation-baseline event and archive formats are not replayed or migrated.
 
 ### 11.2 Isolated review discussions
 
-The normal application wires [runWorkspaceReview](../src/review/application.ts) into Runtime for stagnation and delivery review. The progress module also retains a bounded structured-review path for Runtime configurations without that callback; these are not the command-approval agent.
+The normal application wires [runWorkspaceReview](../src/review/application.ts) into Runtime for stagnation and risk-triggered delivery review (for example, changed tests/configuration or repeated verified failures). The progress module also retains a bounded structured-review path for Runtime configurations without that callback; these are not the command-approval agent.
 
 Main-thread mutation is suspended while preparing/reviewing a stable workspace snapshot. Independent author/reviewer participants receive explicit briefing and evidence, their own private histories and separate working copies. They can read/search and run approved commands, but are not given ordinary file-edit, DAG, child-management or long-term-memory-write tools. Commands may alter a disposable review copy; this does not authorize editing the live main workspace.
 
-Proposals and votes bind to the requirement revision and workspace fingerprint. Agreement is not automatically proof: Runtime checks evidence, unresolved obligations, independent experiments and delivery requirements. Changed snapshots invalidate stale conclusions.
+Proposals and votes bind to the requirement revision and workspace fingerprint. Review sessions for the same material share a cache key; repeated identical commands do not invalidate it merely by obtaining a new command ID. Runtime preserves fresh reviewer findings, factual command outcomes and known changed-test evidence, but does not certify patch semantics from a complete-test inventory or require one formal check for every requirement. An unavailable or inconclusive reviewer produces an explicit unverified note, not a hard delivery veto. Sandbox, approval, uncertain cleanup and durable command/DAG obligations remain hard gates. Local tests, reviewer opinions and official benchmark scores are reported separately.
 
 The default discussion lasts at most five rounds, with additional limits of 32 model requests, 20 tool calls and ten minutes. If no valid agreement is reached, each participant supplies an independent summary; a bounded combined handoff returns disagreement and uncertainty to the main agent. The full discussion is retained for recall, not copied wholesale into main context.
 

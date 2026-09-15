@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { describe, it } from "./harness.js";
-import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { verificationTargetKey } from "../src/command/verification.js";
-import { captureValidationBaseline, compareValidationBaseline } from "../src/progress/validation-standard.js";
 import { matchesReviewExperiment } from "../src/progress/experiment.js";
 import { observeToolResult } from "../src/progress/observation.js";
 import { createProgressGuardState, foldProgressObservation } from "../src/progress/guard.js";
@@ -33,6 +28,14 @@ function read(index: number, extra: Partial<ProgressObservation> = {}): Progress
 }
 
 describe("progress reliability contracts", () => {
+  it("replays one-shot weak hints without duplicating the task-scope registry", () => {
+    const original = createProgressGuardState();
+    const first = foldProgressReviewEvent(original, "progress.hint.presented", { scopeKey: "task", kind: "search" });
+    const replay = foldProgressReviewEvent(first, "progress.hint.presented", { scopeKey: "task", kind: "search" });
+    assert.deepEqual(replay.presentedWeakHintScopes, ["search:task"]);
+    assert.equal(original.presentedWeakHintScopes, undefined);
+    assert.throws(() => foldProgressReviewEvent(first, "progress.hint.presented", { scopeKey: "task", kind: "approve" }));
+  });
   it("counts only complete successful inspection outputs and deduplicates terminal polls", () => {
     const inspect = (index: number, truncated = false, status = "exited") => observeToolResult({
       sourceEventId: `inspection_${index}`, sourceCallId: `ic_${index}`, scopeKey: "task", responseOrdinal: index,
@@ -63,34 +66,16 @@ describe("progress reliability contracts", () => {
     assert.notEqual(verificationTargetKey({ ...command("python runtests.py a"), environmentDigest: "one" }), verificationTargetKey({ ...command("python runtests.py a"), environmentDigest: "two" }));
   });
 
-  it("pins actual initial test/config bytes, permits added tests, and detects mid-command changes", async () => {
-    const root = mkdtempSync(path.join(os.tmpdir(), "easy-code-validation-baseline-"));
-    try {
-      mkdirSync(path.join(root, "tests")); writeFileSync(path.join(root, "tests", "test_a.py"), "assert 1 == 2\n");
-      const original = await captureValidationBaseline(root);
-      const restored = foldProgressReviewEvent(createProgressGuardState(), "progress.validation.baseline", { baseline: original });
-      assert.equal(restored.validationBaseline?.digest, original.digest);
-      assert.throws(() => foldProgressReviewEvent(restored, "progress.validation.baseline", { baseline: original }), /already pinned/u);
-      writeFileSync(path.join(root, "tests", "test_added.py"), "assert 1 == 1\n");
-      const before = await captureValidationBaseline(root);
-      assert.equal(compareValidationBaseline(original, before, before).status, "unchanged");
-      writeFileSync(path.join(root, "tests", "test_a.py"), "assert True\n");
-      const after = await captureValidationBaseline(root);
-      assert.deepEqual(compareValidationBaseline(original, before, after).changedPaths, ["tests/test_a.py"]);
-      writeFileSync(path.join(root, "pytest.ini"), "[pytest]\naddopts = -k other\n");
-      assert.ok(compareValidationBaseline(original, before, await captureValidationBaseline(root)).changedPaths.includes("pytest.ini"));
-      writeFileSync(path.join(root, "tests", "test_large.py"), "#".repeat(2048));
-      const partial = await captureValidationBaseline(root, { ...DEFAULT_RUNTIME_LIMITS, validationScanMaxBytes: 1024 });
-      assert.equal(partial.complete, false);
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
-  it("never clears original failures on changed, incomplete, missing or different baselines", () => {
-    for (const change of [{ standardStatus: "changed" as const }, { standardStatus: "unknown" as const },
-      { baselineDigest: "d".repeat(64) }, { baselineDigest: undefined, standardStatus: undefined }]) {
+  it("retains known changed standards but accepts actual passes without a global inventory", () => {
+    for (const change of [{ standardStatus: "changed" as const }, { baselineDigest: "d".repeat(64) }]) {
       const state = foldProgressObservation(failures(), verification(4, { outcomeClass: "passed", ...change })).state;
       assert.equal(state.failureRuns.length, 1);
       assert.notEqual(state.incidents[0]!.phase, "resolved");
+    }
+    for (const change of [{ standardStatus: "unknown" as const },
+      { baselineDigest: undefined, standardStatus: undefined }]) {
+      const state = foldProgressObservation(failures(), verification(4, { outcomeClass: "passed", ...change })).state;
+      assert.equal(state.failureRuns.length, 0);
     }
     assert.equal(foldProgressObservation(failures(), verification(4, { outcomeClass: "passed" })).state.failureRuns.length, 0);
   });

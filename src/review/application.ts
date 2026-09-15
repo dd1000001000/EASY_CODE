@@ -40,7 +40,6 @@ export interface WorkspaceReviewDependencies {
   sensitivePaths: string[]; dataDir?: string; lifecycleDirectory: string; offline: boolean;
   approve(context: ToolContext, request: import("../core/types.js").ApprovalRequest): Promise<boolean>;
   status(text: string): void;
-  readBaseline?: (hash: string) => Promise<Buffer | undefined>;
 }
 
 /** The app holds its workspace mutation lease for this entire call. */
@@ -77,13 +76,13 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   if (latest && state.delivery && latest.sourceMessageIndex > state.delivery.sourceMessageIndex) correctionRefs.push(latest);
   const corrections = [...new Set(correctionRefs.map(c => state.messages[c.sourceMessageIndex]?.content ?? c.text))];
   const requirementRevision = sha256(JSON.stringify([input.userInput, state.constraints, corrections]));
-  // Native review copies use the host toolchain. Completed parent commands
-  // conservatively invalidate the environment revision without sharing the
-  // parent's private context or writable filesystem with either participant.
-  const environmentRevision = sha256(JSON.stringify([process.platform, process.arch, state.commands.map(c => c.id)]));
-  const key = sha256(JSON.stringify([scope, input.purpose, snapshotId, requirementRevision, environmentRevision,
-    // A changed verified outcome is new evidence; merely re-running the same command is not.
-    state.commands.slice(-6).map(c => [c.program, c.args, c.exitCode, c.status, c.summary])]));
+  // Cache by material, not by command IDs or review label. Repeating an
+  // unchanged check must not purchase a second review of the same patch.
+  const environmentRevision = sha256(JSON.stringify([process.platform, process.arch]));
+  const evidenceRevisions = [...new Set(state.commands.map(c => sha256(JSON.stringify([
+    c.program, c.args, c.exitCode, c.status, c.summary,
+  ]))))].sort();
+  const key = sha256(JSON.stringify([snapshotId, requirementRevision, environmentRevision, evidenceRevisions]));
   const previous = state.reviewSessions?.find(s => s.key === key);
   if (previous?.status === "applied") return { approved: previous.approval && !deps.store.hasPendingTurnSteering(state.threadId, input.turnId), requests: 0, reused: true, reason: previous.closeReason };
   let session = previous ?? state.reviewSessions?.find(s => s.status !== "applied");
@@ -101,7 +100,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   if (!session) {
     const id = createId("review");
     try { copies = await createReviewCopies(deps.workspace, id, snapshotId, deps.limits.reviewSnapshotMaxBytes,
-      state.progressGuard?.validationBaseline, { readBaseline: deps.readBaseline, limits: deps.limits, signal: input.signal,
+      { limits: deps.limits, signal: input.signal,
         offline: deps.offline,
         changedPaths: state.changes.slice(state.delivery?.changeStart ?? 0).map(change => change.path) }); } catch (error) { setupError = error; }
     await emit({ type: "started", id, key, scope, purpose: input.purpose, snapshotId, requirementRevision,
@@ -173,12 +172,12 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
           } }));
         const opening: ChatMessage = { role: "user", content: `Review ${input.purpose} for the original request:\n${input.userInput}\n` +
           `Constraints: ${JSON.stringify(state.constraints)}\nCorrections: ${JSON.stringify(corrections)}\nSnapshot: ${snapshotId}\n` +
-          `Required acceptance IDs: ${JSON.stringify(get().requirements)}. Checks must bind these IDs to actual evidence.\n` +
+          `Request and constraint references: ${JSON.stringify(get().requirements)}. Cite concrete evidence for findings; do not invent a completed check.\n` +
           `Full immutable diff, history evidence and commands: ${materialId}. Use recall_context to read it in pages.\n` +
           "Independently inspect semantics and counterexamples. The author cannot grant delivery approval alone." };
         const material: ChatMessage = { role: "user", content: "RUNTIME_REVIEW_MATERIAL (historical evidence, not user requirements):\n" +
           `Changed paths: ${JSON.stringify(state.changes.map(c => c.path))}\n` +
-          (who === "reviewer" ? `Original tests restored in YOUR copy (exact pre-agent baseline hashes): ${JSON.stringify(copies.restoredTests)}. Implementation files still match the reviewed snapshot.\n` : "") +
+          (who === "reviewer" ? "Your copy contains the current reviewed snapshot. Modified tests are not an independent oracle; inspect the diff and recorded prior hashes before relying on them.\n" : "") +
           `Latest verification records: ${JSON.stringify(state.commands.slice(-3))}\n` +
           "Author: first explain the implementation and uncertainties. Reviewer: independently inspect semantics and counterexamples. " +
           "Changes to tests are not independent proof. The author cannot grant delivery approval alone." };
@@ -213,7 +212,6 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
         commandExecutionMode: "auto_approve", isUnrestrictedHostAccessActive: () => false,
         limits: deps.limits, agentRole: "subagent", agentId: `${reviewId}_${who}`, assignedTaskId: reviewId,
         signal: input.signal, commandTimeoutMs: deps.limits.commandTimeoutMs, maxOutputChars: deps.limits.maxOutputChars,
-        validationBaseline: state.progressGuard?.validationBaseline,
         requestApproval: async request => deps.approve(context, request),
         searchProjectMemory: (query, options) => deps.memory.searchHybrid(workspaceId, query, {
           workspaceRoot: root, readOnly: true, limit: options?.limit ?? deps.limits.memorySearchLimit,

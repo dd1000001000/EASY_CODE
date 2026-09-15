@@ -11,7 +11,6 @@ export const completionObligationKinds = [
   "dag_active",
   "plan_proposal",
   "command_environment",
-  "review_remediation",
 ] as const;
 export type CompletionObligationKind = typeof completionObligationKinds[number];
 
@@ -121,32 +120,6 @@ function dagObligation(graph: Readonly<TaskGraph>): CompletionObligation | undef
   };
 }
 
-export function reviewRemediationObligation(
-  state: Readonly<SessionState>,
-): CompletionObligation | undefined {
-  const session = [...state.reviewSessions].reverse().find(item =>
-    item.purpose === "delivery" && item.status === "applied" && !item.approval);
-  if (!session || !state.delivery) {
-    const previous = state.completionControl?.active?.obligations.find(item =>
-      item.kind === "review_remediation" && /^review:[^:]+:baseline:\d+:\d+$/u.test(item.id));
-    if (!previous) return undefined;
-    const match = /:baseline:(\d+):(\d+)$/u.exec(previous.id)!;
-    return state.changes.length === Number(match[1]) && state.commands.length === Number(match[2])
-      ? { ...previous }
-      : undefined;
-  }
-  // A changed workspace or a new command result is new review material. The
-  // old objection remains evidence, but it no longer blocks a fresh review.
-  if (state.changes.length > (session.changeCount ?? 0) ||
-      state.commands.length > (session.commandCount ?? 0)) return undefined;
-  return {
-    id: `review:${session.id}:baseline:${session.changeCount ?? 0}:${session.commandCount ?? 0}`,
-    kind: "review_remediation",
-    description: `Delivery review ${session.id} did not approve the current snapshot (${session.closeReason ?? "unresolved"}).`,
-    requiredAction: "Use the attributed reviewer handoff to change the implementation or gather new independent evidence before proposing delivery again.",
-  };
-}
-
 export function evaluateCompletionGate(input: CompletionGateInput): CompletionObligation[] {
   const obligations: CompletionObligation[] = [];
   if (input.reconciliationPending) obligations.push({
@@ -187,10 +160,9 @@ export function evaluateCompletionGate(input: CompletionGateInput): CompletionOb
   });
   const dag = input.state.taskGraph ? dagObligation(input.state.taskGraph) : undefined;
   if (dag) obligations.push(dag);
-  if (input.role === "main_agent") {
-    const review = reviewRemediationObligation(input.state);
-    if (review) obligations.push(review);
-  }
+  // Review objections remain durable evidence, but they are not a hard
+  // completion protocol. Safety, command cleanup, DAG and child collection
+  // obligations above remain mandatory.
   if (input.mode === "plan") obligations.push({
     id: "plan:proposal",
     kind: "plan_proposal",

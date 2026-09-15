@@ -1,4 +1,5 @@
-import { foldDelivery, newDelivery, pendingDelivery } from "../review/delivery.js";
+import { foldDelivery, newDelivery } from "../review/delivery.js";
+import { unresolvedCommands } from "../context/runtime-state.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
@@ -53,8 +54,8 @@ import type { NormalRequestEnvelope } from "../context/context-request.js";
 import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
 import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
 import { recallThreadContext } from "../context/recall.js";
-import { captureValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
+import { isValidationConfigPath, isValidationTestPath } from "../progress/validation-paths.js";
 import { RequestPrefixTracker } from "../context/request-prefix.js";
 import {
   ContextManager,
@@ -149,7 +150,6 @@ import {
   foldCompletionControl,
   nextCompletionAttempt,
   renderCompletionCorrection,
-  reviewRemediationObligation,
 } from "./completion-gate.js";
 
 function runtimePromptText(path: string): string {
@@ -398,7 +398,8 @@ function progressRuntimeInstruction(
   const guard = state.progressGuard;
   if (!guard) return "";
   const suspected = guard.incidents.find(item => item.scopeKey === scopeKey && item.phase === "investigation_suspected");
-  if (suspected) return "Runtime observed repeated source/search evidence in a complete investigation window. This is a stagnation suspicion, not proof that the task is stuck. Propose and execute one minimal falsifiable experiment with expected and opposite outcomes. New filenames, summaries and thinking alone do not prove progress. Continued repetition in a separate window may request one read-only reviewer. Incident: " + suspected.incidentId;
+  if (suspected && !guard.presentedWeakHintScopes?.includes(`investigation:${scopeKey}`))
+    return "Runtime observed repeated source/search evidence in a complete investigation window. This is a stagnation suspicion, not proof that the task is stuck. Propose and execute one minimal falsifiable experiment with expected and opposite outcomes. New filenames, summaries and thinking alone do not prove progress. Continued repetition in a separate window may request one read-only reviewer. Incident: " + suspected.incidentId;
   const incident = [...guard.incidents]
     .reverse()
     .find((candidate) =>
@@ -444,12 +445,12 @@ function progressRuntimeInstruction(
         : "Use the new evidence to choose a materially different strategy.",
     });
   }
-  if (guard.searchWarning?.scopeKey === scopeKey) {
+  if (guard.searchWarning?.scopeKey === scopeKey && !guard.presentedWeakHintScopes?.includes(`search:${scopeKey}`)) {
     return renderRuntimePrompt("runtime/progress-search-warning.md", {
       count: guard.searchWarning.count,
     });
   }
-  if (guard.readWarning?.scopeKey === scopeKey) {
+  if (guard.readWarning?.scopeKey === scopeKey && !guard.presentedWeakHintScopes?.includes(`read:${scopeKey}`)) {
     return renderRuntimePrompt("runtime/progress-read-warning.md", {
       warningId: guard.readWarning.id,
       totalReads: guard.readWarning.totalReads,
@@ -458,6 +459,19 @@ function progressRuntimeInstruction(
     });
   }
   return "";
+}
+
+function progressWeakHintKind(state: Readonly<SessionState>, scopeKey: string): "read" | "search" | "investigation" | undefined {
+  const guard = state.progressGuard;
+  const shown = guard.presentedWeakHintScopes ?? [];
+  if (guard.incidents.some(item => item.scopeKey === scopeKey && item.phase === "investigation_suspected") &&
+      !shown.includes(`investigation:${scopeKey}`)) return "investigation";
+  if (guard.incidents.some(item => item.scopeKey === scopeKey &&
+      (item.phase === "experiment_required" || item.phase === "strategy_adjustment" || item.phase === "review_exhausted") &&
+      item.reviewReport)) return undefined;
+  if (guard.searchWarning?.scopeKey === scopeKey && !shown.includes(`search:${scopeKey}`)) return "search";
+  if (guard.readWarning?.scopeKey === scopeKey && !shown.includes(`read:${scopeKey}`)) return "read";
+  return undefined;
 }
 
 function progressResponseOrdinal(
@@ -658,7 +672,6 @@ export interface AgentRuntimeDependencies {
   ) => Promise<void>;
   /** Fresh workspace identity used to reject stale reviewer advice. */
   getProgressWorkspaceFingerprint?: () => Promise<string>;
-  captureValidationBaseline?: () => Promise<import("../progress/validation-standard.js").ValidationBaseline>;
   runReviewSession?: (input: import("../review/application.js").WorkspaceReviewRequest) =>
     Promise<import("../review/application.js").WorkspaceReviewResult>;
   requestApproval: ApprovalHandler;
@@ -2279,13 +2292,17 @@ export class AgentRuntime {
         : [...toolGateway.catalog.tools].filter((tool) =>
             tool.name !== "compact_context"
           );
+      const currentProgressScope = progressScopeKey(state, turnId);
+      const progressInstruction = agentIdentity.role === "main_agent"
+        ? progressRuntimeInstruction(state, currentProgressScope) : "";
+      const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
+      if (weakHintKind) await this.appendProgressReviewEvent(state, turnId,
+        "progress.hint.presented", "completed", { scopeKey: currentProgressScope, kind: weakHintKind });
       const runtimeNextActions = [
         this.dependencies.hasOpenCommandHandles?.()
           ? backgroundCommandFinalizationInstruction()
           : "",
-        agentIdentity.role === "main_agent"
-          ? progressRuntimeInstruction(state, progressScopeKey(state, turnId))
-          : "",
+        progressInstruction,
       ].filter(Boolean);
       let stepRuntimeContext = "";
       const phaseKey = JSON.stringify([state.compactedMessageCount,
@@ -2754,8 +2771,7 @@ export class AgentRuntime {
             `Task paused after ${attempt} repeated invalid completion proposals. Pending obligations: ` +
               obligations.map(item => item.description).join(" "),
             "paused", step, memoryContext, undefined, undefined, undefined,
-            { cause: obligations.some(item => item.kind === "review_remediation") ? "review"
-              : obligations.some(item => item.kind === "command_environment") ? "command_environment"
+            { cause: obligations.some(item => item.kind === "command_environment") ? "command_environment"
               : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents") ? "subagent"
               : obligations.some(item => item.kind === "dag_active") ? "dag" : "completion_protocol",
               resumable: true,
@@ -2768,7 +2784,7 @@ export class AgentRuntime {
             type: "completion.resolved", phase: "completed", payload });
           foldCompletionControl(state, "completion.resolved", payload);
         }
-        const text =
+        let text =
           assistantMessage.content?.trim() ||
           "The task ended, but the model did not provide an explanation.";
         if (await this.takeAndApplySteering(
@@ -2781,8 +2797,17 @@ export class AgentRuntime {
         )) {
           continue;
         }
-        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && (state.changes.length > 0 || pendingDelivery(state))) {
-          if (!state.delivery || pendingDelivery(state) && state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied")) {
+        // Review is an advisory investigation for risky material, not a
+        // correctness certificate required for every edited workspace.
+        const reviewMaterial = state.changes.slice(turnChangeStart).some(change =>
+          isValidationTestPath(change.path) || isValidationConfigPath(change.path)) ||
+          state.progressGuard.incidents.some(incident => incident.phase !== "resolved" &&
+            incident.reason === "repeated_verified_failure");
+        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && reviewMaterial) {
+          if (!state.delivery || (state.delivery.sourceMessageIndex < turnHistoryStart &&
+              state.delivery.request !== memoryContext.userInput &&
+              !/^(?:continue|resume|继续|继续执行)$/iu.test(memoryContext.userInput.trim())) ||
+              state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied")) {
             const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
             await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
             foldDelivery(state, obligation);
@@ -2792,44 +2817,18 @@ export class AgentRuntime {
             purpose: "delivery", remainingModelRequests: Math.max(0, stepLimit - step - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed),
             signal: options.signal });
           progressReviewModelRequestsUsed += review.requests;
-          if (!review.approved) {
-            if (review.decision === "interrupted") return this.finish(state, turnId,
-              "Review was interrupted; work and the unverified delivery obligation are retained.",
-              "interrupted", step, memoryContext);
-            if (review.decision === "unavailable") return this.finish(state, turnId,
-              `Review unavailable; work and the unverified delivery obligation are retained. ${review.reason ?? "No valid review could be completed."}`,
-              "paused", step, memoryContext, undefined, undefined, undefined,
-              { cause: "review", resumable: true,
-                requiredAction: "Restore reviewer availability or add independent evidence, then resume delivery review." });
-            const obligation = reviewRemediationObligation(state) ?? {
-              id: `review:${state.delivery!.id}:baseline:${state.changes.length}:${state.commands.length}`,
-              kind: "review_remediation" as const,
-              description: `Delivery review did not approve the current snapshot (${review.reason ?? "unresolved"}).`,
-              requiredAction: "Change the implementation or gather new independent evidence before proposing delivery again.",
-            };
-            const obligations = [obligation];
-            const { signature, attempt } = nextCompletionAttempt(state, obligations);
-            const payload = { signature, attempt, obligations };
-            await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
-              type: "completion.rejected", phase: "completed", payload });
-            foldCompletionControl(state, "completion.rejected", payload);
-            const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).prematureFinishRetries;
-            if (attempt <= maximum) {
-              const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
-                obligations, attempt, maximum - attempt) };
-              state.messages.push(feedback);
-              await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
-                type: "message.user.synthetic", phase: "completed", payload: feedback });
-              continue;
-            }
-            return this.finish(state, turnId,
-              `Delivery review remains unresolved after ${attempt} completion proposal(s). Work, both reviewer summaries and pending requirements are retained.`,
-              "paused", step, memoryContext, undefined, undefined, undefined,
-              { cause: "review", resumable: true,
-                requiredAction: "Address the retained reviewer objections or provide new independent evidence, then resume.", obligations });
-          }
+          if (review.decision === "interrupted") return this.finish(state, turnId,
+            "Review was interrupted; work and the review state are retained.",
+            "interrupted", step, memoryContext);
+          if (!review.approved) text += `\n\nReview note: ${review.decision ?? "inconclusive"}; ` +
+            `${review.reason ?? "the current patch has not been independently confirmed"}. ` +
+            "Report only checks actually run; this is not an official benchmark verdict.";
           if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         }
+        const unresolvedVerification = unresolvedCommands(state).filter(command => Boolean(command.verificationKind));
+        if (agentIdentity.role === "main_agent" && unresolvedVerification.length) text +=
+          `\n\nVerification note: ${unresolvedVerification.length} recorded verification target(s) still have a failed or uncertain terminal outcome. ` +
+          "Do not describe those targets as passed without a new same-target check.";
         this.dependencies.onText?.(text);
         const reason = state.taskGraph?.status === "terminal_blocked"
           ? "blocked"
@@ -2934,14 +2933,8 @@ export class AgentRuntime {
         }
         const toolName = call.function.name as ToolName;
         const tool = toolGateway.get(toolName);
-        // Pure file reading and Plan explanations pay no inventory-scan cost.
-        // Capture before the first capability that could change verification bytes,
-        // including arbitrary inspect commands and shared-workspace children.
-        if (!environmentFault && !state.progressGuard?.validationBaseline && tool &&
-            toolMetadata(tool).validationSensitive) {
-          const baseline = await (this.dependencies.captureValidationBaseline?.() ?? captureValidationBaseline(state.workspaceRoot, this.dependencies.limits));
-          await this.appendProgressReviewEvent(state, turnId, "progress.validation.baseline", "completed", { baseline });
-        }
+        // Verification relies on recorded changes and actual command results;
+        // no whole-repository test baseline is captured or replayed.
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
         const progressExperimentAtCall = agentIdentity.role === "main_agent"
           ? requiredProgressExperiment(
@@ -3087,7 +3080,8 @@ export class AgentRuntime {
               orchestrationEnabled: options.orchestrationEnabled,
               isOrchestrationEnabled: options.isOrchestrationEnabled,
               workspaceRoot: state.workspaceRoot,
-              validationBaseline: state.progressGuard?.validationBaseline,
+              ...(toolName === "run_command" || toolName === "start_command"
+                ? { validationPriorChanges: state.changes.map(change => ({ ...change })) } : {}),
               ...(progressExperimentAtCall?.reviewReport ? { progressExperiment: {
                 incidentId: progressExperimentAtCall.incidentId, report: progressExperimentAtCall.reviewReport } } : {}),
               mode: effectiveMode,
@@ -3547,12 +3541,6 @@ export class AgentRuntime {
           memoryContext.mutations.push(result.memoryMutation);
         }
         await this.dependencies.onToolCompleted?.(state, call.function.name, result);
-        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && state.changes.length > turnChangeStart &&
-            (!state.delivery || state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.approval && s.status === "applied"))) {
-          const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
-          await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
-          foldDelivery(state, obligation);
-        }
       }
 
       if (environmentFault) {
@@ -3704,9 +3692,7 @@ export class AgentRuntime {
 
     if (state.completionControl?.active) {
       const obligations = state.completionControl.active.obligations;
-      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(item => item.kind === "review_remediation")
-        ? "review"
-        : obligations.some(item => item.kind === "command_environment")
+      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(item => item.kind === "command_environment")
           ? "command_environment"
           : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents")
             ? "subagent"
@@ -3948,12 +3934,6 @@ export class AgentRuntime {
     failure?: AgentRunResult["failure"],
     pause?: AgentRunResult["pause"],
   ): Promise<AgentRunResult> {
-    // A last-line seal for every completion path, not only the normal text branch.
-    if (reason === "success" && this.dependencies.runReviewSession &&
-        (this.dependencies.agentIdentity?.role ?? "main_agent") === "main_agent" && pendingDelivery(state)) {
-      reason = "blocked";
-      text += "\nDelivery remains unverified; the persistent review obligation is not completed.";
-    }
     const returnOutcome: PlanExecutionReturnOutcome | undefined =
       reason === "failed" || reason === "interrupted" || reason === "limit_reached"
         ? reason

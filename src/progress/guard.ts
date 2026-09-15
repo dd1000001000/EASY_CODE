@@ -69,6 +69,7 @@ export function cloneProgressGuardState(
     failureRuns: state.failureRuns.map(cloneFailureRun),
     recentReads: state.recentReads.map((entry) => ({ ...entry })),
     recentSearches: (state.recentSearches ?? []).map((entry) => ({ ...entry })),
+    presentedWeakHintScopes: [...(state.presentedWeakHintScopes ?? [])],
     ...(state.searchWarning ? { searchWarning: { ...state.searchWarning } } : {}),
     ...(state.readWarning ? { readWarning: { ...state.readWarning } } : {}),
     incidents: state.incidents.map(cloneIncident),
@@ -293,7 +294,10 @@ function applyRead(state: ProgressGuardState, observation: Readonly<ProgressObse
 }
 
 function comparableStandard(observation: Readonly<ProgressObservation>, baseline: string | undefined): boolean {
-  return observation.standardStatus !== "changed" && observation.standardStatus !== "unknown" && observation.baselineDigest === baseline;
+  // Missing global inventory is not evidence that an actual test result is
+  // invalid. A known changed original test still cannot certify recovery.
+  return observation.standardStatus !== "changed" &&
+    (!baseline || !observation.baselineDigest || observation.baselineDigest === baseline);
 }
 
 function newEvidenceIncident(state: ProgressGuardState, observation: Readonly<ProgressObservation>,

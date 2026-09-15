@@ -7,13 +7,11 @@ import { CommandVerificationCollector } from "../src/command/verification.js";
 import { expandedMemoryRecall } from "../src/context/memory-controller.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { ContextManager } from "../src/context/manager.js";
-import { deliveryEvidenceSatisfied, foldReviewEvent, type ReviewEvent, type ReviewSession } from "../src/review/session.js";
+import { foldReviewEvent, type ReviewEvent } from "../src/review/session.js";
 import { packageScriptRunner } from "../src/command/verification.js";
 import { mkdtemp, writeFile, rm, mkdir, readFile, realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ValidationBaselineStore } from "../src/review/baseline-store.js";
-import { captureValidationBaseline } from "../src/progress/validation-standard.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { createReviewCopies, reviewFingerprint } from "../src/review/workspace.js";
 import { createId } from "../src/utils/ids.js";
@@ -23,7 +21,7 @@ import { preflightReviewEnvironment } from "../src/review/preflight.js";
 import type { ReviewParticipant } from "../src/review/driver.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import { newDelivery, pendingDelivery } from "../src/review/delivery.js";
+import { newDelivery } from "../src/review/delivery.js";
 import { baseSessionState } from "./session-state.js";
 
 export function reliabilityState(): SessionState {
@@ -69,6 +67,29 @@ describe("verification reliability", () => {
 });
 
 describe("delivery reliability", () => {
+  it("schedules one advisory reviewer for a changed component.test.ts without making its opinion a completion gate", async () => {
+    const s = reliabilityState(); let calls = 0; let reviews = 0;
+    const tool = { name: "read_file" as const, mutating: false,
+      definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
+      execute: async () => ({ ok: true, summary: "read" }) };
+    const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => ({
+      message: ++calls === 1
+        ? { role: "assistant" as const, content: "", tool_calls: [{ id: "read", type: "function" as const,
+          function: { name: "read_file", arguments: "{}" } }] }
+        : { role: "assistant" as const, content: "implementation complete" },
+    }) }, toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+      onToolCompleted: async state => { state.changes.push({ path: "src/component.test.ts", operation: "update",
+        source: "file_tool", status: "applied", timestamp: "now" }); },
+      runReviewSession: async () => { reviews++; return { approved: false, decision: "unavailable", requests: 0,
+        reused: false, reason: "reviewer unavailable" }; } });
+    const result = await runtime.run(s, "change the component test", { maxSteps: 4,
+      maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
+      commandTimeoutMs: 1000, approvalPolicy: "never" });
+    assert.equal(reviews, 1); assert.equal(result.reason, "success");
+    assert.match(result.text, /Review note: unavailable/u);
+  });
   it("degrades incomplete snapshots without calling a model, but does not swallow journal failure", async () => {
     const state = reliabilityState(), events: string[] = [];
     const deps = { workspace: { captureSnapshot: async () => ({ files: new Map(), truncated: true }) },
@@ -80,27 +101,25 @@ describe("delivery reliability", () => {
     deps.store.appendEvent = () => { throw new Error("disk full"); };
     await assert.rejects(() => runWorkspaceReview(input, deps), ReviewPersistenceError);
   });
-  it("copies source, links installed dependencies, and restores a deleted non-Git test baseline", async () => {
+  it("copies the current source and links installed dependencies without restoring removed tests", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-review-env-test-"));
     let copy: string | undefined;
     try {
       const root = path.join(directory, "source"); await mkdir(path.join(root, "node_modules", "dep"), { recursive: true });
       await writeFile(path.join(root, "node_modules", "dep", "index.js"), "module.exports = 42");
       await writeFile(path.join(root, "test_original.py"), "assert True\n");
-      const archive = new ValidationBaselineStore(path.join(directory, "private-baseline"));
-      const baseline = await captureValidationBaseline(root, undefined, (hash, bytes) => archive.put(hash, bytes));
       await rm(path.join(root, "test_original.py"));
       const workspace = await WorkspaceManager.create(root);
-      const copies = await createReviewCopies(workspace, createId("review"), reviewFingerprint(await workspace.captureSnapshot()), 100000, baseline, { readBaseline: hash => archive.get(hash) });
+      const copies = await createReviewCopies(workspace, createId("review"), reviewFingerprint(await workspace.captureSnapshot()), 100000);
       copy = copies.directory;
-      assert.equal(await readFile(path.join(copies.roots.reviewer, "test_original.py"), "utf8"), "assert True\n");
+      await assert.rejects(() => readFile(path.join(copies.roots.reviewer, "test_original.py"), "utf8"), { code: "ENOENT" });
       assert.equal(await readFile(path.join(copies.roots.reviewer, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
       assert.equal(await readFile(path.join(root, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
       assert.equal(await readFile(path.join(copies.roots.author, "node_modules", "dep", "index.js"), "utf8"), "module.exports = 42");
       assert.equal(copies.dependencyLinks.author.node_modules, await realpath(path.join(root, "node_modules")));
     } finally { if (copy) await rm(copy, { recursive: true, force: true }); await rm(directory, { recursive: true, force: true }); }
   });
-  it("cannot bypass prior unapproved changes on a new turn", async () => {
+  it("does not pause a new turn just because a prior advisory review was unresolved", async () => {
     const s = reliabilityState(); s.changes.push({ path: "module.ts", operation: "update", source: "file_tool", status: "applied", timestamp: "now" });
     let reviews = 0;
     const runtime = new AgentRuntime({ provider: { name: "qwen", model: "mock", complete: async () => ({ message: { role: "assistant", content: "Done" } }) },
@@ -109,8 +128,7 @@ describe("delivery reliability", () => {
       runReviewSession: async () => { reviews++; return { approved: false, requests: 0, reused: true }; } });
     const result = await runtime.run(s, "Continue", { maxSteps: 4, maxContextChars: 100000, maxContextTokens: 34000,
       maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.equal(result.reason, "paused"); assert.equal(result.pause?.cause, "review");
-    assert.equal(reviews, 1); assert.ok(s.delivery);
+    assert.equal(result.reason, "success"); assert.equal(reviews, 0);
   });
   it("a known failed target vetoes consensus citing another passing target", () => {
     const s = reliabilityState();
@@ -147,7 +165,7 @@ describe("delivery reliability", () => {
       const obligation = newDelivery(current, "Original requirement", 0, 0);
       store.appendEvent(s.threadId, { type: "delivery.required", payload: obligation });
       const recovered = store.recover(s.threadId);
-      assert.deepEqual(recovered.delivery, obligation); assert.equal(pendingDelivery(recovered), true);
+      assert.deepEqual(recovered.delivery, obligation);
       assert.throws(() => store.appendEvent(s.threadId, { type: "delivery.required", payload: { ...obligation, id: "replacement" } }), /unresolved/);
     } finally { db.close(); await rm(root, { recursive: true, force: true }); }
   });
@@ -163,28 +181,22 @@ describe("delivery reliability", () => {
       await assert.rejects(() => preflightReviewEnvironment(p), /preflight unavailable/); assert.equal(calls, 1);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("accepts declared build checks, complete documentation inspection, and script-bound custom contracts", () => {
-    const fixture = (method: string): ReviewSession => {
-      const s = reliabilityState(); foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "delivery", snapshotId: "s", requirementRevision: "q",
-        requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
-      const r = s.reviewSessions![0]!;
-      r.experiments.push({ id: "result", actor: "reviewer", passed: true, unchanged: true, outcome: "passed", method, standard: "unchanged", paths: ["validate.py"] });
+  it("records a fresh reviewer opinion without turning inventory coverage into a correctness gate", () => {
+    const fixture = (vote: "agree" | "needs_evidence", fresh: boolean) => {
+      const s = reliabilityState(); foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "delivery",
+        snapshotId: "s", requirementRevision: "q", maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
       for (const actor of ["reviewer", "author"] as const) foldReviewEvent(s, { type: "statement", id: "r", actor, value: {
-        proposal: "ready", kind: "delivery", vote: "agree", evidenceRefs: ["result"], unresolved: [], checks: [
-          { requirementId: "request", evidenceId: "result", method, rationale: "Explicit acceptance contract", counterexample: "Boundary input" }],
+        proposal: "ready", kind: "delivery", vote: actor === "reviewer" ? vote : "agree",
+        evidenceRefs: [], unresolved: vote === "needs_evidence" && actor === "reviewer" ? ["Boundary not checked"] : [],
       } });
-      return r;
+      if (s.reviewSessions[0]!.status === "discussing") foldReviewEvent(s, { type: "close", id: "r", reason: "review_complete" });
+      for (const actor of ["author", "reviewer"] as const) foldReviewEvent(s,
+        { type: "summary", id: "r", actor, text: "Recorded finding", unavailable: false, raw: true });
+      foldReviewEvent(s, { type: "decided", id: "r", fresh });
+      return s.reviewSessions[0]!;
     };
-    assert.equal(deliveryEvidenceSatisfied(fixture("build")), true);
-    const docs = fixture("inspection"); docs.documentationOnly = true; docs.changedPaths = ["README.md"];
-    assert.equal(deliveryEvidenceSatisfied(docs), false);
-    docs.experiments[0]!.paths = ["README.md"]; assert.equal(deliveryEvidenceSatisfied(docs), true);
-    const custom = fixture("custom"); assert.equal(deliveryEvidenceSatisfied(custom), false);
-    custom.experiments.push({ id: "contract", actor: "reviewer", passed: true, unchanged: true, method: "inspection", paths: ["unrelated.py"] });
-    for (const statement of custom.statements) { statement.value.checks![0]!.contractEvidenceId = "contract"; statement.value.evidenceRefs.push("contract"); }
-    assert.equal(deliveryEvidenceSatisfied(custom), false);
-    custom.experiments[1]!.paths = ["validate.py"]; assert.equal(deliveryEvidenceSatisfied(custom), true);
-    custom.experiments[0]!.outcome = "failed"; custom.experiments[0]!.passed = false;
-    assert.equal(deliveryEvidenceSatisfied(custom), false);
+    assert.equal(fixture("agree", true).approval, true);
+    assert.equal(fixture("needs_evidence", true).approval, false);
+    assert.equal(fixture("agree", false).approval, false);
   });
 });

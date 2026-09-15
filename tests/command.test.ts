@@ -28,7 +28,7 @@ import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 import { decodeCommandGrant } from "../src/command/command-grant.js";
 import { canGrantCommandPrefix, isCommandApprovalPrefixGranted, grantCommandApprovalPrefix } from "../src/command/approval.js";
-import { captureValidationBaseline } from "../src/progress/validation-standard.js";
+import { sha256 } from "../src/utils/hash.js";
 
 class HostCommandBackend implements CommandExecutionBackend {
   describe(): PreparedCommand["metadata"] {
@@ -54,15 +54,35 @@ class HostCommandBackend implements CommandExecutionBackend {
   }
 }
 
-describe("command validation baseline integration", () => {
-  it("retains a bound experiment through polling and marks a weakened original test non-comparable", async () => {
+describe("command validation change integration", () => {
+  it("marks a modified original test from recorded file changes without a full baseline", async () => {
+    await withWorkspace(async (root, manager) => {
+      const filename = path.join(root, "test.cjs");
+      const original = "const a=require('node:assert/strict');a.equal(2,3);\n";
+      const weakened = original.replace("a.equal(2,3)", "a.equal(2,2)");
+      await writeFile(filename, weakened);
+      const tools = commandTools(manager);
+      try {
+        const output = await tools.runtime.run({ program: process.execPath, args: ["test.cjs"],
+          intent: "verify", verificationKind: "smoke_test" }, {
+          ...context(root, { approve: true, timeoutMs: 5000 }),
+          validationPriorChanges: [{ path: "test.cjs", operation: "update", beforeHash: sha256(original),
+            afterHash: sha256(weakened), source: "file_tool", status: "applied", timestamp: "now" }],
+        });
+        assert.equal(output.validation?.status, "passed");
+        assert.equal(output.validation?.standard?.status, "changed");
+        assert.deepEqual(output.validation?.standard?.changedPaths, ["test.cjs"]);
+      } finally { await tools.runtime.cancelAll(); }
+    });
+  });
+  it("retains a bound experiment through polling and marks a recorded test change non-comparable", async () => {
     await withWorkspace(async (root, manager) => {
       const filename = path.join(root, "test.cjs");
       const original = "const t=require('node:test');const a=require('node:assert/strict');t('boundary',async()=>{await new Promise(r=>setTimeout(r,100));a.equal(2,3)});\n";
       await writeFile(filename, original);
       const tools = commandTools(manager);
       const args = ["--test", "--test-reporter=tap", "test.cjs"];
-      const runContext = { ...context(root, { approve: true, timeoutMs: 5000 }), validationBaseline: await captureValidationBaseline(root),
+      const runContext = { ...context(root, { approve: true, timeoutMs: 5000 }),
         progressExperiment: { incidentId: "incident_bound", report: { recommendation: "run_experiment" as const,
           summary: "s", diagnosis: "d", evidence: "e", experiment: "run", expectedSignal: "pass", falsifyingSignal: "fail",
           experimentProgram: process.execPath, experimentArgsJson: JSON.stringify(args), experimentCwd: "." } } };
@@ -70,12 +90,17 @@ describe("command validation baseline integration", () => {
         let output = await tools.runtime.start({ program: process.execPath, args, intent: "verify" }, runContext);
         while (output.status === "running") output = await tools.runtime.status(output.commandId, runContext, 1000);
         assert.equal(output.validation?.status, "failed");
-        assert.equal(output.validation?.standard?.status, "unchanged");
+        assert.equal(output.validation?.standard, undefined);
         assert.equal(output.requestMetadata?.experimentIncidentId, "incident_bound");
         const repeated = await tools.runtime.status(output.commandId, runContext);
         assert.deepEqual(repeated.requestMetadata, output.requestMetadata);
-        await writeFile(filename, original.replace("a.equal(2,3)", "a.equal(2,2)"));
-        const weakened = await tools.runtime.run({ program: process.execPath, args, intent: "verify" }, runContext);
+        const revised = original.replace("a.equal(2,3)", "a.equal(2,2)");
+        await writeFile(filename, revised);
+        const weakened = await tools.runtime.run({ program: process.execPath, args, intent: "verify" }, {
+          ...runContext,
+          validationPriorChanges: [{ path: "test.cjs", operation: "update", beforeHash: sha256(original),
+            afterHash: sha256(revised), source: "file_tool", status: "applied", timestamp: "now" }],
+        });
         assert.equal(weakened.validation?.status, "passed");
         assert.equal(weakened.validation?.standard?.status, "changed");
         assert.deepEqual(weakened.validation?.standard?.changedPaths, ["test.cjs"]);

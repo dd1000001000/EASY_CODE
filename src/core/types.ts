@@ -451,8 +451,8 @@ export type ApprovalDecision = "allow_once" | "allow_prefix" | "reject";
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 
 export interface ToolContext {
-  /** Runtime-owned original test/config inventory; never a model argument. */
-  validationBaseline?: import("../progress/validation-standard.js").ValidationBaseline;
+  /** Actual prior mutations only; distinguishes original tests from added tests. */
+  validationPriorChanges?: readonly FileChangeRecord[];
   progressExperiment?: { incidentId: string; report: import("../progress/types.js").ProgressReviewReportSnapshot };
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   orchestrationEnabled?: boolean;

@@ -154,10 +154,15 @@ export function foldReviewEvent(state: SessionState, raw: unknown): void {
     }
     case "decided": {
       if (s.status !== "closing" || !s.summaries.author || !s.summaries.reviewer) throw new Error("Both independent summaries required");
-      // Consensus cannot manufacture verification or erase an unresolved item.
-      const last = s.statements.slice(-2);
-      s.approval = event.fresh && agreed(s) && !s.summaries.author.unavailable && !s.summaries.reviewer.unavailable &&
-        deliveryEvidenceSatisfied(s);
+      // A fresh reviewer report with no stated objections is a reviewer
+      // opinion, not Runtime certification that every requirement was met.
+      // The actual command outcomes and official benchmark verdict stay
+      // separate from this advisory review.
+      const reviewer = [...s.statements].reverse().find(item => item.actor === "reviewer");
+      s.approval = event.fresh && !s.summaries.reviewer.unavailable &&
+        reviewer?.value.vote === "agree" && reviewer.value.unresolved.length === 0 &&
+        !(s.blockingChecks?.length) && !s.experiments.some(e =>
+          e.outcome === "failed" || e.standard === "changed");
       s.status = "decided";
       s.handoff = renderReviewHandoff(s, event.fresh);
       break;
@@ -175,35 +180,15 @@ export function foldReviewEvent(state: SessionState, raw: unknown): void {
   }
 }
 
-/** Runtime evidence cannot be erased by a vote or by omitting an objection. */
-export function deliveryEvidenceSatisfied(s: ReviewSession): boolean {
-  const unresolved = new Set(s.blockingChecks ?? []);
-  for (const e of s.experiments) {
-    if (e.outcome === "failed" || !e.passed && e.outcome === undefined) unresolved.add(e.checkKey ?? e.id);
-    else if (e.actor === "reviewer" && e.passed && e.unchanged && e.standard === "unchanged" && e.checkKey) unresolved.delete(e.checkKey);
-  }
-  if (unresolved.size || !s.requirements?.length) return false;
-  if (s.documentationOnly && s.changedPaths?.some(name => !s.experiments.some(e =>
-    e.actor === "reviewer" && e.method === "inspection" && e.passed && e.unchanged && e.paths?.includes(name)))) return false;
-  return s.statements.slice(-2).length === 2 && s.statements.slice(-2).every(({ value }) =>
-    value.kind === "delivery" && s.requirements!.every(requirementId => value.checks?.some(check =>
-      check.requirementId === requirementId && value.evidenceRefs.includes(check.evidenceId) &&
-      (check.method !== "custom" || Boolean(check.contractEvidenceId && value.evidenceRefs.includes(check.contractEvidenceId) &&
-        s.experiments.some(e => e.id === check.contractEvidenceId && e.method === "inspection" && e.actor === "reviewer" && e.unchanged &&
-          e.paths?.some(name => s.experiments.find(run => run.id === check.evidenceId)?.paths?.includes(name))))) && s.experiments.some(e =>
-        e.id === check.evidenceId && e.actor === "reviewer" && e.passed && e.unchanged && e.method === check.method &&
-        (check.method === "inspection" ? s.documentationOnly : e.standard === "unchanged")))));
-}
-
 export function renderReviewHandoff(s: ReviewSession, fresh: boolean): string {
   const limit = s.handoffTokens ?? DEFAULT_RUNTIME_LIMITS.reviewHandoffMaxTokens;
   const sourceRef = `review:${s.id}:evidence`;
   const last = s.statements.slice(-2);
   const unresolved = [...new Set(last.flatMap(item => item.value.unresolved))];
   const state = { reviewId: s.id, purpose: s.purpose, snapshotId: s.snapshotId, requirementRevision: s.requirementRevision,
-      rounds: s.round, reason: s.closeReason, fresh, consensus: fresh && agreed(s), deliveryApproved: s.approval,
+      rounds: s.round, reason: s.closeReason, fresh, consensus: fresh && agreed(s), reviewerWithoutObjection: s.approval,
       sourceRef, unresolvedCount: unresolved.length, blockingCheckCount: s.blockingChecks?.length ?? 0,
-      warning: "Independent opinions are not verified facts. A forced closure is NOT approval. Recall omitted qualifications before acting. Do not reopen the same review without new evidence." };
+      warning: "Independent opinions are not verified facts or a Runtime correctness certificate. Recall omitted qualifications before acting. Do not reopen the same review without new evidence." };
   let proposals = last.map(item => ({ actor: item.actor, proposalId: item.proposalId, kind: item.value.kind,
     vote: item.value.vote, proposal: item.value.proposal }));
   const render = (author: string, reviewer: string, evidence: object) =>

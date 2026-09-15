@@ -158,7 +158,7 @@ function commandResult(
       (output.requestMetadata?.verificationKind && output.validation
         ? `; validation ${output.validation.status}: ${output.validation.reason}` +
           (output.validation.standard?.status === "changed" ? "; original tests/configuration changed: this result cannot resolve the original failure" :
-            output.validation.standard?.status === "unknown" ? "; testing-standard coverage is incomplete: no verified recovery can be claimed" : "") : ""));
+            output.validation.standard?.status === "unknown" ? "; original-test coverage was not established (report only the checks actually run)" : "") : ""));
   const summary = cleanupUnsafe
     ? `${baseSummary}; cleanup is not confirmed. Do not rerun the command. The execution environment is quarantined.${timeoutSummary}`
     : `${baseSummary}${timeoutSummary}`;

@@ -1,6 +1,5 @@
 import { progressReviewPacketDigest, progressReviewReportSchema } from "./reviewer.js";
 import { cloneProgressGuardState } from "./guard.js";
-import { validationBaselineSchema } from "./validation-standard.js";
 import type {
   ProgressGuardState,
   ProgressIncident,
@@ -8,7 +7,7 @@ import type {
 } from "./types.js";
 
 export const PROGRESS_REVIEW_EVENT_TYPES = [
-  "progress.validation.baseline",
+  "progress.hint.presented",
   "progress.review.requested",
   "progress.review.started",
   "progress.review.model_request.started",
@@ -236,9 +235,16 @@ export function foldProgressReviewEvent(
 ): ProgressGuardState {
   const state = cloneProgressGuardState(current);
   const payload = record(rawPayload);
-  if (eventType === "progress.validation.baseline") {
-    if (state.validationBaseline) throw new Error("Validation baseline is already pinned");
-    state.validationBaseline = validationBaselineSchema.parse(payload.baseline);
+  if (eventType === "progress.hint.presented") {
+    const scope = safeText(payload.scopeKey, "scopeKey", 512);
+    const kind = safeText(payload.kind, "kind", 16);
+    if (kind !== "read" && kind !== "search" && kind !== "investigation")
+      throw new Error("Invalid progress hint kind");
+    const key = `${kind}:${scope}`;
+    state.presentedWeakHintScopes ??= [];
+    if (state.presentedWeakHintScopes.includes(key)) return state;
+    if (state.presentedWeakHintScopes.length >= 128) throw new Error("Progress hint registry is full");
+    state.presentedWeakHintScopes.push(key);
     return state;
   }
   const incidentId = safeText(payload.incidentId, "incidentId", 256);
