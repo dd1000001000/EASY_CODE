@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
@@ -280,6 +280,39 @@ describe("review runtime isolation and recovery", () => {
       assert.deepEqual((await restoreReviewCopies(copies.directory, id, fingerprint)).baselines, copies.baselines);
     } finally {
       if (reviewDirectory) await rm(reviewDirectory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("materializes unchanged internal file symlinks but rejects changed symlinks", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-review-symlink-"));
+    const createdCopies: string[] = [];
+    try {
+      await writeFile(path.join(directory, "target.txt"), "shared documentation\n");
+      try {
+        await symlink("target.txt", path.join(directory, "linked.txt"), "file");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EPERM") return;
+        throw error;
+      }
+      const workspace = await WorkspaceManager.create(directory);
+      const fingerprint = reviewFingerprint(await workspace.captureSnapshot());
+      const id = createId("review");
+      const copies = await createReviewCopies(workspace, id, fingerprint, 100000, undefined, { changedPaths: [] });
+      createdCopies.push(copies.directory);
+      const copiedLink = path.join(copies.roots.reviewer, "linked.txt");
+      assert.equal((await lstat(copiedLink)).isSymbolicLink(), false);
+      assert.equal(await readFile(copiedLink, "utf8"), "shared documentation\n");
+      assert.deepEqual(copies.materializedSymlinks, ["linked.txt"]);
+      assert.deepEqual((await restoreReviewCopies(copies.directory, id, fingerprint)).materializedSymlinks, ["linked.txt"]);
+
+      const rejectedId = createId("review");
+      createdCopies.push(path.join(await realpath(os.tmpdir()), `easy-code-${rejectedId}`));
+      await assert.rejects(
+        () => createReviewCopies(workspace, rejectedId, fingerprint, 100000, undefined, { changedPaths: ["linked.txt"] }),
+        /Changed symbolic links cannot enter/u,
+      );
+    } finally {
+      for (const copy of createdCopies) await rm(copy, { recursive: true, force: true });
       await rm(directory, { recursive: true, force: true });
     }
   });
