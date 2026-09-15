@@ -20,7 +20,7 @@ function fixture() {
   const s = state(); const events: ReviewEvent[] = [];
   const emit = async (event: ReviewEvent) => { foldReviewEvent(s, event); events.push(event); };
   foldReviewEvent(s, { type: "started", id: "review_1", key: "key", purpose: "delivery", snapshotId: "snap",
-    requirementRevision: "req", maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 2048 });
+    requirementRevision: "req", maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
   return { s, events, emit, get: () => s.reviewSessions![0]! };
 }
 describe("unified memory and five-round review", () => {

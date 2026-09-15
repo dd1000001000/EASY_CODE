@@ -116,7 +116,7 @@ describe("delivery reliability", () => {
     const s = reliabilityState();
     const emit = (e: ReviewEvent) => foldReviewEvent(s, e);
     emit({ type: "started", id: "r", key: "k", purpose: "delivery", snapshotId: "snapshot", requirementRevision: "req",
-      requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 2048 });
+      requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
     emit({ type: "experiment", id: "r", actor: "reviewer", evidenceId: "bad", checkKey: "target", outcome: "failed", passed: false, unchanged: true, standard: "unchanged" });
     emit({ type: "experiment", id: "r", actor: "reviewer", evidenceId: "good", checkKey: "other", method: "test", outcome: "passed", passed: true, unchanged: true, standard: "unchanged" });
     for (const actor of ["reviewer", "author"] as const) emit({ type: "statement", id: "r", actor, value: { proposal: "ready", kind: "delivery", vote: "agree", evidenceRefs: ["good"], unresolved: [],
@@ -166,7 +166,7 @@ describe("delivery reliability", () => {
   it("accepts declared build checks, complete documentation inspection, and script-bound custom contracts", () => {
     const fixture = (method: string): ReviewSession => {
       const s = reliabilityState(); foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "delivery", snapshotId: "s", requirementRevision: "q",
-        requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 10000, summaryTokens: 2048 });
+        requirements: ["request"], maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
       const r = s.reviewSessions![0]!;
       r.experiments.push({ id: "result", actor: "reviewer", passed: true, unchanged: true, outcome: "passed", method, standard: "unchanged", paths: ["validate.py"] });
       for (const actor of ["reviewer", "author"] as const) foldReviewEvent(s, { type: "statement", id: "r", actor, value: {

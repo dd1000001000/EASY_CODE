@@ -30,7 +30,7 @@ function state(threadId: string): SessionState { return { ...baseSessionState(),
 function setup(provider: ModelProvider, limits = defaultRuntimeLimits(), maxTaskTokens = 0) {
   const main = state("main"); main.messages.push({ role: "assistant", content: "PRIVATE_MAIN_CONTEXT" });
   foldReviewEvent(main, { type: "started", id: "r", key: "key", purpose: "delivery", snapshotId: "snap", requirementRevision: "req",
-    maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 2048 });
+    maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
   const events: ReviewEvent[] = [], records: ChatMessage[] = [];
   const emit = async (e: ReviewEvent) => { foldReviewEvent(main, e); events.push(e); };
   const get = () => main.reviewSessions![0]!;
@@ -57,6 +57,21 @@ describe("review runtime isolation and recovery", () => {
     f.participants.author.assertEnvironmentSafe = () => { throw new Error("quarantined"); };
     try { await assert.rejects(runReviewDiscussion(f.get, f.emit, f.driver), /cleanup.*quarantined/); assert.equal(requests, 0); }
     finally { f.driver.release(); }
+  });
+  it("uses the provider stream timeout policy without synthesizing a review deadline signal", async () => {
+    let captured: ModelRequest | undefined;
+    const f = setup({ name: "glm", model: "mock", complete: async request => {
+      captured = request;
+      return { message: { role: "assistant", content: JSON.stringify({ proposal: "Inspect the boundary", kind: "next_action",
+        vote: "needs_evidence", evidenceRefs: [], unresolved: ["Independent evidence pending"] }) } };
+    } });
+    try {
+      await f.driver.discuss("reviewer", f.get());
+      assert.equal(captured!.signal, undefined);
+      assert.equal(captured!.responseMode, "stream");
+      assert.equal(captured!.thinkingEffort, "none");
+      assert.equal("deadline" in f.get(), false);
+    } finally { f.driver.release(); }
   });
   it("does not reserve two entire 1M windows merely to start a small review", () => {
     const f = setup({ name: "glm", model: "mock", complete: async () => { throw new Error("Not called"); } }, defaultRuntimeLimits(), 1_000_000);
@@ -250,7 +265,7 @@ describe("review runtime isolation and recovery", () => {
       const initial = store.create({ threadId: "journal-review", workspaceRoot: directory, mode: "code", provider: "glm", model: "mock", thinkingEffort: "none" });
       const emit = (payload: ReviewEvent) => store.appendEvent(initial.threadId, { type: "review.session.event", payload });
       emit({ type: "started", id: "r", key: "key", purpose: "delivery", snapshotId: "snap", requirementRevision: "req",
-        maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 2048 });
+        maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 2048 });
       emit({ type: "close", id: "r", reason: "round_limit" });
       for (const actor of ["author", "reviewer"] as const) emit({ type: "summary", id: "r", actor, text: actor, unavailable: false });
       emit({ type: "decided", id: "r", fresh: true }); emit({ type: "applied", id: "r", fresh: false });

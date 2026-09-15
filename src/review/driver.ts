@@ -89,16 +89,12 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
     if (input.signal?.aborted) throw new Error("Review canceled");
     const p = input.participants[who];
     try { p.assertEnvironmentSafe?.(); } catch (error) { throw new ReviewCleanupError(error); }
-    const remainingMs = input.get().deadline - Date.now();
-    if (remainingMs <= 0) throw new Error("Review time limit");
-    const timeout = AbortSignal.timeout(Math.min(remainingMs, input.limits.reviewSummaryTimeoutMs));
-    const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
     const requestEffort = summary ? "none" : p.state.thinkingEffort;
     const sent = budgetedRequest({ ...request, responseMode: "stream",
       thinkingEffort: requestEffort,
       outputReserveTokens: request.outputReserveTokens ??
         responseTokenReserve(input.limits, requestEffort, managers[who].tokenCapacity?.window),
-      maxRetries: 0, signal }, managers[who].tokenCapacity);
+      maxRetries: 0, signal: input.signal }, managers[who].tokenCapacity);
     return completeWithApiRetries(input.provider, sent, {
       limits: input.limits,
       onAttempt: async ordinal => {
@@ -223,7 +219,6 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
       const definitions = [...p.tools.map(t => t.definition), statementTool];
       while (input.get().status === "discussing") {
         if (contentFailures > input.limits.modelContentRetries) throw new Error("Review content corrections were already exhausted before Resume");
-        if (Date.now() >= session.deadline) throw new Error("Review time limit");
         const response = await request(who, { messages: await build(who, definitions),
           tools: definitions, responseMode: "stream" });
         await recordMessage(p, response.message);
@@ -257,15 +252,11 @@ export function createReviewDriver(input: ReviewDriverInput): ReviewDriver & { r
               if (value.executionScope === "host") throw new Error("Review cannot escalate outside its experiment copy");
               const before = ["read_file", "run_command"].includes(call.function.name) ? await p.unchanged() : false;
               await p.append("tool.call", call);
-              const remaining = session.deadline - Date.now();
-              if (remaining <= 0) throw new Error("Review tool deadline reached");
-              const deadlineSignal = AbortSignal.timeout(remaining);
-              const signal = input.signal ? AbortSignal.any([input.signal, deadlineSignal]) : deadlineSignal;
               executing = true;
               const manager = managers[who];
               const resultHistory = manager.build({ state: p.state, systemPrompt: system(who), maxContextChars: input.limits.maxContextChars });
               result = reconciliationGate(p.state, tool.name, value) ?? commandRetries[who].before(tool.name, value) ?? await tool.execute(value, {
-                ...p.context, signal, toolCallId: call.id, limits: input.limits,
+                ...p.context, signal: input.signal, toolCallId: call.id, limits: input.limits,
                 resultTokenBudget: manager.tokenCapacity ? Math.max(0, manager.tokenCapacity.inputCapacity -
                   manager.estimateRequestTokens(resultHistory, definitions) - input.limits.contextSafetyReserveTokens) : undefined,
                 resultCharBudget: manager.tokenCapacity ? undefined : Math.max(0, manager.activeCharBudget(input.limits.maxContextChars) -

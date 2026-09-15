@@ -3047,7 +3047,7 @@ export class EasyCodeApp {
       const task = this.state.messages.filter(message => message.role === "user").slice(-3).map(message => message.content).join("\n");
       return await reviewCommandApproval(request, task, {
         provider, budget: this.sharedTaskBudget(threadId), limits: this.config.limits, maxInputChars: this.config.limits.approvalInputChars,
-        maxOutputTokens: this.config.limits.approvalOutputTokens, timeoutMs: this.config.limits.approvalTimeoutMs,
+        maxOutputTokens: this.config.limits.approvalOutputTokens,
         onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured", turnId,
           payload: { purpose: "command_approval", finishReason: response.finishReason ?? null,
             message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,

@@ -190,7 +190,7 @@ describe("configurable 1M context", () => {
   it("keeps exact review proposals with bounded independent summaries and pageable full evidence", () => {
     const s = state();
     foldReviewEvent(s, { type: "started", id: "r", key: "k", purpose: "stagnation", snapshotId: "snapshot", requirementRevision: "req",
-      maxRounds: 5, maxRequests: 32, maxTools: 20, deadline: Date.now() + 60000, summaryTokens: 4096, briefingTokens: 6144, handoffTokens: 12288 });
+      maxRounds: 5, maxRequests: 32, maxTools: 20, summaryTokens: 4096, briefingTokens: 6144, handoffTokens: 12288 });
     for (const who of ["reviewer", "author"] as const) foldReviewEvent(s, { type: "statement", id: "r", actor: who,
       value: { proposal: "Verify named IntFlag separately from unnamed composites", kind: "next_action", vote: "agree", evidenceRefs: [], unresolved: [] } });
     for (const who of ["author", "reviewer"] as const) foldReviewEvent(s, { type: "summary", id: "r", actor: who,

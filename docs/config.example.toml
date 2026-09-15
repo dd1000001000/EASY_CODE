@@ -100,8 +100,6 @@ context_recall_protection_exchanges = 2
 review_max_rounds = 5
 review_max_requests = 32
 review_max_tool_calls = 20
-review_timeout_ms = 600000
-review_summary_timeout_ms = 120000
 review_snapshot_max_bytes = 134217728
 review_dependency_max_bytes = 1073741824
 review_dependency_max_files = 100000
@@ -119,10 +117,9 @@ context_tool_batch_tokens = 65536
 context_tool_reference_min_chars = 4096
 # Reviewer remains enabled and independently restricted to its read-only profile.
 reviewer_output_tokens = 6144 # local report storage budget
-# Independent command approval agent: shared retries within one bounded deadline.
+# Independent command approval agent: uses the shared Provider response deadlines below.
 approval_input_chars = 24000
 approval_output_tokens = 1024 # local report storage budget
-approval_timeout_ms = 60000
 validation_baseline_max_files = 8000
 validation_scan_max_entries = 50000
 validation_scan_max_bytes = 67108864
@@ -182,8 +179,9 @@ low = 2
 medium = 4
 high = 8
 
-# Renewable only after parsed, non-empty semantic model progress. Headers,
-# heartbeat comments and partial SSE framing do not reset this deadline.
+# Shared by every model role: main/child Agent, reviewer, approval, router and
+# compaction. Renewable only after parsed, non-empty semantic model progress.
+# Headers, heartbeat comments and partial SSE framing do not reset this deadline.
 [limits.provider_stream_idle_timeout_ms]
 none = 60000
 low = 60000
