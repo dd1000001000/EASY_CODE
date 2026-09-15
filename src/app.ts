@@ -3,8 +3,6 @@ import { fileURLToPath } from "node:url";
 import { TaskBudget } from "./runtime/task-budget.js";
 import { BenchmarkContainerBackend } from "./sandbox/benchmark-backend.js";
 import { runWorkspaceReview } from "./review/application.js";
-import { ValidationBaselineStore } from "./review/baseline-store.js";
-import { captureValidationBaseline } from "./progress/validation-standard.js";
 import { sharedReviewEvidenceOwner } from "./context/recall.js";
 
 import chalk from "chalk";
@@ -1792,8 +1790,6 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      captureValidationBaseline: () => captureValidationBaseline(this.workspace.root, this.config.limits,
-        (hash, bytes) => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).put(hash, bytes)),
       getProgressWorkspaceFingerprint: async () => {
         const snapshot = await this.workspace.captureSnapshot();
         if (snapshot.truncated) {
@@ -1961,7 +1957,6 @@ export class EasyCodeApp {
           reason: "A supervised command is still running; observe its terminal result before review." };
         return runWorkspaceReview(input, {
           workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
-          readBaseline: hash => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).get(hash),
           provider, budget, limits: this.config.limits,
           sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
           dataDir: this.config.dataDir,
@@ -2376,8 +2371,6 @@ export class EasyCodeApp {
           return `${base}\n\n${childContract}`;
         },
         getWorkspaceSummary: async () => json(childWorkspace?.getManifestSummary()),
-        captureValidationBaseline: () => captureValidationBaseline(childWorkspace!.root, this.config.limits,
-          (hash, bytes) => new ValidationBaselineStore(path.join(this.config.dataDir, "validation-baselines", workspaceId)).put(hash, bytes)),
         captureToolEvidence: (state, callId, tool, result) =>
           this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
         readToolEvidence: (state, id, offset, limit) =>

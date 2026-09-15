@@ -121,26 +121,32 @@ describe("project discovery regression", () => {
     assert.equal(validateCommandRequest({ program: "cmd", args: ["/c", "dir /b"] }), undefined);
     assert.ok(validateCommandRequest({ program: "cmd", args: ["/k", "dir"] }));
   });
-  it("injects the search hint into the next model request without a reviewer or task termination", async () => fixture(async (root, tool) => {
+  it("injects a repeated-search hint once without a reviewer or task termination", async () => fixture(async (root, tool) => {
     const current: SessionState = { ...baseSessionState(), threadId: "discovery", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
       workspaceRoot: root, constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],
       commandApprovalPrefixes: [], workingSummary: "", compactedMessageCount: 0,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-    let calls = 0;
+    let calls = 0, hintEvents = 0;
     const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
       buildSystemPrompt: async () => "Inspect the project", getWorkspaceSummary: async () => "", searchMemories: async () => [],
-      appendEvent: async () => undefined, requestApproval: async () => false,
+      appendEvent: async event => { if (event.type === "progress.hint.presented") hintEvents += 1; }, requestApproval: async () => false,
       provider: { name: "qwen", model: "mock", complete: async (request) => {
         calls += 1;
         if (calls <= 3) return { message: { role: "assistant", content: null, tool_calls: [{ id: `search${calls}`, type: "function",
           function: { name: "search_files", arguments: '{"glob":"README*"}' } }] } };
-        assert.match(request.messages.map((message) => message.content ?? "").join("\n"), /Runtime observed 3 identical searches/u);
+        const requestText = request.messages.map((message) => message.content ?? "").join("\n");
+        if (calls === 4) {
+          assert.match(requestText, /Runtime observed 3 identical searches/u);
+          return { message: { role: "assistant", content: null, tool_calls: [{ id: "search4", type: "function",
+            function: { name: "search_files", arguments: '{"glob":"README*"}' } }] } };
+        }
+        assert.doesNotMatch(requestText, /Runtime observed 3 identical searches/u);
         return { message: { role: "assistant", content: "No project description was found in the searched scope." } };
       } } });
-    const result = await runtime.run(current, "What is this project?", { maxSteps: 5, maxContextChars: 250000,
+    const result = await runtime.run(current, "What is this project?", { maxSteps: 6, maxContextChars: 250000,
       maxOutputChars: 16000, commandTimeoutMs: 1000, approvalPolicy: "never" });
     assert.equal(result.reason, "success");
-    assert.equal(calls, 4);
+    assert.equal(calls, 5); assert.equal(hintEvents, 1);
     assert.equal(current.progressGuard?.incidents.length, 0);
   }));
 });

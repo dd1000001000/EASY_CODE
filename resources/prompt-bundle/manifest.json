@@ -335,8 +335,8 @@
       "bytes": 406
     },
     "system/runtime-control.md": {
-      "sha256": "sha256:891f20ef464ab3f8e6eb88aafb80b0efb0ed47c4b8426ce73dee7f0815070cfe",
-      "bytes": 1294
+      "sha256": "sha256:1c632fd1947695a83c69707453c37fb0439edb1ca8c6b763b7f2ecf1d88edf62",
+      "bytes": 1418
     },
     "system/security.md": {
       "sha256": "sha256:237b4e60f84228c9d73fee53a65442fc4c03dad0ae131db12eac92bb8293566e",
@@ -543,5 +543,5 @@
       "contentHash": "sha256:30a0d497b19bc4f1c8c617c19fcf052f132606bef54b17ee246dbe10cda969a3"
     }
   },
-  "bundleHash": "sha256:4d05a41429cc2bb6f4ac92d17a3fb5e3318a732017b4d3c4bfdf14786b37dda9"
+  "bundleHash": "sha256:b86ad5160c73b6587f5a0fa2b4f0e44a4762a3eabbc9aa37214c7bbf2952e1ac"
 }

@@ -20,8 +20,8 @@ import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
 import { commandRequestMetadata, normalizeCommandRequest } from "./normalize-request.js";
 import { CommandVerificationCollector, packageScriptRunner, validationCheckKey, workspacePackageManifest } from "./verification.js";
-import { captureValidationBaseline, compareValidationBaseline } from "../progress/validation-standard.js";
 import { matchesReviewExperiment } from "../progress/experiment.js";
+import { targetedValidationChanges } from "./validation-changes.js";
 import { inspectNetworkOperation } from "./network-policy.js";
 import { createCommandNetworkGate } from "./network-gate.js";
 import { networkCommandApprovalPrefix } from "./approval.js";
@@ -405,11 +405,10 @@ export class CommandRuntime {
     hooks: CommandExecutionHooks = {},
   ): Promise<RunCommandOutput> {
     const normalized = normalizeCommandRequest(input);
-    const baseline = context.validationBaseline;
-    const before = baseline && normalized.verificationKind ? await captureValidationBaseline(context.workspaceRoot, context.limits) : undefined;
     const requestMetadata = commandRequestMetadata(normalized);
-    // Publish one terminal audit only after the validation-standard comparison.
-    // Otherwise the journal permanently loses information added below.
+    // Record the actual command outcome. A repository-wide inventory is not a
+    // prerequisite for reporting a verification result; modified tests remain
+    // visible in the workspace change journal and review diff.
     const audits: import("../core/types.js").CommandAuditEntry[] = [];
     if (context.progressExperiment && matchesReviewExperiment(context.progressExperiment.report, normalized, context.workspaceRoot)) {
       requestMetadata.experimentIncidentId = context.progressExperiment.incidentId;
@@ -422,9 +421,12 @@ export class CommandRuntime {
       ...(hooks.onStarted ? { onStarted: (snapshot: () => RunningCommandOutput) =>
         hooks.onStarted!(() => ({ ...snapshot(), requestMetadata })) } : {}),
     });
-    if (output.validation && baseline && before) {
-      output.validation.standard = compareValidationBaseline(baseline, before, await captureValidationBaseline(context.workspaceRoot, context.limits));
-      this.options.recordLifecycle?.(context, output.commandId, "command.validation.standard", output.validation.standard);
+    if (output.validation && normalized.verificationKind) {
+      const targeted = targetedValidationChanges(context.validationPriorChanges ?? [], output.workspaceDelta);
+      if (targeted) {
+        output.validation.standard = { status: "changed", ...targeted };
+        this.options.recordLifecycle?.(context, output.commandId, "command.validation.standard", output.validation.standard);
+      }
     }
     completeAudit = true;
     return { ...output, requestMetadata };

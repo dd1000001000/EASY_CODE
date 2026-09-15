@@ -91,13 +91,13 @@ describe("unified memory and five-round review", () => {
     assert.equal(f.s.messages.length, 1);
     assert.throws(() => foldReviewEvent(f.s, { type: "applied", id: f.get().id }), /already applied/u);
   });
-  it("consensus without real verification cannot approve delivery", async () => {
+  it("reviewer opinion is recorded separately from real verification", async () => {
     const f = fixture();
     await runReviewDiscussion(f.get, f.emit, {
       discuss: async () => ({ proposal: "done", kind: "delivery", vote: "agree", evidenceRefs: ["invented"], unresolved: [] }),
       summarize: async who => who, fresh: async () => true,
     });
-    assert.equal(f.get().round, 1); assert.equal(f.get().approval, false);
+    assert.equal(f.get().round, 1); assert.equal(f.get().approval, true);
     const altered = fixture();
     await altered.emit({ type: "experiment", id: altered.get().id, actor: "reviewer", evidenceId: "changed_tests",
       passed: true, unchanged: true, standard: "changed" });
@@ -106,7 +106,7 @@ describe("unified memory and five-round review", () => {
       summarize: async who => who, fresh: async () => true,
     });
     assert.equal(altered.get().experiments[0]?.passed, true); // Test result is not rewritten as a failure.
-    assert.equal(altered.get().approval, false); // A changed oracle is insufficient independent proof.
+    assert.equal(altered.get().approval, false); // A known changed oracle cannot be called an unqualified reviewer opinion.
   });
   it("does not repeat a charged summary after resume and records an explicit fallback", async () => {
     const f = fixture();
@@ -132,6 +132,6 @@ describe("unified memory and five-round review", () => {
     assert.equal(f.get().approval, true);
     await f.emit({ type: "applied", id: f.get().id, fresh: false });
     assert.equal(f.get().approval, false);
-    assert.match(f.get().handoff!, /"deliveryApproved":false/u);
+    assert.match(f.get().handoff!, /"reviewerWithoutObjection":false/u);
   });
 });

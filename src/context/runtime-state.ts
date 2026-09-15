@@ -32,8 +32,9 @@ export function unresolvedCommands(state: Readonly<SessionState>): CommandAuditE
     // low-confidence failures even though they cannot trigger automatic review.
     const previous = latest.get(key);
     const verified = !verdict ? !previous?.validation : verdict.status === "passed" && verdict.confidence === "high" &&
-      verdict.standard?.status !== "changed" && verdict.standard?.status !== "unknown" &&
-      (!previous?.validation?.standard || previous.validation.standard.baselineDigest === verdict.standard?.baselineDigest) &&
+      verdict.standard?.status !== "changed" &&
+      (!previous?.validation?.standard?.baselineDigest || !verdict.standard?.baselineDigest ||
+        previous.validation.standard.baselineDigest === verdict.standard.baselineDigest) &&
       (verdict.source !== "process_exit" || ["build", "typecheck", "lint", "format_check"].includes(command.verificationKind ?? ""));
     if (verified) latest.delete(key);
   }
@@ -51,7 +52,7 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
       "This is the SAME workspace, not a clean start. Inspect files before changing them; never replay unknown commands. " +
       JSON.stringify({ pendingCommandIds: Object.keys(commands), pendingChildIds: Object.keys(state.contextOperations?.children ?? {}),
         requiredReconciliation: state.pressureRecovery.reconciliation,
-        deliveryStillRequiresVerification: Boolean(state.delivery), dagStatus: state.taskGraph?.status });
+        deliveryReviewAdvisory: Boolean(state.delivery), dagStatus: state.taskGraph?.status });
   }
   const failures = unresolvedCommands(state);
   const incidents = state.progressGuard?.incidents.filter((item) => item.phase !== "resolved") ?? [];
@@ -61,10 +62,10 @@ export function runtimeContinuityMessage(state: Readonly<SessionState>): string 
   const pendingOperations = { commands: state.contextOperations?.commands ?? {},
     children: state.contextOperations?.children ?? {} };
   const payload = {
-    ...(state.delivery ? { deliveryObligation: state.delivery } : {}),
+    ...(state.delivery ? { advisoryReviewMaterial: state.delivery } : {}),
     ...(state.reviewSessions?.length ? { reviews: state.reviewSessions.filter(s => s.status !== "applied" || s === state.reviewSessions!.at(-1)).map(s => ({ id: s.id,
       snapshotId: s.snapshotId, purpose: s.purpose, status: s.status, reason: s.closeReason,
-      rounds: s.round, deliveryApproved: s.approval,
+      rounds: s.round, reviewerWithoutObjection: s.approval,
       unresolved: s.statements.slice(-2).flatMap(item => item.value.unresolved),
       experiments: s.experiments })) } : {}),
     // Preserve complete retired user messages, not a model-generated paraphrase

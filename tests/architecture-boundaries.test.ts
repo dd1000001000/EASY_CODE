@@ -14,6 +14,9 @@ const RETIRED_RUNTIME_SYMBOLS = [
   "legacyToolMetadata",
   "activateInstalledModelCatalog",
   "pruneConsumedReasoning",
+  "captureValidationBaseline",
+  "compareValidationBaseline",
+  "validationBaseline",
   ".easy-code-srt-runtime",
 ] as const;
 
@@ -55,6 +58,8 @@ describe("current protocol architecture boundaries", () => {
       /["']thread_checkpoint["']/u,
       /["']thread_created["']/u,
       /["']context\.compacted["']/u,
+      /["']progress\.validation\.baseline["']/u,
+      /["']review_remediation["']/u,
       /schema_migrations/u,
       /env_key_aliases/u,
       /process\.env\.EASY_CODE_WORKSPACE(?!_ROOT)/u,

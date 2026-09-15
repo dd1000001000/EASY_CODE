@@ -115,14 +115,12 @@ context_max_capacity_retries = 1
 context_summary_max_tokens = 8192
 context_tool_batch_tokens = 65536
 context_tool_reference_min_chars = 4096
-# Reviewer remains enabled and independently restricted to its read-only profile.
+# Risk-triggered reviewer remains available under its restricted profile;
+# its opinion is advisory, not a universal delivery gate.
 reviewer_output_tokens = 6144 # local report storage budget
 # Independent command approval agent: uses the shared Provider response deadlines below.
 approval_input_chars = 24000
 approval_output_tokens = 1024 # local report storage budget
-validation_baseline_max_files = 8000
-validation_scan_max_entries = 50000
-validation_scan_max_bytes = 67108864
 progress_investigation_min_samples = 5
 progress_investigation_repeat_ratio = 0.7
 progress_investigation_window_responses = 12
