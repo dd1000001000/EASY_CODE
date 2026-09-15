@@ -189,6 +189,8 @@ describe("durable turn steering", () => {
         payload: { message: { role: "user", content: "finish" } },
       });
       assert.equal(threads.sealTurnSteering("thread_steering_seal", "turn_seal"), undefined);
+      assert.equal(threads.sealTurnSteering("thread_steering_seal", "turn_seal"), undefined);
+      assert.equal(threads.recover("thread_steering_seal").steeringSealedTurnId, "turn_seal");
       assert.throws(
         () => threads.enqueueTurnSteering("thread_steering_seal", "turn_seal", {
           role: "user",

@@ -1955,31 +1955,37 @@ export class EasyCodeApp {
         // A background writer outlives its run_command lock; do not snapshot it.
         if (this.hasRunningCommands()) return { approved: false, requests: 0, reused: true,
           reason: "A supervised command is still running; observe its terminal result before review." };
-        return runWorkspaceReview(input, {
-          workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
-          provider, budget, limits: this.config.limits,
-          sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
-          dataDir: this.config.dataDir,
-          lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
-          status: text => this.terminal.status(text),
-          approve: async (context, request) => this.approvalQueue.run(async () => {
-            if (request.signal?.aborted || request.command?.scope === "host") return false;
-            const saved = this.threadStore.recover(context.threadId);
-            if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
-            // Review permissions do not inherit main-thread Full access.
-            const decision = await this.reviewApproval(request);
-            this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
-            let vote = decision.decision;
-            if (vote === "reject") {
-              if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
-              vote = await this.terminal.approve({ ...request, description: `${request.description}\nApproval reviewer: ${decision.reason}` });
-            }
-            if (request.signal?.aborted) return false;
-            if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
-              this.threadStore.recordCommandApprovalPrefixGrant(context.threadId, request.commandPrefix, context.turnId);
-            return vote !== "reject";
-          }),
-        });
+        const reviewUiId = this.terminal.startReview(input.purpose);
+        try {
+          return await runWorkspaceReview(input, {
+            workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
+            provider, budget, limits: this.config.limits,
+            sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
+            dataDir: this.config.dataDir,
+            lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
+            status: text => this.terminal.status(text),
+            onProgress: progress => this.terminal.updateReview(reviewUiId, progress.phase, progress.round, progress.maxRounds),
+            approve: async (context, request) => this.approvalQueue.run(async () => {
+              if (request.signal?.aborted || request.command?.scope === "host") return false;
+              const saved = this.threadStore.recover(context.threadId);
+              if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
+              // Review permissions do not inherit main-thread Full access.
+              const decision = await this.reviewApproval(request);
+              this.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
+              let vote = decision.decision;
+              if (vote === "reject") {
+                if (this.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
+                vote = await this.terminal.approve({ ...request, description: `${request.description}\nApproval reviewer: ${decision.reason}` });
+              }
+              if (request.signal?.aborted) return false;
+              if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
+                this.threadStore.recordCommandApprovalPrefixGrant(context.threadId, request.commandPrefix, context.turnId);
+              return vote !== "reject";
+            }),
+          });
+        } finally {
+          this.terminal.stopReview(reviewUiId);
+        }
       }, input.signal),
       onStatus: (status) => this.terminal.status(status),
       onModelRequestStart: (text) => this.terminal.startActivity(text, "model"),

@@ -23,7 +23,8 @@ import { readFile } from "node:fs/promises";
 import { createId } from "../utils/ids.js";
 import { sha256 } from "../utils/hash.js";
 import { createReviewCopies, restoreReviewCopies, reviewDiff, reviewFingerprint } from "./workspace.js";
-import { foldReviewEvent, runReviewDiscussion, type ReviewActor, type ReviewEvent } from "./session.js";
+import { foldReviewEvent, runReviewDiscussion, type ReviewActor, type ReviewEvent, type ReviewSession } from "./session.js";
+import type { UIReviewPhase } from "../ui/contracts.js";
 import { createReviewDriver, type ReviewParticipant } from "./driver.js";
 import { preflightReviewEnvironment } from "./preflight.js";
 
@@ -40,6 +41,17 @@ export interface WorkspaceReviewDependencies {
   sensitivePaths: string[]; dataDir?: string; lifecycleDirectory: string; offline: boolean;
   approve(context: ToolContext, request: import("../core/types.js").ApprovalRequest): Promise<boolean>;
   status(text: string): void;
+  onProgress?: (progress: Readonly<{ phase: UIReviewPhase; round: number; maxRounds: number }>) => void;
+}
+
+function reviewPhase(event: ReviewEvent, session: ReviewSession): UIReviewPhase {
+  if (session.status === "applied" || event.type === "applied") return "applied";
+  if (session.status === "decided" || event.type === "decided") return "decision";
+  if (session.status === "closing") return "summaries";
+  if (session.briefing || session.statements.length > 0) return "discussion";
+  if (session.briefingRequested) return "briefing";
+  if (session.environmentStarted) return "environment";
+  return "snapshot";
 }
 
 /** The app holds its workspace mutation lease for this entire call. */
@@ -92,6 +104,14 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     const candidate = structuredClone(state); foldReviewEvent(candidate, event);
     durableReviewWrite(() => deps.store.appendEvent(state.threadId, { type: "review.session.event", turnId: input.turnId, payload: event }));
     foldReviewEvent(state, event);
+    const current = state.reviewSessions.find(session => session.id === event.id);
+    if (current) {
+      try {
+        deps.onProgress?.({ phase: reviewPhase(event, current), round: current.round, maxRounds: current.maxRounds });
+      } catch {
+        // A presentation failure cannot undo a durable review event.
+      }
+    }
   };
   if (!session && (state.reviewSessions?.filter(s => s.scope === scope).length ?? 0) >= deps.limits.reviewMaxSessionsPerTask)
     return { approved: false, requests: 0, reused: true, reason: "Review session budget exhausted; no new review was started." };

@@ -1518,6 +1518,37 @@ describe("Terminal retained inline shell", () => {
     });
   });
 
+  it("keeps the busy adjustment editor writable during review and shares the activity refresh clock", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      output.resume();
+      const terminal = new Terminal(input, output);
+      const submitted: string[] = [];
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        terminal.setCurrentRequest("Implement the task", [], {
+          onSteer: async submission => { submitted.push(submission.text); },
+        });
+        const reviewId = terminal.startReview("delivery");
+        terminal.updateReview(reviewId, "discussion", 1, 5);
+        await settlePromptInput();
+        input.write("new adjustment during review\r");
+        await settlePromptInput();
+        assert.deepEqual(submitted, ["new adjustment during review"]);
+        assert.equal(terminalState(terminal).live.review?.phase, "discussion");
+        const activityId = terminal.startActivity("review model request", "model");
+        terminal.stopActivity(activityId);
+        assert.equal(terminalState(terminal).live.review?.id, reviewId);
+        terminal.stopReview(reviewId);
+        assert.equal(terminalState(terminal).live.review, null);
+        terminal.clearCurrentRequest();
+      } finally {
+        terminal.close();
+      }
+    });
+  });
+
   it("freezes new steering, drains submitted lines before seal, and resumes when steering wins", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();

@@ -1287,12 +1287,20 @@ export class ThreadStore {
     threadId: string,
     turnId: string,
   ): TurnSteeringBatch | undefined {
+    // Recovery may re-enter finalization after a durable seal. Keep replay's
+    // duplicate-event check strict, but do not append a second seal here.
+    const current = this.recover(threadId);
+    if (current.activeTurnId !== turnId) {
+      throw new Error(`Cannot seal inactive turn ${turnId}`);
+    }
+    if (current.steeringSealedTurnId === turnId) return undefined;
     const pending = this.drainTurnSteering(threadId, turnId);
     if (pending) return pending;
     const prior = this.recover(threadId);
     if (prior.activeTurnId !== turnId) {
       throw new Error(`Cannot seal inactive turn ${turnId}`);
     }
+    if (prior.steeringSealedTurnId === turnId) return undefined;
     try {
       this.appendEvent(threadId, {
         type: "turn.steering.sealed",
@@ -1302,6 +1310,10 @@ export class ThreadStore {
       });
       return undefined;
     } catch (error) {
+      const latest = this.recover(threadId);
+      if (latest.activeTurnId === turnId && latest.steeringSealedTurnId === turnId) {
+        return undefined;
+      }
       // If enqueue won the append lock after our empty snapshot, consume that
       // newly durable prefix instead of finalizing over it.
       const raced = this.drainTurnSteering(threadId, turnId);

@@ -284,6 +284,7 @@ export function createUIState(options: CreateUIStateOptions = {}): UIState {
     transcript: [],
     live: {
       activity: null,
+      review: null,
       progress: [],
       thinking: null,
       tasks: null,
@@ -335,6 +336,17 @@ export function applyEvent(
       return {
         ...state,
         live: { ...state.live, activity: null },
+      };
+    case "review.set":
+      return {
+        ...state,
+        live: { ...state.live, review: { ...event.review } },
+      };
+    case "review.clear":
+      if (event.id !== undefined && state.live.review?.id !== event.id) return state;
+      return {
+        ...state,
+        live: { ...state.live, review: null },
       };
     case "progress.set":
       return {

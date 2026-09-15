@@ -77,6 +77,20 @@ export interface UIActivityState {
   readonly startedAt?: number;
 }
 
+export type UIReviewPhase =
+  | "snapshot" | "environment" | "briefing" | "discussion"
+  | "summaries" | "decision" | "applied";
+
+/** Review is independent of transient model/tool spinners. */
+export interface UIReviewState {
+  readonly id: string;
+  readonly purpose: "stagnation" | "delivery";
+  readonly startedAt: number;
+  readonly phase: UIReviewPhase;
+  readonly round: number;
+  readonly maxRounds: number;
+}
+
 export type UIProgressKind = "step" | "tool" | "status";
 export type UIProgressStatus =
   | "pending"
@@ -123,6 +137,7 @@ export interface UIThinkingPanelState extends UIThinkingPanelMetadata {
 
 export interface UILiveState {
   readonly activity: UIActivityState | null;
+  readonly review: UIReviewState | null;
   readonly progress: readonly UIProgressItem[];
   readonly thinking: UIThinkingPanelState | null;
   readonly tasks: TaskGraphView | null;
@@ -202,6 +217,8 @@ export type UIEvent =
     }
   | { readonly type: "activity.start"; readonly activity: UIActivityState }
   | { readonly type: "activity.stop"; readonly id?: string }
+  | { readonly type: "review.set"; readonly review: UIReviewState }
+  | { readonly type: "review.clear"; readonly id?: string }
   | {
       readonly type: "progress.set";
       readonly progress: readonly UIProgressItem[];
