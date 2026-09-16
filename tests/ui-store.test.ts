@@ -251,6 +251,19 @@ describe("pure terminal UI state", () => {
     assert.notEqual(withTasks.live.tasks, graph);
     assert.notEqual(withTasks.live.tasks?.tasks[0]?.dependencies, graph.tasks[0]?.dependencies);
     assert.equal(applyEvent(withTasks, { type: "tasks.clear" }).live.tasks, null);
+    const completedGraph: TaskGraphView = {
+      ...graph,
+      status: "completed",
+      currentTask: null,
+      completed: graph.total,
+      startableTasks: [],
+      tasks: graph.tasks.map((task) => ({ ...task, status: "completed" as const })),
+    };
+    assert.equal(
+      applyEvent(withTasks, { type: "tasks.set", tasks: completedGraph }).live.tasks,
+      null,
+      "a completed DAG is history, not a persistent live footer section",
+    );
 
     const agents = Array.from(
       { length: MAX_LIVE_SUBAGENTS + 3 },
