@@ -394,7 +394,7 @@ describe("model-controlled plan flow", () => {
         assert.deepEqual(mainTools, ["create_file"]);
         assert.equal(current.planReview, undefined);
     });
-    it("corrects plain Plan text and accepts the subsequent propose_plan call", async () => {
+    it("turns plain Plan text into a proposal without a second model request", async () => {
         let requests = 0;
         let sawReminder = false;
         const provider = {
@@ -420,10 +420,11 @@ describe("model-controlled plan flow", () => {
             },
         };
         const result = await runtime(provider, [new ProposePlanTool()]).run(state("plan"), "Create a plan", options());
-        assert.equal(requests, 2);
-        assert.equal(sawReminder, true);
+        assert.equal(requests, 1);
+        assert.equal(sawReminder, false);
         assert.equal(result.reason, "planned");
         assert.ok(result.planProposal);
+        assert.equal(result.planProposal?.steps[0]?.description, "A plain text plan");
     });
     it("consumes an exact approved proposal only after the execution message is durable", async () => {
         let requests = 0;

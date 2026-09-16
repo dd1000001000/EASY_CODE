@@ -58,7 +58,6 @@ export interface ProgressObservation {
   readonly searchRepeatLimit?: number;
   readonly standardStatus?: "unchanged" | "changed" | "unknown";
   readonly baselineDigest?: string;
-  readonly experimentIncidentId?: string;
   readonly changedTestPaths?: readonly string[];
   readonly readRange?: { fileKey: string; start: number; end: number };
   readonly investigationPolicy?: { minimum: number; ratio: number; window: number; review: boolean };
@@ -121,53 +120,13 @@ export interface ProgressReadWarning {
 }
 
 export type ProgressIncidentPhase =
-  | "investigation_suspected"
   | "review_pending"
-  | "review_requested"
-  | "reviewing"
-  | "experiment_required"
   | "strategy_adjustment"
-  | "review_exhausted"
   | "resolved"
-  | "review_unavailable"
-  | "review_stale";
-
-export interface ProgressReviewBindingSnapshot {
-  reviewId: string;
-  incidentId: string;
-  intentRevision: number;
-  workspaceFingerprint: string;
-  progressWatermark: number;
-  packetDigest: string;
-}
-
-export interface ProgressReviewReportSnapshot {
-  experimentProgram?: string;
-  experimentArgsJson?: string;
-  experimentCwd?: string;
-  recommendation: "run_experiment" | "insufficient_evidence";
-  summary: string;
-  diagnosis: string;
-  evidence: string;
-  experiment: string;
-  expectedSignal: string;
-  falsifyingSignal: string;
-}
-
-export interface ProgressExperimentSnapshot {
-  id: string;
-  sourceEventId: string;
-  sourceCallId: string;
-  commandId?: string;
-  outcomeClass: ProgressOutcomeClass;
-  outcomeKey?: string;
-  newEvidence: boolean;
-  verifiedImprovement: boolean;
-  semanticConfirmed: false;
-}
+  | "review_unavailable";
 
 export interface ProgressIncident {
-  reason?: "repeated_verified_failure" | "investigation_stalled" | "validation_standard_changed";
+  reason: "repeated_verified_failure";
   baselineDigest?: string;
   incidentId: string;
   signature: string;
@@ -181,31 +140,10 @@ export interface ProgressIncident {
   verificationCycleIds: string[];
   phase: ProgressIncidentPhase;
   reviewAttempts: number;
-  validReviews: number;
-  reviewModelRequests: number;
-  reviewInputTokens: number;
-  reviewOutputTokens: number;
-  reviewTotalTokens: number;
-  reviewCachedInputTokens: number;
-  reviewReasoningTokens: number;
-  reviewDurationMs: number;
-  /** Provider requests are journaled before dispatch and finished at most once. */
-  reviewStartedRequestOrdinals: number[];
-  reviewFinishedRequestOrdinals: number[];
-  reviewBinding?: ProgressReviewBindingSnapshot;
-  reviewPacket?: string;
-  reviewReport?: ProgressReviewReportSnapshot;
   reviewUnavailableReason?: string;
-  experiment?: ProgressExperimentSnapshot;
 }
 
 export interface ProgressGuardState {
-  investigations?: Array<{
-    scopeKey: string; after: number;
-    samples: Array<{ ordinal: number; repeated: boolean }>;
-    sources: Array<{ key: string; hash: string; ranges: Array<[number, number]> }>;
-    searches: string[];
-  }>;
   schemaVersion: typeof PROGRESS_GUARD_STATE_SCHEMA_VERSION;
   acceptedObservations: number;
   duplicateObservations: number;

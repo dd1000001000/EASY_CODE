@@ -45,11 +45,11 @@ describe("environment quarantine", () => {
         const result = await runtime.run(current, "inspect", degradationOptions);
         assert.equal(result.reason, "paused");
         assert.equal(result.pause?.cause, "command_environment");
-        assert.equal(requests, 2);
+        assert.equal(requests, 1);
         assert.equal(executions, 1);
-        assert.equal(reads, 2);
+        assert.equal(reads, 1);
         assert.equal(reviews, 0);
-        assert.equal(current.messages.filter(m => m.role === "tool").length, 3);
+        assert.equal(current.messages.filter(m => m.role === "tool").length, 2);
     });
     it("keeps the model available when a shared environment is already quarantined", async () => {
         let requests = 0;
@@ -61,9 +61,8 @@ describe("environment quarantine", () => {
             buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
             appendEvent: async () => { }, requestApproval: async () => false });
         const result = await runtime.run(state(), "continue", degradationOptions);
-        assert.equal(result.reason, "paused");
-        assert.equal(requests, 2);
-        assert.equal(result.pause?.cause, "command_environment");
+        assert.equal(result.reason, "success");
+        assert.equal(requests, 1);
     });
     it("honors a configured command-environment correction limit of zero", async () => {
         let requests = 0;
@@ -71,14 +70,13 @@ describe("environment quarantine", () => {
                     requests++;
                     return { message: { role: "assistant", content: "done" } };
                 } }, toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
-            limits: { ...DEFAULT_RUNTIME_LIMITS, commandEnvironmentRecoveryRetries: 0 },
+            limits: DEFAULT_RUNTIME_LIMITS,
             getEnvironmentFault: () => "container cleanup failed",
             buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace", searchMemories: async () => [],
             appendEvent: async () => { }, requestApproval: async () => false });
         const result = await runtime.run(state(), "continue", degradationOptions);
-        assert.equal(result.reason, "paused");
+        assert.equal(result.reason, "success");
         assert.equal(requests, 1);
-        assert.equal(result.pause?.cause, "command_environment");
     });
 });
 function state(mode = "code") {
@@ -719,7 +717,7 @@ describe("AgentRuntime", () => {
         assert.equal(imageCommittedBeforeRouting, true);
         assert.equal(result.reason, "success");
     });
-    it("continues an unfinished Auto-mode DAG in Code mode without rerouting", async () => {
+    it("reroutes a new Auto request even when an older DAG is unfinished", async () => {
         const currentState = state("auto");
         currentState.taskGraph = applyTaskGraphOperation(undefined, {
             action: "create",
@@ -746,8 +744,12 @@ describe("AgentRuntime", () => {
                 model: "mock",
                 async complete(request) {
                     requests += 1;
+                    if (request.tools?.some((tool) => tool.function.name === "select_mode")) {
+                        return { message: { role: "assistant", content: null, tool_calls: [{ id: "route", type: "function",
+                            function: { name: "select_mode", arguments: '{"mode":"code","reason":"Continue the requested work."}' } }] } };
+                    }
                     assert.equal(request.tools?.some((tool) => tool.function.name === "manage_tasks"), true);
-                    if (requests === 1) {
+                    if (requests === 2) {
                         return {
                             message: {
                                 role: "assistant",
@@ -763,7 +765,7 @@ describe("AgentRuntime", () => {
                             },
                         };
                     }
-                    if (requests === 2) {
+                    if (requests === 3) {
                         return {
                             message: {
                                 role: "assistant",
@@ -804,16 +806,15 @@ describe("AgentRuntime", () => {
             requestApproval: async () => false,
         });
         const result = await runtime.run(currentState, "Continue", {
-            maxSteps: 3,
+            maxSteps: 4,
             maxContextChars: 20_000,
             maxOutputChars: 8_000,
             commandTimeoutMs: 1_000,
             approvalPolicy: "never",
         });
-        assert.equal(requests, 3);
-        assert.deepEqual(promptModes, ["code", "code", "code"]);
-        assert.equal(result.reason, "paused");
-        assert.equal(result.pause?.cause, "dag");
+        assert.equal(requests, 4);
+        assert.deepEqual(promptModes, ["auto", "code", "code", "code"]);
+        assert.equal(result.reason, "success");
         assert.equal(currentState.taskGraph.status, "waiting_input");
     });
     it("executes a tool call and returns the final response", async () => {
@@ -984,7 +985,7 @@ describe("AgentRuntime", () => {
             "write_memory",
         ]);
     });
-    it("enforces a model-created task DAG and refuses a premature final answer", async () => {
+    it("records a model-created task DAG without making it a completion gate", async () => {
         let requestCount = 0;
         let readExecutions = 0;
         let sawRuntimeReminder = false;
@@ -1119,12 +1120,12 @@ describe("AgentRuntime", () => {
             approvalPolicy: "never",
         });
         assert.equal(result.reason, "success");
-        assert.equal(requestCount, 8);
+        assert.equal(requestCount, 3);
         assert.equal(readExecutions, 1);
-        assert.equal(sawRuntimeReminder, true);
-        assert.equal(currentState.taskGraph?.status, "completed");
-        assert.equal(currentState.taskGraph?.tasks[0]?.status, "completed");
-        assert.equal(currentState.messages.some(m => m.role === "tool" && m.content.includes("Start one unblocked DAG task")), true);
+        assert.equal(sawRuntimeReminder, false);
+        assert.equal(currentState.taskGraph?.status, "active");
+        assert.equal(currentState.taskGraph?.tasks[0]?.status, "pending");
+        assert.equal(currentState.messages.some(m => m.role === "tool" && m.content.includes("Start one unblocked DAG task")), false);
     });
     it("refuses a plain final answer until the supervised command is terminal", async () => {
         let requests = 0;
@@ -1292,10 +1293,10 @@ describe("AgentRuntime", () => {
             assert.equal(requests, 6);
             assert.equal(sawRejection, true);
             assert.equal(currentState.taskGraph?.status, terminalAction === "complete" ? "completed" : "waiting_input");
-            assert.equal(result.reason, terminalAction === "complete" ? "success" : "paused");
+            assert.equal(result.reason, "success");
         }
     });
-    it("rejects every call when manage_tasks is batched with a work tool", async () => {
+    it("executes manage_tasks and work tools in model order within one batch", async () => {
         let requests = 0;
         let reads = 0;
         const runtime = new AgentRuntime({
@@ -1377,10 +1378,10 @@ describe("AgentRuntime", () => {
             approvalPolicy: "never",
         });
         assert.equal(result.reason, "success");
-        assert.equal(reads, 0);
-        assert.equal(currentState.taskGraph, undefined);
+        assert.equal(reads, 1);
+        assert.equal(currentState.taskGraph?.status, "active");
         assert.equal(currentState.messages.filter((message) => message.role === "tool" &&
-            message.content.includes("manage_tasks_must_be_exclusive")).length, 2);
+            message.content.includes("manage_tasks_must_be_exclusive")).length, 0);
     });
     it("allows a blocked DAG to end the turn without pretending tasks completed", async () => {
         const call = (id, input) => ({
@@ -1462,8 +1463,7 @@ describe("AgentRuntime", () => {
             commandTimeoutMs: 1_000,
             approvalPolicy: "never",
         });
-        assert.equal(result.reason, "paused");
-        assert.equal(result.pause?.cause, "dag");
+        assert.equal(result.reason, "success");
         assert.equal(result.steps, 4);
         assert.equal(currentState.taskGraph?.status, "waiting_input");
         assert.equal(currentState.taskGraph?.tasks[0]?.status, "blocked");
@@ -1499,7 +1499,7 @@ describe("AgentRuntime", () => {
             searchMemories: async () => [], appendEvent: async () => { }, requestApproval: async () => false });
         const opts = { maxSteps: 4, maxContextChars: 30000, maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never" };
         const first = await runtime.run(current, "Verify", opts);
-        assert.equal(first.reason, "paused");
+        assert.equal(first.reason, "success");
         assert.equal(executions, 2);
         assert.equal(current.taskGraph.status, "active");
         assert.equal(current.messages.some(m => m.role === "tool" && m.content.includes("command_sandbox_unavailable")), true);
@@ -1627,7 +1627,7 @@ describe("AgentRuntime", () => {
             commandTimeoutMs: 1_000,
             approvalPolicy: "never",
         });
-        assert.equal(result.reason, "paused");
+        assert.equal(result.reason, "success");
         assert.equal(result.steps, 4);
         assert.equal(commandExecutions, 2);
         assert.equal(currentState.taskGraph.status, "waiting_input");
@@ -2088,12 +2088,10 @@ describe("AgentRuntime", () => {
             commandTimeoutMs: 1_000,
             approvalPolicy: "never",
         });
-        assert.equal(result.reason, "paused", result.text);
-        assert.equal(result.pause?.cause, "completion_protocol");
-        assert.match(result.text, /reconciliation is incomplete/i);
+        assert.equal(result.reason, "success", result.text);
         assert.equal(result.failure, undefined);
-        assert.equal(requests.length, 3);
-        assert.equal(snapshots.length, 3);
+        assert.equal(requests.length, 1);
+        assert.equal(snapshots.length, 1);
         assert.equal(currentState.compactedMessageCount, 2);
         assert.ok(currentState.pressureRecovery?.serverReset);
         assert.match(currentState.messages[0]?.content ?? "", /OMITTED_HISTORY_END/);

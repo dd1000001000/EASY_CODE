@@ -67,7 +67,7 @@ describe("context reliability", () => {
     assert.deepEqual(current, before);
   });
 
-  it("keeps output witnesses in checkpoints and pending experiments in Runtime context", () => {
+  it("keeps output witnesses in checkpoints and review state in Runtime context", () => {
     const current = state();
     current.commands = [{ ...command("failure"), outputEvidence: {
       capturedOutputDigest: "sha256:" + "a".repeat(64), stdoutTail: "test_a FAILED expected 2 actual 3",
@@ -83,10 +83,6 @@ describe("context reliability", () => {
         verificationCycleId: commandId, commandId, targetKey: "sha256:" + "b".repeat(64), outcomeKey: "sha256:" + "c".repeat(64),
       }).state;
     }
-    guard.incidents[0]!.phase = "experiment_required";
-    guard.incidents[0]!.reviewReport = { recommendation: "run_experiment", summary: "proposal",
-      diagnosis: "Maybe the cache", evidence: "failure", experiment: "Disable cache and rerun",
-      expectedSignal: "passes", falsifyingSignal: "same failure" };
     current.progressGuard = guard;
     const restored = deserializeSessionState(serializeSessionState(current));
     assert.deepEqual(restored.commands[0]?.outputEvidence, current.commands[0]?.outputEvidence);
@@ -94,9 +90,9 @@ describe("context reliability", () => {
     // Progress state intentionally starts empty and comes from journal replay,
     // not checkpoint text.
     assert.deepEqual(restored.progressGuard, createProgressGuardState());
-    assert.match(runtimeContinuityMessage(current), /unverifiedReview/u);
-    assert.match(runtimeContinuityMessage(current), /Disable cache and rerun/u);
-    assert.equal(current.progressGuard?.incidents[0]?.phase, "experiment_required");
+    assert.match(runtimeContinuityMessage(current), /review_pending/u);
+    assert.match(runtimeContinuityMessage(current), /repeated_verified_failure/u);
+    assert.equal(current.progressGuard?.incidents[0]?.phase, "review_pending");
   });
 
   it("keeps the history prefix stable when retrieval data changes", () => {

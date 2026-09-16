@@ -199,17 +199,19 @@ describe("unfinished investigation compaction", () => {
             f.dispose();
         }
     });
-    it("does not clear pending reviewer experiments or their budgets during compaction", async () => {
+    it("does not clear reviewer state during compaction", async () => {
         const f = fixture();
         try {
             f.state.progressGuard = createProgressGuardState();
-            f.state.progressGuard.incidents.push({ incidentId: "review", phase: "experiment_pending", reviewAttempts: 1,
-                experiment: { instruction: "Compare the two parser branches" } });
+            f.state.progressGuard.incidents.push({ incidentId: "review", signature: "failure", reason: "repeated_verified_failure",
+                scopeKey: "task", targetKey: "parser", outcomeKey: "same failure", outcomeClass: "failed",
+                triggerSourceEventId: "event", triggerResponseOrdinal: 3, verificationCycleIds: ["a", "b", "c"],
+                phase: "strategy_adjustment", reviewAttempts: 1 });
             const original = JSON.stringify(f.state.progressGuard);
             const result = await f.run({ append: async () => undefined });
             assert.equal(result.committed, true);
             assert.equal(JSON.stringify(f.state.progressGuard), original);
-            assert.match(runtimeContinuityMessage(f.state), /Compare the two parser branches/);
+            assert.match(runtimeContinuityMessage(f.state), /strategy_adjustment/);
             assert.match(runtimeContinuityMessage(f.state), /"reviewAttempts":1/);
         }
         finally {

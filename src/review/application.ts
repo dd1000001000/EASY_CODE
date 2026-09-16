@@ -28,9 +28,7 @@ import type { UIReviewPhase } from "../ui/contracts.js";
 import { createReviewDriver, type ReviewParticipant } from "./driver.js";
 
 export interface WorkspaceReviewRequest {
-  state: SessionState; turnId: string; userInput: string; purpose: "stagnation" | "delivery";
-  /** The main Agent's already-produced final answer, reviewed before finalization. */
-  draftAnswer?: string;
+  state: SessionState; turnId: string; userInput: string;
   incidentId?: string; remainingModelRequests: number; signal?: AbortSignal;
   maxContextTokens?: number;
 }
@@ -64,7 +62,7 @@ export function createMainReviewBrief(state: Readonly<SessionState>, input: Work
   const narrative = (state.workingSummary ?? "").replace(/```[\s\S]*?```/gu, "[code omitted]")
     .split("\n").filter(line => line.length <= 320 && !/^\s*(?:\+|-|@@|\d+\s*\|)/u.test(line))
     .join("\n");
-  return bounded(JSON.stringify({ purpose: input.purpose, mainAgentSummary: bounded(narrative, 5500),
+  return bounded(JSON.stringify({ mainAgentSummary: bounded(narrative, 5500),
     changedFileCount: state.changes.length,
     repeatedFailure: incident ? { reason: incident.reason, outcomeKey: incident.outcomeKey } : undefined,
     unresolvedVerification: failures,
@@ -79,7 +77,7 @@ export async function runWorkspaceReview(input: WorkspaceReviewRequest, deps: Wo
     if (error instanceof ReviewFatalError) throw error;
     const reason = bounded(String(error), 1800);
     durableReviewWrite(() => deps.store.appendEvent(input.state.threadId, { type: "review.unavailable", turnId: input.turnId,
-      payload: { code: "review_setup_unavailable", reason, deliveryId: input.state.delivery?.id } }));
+      payload: { code: "review_setup_unavailable", reason } }));
     return { decision: input.signal?.aborted ? "interrupted" : "unavailable", requests: Math.max(0,
       input.state.reviewSessions.reduce((total, session) => total + session.requests, 0) - before), reused: false, reason };
   }
@@ -87,7 +85,7 @@ export async function runWorkspaceReview(input: WorkspaceReviewRequest, deps: Wo
 
 async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: WorkspaceReviewDependencies): Promise<WorkspaceReviewResult> {
   const { state } = input;
-  const scope = state.delivery?.id ?? recoveryScope(state);
+  const scope = recoveryScope(state);
   const snapshotId = reviewFingerprint(await deps.workspace.captureSnapshot());
   const corrections = (state.contextIntentLedger?.userCorrections ?? [])
     .map(item => state.messages[item.sourceMessageIndex]?.content ?? item.text);
@@ -95,13 +93,13 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   const evidenceRevisions = [...new Set(state.commands.map(command => sha256(JSON.stringify([
     command.program, command.args, command.exitCode, command.status, command.summary,
   ]))))].sort();
-  const key = sha256(JSON.stringify([input.purpose, snapshotId, requirementRevision, process.platform, process.arch, evidenceRevisions]));
+  const key = sha256(JSON.stringify([snapshotId, requirementRevision, process.platform, process.arch, evidenceRevisions]));
   const previous = state.reviewSessions.find(session => session.key === key);
   if (previous?.status === "applied") return { decision: previous.report && previous.fresh ? "reported" : "inconclusive",
     requests: 0, reused: true, reason: previous.reason, report: previous.report };
-  if (!previous && input.remainingModelRequests < 2)
+  if (!previous && input.remainingModelRequests < 1)
     return { decision: "unavailable", requests: 0, reused: true,
-      reason: "The shared task budget does not leave enough requests for independent review and any required follow-up." };
+      reason: "The shared task budget does not leave a request for independent review." };
 
   const emit = async (event: ReviewEvent) => {
     const candidate = structuredClone(state);
@@ -120,9 +118,9 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     let copyError: unknown;
     try { copies = await createReviewCopies(deps.workspace, id, snapshotId, deps.limits.reviewSnapshotMaxBytes,
       { limits: deps.limits, signal: input.signal, offline: deps.offline,
-        changedPaths: state.changes.slice(state.delivery?.changeStart ?? 0).map(change => change.path) }); }
+        changedPaths: state.changes.map(change => change.path) }); }
     catch (error) { copyError = error; }
-    await emit({ type: "started", id, key, scope, purpose: input.purpose, snapshotId, requirementRevision,
+    await emit({ type: "started", id, key, scope, snapshotId, requirementRevision,
       reviewerThreadId, incidentId: input.incidentId, directory: copies?.directory });
     session = state.reviewSessions.at(-1)!;
     if (copyError) { await emit({ type: "unavailable", id, reason: bounded(String(copyError), 1800) });
@@ -167,11 +165,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     const opening: ChatMessage = { role: "user", content: `Original user request:\n${input.userInput}\n` +
       `Constraints: ${JSON.stringify(state.constraints)}\nUser corrections: ${JSON.stringify(corrections)}\n` +
       `Snapshot identity: ${snapshotId}\nMain Agent handoff (unverified): ${get().brief}\n` +
-      (input.purpose === "delivery" ? input.draftAnswer?.trim()
-        ? `Main-Agent delivery draft:\n${bounded(input.draftAnswer, 30000)}\n`
-        : "No main-Agent delivery draft was provided.\n"
-        : "") +
-      "Read the project yourself. Give pass only if this exact complete draft needs no correction; otherwise give revise and one concrete next action." };
+      "Read the project yourself. Return one independent conclusion and one concrete next action; there is no agreement round." };
     durableReviewWrite(() => deps.store.recordMessage(threadId, opening, undefined, "assignment"));
     reviewer.messages.push(opening);
     recordUserRequirement(reviewer, reviewer.messages.length - 1);

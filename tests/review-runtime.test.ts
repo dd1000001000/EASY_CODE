@@ -28,7 +28,7 @@ describe("one-way review runtime", () => {
   it("folds one durable report, without author turns, rounds, or reviewer-specific ceilings", () => {
     const main = state("main");
     const emit = (event: ReviewEvent) => foldReviewEvent(main, event);
-    emit({ type: "started", id: "r", key: "k", scope: "task", purpose: "delivery", snapshotId: "snap",
+    emit({ type: "started", id: "r", key: "k", scope: "task", snapshotId: "snap",
       requirementRevision: "req", reviewerThreadId: "private" });
     emit({ type: "brief_ready", id: "r", text: "Fallible handoff" });
     emit({ type: "review_started", id: "r" });
@@ -52,7 +52,7 @@ describe("one-way review runtime", () => {
       const initial = store.create({ threadId: "main", workspaceRoot: directory, mode: "code", provider: "glm",
         model: "mock", thinkingEffort: "none" });
       const emit = (payload: ReviewEvent) => store.appendEvent(initial.threadId, { type: "review.assignment.event", payload });
-      emit({ type: "started", id: "r", key: "k", scope: "task", purpose: "delivery", snapshotId: "snap",
+      emit({ type: "started", id: "r", key: "k", scope: "task", snapshotId: "snap",
         requirementRevision: "req", reviewerThreadId: "private" });
       emit({ type: "brief_ready", id: "r", text: "Fallible handoff" });
       emit({ type: "review_started", id: "r" });
@@ -85,7 +85,7 @@ describe("one-way review runtime", () => {
 
   it("lets the reviewer read independently and send one report using the shared budget", async () => {
     const main = state("main"), reviewer = state("private");
-    foldReviewEvent(main, { type: "started", id: "r", key: "k", scope: "task", purpose: "delivery", snapshotId: "snap",
+    foldReviewEvent(main, { type: "started", id: "r", key: "k", scope: "task", snapshotId: "snap",
       requirementRevision: "req", reviewerThreadId: "private" });
     foldReviewEvent(main, { type: "brief_ready", id: "r", text: "Fallible handoff" });
     foldReviewEvent(main, { type: "review_started", id: "r" });
@@ -126,8 +126,7 @@ describe("one-way review runtime", () => {
     const main = store.create({ threadId: "main", workspaceRoot: root, mode: "code", provider: "glm", model: "mock",
       thinkingEffort: "none" });
     main.workingSummary = "Investigating a boundary.\n```python\nSECRET_SOURCE = 1\n```";
-    const request = { state: main, turnId: "turn", userInput: "Fix the module", purpose: "delivery" as const,
-      draftAnswer: "Implementation complete; UI behavior remains unverified.", remainingModelRequests: 12 };
+    const request = { state: main, turnId: "turn", userInput: "Fix the module", remainingModelRequests: 12 };
     const brief = createMainReviewBrief(main, request);
     assert.doesNotMatch(brief, /SECRET_SOURCE/);
     let calls = 0;
@@ -149,13 +148,12 @@ describe("one-way review runtime", () => {
       assert.equal(session.status, "applied");
       const opening = store.recover(session.reviewerThreadId).messages.find(message => message.role === "user")!.content;
       assert.doesNotMatch(opening, /SECRET_SOURCE|Changed paths|Full immutable diff/u);
-      assert.match(opening, /Main-Agent delivery draft/u);
-      assert.match(opening, /UI behavior remains unverified/u);
+      assert.match(opening, /one concrete next action/u);
       assert.equal(main.messages.filter(message => message.content?.startsWith("RUNTIME_REVIEW_ADVICE")).length, 1);
       const second = await runWorkspaceReview(request, deps);
       assert.equal(second.reused, true); assert.equal(calls, 1);
-      const revised = await runWorkspaceReview({ ...request, draftAnswer: "Revised answer with the same requirement." }, deps);
-      assert.equal(revised.reused, true, "a revised answer must not start a second reviewer");
+      const revised = await runWorkspaceReview(request, deps);
+      assert.equal(revised.reused, true, "the same incident must not start a second reviewer");
       assert.equal(calls, 1);
     } finally {
       for (const session of main.reviewSessions) if (session.directory) await rm(session.directory, { recursive: true, force: true });

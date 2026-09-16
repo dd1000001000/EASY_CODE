@@ -127,19 +127,13 @@ export class SubmitTaskResultTool implements AgentTool {
       const parsed = this.inputSchema.parse(input);
       let report: SubagentTaskReport;
       if (parsed.outcome === "completed") {
-        if (parsed.evidence.length !== this.task.completionChecks.length) {
-          throw new Error(
-            `Task ${this.task.id} requires exactly ` +
-              `${this.task.completionChecks.length} completion evidence item(s)`,
-          );
-        }
         report = {
           taskId: this.task.id,
           outcome: "completed",
           summary: parsed.summary,
-          completionEvidence: this.task.completionChecks.map((check, index) => ({
-            check,
-            evidence: parsed.evidence[index] as string,
+          completionEvidence: parsed.evidence.map((evidence, index) => ({
+            check: this.task.completionChecks[index] ?? `Additional evidence ${index + 1}`,
+            evidence,
           })),
         };
       } else {

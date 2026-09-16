@@ -261,11 +261,7 @@ function applyCompletionEvidence(
   evidence: readonly string[],
   completedAt: string,
 ): void {
-  if (evidence.length !== task.completionChecks.length) {
-    throw new Error(
-      `Task ${task.id} requires exactly ${task.completionChecks.length} completion evidence item(s)`,
-    );
-  }
+  if (evidence.length === 0) throw new Error(`Task ${task.id} requires completion evidence`);
   if (
     evidence.reduce((total, item) => total + item.length, 0) >
     MAX_TASK_COMPLETION_EVIDENCE_TOTAL_CHARS
@@ -276,9 +272,9 @@ function applyCompletionEvidence(
     );
   }
   for (const item of evidence) assertSafeText(item);
-  task.completionEvidence = task.completionChecks.map((check, index) => ({
-    check,
-    evidence: evidence[index] as string,
+  task.completionEvidence = evidence.map((item, index) => ({
+    check: task.completionChecks[index] ?? `Additional evidence ${index + 1}`,
+    evidence: item,
   }));
   task.status = "completed";
   task.completedAt = completedAt;
@@ -411,14 +407,9 @@ function assertTaskGraphInvariants(graph: TaskGraph): void {
       if (
         !task.startedAt ||
         !task.completedAt ||
-        task.completionEvidence?.length !== task.completionChecks.length
+        !task.completionEvidence?.length
       ) {
         throw new Error(`Completed task ${task.id} is missing completion evidence`);
-      }
-      for (let index = 0; index < task.completionChecks.length; index += 1) {
-        if (task.completionEvidence[index]?.check !== task.completionChecks[index]) {
-          throw new Error(`Completed task ${task.id} has mismatched completion evidence`);
-        }
       }
     } else if (task.status === "in_progress" && !task.startedAt) {
       throw new Error(`In-progress task ${task.id} is missing its start time`);

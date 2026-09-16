@@ -20,7 +20,6 @@ import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
 import { CommandPolicy } from "./policy.js";
 import { commandRequestMetadata, normalizeCommandRequest } from "./normalize-request.js";
 import { CommandVerificationCollector, packageScriptRunner, validationCheckKey, workspacePackageManifest } from "./verification.js";
-import { matchesReviewExperiment } from "../progress/experiment.js";
 import { targetedValidationChanges } from "./validation-changes.js";
 import { inspectNetworkOperation } from "./network-policy.js";
 import { createCommandNetworkGate } from "./network-gate.js";
@@ -410,9 +409,6 @@ export class CommandRuntime {
     // prerequisite for reporting a verification result; modified tests remain
     // visible in the workspace change journal and review diff.
     const audits: import("../core/types.js").CommandAuditEntry[] = [];
-    if (context.progressExperiment && matchesReviewExperiment(context.progressExperiment.report, normalized, context.workspaceRoot)) {
-      requestMetadata.experimentIncidentId = context.progressExperiment.incidentId;
-    }
     let output: RunCommandOutput | undefined;
     let completeAudit = false;
     try {

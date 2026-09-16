@@ -1,1 +1,1 @@
-Execute the single Runtime-bound assignment now. Inspect the workspace as needed, keep the scope isolated, verify every completion check, and submit the structured result.
+Execute the single Runtime-bound assignment now. Inspect the workspace as needed, keep the scope isolated, use the completion checks as verification guidance, and submit concise evidence or a concrete blocker.

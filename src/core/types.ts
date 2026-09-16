@@ -86,8 +86,6 @@ export interface ToolRuntimeMetadata {
   readonly effects: readonly ToolEffect[];
   readonly allowedModes: readonly AgentMode[];
   readonly allowedRoles: readonly AgentRole[];
-  readonly taskWork: boolean;
-  readonly progressExperiment: boolean;
   readonly requiresOrchestration: boolean;
   readonly requiresVision: boolean;
   readonly validationSensitive: boolean;
@@ -453,7 +451,6 @@ export type ApprovalHandler = (request: ApprovalRequest) => Promise<boolean>;
 export interface ToolContext {
   /** Actual prior mutations only; distinguishes original tests from added tests. */
   validationPriorChanges?: readonly FileChangeRecord[];
-  progressExperiment?: { incidentId: string; report: import("../progress/types.js").ProgressReviewReportSnapshot };
   limits?: Readonly<import("../config/runtime-limits.js").RuntimeLimits>;
   orchestrationEnabled?: boolean;
   isOrchestrationEnabled?: () => boolean;
@@ -848,7 +845,6 @@ export interface SessionState {
   reviewSessions: import("../review/session.js").ReviewSession[];
   /** Runtime-authored completion obligations and their durable correction count. */
   completionControl?: import("../runtime/completion-gate.js").CompletionControlState;
-  delivery?: import("../review/delivery.js").DeliveryObligation;
   orchestrationEnabled: boolean;
   /** Event-authoritative phase boundaries and compaction transaction budget. */
   compactionControl: import("../context/compaction-transaction.js").CompactionControl;

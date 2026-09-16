@@ -53,7 +53,7 @@ describe("unified memory and one-way review", () => {
   });
   it("publishes only captured reviewer evidence to its parent", () => {
     const s = state();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "delivery",
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task",
       snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "private_reviewer" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });
@@ -63,7 +63,7 @@ describe("unified memory and one-way review", () => {
   });
   it("recalls the exact reviewer report without author summary or consensus", () => {
     const s = state();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "delivery",
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task",
       snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "private_reviewer" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });

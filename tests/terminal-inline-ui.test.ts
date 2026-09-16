@@ -1530,7 +1530,7 @@ describe("Terminal retained inline shell", () => {
         terminal.setCurrentRequest("Implement the task", [], {
           onSteer: async submission => { submitted.push(submission.text); },
         });
-        const reviewId = terminal.startReview("delivery");
+        const reviewId = terminal.startReview();
         terminal.updateReview(reviewId, "independent_review");
         await settlePromptInput();
         input.write("new adjustment during review\r");

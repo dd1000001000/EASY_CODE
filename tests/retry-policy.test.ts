@@ -126,8 +126,12 @@ describe("shared retry policy", () => {
         hasOpenCommandHandles: () => mode === "background",
         getOutstandingSubagents: () => mode === "children" ? [{ agentId: "child", status: "running" } as any] : [],
       }).run(s, "work", runOptions);
-      assert.equal(calls, 3); assert.equal(result.reason, "paused");
-      assert.equal(result.pause?.resumable, true);
+      if (mode === "plan") {
+        assert.equal(calls, 1); assert.equal(result.reason, "planned");
+      } else {
+        assert.equal(calls, 3); assert.equal(result.reason, "paused");
+        assert.equal(result.pause?.resumable, true);
+      }
     }
 
     let calls = 0;
@@ -172,8 +176,7 @@ describe("shared retry policy", () => {
       if (++calls === 1) throw capacityFailure();
       assert.doesNotMatch(JSON.stringify(r.messages), /old assistant result/); return ok;
     })).run(s, "new user requirement", runOptions);
-    assert.equal(calls, 4); assert.equal(result.reason, "paused");
-    assert.match(result.pause?.requiredAction ?? "", /query every original pending/iu);
+    assert.equal(calls, 2); assert.equal(result.reason, "success");
     assert.ok(s.pressureRecovery?.serverReset);
   });
 });

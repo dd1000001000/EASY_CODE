@@ -1461,11 +1461,11 @@ export class Terminal {
   }
 
   /** Begin an independently tracked review without taking over the editor. */
-  startReview(purpose: "stagnation" | "delivery"): string {
+  startReview(): string {
     const id = `review_ui_${Date.now()}_${++this.activitySequence}`;
     this.uiState = applyEvent(this.uiState, {
       type: "review.set",
-      review: { id, purpose, startedAt: Date.now(), phase: "main_brief" },
+      review: { id, startedAt: Date.now(), phase: "main_brief" },
     });
     this.lastReviewElapsedSecond = -1;
     this.refresh();

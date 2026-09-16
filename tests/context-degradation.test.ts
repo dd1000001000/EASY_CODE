@@ -322,19 +322,21 @@ describe("bounded context degradation", () => {
     } finally { f.dispose(); }
   });
 
-  it("minimal rebase keeps pending commands and reviewer experiment budgets", async () => {
+  it("minimal rebase keeps pending commands and reviewer attempt state", async () => {
     const f = fixture(1, false, false, 100, 100000);
     try {
       f.state.progressGuard = createProgressGuardState();
-      f.state.progressGuard.incidents.push({ incidentId: "review", phase: "experiment_pending", reviewAttempts: 1,
-        experiment: { instruction: "Compare parser branches" } } as never);
+      f.state.progressGuard.incidents.push({ incidentId: "review", signature: "failure", reason: "repeated_verified_failure",
+        scopeKey: "task", targetKey: "parser", outcomeKey: "same failure", outcomeClass: "failed",
+        triggerSourceEventId: "event", triggerResponseOrdinal: 3, verificationCycleIds: ["a", "b", "c"],
+        phase: "strategy_adjustment", reviewAttempts: 1 });
       f.state.contextOperations = { commands: { job: { commandId: "job", program: "pytest", args: ["test.py"],
         cwd: f.state.workspaceRoot, status: "running", exitCode: null } }, children: {}, knownCommandIds: ["job"] };
       const facts = runtimeContinuityMessage(f.state);
       const result = await f.run({ maxContextChars: 30000, append: async () => undefined });
       assert.equal(result.committed, true);
       assert.equal(f.state.contextOperations.commands.job?.commandId, "job");
-      assert.match(runtimeContinuityMessage(f.state), /Compare parser branches/);
+      assert.match(runtimeContinuityMessage(f.state), /strategy_adjustment/);
       assert.equal(f.state.progressGuard.incidents[0]?.reviewAttempts, 1);
       assert.match(facts, /poll_command/);
     } finally { f.dispose(); }

@@ -279,7 +279,7 @@ function contextSystemBudget(input: ContextBuildInput): ContextSystemBudget {
   const protectedReserve = estimateMessagesChars([
     ...(latestUser ? [latestUser] : []),
     ...(input.state.workingSummary ? [summaryMessage(input.state.workingSummary)] : []),
-    ...[runtimeContinuityMessage(input.state), input.runtimeContext ?? ""].filter(Boolean)
+    ...[runtimeContinuityMessage(input.state), input.state.pressureRecovery?.serverReset ? "" : input.runtimeContext ?? ""].filter(Boolean)
       .map((content): ChatMessage => ({ role: "user", content })),
   ]) + 384;
   // Artificial retrieval/tool headroom may shrink; actual instructions and
@@ -417,7 +417,8 @@ export class ContextManager {
   build(input: ContextBuildInput): ChatMessage[] {
     const budget = contextSystemBudget(input);
     const continuity = runtimeContinuityMessage(input.state);
-    const tail: ChatMessage[] = [continuity, reconciliationPending(input.state) ? "" : input.runtimeContext ?? ""].filter(Boolean)
+    const tail: ChatMessage[] = [continuity,
+      reconciliationPending(input.state) || input.state.pressureRecovery?.serverReset ? "" : input.runtimeContext ?? ""].filter(Boolean)
       .map((content) => ({ role: "user", content }));
     // History is retired only by a committed Runtime maintenance event.
     // Pressure inspection and the provider guard handle oversized requests;

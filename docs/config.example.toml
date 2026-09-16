@@ -68,7 +68,6 @@ command_execution_retries = 0
 subagent_failure_retries = 0
 # Correction counts exclude the initial attempt. Zero disables correction.
 premature_finish_retries = 2
-command_environment_recovery_retries = 1
 provider_retry_wait_ms = 30000
 default_read_lines = 100
 max_read_lines = 1000

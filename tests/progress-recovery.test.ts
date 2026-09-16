@@ -9,7 +9,6 @@ import {
   foldProgressObservation,
 } from "../src/progress/guard.js";
 import { parseProgressObservation } from "../src/progress/observation.js";
-import { progressReviewPacketDigest } from "../src/progress/reviewer.js";
 import type {
   ProgressGuardState,
   ProgressObservation,
@@ -319,85 +318,4 @@ describe("ProgressGuard journal recovery", () => {
     }
   });
 
-  it("recovers a started reviewer as a charged, non-repeatable attempt", () => {
-    const dataDir = temporaryDataDir();
-    const storage = createStorage(dataDir);
-    try {
-      const threads = new ThreadStore(storage);
-      createThread(threads, dataDir);
-      for (let index = 1; index <= 3; index += 1) {
-        const observation = failedObservation({
-          eventId: `event_review_recovery_${index}`,
-          callId: `call_review_recovery_${index}`,
-          commandId: commandId(index + 10),
-          responseOrdinal: index,
-        });
-        appendObservation(threads, {
-          eventId: observation.sourceEventId,
-          callId: observation.sourceCallId,
-          observation,
-        });
-      }
-      const pending = recoveredProgress(threads.recover(THREAD_ID)).incidents[0];
-      assert.ok(pending);
-      const packet = "immutable reviewer recovery packet";
-      const binding = {
-        reviewId: "review_recovery",
-        incidentId: pending.incidentId,
-        intentRevision: 1,
-        workspaceFingerprint: "sha256:" + "a".repeat(64),
-        progressWatermark: 3,
-        packetDigest: progressReviewPacketDigest(packet),
-      };
-      threads.appendEvent(THREAD_ID, {
-        type: "progress.review.requested",
-        phase: "requested",
-        turnId: "turn_progress_recovery",
-        payload: { incidentId: pending.incidentId, binding, packet },
-      });
-      threads.appendEvent(THREAD_ID, {
-        type: "progress.review.started",
-        phase: "started",
-        turnId: "turn_progress_recovery",
-        payload: { incidentId: pending.incidentId, reviewId: binding.reviewId },
-      });
-
-      const recovered = recoveredProgress(threads.recover(THREAD_ID));
-      assert.equal(recovered.incidents[0]?.phase, "reviewing");
-      assert.equal(recovered.incidents[0]?.reviewAttempts, 1);
-      assert.throws(
-        () => threads.appendEvent(THREAD_ID, {
-          type: "progress.review.started",
-          phase: "started",
-          turnId: "turn_progress_recovery",
-          payload: { incidentId: pending.incidentId, reviewId: binding.reviewId },
-        }),
-        /Invalid progress review start/u,
-      );
-      threads.appendEvent(THREAD_ID, {
-        type: "progress.review.unavailable",
-        phase: "interrupted",
-        turnId: "turn_progress_recovery_resume",
-        payload: {
-          incidentId: pending.incidentId,
-          reviewId: binding.reviewId,
-          reason: "started review had no durable terminal event",
-          accounting: {
-            reviewAttempts: 1,
-            validReviews: 0,
-            reviewModelRequests: 0,
-            reviewInputTokens: 0,
-            reviewOutputTokens: 0,
-            reviewTotalTokens: 0,
-          },
-        },
-      });
-      const terminal = recoveredProgress(threads.recover(THREAD_ID));
-      assert.equal(terminal.incidents[0]?.phase, "review_unavailable");
-      assert.equal(terminal.incidents[0]?.reviewAttempts, 1);
-    } finally {
-      storage.close();
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
 });
