@@ -88,6 +88,39 @@ async function submitWithSequence(
 }
 
 describe("image-aware CLI prompt", () => {
+  it("shows a command suffix and accepts it with Tab without submitting the ghost text", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput();
+    output.resume();
+    const drafts: Array<{ text: string; suffix?: string }> = [];
+    const prompt = readPrompt({
+      input,
+      output,
+      prompt: "> ",
+      captureImage: async (index) => attachment(index),
+      completionProvider: ({ text, cursor }) =>
+        text === "/approv" && cursor === text.length
+          ? { replacement: "/approval", suffix: "al" }
+          : undefined,
+      onDraftChange: (draft) => drafts.push({
+        text: draft.text,
+        ...(draft.completionSuffix
+          ? { suffix: draft.completionSuffix }
+          : {}),
+      }),
+    });
+
+    input.write("/approv");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(drafts.some((draft) =>
+      draft.text === "/approv" && draft.suffix === "al"
+    ));
+    input.write("\t\r");
+
+    const result = await prompt;
+    assert.equal(result?.text, "/approval");
+  });
+
   it("keeps one busy editor open for repeated steering text, paste, and images", async () => {
     const input = new TtyInput();
     const output = new TtyOutput();

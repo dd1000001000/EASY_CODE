@@ -80,6 +80,13 @@ export interface PromptDraft {
   readonly text: string;
   readonly cursor: number;
   readonly images: readonly Readonly<ImageAttachment>[];
+  /** Presentation-only suffix; it is never part of `text` or a submission. */
+  readonly completionSuffix?: string;
+}
+
+export interface PromptCompletion {
+  readonly replacement: string;
+  readonly suffix: string;
 }
 
 export interface ReadPromptOptions {
@@ -122,6 +129,10 @@ export interface ReadPromptOptions {
   ) => void | Promise<void>;
   /** Observe the logical draft after readline and atomic paste updates. */
   readonly onDraftChange?: (draft: Readonly<PromptDraft>) => void;
+  /** Offer a completion for the current draft. Tab accepts it in the editor. */
+  readonly completionProvider?: (
+    draft: Readonly<Pick<PromptDraft, "text" | "cursor" | "images">>,
+  ) => Readonly<PromptCompletion> | undefined;
   /** Busy composers route Ctrl+C to the active Runtime instead of closing. */
   readonly onInterrupt?: () => void;
   /** Dispose images whose markers were removed or whose editor was cancelled. */
@@ -1442,6 +1453,29 @@ export function readPrompt(
     readlineOutputMuted = true;
     promptSuspensionDepth = 1;
   }
+  const completionFor = (
+    text: string,
+    cursor: number,
+    images: readonly Readonly<ImageAttachment>[],
+  ): PromptCompletion | undefined => {
+    if (!options.completionProvider) return undefined;
+    try {
+      const completion = options.completionProvider({ text, cursor, images });
+      if (
+        !completion ||
+        cursor !== text.length ||
+        completion.suffix.length === 0 ||
+        completion.replacement !== `${text}${completion.suffix}` ||
+        /[\r\n\0]/u.test(completion.replacement)
+      ) return undefined;
+      return {
+        replacement: completion.replacement,
+        suffix: completion.suffix,
+      };
+    } catch {
+      return undefined;
+    }
+  };
   rl = readline.createInterface({
     input: proxy,
     output: readlineOutput,
@@ -1451,10 +1485,13 @@ export function readPrompt(
     try {
       const visibleText = stripInternalPasteNonce(rl.line);
       const visibleCursor = stripInternalPasteNonce(rl.line.slice(0, rl.cursor)).length;
+      const images = proxy.referencedImages(rl.line);
+      const completion = completionFor(visibleText, visibleCursor, images);
       options.onDraftChange?.({
         text: visibleText,
         cursor: visibleCursor,
-        images: proxy.referencedImages(rl.line),
+        images,
+        ...(completion ? { completionSuffix: completion.suffix } : {}),
       });
     } catch {
       // A presentation callback cannot own the editor lifecycle.
@@ -1630,7 +1667,38 @@ export function readPrompt(
         latestPromptEndPosition = promptGeometry().endPosition;
       }
     };
-    const onAfterKeypress = (): void => {
+    const onAfterKeypress = (
+      _text?: string,
+      key?: Readonly<{ name?: string }>,
+    ): void => {
+      if (key?.name === "tab" && options.completionProvider) {
+        const mutableReadline = rl as unknown as {
+          line: string;
+          cursor: number;
+          _refreshLine?: () => void;
+        };
+        const insertedTab = mutableReadline.line.lastIndexOf(
+          "\t",
+          Math.max(0, mutableReadline.cursor - 1),
+        );
+        if (insertedTab >= 0) {
+          const lineWithoutTab = `${mutableReadline.line.slice(0, insertedTab)}${mutableReadline.line.slice(insertedTab + 1)}`;
+          const visibleText = stripInternalPasteNonce(lineWithoutTab);
+          const visibleCursor = stripInternalPasteNonce(
+            lineWithoutTab.slice(0, insertedTab),
+          ).length;
+          const completion = completionFor(
+            visibleText,
+            visibleCursor,
+            proxy.referencedImages(lineWithoutTab),
+          );
+          mutableReadline.line = completion?.replacement ?? lineWithoutTab;
+          mutableReadline.cursor = completion
+            ? completion.replacement.length
+            : insertedTab;
+          mutableReadline._refreshLine?.();
+        }
+      }
       // One input chunk can contain a large paste. Redraw once after readline
       // consumes the burst instead of once for every decoded character.
       if (inputSuspended) {
@@ -1672,7 +1740,8 @@ export function readPrompt(
       options.renderBelow ||
       options.renderPrompt ||
       options.clearOnSubmit ||
-      options.onDraftChange
+      options.onDraftChange ||
+      options.completionProvider
     ) {
       // readline's own keypress/resize listeners remain the sole owners of the
       // edit buffer. We only clear decoration immediately before their redraw

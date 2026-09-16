@@ -2,9 +2,57 @@ import type { ProviderName } from "../core/types.js";
 import { PROVIDER_CATALOG } from "../models/catalog.js";
 
 export interface SlashCommand {
-  name: string;
+  name: SlashCommandName;
   args: string[];
   rawArgs: string;
+}
+
+export const SLASH_COMMAND_NAMES = [
+  "mode",
+  "provider",
+  "model",
+  "approval",
+  "orchestration",
+  "status",
+  "workspace",
+  "image",
+  "changes",
+  "tasks",
+  "agents",
+  "tools",
+  "permissions",
+  "commands",
+  "context",
+  "usage",
+  "memory",
+  "thinking",
+  "adjustment",
+  "sessions",
+  "resume",
+  "new",
+  "clear",
+  "help",
+  "exit",
+] as const;
+
+export type SlashCommandName = typeof SLASH_COMMAND_NAMES[number];
+
+export interface SlashCommandCompletion {
+  readonly replacement: string;
+  readonly suffix: string;
+}
+
+const SLASH_COMMAND_ALIASES: Readonly<Record<string, SlashCommandName>> = {
+  quit: "exit",
+  subagents: "agents",
+};
+
+const slashCommandNames = new Set<string>(SLASH_COMMAND_NAMES);
+
+function canonicalSlashCommandName(value: string): SlashCommandName | undefined {
+  const normalized = value.toLowerCase();
+  if (slashCommandNames.has(normalized)) return normalized as SlashCommandName;
+  return SLASH_COMMAND_ALIASES[normalized];
 }
 
 export type ModelCommandRequest =
@@ -33,14 +81,37 @@ function modelCommandUsage(): string {
 export function parseSlashCommand(input: string): SlashCommand | null {
   const trimmed = input.trim();
   if (!trimmed.startsWith("/")) return null;
-  const firstSpace = trimmed.indexOf(" ");
-  const name = (firstSpace === -1 ? trimmed.slice(1) : trimmed.slice(1, firstSpace)).toLowerCase();
-  const rawArgs = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
+  const separator = trimmed.search(/\s/u);
+  const token = separator === -1 ? trimmed.slice(1) : trimmed.slice(1, separator);
+  const name = canonicalSlashCommandName(token);
+  if (!name) return null;
+  const rawArgs = separator === -1 ? "" : trimmed.slice(separator + 1).trim();
   return {
     name,
     rawArgs,
     args: rawArgs ? rawArgs.split(/\s+/) : []
   };
+}
+
+/** Return presentation-only completion for a command-name prefix. */
+export function completeSlashCommandPrefix(
+  text: string,
+  cursor: number,
+): SlashCommandCompletion | undefined {
+  if (cursor !== text.length) return undefined;
+  const match = /^\/([a-z0-9_-]+)$/iu.exec(text);
+  if (!match) return undefined;
+  const prefix = match[1]!.toLowerCase();
+  const candidate = SLASH_COMMAND_NAMES
+    .map((name, index) => ({ name, index }))
+    .filter(({ name }) => name.startsWith(prefix) && name.length > prefix.length)
+    .sort((left, right) =>
+      (left.name.length - prefix.length) - (right.name.length - prefix.length) ||
+      left.index - right.index
+  )[0];
+  if (!candidate) return undefined;
+  const suffix = candidate.name.slice(prefix.length);
+  return { replacement: `${text}${suffix}`, suffix };
 }
 
 /** Parse /model without conflating provider names with arbitrary model IDs. */

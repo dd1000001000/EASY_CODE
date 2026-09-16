@@ -119,9 +119,15 @@ function mergeComposer(
   const images = (patch.images ?? current.images)
     .slice(0, MAX_COMPOSER_IMAGES)
     .map((image) => ({ ...image }));
+  const completionSuffix = patch.completionSuffix !== undefined
+    ? patch.completionSuffix
+    : patch.text !== undefined
+      ? undefined
+      : current.completionSuffix;
   return {
     text,
     cursor,
+    ...(completionSuffix ? { completionSuffix } : {}),
     busy: patch.busy ?? current.busy,
     pendingSubmissions: boundedInteger(
       patch.pendingSubmissions ?? current.pendingSubmissions,

@@ -27,6 +27,7 @@ export type TuiKey =
   | "delete"
   | "enter"
   | "newline"
+  | "tab"
   | "interrupt"
   | "page-up"
   | "page-down";
@@ -244,7 +245,7 @@ export class TuiInputDecoder {
       events.push({ type: "key", key: "backspace" });
     } else if (first === CTRL_A) events.push({ type: "key", key: "home" });
     else if (first === CTRL_E) events.push({ type: "key", key: "end" });
-    else if (first === TAB) events.push({ type: "text", text: "\t" });
+    else if (first === TAB) events.push({ type: "key", key: "tab" });
     return true;
   }
 
@@ -453,6 +454,8 @@ export function reduceTuiInput(
     }
     case "newline":
       next = replaceRange(next, next.cursor, next.cursor, "\n");
+      break;
+    case "tab":
       break;
     case "enter":
       effects.push({ type: "submit", text: next.text });

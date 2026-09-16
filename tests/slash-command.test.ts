@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
 import {
+  completeSlashCommandPrefix,
   helpText,
   parseModelCommand,
   parseSlashCommand,
@@ -17,6 +18,30 @@ describe("parseSlashCommand", () => {
 
   it("returns null for normal prompts", () => {
     assert.equal(parseSlashCommand("fix the bug"), null);
+    assert.equal(
+      parseSlashCommand("/folder 帮我看一下这个文件夹里有什么"),
+      null,
+    );
+    assert.equal(parseSlashCommand("/approv"), null);
+  });
+
+  it("canonicalizes command aliases", () => {
+    assert.equal(parseSlashCommand("/quit")?.name, "exit");
+    assert.equal(parseSlashCommand("/subagents")?.name, "agents");
+  });
+
+  it("offers presentation-only command-name completion", () => {
+    assert.deepEqual(completeSlashCommandPrefix("/approv", 7), {
+      replacement: "/approval",
+      suffix: "al",
+    });
+    assert.deepEqual(completeSlashCommandPrefix("/m", 2), {
+      replacement: "/mode",
+      suffix: "ode",
+    });
+    assert.equal(completeSlashCommandPrefix("/approv", 3), undefined);
+    assert.equal(completeSlashCommandPrefix("/model ", 7), undefined);
+    assert.equal(completeSlashCommandPrefix("/folder", 7), undefined);
   });
 
   it("parses model selection and provider-aware direct switching", () => {
