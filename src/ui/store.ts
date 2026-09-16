@@ -386,7 +386,15 @@ export function applyEvent(
     case "tasks.set":
       return {
         ...state,
-        live: { ...state.live, tasks: cloneTaskGraph(event.tasks) },
+        // A completed DAG remains durable in the Thread and transcript, but
+        // it is no longer live status. Keeping it here leaves `Tasks N/N` in
+        // the fixed footer throughout later requests.
+        live: {
+          ...state.live,
+          tasks: event.tasks.status === "completed"
+            ? null
+            : cloneTaskGraph(event.tasks),
+        },
       };
     case "tasks.clear":
       return {
