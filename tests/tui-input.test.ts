@@ -105,6 +105,7 @@ describe("raw TUI input decoder", () => {
       "\u001B[13;2u",
       "\u000A",
       "\u000D",
+      "\u0009",
       "\u0003",
     ].join("");
     assert.deepEqual(
@@ -123,9 +124,17 @@ describe("raw TUI input decoder", () => {
         { type: "key", key: "newline" },
         { type: "key", key: "newline" },
         { type: "key", key: "enter" },
+        { type: "key", key: "tab" },
         { type: "key", key: "interrupt" },
       ],
     );
+  });
+
+  it("does not insert a literal tab into the standalone editor", () => {
+    const core = new TuiInputCore({ initialText: "/approv" });
+    const transition = core.feed("\t");
+    assert.deepEqual(transition.events, [{ type: "key", key: "tab" }]);
+    assert.equal(transition.state.text, "/approv");
   });
 
   it("supports enhanced CSI-u Unicode, functional keys, and release filtering", () => {

@@ -1189,7 +1189,6 @@ export class EasyCodeApp {
         return false;
       }
       case "agents":
-      case "subagents":
         if (command.args.length) throw new Error("Usage: /agents");
         this.printSubagents(true);
         return false;
@@ -1317,11 +1316,8 @@ export class EasyCodeApp {
         this.terminal.write(`${helpText().trim()}\n`);
         return false;
       case "exit":
-      case "quit":
         await this.clearPendingImages();
         return true;
-      default:
-        throw new Error(`Unknown command /${command.name}; use /help to view available commands.`);
     }
   }
 

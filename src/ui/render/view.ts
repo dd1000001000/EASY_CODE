@@ -257,12 +257,16 @@ export function renderComposerPrompt(
     : composer.busy
       ? safeInline(options.busyPlaceholder ?? defaultBusyPlaceholder)
       : customPlaceholder || "Type your request…";
+  const completionSuffix = hasText && composer.cursor === composer.text.length
+    ? safeInline(composer.completionSuffix ?? "")
+    : "";
   const imageBadges = composer.images
     .map((image) => `[${safeInline(image.label) || "Image"}]`)
     .join(" ");
-  const payload = `${mainText}${mainText && imageBadges ? " " : ""}${imageBadges}`;
+  const payload = `${mainText}${completionSuffix ? palette.gray(completionSuffix) : ""}` +
+    `${mainText && imageBadges ? " " : ""}${imageBadges}`;
   const contentColumns = Math.max(1, innerWidth - 2);
-  const wrapped = wrapToWidth(payload, contentColumns, { preserveAnsi: false });
+  const wrapped = wrapToWidth(payload, contentColumns, { preserveAnsi: true });
   const lines = wrapped.map((line, index) => {
     const prefixed = `${index === 0 ? "> " : "  "}${line}`;
     if (hasText) return prefixed;

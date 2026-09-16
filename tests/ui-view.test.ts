@@ -678,4 +678,20 @@ describe("pure terminal UI views", () => {
     assertBoundedLines(footer, 24);
     assert.match(footer, /^auto  deepseek\/v4-pro/u);
   });
+
+  it("renders command completion without adding it to composer text", () => {
+    const state = applyEvent(createUIState(), {
+      type: "composer.patch",
+      patch: {
+        text: "/approv",
+        cursor: 7,
+        completionSuffix: "al",
+      },
+    });
+    assert.equal(state.composer.text, "/approv");
+    assert.match(
+      renderComposerPrompt(state, { columns: 40, color: false }),
+      /> \/approval/u,
+    );
+  });
 });

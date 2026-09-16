@@ -182,6 +182,8 @@ export interface UIComposerState {
   readonly text: string;
   /** UTF-16 offset into text, matching Node readline/string indexing. */
   readonly cursor: number;
+  /** Presentation-only completion suffix; never part of the submitted text. */
+  readonly completionSuffix?: string;
   readonly busy: boolean;
   /** Steering submissions accepted by the editor but not yet acknowledged. */
   readonly pendingSubmissions: number;

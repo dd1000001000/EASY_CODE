@@ -21,6 +21,7 @@ import {
 } from "../plans/plan.js";
 import { readSecretInput } from "../config/secret-input.js";
 import { renderFileDiff } from "./file-diff.js";
+import { completeSlashCommandPrefix } from "./slash-command.js";
 import {
   PrivateOscInputFilter,
   readPrompt,
@@ -1033,6 +1034,8 @@ export class Terminal {
         signal: promptController.signal,
         captureImage: options.captureImage,
         captureText: options.captureText,
+        completionProvider: (draft) =>
+          completeSlashCommandPrefix(draft.text, draft.cursor),
         startSuspended: this.inlineShellActive,
         onSessionReady: (session) => {
           if (session) {
@@ -1063,6 +1066,9 @@ export class Terminal {
               text: draft.text,
               cursor: draft.cursor,
               images: draft.images,
+              ...(draft.completionSuffix
+                ? { completionSuffix: draft.completionSuffix }
+                : {}),
             },
           });
           this.refresh();
@@ -3261,6 +3267,8 @@ export class Terminal {
         return "\r";
       case "newline":
         return "\u001B\r";
+      case "tab":
+        return "\t";
       case "interrupt":
       case "page-up":
       case "page-down":
@@ -3579,12 +3587,15 @@ export class Terminal {
       .join(" ");
     const before = text.slice(0, cursor);
     const after = text.slice(cursor);
+    const completionSuffix = cursor === text.length
+      ? this.uiState.composer.completionSuffix ?? ""
+      : "";
     const placeholder = this.uiState.composer.placeholder ||
       (this.uiState.composer.busy
         ? "Type an adjustment for the current task…"
         : "Type your request…");
     const visibleDraft = text || attachmentSuffix
-      ? `${before}${chalk.inverse(" ")}${after}` +
+      ? `${before}${chalk.inverse(" ")}${chalk.gray(completionSuffix)}${after}` +
         `${attachmentSuffix ? `${text ? " " : ""}${attachmentSuffix}` : ""}`
       : `${chalk.inverse(" ")}${chalk.gray(placeholder)}`;
     const interiorWidth = Math.max(1, columns - 4);
