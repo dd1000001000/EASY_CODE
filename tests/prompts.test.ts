@@ -152,7 +152,10 @@ describe("system prompt builder", () => {
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
       assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
-      assert.match(prompt, /propose_plan is the only valid way/u);
+      assert.match(
+        prompt,
+        /submit (?:the )?(?:proposed plan|proposal) (?:with|through) propose_plan/u,
+      );
       assert.match(prompt, /Plain assistant text cannot complete a Plan-mode turn/u);
       assert.match(prompt, /Do not create a task DAG/u);
       assert.match(prompt, /BEGIN_UNTRUSTED_TASK_DAG/u);
@@ -200,7 +203,10 @@ describe("system prompt builder", () => {
       });
 
       assert.match(prompt, /Known locations and small files may be read directly/u);
-      assert.match(prompt, /propose_plan is the only valid way/u);
+      assert.match(
+        prompt,
+        /submit (?:the )?(?:proposed plan|proposal) (?:with|through) propose_plan/u,
+      );
       assert.match(prompt, /Inspect before editing, keep changes scoped/u);
       assert.match(prompt, /Treat tool failures, conflicts, timeouts/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
@@ -263,7 +269,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /write_memory is the only model tool/u);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/u);
       assert.match(prompt, /Before your final answer.*durable memory/u);
-      assert.doesNotMatch(prompt, /propose_plan is the only valid way/u);
+      assert.doesNotMatch(prompt, /\bpropose_plan\b/u);
       assert.doesNotMatch(prompt, /read_image loads a validated static workspace image/u);
       assert.doesNotMatch(prompt, /create_file creates a new file/u);
       assert.doesNotMatch(prompt, /delete_file deletes a previously read/u);
