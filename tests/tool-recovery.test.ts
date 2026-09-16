@@ -104,15 +104,14 @@ describe("Runtime tool recovery", () => {
       const result = await createRuntime(provider, [new CompactContextTool()], {
         appendEvent: async (event) => { events.push(event); },
       }).run(current, requestText, { ...options, maxContextChars: 100_000 });
-      assert.equal(calls, 3);
-      assert.equal(result.reason, "paused", result.text);
-      assert.equal(result.pause?.cause, "completion_protocol");
+      assert.equal(calls, mode === "auto" ? 4 : 1);
+      assert.equal(result.reason, "success", result.text);
       assert.equal(result.failure, undefined);
       assert.equal(current.compactedMessageCount, 2);
       assert.ok(current.pressureRecovery?.serverReset);
       assert.equal(current.activeTurnId, undefined);
       const final = [...events].reverse().find((event) => event.type === "turn.completed");
-      assert.equal((final?.payload as { reason?: string }).reason, "paused");
+      assert.equal((final?.payload as { reason?: string }).reason, "success");
       const restored = deserializeSessionState(serializeSessionState(current));
       // Like ThreadStore recovery: restore event-authoritative projections, not only the checkpoint.
       restored.pressureRecovery = structuredClone(current.pressureRecovery);
@@ -126,7 +125,7 @@ describe("Runtime tool recovery", () => {
         { ...options, maxContextTokens: 256_000 });
       assert.equal(resumed.reason, "success", resumed.text);
       assert.equal(resumeCalls, 2);
-      assert.equal(calls, 5);
+      assert.equal(calls, mode === "auto" ? 6 : 3);
       assert.equal(restored.messages[0]?.content, original);
     });
   }

@@ -189,7 +189,7 @@ describe("configurable 1M context", () => {
 
   it("keeps one reviewer report and makes its full content recallable", () => {
     const s = state();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "stagnation",
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task",
       snapshotId: "snapshot", requirementRevision: "req", reviewerThreadId: "reviewer_thread" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "Main handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });

@@ -40,7 +40,7 @@ const OBSERVATION_KEYS = new Set([
   "outcomeKey",
   "evidenceDigest",
   "searchRepeatLimit",
-  "standardStatus", "baselineDigest", "experimentIncidentId", "changedTestPaths", "readRange", "investigationPolicy",
+  "standardStatus", "baselineDigest", "changedTestPaths", "readRange", "investigationPolicy",
 ]);
 
 const COMMAND_TOOLS = new Set([
@@ -67,7 +67,6 @@ const INFRASTRUCTURE_STATUSES = new Set([
 ]);
 
 export interface ObserveToolResultInput {
-  readonly experimentIncidentId?: string;
   readonly investigationPolicy?: ProgressObservation["investigationPolicy"];
   readonly sourceEventId: string;
   readonly sourceCallId: string;
@@ -299,9 +298,6 @@ function commandObservation(
       standardStatus: validation.standard.status, baselineDigest: validation.standard.baselineDigest,
       changedTestPaths: validation.standard.changedPaths,
     } : {}),
-    ...(typeof (isRecord(data.requestMetadata) ? data.requestMetadata.experimentIncidentId : undefined) === "string"
-      ? { experimentIncidentId: (data.requestMetadata as { experimentIncidentId: string }).experimentIncidentId }
-      : input.experimentIncidentId ? { experimentIncidentId: input.experimentIncidentId } : {}),
     // Exit status of a custom script proves that script exited, not that tests
     // actually ran. Keep build/typecheck/lint command contracts usable.
     confidence: data.status === "timed_out" ? "high" : validation.source === "process_exit" &&
@@ -396,7 +392,6 @@ export function parseProgressObservation(
   optionalSafeText(value.verificationCycleId, MAX_IDENTIFIER_CHARS, "verificationCycleId");
   optionalSafeText(value.targetKey, MAX_KEY_CHARS, "targetKey");
   optionalSafeText(value.outcomeKey, MAX_KEY_CHARS, "outcomeKey");
-  optionalSafeText(value.experimentIncidentId, MAX_IDENTIFIER_CHARS, "experimentIncidentId");
   const extra = z.object({
     standardStatus: z.enum(["unchanged", "changed", "unknown"]).optional(),
     baselineDigest: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
@@ -406,8 +401,8 @@ export function parseProgressObservation(
       window: z.number().int().min(4).max(64), review: z.boolean() }).strict().optional(),
   }).parse(value);
   if (extra.readRange && (value.kind !== "read" || extra.readRange.end < extra.readRange.start) ||
-      extra.standardStatus && (value.kind !== "verification_terminal" || !extra.baselineDigest) ||
-      value.experimentIncidentId !== undefined && value.kind !== "verification_terminal") throw new Error("Invalid progress evidence binding");
+      extra.standardStatus && (value.kind !== "verification_terminal" || !extra.baselineDigest))
+    throw new Error("Invalid progress evidence binding");
   if (
     value.schemaVersion !== PROGRESS_OBSERVATION_SCHEMA_VERSION ||
     !Number.isSafeInteger(value.responseOrdinal) ||
@@ -474,7 +469,6 @@ export function parseProgressObservation(
 
   const parsed: ProgressObservation = {
     ...extra,
-    ...(typeof value.experimentIncidentId === "string" ? { experimentIncidentId: value.experimentIncidentId } : {}),
     schemaVersion: PROGRESS_OBSERVATION_SCHEMA_VERSION,
     sourceEventId: value.sourceEventId,
     sourceCallId: value.sourceCallId,

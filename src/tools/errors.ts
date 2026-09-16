@@ -53,8 +53,7 @@ function projectResultData(data: unknown, budget: number): unknown {
 const MAX_ISSUES = 12;
 const EXCLUSIVE_PROTOCOL_ERRORS = new Set([
   "context_compaction_required", "context_compaction_must_be_exclusive",
-  "compact_context_must_be_exclusive", "manage_tasks_must_be_exclusive",
-  "manage_subagents_must_not_mix_with_other_tools", "propose_plan_must_be_exclusive",
+  "compact_context_must_be_exclusive", "propose_plan_must_be_exclusive",
   "submit_task_result_must_be_exclusive",
 ]);
 const safeText = (value: string, limit: number) => redactSensitiveInformation(value).slice(0, limit);

@@ -48,7 +48,6 @@ export function cloneSessionState(state: SessionState): SessionState {
   return {
     ...state,
     ...(state.reviewSessions ? { reviewSessions: structuredClone(state.reviewSessions) } : {}),
-    ...(state.delivery ? { delivery: { ...state.delivery } } : {}),
     promptBundle: { ...state.promptBundle },
     constraints: [...state.constraints],
     messages: [...state.messages],

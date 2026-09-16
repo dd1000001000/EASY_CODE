@@ -82,7 +82,6 @@ export type UIReviewPhase = "main_brief" | "independent_review";
 /** Review is independent of transient model/tool spinners. */
 export interface UIReviewState {
   readonly id: string;
-  readonly purpose: "stagnation" | "delivery";
   readonly startedAt: number;
   readonly phase: UIReviewPhase;
 }

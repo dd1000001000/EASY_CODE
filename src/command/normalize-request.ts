@@ -1,7 +1,6 @@
 import { commandVerificationKind, VERIFICATION_KINDS, type RunCommandInput, type VerificationKind } from "./types.js";
 
 export interface CommandRequestMetadata {
-  experimentIncidentId?: string;
   intent: RunCommandInput["intent"];
   verificationKind?: VerificationKind;
   warnings: string[];

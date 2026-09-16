@@ -1,16 +1,12 @@
 import { z } from "zod";
-import type { AgentMode, SessionState, TaskGraph } from "../core/types.js";
+import type { SessionState } from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 
 export const completionObligationKinds = [
   "context_reconciliation",
   "background_commands",
-  "progress_experiment",
   "subagent_submission",
   "collect_subagents",
-  "dag_active",
-  "plan_proposal",
-  "command_environment",
 ] as const;
 export type CompletionObligationKind = typeof completionObligationKinds[number];
 
@@ -95,29 +91,13 @@ export function foldCompletionControl(
 export interface CompletionGateInput {
   state: Readonly<SessionState>;
   role: "main_agent" | "subagent";
-  mode: AgentMode;
   reconciliationPending: boolean;
   openCommandHandles: boolean;
-  pendingExperiment?: { scopeKey: string };
   outstandingSubagents: readonly {
     id: string;
     taskId: string;
     status: string;
   }[];
-  commandEnvironmentFault?: string;
-}
-
-function dagObligation(graph: Readonly<TaskGraph>): CompletionObligation | undefined {
-  if (graph.status !== "active" && graph.status !== "waiting_input") return undefined;
-  const unfinished = graph.tasks.filter(task => task.status !== "completed");
-  return {
-    id: `dag:${graph.id}:${unfinished.map(task => `${task.id}:${task.status}`).join(",")}`,
-    kind: "dag_active",
-    description: `Task DAG ${graph.id} is ${graph.status} with ${unfinished.length} unfinished node(s).`,
-    requiredAction: graph.status === "waiting_input"
-      ? "Resolve or report the recorded recoverable blockers before finishing."
-      : "Continue, block with durable evidence, or complete every remaining DAG node before finishing.",
-  };
 }
 
 export function evaluateCompletionGate(input: CompletionGateInput): CompletionObligation[] {
@@ -126,7 +106,7 @@ export function evaluateCompletionGate(input: CompletionGateInput): CompletionOb
     id: "context:reconciliation",
     kind: "context_reconciliation",
     description: "Context-reset reconciliation is incomplete.",
-    requiredAction: "Inspect the workspace and query every original pending command, child and DAG state before finishing.",
+    requiredAction: "Observe the original pending command and child handles before finishing.",
   });
   if (input.openCommandHandles) obligations.push({
     id: "commands:open-handles",
@@ -134,40 +114,17 @@ export function evaluateCompletionGate(input: CompletionGateInput): CompletionOb
     description: "One or more supervised commands have not been observed in a terminal state.",
     requiredAction: "Poll or cancel the original command handles and collect their terminal results. Do not rerun them.",
   });
-  if (input.commandEnvironmentFault) obligations.push({
-    id: `command-environment:${sha256(input.commandEnvironmentFault)}`,
-    kind: "command_environment",
-    description: "The command environment is quarantined, so mutation and verification tools are unavailable.",
-    requiredAction: "Continue safe read-only analysis if useful. Do not replay an uncertain command. Ask the user to repair and verify cleanup before further mutations.",
-  });
-  if (input.pendingExperiment) obligations.push({
-    id: `experiment:${input.pendingExperiment.scopeKey}`,
-    kind: "progress_experiment",
-    description: "A required progress experiment has not produced a real terminal verification result.",
-    requiredAction: "Run the recorded falsifiable experiment and record its terminal result before finishing.",
-  });
   if (input.role === "subagent") obligations.push({
     id: "subagent:submit-result",
     kind: "subagent_submission",
     description: "The child has not submitted its bound result through submit_task_result.",
-    requiredAction: "Submit either completed evidence for every bound completion check or a concrete blocker.",
+    requiredAction: "Submit concise completion evidence or a concrete blocker for the bound assignment.",
   });
   if (input.role === "main_agent" && input.outstandingSubagents.length) obligations.push({
     id: `subagents:${input.outstandingSubagents.map(agent => `${agent.id}:${agent.status}`).sort().join(",")}`,
     kind: "collect_subagents",
     description: `${input.outstandingSubagents.length} child result(s) are running or uncollected.`,
     requiredAction: "Wait for running children and collect every terminal result before finishing.",
-  });
-  const dag = input.state.taskGraph ? dagObligation(input.state.taskGraph) : undefined;
-  if (dag) obligations.push(dag);
-  // Review objections remain durable evidence, but they are not a hard
-  // completion protocol. Safety, command cleanup, DAG and child collection
-  // obligations above remain mandatory.
-  if (input.mode === "plan") obligations.push({
-    id: "plan:proposal",
-    kind: "plan_proposal",
-    description: "Plan mode has no accepted propose_plan result for this turn.",
-    requiredAction: "Submit the complete plan with propose_plan before finishing the turn.",
   });
   return obligations;
 }

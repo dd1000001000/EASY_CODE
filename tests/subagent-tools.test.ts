@@ -295,15 +295,22 @@ describe("subagent control tools", () => {
     assert.equal(spoofed.ok, false);
   });
 
-  it("rejects incorrect evidence counts, inactive bindings, Plan mode, and cross-outcome fields", async () => {
+  it("accepts concise evidence and rejects inactive bindings, Plan mode, and cross-outcome fields", async () => {
     const active = new SubmitTaskResultTool(boundTask());
-    const mismatch = await active.execute({
+    const concise = await active.execute({
       outcome: "completed",
       summary: "Done",
       evidence: ["Only one check was verified"],
     }, context());
-    assert.equal(mismatch.ok, false);
-    assert.match(mismatch.error ?? "", /requires exactly 2/u);
+    assert.equal(concise.ok, true);
+    assert.equal(concise.subagentTaskReport?.outcome, "completed");
+    if (concise.subagentTaskReport?.outcome !== "completed") {
+      throw new Error("Expected completion report");
+    }
+    assert.deepEqual(concise.subagentTaskReport.completionEvidence, [{
+      check: "Focused tests pass",
+      evidence: "Only one check was verified",
+    }]);
 
     const pending = new SubmitTaskResultTool(boundTask("pending"));
     assert.equal((await pending.execute({

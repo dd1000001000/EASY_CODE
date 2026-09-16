@@ -143,7 +143,7 @@ function assertBoundedLines(value: string, columns: number): void {
 
 describe("pure terminal UI views", () => {
   it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
-    const review = { id: "review_ui", purpose: "delivery" as const, startedAt: 1_000,
+    const review = { id: "review_ui", startedAt: 1_000,
       phase: "independent_review" as const };
     const state = applyEvents(createUIState(), [
       { type: "review.set", review },

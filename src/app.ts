@@ -1790,18 +1790,6 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      getProgressWorkspaceFingerprint: async () => {
-        const snapshot = await this.workspace.captureSnapshot();
-        if (snapshot.truncated) {
-          throw new Error(
-            "Workspace snapshot exceeded its complete-file limit; progress review is disabled fail-closed.",
-          );
-        }
-        const files = [...snapshot.files.values()]
-          .map((entry) => [entry.path, entry.kind, entry.hash, entry.size] as const)
-          .sort(([left], [right]) => left.localeCompare(right));
-        return `sha256:${sha256(JSON.stringify({ files }))}`;
-      },
       searchMemories: async (query, options) => this.memoryManager.searchHybrid(workspaceId, query,
         { workspaceRoot: this.workspace.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
           includeInactive: options?.includeInactive }),
@@ -1955,7 +1943,7 @@ export class EasyCodeApp {
         // A background writer outlives its run_command lock; do not snapshot it.
         if (this.hasRunningCommands()) return { decision: "unavailable" as const, requests: 0, reused: true,
           reason: "A supervised command is still running; observe its terminal result before review." };
-        const reviewUiId = this.terminal.startReview(input.purpose);
+        const reviewUiId = this.terminal.startReview();
         try {
           return await runWorkspaceReview(input, {
             workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,

@@ -81,8 +81,6 @@ function metadataHash(tool: Readonly<AgentTool>): string {
     effects: [...metadata.effects],
     allowedModes: [...metadata.allowedModes],
     allowedRoles: [...metadata.allowedRoles],
-    taskWork: metadata.taskWork,
-    progressExperiment: metadata.progressExperiment,
     requiresOrchestration: metadata.requiresOrchestration,
     requiresVision: metadata.requiresVision,
     validationSensitive: metadata.validationSensitive,

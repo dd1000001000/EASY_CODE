@@ -1,4 +1,3 @@
-import { foldDelivery, newDelivery } from "../review/delivery.js";
 import { unresolvedCommands } from "../context/runtime-state.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import {
@@ -54,8 +53,6 @@ import type { NormalRequestEnvelope } from "../context/context-request.js";
 import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
 import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
 import { recallThreadContext } from "../context/recall.js";
-import { matchesReviewExperiment } from "../progress/experiment.js";
-import { isValidationConfigPath, isValidationTestPath } from "../progress/validation-paths.js";
 import { RequestPrefixTracker } from "../context/request-prefix.js";
 import {
   ContextManager,
@@ -77,6 +74,7 @@ import {
   clonePlanReviewState,
   createPlanReviewState,
   formatPlanProposal,
+  planDraftFromText,
   returnPlanExecutionToReview,
   type PlanExecutionReturnOutcome,
 } from "../plans/plan.js";
@@ -91,7 +89,6 @@ import {
   activeTask,
   cloneTaskGraph,
   taskGraphOperationSchema,
-  taskGraphView,
   validateTaskGraphTransition,
   subagentTaskOperationSchema,
   validateSubagentTaskTransition,
@@ -103,25 +100,10 @@ import { sha256 } from "../utils/hash.js";
 import { safeJsonParse } from "../utils/json.js";
 import {
   createProgressGuardState,
+  foldProgressHint,
   foldProgressObservation,
 } from "../progress/guard.js";
 import { observeToolResult } from "../progress/observation.js";
-import {
-  foldProgressReviewEvent,
-  interruptedProgressIncident,
-  nextPendingProgressIncident,
-  requestedProgressIncident,
-  reviewAttemptUsedForScope,
-  type ProgressReviewEventType,
-} from "../progress/lifecycle.js";
-import {
-  progressReviewPacketDigest,
-  runProgressReviewer,
-  type ProgressReviewAccounting,
-  type ProgressReviewBinding,
-  type ProgressReviewModelRequestRecord,
-} from "../progress/reviewer.js";
-import type { ProgressIncident } from "../progress/types.js";
 import {
   AutoRouteRequestError,
   AutoRouteSelectionError,
@@ -139,7 +121,7 @@ import {
 import {
   ToolRecoveryBudget, ToolProtocolExhausted,
 } from "./tool-recovery.js";
-import { availableAgentTools, toolMetadata } from "../tools/capabilities.js";
+import { availableAgentTools } from "../tools/capabilities.js";
 import { snapshotToolSet, type ToolCatalogSnapshot } from "../tools/catalog.js";
 import {
   ToolExecutionGateway,
@@ -345,106 +327,12 @@ function progressScopeKey(state: Readonly<SessionState>, turnId: string): string
     : `thread:${state.threadId}/turn:${turnId}`;
 }
 
-function progressIntentRevision(state: Readonly<SessionState>): number {
-  let latestUserIndex = -1;
-  for (let index = state.messages.length - 1; index >= 0; index -= 1) {
-    if (state.messages[index]?.role === "user") {
-      latestUserIndex = index;
-      break;
-    }
-  }
-  return Math.max(
-    latestUserIndex + 1,
-    state.steeringWatermark + 1,
-    (state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? -1) + 1,
-  );
-}
-
-function progressReviewPacket(
-  state: Readonly<SessionState>,
-  incident: Readonly<ProgressIncident>,
-  currentUserInput: string,
-): string {
-  const recentToolEvidence = state.messages
-    .slice(-24)
-    .filter((message) => message.role === "tool")
-    .map((message) => `${message.name ?? "tool"}: ${message.content}`)
-    .join("\n\n")
-    .slice(0, 24_000);
-  return redactSensitiveInformation([
-    "[PROGRESS_INCIDENT]",
-    JSON.stringify({
-      incidentId: incident.incidentId,
-      reason: incident.reason ?? "repeated_verified_failure",
-      baselineDigest: incident.baselineDigest,
-      scopeKey: incident.scopeKey,
-      targetKey: incident.targetKey,
-      outcomeClass: incident.outcomeClass,
-      outcomeKey: incident.outcomeKey,
-      verificationKind: incident.verificationKind ?? "custom",
-      verificationCycleIds: incident.verificationCycleIds,
-    }),
-    "[CURRENT_RUNTIME_CONTEXT]",
-    contextRetrievalQuery(state, currentUserInput),
-    recentToolEvidence ? "[RECENT_TOOL_EVIDENCE]" : "",
-    recentToolEvidence,
-  ].filter(Boolean).join("\n\n")).slice(0, 64_000);
-}
-
 function progressRuntimeInstruction(
   state: Readonly<SessionState>,
   scopeKey: string,
 ): string {
   const guard = state.progressGuard;
   if (!guard) return "";
-  const suspected = guard.incidents.find(item => item.scopeKey === scopeKey && item.phase === "investigation_suspected");
-  if (suspected && !guard.presentedWeakHintScopes?.includes(`investigation:${scopeKey}`))
-    return "Runtime observed repeated source/search evidence in a complete investigation window. This is a stagnation suspicion, not proof that the task is stuck. Propose and execute one minimal falsifiable experiment with expected and opposite outcomes. New filenames, summaries and thinking alone do not prove progress. Continued repetition in a separate window may request one read-only reviewer. Incident: " + suspected.incidentId;
-  const incident = [...guard.incidents]
-    .reverse()
-    .find((candidate) =>
-      candidate.scopeKey === scopeKey &&
-      (
-        candidate.phase === "experiment_required" ||
-        candidate.phase === "strategy_adjustment" ||
-        candidate.phase === "review_exhausted"
-      )
-    );
-  if (incident?.phase === "experiment_required" && incident.reviewReport) {
-    return renderRuntimePrompt("runtime/progress-experiment-required.md", {
-      incidentId: incident.incidentId,
-      diagnosis: incident.reviewReport.diagnosis,
-      evidence: incident.reviewReport.evidence,
-      experiment: incident.reviewReport.experiment + (incident.reviewReport.experimentProgram ?
-        "\nExact experiment command (normal approval still applies): " + JSON.stringify({
-          program: incident.reviewReport.experimentProgram, args: JSON.parse(incident.reviewReport.experimentArgsJson ?? "[]"),
-          cwd: incident.reviewReport.experimentCwd || ".", intent: "verify", verificationKind: "custom" }) : ""),
-      expectedSignal: incident.reviewReport.expectedSignal,
-      falsifyingSignal: incident.reviewReport.falsifyingSignal,
-    });
-  }
-  if (
-    (incident?.phase === "strategy_adjustment" ||
-      incident?.phase === "review_exhausted") &&
-    incident.reviewReport
-  ) {
-    return renderRuntimePrompt("runtime/progress-strategy-adjustment.md", {
-      incidentId: incident.incidentId,
-      diagnosis: incident.reviewReport.diagnosis,
-      experiment: incident.reviewReport.experiment,
-      experimentResult: incident.experiment
-        ? JSON.stringify({
-            outcomeClass: incident.experiment.outcomeClass,
-            outcomeKey: incident.experiment.outcomeKey ?? "unknown",
-            newEvidence: incident.experiment.newEvidence,
-            verifiedImprovement: incident.experiment.verifiedImprovement,
-          })
-        : "No reviewer experiment was requested; gather stronger evidence.",
-      budgetState: incident.phase === "review_exhausted"
-        ? "The automatic review attempt is exhausted for this task."
-        : "Use the new evidence to choose a materially different strategy.",
-    });
-  }
   if (guard.searchWarning?.scopeKey === scopeKey && !guard.presentedWeakHintScopes?.includes(`search:${scopeKey}`)) {
     return renderRuntimePrompt("runtime/progress-search-warning.md", {
       count: guard.searchWarning.count,
@@ -461,14 +349,9 @@ function progressRuntimeInstruction(
   return "";
 }
 
-function progressWeakHintKind(state: Readonly<SessionState>, scopeKey: string): "read" | "search" | "investigation" | undefined {
+function progressWeakHintKind(state: Readonly<SessionState>, scopeKey: string): "read" | "search" | undefined {
   const guard = state.progressGuard;
   const shown = guard.presentedWeakHintScopes ?? [];
-  if (guard.incidents.some(item => item.scopeKey === scopeKey && item.phase === "investigation_suspected") &&
-      !shown.includes(`investigation:${scopeKey}`)) return "investigation";
-  if (guard.incidents.some(item => item.scopeKey === scopeKey &&
-      (item.phase === "experiment_required" || item.phase === "strategy_adjustment" || item.phase === "review_exhausted") &&
-      item.reviewReport)) return undefined;
   if (guard.searchWarning?.scopeKey === scopeKey && !shown.includes(`search:${scopeKey}`)) return "search";
   if (guard.readWarning?.scopeKey === scopeKey && !shown.includes(`read:${scopeKey}`)) return "read";
   return undefined;
@@ -489,7 +372,6 @@ interface CommandVerificationClassification {
 function commandVerificationClassification(
   toolName: ToolName,
   rawArguments: string,
-  experimentRequired: boolean,
   knownVerificationCommands: ReadonlyMap<string, VerificationKind>,
   result: Readonly<ToolExecutionResult>,
 ): CommandVerificationClassification {
@@ -512,12 +394,9 @@ function commandVerificationClassification(
       const kind = declaredIntent
         ? commandVerificationKind({ intent: declaredIntent, verificationKind: declaredKind })
         : undefined;
-      if (experimentRequired) return { intent: true, kind: kind ?? "custom" };
       return kind ? { intent: true, kind } : { intent: false };
     } catch {
-      return experimentRequired
-        ? { intent: true, kind: "custom" }
-        : { intent: false };
+      return { intent: false };
     }
   }
   if (toolName !== "poll_command" && toolName !== "cancel_command") {
@@ -532,49 +411,10 @@ function commandVerificationClassification(
   return kind ? { intent: true, kind } : { intent: false };
 }
 
-function requiredProgressExperiment(
-  state: Readonly<SessionState>,
-  scopeKey: string,
-): Readonly<ProgressIncident> | undefined {
-  return state.progressGuard?.incidents.find(
-    (incident) =>
-      incident.scopeKey === scopeKey &&
-      incident.phase === "experiment_required",
-  );
-}
-
-function persistedProgressReviewAccounting(
-  incident: Readonly<ProgressIncident>,
-): ProgressReviewAccounting {
-  return {
-    reviewAttempts: incident.reviewAttempts > 0 ? 1 : 0,
-    validReviews: incident.validReviews > 0 ? 1 : 0,
-    reviewModelRequests: incident.reviewModelRequests,
-    reportedModelRequests: incident.reviewFinishedRequestOrdinals.length,
-    unreportedModelRequests: Math.max(
-      0,
-      incident.reviewModelRequests - incident.reviewFinishedRequestOrdinals.length,
-    ),
-    reviewInputTokens: incident.reviewInputTokens,
-    reviewOutputTokens: incident.reviewOutputTokens,
-    reviewTotalTokens: incident.reviewTotalTokens,
-    reviewCachedInputTokens: incident.reviewCachedInputTokens,
-    reviewReasoningTokens: incident.reviewReasoningTokens,
-    reviewDurationMs: incident.reviewDurationMs,
-    requests: [],
-  };
-}
-
 interface RuntimeLayeredContext {
   workingCheckpoint?: string;
   retrievedThreadEvidence?: string;
   evidence?: readonly Readonly<ContextSearchHit>[];
-}
-
-function commandEnvironmentFault(
-  dependencies: Pick<AgentRuntimeDependencies, "getEnvironmentFault">,
-): string | undefined {
-  return dependencies.getEnvironmentFault?.();
 }
 
 function pinCurrentState(
@@ -670,8 +510,6 @@ export interface AgentRuntimeDependencies {
       eventId?: string;
     },
   ) => Promise<void>;
-  /** Fresh workspace identity used to reject stale reviewer advice. */
-  getProgressWorkspaceFingerprint?: () => Promise<string>;
   runReviewSession?: (input: import("../review/application.js").WorkspaceReviewRequest) =>
     Promise<import("../review/application.js").WorkspaceReviewResult>;
   requestApproval: ApprovalHandler;
@@ -792,57 +630,6 @@ function availableTools(
     orchestrationAvailable,
     visionAvailable,
   });
-}
-
-function taskGraphToolError(
-  graph: Readonly<TaskGraph> | undefined,
-  tool: Readonly<AgentTool>,
-  turnId: string,
-): string | undefined {
-  if (!graph) return undefined;
-  const metadata = toolMetadata(tool);
-  if (graph.status === "completed") {
-    if (
-      graph.updatedByTurnId === turnId &&
-      metadata.taskWork
-    ) {
-      return "The task DAG was completed in this turn. Return the final result before starting unrelated work.";
-    }
-    return undefined;
-  }
-  if (tool.name === "write_memory") {
-    return "Long-term memory maintenance must wait until the task DAG is completed.";
-  }
-  if (!metadata.taskWork) return undefined;
-  const current = activeTask(graph);
-  if (current) return undefined;
-  if (graph.status === "waiting_input" || graph.status === "terminal_blocked") {
-    return "The task DAG is blocked. Resume its blocked node before using work tools.";
-  }
-  return "Start one unblocked DAG task with manage_tasks before using work tools.";
-}
-
-function incompleteTaskGraphReminder(graph: Readonly<TaskGraph>): string {
-  const view = taskGraphView(graph);
-  const childTasks = view.tasks.filter(
-    (task) => task.status === "in_progress" && task.owner === "subagent",
-  );
-  const action = view.currentTask
-      ? `Continue task ${view.currentTask}, then mark it complete with verified evidence or block it with a concrete external reason.`
-      : childTasks.length
-        ? `Use manage_subagents status/wait to collect the running child task(s): ${childTasks.map((task) => `${task.id}=${task.assignedAgentId}`).join(", ")}.`
-        : `Start one available task with manage_tasks. Startable tasks: ${view.startableTasks.join(", ") || "none"}.`;
-  return renderRuntimePrompt("runtime/task-dag-final-required.md", {
-    action,
-  });
-}
-
-function terminalTaskGraphText(graph: Readonly<TaskGraph> | undefined): string {
-  const blockedTask = graph?.tasks.find((task) => task.status === "blocked");
-  const blocker = blockedTask?.blockerDetails?.reason;
-  return graph?.status === "terminal_blocked"
-    ? `The task DAG is blocked${blocker ? `: ${blocker}` : "."}`
-    : "The task DAG completed all declared tasks and completion checks.";
 }
 
 function resultForModel(result: ToolExecutionResult, maximumChars: number): string {
@@ -1046,81 +833,22 @@ export class AgentRuntime {
     }
   }
 
-  private async progressWorkspaceFingerprint(): Promise<
-    { ok: true; fingerprint: string } | { ok: false; error: string }
-  > {
-    if (!this.dependencies.getProgressWorkspaceFingerprint) {
-      return {
-        ok: false,
-        error: "A fresh complete workspace fingerprint provider is unavailable.",
-      };
-    }
-    try {
-      const fingerprint = await this.dependencies.getProgressWorkspaceFingerprint();
-      if (!/^sha256:[0-9a-f]{64}$/u.test(fingerprint)) {
-        throw new Error("workspace fingerprint has an invalid format");
-      }
-      return { ok: true, fingerprint };
-    } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
-  }
-
-  private async appendProgressReviewEvent(
+  private async appendProgressHint(
     state: SessionState,
     turnId: string,
-    type: ProgressReviewEventType,
-    phase: EventRecord["phase"],
     payload: unknown,
   ): Promise<void> {
     await this.dependencies.appendEvent({
       threadId: state.threadId,
       turnId,
-      type,
-      phase,
+      type: "progress.hint.presented",
+      phase: "completed",
       payload,
     });
-    state.progressGuard = foldProgressReviewEvent(
-      state.progressGuard,
-      type,
-      payload,
-    );
+    state.progressGuard = foldProgressHint(state.progressGuard, payload);
   }
 
-  private async reportProgressReviewRequestUsage(
-    state: Readonly<SessionState>,
-    turnId: string,
-    request: Readonly<ProgressReviewModelRequestRecord>,
-  ): Promise<void> {
-    if (!this.dependencies.onModelUsage) return;
-    const record: ModelUsageRecord = {
-      actor: "reviewer",
-      purpose: "progress_review",
-      provider: this.dependencies.provider.name,
-      model: this.dependencies.provider.model,
-      turnId,
-      attempt: request.ordinal,
-      retry: request.ordinal > 1,
-      ...(request.usage ? { usage: { ...request.usage } } : {}),
-    };
-    try {
-      await this.dependencies.onModelUsage(record);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.dependencies.onStatus?.(
-        `Progress reviewer usage accounting could not be saved: ${detail}`,
-      );
-    }
-  }
-
-  /**
-   * Resolve one durable intervention before the next main-model request. The
-   * return value is the number of reviewer Provider requests charged against
-   * the same step budget as the parent task.
-   */
+  /** Run the single current review implementation; no legacy reviewer or experiment gate remains. */
   private async processProgressIntervention(input: {
     state: SessionState;
     turnId: string;
@@ -1128,400 +856,21 @@ export class AgentRuntime {
     remainingModelRequests: number;
     signal?: AbortSignal;
   }): Promise<number> {
-    const { state, turnId } = input;
-    const currentScopeKey = progressScopeKey(state, turnId);
-    if (this.dependencies.runReviewSession) {
-      const pending = state.progressGuard.incidents.find(incident => incident.scopeKey === currentScopeKey &&
-        incident.phase === "review_pending" && incident.reason !== "validation_standard_changed");
-      const unfinished = state.reviewSessions?.find(s => s.status !== "applied" && s.purpose === "stagnation");
-      if (!pending && !unfinished) return 0;
-      const result = await this.dependencies.runReviewSession({ ...input, purpose: "stagnation",
-        maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
-        incidentId: pending?.incidentId ?? unfinished?.incidentId });
-      return result.requests;
-    }
-
-    // Crash recovery is global, not current-turn scoped. Otherwise a standalone
-    // review started in the interrupted turn becomes permanently unreachable
-    // when resume creates a new turn ID.
-    for (let interrupted = interruptedProgressIncident(state.progressGuard);
-      interrupted?.reviewBinding;
-      interrupted = interruptedProgressIncident(state.progressGuard)) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.unavailable",
-        "interrupted",
-        {
-          incidentId: interrupted.incidentId,
-          reviewId: interrupted.reviewBinding.reviewId,
-          reason:
-            "A prior reviewer was started but has no durable terminal event; its attempt remains charged and is not retried.",
-          accounting: persistedProgressReviewAccounting(interrupted),
-        },
-      );
-    }
-
-    // Requested/pending reviews belong to immutable task material. If resume
-    // moved to a different logical scope, close them instead of silently
-    // orphaning them or reviewing a new request with stale evidence.
-    for (let requested = requestedProgressIncident(state.progressGuard);
-      requested && requested.scopeKey !== currentScopeKey;
-      requested = requestedProgressIncident(state.progressGuard)) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.stale",
-        "interrupted",
-        {
-          incidentId: requested.incidentId,
-          reviewId: requested.reviewBinding!.reviewId,
-          reason: "The logical task scope changed before the reviewer started.",
-        },
-      );
-    }
-    for (let pending = nextPendingProgressIncident(state.progressGuard);
-      pending && pending.scopeKey !== currentScopeKey;
-      pending = nextPendingProgressIncident(state.progressGuard)) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.unavailable",
-        "interrupted",
-        {
-          incidentId: pending.incidentId,
-          reason: "The logical task scope ended before a review attempt started.",
-        },
-      );
-    }
-
-    // A completed review remains usable only while its intent and complete
-    // workspace snapshot are still the ones it audited. Evidence gathered by
-    // the requested experiment may advance the watermark, so watermark is not
-    // rechecked after completion.
-    const activeReport = [...state.progressGuard.incidents]
-      .reverse()
-      .find((candidate) =>
-        candidate.scopeKey === currentScopeKey &&
-        (
-          candidate.phase === "experiment_required" ||
-          candidate.phase === "strategy_adjustment" ||
-          candidate.phase === "review_exhausted"
-        ) &&
-        candidate.reviewBinding !== undefined
-      );
-    if (activeReport?.reviewBinding) {
-      const steeringPending = await this.dependencies.hasPendingSteering?.({
-        threadId: state.threadId,
-        turnId,
-      }) ?? false;
-      const snapshot = await this.progressWorkspaceFingerprint();
-      if (!snapshot.ok) {
-        await this.appendProgressReviewEvent(
-          state,
-          turnId,
-          "progress.review.unavailable",
-          "failed",
-          {
-            incidentId: activeReport.incidentId,
-            reviewId: activeReport.reviewBinding.reviewId,
-            reason: `The completed review cannot be freshness-checked: ${snapshot.error}`,
-            accounting: persistedProgressReviewAccounting(activeReport),
-          },
-        );
-        return 0;
-      }
-      if (
-        steeringPending ||
-        activeReport.reviewBinding.intentRevision !== progressIntentRevision(state) ||
-        activeReport.reviewBinding.workspaceFingerprint !== snapshot.fingerprint
-      ) {
-        await this.appendProgressReviewEvent(
-          state,
-          turnId,
-          "progress.review.stale",
-          "interrupted",
-          {
-            incidentId: activeReport.incidentId,
-            reviewId: activeReport.reviewBinding.reviewId,
-            reason: "Intent or workspace changed after the review completed.",
-            accounting: persistedProgressReviewAccounting(activeReport),
-          },
-        );
-        return 0;
-      }
-      return 0;
-    }
-
-    let incident = requestedProgressIncident(state.progressGuard, currentScopeKey);
-    let requestedNow = false;
-    if (!incident) {
-      incident = nextPendingProgressIncident(state.progressGuard, currentScopeKey);
-      if (!incident) return 0;
-      if (
-        reviewAttemptUsedForScope(
-          state.progressGuard,
-          incident.scopeKey,
-          incident.incidentId,
-        )
-      ) {
-        await this.appendProgressReviewEvent(
-          state,
-          turnId,
-          "progress.review.unavailable",
-          "failed",
-          {
-            incidentId: incident.incidentId,
-            reason: "The one-review-attempt budget for this task scope is exhausted.",
-          },
-        );
-        return 0;
-      }
-      if (input.remainingModelRequests < 2) {
-        await this.appendProgressReviewEvent(
-          state,
-          turnId,
-          "progress.review.unavailable",
-          "failed",
-          {
-            incidentId: incident.incidentId,
-            reason:
-              "The shared model-request budget has no room for both a reviewer and a parent verification step.",
-          },
-        );
-        return 0;
-      }
-      const snapshot = await this.progressWorkspaceFingerprint();
-      if (!snapshot.ok) {
-        await this.appendProgressReviewEvent(
-          state,
-          turnId,
-          "progress.review.unavailable",
-          "failed",
-          {
-            incidentId: incident.incidentId,
-            reason: `A fresh complete workspace snapshot is required: ${snapshot.error}`,
-          },
-        );
-        return 0;
-      }
-      const packet = progressReviewPacket(state, incident, input.userInput);
-      const reviewId = createId("review");
-      const binding: ProgressReviewBinding = {
-        reviewId,
-        incidentId: incident.incidentId,
-        intentRevision: progressIntentRevision(state),
-        workspaceFingerprint: snapshot.fingerprint,
-        progressWatermark: state.progressGuard.acceptedObservations,
-        packetDigest: progressReviewPacketDigest(packet),
-      };
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.requested",
-        "requested",
-        { incidentId: incident.incidentId, binding, packet },
-      );
-      requestedNow = true;
-      incident = requestedProgressIncident(state.progressGuard, currentScopeKey);
-      if (!incident) throw new Error("Progress review request did not enter durable state");
-    }
-
-    const binding = incident.reviewBinding;
-    const packet = incident.reviewPacket;
-    if (!binding || !packet) {
-      throw new Error("A requested progress review is missing its immutable material");
-    }
-    const currentSnapshot = requestedNow
-      ? { ok: true as const, fingerprint: binding.workspaceFingerprint }
-      : await this.progressWorkspaceFingerprint();
-    if (!currentSnapshot.ok) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.unavailable",
-        "failed",
-        {
-          incidentId: incident.incidentId,
-          reviewId: binding.reviewId,
-          reason: `The requested review cannot be freshness-checked: ${currentSnapshot.error}`,
-        },
-      );
-      return 0;
-    }
-    const steeringPendingBeforeStart =
-      await this.dependencies.hasPendingSteering?.({
-        threadId: state.threadId,
-        turnId,
-      }) ?? false;
-    if (
-      steeringPendingBeforeStart ||
-      binding.intentRevision !== progressIntentRevision(state) ||
-      binding.workspaceFingerprint !== currentSnapshot.fingerprint ||
-      binding.progressWatermark !== state.progressGuard.acceptedObservations
-    ) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.stale",
-        "interrupted",
-        {
-          incidentId: incident.incidentId,
-          reviewId: binding.reviewId,
-          reason: "Intent, workspace, or progress evidence changed before reviewer start.",
-        },
-      );
-      return 0;
-    }
-
-    await this.appendProgressReviewEvent(
-      state,
-      turnId,
-      "progress.review.started",
-      "started",
-      {
-        incidentId: incident.incidentId,
-        reviewId: binding.reviewId,
-      },
-    );
-    this.dependencies.onStatus?.(
-      `Progress stalled; running one isolated read-only reviewer for ${incident.incidentId}.`,
-    );
-    const execution = await this.withModelRequestActivity(
-      `Reviewing stalled progress with ${this.dependencies.provider.model}`,
-      () => runProgressReviewer(
-        {
-          binding,
-          packet,
-          thinkingEffort: state.thinkingEffort,
-          maxModelRequests: Math.min(Math.max(1, input.remainingModelRequests - 1), (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1),
-          maxOutputTokens: (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).reviewerOutputTokens,
-          signal: input.signal,
-        },
-        {
-          provider: this.dependencies.provider,
-          limits: this.dependencies.limits,
-          onRequestStarted: async (request) => {
-            await this.appendProgressReviewEvent(
-              state,
-              turnId,
-              "progress.review.model_request.started",
-              "started",
-              {
-                incidentId: incident.incidentId,
-                reviewId: binding.reviewId,
-                ordinal: request.ordinal,
-                kind: request.kind,
-              },
-            );
-          },
-          onRequestFinished: async (request) => {
-            await this.appendProgressReviewEvent(
-              state,
-              turnId,
-              "progress.review.model_request.finished",
-              request.status === "completed" ? "completed" : "failed",
-              {
-                incidentId: incident.incidentId,
-                reviewId: binding.reviewId,
-                ordinal: request.ordinal,
-                kind: request.kind,
-                status: request.status,
-                durationMs: request.durationMs,
-                ...(request.usage ? { usage: request.usage } : {}),
-                ...(request.error ? { error: request.error } : {}),
-              },
-            );
-            await this.reportProgressReviewRequestUsage(state, turnId, request);
-          },
-          onResponse: async response => {
-            await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "model.output.captured",
-              payload: { purpose: "reviewer", reviewId: binding.reviewId,
-                finishReason: response.finishReason ?? null,
-                message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
-                  tool_calls: response.message.tool_calls }))) } });
-          },
-        },
-      ),
-    );
-
-    const finalSnapshot = await this.progressWorkspaceFingerprint();
-    if (!finalSnapshot.ok) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.unavailable",
-        "failed",
-        {
-          incidentId: incident.incidentId,
-          reviewId: binding.reviewId,
-          reason: `The reviewer result cannot be freshness-checked: ${finalSnapshot.error}`,
-          accounting: execution.accounting,
-        },
-      );
-      return execution.accounting.reviewModelRequests;
-    }
-    const steeringPendingAfterReview =
-      await this.dependencies.hasPendingSteering?.({
-        threadId: state.threadId,
-        turnId,
-      }) ?? false;
-    const stale =
-      steeringPendingAfterReview ||
-      binding.intentRevision !== progressIntentRevision(state) ||
-      binding.workspaceFingerprint !== finalSnapshot.fingerprint ||
-      binding.progressWatermark !== state.progressGuard.acceptedObservations;
-    if (stale) {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.stale",
-        "interrupted",
-        {
-          incidentId: incident.incidentId,
-          reviewId: binding.reviewId,
-          reason: "Intent, workspace, or progress evidence changed while reviewer was running.",
-          accounting: execution.accounting,
-        },
-      );
-      return execution.accounting.reviewModelRequests;
-    }
-    if (execution.status === "completed") {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.completed",
-        "completed",
-        {
-          incidentId: incident.incidentId,
-          binding,
-          report: execution.report,
-          accounting: execution.accounting,
-        },
-      );
-      this.dependencies.onStatus?.(
-        execution.report.recommendation === "run_experiment"
-          ? "Reviewer proposed a falsifiable experiment; the parent must verify it before further edits."
-          : "Reviewer found insufficient evidence; the parent must gather a materially different signal.",
-      );
-    } else {
-      await this.appendProgressReviewEvent(
-        state,
-        turnId,
-        "progress.review.unavailable",
-        execution.reason === "interrupted" ? "interrupted" : "failed",
-        {
-          incidentId: incident.incidentId,
-          reviewId: binding.reviewId,
-          reason: `${execution.reason}: ${execution.error}`,
-          accounting: execution.accounting,
-        },
-      );
-      this.dependencies.onStatus?.(
-        `Progress reviewer is unavailable (${execution.reason}); this is not code-failure evidence.`,
-      );
-    }
-    return execution.accounting.reviewModelRequests;
+    const runReviewSession = this.dependencies.runReviewSession;
+    if (!runReviewSession) return 0;
+    const scopeKey = progressScopeKey(input.state, input.turnId);
+    const pending = input.state.progressGuard.incidents.find(incident =>
+      incident.scopeKey === scopeKey &&
+      incident.phase === "review_pending");
+    const unfinished = input.state.reviewSessions?.find(session =>
+      session.status !== "applied");
+    if (!pending && !unfinished) return 0;
+    const result = await runReviewSession({
+      ...input,
+      maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
+      incidentId: pending?.incidentId ?? unfinished?.incidentId,
+    });
+    return result.requests;
   }
 
   private observeProviderContext(input: {
@@ -1743,6 +1092,9 @@ export class AgentRuntime {
       ) {
         throw new Error("The approved plan no longer matches the pending review state");
       }
+      const replacedTaskGraphId = state.taskGraph && state.taskGraph.status !== "completed"
+        ? state.taskGraph.id
+        : undefined;
       await this.dependencies.appendEvent({
         threadId: state.threadId,
         turnId,
@@ -1751,10 +1103,12 @@ export class AgentRuntime {
         payload: {
           planId: review.proposal.id,
           revision: review.proposal.revision,
+          ...(replacedTaskGraphId ? { replacedTaskGraphId } : {}),
         },
       });
       memoryContext.approvedPlanReview = clonePlanReviewState(review);
       state.planReview = undefined;
+      if (replacedTaskGraphId) state.taskGraph = undefined;
       state.updatedAt = new Date().toISOString();
     }
 
@@ -1773,14 +1127,6 @@ export class AgentRuntime {
         "Outstanding child assignments must be collected in Code mode before entering Plan mode",
       );
     }
-    if (
-      options.modeOverride === "plan" &&
-      state.taskGraph &&
-      state.taskGraph.status !== "completed"
-    ) {
-      throw new Error("An active task DAG cannot be adjusted in Plan mode");
-    }
-
     let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
     let autoReason = "";
     let contextLayerFailureReported = false;
@@ -1799,10 +1145,8 @@ export class AgentRuntime {
         `Auto mode review transition: ${options.modeOverride} — ${autoReason}`,
       );
     } else if (state.mode === "auto") {
-      const unfinishedGraph = state.taskGraph && state.taskGraph.status !== "completed";
       const routingPressure = this.dependencies.contextManager.inspect(state, options.maxContextChars).utilization;
       if (
-        !unfinishedGraph &&
         outstandingSubagentsAtRoute.length === 0 &&
         routingPressure >= (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextCompactionTriggerRatio
       ) {
@@ -1842,11 +1186,6 @@ export class AgentRuntime {
         ? {
             mode: "code" as const,
             reason: backgroundCommandFinalizationInstruction(),
-          }
-        : unfinishedGraph
-        ? {
-            mode: "code" as const,
-            reason: "Continue the existing task DAG in code mode until it is completed or explicitly blocked.",
           }
         : outstandingSubagentsAtRoute.length > 0
           ? {
@@ -2192,7 +1531,6 @@ export class AgentRuntime {
     const progressVerificationCommands = new Map<string, VerificationKind>();
 
     const stepLimit = options.maxSteps;
-    let taskDagFinalizationOnly = false;
     const toolRecovery = new ToolRecoveryBudget((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1);
     let invalidOutputAttempts = 0;
     const commandRetries = new CommandRetryTracker((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries);
@@ -2200,7 +1538,6 @@ export class AgentRuntime {
     let progressReviewModelRequestsUsed = 0;
     // Once execution becomes uncertain, this run never re-enables mutations.
     // Recovery is an explicit external repair followed by Resume.
-    let runEnvironmentFault: string | undefined;
     for (
       let step = 1;
       step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed <= Math.min(stepLimit, options.maxSteps) && this.remainingRequests > 0;
@@ -2285,19 +1622,14 @@ export class AgentRuntime {
       }
       const memorySearchDurationMs = Date.now() - memorySearchStarted;
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
-      const ordinaryEnabledTools = taskDagFinalizationOnly
-        ? state.taskGraph?.status === "completed"
-          ? [...toolGateway.catalog.tools].filter((tool) => tool.name === "write_memory")
-          : []
-        : [...toolGateway.catalog.tools].filter((tool) =>
-            tool.name !== "compact_context"
-          );
+      const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter((tool) =>
+        tool.name !== "compact_context");
       const currentProgressScope = progressScopeKey(state, turnId);
       const progressInstruction = agentIdentity.role === "main_agent"
         ? progressRuntimeInstruction(state, currentProgressScope) : "";
       const weakHintKind = progressInstruction ? progressWeakHintKind(state, currentProgressScope) : undefined;
-      if (weakHintKind) await this.appendProgressReviewEvent(state, turnId,
-        "progress.hint.presented", "completed", { scopeKey: currentProgressScope, kind: weakHintKind });
+      if (weakHintKind) await this.appendProgressHint(
+        state, turnId, { scopeKey: currentProgressScope, kind: weakHintKind });
       const runtimeNextActions = [
         this.dependencies.hasOpenCommandHandles?.()
           ? backgroundCommandFinalizationInstruction()
@@ -2635,33 +1967,13 @@ export class AgentRuntime {
         continue;
       }
 
-      const suppressFinalizationToolCalls =
-        taskDagFinalizationOnly &&
-        Boolean(response.message.tool_calls?.length) &&
-        !(
-          state.taskGraph?.status === "completed" &&
-          response.message.tool_calls?.every(
-            (call) => call.function.name === "write_memory",
-          )
-        );
-      const executionToolCalls = suppressFinalizationToolCalls
-        ? undefined
-        : response.message.tool_calls;
+      const executionToolCalls = response.message.tool_calls;
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: suppressFinalizationToolCalls
-          ? response.message.content?.trim() || terminalTaskGraphText(state.taskGraph)
-          : response.message.content,
-        tool_calls: suppressFinalizationToolCalls
-          ? undefined
-          : executionToolCalls?.map(durableToolCall),
+        content: response.message.content,
+        tool_calls: executionToolCalls?.map(durableToolCall),
         reasoning_content: response.message.reasoning_content
       };
-      if (suppressFinalizationToolCalls) {
-        this.dependencies.onStatus?.(
-          "Ignored tools other than memory maintenance during task-DAG finalization.",
-        );
-      }
       state.messages.push(assistantMessage);
       const projectionHistory: ChatMessage[] = [...messages, assistantMessage];
       await this.dependencies.appendEvent({
@@ -2718,6 +2030,35 @@ export class AgentRuntime {
       invalidOutputAttempts = 0;
       const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
+        if (effectiveMode === "plan" && assistantMessage.content?.trim()) {
+          if (await this.takeAndApplySteering(
+            state, turnId, "before_final", turnImages, true, memoryContext,
+          )) continue;
+          const planReview = createPlanReviewState(
+            planDraftFromText(assistantMessage.content),
+            turnId,
+            state.planReview,
+          );
+          await this.dependencies.appendEvent({
+            threadId: state.threadId,
+            turnId,
+            type: "plan.proposed",
+            phase: "completed",
+            payload: { planReview },
+          });
+          state.planReview = planReview;
+          state.updatedAt = new Date().toISOString();
+          const text = `${formatPlanProposal(planReview.proposal)}\n\n` +
+            runtimePromptText("runtime/plan-waiting-review.md");
+          this.dependencies.onText?.(text);
+          const prefix = state.mode === "auto" && autoReason
+            ? `Auto decision: ${autoReason}\n\n`
+            : "";
+          return this.finish(
+            state, turnId, `${prefix}${text}`, "planned", step, memoryContext,
+            planReview.proposal,
+          );
+        }
         if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
           const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
           if (collected > 0) {
@@ -2725,24 +2066,15 @@ export class AgentRuntime {
             continue;
           }
         }
-        const pendingExperiment = agentIdentity.role === "main_agent"
-          ? requiredProgressExperiment(
-              state,
-              progressScopeKey(state, turnId),
-            )
-          : undefined;
         const outstandingSubagents = agentIdentity.role === "main_agent"
           ? this.dependencies.getOutstandingSubagents?.() ?? []
           : [];
         const obligations = evaluateCompletionGate({
           state,
           role: agentIdentity.role,
-          mode: effectiveMode,
           reconciliationPending: reconciliationPending(state),
           openCommandHandles: this.dependencies.hasOpenCommandHandles?.() ?? false,
-          ...(pendingExperiment ? { pendingExperiment } : {}),
           outstandingSubagents,
-          commandEnvironmentFault: runEnvironmentFault ?? commandEnvironmentFault(this.dependencies),
         });
         if (obligations.length) {
           const { signature, attempt } = nextCompletionAttempt(state, obligations);
@@ -2755,9 +2087,7 @@ export class AgentRuntime {
           // restrictive configured correction budget is exhausted. Resolving
           // that obligation creates a new signature and lets the remaining
           // obligations use their own budget on Resume.
-          const maximum = Math.min(...obligations.map(item => item.kind === "command_environment"
-            ? limits.commandEnvironmentRecoveryRetries
-            : limits.prematureFinishRetries));
+          const maximum = limits.prematureFinishRetries;
           if (attempt <= maximum) {
             const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
               obligations, attempt, maximum - attempt) };
@@ -2771,9 +2101,8 @@ export class AgentRuntime {
             `Task paused after ${attempt} repeated invalid completion proposals. Pending obligations: ` +
               obligations.map(item => item.description).join(" "),
             "paused", step, memoryContext, undefined, undefined, undefined,
-            { cause: obligations.some(item => item.kind === "command_environment") ? "command_environment"
-              : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents") ? "subagent"
-              : obligations.some(item => item.kind === "dag_active") ? "dag" : "completion_protocol",
+            { cause: obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents")
+              ? "subagent" : "completion_protocol",
               resumable: true,
               requiredAction: obligations.map(item => item.requiredAction).join(" "),
               obligations });
@@ -2797,49 +2126,8 @@ export class AgentRuntime {
         )) {
           continue;
         }
-        // Review is an advisory investigation for risky material, not a
-        // correctness certificate required for every edited workspace.
-        const reviewMaterial = state.changes.slice(turnChangeStart).some(change =>
-          isValidationTestPath(change.path) || isValidationConfigPath(change.path)) ||
-          state.progressGuard.incidents.some(incident => incident.phase !== "resolved" &&
-            incident.reason === "repeated_verified_failure");
-        if (agentIdentity.role === "main_agent" && this.dependencies.runReviewSession && reviewMaterial) {
-          if (!state.delivery || (state.delivery.sourceMessageIndex < turnHistoryStart &&
-              state.delivery.request !== memoryContext.userInput &&
-              !/^(?:continue|resume|继续|继续执行)$/iu.test(memoryContext.userInput.trim())) ||
-              state.reviewSessions?.some(s => s.scope === state.delivery!.id && s.status === "applied" &&
-                state.delivery!.request !== memoryContext.userInput)) {
-            const obligation = newDelivery(state, memoryContext.userInput, turnHistoryStart, turnChangeStart);
-            await this.dependencies.appendEvent({ threadId: state.threadId, turnId, type: "delivery.required", payload: obligation });
-            foldDelivery(state, obligation);
-          }
-          const review = await this.dependencies.runReviewSession({ state, turnId, userInput: state.delivery!.request,
-            draftAnswer: text,
-            maxContextTokens: this.dependencies.contextManager.tokenCapacity?.window,
-            purpose: "delivery", remainingModelRequests: Math.max(0, stepLimit - step - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed),
-            signal: options.signal });
-          progressReviewModelRequestsUsed += review.requests;
-          if (review.decision === "interrupted") return this.finish(state, turnId,
-            "Review was interrupted; work and the review state are retained.",
-            "interrupted", step, memoryContext);
-          // The editor stayed open during investigation. Drain any adjustment
-          // before handing the advisory report to the next model request;
-          // finalization is sealed only when an answer is actually delivered.
-          const reviewSteering = await this.takeAndApplySteering(state, turnId, "before_final", turnImages, false, memoryContext);
-          if (reviewSteering) continue;
-          // The Reviewer may clear the prepared answer for immediate delivery.
-          // A revise verdict returns advice to the main Agent instead. The
-          // normal final steering seal still follows either path.
-          const fastDelivery = review.decision === "reported" &&
-            review.report?.verdict === "pass";
-          if (review.report && !fastDelivery && !review.reused) continue;
-          if (review.decision === "unavailable" || review.decision === "inconclusive") text += `\n\nReview note: ${review.decision}; ` +
-            `${review.reason ?? "independent advice was not available or is stale"}. ` +
-            "Report only checks actually run; this is not an official benchmark verdict.";
-        }
-        // Keep the adjustment editor live throughout review. The one final
-        // admission barrier belongs after review, so late steering invalidates
-        // this answer and is handled by a fresh model attempt.
+        // Finalization seals user steering exactly once. Reviewer advice, when
+        // present, was already injected before this model request.
         if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
         const unresolvedVerification = unresolvedCommands(state).filter(command => Boolean(command.verificationKind));
         if (agentIdentity.role === "main_agent" && unresolvedVerification.length) text +=
@@ -2855,12 +2143,6 @@ export class AgentRuntime {
 
       const compactContextIsExclusive =
         calls.length === 1 && calls[0]?.function.name === "compact_context";
-      const manageTasksBatched =
-        calls.length > 1 && calls.some((call) => call.function.name === "manage_tasks");
-      const manageSubagentsMixed =
-        calls.length > 1 &&
-        calls.some((call) => call.function.name === "manage_subagents") &&
-        !calls.every((call) => call.function.name === "manage_subagents");
       const proposePlanBatched =
         calls.length > 1 && calls.some((call) => call.function.name === "propose_plan");
       const submitTaskResultBatched =
@@ -2873,7 +2155,7 @@ export class AgentRuntime {
       let requiredProtocolExhaustion: { tool: string; attempt: number } | undefined;
       let finishRejectedReason: string | undefined;
       let completedVerificationPhase = false;
-      let environmentFault = runEnvironmentFault;
+      let environmentFault = this.dependencies.getEnvironmentFault?.();
 
       for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
         const call = calls[callIndex]!;
@@ -2952,14 +2234,6 @@ export class AgentRuntime {
         // Verification relies on recorded changes and actual command results;
         // no whole-repository test baseline is captured or replayed.
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
-        const progressExperimentAtCall = agentIdentity.role === "main_agent"
-          ? requiredProgressExperiment(
-              state,
-              taskIdAtCall
-                ? `thread:${state.threadId}/task:${taskIdAtCall}`
-                : progressScopeKey(state, turnId),
-            )
-          : undefined;
         let taskGraphOperation: TaskGraphTransitionOperation | undefined;
         let subagentTaskOperation: SubagentTaskOperation | undefined;
         let result: ToolExecutionResult;
@@ -2999,29 +2273,6 @@ export class AgentRuntime {
             foldCompactionControl(state, "context.compaction.requested", payload);
             result = { ok: true, summary: "Compaction requested. Runtime will assess the candidate at the next complete tool-exchange boundary." };
           }
-        } else if (
-          progressExperimentAtCall &&
-          (!tool || !toolMetadata(tool).progressExperiment)
-        ) {
-          result = {
-            ok: false,
-            summary:
-              "Runtime requires a read-only or command-based falsifiable experiment before ordinary mutations or task transitions.",
-            error: "progress_experiment_required",
-          };
-        } else if (manageTasksBatched) {
-          result = {
-            ok: false,
-            summary: "manage_tasks must be the only tool call in a model response.",
-            error: "manage_tasks_must_be_exclusive",
-          };
-        } else if (manageSubagentsMixed) {
-          result = {
-            ok: false,
-            summary:
-              "manage_subagents may be batched only with other manage_subagents calls.",
-            error: "manage_subagents_must_not_mix_with_other_tools",
-          };
         } else if (proposePlanBatched) {
           result = {
             ok: false,
@@ -3043,8 +2294,6 @@ export class AgentRuntime {
           };
         } else {
           try {
-            const graphError = taskGraphToolError(state.taskGraph, tool, turnId);
-            if (graphError) throw new Error(graphError);
             const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
             if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
             const rawInput = preparedInvocation.input;
@@ -3098,8 +2347,6 @@ export class AgentRuntime {
               workspaceRoot: state.workspaceRoot,
               ...(toolName === "run_command" || toolName === "start_command"
                 ? { validationPriorChanges: state.changes.map(change => ({ ...change })) } : {}),
-              ...(progressExperimentAtCall?.reviewReport ? { progressExperiment: {
-                incidentId: progressExperimentAtCall.incidentId, report: progressExperimentAtCall.reviewReport } } : {}),
               mode: effectiveMode,
               threadId: state.threadId,
               turnId,
@@ -3395,7 +2642,6 @@ export class AgentRuntime {
         }
         if (result.failure?.code === "command_environment_quarantined") {
           environmentFault = result.error ?? result.failure.instruction;
-          runEnvironmentFault = environmentFault;
         }
         if (result.ok) toolRecovery.succeed(toolName);
         // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
@@ -3442,7 +2688,6 @@ export class AgentRuntime {
         const verification = commandVerificationClassification(
           toolName,
           call.function.arguments,
-          progressExperimentAtCall !== undefined,
           progressVerificationCommands,
           result,
         );
@@ -3473,9 +2718,6 @@ export class AgentRuntime {
             minimum: projectionLimits.progressInvestigationMinSamples, ratio: projectionLimits.progressInvestigationRepeatRatio,
             window: projectionLimits.progressInvestigationWindowResponses, review: projectionLimits.progressInvestigationReviewEnabled,
           },
-          ...(progressExperimentAtCall?.reviewReport && ["run_command", "start_command"].includes(toolName) &&
-            matchesReviewExperiment(progressExperimentAtCall.reviewReport, call.function.arguments, state.workspaceRoot)
-            ? { experimentIncidentId: progressExperimentAtCall.incidentId } : {}),
           ...(verification.kind ? { verificationKind: verification.kind } : {}),
         });
         const rollbackPreparedSubagent = (): void => {
@@ -3560,34 +2802,11 @@ export class AgentRuntime {
       }
 
       if (environmentFault) {
-        const obligations = evaluateCompletionGate({
-          state,
-          role: agentIdentity.role,
-          mode: effectiveMode,
-          reconciliationPending: false,
-          openCommandHandles: false,
-          outstandingSubagents: [],
-          commandEnvironmentFault: environmentFault,
-        });
-        const { signature, attempt } = nextCompletionAttempt(state, obligations);
-        const payload = { signature, attempt, obligations };
-        await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
-          type: "completion.rejected", phase: "completed", payload });
-        foldCompletionControl(state, "completion.rejected", payload);
-        const maximum = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).commandEnvironmentRecoveryRetries;
-        if (attempt <= maximum) {
-          const feedback: ChatMessage = { role: "user", content: renderCompletionCorrection(
-            obligations, attempt, maximum - attempt) };
-          state.messages.push(feedback);
-          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
-            type: "message.user.synthetic", phase: "completed", payload: feedback });
-          continue;
-        }
         return this.finish(state, turnId,
-          `Task paused after the quarantined command environment remained unavailable for ${attempt} completion attempt(s). ${environmentFault}`,
+          `Task paused because the command environment is quarantined. ${environmentFault}`,
           "paused", step, memoryContext, undefined, undefined, undefined,
           { cause: "command_environment", resumable: true,
-            requiredAction: "Repair the command environment and verify cleanup, then resume this task.", obligations });
+            requiredAction: "Repair the command environment and verify cleanup, then resume this task.", obligations: [] });
       }
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
       else if (investigationExchangeStart(state.messages) !== undefined)
@@ -3610,7 +2829,7 @@ export class AgentRuntime {
         throw new ToolProtocolExhausted(requiredProtocolExhaustion.tool, requiredProtocolExhaustion.attempt, step);
       }
       if (finishRejectedReason) {
-        const obligations = evaluateCompletionGate({ state, role: agentIdentity.role, mode: effectiveMode,
+        const obligations = evaluateCompletionGate({ state, role: agentIdentity.role,
           reconciliationPending: reconciliationPending(state), openCommandHandles: true,
           outstandingSubagents: agentIdentity.role === "main_agent"
             ? this.dependencies.getOutstandingSubagents?.() ?? [] : [] });
@@ -3697,24 +2916,14 @@ export class AgentRuntime {
         });
         await this.dependencies.commitImages?.(state.threadId, stepImageAttachments);
       }
-      if (
-        state.taskGraph &&
-        (state.taskGraph.status === "completed" || state.taskGraph.status === "terminal_blocked") &&
-        state.taskGraph.updatedByTurnId === turnId && step === stepLimit
-      ) {
-        taskDagFinalizationOnly = true;
-      }
     }
 
     if (state.completionControl?.active) {
       const obligations = state.completionControl.active.obligations;
-      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(item => item.kind === "command_environment")
-          ? "command_environment"
-          : obligations.some(item => item.kind === "subagent_submission" || item.kind === "collect_subagents")
-            ? "subagent"
-            : obligations.some(item => item.kind === "dag_active")
-              ? "dag"
-              : "completion_protocol";
+      const cause: NonNullable<AgentRunResult["pause"]>["cause"] = obligations.some(item =>
+        item.kind === "subagent_submission" || item.kind === "collect_subagents")
+        ? "subagent"
+        : "completion_protocol";
       return this.finish(state, turnId,
         `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
         "paused", options.maxSteps - this.remainingRequests, memoryContext, undefined, undefined, undefined,

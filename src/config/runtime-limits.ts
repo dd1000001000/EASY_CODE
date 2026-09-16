@@ -48,7 +48,6 @@ export const runtimeLimitsSchema = z.object({
   modelContentRetries: integer(0, 2),
   sandboxInitializationRetries: integer(0, 1),
   /** Model-visible recovery turns after the first quarantined-environment result. */
-  commandEnvironmentRecoveryRetries: integer(0, 5),
   /** Sandbox boundary violations are model-correctable before human escalation. */
   sandboxBoundaryModelCorrections: integer(0, 5),
   sandboxBoundaryApprovalThreshold: integer(1, 10),

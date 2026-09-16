@@ -1265,16 +1265,8 @@ function validateAndCloneReport(
     throw new Error(`Child result targeted ${report.taskId} instead of bound task ${task.id}`);
   }
   if (report.outcome === "completed") {
-    if (report.completionEvidence.length !== task.completionChecks.length) {
-      throw new Error(
-        `Child result for ${task.id} requires exactly ${task.completionChecks.length} evidence item(s)`,
-      );
-    }
-    for (let index = 0; index < task.completionChecks.length; index += 1) {
-      if (report.completionEvidence[index]?.check !== task.completionChecks[index]) {
-        throw new Error(`Child result for ${task.id} changed completion check ${index + 1}`);
-      }
-    }
+    if (report.completionEvidence.length === 0)
+      throw new Error(`Child result for ${task.id} requires completion evidence`);
   }
   return cloneReport(report);
 }

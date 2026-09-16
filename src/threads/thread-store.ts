@@ -33,7 +33,6 @@ import type { EasyCodeStorage } from "../storage/database.js";
 import { ACTIVE_MODEL_REGISTRY_HASH, isProviderIdentifier } from "../models/catalog.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { foldReviewEvent } from "../review/session.js";
-import { foldDelivery } from "../review/delivery.js";
 import { createId } from "../utils/ids.js";
 import {
   aggregateModelUsage,
@@ -79,13 +78,10 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sha256 } from "../utils/hash.js";
 import {
   createProgressGuardState,
+  foldProgressHint,
   foldProgressObservation,
 } from "../progress/guard.js";
 import { parseProgressObservation } from "../progress/observation.js";
-import {
-  foldProgressReviewEvent,
-  isProgressReviewEventType,
-} from "../progress/lifecycle.js";
 import { foldCompletionControl } from "../runtime/completion-gate.js";
 
 export interface ThreadCreateInput {
@@ -1330,7 +1326,7 @@ export class ThreadStore {
         if (!this.threadExists(threadId)) throw new Error(`Thread not found: ${threadId}`);
         const priorEvents = journal.read();
         if (priorEvents.length === 0) throw new Error(`Thread not found: ${threadId}`);
-        if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "delivery.required" || input.type === "review.assignment.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
+        if (input.type === "context.memory.gated" || input.type === "context.reconciled" || input.type === "context.server_reset" || input.type === "review.assignment.event" || input.type === "context.maintenance.checked" || input.type === "context.history.evicted" || input.type === "context.phase.closed" || input.type.startsWith("context.compaction.") ||
             (input.type === "context.compaction.committed" && asPayloadRecord(input.payload)?.transactionId !== undefined)) {
           // Validate before append, so malformed control events cannot poison
           // recovery. A commit is checked against the same event-folded state.
@@ -1370,13 +1366,9 @@ export class ThreadStore {
             throw new Error("ProgressObservation scope does not match its tool.result event");
           }
         }
-        if (isProgressReviewEventType(input.type)) {
+        if (input.type === "progress.hint.presented") {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
-          foldProgressReviewEvent(
-            priorState.progressGuard,
-            input.type,
-            input.payload,
-          );
+          foldProgressHint(priorState.progressGuard, input.payload);
         }
         if (input.type.startsWith("turn.steering.")) {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
@@ -1441,7 +1433,7 @@ export class ThreadStore {
           );
         } else if (
           payload &&
-          ((input.type === "tool.result" && "planReview" in payload) ||
+          (((input.type === "tool.result" || input.type === "plan.proposed") && "planReview" in payload) ||
             input.type === "plan.approved" ||
             input.type === "plan.rejected" ||
             input.type === "plan.feedback_submitted" ||
@@ -2197,7 +2189,8 @@ export class ThreadStore {
         );
         interruptedPlanExecutions.delete(event.turnId);
       } else if (
-        (event.type === "plan.approved" ||
+        (event.type === "plan.proposed" ||
+          event.type === "plan.approved" ||
           event.type === "plan.rejected" ||
           event.type === "plan.feedback_submitted" ||
           event.type === "plan.execution_started") &&
@@ -2288,18 +2281,12 @@ export class ThreadStore {
         if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation event");
         const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
         state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(p => normalizeCommandApprovalPrefix(p) !== prefix);
-      } else if (event.type === "delivery.required") {
-        foldDelivery(state, event.payload);
       } else if (event.type === "review.assignment.event") {
         foldReviewEvent(state, event.payload);
       } else if (event.type === "completion.rejected" || event.type === "completion.resolved") {
         foldCompletionControl(state, event.type, event.payload);
-      } else if (isProgressReviewEventType(event.type)) {
-        state.progressGuard = foldProgressReviewEvent(
-          state.progressGuard,
-          event.type,
-          event.payload,
-        );
+      } else if (event.type === "progress.hint.presented") {
+        state.progressGuard = foldProgressHint(state.progressGuard, event.payload);
       }
       state.updatedAt = event.timestamp;
     }
@@ -2449,16 +2436,16 @@ export class ThreadStore {
     event: Pick<EventRecord, "eventId" | "timestamp" | "type" | "turnId" | "phase">,
     payload: Record<string, unknown>,
   ): void {
-    if (event.type === "tool.result") {
-      if (
-        event.phase !== "completed" ||
-        payload.tool !== "propose_plan" ||
-        !isPlanReviewState(payload.planReview) ||
+      if (event.type === "tool.result" || event.type === "plan.proposed") {
+        if (
+          event.phase !== "completed" ||
+          (event.type === "tool.result" && payload.tool !== "propose_plan") ||
+          !isPlanReviewState(payload.planReview) ||
         payload.planReview.status !== "awaiting_review" ||
         !event.turnId ||
         payload.planReview.proposal.proposedByTurnId !== event.turnId
       ) {
-        throw new Error(`Invalid plan proposal source in tool.result event ${event.eventId}`);
+          throw new Error(`Invalid plan proposal source in event ${event.eventId}`);
       }
       const previous = state.planReview?.proposal;
       const next = payload.planReview.proposal;
@@ -2468,7 +2455,7 @@ export class ThreadStore {
           next.id !== previous.id ||
           next.revision !== previous.revision + 1
         ) {
-          throw new Error(`Invalid plan revision in tool.result event ${event.eventId}`);
+            throw new Error(`Invalid plan revision in event ${event.eventId}`);
         }
       } else if (next.revision !== 1) {
         throw new Error(`Initial plan proposal must use revision 1 in event ${event.eventId}`);
@@ -2533,6 +2520,16 @@ export class ThreadStore {
     if (event.type === "plan.execution_started") {
       if (current.status !== "approved_pending_execution") {
         throw new Error(`Cannot execute an unapproved plan in event ${event.eventId}`);
+      }
+      if (payload.replacedTaskGraphId !== undefined) {
+        if (
+          typeof payload.replacedTaskGraphId !== "string" ||
+          state.taskGraph?.id !== payload.replacedTaskGraphId ||
+          state.taskGraph.status === "completed"
+        ) {
+          throw new Error(`Invalid replaced task DAG in event ${event.eventId}`);
+        }
+        state.taskGraph = undefined;
       }
       state.planReview = undefined;
       return;

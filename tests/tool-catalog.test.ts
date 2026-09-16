@@ -49,7 +49,7 @@ function externalMetadata(name: string, sourceId = "fixture"): ToolRuntimeMetada
   return {
     identity: { id: `${sourceId}:${name}`, name, displayName: name, sourceId, sourceKind: "external", sourceVersion: "1" },
     effects: ["external_read"], allowedModes: ["auto", "code"], allowedRoles: ["main_agent"],
-    taskWork: false, progressExperiment: false, requiresOrchestration: false, requiresVision: false,
+    requiresOrchestration: false, requiresVision: false,
     validationSensitive: false, idempotent: true, controlPlane: false, resultClass: "generic",
   };
 }
@@ -95,7 +95,6 @@ describe("extensible tool capabilities", () => {
       mode: "code", role: "subagent", orchestrationAvailable: false, visionAvailable: true,
     }).map((tool) => tool.name), ["read_file", "submit_task_result"]);
     assert.equal(builtinToolMetadata("run_command").validationSensitive, true);
-    assert.equal(builtinToolMetadata("read_file").progressExperiment, true);
   });
 
   it("requires host-owned metadata for every non-builtin tool", async () => {

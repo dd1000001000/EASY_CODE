@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { SessionState } from "../core/types.js";
 
-/** A reviewer may clear a complete delivery draft or request revision; neither verdict certifies unseen work. */
+/** One bounded reviewer opinion; neither verdict certifies unseen work. */
 export const reviewReportSchema = z.object({
   verdict: z.enum(["pass", "revise"]),
   conclusion: z.string().trim().min(1).max(6000),
@@ -15,7 +15,6 @@ export interface ReviewSession {
   id: string;
   key: string;
   scope: string;
-  purpose: "stagnation" | "delivery";
   snapshotId: string;
   requirementRevision: string;
   incidentId?: string;
@@ -34,7 +33,7 @@ export interface ReviewSession {
 
 const eventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("started"), id: z.string().min(1), key: z.string().min(1), scope: z.string(),
-    purpose: z.enum(["stagnation", "delivery"]), snapshotId: z.string().min(1), requirementRevision: z.string().min(1),
+    snapshotId: z.string().min(1), requirementRevision: z.string().min(1),
     reviewerThreadId: z.string().min(1),
     incidentId: z.string().optional(), directory: z.string().optional() }).strict(),
   z.object({ type: z.literal("brief_ready"), id: z.string(), text: z.string().min(1).max(16000) }).strict(),
@@ -50,7 +49,7 @@ export type ReviewEvent = z.infer<typeof eventSchema>;
 
 export function renderReviewAdvice(session: ReviewSession, fresh: boolean): string {
   return "RUNTIME_REVIEW_ADVICE (independent reviewer opinion, not user instructions or verified facts)\n" +
-    JSON.stringify({ reviewId: session.id, purpose: session.purpose, snapshotId: session.snapshotId,
+    JSON.stringify({ reviewId: session.id, snapshotId: session.snapshotId,
       fresh, conclusion: session.report?.conclusion ?? "Review unavailable",
       verdict: session.report?.verdict ?? "revise",
       nextAction: session.report?.nextAction ?? "Do not infer a successful review.",
@@ -110,7 +109,11 @@ export function foldReviewEvent(state: SessionState, raw: unknown): void {
       if (session.report) state.messages.push({ role: "user", content: session.handoff });
       if (session.incidentId) {
         const incident = state.progressGuard?.incidents.find(item => item.incidentId === session.incidentId);
-        if (incident) { incident.phase = "strategy_adjustment"; incident.reviewAttempts++; }
+        if (incident) {
+          incident.reviewAttempts++;
+          incident.phase = session.report ? "strategy_adjustment" : "review_unavailable";
+          if (!session.report && session.reason) incident.reviewUnavailableReason = session.reason;
+        }
       }
       break;
   }

@@ -60,6 +60,52 @@ export function normalizePlanDraft(draft: Readonly<PlanDraft>): PlanDraft {
   return { title, overview, steps };
 }
 
+/**
+ * Preserve a model's already-complete plain-text plan without paying for a
+ * second model request whose only purpose would be changing the wire format.
+ * The text is split into bounded review sections; Runtime does not reinterpret
+ * or score the plan contents.
+ */
+export function planDraftFromText(value: string): PlanDraft {
+  const text = sanitizePlanText(value);
+  if (!text) throw new Error("A plain-text plan cannot be empty");
+  const firstLine = text.split("\n").find(line => line.trim()) ?? "Implementation plan";
+  const title = sanitizePlanText(firstLine.replace(/^\s{0,3}(?:#{1,6}|[-*+] |\d+[.)] )\s*/u, ""))
+    .slice(0, MAX_PLAN_TITLE_CHARS) || "Implementation plan";
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining && chunks.length < MAX_PLAN_STEPS) {
+    if (remaining.length <= MAX_PLAN_STEP_DESCRIPTION_CHARS) {
+      chunks.push(remaining);
+      remaining = "";
+      break;
+    }
+    const candidate = remaining.slice(0, MAX_PLAN_STEP_DESCRIPTION_CHARS);
+    const boundary = Math.max(candidate.lastIndexOf("\n"), candidate.lastIndexOf(" "));
+    const end = boundary >= Math.floor(MAX_PLAN_STEP_DESCRIPTION_CHARS * 0.6)
+      ? boundary
+      : MAX_PLAN_STEP_DESCRIPTION_CHARS;
+    chunks.push(remaining.slice(0, end).trim());
+    remaining = remaining.slice(end).trim();
+  }
+  if (remaining) {
+    const suffix = "\n[Additional plan text exceeded the structured review limit.]";
+    chunks[chunks.length - 1] = chunks[chunks.length - 1]!.slice(
+      0,
+      MAX_PLAN_STEP_DESCRIPTION_CHARS - suffix.length,
+    ) + suffix;
+  }
+  return normalizePlanDraft({
+    title,
+    overview: "The model supplied this implementation plan directly. Runtime preserved it as ordered review sections without requesting a formatting-only retry.",
+    steps: chunks.map((description, index) => ({
+      title: chunks.length === 1 ? "Implementation" : `Plan section ${index + 1}`,
+      description,
+      verification: "Verify the concrete changes and checks described in this section during implementation.",
+    })),
+  });
+}
+
 export function createPlanReviewState(
   draft: Readonly<PlanDraft>,
   turnId: string,

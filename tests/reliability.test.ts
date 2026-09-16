@@ -19,9 +19,6 @@ import { runWorkspaceReview, type WorkspaceReviewDependencies } from "../src/rev
 import { ReviewPersistenceError } from "../src/review/errors.js";
 import { preflightReviewEnvironment } from "../src/review/preflight.js";
 import type { ReviewParticipant } from "../src/review/driver.js";
-import { createStorage } from "../src/storage/database.js";
-import { ThreadStore } from "../src/threads/thread-store.js";
-import { newDelivery } from "../src/review/delivery.js";
 import { baseSessionState } from "./session-state.js";
 
 export function reliabilityState(): SessionState {
@@ -67,7 +64,7 @@ describe("verification reliability", () => {
 });
 
 describe("delivery reliability", () => {
-  it("delivers on the Reviewer's pass without a second main-Agent model request", async () => {
+  it("does not review an ordinary edit without a stagnation incident", async () => {
     const s = reliabilityState(); let calls = 0; let reviews = 0; let seals = 0;
     const tool = { name: "read_file" as const, mutating: false,
       definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
@@ -84,10 +81,8 @@ describe("delivery reliability", () => {
       sealSteering: async () => { seals++; return undefined; },
       onToolCompleted: async state => { state.changes.push({ path: "src/component.test.ts", operation: "update",
         source: "file_tool", status: "applied", timestamp: "now" }); },
-      runReviewSession: async input => {
+      runReviewSession: async () => {
         reviews++;
-        assert.equal(input.draftAnswer, "Implementation complete; frontend interaction remains unverified.");
-        assert.equal(seals, 0);
         const report = { verdict: "pass" as const, conclusion: "The caveated draft is ready",
           nextAction: "Deliver unchanged", evidenceRefs: [],
           uncertainties: ["Frontend interaction has not been tested"] };
@@ -100,9 +95,9 @@ describe("delivery reliability", () => {
     assert.equal(result.reason, "success");
     assert.match(result.text, /frontend interaction remains unverified/u);
     assert.equal(calls, 2, "the main Agent must not be called again after a passing review");
-    assert.equal(reviews, 1); assert.equal(seals, 1);
+    assert.equal(reviews, 0); assert.equal(seals, 1);
   });
-  it("schedules one advisory reviewer for a changed component.test.ts without making its opinion a completion gate", async () => {
+  it("does not infer review need from a changed test filename", async () => {
     const s = reliabilityState(); let calls = 0; let reviews = 0; let seals = 0;
     const tool = { name: "read_file" as const, mutating: false,
       definition: { type: "function" as const, function: { name: "read_file", description: "read", parameters: { type: "object" } } },
@@ -124,10 +119,10 @@ describe("delivery reliability", () => {
     const result = await runtime.run(s, "change the component test", { maxSteps: 4,
       maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
       commandTimeoutMs: 1000, approvalPolicy: "never" });
-    assert.equal(reviews, 1); assert.equal(seals, 1); assert.equal(result.reason, "success");
-    assert.match(result.text, /Review note: unavailable/u);
+    assert.equal(reviews, 0); assert.equal(seals, 1); assert.equal(result.reason, "success");
+    assert.doesNotMatch(result.text, /Review note/u);
   });
-  it("applies an adjustment arriving during review before delivering a new model answer", async () => {
+  it("does not run advisory review without repeated verification failures", async () => {
     const state = reliabilityState();
     let calls = 0;
     let reviews = 0;
@@ -169,16 +164,16 @@ describe("delivery reliability", () => {
       maxContextChars: 100000, maxContextTokens: 34000, maxOutputChars: 8000,
       commandTimeoutMs: 1000, approvalPolicy: "never" });
     assert.equal(result.reason, "success", JSON.stringify(result));
-    assert.match(result.text, /adjusted answer/u);
-    assert.doesNotMatch(result.text, /stale answer/u);
-    assert.equal(calls, 3);
-    assert.equal(seals, 1, "review drains the adjustment without prematurely sealing; only delivery seals");
+    assert.match(result.text, /stale answer/u);
+    assert.equal(calls, 2);
+    assert.equal(reviews, 0);
+    assert.equal(seals, 1);
   });
   it("degrades incomplete snapshots without calling a model, but does not swallow journal failure", async () => {
     const state = reliabilityState(), events: string[] = [];
     const deps = { workspace: { captureSnapshot: async () => ({ files: new Map(), truncated: true }) },
       store: { appendEvent: (_: string, e: { type: string }) => { events.push(e.type); } } } as unknown as WorkspaceReviewDependencies;
-    const input = { state, turnId: "turn", userInput: "fix", purpose: "delivery" as const, remainingModelRequests: 32 };
+    const input = { state, turnId: "turn", userInput: "fix", remainingModelRequests: 32 };
     const result = await runWorkspaceReview(input, deps);
     assert.equal(result.decision, "unavailable"); assert.equal(result.requests, 0);
     assert.deepEqual(events, ["review.unavailable"]);
@@ -217,7 +212,7 @@ describe("delivery reliability", () => {
     const s = reliabilityState();
     const emit = (e: ReviewEvent) => foldReviewEvent(s, e);
     s.commands.push(command("failed"));
-    emit({ type: "started", id: "r", key: "k", scope: "task", purpose: "delivery", snapshotId: "snapshot",
+    emit({ type: "started", id: "r", key: "k", scope: "task", snapshotId: "snapshot",
       requirementRevision: "req", reviewerThreadId: "private" });
     emit({ type: "brief_ready", id: "r", text: "fallible handoff" });
     emit({ type: "review_started", id: "r" });
@@ -238,21 +233,6 @@ describe("delivery reliability", () => {
       assert.equal(await packageScriptRunner({ program: "npm", args: ["test"] }, root), undefined);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
-  it("persists the delivery obligation through a real journal recovery", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-delivery-journal-"));
-    const db = createStorage(path.join(root, "data"));
-    try {
-      const store = new ThreadStore(db);
-      const s = store.create({ threadId: "delivery", workspaceRoot: root, mode: "code", provider: "glm", model: "mock", thinkingEffort: "none" });
-      store.recordMessage(s.threadId, { role: "user", content: "Original requirement" });
-      const current = store.recover(s.threadId);
-      const obligation = newDelivery(current, "Original requirement", 0, 0);
-      store.appendEvent(s.threadId, { type: "delivery.required", payload: obligation });
-      const recovered = store.recover(s.threadId);
-      assert.deepEqual(recovered.delivery, obligation);
-      assert.throws(() => store.appendEvent(s.threadId, { type: "delivery.required", payload: { ...obligation, id: "replacement" } }), /unresolved/);
-    } finally { db.close(); await rm(root, { recursive: true, force: true }); }
-  });
   it("runs bounded environment checks through the participant's normal command boundary", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-preflight-"));
     try {
@@ -267,7 +247,7 @@ describe("delivery reliability", () => {
   });
   it("injects a single one-way recommendation and refuses duplicate application", () => {
     const s = reliabilityState();
-    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task", purpose: "delivery",
+    foldReviewEvent(s, { type: "started", id: "r", key: "k", scope: "task",
       snapshotId: "s", requirementRevision: "q", reviewerThreadId: "private" });
     foldReviewEvent(s, { type: "brief_ready", id: "r", text: "fallible handoff" });
     foldReviewEvent(s, { type: "review_started", id: "r" });

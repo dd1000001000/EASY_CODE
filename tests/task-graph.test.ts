@@ -61,7 +61,7 @@ function toolContext(graph?: TaskGraph): ToolContext {
 }
 
 describe("single-agent task DAG", () => {
-  it("enforces dependencies, one active node, completion evidence, blocking, and resume", async () => {
+  it("enforces dependencies, one active node, minimal completion evidence, blocking, and resume", async () => {
     const tool = new ManageTasksTool();
     let graph: TaskGraph | undefined;
     const call = async (input: unknown): Promise<ToolExecutionResult> => {
@@ -90,7 +90,7 @@ describe("single-agent task DAG", () => {
     assert.equal(graph && taskGraphView(graph).currentTask, "architecture");
     assert.equal((await call({ action: "start", taskId: "backend" })).ok, false);
     assert.equal(
-      (await call({ action: "complete", taskId: "architecture", evidence: ["one", "two"] })).ok,
+      (await call({ action: "complete", taskId: "architecture", evidence: [] })).ok,
       false,
     );
     assert.equal(

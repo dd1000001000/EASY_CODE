@@ -3,7 +3,7 @@ import { describe, it } from "./harness.js";
 import { projectText, displayTextSchema } from "../src/utils/bounded-text.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
 import { semanticSummarySchema, clipSemanticFields, parseSemanticRequestPatch } from "../src/context/semantic-compaction.js";
-import { progressReviewReportSchema } from "../src/progress/reviewer.js";
+import { reviewReportSchema } from "../src/review/session.js";
 import { proposePlanInputSchema } from "../src/tools/propose-plan.js";
 import { submitTaskResultInputSchema } from "../src/tools/submit-task-result.js";
 import { TaskBudget } from "../src/runtime/task-budget.js";
@@ -35,18 +35,12 @@ describe("storage-only output retention", () => {
     assert.throws(() => parseSemanticRequestPatch({ ...input, conclusions: [{ text: "claim", evidenceIds: ["bad-id"] }] }));
   });
 
-  it("clips reviewer prose but never clips executable arguments", () => {
-    const report = { recommendation: "run_experiment", summary: "s".repeat(5000), diagnosis: "d", evidence: "e",
-      experiment: "experiment", expectedSignal: "yes", falsifyingSignal: "no",
-      experimentProgram: "python", experimentArgsJson: '["-c","print(1)"]', experimentCwd: "." };
-    const result = progressReviewReportSchema.parse(report);
-    assert.ok(result.summary.length <= 2000);
-    assert.match(result.summary, /truncated/u);
-    assert.equal(result.experimentArgsJson, report.experimentArgsJson);
-    assert.throws(() => progressReviewReportSchema.parse({ ...report, experimentArgsJson: "x".repeat(9000) }));
-    assert.throws(() => progressReviewReportSchema.parse({ ...report, experimentProgram: "x".repeat(1025) }));
-    assert.throws(() => progressReviewReportSchema.parse({ ...report, falsifyingSignal: "x".repeat(2001) }));
-    assert.throws(() => progressReviewReportSchema.parse({ ...report, evidence: "x".repeat(4001) }));
+  it("bounds the single reviewer conclusion schema", () => {
+    const report = { verdict: "revise", conclusion: "specific issue", nextAction: "run a focused check",
+      evidenceRefs: ["src/a.ts:10"], uncertainties: ["integration not run"] };
+    assert.deepEqual(reviewReportSchema.parse(report), report);
+    assert.throws(() => reviewReportSchema.parse({ ...report, conclusion: "x".repeat(6001) }));
+    assert.throws(() => reviewReportSchema.parse({ ...report, evidenceRefs: ["x".repeat(161)] }));
   });
 
   it("clips plan/report presentation but preserves complete verification contracts", () => {
