@@ -30,14 +30,19 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("/subagents")?.name, "agents");
   });
 
+  it("recognizes the MCP server menu", () => {
+    assert.equal(parseSlashCommand("/mcp")?.name, "mcp");
+    assert.match(helpText(), /\/mcp\s+Manage user MCP servers/u);
+  });
+
   it("offers presentation-only command-name completion", () => {
     assert.deepEqual(completeSlashCommandPrefix("/approv", 7), {
       replacement: "/approval",
       suffix: "al",
     });
     assert.deepEqual(completeSlashCommandPrefix("/m", 2), {
-      replacement: "/mode",
-      suffix: "ode",
+      replacement: "/mcp",
+      suffix: "cp",
     });
     assert.equal(completeSlashCommandPrefix("/approv", 3), undefined);
     assert.equal(completeSlashCommandPrefix("/model ", 7), undefined);

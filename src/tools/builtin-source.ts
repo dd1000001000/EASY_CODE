@@ -5,6 +5,7 @@ import type { SubagentControl } from "../subagents/types.js";
 import { CommandRuntime } from "../command/runtime.js";
 import type { DownloadBroker } from "../downloads/broker.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
+import type { McpConfigStore } from "../mcp/config.js";
 import {
   WorkspaceMutationLock,
   wrapAgentToolsWithWorkspaceMutationLock,
@@ -20,6 +21,13 @@ import { MemoryToolSession } from "./memory-tool-session.js";
 import { ReadMemoryTool } from "./read-memory.js";
 import { ManageSubagentsTool } from "./manage-subagents.js";
 import { ManageTasksTool } from "./manage-tasks.js";
+import {
+  DisableMcpServerTool,
+  ListMcpServersTool,
+  RemoveMcpServerTool,
+  SaveLocalMcpServerTool,
+  SaveRemoteMcpServerTool,
+} from "./mcp-config-tools.js";
 import { ProposePlanTool } from "./propose-plan.js";
 import { ReadFileTool } from "./read-file.js";
 import { ReadImageTool } from "./read-image.js";
@@ -44,6 +52,8 @@ export interface BuiltinToolSourceOptions {
   readonly downloadBroker?: DownloadBroker;
   readonly limits?: Readonly<RuntimeLimits>;
   readonly mutationLock?: WorkspaceMutationLock;
+  readonly mcpConfigStore?: McpConfigStore;
+  readonly onMcpConfigChanged?: (id: string) => Promise<void>;
   readonly boundTask?: BoundTask;
 }
 
@@ -80,6 +90,15 @@ export class BuiltinToolSource implements ToolSource {
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
       new ManageTasksTool(),
+      ...(this.options.mcpConfigStore
+        ? [
+          new ListMcpServersTool(workspace, this.options.mcpConfigStore),
+          new SaveLocalMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+          new SaveRemoteMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+          new DisableMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+          new RemoveMcpServerTool(workspace, this.options.mcpConfigStore, this.options.onMcpConfigChanged),
+        ]
+        : []),
       ...(this.options.subagentControl
         ? [new ManageSubagentsTool(this.options.subagentControl, this.options.limits)]
         : []),

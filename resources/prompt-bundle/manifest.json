@@ -334,9 +334,17 @@
       "sha256": "sha256:7c1f4ec3297518daf45d3c722b00e6c4cc2caefaa7c6f550ad8b7f1b89cf2cce",
       "bytes": 638
     },
+    "tools/disable_mcp_server.json": {
+      "sha256": "sha256:65e01e2aa58819fbaa1dce20a9302e72edea21c74303a54d1f67401c25ed4a1d",
+      "bytes": 407
+    },
     "tools/fetch_artifact.json": {
       "sha256": "sha256:545af4e8b9faafa422d06101cce95547f4d9532bb248b2201eedb1169b286562",
       "bytes": 950
+    },
+    "tools/list_mcp_servers.json": {
+      "sha256": "sha256:e679c82f0adf1a5a75c1402c4734c7c21339ec841cb8fcaee962b71957b2b7aa",
+      "bytes": 409
     },
     "tools/manage_subagents.json": {
       "sha256": "sha256:7ae67825b43abd95b8509bfcb4865114e77be6f17dc098d75fbe342c811a0dcb",
@@ -370,6 +378,10 @@
       "sha256": "sha256:fb8e51a1e9f339600fe4687bc3832c97c60128c9aeb32ada6135092a5906eaf5",
       "bytes": 687
     },
+    "tools/remove_mcp_server.json": {
+      "sha256": "sha256:062e7acd748cd147659c8c0a4a8eb8adb6cbb5232441ae51e1ea7f741fd410cb",
+      "bytes": 419
+    },
     "tools/respond_directly.json": {
       "sha256": "sha256:95835d373e4b0d3ee274a58a7c30a00c5070a7c9cd06d20f8f703fdae77640b3",
       "bytes": 871
@@ -377,6 +389,14 @@
     "tools/run_command.json": {
       "sha256": "sha256:560a70fabb99afb2fe28ed84cefa02aa719cac77fc28b1704c53a2836037339a",
       "bytes": 3691
+    },
+    "tools/save_local_mcp_server.json": {
+      "sha256": "sha256:2e742417c587787fc826567a07cbd36b6c498ae05db2d55ec8df0b5952d5e4b6",
+      "bytes": 969
+    },
+    "tools/save_remote_mcp_server.json": {
+      "sha256": "sha256:f0c96e3f2cad205ce95cbbba48965831e1b82ed6df76e8f8036193eed74c2ccf",
+      "bytes": 993
     },
     "tools/search_context.json": {
       "sha256": "sha256:04f68ec23811e34559af2695aea329511d96c12f8fa1a9bcd8a62d0b7a26d710",
@@ -428,10 +448,20 @@
       "contractVersion": "1.0.0",
       "contentHash": "sha256:7c1f4ec3297518daf45d3c722b00e6c4cc2caefaa7c6f550ad8b7f1b89cf2cce"
     },
+    "disable_mcp_server": {
+      "path": "tools/disable_mcp_server.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:65e01e2aa58819fbaa1dce20a9302e72edea21c74303a54d1f67401c25ed4a1d"
+    },
     "fetch_artifact": {
       "path": "tools/fetch_artifact.json",
       "contractVersion": "1.0.0",
       "contentHash": "sha256:545af4e8b9faafa422d06101cce95547f4d9532bb248b2201eedb1169b286562"
+    },
+    "list_mcp_servers": {
+      "path": "tools/list_mcp_servers.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:e679c82f0adf1a5a75c1402c4734c7c21339ec841cb8fcaee962b71957b2b7aa"
     },
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
@@ -473,6 +503,11 @@
       "contractVersion": "1.0.0",
       "contentHash": "sha256:fb8e51a1e9f339600fe4687bc3832c97c60128c9aeb32ada6135092a5906eaf5"
     },
+    "remove_mcp_server": {
+      "path": "tools/remove_mcp_server.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:062e7acd748cd147659c8c0a4a8eb8adb6cbb5232441ae51e1ea7f741fd410cb"
+    },
     "respond_directly": {
       "path": "tools/respond_directly.json",
       "contractVersion": "1.0.0",
@@ -482,6 +517,16 @@
       "path": "tools/run_command.json",
       "contractVersion": "1.1.0",
       "contentHash": "sha256:560a70fabb99afb2fe28ed84cefa02aa719cac77fc28b1704c53a2836037339a"
+    },
+    "save_local_mcp_server": {
+      "path": "tools/save_local_mcp_server.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:2e742417c587787fc826567a07cbd36b6c498ae05db2d55ec8df0b5952d5e4b6"
+    },
+    "save_remote_mcp_server": {
+      "path": "tools/save_remote_mcp_server.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:f0c96e3f2cad205ce95cbbba48965831e1b82ed6df76e8f8036193eed74c2ccf"
     },
     "search_context": {
       "path": "tools/search_context.json",
@@ -519,5 +564,5 @@
       "contentHash": "sha256:30a0d497b19bc4f1c8c617c19fcf052f132606bef54b17ee246dbe10cda969a3"
     }
   },
-  "bundleHash": "sha256:ca5a0759d5571f04a61737e91081e8501024bdf333df52aad57abc313b43682e"
+  "bundleHash": "sha256:337568434d0b6c2f33cbbeea1e5285ca87bcdb2da2a34c6db87de5bb0802deec"
 }

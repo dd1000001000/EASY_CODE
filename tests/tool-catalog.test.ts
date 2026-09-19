@@ -97,6 +97,23 @@ describe("extensible tool capabilities", () => {
     assert.equal(builtinToolMetadata("run_command").validationSensitive, true);
   });
 
+  it("exposes MCP listing separately from configuration changes", () => {
+    const names = ["list_mcp_servers", "save_local_mcp_server", "save_remote_mcp_server",
+      "disable_mcp_server", "remove_mcp_server"];
+    const tools = names.map(name => builtin(name));
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "plan", role: "main_agent", orchestrationAvailable: false,
+    }).map(tool => tool.name), ["list_mcp_servers"]);
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "code", role: "main_agent", orchestrationAvailable: false,
+    }).map(tool => tool.name), names);
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "code", role: "subagent", orchestrationAvailable: false,
+    }).map(tool => tool.name), []);
+    assert.deepEqual(builtinToolMetadata("list_mcp_servers").effects, ["external_read"]);
+    assert.deepEqual(builtinToolMetadata("remove_mcp_server").effects, ["external_write", "destructive"]);
+  });
+
   it("requires host-owned metadata for every non-builtin tool", async () => {
     const catalog = new ToolCatalog();
     catalog.registerSource(new StaticToolSource("fixture", [builtin("untrusted_dynamic")], "external"));

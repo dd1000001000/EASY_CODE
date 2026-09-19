@@ -297,6 +297,7 @@ export class Terminal {
   private promptActive = false;
   private guardedInputActive = false;
   private activePromptController?: AbortController;
+  private externalOperationController?: AbortController;
   private readlineInputFilter?: PrivateOscInputFilter;
   private currentRequestOptions?: Readonly<CurrentRequestOptions>;
   /** Coalesce a Ctrl+C key-repeat burst into one cancellation per request. */
@@ -1455,6 +1456,25 @@ export class Terminal {
     return choice?.disabled ? undefined : choice?.id;
   }
 
+  /** Keep Ctrl+C meaningful while an idle raw-mode shell awaits an external callback. */
+  async withCancellableExternalOperation<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (this.closed || this.externalOperationController) throw new Error("A terminal operation is already active.");
+    const controller = new AbortController();
+    this.externalOperationController = controller;
+    const onInterrupt = (): void => {
+      if (controller.signal.aborted) return;
+      const error = new Error("External authorization canceled by user");
+      error.name = "AbortError";
+      controller.abort(error);
+    };
+    process.on("SIGINT", onInterrupt);
+    try { return await operation(controller.signal); }
+    finally {
+      process.removeListener("SIGINT", onInterrupt);
+      if (this.externalOperationController === controller) this.externalOperationController = undefined;
+    }
+  }
+
   write(text: string): void {
     if (this.closed) return;
     if (this.inlineShellActive) {
@@ -2210,6 +2230,8 @@ export class Terminal {
     }
     this.activePromptController?.abort();
     this.activePromptController = undefined;
+    this.externalOperationController?.abort();
+    this.externalOperationController = undefined;
     const rl = this.rl;
     rl?.close();
     if (rl) this.releaseReadlineInput(rl);
@@ -3214,7 +3236,13 @@ export class Terminal {
       return;
     }
     if (event.type === "key" && event.key === "interrupt") {
-      if (this.currentRequestOptions?.onInterrupt) {
+      if (this.externalOperationController) {
+        if (!this.externalOperationController.signal.aborted) {
+          const error = new Error("External authorization canceled by user");
+          error.name = "AbortError";
+          this.externalOperationController.abort(error);
+        }
+      } else if (this.currentRequestOptions?.onInterrupt) {
         this.signalCurrentRequestInterrupt();
       } else {
         this.activePromptController?.abort();

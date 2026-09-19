@@ -26,6 +26,12 @@ import {
   type ApiKeyCredentialStore,
 } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
+import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
+import { McpConnections, McpToolSource } from "./mcp/source.js";
+import { authorizeMcpServer, McpOauthCredentials, storedMcpOauthProvider } from "./mcp/oauth.js";
+import { mcpServerActions } from "./mcp/menu.js";
+import { openAuthorizationUrl } from "./mcp/open-authorization.js";
+import { CommandResolver } from "./command/resolver.js";
 import {
   grantCommandApprovalPrefix,
   isCommandApprovalPrefixGranted,
@@ -135,7 +141,7 @@ import {
   type ToolCatalogSnapshot,
   type ToolSource,
 } from "./tools/catalog.js";
-import type { ToolExecutionAuthorizer } from "./tools/execution-gateway.js";
+import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import {
   interruptedTurnAssistantMessage,
@@ -515,6 +521,8 @@ export class EasyCodeApp {
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
   private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
+  private readonly mcpConfigStore = new McpConfigStore();
+  private mcpConnections?: McpConnections;
   private readonly executionEnvironments: ExecutionEnvironmentManager;
   private readonly subagentCoordinator: SubagentCoordinator;
   private pendingImages: ImageAttachment[] = [];
@@ -1195,6 +1203,10 @@ export class EasyCodeApp {
       case "tools":
         await this.printTools();
         return false;
+      case "mcp":
+        if (command.args.length) throw new Error("Usage: /mcp");
+        await this.showMcpServers();
+        return false;
       case "permissions":
         this.updatePermissions(command.args);
         return false;
@@ -1340,6 +1352,9 @@ export class EasyCodeApp {
         "Cannot close synchronously while a tool source has a managed lifecycle; use closeAsync().",
       );
     }
+    if (this.mcpConnections?.hasConnections()) {
+      throw new Error("Cannot close synchronously while MCP servers are connected; use closeAsync().");
+    }
     this.closeResources();
   }
 
@@ -1408,6 +1423,7 @@ export class EasyCodeApp {
       const catalogs = [...this.mainToolCatalogs.values()];
       this.mainToolCatalogs.clear();
       await Promise.all(catalogs.map((catalog) => catalog.close()));
+      await this.mcpConnections?.close();
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -1759,7 +1775,7 @@ export class EasyCodeApp {
         effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
       toolCatalog,
       visionAvailable: visionCapable,
-      authorizeToolExecution: this.authorizeToolExecution,
+      authorizeToolExecution: request => this.authorizeExternalToolCall(request),
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
@@ -1944,7 +1960,7 @@ export class EasyCodeApp {
           return await runWorkspaceReview(input, {
             workspace: this.workspace, store: this.threadStore, memory: this.memoryManager, index: this.contextArtifactIndex,
             provider, budget, limits: this.config.limits,
-            sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH],
+            sensitivePaths: [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH, USER_MCP_CONFIG_PATH],
             dataDir: this.config.dataDir,
             lifecycleDirectory: path.join(this.config.dataDir, "review-command-leases"), offline: this.trustedOuterSandbox === "harbor",
             status: text => this.terminal.status(text),
@@ -4096,6 +4112,150 @@ export class EasyCodeApp {
     this.terminal.write(`${json(tools)}\n`);
   }
 
+  private async showMcpServers(): Promise<void> {
+    for (;;) {
+      const config = await this.mcpConfigStore.read();
+      const servers = Object.entries(config.servers).sort(([left], [right]) => left.localeCompare(right));
+      if (servers.length === 0) {
+        this.terminal.info(`User MCPs (${this.mcpConfigStore.filePath}): none configured. Ask the agent to add a server.`);
+        return;
+      }
+      const selected = await this.terminal.selectChoice(
+        `User MCPs (${this.mcpConfigStore.filePath})`,
+        servers.map(([id, server]) => ({
+          id,
+          label: id,
+          detail: this.mcp().status(id).connected
+            ? `✓ connected · ${this.mcp().status(id).toolCount} tool(s) · ${server.transport}`
+            : `${server.enabled ? "enabled · disconnected" : "disabled"} · ${server.transport}`,
+        })),
+      );
+      if (!selected) return;
+      const server = config.servers[selected];
+      if (!server) continue;
+      let authenticated = false;
+      let authStoreReady = true;
+      if (server.transport !== "stdio" && server.auth === "oauth") {
+        try { authenticated = await new McpOauthCredentials(selected, server.url).hasTokens(); }
+        catch (error) {
+          authStoreReady = false;
+          this.terminal.warning(`MCP OAuth credential store is unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      const connected = this.mcp().status(selected).connected;
+      const bearerReady = server.transport === "stdio" || server.auth !== "bearer" ||
+        Boolean(process.env[server.bearerTokenEnvVar!]);
+      if (!bearerReady) {
+        this.terminal.warning(`Set ${server.bearerTokenEnvVar} in EASY CODE's environment before connecting.`);
+      }
+      const action = await this.terminal.selectChoice(`MCP server: ${selected}`, mcpServerActions(server, {
+        connected, authenticated, bearerReady, authStoreReady,
+        benchmark: this.trustedOuterSandbox === "harbor",
+      }));
+      if (!action || action === "back") continue;
+      if (action === "details") {
+        this.terminal.write(`${json(server.transport === "stdio"
+          ? { id: selected, transport: server.transport, command: server.command, args: server.args,
+            cwd: server.cwd, env: Object.keys(server.env), enabled: server.enabled }
+          : { id: selected, transport: server.transport, url: server.url, auth: server.auth,
+            bearerTokenEnvVar: server.bearerTokenEnvVar, enabled: server.enabled })}\n`);
+      } else if (action === "authenticate" && server.transport !== "stdio" && server.auth === "oauth") {
+        this.terminal.info("Waiting for MCP authorization (up to 6 minutes). Press Ctrl+C to cancel.");
+        try {
+          await this.terminal.withCancellableExternalOperation(signal =>
+            authorizeMcpServer(selected, server.url, async url => {
+              this.terminal.write(`MCP sign-in URL: ${url}\n`);
+              try {
+                await openAuthorizationUrl(url);
+                this.terminal.info("Asked the system to open the authorization link with its default handler.");
+              } catch (error) {
+                this.terminal.warning(`Could not open the authorization link automatically: ${error instanceof Error ? error.message : String(error)}. Open the URL above manually.`);
+              }
+            }, new McpOauthCredentials(selected, server.url), signal));
+          this.terminal.success(`MCP server ${selected} authenticated.`);
+        } catch (error) {
+          this.terminal.warning(`MCP authorization did not complete: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else if (action === "clear_auth" && server.transport !== "stdio" && server.auth === "oauth") {
+        await this.mcp().disconnect(selected);
+        await new McpOauthCredentials(selected, server.url).clear();
+        this.terminal.success(`MCP server ${selected} authentication cleared.`);
+      } else if (action === "connect") {
+        if (this.trustedOuterSandbox === "harbor") {
+          this.terminal.warning("MCP servers are not available inside benchmark tasks.");
+          continue;
+        }
+        let toolCount: number;
+        if (server.transport === "stdio") {
+          this.createCommandRuntime(this.workspace).assertEnvironmentSafe();
+          const resolved = await new CommandResolver(this.workspace).resolve({
+            program: server.command, args: server.args, cwd: server.cwd, intent: "run",
+          });
+          this.terminal.write(`${json({ executable: resolved.executablePath, args: resolved.args,
+            cwd: resolved.cwdAbsolute, executableSha256: resolved.executableHash,
+            environmentReferences: server.env, network: "denied" })}\n`);
+          const approved = await this.terminal.selectChoice(`Run MCP server ${selected} inside the workspace sandbox?`, [
+            { id: "cancel", label: "Cancel" },
+            { id: "run", label: "Approve and connect",
+              detail: `${resolved.executablePath} ${resolved.args.join(" ")} · cwd=${resolved.cwdAbsolute} · sha256=${resolved.executableHash?.slice(0, 12)}`.slice(0, 400) },
+          ], "cancel");
+          if (approved !== "run") continue;
+          toolCount = await this.mcp().connect(selected, server, resolved.executableHash);
+        } else {
+          if (server.auth === "oauth" && !await new McpOauthCredentials(selected, server.url).hasTokens()) {
+            this.terminal.warning("Authenticate this MCP server before connecting.");
+            continue;
+          }
+          const approved = await this.terminal.selectChoice(`Connect to remote MCP server ${selected}?`, [
+            { id: "cancel", label: "Cancel" },
+            { id: "connect", label: "Approve connection", detail: `${server.url} · ${server.auth}` },
+          ], "cancel");
+          if (approved !== "connect") continue;
+          toolCount = await this.mcp().connect(selected, server, undefined,
+            server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url) : undefined);
+        }
+        await this.mcpConfigStore.setEnabled(selected, true);
+        this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
+      } else if (action === "disconnect") {
+        await this.mcp().disconnect(selected);
+        this.terminal.info(`Disconnected MCP server ${selected}.`);
+      } else if (action === "disable") {
+        await this.mcp().disconnect(selected);
+        await this.mcpConfigStore.setEnabled(selected, false);
+        this.terminal.success(`Disabled MCP server ${selected}.`);
+      } else if (action === "remove") {
+        const confirmed = await this.terminal.selectChoice(`Remove MCP server ${selected}?`, [
+          { id: "cancel", label: "Cancel" },
+          { id: "remove", label: "Remove configuration" },
+        ], "cancel");
+        if (confirmed === "remove") {
+          await this.mcp().disconnect(selected);
+          if (server.transport !== "stdio" && server.auth === "oauth") {
+            await new McpOauthCredentials(selected, server.url).clear();
+          }
+          await this.mcpConfigStore.remove(selected);
+          this.terminal.success(`Removed MCP server ${selected}.`);
+        }
+      }
+    }
+  }
+
+  private mcp(): McpConnections {
+    this.mcpConnections ??= new McpConnections(this.workspace, this.config.dataDir);
+    return this.mcpConnections;
+  }
+
+  private async authorizeExternalToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
+    if (request.binding?.sourceId !== "mcp") {
+      return this.authorizeToolExecution?.(request) ?? false;
+    }
+    const selected = await this.terminal.selectChoice(`Allow MCP tool ${request.tool.name}?`, [
+      { id: "deny", label: "Deny" },
+      { id: "allow", label: "Allow this call once", detail: json(request.input).slice(0, 300) },
+    ], "deny");
+    return selected === "allow";
+  }
+
   private async mainToolCatalogSnapshot(): Promise<Readonly<ToolCatalogSnapshot>> {
     const threadId = this.state.threadId;
     let catalog = this.mainToolCatalogs.get(threadId);
@@ -4123,7 +4283,12 @@ export class EasyCodeApp {
         downloadBroker,
         limits: this.config.limits,
         mutationLock: this.workspaceMutationLock,
+        ...(this.trustedOuterSandbox ? {} : {
+          mcpConfigStore: this.mcpConfigStore,
+          onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),
+        }),
       }));
+      if (!this.trustedOuterSandbox) catalog.registerSource(new McpToolSource(this.mcp()));
       for (const factory of this.toolSourceFactories ?? []) {
         catalog.registerSource(await factory({
           workspaceRoot: this.workspace.root,
@@ -4152,7 +4317,7 @@ export class EasyCodeApp {
   private createCommandRuntime(workspace: WorkspaceManager): CommandRuntime {
     const existing = this.commandRuntimes.get(workspace);
     if (existing) return existing;
-    for (const root of [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH]) workspace.pathGuard.protect(root);
+    for (const root of [this.config.configDir, this.config.dataDir, this.config.cacheDir, USER_MODEL_REGISTRY_PATH, USER_MCP_CONFIG_PATH]) workspace.pathGuard.protect(root);
     workspace.pathGuard.protect(fileURLToPath(new URL("./", import.meta.url)));
     workspace.pathGuard.protect(fileURLToPath(new URL("../node_modules", import.meta.url)));
     const runtime = new CommandRuntime(

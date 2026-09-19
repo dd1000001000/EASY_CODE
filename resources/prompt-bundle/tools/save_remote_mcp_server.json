@@ -1,0 +1,13 @@
+{
+  "id": "save_remote_mcp_server",
+  "contractVersion": "1.0.0",
+  "description": "Create or replace a remote Streamable HTTP or legacy SSE MCP server configuration at the user's request. The saved server is disabled; this tool never connects or authenticates.",
+  "propertyDescriptions": {
+    "id": "Stable user-facing server identifier.",
+    "transport": "http for Streamable HTTP or sse for a legacy SSE endpoint.",
+    "url": "Remote MCP endpoint. HTTPS required except loopback HTTP; no credentials, query string, or fragment.",
+    "auth": "Remote authentication: none, bearer from an environment variable, or OAuth through the user's /mcp flow.",
+    "bearerTokenEnvVar": "Name of the environment variable containing a bearer token; never provide the token value."
+  },
+  "guidance": "Only save MCP configuration when the user explicitly asks. Never put secret values in the URL or configuration. The user must separately authenticate, enable, and approve the connection in /mcp."
+}

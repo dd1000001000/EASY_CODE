@@ -69,6 +69,7 @@
   "license": "MIT",
   "dependencies": {
     "@huggingface/tokenizers": "0.1.3",
+    "@modelcontextprotocol/client": "2.0.0",
     "@napi-rs/keyring": "1.3.0",
     "@openai/codex": "0.153.4",
     "@orama/orama": "2.1.1",
