@@ -1,0 +1,9 @@
+{
+  "id": "remove_mcp_server",
+  "contractVersion": "1.0.0",
+  "description": "Remove a configured MCP server at the user's request and disconnect it if connected.",
+  "propertyDescriptions": {
+    "id": "Stable user-facing identifier of the server to remove."
+  },
+  "guidance": "This immediately removes the server from user-level MCP configuration. Only use it when the user explicitly asks to remove the server."
+}

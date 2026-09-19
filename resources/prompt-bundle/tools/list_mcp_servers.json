@@ -1,0 +1,7 @@
+{
+  "id": "list_mcp_servers",
+  "contractVersion": "1.0.0",
+  "description": "List the user's configured EASY CODE MCP servers without connecting, starting, or enabling them. Environment reference values are not returned.",
+  "propertyDescriptions": {},
+  "guidance": "Use this read-only tool to inspect MCP configuration when relevant to the user's request. It does not test connectivity or grant access."
+}

@@ -15,6 +15,11 @@ import {
   FetchArtifactTool,
   MemoryToolSession,
   ManageSubagentsTool,
+  DisableMcpServerTool,
+  ListMcpServersTool,
+  RemoveMcpServerTool,
+  SaveLocalMcpServerTool,
+  SaveRemoteMcpServerTool,
   ManageTasksTool,
   ProposePlanTool,
   PollCommandTool,
@@ -40,6 +45,7 @@ import {
 import type { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
+import { McpConfigStore } from "../src/mcp/config.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
@@ -57,6 +63,11 @@ function actualDefinitions() {
     new ReadMemoryTool(workspace, memorySession).definition,
     new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
+    new ListMcpServersTool(workspace, new McpConfigStore()).definition,
+    new SaveLocalMcpServerTool(workspace, new McpConfigStore()).definition,
+    new SaveRemoteMcpServerTool(workspace, new McpConfigStore()).definition,
+    new DisableMcpServerTool(workspace, new McpConfigStore()).definition,
+    new RemoveMcpServerTool(workspace, new McpConfigStore()).definition,
     new ManageTasksTool().definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
@@ -83,7 +94,9 @@ describe("Prompt Bundle tool metadata", () => {
       "compact_context",
       "create_file",
       "delete_file",
+      "disable_mcp_server",
       "fetch_artifact",
+      "list_mcp_servers",
       "manage_subagents",
       "manage_tasks",
       "poll_command",
@@ -92,8 +105,11 @@ describe("Prompt Bundle tool metadata", () => {
       "read_image",
       "read_memory",
       "recall_context",
+      "remove_mcp_server",
       "respond_directly",
       "run_command",
+      "save_local_mcp_server",
+      "save_remote_mcp_server",
       "search_context",
       "search_files",
       "select_mode",

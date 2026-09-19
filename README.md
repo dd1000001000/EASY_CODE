@@ -69,7 +69,10 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | `/orchestration`, `/tasks`, `/agents` | Enable and inspect DAG / child agents |
 | `/sessions`, `/resume`, `/new` | List, resume or create sessions |
 | `/image ./screenshot.png` | Attach an image for a vision-capable model |
+| `/mcp` | View, authenticate, connect, disconnect or remove MCP servers |
 | `/context`, `/usage`, `/help` | Inspect context, usage and full help |
+
+Ask the agent to add or update an MCP server, then use `/mcp` to approve and connect it. Server configuration is stored in `~/.easy_code/mcp.toml`. Local servers use stdio and run inside the workspace sandbox, with direct network access disabled. Remote servers support Streamable HTTP or legacy SSE; they require HTTPS (or loopback HTTP) and can use an environment-variable bearer token or interactive OAuth sign-in. OAuth opens the authorization link automatically; press Ctrl+C to cancel while waiting. Credentials are stored in the operating system's credential store, not in the config file. Each MCP tool call asks for approval.
 
 Put project conventions and validation commands in `EASYCODE.md`. Adjust operational budgets in the `[limits]` table of `.easycode/config.toml`; run `easy-code config defaults` to inspect defaults.
 

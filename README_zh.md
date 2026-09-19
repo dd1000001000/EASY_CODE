@@ -69,7 +69,10 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | `/orchestration`、`/tasks`、`/agents` | 开关与查看 DAG / 子 Agent |
 | `/sessions`、`/resume`、`/new` | 查看、恢复、新建会话 |
 | `/image ./screenshot.png` | 向支持视觉的模型附加图片 |
+| `/mcp` | 查看、授权、连接、断开或移除 MCP Server |
 | `/context`、`/usage`、`/help` | 查看上下文、用量和完整帮助 |
+
+可以让 Agent 添加或修改 MCP Server，再用 `/mcp` 批准并连接。配置保存在 `~/.easy_code/mcp.toml`。本地 Server 使用 stdio，在工作区沙箱内运行，默认不能直接联网。远端 Server 支持 Streamable HTTP 和旧版 SSE，要求 HTTPS（本机回环地址可用 HTTP），可使用环境变量中的 Bearer Token 或交互式 OAuth 授权。OAuth 会自动打开授权链接；等待时可按 Ctrl+C 取消。凭据保存在操作系统凭据库，不写入配置文件。每次 MCP 工具调用都需批准。
 
 在项目 `EASYCODE.md` 中写入约定和验证命令；在 `.easycode/config.toml` 的 `[limits]` 中调整运行预算。运行 `easy-code config defaults` 查看默认值。
 
