@@ -18,6 +18,7 @@ import { isProviderIdentifier } from "../models/catalog.js";
 import { clonePlanReviewState } from "../plans/plan.js";
 import { cloneTaskGraph, isTaskGraph } from "../tasks/task-graph.js";
 import { validateCommandApprovalPrefixes } from "../command/approval.js";
+import { validateToolApprovalGrants } from "../tools/approval.js";
 import { sha256 } from "../utils/hash.js";
 import { CURRENT_PROTOCOL, requireCurrentProtocol } from "../protocol/versions.js";
 import { userRequirementIndices } from "../context/user-requirements.js";
@@ -43,6 +44,7 @@ export interface SerializedSessionState {
   readonly changes: FileChangeRecord[];
   readonly commands: CommandAuditEntry[];
   readonly commandApprovalPrefixes: string[];
+  readonly toolApprovalGrants?: string[];
   readonly taskGraph?: TaskGraph;
   readonly planReview?: PlanReviewState;
   readonly pendingSteering: TurnSteeringEntry[];
@@ -838,6 +840,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     commandApprovalPrefixes: validateCommandApprovalPrefixes(
       state.commandApprovalPrefixes,
     ),
+    toolApprovalGrants: validateToolApprovalGrants(state.toolApprovalGrants ?? []),
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     pendingSteering: steering.pendingSteering,
@@ -865,7 +868,7 @@ export function deserializeSessionState(value: unknown): SessionState {
   if (
     !hasOnlyKeys(value, ["formatVersion", "orchestrationEnabled", "threadId", "activeTurnId", "mode", "provider", "model",
       "thinkingEffort", "workspaceRoot", "promptBundle", "modelRegistryHash", "goal", "constraints", "userMessageIndices", "messages",
-      "filesRead", "changes", "commands", "commandApprovalPrefixes", "taskGraph", "planReview", "pendingSteering",
+      "filesRead", "changes", "commands", "commandApprovalPrefixes", "toolApprovalGrants", "taskGraph", "planReview", "pendingSteering",
       "steeringSequence", "steeringWatermark", "steeringSealedTurnId", "workingSummary", "compactedMessageCount",
       "contextIntentLedger", "contextCompactionMetadata", "createdAt", "updatedAt"]) ||
     typeof value.orchestrationEnabled !== "boolean" ||
@@ -938,6 +941,7 @@ export function deserializeSessionState(value: unknown): SessionState {
   } catch {
     throw new Error("Invalid command approval prefixes in serialized session state");
   }
+  const toolApprovalGrants = validateToolApprovalGrants(value.toolApprovalGrants ?? []);
 
   const steeringSequence = value.steeringSequence as number;
   const steeringWatermark = value.steeringWatermark as number;
@@ -1012,6 +1016,7 @@ export function deserializeSessionState(value: unknown): SessionState {
       args: [...item.args],
     })),
     commandApprovalPrefixes,
+    toolApprovalGrants,
     ...(isTaskGraph(value.taskGraph)
       ? { taskGraph: cloneTaskGraph(value.taskGraph) }
       : {}),

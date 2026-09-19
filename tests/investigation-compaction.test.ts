@@ -15,7 +15,7 @@ import { createProgressGuardState } from "../src/progress/guard.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 const semantic = { currentWork: "Investigation is unfinished", hypotheses: ["Parser may drop the value"],
     nextStep: "Reproduce the parser failure before changing code" };

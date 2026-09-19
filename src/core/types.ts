@@ -512,6 +512,8 @@ export interface AgentTool {
   readonly name: ToolName;
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
+  /** Runtime adapter's actual operation when one model-facing tool dispatches multiple operations. */
+  readonly approvalTarget?: (input: unknown) => { name: string; label: string; description?: string; input?: unknown };
   /** Built-ins receive Runtime-owned metadata; every external tool must provide it. */
   readonly metadata?: Readonly<ToolRuntimeMetadata>;
   /** Optional when validation is performed by a built-in or adapter-owned boundary. */
@@ -877,6 +879,8 @@ export interface SessionState {
   commands: CommandAuditEntry[];
   /** Runtime-normalized executable identities approved for this Thread only. */
   commandApprovalPrefixes: string[];
+  /** Journal-backed, exact tool identities approved for repeated use in this Thread. */
+  toolApprovalGrants?: string[];
   /** Optional model-created DAG for one complex objective; Runtime owns all transitions. */
   taskGraph?: TaskGraph;
   /** Runtime-owned proposal awaiting a user review or an already-approved execution turn. */

@@ -8,6 +8,7 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "approval.mode_changed",
   "approval.reviewed",
   "approval.user_required",
+  "approval.tool_granted",
   "command.approval_prefix_granted",
   "command.approval_prefix_revoked",
   "command.audit.recorded",

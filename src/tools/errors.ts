@@ -10,6 +10,11 @@ import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 function projectResultData(data: unknown, budget: number): unknown {
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
   const source = data as Record<string, any>;
+  if (Array.isArray(source.mcpContent)) {
+    return { mcpContentItems: source.mcpContent.length,
+      structuredContentPresent: source.structuredContent !== undefined,
+      completeResultInEvidence: true };
+  }
   const result: Record<string, any> = { ...source, truncated: true };
   const prefix = (text: string, room: number) => projectText(text, Math.max(0, room)).text;
   const headTail = (text: string, room: number) => {
@@ -160,13 +165,15 @@ export function normalizeToolFailure(result: ToolExecutionResult): ToolExecution
 
 /** Keep actionable field paths ahead of verbose error strings under output pressure. */
 export function toolResultForModel(result: ToolExecutionResult, maximumChars: number): string {
-  const data = result.data as { commandId?: unknown; status?: unknown; exitCode?: unknown } | undefined;
+  const data = result.data as { commandId?: unknown; status?: unknown; exitCode?: unknown;
+    mcpContent?: unknown } | undefined;
   const commandState = typeof data?.commandId === "string" && typeof data.status === "string"
     ? { commandId: data.commandId.slice(0, 80), status: data.status.slice(0, 80),
       ...(typeof data.exitCode === "number" || data.exitCode === null ? { exitCode: data.exitCode } : {}) } : {};
   const payload = {
     evidenceId: result.evidenceId,
-    ok: result.ok, summary: result.summary, data: result.data,
+    ok: result.ok, summary: result.summary,
+    data: Array.isArray(data?.mcpContent) ? projectResultData(data, maximumChars) : result.data,
     error: result.error, failure: result.failure, content: result.content,
   };
   const encode = jsonForModel;

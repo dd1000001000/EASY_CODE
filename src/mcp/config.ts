@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import toml from "toml";
@@ -9,18 +9,18 @@ import { assertNoUninstall, assertPlainAncestors } from "../install/ownership.js
 const serverId = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u);
 const envName = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
 const credentialRef = z.string().regex(/^env:[A-Za-z_][A-Za-z0-9_]*$/u);
+const MAX_CONFIG_BYTES = 8 * 1024 * 1024;
 
 const localServerSchema = z.object({
   transport: z.literal("stdio").default("stdio"),
-  command: z.string().min(1).max(4096),
-  args: z.array(z.string().max(16384)).max(128).default([]),
-  cwd: z.string().min(1).max(4096).default("."),
-  env: z.record(envName, credentialRef).refine(value => Object.keys(value).length <= 32,
-    "MCP server may reference at most 32 environment variables").default({}),
+  command: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  cwd: z.string().min(1).default("."),
+  env: z.record(envName, credentialRef).default({}),
   enabled: z.boolean().default(false),
 }).strict();
 
-const remoteUrl = z.string().url().max(4096).refine(value => {
+const remoteUrl = z.string().url().refine(value => {
   const parsed = new URL(value);
   return (parsed.protocol === "https:" || (parsed.protocol === "http:" &&
     ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))) &&
@@ -86,11 +86,17 @@ export class McpConfigStore {
     assertNoUninstall();
     assertPlainAncestors(this.filePath);
     let source: string;
-    try { source = await readFile(this.filePath, "utf8"); }
+    try {
+      if ((await stat(this.filePath)).size > MAX_CONFIG_BYTES) {
+        throw new Error("MCP configuration exceeds the 8 MiB safety limit");
+      }
+      source = await readFile(this.filePath, "utf8");
+    }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 2, servers: {} };
       throw error;
     }
+    if (Buffer.byteLength(source) > MAX_CONFIG_BYTES) throw new Error("MCP configuration exceeds the 8 MiB safety limit");
     const parsed = toml.parse(source) as Record<string, unknown>;
     if (parsed.version === 1 && parsed.servers && typeof parsed.servers === "object") {
       parsed.version = 2;
@@ -136,6 +142,8 @@ export class McpConfigStore {
 
   private async write(config: McpConfiguration): Promise<void> {
     mcpConfigSchema.parse(config);
+    const source = serialize(config);
+    if (Buffer.byteLength(source) > MAX_CONFIG_BYTES) throw new Error("MCP configuration exceeds the 8 MiB safety limit");
     assertNoUninstall();
     assertPlainAncestors(this.filePath);
     await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
@@ -143,7 +151,7 @@ export class McpConfigStore {
     const temporary = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       const handle = await open(temporary, "wx", 0o600);
-      try { await handle.writeFile(serialize(config), "utf8"); await handle.sync(); }
+      try { await handle.writeFile(source, "utf8"); await handle.sync(); }
       finally { await handle.close(); }
       await rename(temporary, this.filePath);
     } finally {

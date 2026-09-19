@@ -1,9 +1,72 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
-import { authorizeMcpServer, type McpOauthCredentialStore, type SavedCredentials } from "../src/mcp/oauth.js";
+import os from "node:os";
+import path from "node:path";
+import { authorizeMcpServer, McpOauthCredentials,
+  type McpKeyringEntryFactory, type McpOauthCredentialStore, type SavedCredentials } from "../src/mcp/oauth.js";
 import { describe, it } from "./harness.js";
 
 describe("MCP OAuth", () => {
+  it("stores long OAuth tokens outside the Windows-sized keyring entry and reads them after restart", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-mcp-oauth-"));
+    const entries = new Map<string, string>();
+    const keyring: McpKeyringEntryFactory = account => ({
+      async getPassword() { return entries.get(account); },
+      async setPassword(value) {
+        if (Buffer.byteLength(value, "utf16le") > 2560) throw new Error("Windows credential blob is too large");
+        entries.set(account, value);
+      },
+      async deleteCredential() { return entries.delete(account); },
+    });
+    const longToken = "token-" + "x".repeat(12_000);
+    try {
+      const credentials = new McpOauthCredentials("large", "https://mcp.example.com/trading", directory, keyring);
+      await credentials.update(saved => {
+        saved.tokens = { access_token: longToken, refresh_token: "refresh-" + "y".repeat(8_000),
+          token_type: "Bearer" };
+      });
+      assert.equal(await credentials.hasTokens(), true);
+      assert.ok([...entries.values()].every(value => !value.includes(longToken)));
+      const encrypted = await readFile(path.join(directory, "mcp-oauth",
+        createHash("sha256")
+          .update("large\0https://mcp.example.com/trading").digest("hex") + ".json.enc"), "utf8");
+      assert.doesNotMatch(encrypted, /token-xxxx/u);
+      const reopened = new McpOauthCredentials("large", "https://mcp.example.com/trading", directory, keyring);
+      assert.equal((await reopened.read()).tokens?.access_token, longToken);
+      await reopened.update(saved => { saved.tokens = { access_token: longToken + "-updated", token_type: "Bearer" }; });
+      assert.equal((await credentials.read()).tokens?.access_token, longToken + "-updated");
+      await reopened.clear();
+      assert.equal(await credentials.hasTokens(), false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a previous short keyring record without discarding tokens", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-mcp-migrate-"));
+    const url = "https://mcp.example.com/legacy";
+    const legacyAccount = `mcp:old:${createHash("sha256").update(url).digest("hex")}`;
+    const entries = new Map([[legacyAccount, JSON.stringify({ tokens: {
+      access_token: "old-token", token_type: "Bearer",
+    } })]]);
+    const keyring: McpKeyringEntryFactory = account => ({
+      async getPassword() { return entries.get(account); },
+      async setPassword(value) { entries.set(account, value); },
+      async deleteCredential() { return entries.delete(account); },
+    });
+    try {
+      const credentials = new McpOauthCredentials("old", url, directory, keyring);
+      assert.equal((await credentials.read()).tokens?.access_token, "old-token");
+      await credentials.update(saved => { saved.tokens = { access_token: "new-token", token_type: "Bearer" }; });
+      assert.equal(entries.has(legacyAccount), false);
+      assert.equal((await new McpOauthCredentials("old", url, directory, keyring).read()).tokens?.access_token, "new-token");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("discovers, registers, checks callback state, and stores tokens outside the config", async () => {
     let origin = "";
     let saved: SavedCredentials = {};

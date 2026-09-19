@@ -9,7 +9,7 @@ import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { observeToolResult, parseProgressObservation } from "../src/progress/observation.js";
 import { createProgressGuardState, foldProgressObservation } from "../src/progress/guard.js";
 import { validateCommandRequest } from "../src/command/request-validation.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { ContextManager } from "../src/context/manager.js";
 import type { SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
 import { describe, it } from "./harness.js";

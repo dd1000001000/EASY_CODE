@@ -10,7 +10,7 @@ import type {
   ToolExecutionResult,
   TurnSteeringBatch,
 } from "../src/core/types.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { TurnSteeringAttemptNotifier } from "../src/runtime/turn-steering-notifier.js";
 import { describe, it } from "./harness.js";
 import { baseSessionState } from "./session-state.js";

@@ -9,7 +9,7 @@ import { SearchFilesTool } from "../src/tools/search-files.js";
 import { ReadFileTool } from "../src/tools/read-file.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { ContextManager } from "../src/context/manager.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { projectToolResult } from "../src/tools/output-projection.js";
 import { selectMemoryContext, optionalMemoryTokenBudget, expandedMemoryRecall } from "../src/context/memory-controller.js";
 import { assertDurableMemory } from "../src/memory/admission.js";

@@ -207,9 +207,14 @@ export interface ToolPolicyDecision {
   readonly denialReason?: "mode" | "role" | "orchestration" | "vision";
 }
 
-/** External effects that must cross a host-owned approval boundary before invocation. */
+/** User-facing tools share one approval boundary; command and download tools retain their narrower existing boundary. */
 export function toolRequiresApproval(tool: Readonly<AgentTool>): boolean {
   const metadata = toolMetadata(tool);
+  if (metadata.identity.sourceKind === "builtin") {
+    return !metadata.controlPlane && ![
+      "run_command", "start_command", "poll_command", "cancel_command", "fetch_artifact",
+    ].includes(tool.name);
+  }
   return metadata.identity.sourceKind === "external" && metadata.effects.some((effect) =>
     effect === "workspace_write" || effect === "process_execute" || effect === "network_write" ||
     effect === "external_write" || effect === "destructive");

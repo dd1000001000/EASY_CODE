@@ -20,7 +20,6 @@ import type { LocalMcpServerConfig } from "./config.js";
 const STARTUP_MS = 30_000;
 const WRITE_MS = 10_000;
 const MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
-const MAX_CONNECTION_OUTPUT_BYTES = 64 * 1024 * 1024;
 type ExecutionEnd = { confirmed: true; exitCode: number } | { confirmed: false; error: string };
 
 /** MCP stdio over the existing OS-enforced command/exec stream, never host spawn. */
@@ -37,7 +36,6 @@ export class SandboxedMcpStdioTransport implements Transport {
   private execution?: Promise<ExecutionEnd>;
   private active = false;
   private closed = false;
-  private outputBytes = 0;
 
   get isActive(): boolean { return this.active && !this.closed; }
 
@@ -95,12 +93,6 @@ export class SandboxedMcpStdioTransport implements Transport {
           return;
         }
         const bytes = Buffer.from(encoded, "base64");
-        this.outputBytes += bytes.length;
-        if (this.outputBytes > MAX_CONNECTION_OUTPUT_BYTES) {
-          this.onerror?.(new Error("MCP server exceeded the connection output budget"));
-          void this.close();
-          return;
-        }
         if (notification.params?.stream === "stderr") {
           return;
         }

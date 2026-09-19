@@ -83,6 +83,7 @@ import {
 } from "../progress/guard.js";
 import { parseProgressObservation } from "../progress/observation.js";
 import { foldCompletionControl } from "../runtime/completion-gate.js";
+import { validateToolApprovalGrants } from "../tools/approval.js";
 
 export interface ThreadCreateInput {
   readonly threadId?: string;
@@ -1025,6 +1026,7 @@ export class ThreadStore {
       changes: [],
       commands: [],
       commandApprovalPrefixes: [],
+      toolApprovalGrants: [],
       pendingSteering: [],
       steeringSequence: 0,
       steeringWatermark: 0,
@@ -1400,6 +1402,13 @@ export class ThreadStore {
             payload.commandPrefix,
           );
         }
+        if (input.type === "approval.tool_granted") {
+          if (input.phase !== "completed" || !payload || typeof payload.key !== "string") {
+            throw new Error("Tool approval grants require one completed key");
+          }
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          validateToolApprovalGrants([...(priorState.toolApprovalGrants ?? []), payload.key]);
+        }
         if (input.type === "command.approval_prefix_revoked") {
           if (input.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation");
           normalizeCommandApprovalPrefix(payload.commandPrefix);
@@ -1660,6 +1669,14 @@ export class ThreadStore {
       turnId,
       phase: "completed",
       payload: { commandPrefix: normalized },
+    });
+  }
+
+  /** Durable same-tool grant; the caller must not execute if this append fails. */
+  recordToolApprovalGrant(threadId: string, key: string, turnId?: string): EventRecord {
+    validateToolApprovalGrants([key]);
+    return this.appendEvent(threadId, {
+      type: "approval.tool_granted", turnId, phase: "completed", payload: { key },
     });
   }
 
@@ -2281,6 +2298,11 @@ export class ThreadStore {
         if (event.phase !== "completed" || typeof payload?.commandPrefix !== "string") throw new Error("Invalid prefix revocation event");
         const prefix = normalizeCommandApprovalPrefix(payload.commandPrefix);
         state.commandApprovalPrefixes = state.commandApprovalPrefixes.filter(p => normalizeCommandApprovalPrefix(p) !== prefix);
+      } else if (event.type === "approval.tool_granted") {
+        if (event.phase !== "completed" || typeof payload?.key !== "string") {
+          throw new Error(`Invalid tool approval grant in event ${event.eventId}`);
+        }
+        state.toolApprovalGrants = validateToolApprovalGrants([...(state.toolApprovalGrants ?? []), payload.key]);
       } else if (event.type === "review.assignment.event") {
         foldReviewEvent(state, event.payload);
       } else if (event.type === "completion.rejected" || event.type === "completion.resolved") {
