@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { SkillStore } from "../skills/store.js";
 
 import type {
   AgentMode,
@@ -50,6 +51,11 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "propose_plan",
   "read_file",
   "search_files",
+  "list_skills",
+  "read_skill",
+  "create_skill",
+  "modify_skill",
+  "delete_skill",
   "read_image",
   "create_file",
   "update_file",
@@ -154,6 +160,16 @@ export async function buildSystemPrompt(
   ];
   if (instructions.length) {
     sections.push(formatInstructions(catalog, instructions));
+  }
+  const skillListing = await new SkillStore(workspaceRoot).list();
+  const skillLines = [
+    ...skillListing.project.map(skill => `project/${skill.name} (${skill.directory}): ${skill.description}`),
+    ...skillListing.user.map(skill => `user/${skill.name} (${skill.directory}): ${skill.description}`),
+  ];
+  if (skillLines.length) {
+    sections.push(renderPrompt(catalog, "runtime/skill-catalog.md", {
+      entries: untrustedBlock(catalog, "SKILL_CATALOG", bounded(catalog, skillLines.join("\n"), 8_000)),
+    }));
   }
   // Stable policy/tool/project guidance precedes per-turn environment facts.
   sections.push(environment);

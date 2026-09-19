@@ -1,0 +1,15 @@
+{
+  "id": "create_skill",
+  "contractVersion": "1.0.0",
+  "description": "Create a new user-level or project-level EASY CODE Skill as a SKILL.md workflow with optional supporting text files. Existing Skills are never overwritten.",
+  "propertyDescriptions": {
+    "scope": "Choose user for all projects or project for the current project's shared Skill directory.",
+    "name": "Lowercase Skill directory name, unique within the selected scope.",
+    "description": "Concise routing description: what the Skill does and when it should or should not activate.",
+    "instructions": "Main SKILL.md workflow: required inputs, ordered steps, outputs, verification and stop conditions.",
+    "files": "Optional supporting text files inside this Skill.",
+    "files[].path": "Safe relative path, commonly under references/, assets/ or scripts/.",
+    "files[].content": "Full UTF-8 text content of the supporting file."
+  },
+  "guidance": "Create one focused Skill only when the user asks to save a reusable workflow. Prefer instructions over scripts; scripts do not execute on creation."
+}

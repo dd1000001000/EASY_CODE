@@ -9,6 +9,7 @@ EASY CODE is a local CLI coding agent. Its bundled model registry includes Qwen,
 - Auto / Plan / Code modes, with interactive sessions and one-shot tasks.
 - File editing, command approval, test verification and diff display.
 - Saved sessions, Resume, context management and project memory.
+- Reusable user and project Skills that the agent can discover, read and maintain.
 - Optional DAG / child-agent collaboration, vision-model image input and VS Code terminal integration.
 
 ## Install
@@ -70,7 +71,10 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | `/sessions`, `/resume`, `/new` | List, resume or create sessions |
 | `/image ./screenshot.png` | Attach an image for a vision-capable model |
 | `/mcp` | View, authenticate, connect, disconnect or remove MCP servers |
+| `/skills` | List user and project Skills |
 | `/context`, `/usage`, `/help` | Inspect context, usage and full help |
+
+Ask the agent to create, update or remove a Skill, or place one manually at `~/.easy_code_skills/<name>/SKILL.md` (user-wide) or `<project root>/.easy_code_skills/<name>/SKILL.md` (shared by sessions in that project). Each `SKILL.md` needs YAML `name` and `description` fields followed by instructions; optional `references/`, `assets/` and `scripts/` can hold supporting materials. `/skills` lists both locations. Skill changes made by the agent use tool approval; deleting a Skill archives it for recovery.
 
 Ask the agent to add or update an MCP server, then use `/mcp` to approve and connect it. Server configuration is stored in `~/.easy_code/mcp.toml`. Local servers use stdio and run inside the workspace sandbox, with direct network access disabled. Remote servers support Streamable HTTP or legacy SSE; they require HTTPS (or loopback HTTP) and can use an environment-variable bearer token or interactive OAuth sign-in. OAuth opens the authorization link automatically; press Ctrl+C to cancel while waiting. Credentials are stored in the operating system's credential store, not in the config file. Each MCP tool call asks for approval.
 
