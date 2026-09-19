@@ -31,6 +31,8 @@ import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { authorizeMcpServer, McpOauthCredentials, storedMcpOauthProvider } from "./mcp/oauth.js";
 import { mcpServerActions } from "./mcp/menu.js";
 import { openAuthorizationUrl } from "./mcp/open-authorization.js";
+import { SkillStore } from "./skills/store.js";
+import { sanitizeTerminalText } from "./ui/render/layout.js";
 import { CommandResolver } from "./command/resolver.js";
 import {
   grantCommandApprovalPrefix,
@@ -1204,6 +1206,10 @@ export class EasyCodeApp {
         return false;
       case "tools":
         await this.printTools();
+        return false;
+      case "skills":
+        if (command.args.length) throw new Error("Usage: /skills");
+        await this.showSkills();
         return false;
       case "mcp":
         if (command.args.length) throw new Error("Usage: /mcp");
@@ -4113,6 +4119,20 @@ export class EasyCodeApp {
       };
     });
     this.terminal.write(`${json(tools)}\n`);
+  }
+
+  private async showSkills(): Promise<void> {
+    const listing = await new SkillStore(this.workspace.root).list();
+    const safeLine = (value: string): string => sanitizeTerminalText(value, { allowSgr: false }).replace(/\s+/gu, " ");
+    for (const [title, directory, skills] of [
+      ["User Skills", listing.userDirectory, listing.user],
+      ["Project Skills", listing.projectDirectory, listing.project],
+    ] as const) {
+      this.terminal.write(`${title} (${safeLine(directory)})\n`);
+      if (skills.length === 0) this.terminal.write("  (none)\n");
+      for (const skill of skills) this.terminal.write(`  ${skill.name} — ${safeLine(skill.description)}\n`);
+    }
+    for (const warning of listing.warnings) this.terminal.warning(`Skill skipped: ${safeLine(warning)}`);
   }
 
   private async showMcpServers(): Promise<void> {

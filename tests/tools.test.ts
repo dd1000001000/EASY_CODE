@@ -125,6 +125,11 @@ describe("workspace file tools", () => {
         [
           "read_file",
           "search_files",
+          "list_skills",
+          "read_skill",
+          "create_skill",
+          "modify_skill",
+          "delete_skill",
           "read_image",
           "create_file",
           "update_file",

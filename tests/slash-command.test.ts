@@ -33,6 +33,8 @@ describe("parseSlashCommand", () => {
   it("recognizes the MCP server menu", () => {
     assert.equal(parseSlashCommand("/mcp")?.name, "mcp");
     assert.match(helpText(), /\/mcp\s+Manage user MCP servers/u);
+    assert.equal(parseSlashCommand("/skills")?.name, "skills");
+    assert.match(helpText(), /\/skills\s+Show user and project Skills/u);
   });
 
   it("offers presentation-only command-name completion", () => {

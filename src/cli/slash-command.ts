@@ -20,6 +20,7 @@ export const SLASH_COMMAND_NAMES = [
   "tasks",
   "agents",
   "tools",
+  "skills",
   "mcp",
   "permissions",
   "commands",
@@ -170,6 +171,7 @@ EASY CODE commands
   /tasks                     Show the current model-managed task DAG
   /agents                    Show child sessions, tasks, isolation, and handoff
   /tools                     Show available tools
+  /skills                    Show user and project Skills
   /mcp                       Manage user MCP servers
   /permissions               Show command permissions and sandbox status
   /permissions revoke <index> Revoke a saved command/network prefix for this Thread

@@ -173,6 +173,8 @@ CLI 按 `limits.streamFlushIntervalMs`（默认 50ms）合并增量刷新，复�
 
 MCP Client 通过同一条工具来源和执行网关接入本地与远端 Server。`/mcp` 读取固定的用户配置 `~/.easy_code/mcp.toml`；Agent 可通过分开的内置工具查看或修改配置，但修改本身不能启动或连接 Server。本地 stdio Server 使用原生工作区沙箱的持续 stdin/stdout 命令通道。远端 Server 经用户明确批准 URL 后，使用 Streamable HTTP 或旧版 SSE；除本机回环地址外必须使用 HTTPS。Bearer 凭据在连接时从环境变量读取，OAuth 使用本机回调并将凭据存入操作系统凭据库。授权链接通过固定的系统处理器无 Shell 地打开；等待流程有绝对超时，并支持终端原始输入模式下的 Ctrl+C 取消。取消或失败的重新授权不会覆盖之前有效的凭据。协议握手和有界工具清单读取成功后，带命名空间的工具才进入后续目录快照。所有 MCP 工具按保守的外部效果分类，每次调用单独审批；Server 自报的注解不产生权限。MCP Resource 和 Prompt 暂不开放。控制任务状态与审批的内置工具仍在进程内运行，但与 MCP 工具共用工具目录和执行网关。
 
+Skill 是独立的本地资源，不是 MCP 工具或 Thread 记忆。[Skill 存储层](../src/skills/store.ts) 将用户主目录及规范化后的 Git 项目根目录（非 Git 工作区使用工作区根）分别映射为 `.easy_code_skills`。每个 Skill 用包含 YAML `name`、`description` 及操作说明的 `SKILL.md` 定义，可附带 `references/`、`assets/`、`scripts/`。初始提示只注入名称和描述，详细内容按需读取。五个[内置工具](../src/tools/skill-tools.ts)分别列出、读取、创建、修改、归档 Skill；`/skills` 展示两个层级。修改操作按具体作用域与 Skill 审批，通过整个目录的内容版本识别并发改动，并检查真实路径与链接、采用暂存替换。中断的替换可从备份恢复；删除会移入用户数据归档，而非直接永久擦除。卸载保留用户级与项目级 Skill 目录。
+
 ### 6.2 内置文件安全
 
 [内置工具来源](../src/tools/builtin-source.ts) 负责装配可信工具，[工具目录](../src/tools/catalog.ts) 发布不可变的请求视图；不存在另一套注册表去创建平行的内置工具集合。工具同时包含模型可见的 JSON Schema、本地 Zod 校验和结构化结果/错误协议。富结果使用有界的中立内容联合类型，覆盖文本、结构化值、附件引用、资源引用和持久制品；可执行参数及权威证据仍与展示内容分离。

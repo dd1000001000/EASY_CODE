@@ -46,9 +46,12 @@ import type { WorkspaceManager } from "../src/workspace/manager.js";
 import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { McpConfigStore } from "../src/mcp/config.js";
+import { SkillStore } from "../src/skills/store.js";
+import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
+  const skills = new SkillStore(process.cwd());
   const memorySession = new MemoryToolSession();
   const task = {
     id: "bound_task",
@@ -58,12 +61,16 @@ function actualDefinitions() {
   return [
     new CompactContextTool().definition,
     new CreateFileTool(workspace).definition,
+    new CreateSkillTool(workspace, skills).definition,
     new DeleteFileTool(workspace).definition,
+    new DeleteSkillTool(workspace, skills).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
     new ReadMemoryTool(workspace, memorySession).definition,
     new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
     new ListMcpServersTool(workspace, new McpConfigStore()).definition,
+    new ListSkillsTool(workspace, skills).definition,
+    new ModifySkillTool(workspace, skills).definition,
     new SaveLocalMcpServerTool(workspace, new McpConfigStore()).definition,
     new SaveRemoteMcpServerTool(workspace, new McpConfigStore()).definition,
     new DisableMcpServerTool(workspace, new McpConfigStore()).definition,
@@ -71,6 +78,7 @@ function actualDefinitions() {
     new ManageTasksTool().definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
+    new ReadSkillTool(workspace, skills).definition,
     new ReadImageTool(workspace).definition,
     new RecallContextTool().definition,
     new SearchContextTool().definition,
@@ -93,17 +101,22 @@ describe("Prompt Bundle tool metadata", () => {
       "cancel_command",
       "compact_context",
       "create_file",
+      "create_skill",
       "delete_file",
+      "delete_skill",
       "disable_mcp_server",
       "fetch_artifact",
       "list_mcp_servers",
+      "list_skills",
       "manage_subagents",
       "manage_tasks",
+      "modify_skill",
       "poll_command",
       "propose_plan",
       "read_file",
       "read_image",
       "read_memory",
+      "read_skill",
       "recall_context",
       "remove_mcp_server",
       "respond_directly",

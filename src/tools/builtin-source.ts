@@ -6,6 +6,7 @@ import { CommandRuntime } from "../command/runtime.js";
 import type { DownloadBroker } from "../downloads/broker.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { McpConfigStore } from "../mcp/config.js";
+import { SkillStore } from "../skills/store.js";
 import {
   WorkspaceMutationLock,
   wrapAgentToolsWithWorkspaceMutationLock,
@@ -38,6 +39,7 @@ import {
   StartCommandTool,
 } from "./run-command.js";
 import { SearchFilesTool } from "./search-files.js";
+import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "./skill-tools.js";
 import { SubmitTaskResultTool } from "./submit-task-result.js";
 import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
@@ -74,12 +76,18 @@ export class BuiltinToolSource implements ToolSource {
   private createTools(): AgentTool[] {
     const { workspace } = this.options;
     const memorySession = new MemoryToolSession();
+    const skillStore = new SkillStore(workspace.root);
     const commandRuntime = this.options.commandRuntime ?? new CommandRuntime(workspace, undefined, undefined, undefined, {
       limits: this.options.limits,
     });
     const tools: AgentTool[] = [
       new ReadFileTool(workspace),
       new SearchFilesTool(workspace),
+      new ListSkillsTool(workspace, skillStore),
+      new ReadSkillTool(workspace, skillStore),
+      new CreateSkillTool(workspace, skillStore),
+      new ModifySkillTool(workspace, skillStore),
+      new DeleteSkillTool(workspace, skillStore),
       new ReadImageTool(workspace),
       new CreateFileTool(workspace),
       new UpdateFileTool(workspace),

@@ -9,6 +9,7 @@ EASY CODE 是本地运行的 CLI 编程 Agent。内置模型注册表包含 Qwen
 - Auto / Plan / Code 工作模式，支持交互式对话和单次任务。
 - 文件编辑、命令审批、测试验证与 Diff 展示。
 - 自动保存会话，支持 Resume、上下文管理与项目记忆。
+- 可复用的用户级和项目级 Skill，支持 Agent 按需发现、读取和维护。
 - 可选 DAG / 子 Agent 协作；支持视觉模型图片输入与 VS Code 终端增强。
 
 ## 安装
@@ -70,7 +71,10 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | `/sessions`、`/resume`、`/new` | 查看、恢复、新建会话 |
 | `/image ./screenshot.png` | 向支持视觉的模型附加图片 |
 | `/mcp` | 查看、授权、连接、断开或移除 MCP Server |
+| `/skills` | 列出用户级与项目级 Skill |
 | `/context`、`/usage`、`/help` | 查看上下文、用量和完整帮助 |
+
+可让 Agent 创建、修改或删除 Skill，也可手动放到 `~/.easy_code_skills/<名称>/SKILL.md`（用户级）或 `<项目根目录>/.easy_code_skills/<名称>/SKILL.md`（同项目跨 Thread 共享）。`SKILL.md` 需包含 YAML 格式的 `name`、`description` 和后续操作说明；可用 `references/`、`assets/`、`scripts/` 存放辅助内容。`/skills` 列出两处 Skill。Agent 修改 Skill 需经过工具审批；删除时会归档以便恢复。
 
 可以让 Agent 添加或修改 MCP Server，再用 `/mcp` 批准并连接。配置保存在 `~/.easy_code/mcp.toml`。本地 Server 使用 stdio，在工作区沙箱内运行，默认不能直接联网。远端 Server 支持 Streamable HTTP 和旧版 SSE，要求 HTTPS（本机回环地址可用 HTTP），可使用环境变量中的 Bearer Token 或交互式 OAuth 授权。OAuth 会自动打开授权链接；等待时可按 Ctrl+C 取消。凭据保存在操作系统凭据库，不写入配置文件。每次 MCP 工具调用都需批准。
 

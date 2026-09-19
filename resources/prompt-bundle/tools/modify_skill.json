@@ -1,0 +1,16 @@
+{
+  "id": "modify_skill",
+  "contractVersion": "1.0.0",
+  "description": "Modify one existing EASY CODE Skill using the exact version returned by read_skill; conflicting concurrent changes are rejected.",
+  "propertyDescriptions": {
+    "scope": "Exact user or project scope of the Skill to modify.",
+    "name": "Exact Skill name within the selected scope.",
+    "expectedVersion": "64-character version hash returned by read_skill before editing.",
+    "skillMarkdown": "Optional complete replacement SKILL.md with valid name and description frontmatter.",
+    "files": "Optional changes to supporting files; omitted files remain unchanged.",
+    "files[].operation": "upsert writes the supplied text; remove deletes that supporting file.",
+    "files[].path": "Relative path of a supporting file within the selected Skill.",
+    "files[].content": "Required for upsert and omitted for remove; full UTF-8 text content."
+  },
+  "guidance": "Read the current Skill and its version before modifying it. Preserve unrelated content and do not retry a version conflict without rereading."
+}
