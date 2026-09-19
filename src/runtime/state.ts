@@ -31,6 +31,7 @@ export function createSessionState(
     changes: [],
     commands: [],
     commandApprovalPrefixes: [],
+    toolApprovalGrants: [],
     pendingSteering: [],
     steeringSequence: 0,
     steeringWatermark: 0,
@@ -56,6 +57,7 @@ export function cloneSessionState(state: SessionState): SessionState {
     changes: [...state.changes],
     commands: [...state.commands],
     commandApprovalPrefixes: [...state.commandApprovalPrefixes],
+    toolApprovalGrants: [...(state.toolApprovalGrants ?? [])],
     ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
     ...(state.planReview ? { planReview: clonePlanReviewState(state.planReview) } : {}),
     pendingSteering: state.pendingSteering.map((entry) => ({

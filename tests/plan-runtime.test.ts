@@ -5,6 +5,7 @@ import { ContextManager } from "../src/context/manager.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
+import { createMcpCatalogTools } from "../src/mcp/source.js";
 import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { baseSessionState } from "./session-state.js";
@@ -130,11 +131,12 @@ function review(status = "awaiting_review") {
             : {}),
     };
 }
-function runtime(provider, tools, events = [], modes = [], usageRecords = [], reasoningTexts = [], limits = DEFAULT_RUNTIME_LIMITS) {
+function runtime(provider, tools, events = [], modes = [], usageRecords = [], reasoningTexts = [], limits = DEFAULT_RUNTIME_LIMITS, connectedMcpServers) {
     return new AgentRuntime({
         limits,
         provider,
         toolCatalog: snapshotToolSet(tools),
+        connectedMcpServers,
         contextManager: new ContextManager(),
         buildSystemPrompt: async ({ mode }) => {
             modes.push(mode);
@@ -155,6 +157,40 @@ function runtime(provider, tools, events = [], modes = [], usageRecords = [], re
     });
 }
 describe("model-controlled plan flow", () => {
+    it("routes a live MCP availability question to Code and exposes the catalog", async () => {
+        const tools = createMcpCatalogTools("robinhood", Array.from({ length: 81 }, (_, index) => ({
+            name: `tool_${index}`, inputSchema: { type: "object" },
+        })), { callTool: async () => ({ content: [] }) });
+        let requests = 0;
+        const provider = {
+            name: "deepseek", model: "mock-model",
+            async complete(request) {
+                requests += 1;
+                if (requests === 1) {
+                    const policy = request.messages[0]?.content ?? "";
+                    assert.match(policy, /robinhood: connected, 81 tool\(s\)/u);
+                    assert.match(policy, new RegExp(tools[0].name, "u"));
+                    assert.match(policy, /select Code mode/u);
+                    return selectMode("code");
+                }
+                assert.deepEqual(request.tools?.map(tool => tool.function.name), tools.map(tool => tool.name));
+                if (requests === 2) return { message: { role: "assistant", content: null, tool_calls: [{
+                    id: "call_mcp_search", type: "function", function: {
+                        name: tools[0].name, arguments: JSON.stringify({ query: "tool_80" }),
+                    },
+                }] } };
+                assert.match(JSON.stringify(request.messages), /tool_80/u);
+                return { message: { role: "assistant", content: "Robinhood tools are available; tool_80 is listed." } };
+            },
+        };
+        const current = state("auto");
+        current.messages.push({ role: "assistant", content: "Robinhood tools are not available yet." });
+        const result = await runtime(provider, tools, [], [], [], [], DEFAULT_RUNTIME_LIMITS,
+            [{ id: "robinhood", toolCount: 81 }]).run(current, "Can you see Robinhood tools now?", options());
+        assert.equal(result.reason, "success", result.text);
+        assert.equal(requests, 3);
+        assert.match(result.text, /tool_80/u);
+    });
     it("answers a bounded Auto request in one call and records router usage", async () => {
         let requests = 0;
         let routerTools = [];

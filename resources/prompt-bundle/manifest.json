@@ -42,6 +42,10 @@
       "sha256": "sha256:d451dc7da357a94d87bf15433063d3363a0c4094929bf7febf8301989f56916f",
       "bytes": 64
     },
+    "agents/tool-approval.md": {
+      "sha256": "sha256:fbf023951eaab3047fd27a82ba8aa4275a9c20f40a55cc142cc250399e6a8d8b",
+      "bytes": 840
+    },
     "command-modes/auto-approve.md": {
       "sha256": "sha256:0a08912ee4429823cdc2fd3bf5bf138fe22d8de7f0207970f8770d9d5e786077",
       "bytes": 555
@@ -109,6 +113,10 @@
     "controllers/current-request.md": {
       "sha256": "sha256:4ed870e2e3961fc87ce3898d98d7694773623cc3a43c7365ced966c11d1cc34a",
       "bytes": 64
+    },
+    "controllers/live-mcp-status.md": {
+      "sha256": "sha256:c343df94d26b492ab9e34bebad8042649a79e1c0b3e51b0063bed1e0f4d15354",
+      "bytes": 612
     },
     "controllers/prior-assistant.md": {
       "sha256": "sha256:1f5ade2dd9a042289f382068f182a5c80de2bf4b8e1914837861e35d07736d16",
@@ -564,5 +572,5 @@
       "contentHash": "sha256:30a0d497b19bc4f1c8c617c19fcf052f132606bef54b17ee246dbe10cda969a3"
     }
   },
-  "bundleHash": "sha256:337568434d0b6c2f33cbbeea1e5285ca87bcdb2da2a34c6db87de5bb0802deec"
+  "bundleHash": "sha256:89f0ee7dc1fe57a2a4fabf88da777194c379480ad4d589553d7db361a2e050ff"
 }

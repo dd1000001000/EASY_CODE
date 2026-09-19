@@ -3,6 +3,7 @@ import type { ToolCatalogBinding, ToolCatalogSnapshot } from "./catalog.js";
 import { toolRequiresApproval } from "./capabilities.js";
 import { prepareToolInput } from "./errors.js";
 import { normalizeToolContentResult } from "./content.js";
+import { toolApprovalIdentity } from "./approval.js";
 
 export interface PreparedToolInvocation {
   readonly tool: AgentTool;
@@ -58,9 +59,11 @@ export class ToolExecutionGateway {
     context: ToolContext,
     activity?: (name: ToolName, execute: () => Promise<ToolExecutionResult>) => Promise<ToolExecutionResult>,
   ): Promise<ToolExecutionResult> {
+    const identity = toolApprovalIdentity(invocation.tool, invocation.input,
+      invocation.binding, context.workspaceRoot);
     if (toolRequiresApproval(invocation.tool)) {
       if (!this.authorize) {
-        throw new Error(`External tool ${invocation.tool.name} requires a Runtime authorization bridge`);
+        throw new Error(`Tool ${invocation.tool.name} requires a Runtime authorization bridge`);
       }
       const allowed = await this.authorize({
         tool: invocation.tool,
@@ -68,10 +71,10 @@ export class ToolExecutionGateway {
         binding: invocation.binding,
         context,
       });
-      if (!allowed) throw new Error(`External tool ${invocation.tool.name} was not authorized`);
+      if (!allowed) throw new Error(`Tool ${identity.label} was not authorized`);
     }
     const execute = () => invocation.tool.execute(invocation.input, context);
-    const result = activity ? await activity(invocation.tool.name, execute) : await execute();
+    const result = activity ? await activity(identity.label, execute) : await execute();
     return normalizeToolContentResult(result, context.maxOutputChars);
   }
 }

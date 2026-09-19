@@ -13,7 +13,9 @@ export async function addCredentials(plan: UninstallPlan, remove?: (slot: string
   const slots = new Set<string>();
   for (const record of plan.resources) if (record.kind === "credential" && record.name) slots.add(record.name);
   for (const slot of slots) {
-    if (!/^[a-z][a-z0-9-]{0,63}\.api-key$/u.test(slot)) { plan.blockers.push("Invalid credential identifier"); continue; }
+    if (!/^(?:[a-z][a-z0-9-]{0,63}\.api-key|mcp-oauth-[a-f0-9]{32}\.key)$/u.test(slot)) {
+      plan.blockers.push("Invalid credential identifier"); continue;
+    }
     plan.actions.push({ id: "credential:" + slot, phase: 50, target: "keyring:easy-code-agent/" + slot, description: "Delete EASY CODE's stored API key (if present)",
       execute: async () => {
         if (remove) return remove(slot);

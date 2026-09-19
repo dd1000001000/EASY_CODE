@@ -144,4 +144,18 @@ describe("user MCP configuration", () => {
       assert.match(await readFile(store.filePath, "utf8"), /version = 2/u);
     });
   });
+
+  it("accepts realistic large configuration fields without legacy per-field caps", async () => {
+    await withStore(async store => {
+      const args = Array.from({ length: 129 }, (_, index) => `argument-${index}`);
+      const env = Object.fromEntries(Array.from({ length: 33 }, (_, index) =>
+        [`MCP_SETTING_${index}`, `env:EXTERNAL_SETTING_${index}`]));
+      await store.upsert("wide", { command: "node", args, cwd: ".", env });
+      assert.equal((await store.read()).servers.wide?.transport, "stdio");
+      const longUrl = `https://mcp.example.com/${"path".repeat(1100)}`;
+      await store.upsert("remote", { transport: "http", url: longUrl, auth: "none" });
+      const remote = (await store.read()).servers.remote;
+      assert.equal(remote?.transport === "http" ? remote.url : undefined, longUrl);
+    });
+  });
 });

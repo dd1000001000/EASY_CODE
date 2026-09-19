@@ -123,6 +123,7 @@ import {
 } from "./tool-recovery.js";
 import { availableAgentTools } from "../tools/capabilities.js";
 import { snapshotToolSet, type ToolCatalogSnapshot } from "../tools/catalog.js";
+import { toolApprovalIdentity } from "../tools/approval.js";
 import {
   ToolExecutionGateway,
   type ToolExecutionAuthorizer,
@@ -450,6 +451,8 @@ export interface AgentRuntimeDependencies {
   provider: ModelProvider;
   /** Immutable, source-aware tool set captured once for this Runtime run. */
   toolCatalog: Readonly<ToolCatalogSnapshot>;
+  /** Live MCP connections captured with the tool catalog, never inferred from conversation history. */
+  connectedMcpServers?: readonly Readonly<{ id: string; toolCount: number }>[];
   /** Provider capability used when filtering the captured catalog. */
   visionAvailable?: boolean;
   /** Host-owned authorization bridge for effectful external tool sources. */
@@ -517,7 +520,8 @@ export interface AgentRuntimeDependencies {
   onToolCompleted?: (
     state: SessionState,
     toolName: string,
-    result: ToolExecutionResult
+    result: ToolExecutionResult,
+    displayName?: string,
   ) => Promise<void>;
   /** Roll back a prepared child lifecycle when its authoritative event cannot commit. */
   onSubagentLifecycleRollback?: (update: SubagentLifecycleUpdate) => void;
@@ -1289,18 +1293,35 @@ export class AgentRuntime {
               const evidenceText = context.evidence ? renderRetrievedContext(selection.evidence)
                 : requestTokens([{ role: "user", content: context.retrievedThreadEvidence ?? "" }]) <= allowance
                   ? context.retrievedThreadEvidence : undefined;
-              return this.dependencies.buildSystemPrompt({
-              mode: "auto",
-              workspaceSummary: "",
-              memories: [],
-              ...(context.workingCheckpoint
-                ? { workingCheckpoint: context.workingCheckpoint }
-                : {}),
-              ...(evidenceText
-                ? { retrievedThreadEvidence: evidenceText }
-                : {}),
-              toolNames: [],
+              const basePolicy = await this.dependencies.buildSystemPrompt({
+                mode: "auto",
+                workspaceSummary: "",
+                memories: [],
+                ...(context.workingCheckpoint
+                  ? { workingCheckpoint: context.workingCheckpoint }
+                  : {}),
+                ...(evidenceText
+                  ? { retrievedThreadEvidence: evidenceText }
+                  : {}),
+                toolNames: [],
               });
+              if (!this.dependencies.connectedMcpServers) return basePolicy;
+              const mcpTools = this.dependencies.toolCatalog.tools
+                .filter(tool => tool.metadata?.identity.sourceId === "mcp")
+                .map(tool => tool.name);
+              const servers = this.dependencies.connectedMcpServers;
+              const visibleServers = servers.slice(0, 32)
+                .map(server => `${server.id}: connected, ${server.toolCount} tool(s)`).join("; ");
+              const serverStatus = servers.length
+                ? `${visibleServers}${servers.length > 32 ? `; ${servers.length - 32} more connected server(s)` : ""}`
+                : "No MCP servers connected";
+              const visibleNames = mcpTools.slice(0, 32).join(", ") || "none";
+              const toolNames = mcpTools.length > 32
+                ? `${visibleNames} (${mcpTools.length - 32} more model-facing MCP tools)`
+                : visibleNames;
+              return `${basePolicy}\n\n${renderRuntimePrompt("controllers/live-mcp-status.md", {
+                serverStatus, toolNames,
+              })}`;
             };
             let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
             if (this.dependencies.getLayeredContext) {
@@ -2231,6 +2252,7 @@ export class AgentRuntime {
         }
         const toolName = call.function.name as ToolName;
         const tool = toolGateway.get(toolName);
+        let displayName = toolName;
         // Verification relies on recorded changes and actual command results;
         // no whole-repository test baseline is captured or replayed.
         const taskIdAtCall = activeTask(state.taskGraph)?.id;
@@ -2297,6 +2319,8 @@ export class AgentRuntime {
             const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
             if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
             const rawInput = preparedInvocation.input;
+            displayName = toolApprovalIdentity(preparedInvocation.tool, rawInput,
+              preparedInvocation.binding, state.workspaceRoot).label;
             let input: unknown = rawInput;
             if (toolName === "manage_tasks") {
               const parsedOperation = taskGraphOperationSchema.parse(rawInput);
@@ -2330,7 +2354,7 @@ export class AgentRuntime {
               finishRejectedReason = backgroundCommandFinalizationInstruction();
               throw new Error(finishRejectedReason);
             }
-            this.dependencies.onStatus?.(`Tool: ${tool.name}`);
+            this.dependencies.onStatus?.(`Tool: ${displayName}`);
             const toolContext = {
               limits: this.dependencies.limits,
               resultTokenBudget: this.dependencies.contextManager.tokenCapacity
@@ -2446,7 +2470,7 @@ export class AgentRuntime {
             } finally { waitAttempt?.dispose(); }
             preparedSubagentLifecycle = result.subagentLifecycle;
           } catch (error) {
-            result = toolFailure(error, `Tool ${call.function.name} failed.`);
+            result = toolFailure(error, `Tool ${displayName} failed.`);
           }
         }
 
@@ -2798,7 +2822,7 @@ export class AgentRuntime {
         if (toolName === "write_memory" && result.ok && result.memoryMutation) {
           memoryContext.mutations.push(result.memoryMutation);
         }
-        await this.dependencies.onToolCompleted?.(state, call.function.name, result);
+        await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName);
       }
 
       if (environmentFault) {

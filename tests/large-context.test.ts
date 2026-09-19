@@ -19,7 +19,7 @@ import { OutputCollector } from "../src/command/output-stream.js";
 import { EvidenceStore } from "../src/context/evidence-store.js";
 import { createStorage } from "../src/storage/database.js";
 import { ThreadStore } from "../src/threads/thread-store.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
 import { foldReviewEvent } from "../src/review/session.js";
 import { recallThreadContext } from "../src/context/recall.js";

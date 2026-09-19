@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "./harness.js";
 import { compactionV2Input, } from "./compaction-fixture.js";
 import { ContextManager, MAX_ACTIVE_WORKING_SET_CHARS, estimateMessagesChars, estimateToolDefinitionsChars, } from "../src/context/manager.js";
-import { AgentRuntime } from "../src/runtime/agent.js";
+import { AgentRuntime } from "./approved-runtime.js";
 import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";

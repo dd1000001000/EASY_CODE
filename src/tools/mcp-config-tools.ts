@@ -16,15 +16,15 @@ const listInputSchema = z.object({}).strict();
 const idInputSchema = z.object({ id: serverId }).strict();
 const saveLocalInputSchema = z.object({
   id: serverId,
-  command: z.string().min(1).max(4096),
-  args: z.array(z.string().max(16384)).max(128).optional(),
-  cwd: z.string().min(1).max(4096).optional(),
-  env: z.array(envReferenceSchema).max(32).optional(),
+  command: z.string().min(1),
+  args: z.array(z.string()).optional(),
+  cwd: z.string().min(1).optional(),
+  env: z.array(envReferenceSchema).optional(),
 }).strict();
 const saveRemoteInputSchema = z.object({
   id: serverId,
   transport: z.enum(["http", "sse"]),
-  url: z.string().url().max(4096),
+  url: z.string().url(),
   auth: z.enum(["none", "bearer", "oauth"]).optional(),
   bearerTokenEnvVar: envName.optional(),
 }).strict();
@@ -93,11 +93,11 @@ export class SaveLocalMcpServerTool extends McpConfigTool implements AgentTool {
   readonly inputSchema = saveLocalInputSchema;
   readonly definition = definition(this.name, {
     id: idProperty,
-    command: { type: "string", minLength: 1, maxLength: 4096 },
-    args: { type: "array", items: { type: "string", maxLength: 16384 }, maxItems: 128 },
-    cwd: { type: "string", minLength: 1, maxLength: 4096 },
+    command: { type: "string", minLength: 1 },
+    args: { type: "array", items: { type: "string" } },
+    cwd: { type: "string", minLength: 1 },
     env: {
-      type: "array", maxItems: 32,
+      type: "array",
       items: {
         type: "object", additionalProperties: false,
         properties: { name: { type: "string" }, source: { type: "string" } },
@@ -133,7 +133,7 @@ export class SaveRemoteMcpServerTool extends McpConfigTool implements AgentTool 
   readonly definition = definition(this.name, {
     id: idProperty,
     transport: { type: "string", enum: ["http", "sse"] },
-    url: { type: "string", format: "uri", maxLength: 4096 },
+    url: { type: "string", format: "uri" },
     auth: { type: "string", enum: ["none", "bearer", "oauth"] },
     bearerTokenEnvVar: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
   }, ["id", "transport", "url"]);

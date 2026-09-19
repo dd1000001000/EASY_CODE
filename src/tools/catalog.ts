@@ -113,6 +113,7 @@ function snapshotTool(tool: AgentTool): AgentTool {
     definition,
     mutating: tool.mutating,
     metadata: frozenMetadata,
+    ...(tool.approvalTarget ? { approvalTarget: tool.approvalTarget } : {}),
     ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
     execute: (input: unknown, context: Parameters<AgentTool["execute"]>[1]) => tool.execute(input, context),
   });

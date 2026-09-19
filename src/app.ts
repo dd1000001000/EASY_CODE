@@ -26,7 +26,7 @@ import {
   type ApiKeyCredentialStore,
 } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
-import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
+import { McpConfigStore, USER_MCP_CONFIG_PATH, type RemoteMcpServerConfig } from "./mcp/config.js";
 import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { authorizeMcpServer, McpOauthCredentials, storedMcpOauthProvider } from "./mcp/oauth.js";
 import { mcpServerActions } from "./mcp/menu.js";
@@ -142,6 +142,8 @@ import {
   type ToolSource,
 } from "./tools/catalog.js";
 import type { ToolExecutionAuthorizer, ToolExecutionAuthorizationRequest } from "./tools/execution-gateway.js";
+import { toolApprovalIdentity, type ToolApprovalIdentity } from "./tools/approval.js";
+import { reviewToolApproval, type ToolApprovalReview } from "./tools/approval-agent.js";
 import { DownloadBroker } from "./downloads/broker.js";
 import {
   interruptedTurnAssistantMessage,
@@ -1774,8 +1776,9 @@ export class EasyCodeApp {
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
         effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
       toolCatalog,
+      connectedMcpServers: this.mcpConnections?.connectedServers() ?? [],
       visionAvailable: visionCapable,
-      authorizeToolExecution: request => this.authorizeExternalToolCall(request),
+      authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
       agentIdentity: { role: "main_agent" },
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
@@ -1887,9 +1890,9 @@ export class EasyCodeApp {
           await this.imageStore.commit(threadId, attachment);
         }
       },
-      onToolCompleted: async (_state, toolName, result) => {
+      onToolCompleted: async (_state, toolName, result, displayName) => {
         this.terminal.toolCompleted(
-          toolName,
+          displayName ?? toolName,
           result.ok,
           result.summary,
           result.error,
@@ -2327,7 +2330,7 @@ export class EasyCodeApp {
           childConfig.providers[provider.name]!.baseUrl]), this.storage),
         toolCatalog,
         visionAvailable: false,
-        authorizeToolExecution: this.authorizeToolExecution,
+        authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
         agentIdentity: {
           role: "subagent",
           agentId: request.record.id,
@@ -4136,7 +4139,7 @@ export class EasyCodeApp {
       let authenticated = false;
       let authStoreReady = true;
       if (server.transport !== "stdio" && server.auth === "oauth") {
-        try { authenticated = await new McpOauthCredentials(selected, server.url).hasTokens(); }
+        try { authenticated = await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens(); }
         catch (error) {
           authStoreReady = false;
           this.terminal.warning(`MCP OAuth credential store is unavailable: ${error instanceof Error ? error.message : String(error)}`);
@@ -4159,6 +4162,7 @@ export class EasyCodeApp {
             cwd: server.cwd, env: Object.keys(server.env), enabled: server.enabled }
           : { id: selected, transport: server.transport, url: server.url, auth: server.auth,
             bearerTokenEnvVar: server.bearerTokenEnvVar, enabled: server.enabled })}\n`);
+        return;
       } else if (action === "authenticate" && server.transport !== "stdio" && server.auth === "oauth") {
         this.terminal.info("Waiting for MCP authorization (up to 6 minutes). Press Ctrl+C to cancel.");
         try {
@@ -4171,19 +4175,28 @@ export class EasyCodeApp {
               } catch (error) {
                 this.terminal.warning(`Could not open the authorization link automatically: ${error instanceof Error ? error.message : String(error)}. Open the URL above manually.`);
               }
-            }, new McpOauthCredentials(selected, server.url), signal));
+            }, new McpOauthCredentials(selected, server.url, this.config.dataDir), signal));
           this.terminal.success(`MCP server ${selected} authenticated.`);
         } catch (error) {
           this.terminal.warning(`MCP authorization did not complete: ${error instanceof Error ? error.message : String(error)}`);
+          return;
         }
+        try {
+          const toolCount = await this.connectAuthenticatedMcpServer(selected, server);
+          this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
+        } catch (error) {
+          this.terminal.warning(`MCP server ${selected} was authenticated but could not connect: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return;
       } else if (action === "clear_auth" && server.transport !== "stdio" && server.auth === "oauth") {
         await this.mcp().disconnect(selected);
-        await new McpOauthCredentials(selected, server.url).clear();
+        await new McpOauthCredentials(selected, server.url, this.config.dataDir).clear();
         this.terminal.success(`MCP server ${selected} authentication cleared.`);
+        return;
       } else if (action === "connect") {
         if (this.trustedOuterSandbox === "harbor") {
           this.terminal.warning("MCP servers are not available inside benchmark tasks.");
-          continue;
+          return;
         }
         let toolCount: number;
         if (server.transport === "stdio") {
@@ -4199,30 +4212,33 @@ export class EasyCodeApp {
             { id: "run", label: "Approve and connect",
               detail: `${resolved.executablePath} ${resolved.args.join(" ")} · cwd=${resolved.cwdAbsolute} · sha256=${resolved.executableHash?.slice(0, 12)}`.slice(0, 400) },
           ], "cancel");
-          if (approved !== "run") continue;
+          if (approved !== "run") return;
           toolCount = await this.mcp().connect(selected, server, resolved.executableHash);
         } else {
-          if (server.auth === "oauth" && !await new McpOauthCredentials(selected, server.url).hasTokens()) {
+          if (server.auth === "oauth" && !await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens()) {
             this.terminal.warning("Authenticate this MCP server before connecting.");
-            continue;
+            return;
           }
           const approved = await this.terminal.selectChoice(`Connect to remote MCP server ${selected}?`, [
             { id: "cancel", label: "Cancel" },
             { id: "connect", label: "Approve connection", detail: `${server.url} · ${server.auth}` },
           ], "cancel");
-          if (approved !== "connect") continue;
+          if (approved !== "connect") return;
           toolCount = await this.mcp().connect(selected, server, undefined,
-            server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url) : undefined);
+            server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url, this.config.dataDir) : undefined);
         }
         await this.mcpConfigStore.setEnabled(selected, true);
         this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
+        return;
       } else if (action === "disconnect") {
         await this.mcp().disconnect(selected);
         this.terminal.info(`Disconnected MCP server ${selected}.`);
+        return;
       } else if (action === "disable") {
         await this.mcp().disconnect(selected);
         await this.mcpConfigStore.setEnabled(selected, false);
         this.terminal.success(`Disabled MCP server ${selected}.`);
+        return;
       } else if (action === "remove") {
         const confirmed = await this.terminal.selectChoice(`Remove MCP server ${selected}?`, [
           { id: "cancel", label: "Cancel" },
@@ -4231,13 +4247,22 @@ export class EasyCodeApp {
         if (confirmed === "remove") {
           await this.mcp().disconnect(selected);
           if (server.transport !== "stdio" && server.auth === "oauth") {
-            await new McpOauthCredentials(selected, server.url).clear();
+            await new McpOauthCredentials(selected, server.url, this.config.dataDir).clear();
           }
           await this.mcpConfigStore.remove(selected);
           this.terminal.success(`Removed MCP server ${selected}.`);
         }
+        return;
       }
     }
+  }
+
+  private async connectAuthenticatedMcpServer(id: string, server: RemoteMcpServerConfig): Promise<number> {
+    const toolCount = await this.mcp().connect(id, server, undefined,
+      storedMcpOauthProvider(id, server.url, this.config.dataDir));
+    try { await this.mcpConfigStore.setEnabled(id, true); }
+    catch (error) { await this.mcp().disconnect(id); throw error; }
+    return toolCount;
   }
 
   private mcp(): McpConnections {
@@ -4245,15 +4270,105 @@ export class EasyCodeApp {
     return this.mcpConnections;
   }
 
-  private async authorizeExternalToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
-    if (request.binding?.sourceId !== "mcp") {
+  private async authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
+    if (request.binding?.sourceId !== "mcp" && request.binding?.sourceId !== "builtin") {
       return this.authorizeToolExecution?.(request) ?? false;
     }
-    const selected = await this.terminal.selectChoice(`Allow MCP tool ${request.tool.name}?`, [
-      { id: "deny", label: "Deny" },
-      { id: "allow", label: "Allow this call once", detail: json(request.input).slice(0, 300) },
-    ], "deny");
-    return selected === "allow";
+    const identity = toolApprovalIdentity(request.tool, request.input, request.binding,
+      request.context.workspaceRoot);
+    const parentThreadId = this.state.threadId;
+    const threadId = request.context.threadId;
+    const mode = request.context.commandExecutionMode ?? this.commandExecutionMode;
+    const signal = request.context.signal;
+    return this.approvalQueue.run(async () => {
+      if (signal?.aborted || parentThreadId !== this.state.threadId) return false;
+      const saved = this.threadStore.recover(threadId);
+      if ((saved.toolApprovalGrants ?? []).includes(identity.key)) {
+        this.terminal.info(`Approved by this Thread's tool grant: ${identity.label}`);
+        return true;
+      }
+      if (mode === "unrestricted") {
+        this.terminal.info(`Approved automatically: ${identity.label}`);
+        return true;
+      }
+      const approvalId = createId("approval");
+      let decision: "allow_once" | "allow_same_tool" | "reject" | undefined;
+      let reviewerReason: string | undefined;
+      if (mode === "auto_approve") {
+        this.terminal.info(`Independent approval review: ${identity.label}`);
+        const review = await this.reviewCatalogToolApproval(identity, threadId, request.context.turnId, signal);
+        this.threadStore.appendEvent(threadId, { type: "approval.reviewed", turnId: request.context.turnId,
+          payload: { id: approvalId, tool: identity.label, decision: review.decision,
+            reason: review.reason, unavailable: review.unavailable ?? false } });
+        if (review.decision === "reject") {
+          reviewerReason = review.reason;
+          this.terminal.info(`Approval agent requires user decision: ${review.reason}`);
+        } else decision = review.decision;
+      }
+      if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
+      if (!decision) {
+        const preview = redactSensitiveInformation(JSON.stringify(identity.input)).slice(0, 300);
+        const selected = await this.terminal.selectChoice(`Allow tool ${identity.label}?`, [
+          { id: "allow_once", label: "Allow this call once", detail: preview },
+          { id: "allow_same_tool", label: "Allow this tool in this Thread",
+            detail: "Later arguments may differ" },
+          { id: "reject", label: "Reject", detail: reviewerReason?.slice(0, 160) },
+        ], "reject");
+        if (!selected) {
+          this.threadStore.appendEvent(threadId, { type: "approval.user_required", turnId: request.context.turnId,
+            payload: { id: approvalId, tool: identity.label } });
+          return false;
+        }
+        decision = selected as "allow_once" | "allow_same_tool" | "reject";
+      }
+      if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
+      this.threadStore.appendEvent(threadId, { type: "approval.decided", turnId: request.context.turnId,
+        payload: { id: approvalId, tool: identity.label, decision } });
+      if (decision === "reject") return false;
+      if (decision === "allow_same_tool") {
+        this.threadStore.recordToolApprovalGrant(threadId, identity.key, request.context.turnId);
+        if (threadId === this.state.threadId) {
+          this.state.toolApprovalGrants = [...new Set([...(this.state.toolApprovalGrants ?? []), identity.key])];
+          this.dirty = true;
+        }
+        this.terminal.info(`Allowed in this Thread: ${identity.label}`);
+      }
+      return true;
+    });
+  }
+
+  private async reviewCatalogToolApproval(identity: ToolApprovalIdentity, threadId: string, turnId: string,
+    signal?: AbortSignal): Promise<ToolApprovalReview> {
+    try {
+      const parentThreadId = this.state.threadId;
+      const provider = createProvider(this.effectiveConfig(), this.state.provider,
+        this.config.approvalModel ?? this.state.model);
+      const task = this.threadStore.recover(threadId).messages.filter(message => message.role === "user")
+        .slice(-3).map(message => message.content).join("\n");
+      return await reviewToolApproval(identity, task, {
+        provider, budget: this.sharedTaskBudget(parentThreadId),
+        systemPrompt: promptBundleText("agents/tool-approval.md"),
+        limits: this.config.limits, signal,
+        maxInputChars: this.config.limits.approvalInputChars,
+        maxOutputTokens: this.config.limits.approvalOutputTokens,
+        onResponse: response => this.threadStore.appendEvent(threadId, { type: "model.output.captured",
+          turnId,
+          payload: { purpose: "tool_approval", finishReason: response.finishReason ?? null,
+            message: JSON.parse(redactSensitiveInformation(JSON.stringify({ content: response.message.content,
+              tool_calls: response.message.tool_calls }))) } }),
+        onUsage: (usage, attempt) => {
+          if (attempt) this.threadStore.appendEvent(threadId, { type: "model.api_attempt",
+            turnId, phase: attempt.outcome,
+            payload: { ...attempt, actor: "approval_agent", purpose: "tool_approval" } });
+          this.threadStore.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
+            actor: "approval_agent", purpose: "tool_approval", provider: provider.name, model: provider.model,
+            turnId, retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
+          } });
+        },
+      });
+    } catch (error) {
+      return { decision: "reject", reason: redactSensitiveInformation(String(error)), unavailable: true };
+    }
   }
 
   private async mainToolCatalogSnapshot(): Promise<Readonly<ToolCatalogSnapshot>> {
