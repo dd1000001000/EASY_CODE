@@ -1,5 +1,7 @@
 # EASY CODE
 
+![EASY CODE — local coding agent for terminal and browser](./docs/assets/easy-code-banner.png)
+
 English | [简体中文](./README_zh.md)
 
 EASY CODE is a local coding agent with terminal and browser interfaces. Its bundled model registry includes Qwen, DeepSeek, Kimi K3, Zhipu GLM and GLM Coding Plan, and you can add other OpenAI-compatible providers without changing the source code. Open a project and describe a task to inspect code, edit files, run commands and verify changes.

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElButton, ElCard, ElMessageBox, ElNotification } from "element-plus";
-import { Close, Delete, Edit, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
+import { Delete, Edit, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
 import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 import type { WebCommandEntry } from "../web-command-catalog.js";
 import type { PlanProposal } from "../core/types.js";
 import { bootstrap, fetchHistoryPage, request, type ProjectItem, type ThreadItem, type WebSnapshot } from "./api.js";
 import { displayProject, displayTitle, isConversationEntry, isNoticeEntry } from "./display-content.js";
+import { useOutsideDismiss } from "./use-outside-dismiss.js";
 import Composer from "./components/Composer.vue";
 import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
@@ -26,8 +27,10 @@ const commandPanelName = ref<string | null>(null);
 const commandOutput = ref<WebEntry[]>([]);
 const commandOutputLabel = ref("");
 const commandOutputDismissed = ref(false);
+const commandOutputRoot = ref<{ $el: HTMLElement }>();
 let commandCaptureThreadId: string | undefined;
 let commandRunSeen = false;
+useOutsideDismiss(commandOutputRoot, () => { commandOutputDismissed.value = true; });
 let activeNotification: ReturnType<typeof ElNotification> | undefined;
 const runningThreadIds = ref<Set<string>>(new Set());
 const expandedProjects = ref<Set<string>>(new Set());
@@ -490,7 +493,7 @@ function noticePreview(text: string): string {
 <template>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">E</span><div><strong>EASY CODE</strong><small>Local coding agent</small></div></div>
+      <div class="brand"><img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><div><strong>EASY CODE</strong><small>Local coding agent</small></div></div>
       <div class="sidebar-heading project-heading"><span>PROJECTS</span><ElButton class="project-add" text :icon="Plus" title="Add local project folder" aria-label="Add local project folder" :disabled="switching" @click="addProject" /></div>
       <nav class="thread-list" aria-label="Projects and conversations">
         <section v-for="project in projects" :key="project.id" class="project-group">
@@ -541,8 +544,8 @@ function noticePreview(text: string): string {
           <section v-if="view.review" class="monitor-section"><h3>Reviewer</h3><p>{{ reviewLabel }} · {{ elapsed(view.review.startedAt) }}</p></section>
           <section v-if="view.activities.length" class="monitor-section"><h3>In progress</h3><ul><li v-for="activity in view.activities" :key="activity.id">{{ activity.text }}</li></ul></section>
         </ElCard>
-        <ElCard v-if="commandOutput.length && !commandOutputDismissed && !selectedCommand" class="command-output-overlay" shadow="always" aria-label="Command output">
-          <div class="command-output-heading"><strong>{{ commandOutputLabel || 'Command output' }}</strong><ElButton text circle :icon="Close" aria-label="Close command output" @click="commandOutputDismissed = true" /></div>
+        <ElCard v-if="commandOutput.length && !commandOutputDismissed && !selectedCommand" ref="commandOutputRoot" class="command-output-overlay" shadow="always" aria-label="Command output">
+          <div class="command-output-heading"><strong>{{ commandOutputLabel || 'Command output' }}</strong></div>
           <div class="command-output-body"><pre v-for="entry in commandOutput" :key="entry.id">{{ entry.text }}</pre></div>
         </ElCard>
       </div>

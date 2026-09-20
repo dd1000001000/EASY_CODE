@@ -6,6 +6,7 @@ import { discardImage, uploadImage } from "../api.js";
 import { composeMessage, composerEnterAction, composerPrimaryAction, LONG_PASTE_THRESHOLD, matchingSlashCommands, MAX_MESSAGE_CHARACTERS, pastedTextPreview, type PastedText } from "../composer-content.js";
 import type { WebDecision } from "../../web-contracts.js";
 import type { WebCommandEntry } from "../../web-command-catalog.js";
+import { useOutsideDismiss } from "../use-outside-dismiss.js";
 import DecisionDialog from "./DecisionDialog.vue";
 
 interface DraftImage { id: string; label: string; mediaType: string; previewUrl: string }
@@ -26,11 +27,14 @@ const sending = ref(false);
 const composing = ref(false);
 let lastCompositionEndAt = -Infinity;
 const fileInput = ref<HTMLInputElement>();
+const commandSuggestionsRoot = ref<{ $el: HTMLElement }>();
+const dismissedCommandDraft = ref<string>();
 const hasContent = computed(() => Boolean(draft.value.trim() || images.value.length || pastedTexts.value.length));
 const showStopButton = computed(() => composerPrimaryAction(props.busy, hasContent.value) === "stop");
 const previewUrls = computed(() => images.value.map(image => image.previewUrl));
-const commandMatches = computed(() => props.threadId && !props.busy && !props.decision
+const commandMatches = computed(() => props.threadId && !props.busy && !props.decision && draft.value !== dismissedCommandDraft.value
   ? props.commands.filter(command => matchingSlashCommands(draft.value, [command.name]).length > 0) : []);
+useOutsideDismiss(commandSuggestionsRoot, () => { dismissedCommandDraft.value = draft.value; });
 watch(() => props.threadId, (next, previous) => {
   if (previous) {
     localStorage.setItem(`easy-code-draft:${previous}`, draft.value);
@@ -49,6 +53,7 @@ watch(() => props.threadId, (next, previous) => {
   sending.value = false;
 }, { immediate: true });
 watch(draft, value => {
+  dismissedCommandDraft.value = undefined;
   if (props.threadId) localStorage.setItem(`easy-code-draft:${props.threadId}`, value);
   else unboundDraft = value;
 });
@@ -146,7 +151,7 @@ defineExpose({ sent, failed });
     <div class="composer" :class="{ 'composer--unbound': !threadId }">
       <slot name="command-panel" />
       <DecisionDialog v-if="decision" :decision="decision" @submit="(id, value) => emit('submitDecision', id, value)" />
-      <ElCard v-if="commandMatches.length" class="composer-command-panel" shadow="always" aria-label="Matching commands">
+      <ElCard v-if="commandMatches.length" ref="commandSuggestionsRoot" class="composer-command-panel" shadow="always" aria-label="Matching commands">
         <ElScrollbar max-height="min(50vh, 360px)">
           <div class="composer-command-list">
             <ElButton v-for="command in commandMatches" :key="command.name" text @click="openCommand(command.name)"><strong>/{{ command.name }}</strong><span>{{ command.description }}</span></ElButton>

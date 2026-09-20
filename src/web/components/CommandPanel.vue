@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElInput, ElMessageBox, ElOption, ElScrollbar, ElSelect, ElTabPane, ElTabs, ElTag } from "element-plus";
-import { Close, Refresh } from "@element-plus/icons-vue";
+import { Refresh } from "@element-plus/icons-vue";
 import type { WebEntry, WebDecision } from "../../web-contracts.js";
 import type { WebCommandEntry } from "../../web-command-catalog.js";
 import type { UISessionInfo } from "../../ui/contracts.js";
+import { useOutsideDismiss } from "../use-outside-dismiss.js";
 
 const props = defineProps<{
   command: WebCommandEntry;
@@ -107,20 +108,12 @@ function close(): void {
   if (props.command.name === "mcp" && props.running && !props.decision) emit("cancelExternal");
   emit("close");
 }
-function outsidePointer(event: PointerEvent): void {
-  const target = event.target;
-  if (!(target instanceof Element)) return;
-  if (panelRoot.value?.$el.contains(target) || target.closest(".el-overlay, .el-popper")) return;
-  if (props.command.name === "mcp" && props.running) return;
-  close();
-}
-onMounted(() => document.addEventListener("pointerdown", outsidePointer, true));
-onUnmounted(() => document.removeEventListener("pointerdown", outsidePointer, true));
+useOutsideDismiss(panelRoot, close);
 </script>
 
 <template>
   <ElCard ref="panelRoot" class="web-command-panel" shadow="always" role="dialog" :aria-label="`/${command.name} interface`" @keydown.esc.stop.prevent="close">
-    <div class="web-command-heading"><div><strong>/{{ command.name }}</strong><small>{{ command.description }}</small></div><ElButton text circle :icon="Close" aria-label="Close command panel" @click="close" /></div>
+    <div class="web-command-heading"><div><strong>/{{ command.name }}</strong><small>{{ command.description }}</small></div></div>
     <ElScrollbar max-height="min(48vh, 430px)">
       <div class="web-command-content">
         <template v-if="command.name === 'mode'">
