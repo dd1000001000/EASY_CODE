@@ -8,6 +8,8 @@ import chalk from "chalk";
 import { Command, Option } from "commander";
 
 import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
+import { WebInteraction } from "./web-server/interaction.js";
+import { serveWeb } from "./web-server/server.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
@@ -30,6 +32,7 @@ import {
 import { ensureUserModelRegistry, PROVIDER_CATALOG } from "./models/catalog.js";
 
 interface CliOptions {
+  web?: boolean;
   workspace?: string;
   provider?: ProviderName;
   model?: string;
@@ -84,6 +87,7 @@ export function isDirectExecution(
 function appOptions(
   options: CliOptions,
   startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
+  terminal?: EasyCodeAppOptions["terminal"],
 ): EasyCodeAppOptions {
   return {
     workspaceRoot: options.workspace,
@@ -97,6 +101,7 @@ function appOptions(
     imagePaths: options.image,
     startupInteraction,
     sandboxStartup: startupInteraction !== "none",
+    ...(terminal ? { terminal } : {}),
   };
 }
 
@@ -104,6 +109,7 @@ async function withApp(
   options: CliOptions,
   action: (app: EasyCodeApp) => Promise<void>,
   startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
+  terminal?: EasyCodeAppOptions["terminal"],
 ): Promise<void> {
   let app: EasyCodeApp | undefined;
   let stopRequested = false;
@@ -117,7 +123,7 @@ async function withApp(
     }));
     for (const resource of resources) beginOwnedResource(resource);
     recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
-    app = await EasyCodeApp.create(appOptions(options, startupInteraction));
+    app = await EasyCodeApp.create(appOptions(options, startupInteraction, terminal));
     for (const resource of resources) completeOwnedResource(resource);
     if (stopRequested) { app.requestUninstallShutdown(); return; }
     await action(app);
@@ -178,7 +184,15 @@ export async function main(argv = process.argv): Promise<void> {
       .showHelpAfterError(),
   );
 
+  program.option("--web", "open the local Vue Web interface");
+
   program.action(async (options: CliOptions) => {
+    if (options.web) {
+      if (options.image?.length) throw new Error("Use the Web composer to attach images when launching with --web.");
+      const port = new WebInteraction();
+      await withApp(options, async (app) => serveWeb(app, port), "none", port);
+      return;
+    }
     const explicitSelection = Boolean(options.provider || options.model || options.resume);
     await withApp(
       options,

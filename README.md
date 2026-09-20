@@ -2,11 +2,11 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local CLI coding agent. Its bundled model registry includes Qwen, DeepSeek, Kimi K3, Zhipu GLM and GLM Coding Plan, and you can add other OpenAI-compatible providers without changing the source code. Open a project and describe a task to inspect code, edit files, run commands and verify changes.
+EASY CODE is a local coding agent with terminal and browser interfaces. Its bundled model registry includes Qwen, DeepSeek, Kimi K3, Zhipu GLM and GLM Coding Plan, and you can add other OpenAI-compatible providers without changing the source code. Open a project and describe a task to inspect code, edit files, run commands and verify changes.
 
 ## Features
 
-- Auto / Plan / Code modes, with interactive sessions and one-shot tasks.
+- Auto / Plan / Code modes, with terminal/browser sessions and one-shot tasks.
 - File editing, command approval, test verification and diff display.
 - Saved sessions, Resume, context management, and global user/project memory.
 - Reusable user and project Skills that the agent can discover, read and maintain.
@@ -35,6 +35,15 @@ easy-code config set qwen.api-key
 # Alternatives: deepseek.api-key, kimi.api-key, glm.api-key, glm-coding-plan.api-key
 easy-code --workspace /path/to/project
 ```
+
+To use the local browser interface instead (bound only to `127.0.0.1`; stop it from its launching terminal):
+
+```bash
+easy-code --web --workspace /path/to/project
+easy-code --web --workspace /path/to/project --resume <thread-id>
+```
+
+The browser interface supports session switching, images, in-flight adjustments, stopping tasks, plan review and tool approvals. Model, MCP and Skill menus are available from the sidebar. Installation, uninstall and Benchmark administration remain terminal commands.
 
 The first installation creates `~/.easy_code/models.toml`. Edit that file to maintain provider endpoints, wire protocol (`chat_completions` or `responses`), endpoint streaming and `tool_stream` support, model IDs, context windows, vision/tool/reasoning capabilities and the benchmark profile. EASY CODE validates it at startup and never overwrites an existing copy. Provider API keys are stored only in the OS credential store, bound to their provider endpoint; environment variables and TOML are not key sources. Benchmark keys use a separate credential-store namespace and are set with `easy-code benchmark credential set <provider>`.
 

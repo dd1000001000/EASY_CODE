@@ -2,11 +2,11 @@
 
 [English](./README.md) | 简体中文
 
-EASY CODE 是本地运行的 CLI 编程 Agent。内置模型注册表包含 Qwen、DeepSeek、Kimi K3、智谱 GLM 和 GLM Coding Plan，也可以不改源码直接加入其他 OpenAI-compatible 供应商。进入项目目录，用自然语言描述任务，即可让模型阅读代码、修改文件、运行命令与测试。
+EASY CODE 是本地运行的编程 Agent，提供终端与浏览器两种界面。内置模型注册表包含 Qwen、DeepSeek、Kimi K3、智谱 GLM 和 GLM Coding Plan，也可以不改源码直接加入其他 OpenAI-compatible 供应商。进入项目目录，用自然语言描述任务，即可让模型阅读代码、修改文件、运行命令与测试。
 
 ## 核心功能
 
-- Auto / Plan / Code 工作模式，支持交互式对话和单次任务。
+- Auto / Plan / Code 工作模式，支持终端、浏览器交互和单次任务。
 - 文件编辑、命令审批、测试验证与 Diff 展示。
 - 自动保存会话，支持 Resume、上下文管理、全局用户记忆与项目记忆。
 - 可复用的用户级和项目级 Skill，支持 Agent 按需发现、读取和维护。
@@ -35,6 +35,15 @@ easy-code config set qwen.api-key
 # 其他选择：deepseek.api-key、kimi.api-key、glm.api-key、glm-coding-plan.api-key
 easy-code --workspace /path/to/project
 ```
+
+也可启动本机浏览器界面（仅监听 `127.0.0.1`，关闭启动它的终端即停止服务）：
+
+```bash
+easy-code --web --workspace /path/to/project
+easy-code --web --workspace /path/to/project --resume <thread-id>
+```
+
+浏览器界面支持会话切换、图片、执行中追加指令、停止任务、Plan 审核及工具审批；侧栏可以打开模型、MCP、Skill 等交互菜单。安装、卸载和 Benchmark 管理命令继续在终端运行。
 
 首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、协议（`chat_completions` 或 `responses`）、端点流式及 `tool_stream` 能力、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。供应商 API Key 只保存在系统凭据库，并绑定对应端点；环境变量和 TOML 不再提供 Key。Benchmark 使用独立的凭据库命名空间，通过 `easy-code benchmark credential set <provider>` 设置。
 

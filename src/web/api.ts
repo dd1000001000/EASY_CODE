@@ -1,0 +1,54 @@
+import type { PlanProposal } from "../core/types.js";
+import type { WebPatch, WebView } from "../web-contracts.js";
+
+export interface ThreadItem {
+  threadId: string;
+  goal?: string;
+  mode: string;
+  provider: string;
+  model: string;
+  updatedAt: string;
+}
+export interface WebSnapshot {
+  sequence: number;
+  view: WebView;
+  plan: PlanProposal | null;
+  threads: ThreadItem[];
+}
+
+export async function request<T>(route: string, data?: unknown): Promise<T> {
+  const response = await fetch(route, {
+    method: data === undefined ? "GET" : "POST",
+    credentials: "same-origin",
+    headers: data === undefined ? undefined : { "Content-Type": "application/json" },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+  const payload = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : `HTTP ${response.status}`);
+  return payload as T;
+}
+
+export async function bootstrap(): Promise<WebSnapshot> {
+  const token = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
+  if (token) {
+    history.replaceState(null, "", `${location.pathname}${location.search}`);
+    await request("/api/bootstrap", { token });
+  }
+  return request<WebSnapshot>("/api/state");
+}
+
+export async function uploadImage(file: File): Promise<{ id: string; label: string; mediaType: string }> {
+  const response = await fetch("/api/image", {
+    method: "POST", body: file, credentials: "same-origin",
+    headers: { "Content-Type": file.type },
+  });
+  const result = await response.json() as { image?: { id: string; label: string; mediaType: string }; error?: string };
+  if (!response.ok || !result.image) throw new Error(result.error ?? `Image upload failed (${response.status})`);
+  return result.image;
+}
+
+export async function discardImage(id: string): Promise<void> {
+  await request("/api/image/discard", { id });
+}
+
+export type { WebPatch };

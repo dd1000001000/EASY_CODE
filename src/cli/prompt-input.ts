@@ -4,6 +4,7 @@ import { Transform, type TransformCallback } from "node:stream";
 
 import { stripTerminalControls } from "../command/output-stream.js";
 import type { ImageAttachment } from "../core/types.js";
+import type { UserSubmission } from "../ui/interaction-port.js";
 import {
   sanitizeTerminalText,
   wrapToWidth,
@@ -21,11 +22,7 @@ export interface PromptOutput extends NodeJS.WritableStream {
   readonly columns?: number;
 }
 
-export interface PromptSubmission {
-  readonly text: string;
-  readonly images: ImageAttachment[];
-  readonly pasteErrors: string[];
-}
+export type PromptSubmission = UserSubmission;
 
 export interface PromptInputSession {
   /**

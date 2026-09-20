@@ -1,5 +1,9 @@
 import type { ProviderName, ThinkingEffort } from "../core/types.js";
-import type { VisionSupport } from "../models/catalog.js";
+import type {
+  ModelSelectorChoice,
+  ProviderSelectorChoice,
+  ThinkingEffortSelectorChoice,
+} from "../ui/interaction-port.js";
 import {
   renderMenu,
   selectMenuIndex,
@@ -8,23 +12,7 @@ import {
   type MenuSelectorOutput,
 } from "./menu-selector.js";
 
-export interface ProviderSelectorChoice {
-  readonly provider: ProviderName;
-  readonly label: string;
-  readonly apiKeyConfigured: boolean;
-}
-
-export interface ModelSelectorChoice {
-  readonly id: string;
-  readonly label: string;
-  readonly vision?: VisionSupport;
-}
-
-export interface ThinkingEffortSelectorChoice {
-  readonly id: ThinkingEffort;
-  readonly label: string;
-  readonly applied: boolean;
-}
+export type { ModelSelectorChoice, ProviderSelectorChoice, ThinkingEffortSelectorChoice } from "../ui/interaction-port.js";
 
 export type ModelSelectorInput = MenuSelectorInput;
 export type ModelSelectorOutput = MenuSelectorOutput;
