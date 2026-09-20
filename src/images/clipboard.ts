@@ -13,6 +13,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { MAX_IMAGE_BYTES } from "./image-store.js";
+import { hostPlatform } from "../core/host-platform.js";
+import type { ClipboardExecutionContext, ClipboardPlatformHost, ClipboardPlatformReader } from "./clipboard-platform.js";
+import { windowsClipboard } from "./platform/windows.js";
+import { macosClipboard } from "./platform/macos.js";
+import { linuxClipboard } from "./platform/linux.js";
 
 export interface ClipboardImageReader {
   readImage(signal?: AbortSignal): Promise<Buffer>;
@@ -43,12 +48,6 @@ export interface SystemClipboardImageReaderOptions {
   readonly currentDirectory?: string;
 }
 
-interface ClipboardExecutionContext {
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly signal?: AbortSignal;
-}
-
 class ClipboardCommandError extends Error {
   constructor(
     message: string,
@@ -59,21 +58,28 @@ class ClipboardCommandError extends Error {
   }
 }
 
-export class SystemClipboardImageReader implements ClipboardImageReader {
+export class SystemClipboardImageReader implements ClipboardImageReader, ClipboardPlatformHost {
   private readonly platform: NodeJS.Platform;
-  private readonly sourceEnv: NodeJS.ProcessEnv;
+  readonly sourceEnv: NodeJS.ProcessEnv;
   private readonly runCommand: ClipboardCommandRunner;
   private readonly timeoutMs: number;
   private readonly currentDirectory: string;
   private readonly verifyPrograms: boolean;
+  private readonly backend: ClipboardPlatformReader;
 
   constructor(options: SystemClipboardImageReaderOptions = {}) {
-    this.platform = options.platform ?? process.platform;
+    this.platform = hostPlatform(options.platform);
     this.sourceEnv = options.env ?? process.env;
     this.runCommand = options.runCommand ?? runClipboardCommand;
     this.timeoutMs = options.timeoutMs ?? 5_000;
     this.currentDirectory = path.resolve(options.currentDirectory ?? process.cwd());
     this.verifyPrograms = options.runCommand === undefined;
+    switch (this.platform) {
+      case "win32": this.backend = windowsClipboard(this); break;
+      case "darwin": this.backend = macosClipboard(this); break;
+      case "linux": this.backend = linuxClipboard(this); break;
+      default: throw new Error(`Image clipboard paste is not supported on ${this.platform}.`);
+    }
   }
 
   async readImage(signal?: AbortSignal): Promise<Buffer> {
@@ -92,18 +98,7 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
       signal,
     };
     try {
-      let data: Buffer;
-      if (this.platform === "win32") {
-        data = await this.readWindowsClipboard(execution);
-      } else if (this.platform === "darwin") {
-        data = await this.readMacClipboard(execution);
-      } else if (this.platform === "linux") {
-        data = this.sourceEnv.WSL_DISTRO_NAME || this.sourceEnv.WSL_INTEROP
-          ? await this.tryWslThenLinux(execution)
-          : await this.readLinuxClipboard(execution);
-      } else {
-        throw new Error(`Image clipboard paste is not supported on ${this.platform}.`);
-      }
+      const data = await this.backend.readImage(execution);
       if (!data.length) throw new Error("The clipboard does not contain an image.");
       if (data.length > MAX_IMAGE_BYTES) {
         throw new Error("The clipboard image exceeds the 10 MiB size limit.");
@@ -130,25 +125,7 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
       signal,
     };
     try {
-      let data: Buffer;
-      if (this.platform === "win32") {
-        data = await this.readPowerShellClipboardText(
-          await this.resolveWindowsPowerShell(),
-          execution,
-        );
-      } else if (this.platform === "darwin") {
-        data = await this.runCommand(
-          await this.resolveFixedProgram("/usr/bin/pbpaste"),
-          [],
-          this.commandOptions(1024 * 1024, execution),
-        );
-      } else if (this.platform === "linux") {
-        data = this.sourceEnv.WSL_DISTRO_NAME || this.sourceEnv.WSL_INTEROP
-          ? await this.tryWslTextThenLinux(execution)
-          : await this.readLinuxClipboardText(execution);
-      } else {
-        return undefined;
-      }
+      const data = await this.backend.readText(execution);
       const text = data.toString("utf8").replace(/^\uFEFF/u, "");
       return text || undefined;
     } finally {
@@ -156,277 +133,25 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
     }
   }
 
-  private async tryWslThenLinux(execution: ClipboardExecutionContext): Promise<Buffer> {
-    try {
-      const program = await this.resolveWslPowerShell();
-      return await this.readPowerShellClipboard(program, execution);
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      return this.readLinuxClipboard(execution);
-    }
+  run(program: string, args: readonly string[], maxOutputBytes: number, execution: ClipboardExecutionContext): Promise<Buffer> {
+    return this.runCommand(program, args, this.commandOptions(maxOutputBytes, execution));
   }
 
-  private async readWindowsClipboard(execution: ClipboardExecutionContext): Promise<Buffer> {
-    try {
-      const program = await this.resolveWindowsPowerShell();
-      return await this.readPowerShellClipboard(program, execution);
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      throw new Error(
-        `Unable to read an image from the Windows clipboard. ${errorMessage(error)}`,
-      );
-    }
+  windowsRoot(): string { return getWindowsRoot(this.sourceEnv); }
+
+  readTemporaryFile(file: string, maxBytes: number, signal?: AbortSignal): Promise<Buffer> {
+    return readTemporaryClipboardFile(file, maxBytes, signal);
   }
 
-  private readPowerShellClipboard(
-    program: string,
-    execution: ClipboardExecutionContext,
-  ): Promise<Buffer> {
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "Add-Type -AssemblyName System.Drawing",
-      "$image = [System.Windows.Forms.Clipboard]::GetImage()",
-      "if ($null -eq $image) { [Console]::Error.Write('The clipboard does not contain an image.'); exit 3 }",
-      "$stream = New-Object System.IO.MemoryStream",
-      "try {",
-      "  $image.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)",
-      "  $bytes = $stream.ToArray()",
-      "  [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
-      "} finally { $stream.Dispose(); $image.Dispose() }",
-    ].join("; ");
-    return this.runCommand(
-      program,
-      ["-STA", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-      this.commandOptions(MAX_IMAGE_BYTES, execution),
-    );
+  private commandOptions(maxOutputBytes: number, execution: ClipboardExecutionContext): ClipboardCommandOptions {
+    return { maxOutputBytes, timeoutMs: this.timeoutMs, cwd: execution.cwd, env: execution.env, signal: execution.signal };
   }
 
-  private readPowerShellClipboardText(
-    program: string,
-    execution: ClipboardExecutionContext,
-  ): Promise<Buffer> {
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$text = [System.Windows.Forms.Clipboard]::GetText()",
-      "if ([string]::IsNullOrEmpty($text)) { exit 3 }",
-      "$bytes = [System.Text.Encoding]::UTF8.GetBytes($text)",
-      "[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
-    ].join("; ");
-    return this.runCommand(
-      program,
-      ["-STA", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
-      this.commandOptions(1024 * 1024, execution),
-    );
-  }
-
-  private async readMacClipboard(execution: ClipboardExecutionContext): Promise<Buffer> {
-    try {
-      const pngPath = path.join(execution.cwd, "clipboard.png");
-      try {
-        await this.writeAppleClipboardFile("PNGf", pngPath, execution);
-        return await readTemporaryClipboardFile(pngPath, MAX_IMAGE_BYTES, execution.signal);
-      } catch (error) {
-        if (isAbortError(error)) throw error;
-        const tiffPath = path.join(execution.cwd, "clipboard.tiff");
-        await this.writeAppleClipboardFile("TIFF", tiffPath, execution);
-        await this.runCommand(
-          await this.resolveFixedProgram("/usr/bin/sips"),
-          ["-s", "format", "png", tiffPath, "--out", pngPath],
-          this.commandOptions(64 * 1024, execution),
-        );
-        return await readTemporaryClipboardFile(pngPath, MAX_IMAGE_BYTES, execution.signal);
-      }
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      throw new Error(`Unable to read an image from the macOS clipboard. ${errorMessage(error)}`);
-    }
-  }
-
-  private async writeAppleClipboardFile(
-    clipboardClass: "PNGf" | "TIFF",
-    target: string,
-    execution: ClipboardExecutionContext,
-  ): Promise<void> {
-    const script = [
-      "on run argv",
-      "set outputPath to item 1 of argv",
-      `set imageData to the clipboard as «class ${clipboardClass}»`,
-      "set fileRef to open for access POSIX file outputPath with write permission",
-      "try",
-      "set eof fileRef to 0",
-      "write imageData to fileRef",
-      "close access fileRef",
-      "on error errorMessage",
-      "try",
-      "close access fileRef",
-      "end try",
-      "error errorMessage",
-      "end try",
-      "end run",
-    ];
-    const args = script.flatMap((line) => ["-e", line]);
-    args.push(target);
-    await this.runCommand(
-      await this.resolveFixedProgram("/usr/bin/osascript"),
-      args,
-      this.commandOptions(64 * 1024, execution),
-    );
-  }
-
-  private async readLinuxClipboard(execution: ClipboardExecutionContext): Promise<Buffer> {
-    const attempts: Array<() => Promise<Buffer>> = [
-      () => this.readWaylandClipboard(execution),
-      () => this.readX11Clipboard(execution),
-    ];
-    const errors: string[] = [];
-    for (const attempt of attempts) {
-      try {
-        return await attempt();
-      } catch (error) {
-        if (isAbortError(error)) throw error;
-        errors.push(errorMessage(error));
-      }
-    }
-    throw new Error(
-      "Unable to read an image from the Linux clipboard. Install wl-clipboard " +
-        "for Wayland or xclip for X11. " + (errors.at(-1) ?? ""),
-    );
-  }
-
-  private async tryWslTextThenLinux(execution: ClipboardExecutionContext): Promise<Buffer> {
-    try {
-      return await this.readPowerShellClipboardText(
-        await this.resolveWslPowerShell(),
-        execution,
-      );
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      return this.readLinuxClipboardText(execution);
-    }
-  }
-
-  private async readLinuxClipboardText(execution: ClipboardExecutionContext): Promise<Buffer> {
-    const errors: string[] = [];
-    try {
-      const program = await this.resolveUnixHelper("wl-paste");
-      const types = await this.runCommand(
-        program,
-        ["--list-types"],
-        this.commandOptions(64 * 1024, execution),
-      );
-      const mediaType = chooseClipboardTextType(types.toString("utf8"));
-      if (!mediaType) throw new Error("The Wayland clipboard does not contain text.");
-      return await this.runCommand(
-        program,
-        ["--no-newline", "--type", mediaType],
-        this.commandOptions(1024 * 1024, execution),
-      );
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      errors.push(errorMessage(error));
-    }
-    try {
-      const program = await this.resolveUnixHelper("xclip");
-      const types = await this.runCommand(
-        program,
-        ["-selection", "clipboard", "-t", "TARGETS", "-o"],
-        this.commandOptions(64 * 1024, execution),
-      );
-      const mediaType = chooseClipboardTextType(types.toString("utf8"));
-      if (!mediaType) throw new Error("The X11 clipboard does not contain text.");
-      return await this.runCommand(
-        program,
-        ["-selection", "clipboard", "-t", mediaType, "-o"],
-        this.commandOptions(1024 * 1024, execution),
-      );
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      errors.push(errorMessage(error));
-    }
-    throw new Error(
-      "Unable to read text from the Linux clipboard. Install wl-clipboard " +
-        "for Wayland or xclip for X11. " + (errors.at(-1) ?? ""),
-    );
-  }
-
-  private async readWaylandClipboard(execution: ClipboardExecutionContext): Promise<Buffer> {
-    const program = await this.resolveUnixHelper("wl-paste");
-    const types = await this.runCommand(
-      program,
-      ["--list-types"],
-      this.commandOptions(64 * 1024, execution),
-    );
-    const mediaType = chooseClipboardMediaType(types.toString("utf8"));
-    if (!mediaType) throw new Error("The Wayland clipboard does not contain a supported image.");
-    return this.runCommand(
-      program,
-      ["--no-newline", "--type", mediaType],
-      this.commandOptions(MAX_IMAGE_BYTES, execution),
-    );
-  }
-
-  private async readX11Clipboard(execution: ClipboardExecutionContext): Promise<Buffer> {
-    const program = await this.resolveUnixHelper("xclip");
-    const types = await this.runCommand(
-      program,
-      ["-selection", "clipboard", "-t", "TARGETS", "-o"],
-      this.commandOptions(64 * 1024, execution),
-    );
-    const mediaType = chooseClipboardMediaType(types.toString("utf8"));
-    if (!mediaType) throw new Error("The X11 clipboard does not contain a supported image.");
-    return this.runCommand(
-      program,
-      ["-selection", "clipboard", "-t", mediaType, "-o"],
-      this.commandOptions(MAX_IMAGE_BYTES, execution),
-    );
-  }
-
-  private commandOptions(
-    maxOutputBytes: number,
-    execution: ClipboardExecutionContext,
-  ): ClipboardCommandOptions {
-    return {
-      maxOutputBytes,
-      timeoutMs: this.timeoutMs,
-      cwd: execution.cwd,
-      env: execution.env,
-      signal: execution.signal,
-    };
-  }
-
-  private async resolveWindowsPowerShell(): Promise<string> {
-    const windowsRoot = getWindowsRoot(this.sourceEnv);
-    const program = path.win32.join(
-      windowsRoot,
-      "System32",
-      "WindowsPowerShell",
-      "v1.0",
-      "powershell.exe",
-    );
-    return this.resolveFixedProgram(program, "win32");
-  }
-
-  private async resolveWslPowerShell(): Promise<string> {
-    const windowsRoot = getWindowsRoot(this.sourceEnv);
-    const driveMatch = /^([A-Za-z]):\\(.*)$/u.exec(windowsRoot);
-    const wslRoot = driveMatch
-      ? `/mnt/${driveMatch[1]?.toLowerCase()}/${(driveMatch[2] ?? "").replace(/\\/gu, "/")}`
-      : "/mnt/c/Windows";
-    return this.resolveFixedProgram(
-      path.posix.join(wslRoot, "System32/WindowsPowerShell/v1.0/powershell.exe"),
-      "linux",
-    );
-  }
-
-  private async resolveUnixHelper(name: "wl-paste" | "xclip"): Promise<string> {
-    const directories = secureUnixPathDirectories(
-      this.sourceEnv.PATH,
-      this.currentDirectory,
-    );
+  async resolveUnixHelper(name: "wl-paste" | "xclip"): Promise<string> {
+    const directories = secureUnixPathDirectories(this.sourceEnv.PATH, this.currentDirectory);
     const candidates = directories.length ? directories : ["/usr/bin", "/bin"];
     if (!this.verifyPrograms) return path.posix.join(candidates[0] ?? "/usr/bin", name);
-    const canonicalCurrentDirectory = await realpath(this.currentDirectory)
-      .catch(() => this.currentDirectory);
+    const canonicalCurrentDirectory = await realpath(this.currentDirectory).catch(() => this.currentDirectory);
     const failures: string[] = [];
     for (const directory of candidates) {
       try {
@@ -438,22 +163,13 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
         if (isPathInside(canonical, canonicalCurrentDirectory)) continue;
         await verifyExecutable(canonical);
         return canonical;
-      } catch (error) {
-        failures.push(errorMessage(error));
-      }
+      } catch (error) { failures.push(errorMessage(error)); }
     }
     throw new ClipboardCommandError(
-      `${name} was not found in a trusted absolute PATH directory. ${failures.at(-1) ?? ""}`,
-      "ENOENT",
-    );
+      `${name} was not found in a trusted absolute PATH directory. ${failures.at(-1) ?? ""}`, "ENOENT");
   }
 
-  private async resolveFixedProgram(
-    program: string,
-    platform: "win32" | "linux" | "darwin" = this.platform === "win32"
-      ? "win32"
-      : this.platform === "darwin" ? "darwin" : "linux",
-  ): Promise<string> {
+  async resolveFixedProgram(program: string, platform: "win32" | "linux" | "darwin"): Promise<string> {
     if (!isAbsoluteForPlatform(program, platform)) {
       throw new ClipboardCommandError("Clipboard helper path must be absolute.");
     }
@@ -467,33 +183,7 @@ export class SystemClipboardImageReader implements ClipboardImageReader {
   }
 }
 
-export function chooseClipboardMediaType(value: string): string | undefined {
-  const available = new Set(value.split(/[\s,]+/u).map((entry) => entry.trim().toLowerCase()));
-  return ["image/png", "image/jpeg", "image/webp", "image/gif"].find((type) =>
-    available.has(type),
-  );
-}
-
-export function chooseClipboardTextType(value: string): string | undefined {
-  const available = new Map(
-    value
-      .split(/[\r\n,]+/u)
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-      .map((entry) => [entry.toLowerCase(), entry]),
-  );
-  for (const candidate of [
-    "text/plain;charset=utf-8",
-    "utf8_string",
-    "text/plain",
-    "text",
-    "string",
-  ]) {
-    const original = available.get(candidate);
-    if (original) return original;
-  }
-  return undefined;
-}
+export { chooseClipboardMediaType, chooseClipboardTextType } from "./clipboard-media.js";
 
 export function createClipboardEnvironment(
   platform: NodeJS.Platform,

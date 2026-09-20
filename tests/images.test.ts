@@ -240,6 +240,29 @@ describe("image attachments", () => {
     assert.equal(chooseClipboardTextType("image/png\ntext/html"), undefined);
   });
 
+  it("uses fixed macOS helpers and removes the private image file", async () => {
+    let temporaryFile = "";
+    const programs: string[] = [];
+    const clipboard = new SystemClipboardImageReader({
+      platform: "darwin",
+      env: { HOME: "/Users/test", GLM_API_KEY: "must-not-leak" },
+      runCommand: async (program, args, options) => {
+        programs.push(program);
+        assert.equal(options.env.GLM_API_KEY, undefined);
+        if (program === "/usr/bin/osascript") {
+          temporaryFile = args.at(-1) ?? "";
+          await writeFile(temporaryFile, PNG_1X1);
+          return Buffer.alloc(0);
+        }
+        return Buffer.from("mac text", "utf8");
+      },
+    });
+    assert.deepEqual(await clipboard.readImage(), PNG_1X1);
+    assert.equal(await clipboard.readText(), "mac text");
+    assert.deepEqual(programs, ["/usr/bin/osascript", "/usr/bin/pbpaste"]);
+    await assert.rejects(lstat(temporaryFile), /ENOENT/u);
+  });
+
   it("skips relative and workspace PATH entries for Linux clipboard helpers", async () => {
     const programs: string[] = [];
     const clipboard = new SystemClipboardImageReader({

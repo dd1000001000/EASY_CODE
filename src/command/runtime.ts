@@ -1,7 +1,8 @@
 import { execa } from "execa";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { containWindowsWorker, type WindowsCommandJob } from "./windows-job.js";
+import { hostPlatform, type HostPlatform } from "../core/host-platform.js";
+import { createCommandWorker } from "./platform/index.js";
 import { ExecutionJournal } from "./execution-journal.js";
 import type { CommandOutputArchive } from "./output-archive.js";
 import type { ToolContext } from "../core/types.js";
@@ -13,7 +14,7 @@ import { extractSandboxControls } from "../sandbox/control.js";
 import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionMetadata, SandboxExecutionRequest } from "../sandbox/types.js";
 import { NativeSandboxBackend } from "../sandbox/native-backend.js";
 import { SandboxFailure } from "../sandbox/failure.js";
-import { terminateProcessTree } from "./lifecycle.js";
+import type { TerminationResult } from "./lifecycle.js";
 import { SandboxControlStream } from "../sandbox/control.js";
 import type { SandboxWorkerControl } from "../sandbox/types.js";
 import { OutputCollector, sanitizeCommandOutput } from "./output-stream.js";
@@ -135,12 +136,6 @@ function commandPreview(command: ResolvedCommand): string {
   return JSON.stringify([command.executablePath, ...redactArguments(command.args)]);
 }
 
-function defaultSandboxStartupTimeout(limits: Readonly<RuntimeLimits>): number {
-  return process.platform === "win32"
-    ? limits.sandboxStartupWindowsMs
-    : limits.sandboxStartupPosixMs;
-}
-
 function containsReadyControl(commandId: string, value: string): boolean {
   if (!value.includes("[[EASY_CODE_SANDBOX:")) return false;
   const digest: OutputDigest = {
@@ -156,6 +151,7 @@ function containsReadyControl(commandId: string, value: string): boolean {
 }
 
 export class CommandRuntime {
+  private readonly hostPlatform: HostPlatform;
   readonly resolver: CommandResolver;
   readonly policy: CommandPolicy;
   private readonly executionBackend: CommandExecutionBackend;
@@ -231,6 +227,7 @@ export class CommandRuntime {
     private readonly unrestrictedExecutionBackend: CommandExecutionBackend = new UnrestrictedHostBackend(),
     private readonly options: CommandRuntimeOptions = {},
   ) {
+    this.hostPlatform = hostPlatform();
     this.executionJournal = new ExecutionJournal(options.lifecycleDirectory);
     this.limits = options.limits ?? DEFAULT_RUNTIME_LIMITS;
     this.boundaryStore = sharedSandboxBoundaryStore(options.boundaryStatePath, this.limits.sandboxBoundaryIncidentLimit);
@@ -729,33 +726,32 @@ export class CommandRuntime {
     let executionEndedAt: number | undefined;
     let canceled = false;
     let result: ProcessResult = {};
-    let termination: ReturnType<typeof terminateProcessTree> | undefined;
+    let termination: Promise<TerminationResult> | undefined;
+    const worker = createCommandWorker(this.hostPlatform);
     const sandboxStartupTimeoutMs = Math.max(
       1,
       this.options.sandboxStartupTimeoutMs ??
-        defaultSandboxStartupTimeout(this.limits),
+        worker.startupTimeoutMs(this.limits),
     );
 
     const subprocess = execa(prepared.executablePath, prepared.args, {
       cwd: prepared.cwdAbsolute,
-      env: { ...prepared.environment, ...(prepared.controlPipe && process.platform === "win32" &&
-        prepared.windowsJobContainment !== false ? { EASY_CODE_JOB_HANDSHAKE: "1" } : {}) },
+      env: worker.launchEnvironment(prepared),
       extendEnv: false,
       shell: false,
-      stdio: prepared.controlPipe ? [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      stdio: prepared.controlPipe ? [worker.stdinMode(prepared), "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
       buffer: false,
       reject: false,
       cleanup: true,
-      detached: process.platform !== "win32",
+      detached: worker.detached,
       windowsHide: true,
       stripFinalNewline: false,
     });
 
-    let windowsJob: WindowsCommandJob | undefined;
     let cooperativeStop: Promise<void> | undefined;
     let cleanupDeadline: NodeJS.Timeout | undefined;
     const forceTermination = (): void => {
-      termination ??= windowsJob ? windowsJob.stop() : terminateProcessTree(subprocess);
+      termination ??= worker.forceStop(subprocess);
     };
     const requestTermination = (): void => {
       networkApprovalController.abort();
@@ -780,14 +776,13 @@ export class CommandRuntime {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
           cooperativeStop = Promise.resolve();
-          if (process.platform === "win32") subprocess.stdin?.write("TERMINATE\n");
-          else if (subprocess.pid) { try { process.kill(subprocess.pid, "SIGTERM"); } catch { forceTermination(); } }
+          if (!worker.cooperativeStop(subprocess) && subprocess.pid) forceTermination();
         }
-      } else if (windowsJob && requestSent && !protocolError && !cleanupError) {
+      } else if (worker.hasSupervisor() && requestSent && !protocolError && !cleanupError) {
         if (!cooperativeStop) {
           if (timeoutTimer) clearTimeout(timeoutTimer);
           cleanupDeadline = setTimeout(forceTermination, this.limits.sandboxCleanupTimeoutMs);
-          cooperativeStop = windowsJob.quiesce().catch(error => {
+          cooperativeStop = worker.quiesce().catch(error => {
             cleanupError = `Descendant cancellation failed: ${String(error)}`;
             forceTermination();
           });
@@ -875,8 +870,8 @@ export class CommandRuntime {
       if (control.type === "cleanup_complete") cleanupConfirmed = true;
       if (control.type === "cleanup_error") cleanupError = control.message;
       if (control.type === "cleanup_requested") {
-        if (!windowsJob) throw new Error("Missing Windows job supervisor at cleanup");
-        void windowsJob.quiesce().then(()=>subprocess.stdin?.end("CLEANUP\n"),error=>{
+        if (!worker.hasSupervisor()) throw new Error("Missing Windows job supervisor at cleanup");
+        void worker.cleanupRequested(subprocess).catch(error=>{
           cleanupError=String(error);requestTermination();
         });
       }
@@ -913,13 +908,11 @@ export class CommandRuntime {
     );
     if (!prepared.metadata.enforced && !prepared.controlPipe) { requestSentAt = Date.now(); announceStarted(); }
 
-    if (prepared.controlPipe && !prepared.externalLifecycle && process.platform === "win32" &&
-      prepared.windowsJobContainment !== false) {
+    if (worker.needsAttachment(prepared)) {
       try {
-        if (!subprocess.pid) throw new Error("Worker did not start");
-        windowsJob = await containWindowsWorker(subprocess.pid);
+        await worker.attach(subprocess);
         if (context.signal?.aborted) requestTermination();
-        else subprocess.stdin?.write("GO\n");
+        else worker.continueWorker(subprocess);
       } catch (error) {
         protocolError = error instanceof Error ? error.message : String(error);
         requestTermination();
@@ -938,7 +931,7 @@ export class CommandRuntime {
       context.signal?.removeEventListener("abort", onAbort);
     }
     await cooperativeStop;
-    const terminationResult = await (windowsJob?.stop() ?? termination);
+    const terminationResult = await (worker.stopAttached() ?? termination);
     await networkGate?.close();
     if (terminationResult && !terminationResult.confirmed && !prepared.externalLifecycle) {
       cleanupError = "Process tree termination could not be confirmed";
