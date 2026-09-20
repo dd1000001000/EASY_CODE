@@ -72,6 +72,13 @@ import type {
   UITranscriptKind,
   UITranscriptEntry,
 } from "../ui/contracts.js";
+import type {
+  AppInteractionPort,
+  CurrentRequestOptions,
+  InteractionChoice,
+  PlanReviewDecision,
+  PlanReviewInputOptions,
+} from "../ui/interaction-port.js";
 import { applyEvent, createUIState } from "../ui/store.js";
 import { ScreenWriter } from "../ui/render/screen-writer.js";
 import {
@@ -111,47 +118,7 @@ import {
   renderSessionHeader,
 } from "../ui/render/view.js";
 
-export type PlanReviewDecision =
-  | { action: "approve" }
-  | { action: "reject" }
-  | { action: "adjust"; feedback: string }
-  | { action: "defer" };
-
-export interface PlanReviewInputOptions {
-  /** Read clipboard text when a terminal sends a paste hotkey to EASY CODE. */
-  readonly captureText?: (
-    signal?: AbortSignal,
-  ) => Promise<string | undefined>;
-}
-
-export interface TerminalChoice {
-  readonly id: string;
-  readonly label: string;
-  readonly detail?: string;
-  readonly disabled?: boolean;
-}
-
-export interface CurrentRequestOptions {
-  /** Preserve Ctrl+C cancellation while the busy UI owns stdin in raw mode. */
-  readonly onInterrupt?: () => void;
-  /** Queue one user-authored adjustment without ending the busy editor. */
-  readonly onSteer?: (
-    submission: Readonly<PromptSubmission>,
-  ) => void | Promise<void>;
-  readonly captureImage?: (
-    index: number,
-    signal?: AbortSignal,
-  ) => Promise<ImageAttachment>;
-  readonly captureText?: (
-    signal?: AbortSignal,
-  ) => Promise<string | undefined>;
-  /** Last image number already allocated in the Thread. */
-  readonly initialImageCount?: number;
-  /** Release images whose draft markers were removed or cancelled. */
-  readonly onDiscardImages?: (
-    images: readonly Readonly<ImageAttachment>[],
-  ) => void | Promise<void>;
-}
+export type { PlanReviewDecision, PlanReviewInputOptions, CurrentRequestOptions } from "../ui/interaction-port.js";
 
 interface BusyInputOwner {
   readonly filter: PrivateOscInputFilter;
@@ -273,7 +240,7 @@ function classifyStatus(text: string): StatusPresentation {
   return { destination: "stable", kind: "info" };
 }
 
-export class Terminal {
+export class Terminal implements AppInteractionPort {
   private static readonly ACTIVITY_FRAMES = [
     "⠋",
     "⠙",
@@ -1420,7 +1387,7 @@ export class Terminal {
 
   async selectChoice(
     title: string,
-    choices: readonly TerminalChoice[],
+    choices: readonly InteractionChoice[],
     initialId?: string,
   ): Promise<string | undefined> {
     if (this.closed || choices.length === 0) return undefined;
@@ -4290,7 +4257,7 @@ function countCodePoints(value: string): number {
   return count;
 }
 
-export function printBanner(terminal: Terminal): void {
+export function printBanner(terminal: Pick<AppInteractionPort, "isInlineShell" | "showSessionHeader" | "info" | "write">): void {
   if (terminal.isInlineShell()) {
     terminal.showSessionHeader();
     terminal.info("Type /help for commands, /model to switch models, or /exit to quit.");

@@ -1,4 +1,4 @@
-import type { TerminalChoice } from "../cli/terminal.js";
+import type { InteractionChoice } from "../ui/interaction-port.js";
 import type { McpServerConfig } from "./config.js";
 
 export interface McpMenuState {
@@ -10,8 +10,8 @@ export interface McpMenuState {
 }
 
 /** Presentation only: execution still rechecks approval and credentials. */
-export function mcpServerActions(server: McpServerConfig, state: McpMenuState): TerminalChoice[] {
-  const choices: TerminalChoice[] = [
+export function mcpServerActions(server: McpServerConfig, state: McpMenuState): InteractionChoice[] {
+  const choices: InteractionChoice[] = [
     { id: "details", label: "Show configuration", detail: "Credentials are never shown" },
   ];
   if (state.connected) {

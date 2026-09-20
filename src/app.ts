@@ -13,7 +13,7 @@ import {
 } from "./benchmarks/swebench.js";
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
-import type { PromptSubmission } from "./cli/prompt-input.js";
+import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
 import {
   helpText,
   parseModelCommand,
@@ -59,6 +59,7 @@ import type {
   CommandAuditEntry,
   CommandExecutionMode,
   EasyCodeConfig,
+  EventRecord,
   FileChangeRecord,
   ImageAttachment,
   PlanProposal,
@@ -155,6 +156,7 @@ import {
   type ThreadSummary,
 } from "./threads/thread-store.js";
 import type { UISessionInfo } from "./ui/contracts.js";
+import type { PlanReviewDecision } from "./ui/interaction-port.js";
 import {
   applySubagentTaskOperation,
   taskGraphView,
@@ -186,7 +188,7 @@ export interface EasyCodeAppOptions {
   sandboxStartup?: boolean;
   /** Dependency injection for sandbox startup tests. */
   sandboxStartupService?: SandboxStartupService;
-  terminal?: Terminal;
+  terminal?: AppInteractionPort;
   /** Dependency injection for isolated tests; false disables keyring reads. */
   credentialStore?: ApiKeyCredentialStore | false;
   /** Images queued before the first prompt; the option may be repeated by the CLI. */
@@ -228,6 +230,14 @@ export function attributeSubagentCommandAudit(
 interface ExecutePromptOptions {
   modeOverride?: "plan" | "code";
   approvedPlan?: Pick<PlanProposal, "id" | "revision">;
+}
+
+interface ActiveTurnSteering {
+  readonly threadId: string;
+  readonly controller: AbortController;
+  readonly notifier: TurnSteeringAttemptNotifier;
+  readonly requestImages: readonly ImageAttachment[];
+  readonly draftImages: Map<string, ImageAttachment>;
 }
 
 export interface ResumeRecoverySummary {
@@ -540,6 +550,8 @@ export class EasyCodeApp {
   private memoryMaintenanceTimer?: NodeJS.Timeout;
   private memoryMaintenanceController?: AbortController;
   private memoryMaintenanceWork?: Promise<void>;
+  private activeTurnController?: AbortController;
+  private activeTurnSteering?: ActiveTurnSteering;
 
   private constructor(
     private readonly config: EasyCodeConfig,
@@ -547,7 +559,7 @@ export class EasyCodeApp {
     workspace: WorkspaceManager,
     state: SessionState,
     threadLease: ThreadLease,
-    private readonly terminal: Terminal,
+    private readonly terminal: AppInteractionPort,
     private readonly assumeYes: boolean,
     private readonly trustedOuterSandbox: "harbor" | undefined,
     private readonly credentialStore: ApiKeyCredentialStore | undefined,
@@ -654,7 +666,7 @@ export class EasyCodeApp {
       credentialStore: harborProviderApiKey ? false : credentialStore ?? false,
     });
     if (harborProviderApiKey) config.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
-    const terminal = options.terminal ?? new Terminal();
+    const terminal: AppInteractionPort = options.terminal ?? new Terminal();
     if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
 
     let storage: EasyCodeStorage | undefined;
@@ -938,6 +950,65 @@ export class EasyCodeApp {
     if (wait) await this.memoryMaintenanceWork;
   }
 
+  /** Start a non-terminal host without entering the CLI prompt-reading loop. */
+  startHostedSession(): void {
+    this.terminal.beginShell(this.terminalSessionInfo());
+    this.syncTerminalView();
+    this.announceResumeRecovery();
+    this.startMemoryMaintenance();
+  }
+
+  sessionInfo(): UISessionInfo { return this.terminalSessionInfo(); }
+  isRequestActive(): boolean { return this.activeTurnController !== undefined; }
+  threadEvents(): readonly EventRecord[] { return this.threadStore.journal(this.state.threadId).read(); }
+  workspaceThreads(): readonly ThreadSummary[] { return this.resumableThreads(); }
+  pendingPlan(): PlanProposal | undefined { return this.state.planReview?.proposal; }
+  nextHostedImageLabel(stagedCount = 0): string {
+    const number = nextThreadImageNumber(this.state.messages, this.pendingImages) + stagedCount;
+    assertThreadImageNumberAvailable(number);
+    return `Image #${number}`;
+  }
+
+  async startNewHostedThread(): Promise<void> {
+    if (this.isRequestActive()) throw new Error("Cannot switch Thread while a request is running.");
+    await this.clearPendingImages();
+    await this.newThread();
+    this.terminal.resetForNewThread(this.terminalSessionInfo());
+    this.syncTerminalView();
+  }
+
+  async resumeHostedThread(threadId: string): Promise<void> {
+    if (this.isRequestActive()) throw new Error("Cannot switch Thread while a request is running.");
+    await this.clearPendingImages();
+    await this.resumeThread(threadId);
+    this.terminal.resetForNewThread(this.terminalSessionInfo());
+    this.syncTerminalView();
+    this.announceResumeRecovery();
+  }
+
+  async importHostedImage(data: Buffer, label: string, sourceName?: string): Promise<ImageAttachment> {
+    this.requireCurrentModelVision();
+    const image = await this.imageStore.importBuffer(this.state.threadId, label, data, sourceName);
+    try {
+      validateProviderImageAttachments(this.state.provider, [image]);
+      return image;
+    } catch (error) {
+      await this.imageStore.remove(this.state.threadId, image).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  discardHostedImage(image: ImageAttachment): Promise<void> {
+    return this.imageStore.remove(this.state.threadId, image);
+  }
+
+  /** A browser supplies the decision, while the existing Journal transition remains authoritative. */
+  async reviewHostedPlan(decision: PlanReviewDecision): Promise<void> {
+    if (this.isRequestActive()) throw new Error("Wait for the active request before reviewing its plan.");
+    if (!this.state.planReview) throw new Error("This Thread has no pending plan.");
+    await this.processPendingPlanReview(true, decision);
+  }
+
   async runInteractive(): Promise<void> {
     if (!this.terminal.isInteractive()) {
       throw new Error("Interactive mode requires a TTY; use `easy-code run \"<task>\"` for non-interactive use.");
@@ -971,7 +1042,7 @@ export class EasyCodeApp {
 
       const promptImages: ImageAttachment[] = [];
       let promptOpen = true;
-      let response: PromptSubmission | null;
+      let response: UserSubmission | null;
       try {
         response = await this.terminal.readPrompt(this.prompt(), {
           initialImageCount:
@@ -1037,10 +1108,9 @@ export class EasyCodeApp {
 
       let result: AgentRunResult;
       try {
-        result = await this.executePrompt(
+        result = await this.submitUserMessage(
           input || "Analyze the attached image(s).",
           images,
-          true,
         );
         this.pendingImages = [];
       } catch (error) {
@@ -1082,6 +1152,74 @@ export class EasyCodeApp {
       );
     }
     return result;
+  }
+
+  /** Submit a user turn without depending on the CLI prompt-reading loop. */
+  async submitUserMessage(
+    text: string,
+    images: readonly ImageAttachment[] = [],
+  ): Promise<AgentRunResult> {
+    if (this.state.planReview) {
+      throw new Error("Review the pending plan before starting another request.");
+    }
+    if (!text.trim() && images.length === 0) {
+      throw new Error("A non-empty prompt or at least one image is required");
+    }
+    return this.executePrompt(text, images, true);
+  }
+
+  /** Cancel only the currently active turn; presentation hosts choose their own cancel gesture. */
+  cancelActiveRequest(): boolean {
+    const controller = this.activeTurnController;
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    return true;
+  }
+
+  /** Queue an adjustment for the running turn; the Journal owns it after enqueue succeeds. */
+  async submitAdjustment(
+    text: string,
+    images: readonly ImageAttachment[] = [],
+  ): Promise<number> {
+    const active = this.activeTurnSteering;
+    const turnId = this.state.activeTurnId;
+    if (!active || !turnId || active.threadId !== this.state.threadId || active.controller.signal.aborted) {
+      throw new Error("The active task finished before this adjustment could be queued.");
+    }
+    if (!text.trim() && images.length === 0) throw new Error("An adjustment needs text or an image.");
+    if (images.length > 0) this.requireCurrentModelVision();
+    const unique = new Map<string, ImageAttachment>();
+    for (const image of active.requestImages) unique.set(image.id, image);
+    for (const entry of this.threadStore.pendingTurnSteering(active.threadId)) {
+      for (const image of entry.message.images ?? []) unique.set(image.id, image);
+    }
+    for (const image of active.draftImages.values()) unique.set(image.id, image);
+    for (const image of images) unique.set(image.id, image);
+    validateImageAttachmentCollection([...unique.values()]);
+    validateProviderImageAttachments(this.state.provider, images);
+    const entry: TurnSteeringEntry = this.threadStore.enqueueTurnSteering(
+      active.threadId,
+      turnId,
+      {
+        role: "user",
+        content: text,
+        ...(images.length ? { images: images.map((image) => ({ ...image })) } : {}),
+      },
+    );
+    this.dirty = true;
+    // The durable message, not the editor, now owns these attachments.
+    for (const image of images) active.draftImages.delete(image.id);
+    active.notifier.notify(entry.sequence);
+    this.terminal.addQueuedAdjustment(entry.sequence, text, images);
+    try {
+      for (const image of images) await this.imageStore.commit(active.threadId, image);
+    } catch (error) {
+      this.terminal.error(
+        `Adjustment #${entry.sequence} is queued, but attachment finalization failed: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+    }
+    return entry.sequence;
   }
 
   async handleSlashCommand(input: string): Promise<boolean> {
@@ -1490,8 +1628,9 @@ export class EasyCodeApp {
     }
   }
 
-  private async processPendingPlanReview(showPlan: boolean): Promise<boolean> {
+  private async processPendingPlanReview(showPlan: boolean, suppliedDecision?: PlanReviewDecision): Promise<boolean> {
     let shouldShowPlan = showPlan;
+    const oneDecisionOnly = suppliedDecision !== undefined;
     while (this.state.planReview && !this.closed) {
       const review = this.state.planReview;
       const proposal = review.proposal;
@@ -1517,15 +1656,15 @@ export class EasyCodeApp {
           },
         );
         shouldShowPlan = false;
-        if (!result.planProposal) return true;
+        if (!result.planProposal || oneDecisionOnly) return true;
         continue;
       }
 
       if (shouldShowPlan) this.terminal.showPlan(proposal);
-      const decision = await this.terminal.reviewPlan({
-        captureText: async (signal) =>
-          this.clipboardImageReader.readText?.(signal),
+      const decision = suppliedDecision ?? await this.terminal.reviewPlan({
+        captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
       });
+      suppliedDecision = undefined;
       if (decision.action === "defer") {
         this.dirty = true;
         this.save();
@@ -1613,6 +1752,10 @@ export class EasyCodeApp {
         this.state.mode === "auto" ? { modeOverride: "plan" } : {},
       );
       shouldShowPlan = !result.planProposal;
+      if (oneDecisionOnly) {
+        if (result.planProposal) this.terminal.showPlan(result.planProposal);
+        return true;
+      }
     }
     return true;
   }
@@ -1622,6 +1765,25 @@ export class EasyCodeApp {
     images: readonly ImageAttachment[] = [],
     presentReasoning = false,
     runtimeOptions: ExecutePromptOptions = {},
+  ): Promise<AgentRunResult> {
+    if (this.activeTurnController) {
+      throw new Error("A request is already running in this Thread.");
+    }
+    const controller = new AbortController();
+    this.activeTurnController = controller;
+    try {
+      return await this.executePromptOwned(userInput, images, presentReasoning, runtimeOptions, controller);
+    } finally {
+      if (this.activeTurnController === controller) this.activeTurnController = undefined;
+    }
+  }
+
+  private async executePromptOwned(
+    userInput: string,
+    images: readonly ImageAttachment[],
+    presentReasoning: boolean,
+    runtimeOptions: ExecutePromptOptions,
+    controller: AbortController,
   ): Promise<AgentRunResult> {
     await this.pauseMemoryMaintenance();
     if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
@@ -1634,7 +1796,6 @@ export class EasyCodeApp {
     validateProviderImageAttachments(this.state.provider, images);
     this.dirty = true;
     if (this.uninstallRequested) throw new Error("Task stopped for EASY CODE uninstall.");
-    const controller = new AbortController();
     this.uninstallController = controller;
     const steeringNotifier = new TurnSteeringAttemptNotifier();
     const capturedSteeringImages = new Map<string, ImageAttachment>();
@@ -1647,12 +1808,19 @@ export class EasyCodeApp {
     validateProviderImageAttachments(this.state.provider, pendingSteeringImages);
     const latestPendingSteering = pendingSteering.at(-1);
     if (latestPendingSteering) steeringNotifier.notify(latestPendingSteering.sequence);
+    this.activeTurnSteering = {
+      threadId: this.state.threadId,
+      controller,
+      notifier: steeringNotifier,
+      requestImages: images,
+      draftImages: capturedSteeringImages,
+    };
     let interruptCount = 0;
     const onInterrupt = (): void => {
       interruptCount += 1;
       if (interruptCount === 1) {
         this.terminal.info("Interrupting the current task...");
-        controller.abort();
+        this.cancelActiveRequest();
       } else {
         process.removeListener("SIGINT", onInterrupt);
         if (this.uninstallController === controller) this.uninstallController = undefined;
@@ -1705,55 +1873,11 @@ export class EasyCodeApp {
         onSteer: async (submission) => {
           const text = stripPasteFailureMarkers(submission.text);
           if (!text.trim() && submission.images.length === 0) return;
-          const turnId = this.state.activeTurnId;
-          if (!turnId) {
-            await discardCapturedSteeringImages(submission.images);
-            throw new Error("The active task finished before this adjustment could be queued.");
-          }
-          let entry: TurnSteeringEntry;
           try {
-            if (submission.images.length > 0) this.requireCurrentModelVision();
-            validateImageAttachmentCollection(steeringImages());
-            validateProviderImageAttachments(this.state.provider, submission.images);
-            entry = this.threadStore.enqueueTurnSteering(
-              this.state.threadId,
-              turnId,
-              {
-                role: "user",
-                content: text,
-                ...(submission.images.length
-                  ? { images: submission.images.map((image) => ({ ...image })) }
-                : {}),
-              },
-            );
+            await this.submitAdjustment(text, submission.images);
           } catch (error) {
             await discardCapturedSteeringImages(submission.images);
             throw error;
-          }
-          this.dirty = true;
-          // The journal is the ownership boundary. From this point onward the
-          // durable entry, rather than the editor, owns every attachment.
-          for (const attachment of submission.images) {
-            capturedSteeringImages.delete(attachment.id);
-          }
-          steeringNotifier.notify(entry.sequence);
-          this.terminal.addQueuedAdjustment(
-            entry.sequence,
-            text,
-            submission.images,
-          );
-          try {
-            // Commit only removes orphan markers after the message reference
-            // is durable, matching initial-turn image ordering.
-            for (const attachment of submission.images) {
-              await this.imageStore.commit(this.state.threadId, attachment);
-            }
-          } catch (error) {
-            this.terminal.error(
-              `Adjustment #${entry.sequence} is queued, but attachment finalization failed: ` +
-                (error instanceof Error ? error.message : String(error)),
-            );
-            return;
           }
         },
       });
@@ -1782,6 +1906,7 @@ export class EasyCodeApp {
       return result;
     } finally {
       try {
+        if (this.activeTurnSteering?.controller === controller) this.activeTurnSteering = undefined;
         this.terminal.clearCurrentRequest();
         await this.discardImages([...capturedSteeringImages.values()]);
         capturedSteeringImages.clear();
@@ -2071,6 +2196,7 @@ export class EasyCodeApp {
       onProviderContext: (snapshot) => {
         if (snapshot.threadId === this.state.threadId) {
           this.lastProviderContext = snapshot;
+          this.syncTerminalView();
         }
       },
       onModelStream: (event: Readonly<ProviderStreamEvent>) => {
