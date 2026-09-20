@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { ElButton, ElCard, ElInput, ElScrollbar, type InputInstance } from "element-plus";
-import { Check, Close } from "@element-plus/icons-vue";
+import { Check } from "@element-plus/icons-vue";
 import type { WebDecision } from "../../web-contracts.js";
+import { useOutsideDismiss } from "../use-outside-dismiss.js";
 
 const props = defineProps<{ decision: WebDecision }>();
 const emit = defineEmits<{ submit: [id: string, value: string | undefined] }>();
@@ -26,11 +27,7 @@ function submit(value: string | undefined): void {
   emit("submit", props.decision.id, value);
 }
 function cancel(): void { submit(undefined); }
-function outsidePointer(event: PointerEvent): void {
-  if (isSettingsPicker.value && panelRoot.value && !panelRoot.value.$el.contains(event.target as Node)) cancel();
-}
-onMounted(() => document.addEventListener("pointerdown", outsidePointer, true));
-onUnmounted(() => document.removeEventListener("pointerdown", outsidePointer, true));
+useOutsideDismiss(panelRoot, cancel);
 watch(() => props.decision.id, async () => {
   submitted = false;
   secret.value = "";
@@ -50,7 +47,7 @@ function choose(value: string): void {
 <template>
   <ElCard ref="panelRoot" class="composer-decision-panel" :class="{ 'composer-decision-panel--left': isApprovalModePicker, 'composer-decision-panel--orchestration': isOrchestrationPicker }" shadow="always"
     role="dialog" :aria-label="decision.title" @keydown.esc.stop.prevent="cancel">
-    <template v-if="!isSettingsPicker" #header><div class="decision-header"><strong>{{ decision.title }}</strong><ElButton text circle :icon="Close" aria-label="Cancel selection" @click="cancel" /></div></template>
+    <template v-if="!isSettingsPicker" #header><div class="decision-header"><strong>{{ decision.title }}</strong></div></template>
     <ElScrollbar max-height="min(50vh, 360px)">
       <div ref="panelContent" class="decision-content">
         <p v-if="decision.description" class="entry-text decision-description">{{ decision.description }}</p>
