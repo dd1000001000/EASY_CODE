@@ -247,6 +247,25 @@ describe("/mode", () => {
 });
 
 describe("hosted setting pickers", () => {
+  it("publishes the selected model and effort to the live session", async () => {
+    const fixture = await createAppFixture(
+      { qwen: "qwen-test-key", glmCodingPlan: "coding-plan-test-key" },
+      { provider: "glm-coding-plan", model: "glm-5.3-flash", thinkingEffort: "low" },
+    );
+    const displayed: Array<{ provider?: string; model?: string; thinkingEffort?: string }> = [];
+    const original = fixture.terminal.setSessionInfo.bind(fixture.terminal);
+    fixture.terminal.setSessionInfo = (session, announce) => {
+      displayed.push({ provider: session.provider, model: session.model, thinkingEffort: session.thinkingEffort });
+      original(session, announce);
+    };
+    try {
+      await fixture.app.selectHostedModel();
+      assert.deepEqual(displayed.at(-1), {
+        provider: "glm-coding-plan", model: "glm-5.3-flash", thinkingEffort: "low",
+      });
+    } finally { fixture.close(); }
+  });
+
   it("keeps canceled model, approval and orchestration selections out of Web notices", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" }, {});
     fixture.terminal.selectChoice = async () => undefined;

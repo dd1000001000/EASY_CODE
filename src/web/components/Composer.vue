@@ -7,6 +7,7 @@ import { composeMessage, composerEnterAction, composerPrimaryAction, LONG_PASTE_
 import type { WebDecision } from "../../web-contracts.js";
 import type { WebCommandEntry } from "../../web-command-catalog.js";
 import { useOutsideDismiss } from "../use-outside-dismiss.js";
+import { t } from "../i18n.js";
 import DecisionDialog from "./DecisionDialog.vue";
 
 interface DraftImage { id: string; label: string; mediaType: string; previewUrl: string }
@@ -77,7 +78,7 @@ function paste(event: ClipboardEvent): void {
   if (files.length) {
     event.preventDefault();
     if (props.threadId) void addFiles(files);
-    else emit("error", "Open a conversation before attaching images.");
+    else emit("error", t("ui.noThreadImage"));
     return;
   }
   const content = event.clipboardData?.getData("text/plain") ?? "";
@@ -85,7 +86,7 @@ function paste(event: ClipboardEvent): void {
   event.preventDefault();
   const next = [...pastedTexts.value, { id: crypto.randomUUID(), content }];
   if (composeMessage(draft.value, next).length > MAX_MESSAGE_CHARACTERS) {
-    emit("error", "The message exceeds the 200,000-character limit.");
+    emit("error", t("ui.tooLong"));
     return;
   }
   pastedTexts.value = next;
@@ -113,7 +114,7 @@ function removeText(id: string): void {
 function send(): void {
   if (!props.threadId || props.decision || sending.value || uploading.value || !hasContent.value) return;
   const text = composeMessage(draft.value, pastedTexts.value);
-  if (text.length > MAX_MESSAGE_CHARACTERS) { emit("error", "The message exceeds the 200,000-character limit."); return; }
+  if (text.length > MAX_MESSAGE_CHARACTERS) { emit("error", t("ui.tooLong")); return; }
   sending.value = true;
   emit("send", text, images.value.map(image => image.id));
 }
@@ -151,36 +152,36 @@ defineExpose({ sent, failed });
     <div class="composer" :class="{ 'composer--unbound': !threadId }">
       <slot name="command-panel" />
       <DecisionDialog v-if="decision" :decision="decision" @submit="(id, value) => emit('submitDecision', id, value)" />
-      <ElCard v-if="commandMatches.length" ref="commandSuggestionsRoot" class="composer-command-panel" shadow="always" aria-label="Matching commands">
+      <ElCard v-if="commandMatches.length" ref="commandSuggestionsRoot" class="composer-command-panel" shadow="always" :aria-label="t('ui.matchingCommands')">
         <ElScrollbar max-height="min(50vh, 360px)">
           <div class="composer-command-list">
-            <ElButton v-for="command in commandMatches" :key="command.name" text @click="openCommand(command.name)"><strong>/{{ command.name }}</strong><span>{{ command.description }}</span></ElButton>
+            <ElButton v-for="command in commandMatches" :key="command.name" text @click="openCommand(command.name)"><strong>/{{ command.name }}</strong><span>{{ t(`command.${command.name}` as import('../../i18n/catalog.js').MessageKey) }}</span></ElButton>
           </div>
         </ElScrollbar>
       </ElCard>
       <div v-if="images.length || pastedTexts.length" class="composer-attachments">
         <div v-for="image in images" :key="image.id" class="composer-image-card">
           <ElImage :src="image.previewUrl" :preview-src-list="previewUrls" fit="contain" :alt="image.label" />
-          <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="`Remove ${image.label}`" @click="removeImage(image.id)" />
+          <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="t('ui.removeNamedImage', { name: image.label })" @click="removeImage(image.id)" />
         </div>
         <div v-for="item in pastedTexts" :key="item.id" class="composer-text-card">
           <Document class="composer-text-icon" />
-          <div><strong>Pasted text · {{ item.content.length }} chars</strong><span>{{ pastedTextPreview(item.content) }}</span></div>
-          <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" aria-label="Remove pasted text" @click="removeText(item.id)" />
+          <div><strong>{{ t('ui.pastedText') }} · {{ item.content.length }} {{ t('ui.chars') }}</strong><span>{{ pastedTextPreview(item.content) }}</span></div>
+          <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="t('ui.removeText')" @click="removeText(item.id)" />
         </div>
       </div>
-      <div @paste.capture="paste" @keydown="keydown" @compositionstart="compositionStart" @compositionend="compositionEnd"><ElInput v-model="draft" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" :placeholder="busy ? 'Adjust the current task…' : 'Ask EASY CODE anything…'" /></div>
+      <div @paste.capture="paste" @keydown="keydown" @compositionstart="compositionStart" @compositionend="compositionEnd"><ElInput v-model="draft" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" :placeholder="busy ? t('ui.adjustTask') : t('ui.askAnything')" /></div>
       <div class="composer-bottom">
         <div class="composer-tools">
-          <ElButton :icon="Plus" circle title="Attach images" aria-label="Attach images" :disabled="!threadId || uploading" @click="fileInput?.click()" />
+          <ElButton :icon="Plus" circle :title="t('ui.attachImages')" :aria-label="t('ui.attachImages')" :disabled="!threadId || uploading" @click="fileInput?.click()" />
           <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden :disabled="!threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
           <ElButton class="composer-setting composer-approval" text :disabled="settingsDisabled" @click="emit('selectApproval')"><span class="composer-setting-label">{{ approvalLabel }}</span><CaretBottom /></ElButton>
           <ElButton class="composer-setting composer-orchestration" text :disabled="settingsDisabled" @click="emit('selectOrchestration')"><span class="composer-setting-label">{{ orchestrationLabel }}</span><CaretBottom /></ElButton>
         </div>
         <div class="composer-actions">
           <ElButton class="composer-setting composer-model" text :disabled="settingsDisabled" @click="emit('selectModel')"><span class="composer-setting-label">{{ modelLabel }}</span><CaretBottom /></ElButton>
-          <ElTooltip :content="showStopButton ? 'Stop current task' : busy ? 'Send adjustment' : 'Send message (Enter; Shift+Enter for newline)'" placement="top">
-            <ElButton class="composer-submit" type="primary" circle :icon="showStopButton ? VideoPause : Top" :aria-label="showStopButton ? 'Stop current task' : busy ? 'Send adjustment' : 'Send message'" :disabled="!threadId || (!showStopButton && (!!decision || sending || uploading || !hasContent))" @click="showStopButton ? emit('stop') : send()" />
+          <ElTooltip :content="showStopButton ? t('ui.stopTask') : busy ? t('ui.sendAdjustment') : t('ui.sendHint')" placement="top">
+            <ElButton class="composer-submit" type="primary" circle :icon="showStopButton ? VideoPause : Top" :aria-label="showStopButton ? t('ui.stopTask') : busy ? t('ui.sendAdjustment') : t('ui.sendMessage')" :disabled="!threadId || (!showStopButton && (!!decision || sending || uploading || !hasContent))" @click="showStopButton ? emit('stop') : send()" />
           </ElTooltip>
         </div>
       </div>

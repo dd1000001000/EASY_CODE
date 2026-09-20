@@ -1,5 +1,6 @@
 import type { PlanProposal } from "../core/types.js";
 import type { WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
+import type { Language } from "../i18n/language.js";
 
 export interface ThreadItem {
   threadId: string;
@@ -15,6 +16,7 @@ export interface ThreadItem {
 }
 export interface ProjectItem { id: string; root: string; name: string }
 export interface WebSnapshot {
+  language: Language;
   sequence: number;
   view: WebView;
   plan: PlanProposal | null;

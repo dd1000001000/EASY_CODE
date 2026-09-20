@@ -10,6 +10,7 @@ function harness(options: { unfinished?: boolean; outstanding?: boolean; graph?:
     state: { threadId: "parent", orchestrationEnabled: true, ...(options.graph ? { taskGraph: { status: options.graph } } : {}) },
     config: { orchestrationEnabled: true, approvalPolicy: "safe" }, commandExecutionMode: options.mode ?? "auto_approve", hostAccessEpoch: 0,
     terminal: { selectChoice: async () => options.selected ?? "manual", info: (s: string) => notes.push(s), success: (s: string) => notes.push(s), warning: (s: string) => notes.push(s) },
+    storage: { db: { prepare: () => ({ get: () => undefined }) } },
     subagentCoordinator: { hasUnfinished: () => options.unfinished ?? false, hasOutstanding: () => options.outstanding ?? false, activatePrepared: () => undefined },
     hasRunningCommands: () => false, threadStore: { appendEvent: (_thread: string, event: unknown) => events.push(event) },
     save: () => undefined, syncTerminalView: () => undefined,

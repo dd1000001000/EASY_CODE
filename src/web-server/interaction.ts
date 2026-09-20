@@ -15,6 +15,8 @@ import type {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/approval.js";
+import type { Language } from "../i18n/language.js";
+import { translate } from "../i18n/catalog.js";
 import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
@@ -52,6 +54,9 @@ export class WebInteraction implements AppInteractionPort {
   private currentReasoningId?: string;
   private currentStreamId?: string;
   private externalOperation?: AbortController;
+  private language: Language = "en_us";
+
+  setLanguage(language: Language): void { this.language = language; }
 
   snapshot(): WebChange { return { sequence: this.sequence, view: this.view() }; }
   historyPage(options: { before?: string; after?: string; around?: string } = {}): WebHistoryPage {
@@ -288,10 +293,10 @@ export class WebInteraction implements AppInteractionPort {
       id: randomUUID(), kind: "approval", title: this.safe(request.title),
       description: this.safe(`${request.description}\n${request.commandPreview ?? ""}\n${request.network ? `Network: ${request.network.effect} ${request.network.destination ?? ""}` : ""}`),
       choices: [
-        { id: "reject", label: "Reject" },
-        { id: "allow_once", label: "Allow this call once" },
+        { id: "reject", label: translate(this.language, "ui.reject") },
+        { id: "allow_once", label: translate(this.language, "cli.allowOnce") },
         ...(canGrantCommandPrefix(request.commandPrefix)
-          ? [{ id: "allow_prefix", label: "Allow this command/tool in this Thread", detail: this.safe(formatCommandApprovalPrefix(request.commandPrefix)) }]
+          ? [{ id: "allow_prefix", label: translate(this.language, "cli.allowThread"), detail: this.safe(formatCommandApprovalPrefix(request.commandPrefix)) }]
           : []),
       ],
     }, request.signal);
@@ -302,16 +307,16 @@ export class WebInteraction implements AppInteractionPort {
       ...(initialId ? { initialId } : {}) });
   }
   selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined> {
-    return this.selectChoice("Select provider", choices.map(item => ({ id: item.provider, label: item.label,
-      detail: item.apiKeyConfigured ? "API key configured" : "API key required" })), initialProvider) as Promise<ProviderSelectorChoice["provider"] | undefined>;
+    return this.selectChoice(translate(this.language, "cli.providerSelect"), choices.map(item => ({ id: item.provider, label: item.label,
+      detail: translate(this.language, item.apiKeyConfigured ? "cli.apiConfigured" : "cli.apiRequired") })), initialProvider) as Promise<ProviderSelectorChoice["provider"] | undefined>;
   }
   selectModel(providerName: string, choices: readonly ModelSelectorChoice[], initialModel?: string): Promise<string | undefined> {
-    return this.selectChoice(`Select ${providerName} model`, choices.map(item => ({ id: item.id, label: item.label,
+    return this.selectChoice(translate(this.language, "cli.modelSelect", { provider: providerName }), choices.map(item => ({ id: item.id, label: item.label,
       detail: item.vision ? `Vision: ${JSON.stringify(item.vision)}` : undefined })), initialModel);
   }
   selectThinkingEffort(providerName: string, model: string, choices: readonly ThinkingEffortSelectorChoice[], initialEffort: ThinkingEffort): Promise<ThinkingEffort | undefined> {
-    return this.selectChoice(`Thinking effort for ${providerName}/${model}`, choices.map(item => ({ id: item.id, label: item.label,
-      detail: item.applied ? "Applied" : "Saved but not applied" })), initialEffort) as Promise<ThinkingEffort | undefined>;
+    return this.selectChoice(translate(this.language, "cli.effortSelect", { provider: providerName, model }), choices.map(item => ({ id: item.id, label: item.label,
+      detail: translate(this.language, item.applied ? "cli.applied" : "cli.savedNotApplied") })), initialEffort) as Promise<ThinkingEffort | undefined>;
   }
   async readSecret(prompt: string): Promise<string> {
     return await this.awaitDecision({ id: randomUUID(), kind: "secret", title: this.safe(prompt) }) ?? "";
@@ -319,9 +324,9 @@ export class WebInteraction implements AppInteractionPort {
   showPlan(plan: Readonly<PlanProposal>): void { this.append("plan", JSON.stringify(plan, null, 2)); }
   async reviewPlan(options?: Readonly<PlanReviewInputOptions>): Promise<PlanReviewDecision> {
     void options;
-    const value = await this.awaitDecision({ id: randomUUID(), kind: "plan", title: "Review proposed plan",
-      choices: [{ id: "approve", label: "Approve" }, { id: "reject", label: "Reject" },
-        { id: "adjust", label: "Request changes" }, { id: "defer", label: "Later" }] });
+    const value = await this.awaitDecision({ id: randomUUID(), kind: "plan", title: translate(this.language, "cli.reviewPlan"),
+      choices: [{ id: "approve", label: translate(this.language, "ui.approveRun") }, { id: "reject", label: translate(this.language, "ui.reject") },
+        { id: "adjust", label: translate(this.language, "ui.requestChanges") }, { id: "defer", label: translate(this.language, "ui.later") }] });
     if (value?.startsWith("adjust:")) return { action: "adjust", feedback: value.slice(7) };
     return value === "approve" || value === "reject" ? { action: value } : { action: "defer" };
   }

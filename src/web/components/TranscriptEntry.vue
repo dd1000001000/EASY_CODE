@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { WebEntry } from "../../web-contracts.js";
 import MarkdownMessage from "./MarkdownMessage.vue";
+import { t } from "../i18n.js";
 defineProps<{ entry: WebEntry }>();
-function preview(text: string): string { return text.replace(/\s+/gu, " ").trim().slice(0, 120) || "Receiving…"; }
+function preview(text: string): string { return text.replace(/\s+/gu, " ").trim().slice(0, 120) || t("ui.receiving"); }
 function characterCount(text: string): number { return Array.from(text).length; }
 </script>
 
@@ -15,11 +16,11 @@ function characterCount(text: string): number { return Array.from(text).length; 
       </div>
     </div>
     <details v-else-if="entry.kind === 'thinking'" class="disclosure">
-      <summary><span class="disclosure-label">Thinking · {{ characterCount(entry.text) }} chars</span><span class="disclosure-preview">{{ preview(entry.text) }}</span></summary>
+      <summary><span class="disclosure-label">{{ t('ui.thinking') }} · {{ characterCount(entry.text) }} {{ t('ui.chars') }}</span><span class="disclosure-preview">{{ preview(entry.text) }}</span></summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>
     </details>
     <details v-else-if="entry.kind === 'tool'" class="disclosure tool-disclosure">
-      <summary><span class="disclosure-label">Tool · {{ characterCount(entry.text) }} chars</span><span class="disclosure-preview">{{ preview(entry.text) }}</span></summary>
+      <summary><span class="disclosure-label">{{ t('ui.tool') }} · {{ characterCount(entry.text) }} {{ t('ui.chars') }}</span><span class="disclosure-preview">{{ preview(entry.text) }}</span></summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>
       <dl v-if="entry.toolDetails?.length" class="tool-detail-list">
         <div v-for="(detail, index) in entry.toolDetails" :key="index">
@@ -30,12 +31,12 @@ function characterCount(text: string): number { return Array.from(text).length; 
     <details v-else-if="entry.kind === 'diff' && entry.diff" class="disclosure tool-disclosure">
       <summary>{{ entry.text }}</summary>
       <div class="diff-grid">
-        <section><h4>Before</h4><pre>{{ entry.diff.before }}</pre></section>
-        <section><h4>After</h4><pre>{{ entry.diff.after }}</pre></section>
+        <section><h4>{{ t('ui.before') }}</h4><pre>{{ entry.diff.before }}</pre></section>
+        <section><h4>{{ t('ui.after') }}</h4><pre>{{ entry.diff.after }}</pre></section>
       </div>
     </details>
     <details v-else-if="entry.kind === 'plan'" class="disclosure plan-disclosure" open>
-      <summary>Proposed plan</summary>
+      <summary>{{ t('ui.proposedPlan') }}</summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>
     </details>
     <MarkdownMessage v-else-if="entry.kind === 'assistant'" class="entry-text assistant-text" :text="entry.text" />

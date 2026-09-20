@@ -77,6 +77,7 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | Command | Purpose |
 | --- | --- |
 | `/model`, `/mode` | Change model or working mode |
+| `/language [en_us\|zh_cn]` | Show or change the CLI and Web interface language |
 | `/approval`, `/permissions` | Change approval mode; inspect and revoke grants |
 | `/orchestration` | Enable or disable DAG / child-agent creation |
 | `/sessions`, `/resume`, `/new` | List, resume or create sessions |
@@ -84,6 +85,8 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | `/mcp` | View, authenticate, connect, disconnect or remove MCP servers |
 | `/skills` | List user and project Skills |
 | `/context`, `/usage`, `/help` | Inspect context, usage and full help |
+
+The Web interface has an English/简体中文 selector in the upper-right corner. The choice is shared with the CLI and saved in the existing user preferences; model responses, file contents and earlier conversation history remain in their original language.
 
 Ask the agent to create, update or remove a Skill, or place one manually at `~/.easy_code_skills/<name>/SKILL.md` (user-wide) or `<project root>/.easy_code_skills/<name>/SKILL.md` (shared by sessions in that project). Each `SKILL.md` needs YAML `name` and `description` fields followed by instructions; optional `references/`, `assets/` and `scripts/` can hold supporting materials. `/skills` lists both locations. Skill changes made by the agent use tool approval; deleting a Skill archives it for recovery.
 

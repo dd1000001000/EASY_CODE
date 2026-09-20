@@ -142,6 +142,18 @@ describe("Web interaction host", () => {
     assert.equal(await selected, "deepseek");
     host.close();
   });
+  it("localizes app-owned Web decision copy without changing stable choice IDs", async () => {
+    const host = new WebInteraction();
+    host.setLanguage("zh_cn");
+    const selected = host.selectProvider([{ provider: "glm", label: "GLM", apiKeyConfigured: true }], "glm");
+    const pending = host.snapshot().view.decision;
+    assert.equal(pending?.title, "选择供应商");
+    assert.equal(pending?.choices?.[0]?.detail, "已配置 API Key");
+    assert.equal(pending?.choices?.[0]?.id, "glm");
+    assert.equal(host.resolveDecision(pending!.id, "glm"), true);
+    assert.equal(await selected, "glm");
+    host.close();
+  });
 });
 
 describe("loopback Web service", () => {
@@ -227,6 +239,14 @@ describe("loopback Web service", () => {
         method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      const changedLanguage = await post("/api/command", { text: "/language zh_cn" });
+      assert.equal(changedLanguage.status, 200);
+      assert.equal((await changedLanguage.json() as { language: string }).language, "zh_cn");
+      const localizedState = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      assert.equal((await localizedState.json() as { language: string }).language, "zh_cn");
+      assert.equal((await post("/api/command", { text: "/language fr_fr" })).status, 400);
+      assert.equal((await post("/api/command", { text: "/mode code" })).status, 400);
+      assert.equal((await post("/api/message", { threadId: "thread_test", text: "/language en_us" })).status, 200);
       for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "sessions"])
         assert.equal((await post("/api/message", { threadId: "thread_test", text: `/${name}` })).status, 400);
       assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/model" })).status, 400);
