@@ -561,6 +561,9 @@ export class EasyCodeApp {
     this.workspace = workspace;
     this.terminal.configureStreaming(config.limits);
     this.state = state;
+    this.terminal.setContextTokensProvider(
+      () => this.contextManager.estimateShortTermTokens(this.state),
+    );
     this.threadLease = threadLease;
     this.commandExecutionMode = trustedOuterSandbox === "harbor" ? "unrestricted" : assumeYes ? "auto_approve" : "manual";
     // Startup/Resume never silently raises user authority to enable orchestration.

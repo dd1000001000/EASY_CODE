@@ -353,6 +353,8 @@ export class Terminal {
     text: string;
   }>;
   private activityTimer?: NodeJS.Timeout;
+  private contextTokensProvider?: () => number;
+  private lastContextTokenSampleAt = 0;
   private lastReviewElapsedSecond = -1;
   private activityStartedAt = 0;
   private activityFrameIndex = 0;
@@ -465,6 +467,12 @@ export class Terminal {
     if (!this.inlineShellActive) return;
     if (announce) this.showSessionHeader();
     else this.refresh();
+  }
+
+  /** Keep the footer's short-term context estimate current during a running turn. */
+  setContextTokensProvider(provider: (() => number) | undefined): void {
+    this.contextTokensProvider = provider;
+    this.lastContextTokenSampleAt = 0;
   }
 
   showSessionHeader(): void {
@@ -3816,6 +3824,7 @@ export class Terminal {
 
   private refresh(): void {
     if (this.secretInputActive) return;
+    this.sampleContextTokens();
     if (this.disclosureViewer) {
       this.refreshDisclosureViewer();
       return;
@@ -3844,6 +3853,25 @@ export class Terminal {
     }
     this.screen.renderLive(live);
     this.syncTerminalCursorVisibility();
+  }
+
+  private sampleContextTokens(): void {
+    const provider = this.contextTokensProvider;
+    const current = this.uiState.header.session;
+    if (!provider || !current || !this.inlineShellActive || this.closed) return;
+    const now = Date.now();
+    if (now - this.lastContextTokenSampleAt < 1_000) return;
+    this.lastContextTokenSampleAt = now;
+    try {
+      const contextTokens = provider();
+      if (!Number.isFinite(contextTokens) || contextTokens < 0 || contextTokens === current.contextTokens) return;
+      this.uiState = applyEvent(this.uiState, {
+        type: "session.set",
+        session: { ...current, contextTokens },
+      });
+    } catch {
+      // Context display is observational and must not interrupt input or the agent.
+    }
   }
 
   private viewOptions(): {

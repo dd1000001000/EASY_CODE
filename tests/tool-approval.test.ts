@@ -226,4 +226,43 @@ describe("tool approval identity and durable grants", () => {
       assert.equal(result.decision, decision);
     }
   });
+
+  it("persists approval-agent usage for both local and MCP tools without falling back to the user", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-tool-review-usage-"));
+    const storage = createStorage(directory);
+    try {
+      const threads = new ThreadStore(storage);
+      const threadId = "tool-review-usage";
+      threads.create({ threadId, workspaceRoot: path.join(directory, "workspace"),
+        mode: "code", provider: "glm-coding-plan", model: "glm-5.3-flash" });
+      const identities = [
+        { key: `sha256:${"a".repeat(64)}`, label: "read_file", input: { path: "README.md" },
+          effects: ["workspace_read"], description: "Read a workspace file" },
+        { key: `sha256:${"b".repeat(64)}`, label: "robinhood / get_accounts", input: {},
+          effects: ["external_read"], description: "Read account information" },
+      ];
+      for (const identity of identities) {
+        const review = await reviewToolApproval(identity, "Inspect the requested information", {
+          provider: { name: "glm-coding-plan", model: "glm-5.3-flash", complete: async () => ({
+            message: { role: "assistant", content: JSON.stringify({ decision: "allow_once", reason: "Matches the task" }) },
+            usage: { promptTokens: 20, completionTokens: 5, totalTokens: 25 },
+          }) },
+          budget: new TaskBudget(4, 0), systemPrompt: "Review the operation",
+          maxInputChars: 10_000, maxOutputTokens: 256,
+          onUsage: (usage, attempt) => {
+            threads.appendEvent(threadId, { type: "model.usage", phase: "completed", payload: {
+              actor: "approval_agent", purpose: "tool_approval", provider: "glm-coding-plan", model: "glm-5.3-flash",
+              turnId: "turn_1", retry: attempt?.retry ?? false, attempt: attempt?.attempt, usage,
+            } });
+          },
+        });
+        assert.equal(review.decision, "allow_once", `${identity.label}: ${review.reason}`);
+      }
+      const summary = threads.modelUsageSummary(threadId);
+      assert.equal(summary.byPurpose.tool_approval.requests, 2);
+      assert.equal(summary.byActor.approvalAgents.totalTokens, 50);
+    } finally {
+      storage.close(); rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

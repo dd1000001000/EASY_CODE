@@ -167,12 +167,11 @@ export interface ProviderUsage {
   reasoningTokens?: number;
 }
 
-export type ModelUsagePurpose =
-  | "auto_route"
-  | "agent_step"
-  | "context_compaction"
-  | "progress_review"
-  | "command_approval";
+export const MODEL_USAGE_PURPOSES = [
+  "auto_route", "agent_step", "context_compaction", "progress_review",
+  "command_approval", "tool_approval",
+] as const;
+export type ModelUsagePurpose = typeof MODEL_USAGE_PURPOSES[number];
 
 /** Durable accounting metadata for one completed provider response. */
 export interface ModelUsageRecord {
