@@ -1,7 +1,8 @@
-import type {
-  ModelUsagePurpose,
-  ModelUsageRecord,
-  ProviderUsage,
+import {
+  MODEL_USAGE_PURPOSES,
+  type ModelUsagePurpose,
+  type ModelUsageRecord,
+  type ProviderUsage,
 } from "../core/types.js";
 import { isProviderIdentifier } from "../models/catalog.js";
 
@@ -30,13 +31,6 @@ export interface ModelUsageSummary extends ModelUsageTotals {
   byModel: Record<string, ModelUsageTotals>;
 }
 
-const PURPOSES: readonly ModelUsagePurpose[] = [
-  "auto_route",
-  "agent_step",
-  "context_compaction",
-  "progress_review",
-  "command_approval",
-];
 function safeLabel(value: unknown, maximum = 256): value is string {
   return (
     typeof value === "string" &&
@@ -96,7 +90,7 @@ export function parseModelUsageRecord(value: unknown): ModelUsageRecord | undefi
     (input.actor !== "main_agent" &&
       input.actor !== "subagent" &&
       input.actor !== "reviewer" && input.actor !== "approval_agent") ||
-    !PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
+    !MODEL_USAGE_PURPOSES.includes(input.purpose as ModelUsagePurpose) ||
     !safeLabel(input.provider, 32) ||
     !isProviderIdentifier(input.provider) ||
     !safeLabel(input.model) ||
@@ -172,6 +166,7 @@ export function aggregateModelUsage(
     context_compaction: emptyTotals(),
     progress_review: emptyTotals(),
     command_approval: emptyTotals(),
+    tool_approval: emptyTotals(),
   };
   const byActor = {
     mainAgent: emptyTotals(),

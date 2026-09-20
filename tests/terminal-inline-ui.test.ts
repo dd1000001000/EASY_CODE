@@ -259,6 +259,39 @@ async function settlePromptInput(): Promise<void> {
 }
 
 describe("Terminal retained inline shell", () => {
+  it("updates the context footer from the live session during refresh", async () => {
+    await withInteractiveEnvironment(() => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session({ contextTokens: 0 })), true);
+        let contextTokens = 48;
+        let samples = 0;
+        terminal.setContextTokensProvider(() => {
+          samples += 1;
+          return contextTokens;
+        });
+        const internal = terminal as unknown as {
+          refresh(): void;
+          lastContextTokenSampleAt: number;
+        };
+        internal.refresh();
+        assert.equal(terminalState(terminal).header.session?.contextTokens, 48);
+        assert.match(stripAnsi(captured()), /ctx 48/u);
+
+        contextTokens = 96;
+        internal.refresh();
+        assert.equal(samples, 1, "ordinary UI frames should not rescan context");
+        internal.lastContextTokenSampleAt = 0;
+        internal.refresh();
+        assert.equal(terminalState(terminal).header.session?.contextTokens, 96);
+        assert.match(stripAnsi(captured()), /ctx 96/u);
+      } finally { terminal.close(); }
+    });
+  });
+
   it("keeps API key dots visible while other shell updates arrive", async () => {
     await withInteractiveEnvironment(async () => {
       const input = new TtyInput();
