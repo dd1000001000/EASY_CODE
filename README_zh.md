@@ -1,20 +1,27 @@
 # EASY CODE
 
+![EASY CODE — 面向终端与浏览器的本地编程 Agent](./docs/assets/easy-code-banner.png)
+
 [English](./README.md) | 简体中文
 
-EASY CODE 是本地运行的编程 Agent，提供终端与浏览器两种界面。内置模型注册表包含 Qwen、DeepSeek、Kimi K3、智谱 GLM 和 GLM Coding Plan，也可以不改源码直接加入其他 OpenAI-compatible 供应商。进入项目目录，用自然语言描述任务，即可让模型阅读代码、修改文件、运行命令与测试。
+EASY CODE 是面向本地项目的编程 Agent，提供终端和浏览器两种界面。用自然语言描述任务，即可探索代码、修改文件、运行命令并验证结果。使用你自己的模型供应商账户；内置模型注册表包含 Qwen、DeepSeek、Kimi、智谱 GLM 和 GLM Coding Plan。
 
-## 核心功能
+## 功能
 
-- Auto / Plan / Code 工作模式，支持终端、浏览器交互和单次任务。
-- 文件编辑、命令审批、测试验证与 Diff 展示。
-- 自动保存会话，支持 Resume、上下文管理、全局用户记忆与项目记忆。
-- 可复用的用户级和项目级 Skill，支持 Agent 按需发现、读取和维护。
-- 可选 DAG / 子 Agent 协作；支持视觉模型图片输入与 VS Code 终端增强。
+- **终端与网页交互：** 保存对话、按项目组织、图片输入、停止任务和运行中追加调整。
+- **灵活选择模型：** 在同一对话中切换供应商、模型和思考强度；新对话默认沿用上次选择，显式指定时除外。
+- **Auto、Plan、Code 模式：** 回答问题、分析方案或直接实施修改。
+- **受控执行：** 命令审批、操作系统原生沙箱、文件变更检查和长时间命令管理。
+- **可选多 Agent 协作：** 带依赖关系的任务图（DAG）、并行子 Agent，以及在反复验证失败时介入的独立审查。
+- **持久上下文：** 对话恢复、上下文压缩、历史召回、全局记忆和项目记忆。
+- **能力扩展：** 用户级／项目级 Skill、本地或远程 MCP 服务器、VS Code 终端集成。
+- **中英文界面：** CLI 与网页共享并保存语言偏好。
+
+“本地”指应用、工具和历史数据在本机运行或保存。执行任务时，所选模型供应商仍会收到必要的请求上下文。
 
 ## 安装
 
-需要 Node.js **>=20.11.0**、npm，以及一个受支持供应商的 API Key。支持 Windows、macOS、Linux；使用 Worktree 需要 Git。
+需要 Node.js **20.11.0 或更新版本**、npm 和受支持供应商的 API Key。支持目标为 Windows、macOS 和 Linux；Git Worktree 隔离需要 Git。沙箱是否可用还取决于操作系统和硬件架构。
 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -24,83 +31,165 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-最后一步全局安装会准备本地检索和集成资源，并解析安装时可用的最新版 `@openai/codex` 原生沙箱 Runtime。Windows 首次使用需要管理员确认，以建立专用离线身份；macOS 使用 Seatbelt；Linux 使用 bubblewrap/seccomp。普通 CLI 命令不再要求安装虚拟机或容器引擎。
+全局安装会准备检索和集成资源，需要允许该包执行安装脚本。原生沙箱使用项目固定的运行时版本，不会自动选择最新版。Windows 沙箱初始化可能需要管理员确认；普通 CLI／网页使用不需要安装虚拟机或容器引擎。
 
-## 开始使用
+## 快速开始
 
-只需配置准备使用的供应商。以下命令会隐藏输入 Key：
+### 配置供应商
+
+以下命令会以隐藏输入的方式询问 API Key：
 
 ```bash
 easy-code config set qwen.api-key
-# 其他选择：deepseek.api-key、kimi.api-key、glm.api-key、glm-coding-plan.api-key
-easy-code --workspace /path/to/project
 ```
 
-也可启动本机浏览器界面（仅监听 `127.0.0.1`，关闭启动它的终端即停止服务）：
+其他内置凭据名称为 `deepseek.api-key`、`kimi.api-key`、`glm.api-key` 和 `glm-coding-plan.api-key`，只需配置准备使用的供应商。模型供应商的 Key 保存在操作系统凭据库中，不从 TOML 或环境变量读取。
+
+### 打开网页或终端
 
 ```bash
-easy-code --web --workspace /path/to/project
-easy-code --web --workspace /path/to/project --resume <thread-id>
+# 浏览器界面
+easy-code --web
+
+# 在项目中打开交互式终端
+easy-code --workspace "/path/to/project"
 ```
 
-浏览器界面支持会话切换、图片、执行中追加指令、停止任务、Plan 审核及工具审批；侧栏可以打开模型、MCP、Skill 等交互菜单。安装、卸载和 Benchmark 管理命令继续在终端运行。
+将示例路径替换为本地目录；包含空格的路径需加引号。网页服务仅监听本机回环地址。使用时保留启动它的终端，结束后从该终端停止服务。
 
-首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、协议（`chat_completions` 或 `responses`）、端点流式及 `tool_stream` 能力、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。供应商 API Key 只保存在系统凭据库，并绑定对应端点；环境变量和 TOML 不再提供 Key。Benchmark 使用独立的凭据库命名空间，通过 `easy-code benchmark credential set <provider>` 设置。
+全新安装的网页不会自动创建默认项目。在“项目”标题旁添加本地文件夹，再使用项目旁的 **＋** 新建对话。已有对话按工作目录归组，也包括同一数据存储中的 CLI 对话。
 
-在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
+### 选择模型并开始任务
 
-安装时会检查沙箱。直接启动 `easy-code` 时若发现 Windows 一次性初始化未完成，也会自动尝试一次；失败后显示恢复菜单，不循环安装。以下指令用于检查、继续初始化或核对未完成命令：
+网页使用输入框下方的模型入口；CLI 输入 `/model` 打开选择器。然后描述任务，例如：
+
+> 找出登录失败的原因，修复问题，并运行相关测试。
+
+执行单次终端任务或恢复已有对话：
 
 ```bash
+easy-code --workspace "/path/to/project" --mode code -y run "修复登录失败的问题并运行相关测试"
+easy-code --workspace "/path/to/project" --resume <thread-id>
+```
+
+`-y` 启用独立的命令审批 Agent，**不是**授予完全访问权限，也不保证整个过程无需用户决策。
+
+## 网页使用方法
+
+| 区域 | 操作 |
+| --- | --- |
+| 项目 | 点击项目展开／折叠；悬浮或选中时显示新建对话操作。顶部按钮可收起整个侧栏，点击图标可重新展开。 |
+| 输入框 | **Enter 发送，Shift+Enter 换行**。打开对话后才能发送；Windows、macOS、Linux 使用同一规则，输入法组字时不会误发送。 |
+| 附件 | 粘贴或上传图片后显示可移除的预览。超长粘贴文本显示为预览卡片，发送时保留全文。图片需要支持视觉的模型。 |
+| 运行中任务 | 输入为空时按钮用于停止；输入文字后改为发送调整，在后续安全执行边界应用。此时仍可切换项目、对话并并行运行其他任务。 |
+| 模型与权限 | 输入框下方可选择模型／思考强度、批准模式和 DAG／Agent 编排。运行中不允许的变更会被禁用或拒绝。 |
+| 指令 | 输入 `/` 或前缀查看带说明的匹配项；点击条目打开输入框上方的操作界面，也可直接输入并发送受支持指令。点击面板外部可关闭。 |
+| 阅读进展 | Thinking 和工具条目显示单行预览与字符数，展开可查看命令内容、文件名、任务／Agent 名称等详情。紧凑导航条用于跳转到用户消息。 |
+| 状态 | 顶部显示对话与运行信息，右上角卡片显示活动中的 DAG、子 Agent 和 Reviewer。通知在 15 秒后自动关闭，也可手动关闭。 |
+| 语言 | 使用右上角语言选择器；与 CLI 共享偏好，不翻译已有消息或模型回答。 |
+
+每个对话只能由用户或主 Agent **自定义命名一次**，之后不能再次改名。项目显示名称可以修改，不会重命名实际目录。
+
+删除对话会清除其历史、关联子对话及记忆贡献；涉及共享记忆时可能恢复到更早版本。移除项目还会删除项目下的对话及适用的项目记忆。**这两种操作都不会删除项目文件。** 删除前应停止活动任务，并仔细阅读确认提示。
+
+同一项目中的并行对话仍共享文件。不要同时安排互相冲突的文件修改；对话并行不代表每个对话都有独立代码副本。
+
+## 工作模式、批准模式与模型
+
+| 设置 | 含义 |
+| --- | --- |
+| Auto | 根据请求选择直接回答、规划或实施。 |
+| Plan | 侧重调查与方案，**不是强制只读模式**。 |
+| Code | 直接进行实现与验证。 |
+| 手动批准 | 除适用的已保存授权外，命令需要用户批准。 |
+| 审批 Agent | 独立评估命令；拒绝或无法判断时仍可能需要用户批准。 |
+| 完全访问 | 移除普通宿主命令的沙箱和逐条审批，以当前账户权限执行。 |
+
+仅在可信任务和环境中使用完全访问。普通沙箱命令可写入工作区，但限制外部写入和直接访问外网；经批准的 HTTP(S) 活动使用独立的网络审批路径。沙箱失败不会自动降级为完全访问。
+
+DAG／子 Agent 编排默认关闭，且要求非手动批准模式。从手动批准启用时，会先询问是否切换批准模式。关闭编排不会关闭独立 Reviewer。主 Agent 可为子 Agent 分配不高于自身的思考强度。
+
+模型注册表位于 `~/.easy_code/models.toml`，首次启动从[内置注册表](./resources/models.default.toml)创建，后续启动不会覆盖。可在其中维护兼容供应商、模型 ID 和能力；修改后需重启 EASY CODE。
+
+思考强度影响 EASY CODE 的本地执行预算，并在受支持时传递为供应商推理设置。**“已保存，但尚未生效”表示该强度未作为供应商推理参数发送，不表示选择丢失。** 是否支持取决于模型与协议；图片能力也取决于所选模型。
+
+## 指令
+
+以下文字指令在 CLI 和网页都可用，网页同时提供对应的操作面板。
+
+| 指令 | 作用 |
+| --- | --- |
+| `/mode plan\|auto\|code` | 切换工作模式。 |
+| `/status` | 查看对话与运行状态。 |
+| `/workspace [refresh]` | 查看或刷新工作区清单。 |
+| `/tools` | 查看当前可用工具。 |
+| `/skills` | 查看用户级和项目级 Skill。 |
+| `/mcp [server-id action]` | 管理 MCP 连接与授权；菜单中列出可用操作。 |
+| `/permissions [revoke <index>]` | 查看权限／沙箱状态，或撤销已保存授权。 |
+| `/context`、`/usage` | 查看上下文容量或供应商报告的 Token 用量。 |
+| `/memory short [limit]` | 查看近期对话预览。 |
+| `/memory long [global\|project] [id]` | 按范围或 ID 查看长期记忆。 |
+| `/memory move <id> <global\|project>` | 在全局与项目范围之间移动记忆。 |
+| `/memory forget <id>` | 将一条长期记忆设为过期。 |
+| `/help` | 显示指令帮助。 |
+
+`/language [en_us|zh_cn]` 在两种界面都可查看或切换共享语言偏好。网页通常直接使用右上角选择器。
+
+以下文字指令**仅供 CLI 使用**，网页使用对应 UI：
+
+| CLI 指令 | 作用／网页替代入口 |
+| --- | --- |
+| `/model` | 网页输入框下方的模型／思考强度选择器。CLI 还支持 `/model <model-id>` 或 `/model <provider> <model-id> [none\|low\|medium\|high]`。 |
+| `/provider <provider-id>` | 切换供应商；网页使用模型选择器。 |
+| `/approval [manual\|auto_approve\|unrestricted]` | 网页输入框下方的批准模式入口。 |
+| `/orchestration [on\|off]` | 网页批准模式旁的 DAG／Agent 入口。 |
+| `/image <path\|clipboard\|clear>` | 网页上传／粘贴图片，以及可移除的附件预览。 |
+| `/sessions`、`/resume [id]`、`/new` | 网页项目／对话侧栏和项目旁的 **＋**。 |
+| `/clear` | 只清空终端显示，不删除历史；网页不提供此功能。 |
+| `/exit` | 保存并退出 CLI；网页服务从启动终端停止。 |
+
+不支持指令别名。未识别的斜杠文本按普通输入处理，不会作为受支持指令执行；在网页输入已识别但仅限 CLI 的指令会被拒绝。
+
+## Skill、MCP 与记忆
+
+**Skill** 保存可复用的说明与资源。用户级目录为 `~/.easy_code_skills/<name>/SKILL.md`，项目级目录为 `<project root>/.easy_code_skills/<name>/SKILL.md`。文件需包含 YAML `name`、`description` 字段和正文说明，旁边可放参考资料、素材和脚本。用 `/skills` 查看，或让 Agent 创建、更新 Skill。Agent 的变更需要审批；删除采用归档方式。
+
+**MCP** 用于接入额外工具。可让 Agent 在 `~/.easy_code/mcp.toml` 中添加或编辑服务器，再通过 `/mcp` 授权和连接；只修改配置不会自动连接。本地 stdio 服务器在工作区沙箱内运行，远程服务器支持 HTTP／SSE 及已配置的 Bearer 认证或 OAuth。除本机回环 HTTP 外，远程地址必须使用 HTTPS。MCP 调用需要审批，服务器描述本身不能授予权限。
+
+**记忆** 不等同于 Skill 或对话历史。全局记忆保留跨项目偏好，项目记忆保留相关项目知识。Agent 可保存有价值的信息，用户通过 `/memory` 查看、移动或遗忘。上下文压缩可支持更长任务，但摘要和召回记忆不能代替对当前文件的核实。后台记忆整理可能额外请求模型并消耗 Token。
+
+## 配置与排查
+
+在 `EASYCODE.md` 中填写项目约定和验证要求。项目配置使用 `.easycode/config.toml`，具体设置见[配置示例](./docs/config.example.toml)。`easy-code config defaults` 可查看默认配置。不要将 API Key 写入项目文件。
+
+```bash
+easy-code install doctor
 easy-code sandbox doctor
 easy-code sandbox setup
-easy-code sandbox recover --workspace /path/to/project
+easy-code sandbox recover --workspace "/path/to/project"
 ```
 
-普通命令在当前项目上由平台原生沙箱执行：允许写工作区，禁止写工作区外路径，默认禁止直接访问外网；获批的 HTTP(S) 下载经过 Runtime 网络门。完全访问会明确绕过沙箱；Benchmark 仍限制在离线 Harbor/Docker 容器内，不会静默回退宿主机。
+安装检查用于排查多个全局启动器的冲突；沙箱指令用于检查、准备或核对执行状态。安装和启动不会重配 Docker、Podman 或 WSL。更新 EASY CODE 后需重启已有进程。当前开发版本不承诺兼容旧内部数据格式或已改变的提示词包；升级前请备份重要数据。
 
-单次运行或恢复会话：
+## 开发与评测
 
 ```bash
-easy-code --workspace /path/to/project --mode code -y run "修复登录错误并验证"
-easy-code --workspace /path/to/project --resume <thread-id>
+npm run build
+npm run typecheck
+npm test
 ```
 
-`auto` 自动选择处理方式；`plan` 以调查和方案为主，**不是强制只读**；`code` 直接实施。
-
-`/approval` 切换请求批准、帮我批准或完全访问。`-y` 启用独立审批 Agent，不等于全部允许。**完全访问会取消普通 CLI 命令的沙箱与逐条审批，请仅在可信环境使用。**
-
-## 常用操作
-
-| 命令 | 用途 |
-| --- | --- |
-| `/model`、`/mode` | 切换模型、工作模式 |
-| `/language [en_us\|zh_cn]` | 查看或切换 CLI 与网页界面语言 |
-| `/approval`、`/permissions` | 切换审批方式、查看与撤销授权 |
-| `/orchestration` | 开关 DAG / 子 Agent 创建功能 |
-| `/sessions`、`/resume`、`/new` | 查看、恢复、新建会话 |
-| `/image ./screenshot.png` | 向支持视觉的模型附加图片 |
-| `/mcp` | 查看、授权、连接、断开或移除 MCP Server |
-| `/skills` | 列出用户级与项目级 Skill |
-| `/context`、`/usage`、`/help` | 查看上下文、用量和完整帮助 |
-
-网页右上角可选择 English／简体中文；该设置与 CLI 共用，保存在现有用户偏好中。模型回答、文件内容和已有对话历史不会自动翻译。
-
-可让 Agent 创建、修改或删除 Skill，也可手动放到 `~/.easy_code_skills/<名称>/SKILL.md`（用户级）或 `<项目根目录>/.easy_code_skills/<名称>/SKILL.md`（同项目跨 Thread 共享）。`SKILL.md` 需包含 YAML 格式的 `name`、`description` 和后续操作说明；可用 `references/`、`assets/`、`scripts/` 存放辅助内容。`/skills` 列出两处 Skill。Agent 修改 Skill 需经过工具审批；删除时会归档以便恢复。
-
-可以让 Agent 添加或修改 MCP Server，再用 `/mcp` 批准并连接。配置保存在 `~/.easy_code/mcp.toml`。本地 Server 使用 stdio，在工作区沙箱内运行，默认不能直接联网。远端 Server 支持 Streamable HTTP 和旧版 SSE，要求 HTTPS（本机回环地址可用 HTTP），可使用环境变量中的 Bearer Token 或交互式 OAuth 授权。OAuth 会自动打开授权链接；等待时可按 Ctrl+C 取消。凭据保存在操作系统凭据库，不写入配置文件。每次 MCP 工具调用都需批准。
-
-在项目 `EASYCODE.md` 中写入约定和验证命令；在 `.easycode/config.toml` 的 `[limits]` 中调整运行预算。运行 `easy-code config defaults` 查看默认值。
+架构和设计边界见[技术设计文档](./docs/TECHNICAL_DESIGN_ZH.md)。SWE-bench 的准备与运行见[评测指南](./benchmarks/swebench_verified/README.md)。评测凭据与交互式使用的凭据分开，通过 `easy-code benchmark credential set <provider>` 配置。
 
 ## 卸载
 
-~~~sh
+```bash
 easy-code uninstall --dry-run
 easy-code uninstall
-~~~
+```
 
-卸载只确认一次：输入 `y` 后删除当前用户的配置、普通及 Benchmark API Key 条目、会话与记忆、缓存、终端插件、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。用户项目、链接的源码仓库、Benchmark 项目和共享系统软件保留。Windows 上游原生沙箱使用的系统账户属于共享 OS 基础设施，不归 EASY CODE 所有，因此不会在卸载时删除。
+建议先查看预演结果。确认后，卸载会移除安装拥有的配置、凭据、历史、记忆、缓存、集成资源、受管理 Worktree 和全局 CLI。`--yes` 表示不再交互确认同一操作。**没有备份就无法撤销。**
 
-更多资料：[配置示例](./docs/config.example.toml) · [架构与模块技术文档](./docs/TECHNICAL_DESIGN_ZH.md) · [Benchmark 指南](./benchmarks/swebench_verified/README.md)
+用户项目文件夹、关联源码目录和共享系统软件会保留；Windows 的共享沙箱账户不会删除。无法确认归属或不安全的资源会阻止移除或被保留，不会猜测后删除；请检查输出中的提示。
 
-[MIT License](./LICENSE) · [第三方开源声明](./THIRD_PARTY_NOTICES.md)
+[MIT 许可证](./LICENSE) · [第三方声明](./THIRD_PARTY_NOTICES.md)

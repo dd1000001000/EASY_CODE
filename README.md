@@ -4,19 +4,24 @@
 
 English | [简体中文](./README_zh.md)
 
-EASY CODE is a local coding agent with terminal and browser interfaces. Its bundled model registry includes Qwen, DeepSeek, Kimi K3, Zhipu GLM and GLM Coding Plan, and you can add other OpenAI-compatible providers without changing the source code. Open a project and describe a task to inspect code, edit files, run commands and verify changes.
+EASY CODE is a local coding agent for your projects, available in the terminal and browser. Describe a task to explore code, edit files, run commands and check results. Use your own provider account; the bundled model registry includes Qwen, DeepSeek, Kimi, Zhipu GLM and GLM Coding Plan.
 
 ## Features
 
-- Auto / Plan / Code modes, with terminal/browser sessions and one-shot tasks.
-- File editing, command approval, test verification and diff display.
-- Saved sessions, Resume, context management, and global user/project memory.
-- Reusable user and project Skills that the agent can discover, read and maintain.
-- Optional DAG / child-agent collaboration, vision-model image input and VS Code terminal integration.
+- **Terminal and Web interfaces:** saved conversations, project folders, image input, stopping tasks and in-flight adjustments.
+- **Flexible models:** switch providers, models and thinking effort within a conversation; new conversations reuse your last selection unless explicitly overridden.
+- **Auto, Plan and Code modes:** answer questions, investigate an approach or implement changes.
+- **Controlled execution:** command approvals, native OS sandboxing, file-change checks and supervised long-running commands.
+- **Optional collaboration:** dependency-based tasks (DAGs), parallel child agents and independent review when repeated verification failures need investigation.
+- **Persistent context:** conversation recovery, context compaction, historical recall and global/project memory.
+- **Extensible capabilities:** user/project Skills, local or remote MCP servers and VS Code terminal integration.
+- **English and Simplified Chinese:** a shared, saved interface-language preference.
+
+“Local” describes where the application, tools and stored history run. Selected model providers still receive the request context needed to perform tasks.
 
 ## Install
 
-Requires Node.js **>=20.11.0**, npm and an API key for a supported provider. Runs on Windows, macOS and Linux; Worktree isolation requires Git.
+Requires Node.js **20.11.0 or newer**, npm and a supported provider API key. Windows, macOS and Linux are supported targets; Git is required for Git worktree isolation. Sandbox availability also depends on the OS and architecture.
 
 ```bash
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -26,85 +31,165 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-The final global install prepares local retrieval and integrations, and resolves the latest `@openai/codex` native sandbox runtime available at installation time. Windows performs a one-time elevated setup for a dedicated offline identity; macOS uses Seatbelt; Linux uses bubblewrap/seccomp. EASY CODE does not install a VM or container engine for normal CLI commands.
+The global installation prepares retrieval and integration resources; allow the package's installation scripts to run. The native sandbox uses the runtime version pinned by the project, not an automatically selected latest release. Windows sandbox setup may require administrator confirmation. Normal CLI/Web use does not require a VM or container engine.
 
-## Get started
+## Quick start
 
-Configure only the provider you intend to use. The command prompts for the key with hidden input:
+### Configure a provider
+
+This command asks for the API key using hidden input:
 
 ```bash
 easy-code config set qwen.api-key
-# Alternatives: deepseek.api-key, kimi.api-key, glm.api-key, glm-coding-plan.api-key
-easy-code --workspace /path/to/project
 ```
 
-To use the local browser interface instead (bound only to `127.0.0.1`; stop it from its launching terminal):
+Other bundled credential names are `deepseek.api-key`, `kimi.api-key`, `glm.api-key` and `glm-coding-plan.api-key`. Configure the provider you intend to use. Model-provider keys are stored in the OS credential store, not in TOML or environment variables.
+
+### Open Web or CLI
 
 ```bash
-easy-code --web --workspace /path/to/project
-easy-code --web --workspace /path/to/project --resume <thread-id>
+# Browser interface
+easy-code --web
+
+# Interactive terminal in a project
+easy-code --workspace "/path/to/project"
 ```
 
-The browser interface supports session switching, images, in-flight adjustments, stopping tasks, plan review and tool approvals. Model, MCP and Skill menus are available from the sidebar. Installation, uninstall and Benchmark administration remain terminal commands.
+Replace the example path with your local folder, and quote paths containing spaces. The Web service listens on local loopback only; keep its launching terminal open and stop the service there when finished.
 
-The first installation creates `~/.easy_code/models.toml`. Edit that file to maintain provider endpoints, wire protocol (`chat_completions` or `responses`), endpoint streaming and `tool_stream` support, model IDs, context windows, vision/tool/reasoning capabilities and the benchmark profile. EASY CODE validates it at startup and never overwrites an existing copy. Provider API keys are stored only in the OS credential store, bound to their provider endpoint; environment variables and TOML are not key sources. Benchmark keys use a separate credential-store namespace and are set with `easy-code benchmark credential set <provider>`.
+A fresh Web installation has no default project. Add a local folder from the **Projects** heading, then use the **＋** beside that project to create a conversation. Existing conversations, including CLI conversations in the same data store, are grouped by their working folder.
 
-Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
+### Select a model and start a task
 
-The sandbox is checked during installation. Interactive startup also attempts the one-time Windows setup when needed; failures open a recovery menu without an installation loop. Check or resume it with:
+In Web, use the model control below the input. In CLI, enter `/model` to open the selector. Then describe a task, for example:
+
+> Find the cause of the login failure, fix it, and run the relevant tests.
+
+For a single terminal task or an existing conversation:
 
 ```bash
-easy-code sandbox doctor
-easy-code sandbox setup
-easy-code sandbox recover --workspace /path/to/project
+easy-code --workspace "/path/to/project" --mode code -y run "Fix the login failure and run the relevant tests"
+easy-code --workspace "/path/to/project" --resume <thread-id>
 ```
 
-Normal commands run against the current project under the platform sandbox: workspace writes are allowed, writes outside it are denied and direct external networking is blocked. Approved HTTP(S) downloads use the Runtime network gate. Full access explicitly bypasses the sandbox; Benchmark remains confined to its offline Harbor/Docker container. There is no silent host fallback.
+`-y` selects the independent command-approval agent. It does **not** grant unrestricted host access or guarantee that no user decision will be needed.
 
-Run one task or resume a session:
+## Using the Web interface
 
-```bash
-easy-code --workspace /path/to/project --mode code -y run "Fix and verify the login error"
-easy-code --workspace /path/to/project --resume <thread-id>
-```
+| Area | How to use it |
+| --- | --- |
+| Projects | Click a project to expand/collapse it. Hover over or select it to reveal its new-conversation action. Collapse the sidebar with its top button; click the logo to expand it. |
+| Input | **Enter** sends; **Shift+Enter** inserts a newline. Sending requires an open conversation. The shortcuts apply on Windows, macOS and Linux; IME composition is not submitted as a message. |
+| Attachments | Paste or upload images for removable previews. Long pasted text appears as a preview card while retaining the full submitted text. Images require a vision-capable model. |
+| Running tasks | An empty draft shows the stop action. Entering text changes it to send an adjustment for a later safe execution boundary. Other projects and conversations remain accessible and can run in parallel. |
+| Model and permissions | Below the input, choose model/thinking effort, approval mode and DAG/agent orchestration. Changes that are unsafe during active work are disabled or rejected. |
+| Commands | Type `/` or a prefix for matching entries with descriptions. Click an entry to open its UI above the input, or type and send a supported command. Click outside a panel to dismiss it. |
+| Reading progress | Thinking and tool entries show a one-line preview and character count. Expand for details such as command text, file names or task/agent names. The compact navigation rail jumps between user messages. |
+| Status | The header shows conversation and runtime information. An upper-right card shows active DAG, child-agent and reviewer activity. Notices close after 15 seconds or can be dismissed manually. |
+| Language | Use the upper-right language selector. It shares the CLI preference; existing messages and model responses are not translated. |
 
-`auto` selects how to handle the task; `plan` focuses on investigation and proposals but is **not enforced read-only**; `code` implements directly.
+Each conversation can receive a custom title **once**, from either the user or the main agent. After that, it cannot be renamed again. Project display names can be changed without renaming the actual directory.
 
-Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an independent approval agent, not blanket approval. **Full access removes the sandbox and per-command approval for normal CLI commands; use it only in a trusted environment.**
+Deleting a conversation removes its saved history, associated child conversations and memory contributions; shared memories may be restored to an earlier revision. Removing a project also removes its conversations and applicable project memory. **Neither action deletes your project files.** Stop active work before deletion and read the confirmation carefully.
 
-## Common commands
+Parallel conversations in one project still share its files. Avoid assigning conflicting edits to the same files; parallel execution does not imply a separate checkout for every conversation.
+
+## Modes, approvals and models
+
+| Setting | Meaning |
+| --- | --- |
+| Auto | Chooses how to handle the request: answer, plan or implement. |
+| Plan | Focuses on investigation and proposals. **It is not enforced read-only.** |
+| Code | Works directly on implementation and verification. |
+| Manual approval | Asks you to approve commands unless a relevant saved grant applies. |
+| Approval agent | Independently evaluates commands; rejected or undecidable requests may still require your approval. |
+| Full access | Removes normal host command sandboxing and individual command approvals. Commands run with your account privileges. |
+
+Use Full access only for trusted tasks and environments. Normal sandboxed commands can write within their workspace; outside writes and direct external networking are restricted. Approved HTTP(S) activity uses a separate network approval path. Sandbox failure never silently enables Full access.
+
+DAG/child-agent orchestration is off by default and requires an approval mode other than Manual. Enabling it from Manual asks before changing approval mode. Disabling orchestration does not disable the independent reviewer. Children can receive a thinking effort no higher than the main agent's.
+
+The model registry is `~/.easy_code/models.toml`. First startup creates it from the [bundled registry](./resources/models.default.toml); later starts do not overwrite it. Use it to maintain compatible providers, model IDs and capabilities. Restart EASY CODE after editing the registry.
+
+Thinking effort affects EASY CODE's local execution budgets and, where supported, the provider's reasoning setting. **“Saved, not applied” means the selected effort is not being sent as a provider reasoning parameter**, not that the selection was discarded. Provider support depends on the model and protocol; image support likewise depends on the selected model's capabilities.
+
+## Commands
+
+These typed commands are available in both CLI and Web. Web also offers panels for these actions.
 
 | Command | Purpose |
 | --- | --- |
-| `/model`, `/mode` | Change model or working mode |
-| `/language [en_us\|zh_cn]` | Show or change the CLI and Web interface language |
-| `/approval`, `/permissions` | Change approval mode; inspect and revoke grants |
-| `/orchestration` | Enable or disable DAG / child-agent creation |
-| `/sessions`, `/resume`, `/new` | List, resume or create sessions |
-| `/image ./screenshot.png` | Attach an image for a vision-capable model |
-| `/mcp` | View, authenticate, connect, disconnect or remove MCP servers |
-| `/skills` | List user and project Skills |
-| `/context`, `/usage`, `/help` | Inspect context, usage and full help |
+| `/mode plan\|auto\|code` | Change working mode. |
+| `/status` | Inspect conversation and runtime state. |
+| `/workspace [refresh]` | Inspect or refresh the workspace inventory. |
+| `/tools` | Browse currently available tools. |
+| `/skills` | List user and project Skills. |
+| `/mcp [server-id action]` | Manage MCP connections and authorization; the menu lists available actions. |
+| `/permissions [revoke <index>]` | Inspect permissions/sandbox status or revoke a saved grant. |
+| `/context`, `/usage` | Inspect context capacity or provider-reported token usage. |
+| `/memory short [limit]` | Inspect recent conversation previews. |
+| `/memory long [global\|project] [id]` | Inspect long-term memory by scope or ID. |
+| `/memory move <id> <global\|project>` | Move a memory between scopes. |
+| `/memory forget <id>` | Expire a long-term memory. |
+| `/help` | Show command help. |
 
-The Web interface has an English/简体中文 selector in the upper-right corner. The choice is shared with the CLI and saved in the existing user preferences; model responses, file contents and earlier conversation history remain in their original language.
+`/language [en_us|zh_cn]` shows or changes the shared language preference in either interface. In Web, the upper-right selector is the usual entry point.
 
-Ask the agent to create, update or remove a Skill, or place one manually at `~/.easy_code_skills/<name>/SKILL.md` (user-wide) or `<project root>/.easy_code_skills/<name>/SKILL.md` (shared by sessions in that project). Each `SKILL.md` needs YAML `name` and `description` fields followed by instructions; optional `references/`, `assets/` and `scripts/` can hold supporting materials. `/skills` lists both locations. Skill changes made by the agent use tool approval; deleting a Skill archives it for recovery.
+The following typed commands are **CLI-only**; Web uses the UI alternatives listed here:
 
-Ask the agent to add or update an MCP server, then use `/mcp` to approve and connect it. Server configuration is stored in `~/.easy_code/mcp.toml`. Local servers use stdio and run inside the workspace sandbox, with direct network access disabled. Remote servers support Streamable HTTP or legacy SSE; they require HTTPS (or loopback HTTP) and can use an environment-variable bearer token or interactive OAuth sign-in. OAuth opens the authorization link automatically; press Ctrl+C to cancel while waiting. Credentials are stored in the operating system's credential store, not in the config file. Each MCP tool call asks for approval.
+| CLI command | Purpose / Web alternative |
+| --- | --- |
+| `/model` | Model and thinking-effort selector below the Web input. CLI also accepts `/model <model-id>` or `/model <provider> <model-id> [none\|low\|medium\|high]`. |
+| `/provider <provider-id>` | Switch provider; use the Web model selector. |
+| `/approval [manual\|auto_approve\|unrestricted]` | Approval control below the Web input. |
+| `/orchestration [on\|off]` | DAG/agent control beside the Web approval control. |
+| `/image <path\|clipboard\|clear>` | Web upload/paste and removable attachment previews. |
+| `/sessions`, `/resume [id]`, `/new` | Web project/conversation sidebar and the project's **＋** action. |
+| `/clear` | Clears terminal display only; no Web equivalent. Does not delete history. |
+| `/exit` | Saves and exits CLI; stop the Web server from its launching terminal. |
 
-Put project conventions and validation commands in `EASYCODE.md`. Adjust operational budgets in the `[limits]` table of `.easycode/config.toml`; run `easy-code config defaults` to inspect defaults.
+There are no command aliases. Unknown slash-prefixed text is ordinary input, not a supported command; recognized CLI-only commands are rejected when typed in Web.
 
-Installation and startup do not change Docker, Podman or WSL configuration. Restart existing CLI sessions after updating installation code.
+## Skills, MCP and memory
+
+**Skills** hold reusable instructions and resources. Place them at `~/.easy_code_skills/<name>/SKILL.md` for user-wide use or `<project root>/.easy_code_skills/<name>/SKILL.md` for a project. Each file needs YAML `name` and `description` fields followed by instructions. Supporting references, assets and scripts can live alongside it. Use `/skills` to inspect them, or ask the agent to create or update a Skill. Agent-managed changes require approval; deletion archives the Skill.
+
+**MCP** connects additional tools. Ask the agent to add or edit a server in `~/.easy_code/mcp.toml`, then use `/mcp` to authorize and connect it. Editing configuration alone does not connect a server. Local stdio servers run in the workspace sandbox; remote servers support HTTP/SSE connections and configured bearer authentication or OAuth. Remote URLs require HTTPS except for loopback HTTP. MCP calls require approval; server descriptions do not grant permissions.
+
+**Memory** is separate from Skills and conversation history. Global memory carries preferences across projects; project memory retains relevant project knowledge. The agent can save useful information; `/memory` lets you inspect, move or forget it. Context compaction makes room for longer work, but summaries and recalled memories do not replace checking current files. Background memory consolidation may make additional model requests and consume tokens.
+
+## Configuration and troubleshooting
+
+Put project conventions and validation instructions in `EASYCODE.md`. Project configuration uses `.easycode/config.toml`; see the [configuration example](./docs/config.example.toml). `easy-code config defaults` displays defaults. Keep API keys out of project files.
+
+```bash
+easy-code install doctor
+easy-code sandbox doctor
+easy-code sandbox setup
+easy-code sandbox recover --workspace "/path/to/project"
+```
+
+The install check helps locate conflicting global launchers; sandbox commands inspect, prepare or reconcile execution state. Installation and startup do not reconfigure Docker, Podman or WSL. Restart existing processes after updating EASY CODE. This development version does not promise compatibility with older internal data formats or changed prompt bundles; back up important data before upgrading.
+
+## Development and evaluation
+
+```bash
+npm run build
+npm run typecheck
+npm test
+```
+
+See the [technical design](./docs/TECHNICAL_DESIGN.md) for architecture and design boundaries. SWE-bench setup and execution are covered in the [benchmark guide](./benchmarks/swebench_verified/README.md). Benchmark credentials are separate from interactive credentials: configure them with `easy-code benchmark credential set <provider>`.
 
 ## Uninstall
 
-~~~sh
+```bash
 easy-code uninstall --dry-run
 easy-code uninstall
-~~~
+```
 
-Uninstall asks once: enter `y` to remove current-user configuration, ordinary and Benchmark API-key entries, history/memory, caches, terminal integration, managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. User projects, linked source checkouts, Benchmark projects and shared system software are preserved. On Windows, the upstream native sandbox accounts are shared OS infrastructure and are not owned or removed by EASY CODE.
+Review the dry run first. After confirmation, uninstall removes installation-owned configuration, credentials, history, memory, caches, integration resources, managed worktrees and the global CLI. `--yes` confirms the same operation without a prompt. **There is no undo without a backup.**
 
-More: [Configuration example](./docs/config.example.toml) · [Architecture and module documentation](./docs/TECHNICAL_DESIGN.md) · [Benchmark guide](./benchmarks/swebench_verified/README.md)
+User project folders, linked source checkouts and shared system software are preserved. Shared Windows sandbox accounts are not removed. Unknown or unsafe resources block removal or are preserved rather than deleted speculatively; inspect the reported notices.
 
 [MIT License](./LICENSE) · [Third-party notices](./THIRD_PARTY_NOTICES.md)
