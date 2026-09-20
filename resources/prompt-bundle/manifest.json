@@ -455,8 +455,8 @@
       "bytes": 908
     },
     "tools/write_memory.json": {
-      "sha256": "sha256:6d6a7eae9332a2ae3f76568849b535a741e960716ee420f39fd8108070472f53",
-      "bytes": 2437
+      "sha256": "sha256:319d069ae34255633c19f0e510370d27f462adf338fa07dc30c79eeb2e4e40d5",
+      "bytes": 2439
     }
   },
   "tools": {
@@ -618,8 +618,8 @@
     "write_memory": {
       "path": "tools/write_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:6d6a7eae9332a2ae3f76568849b535a741e960716ee420f39fd8108070472f53"
+      "contentHash": "sha256:319d069ae34255633c19f0e510370d27f462adf338fa07dc30c79eeb2e4e40d5"
     }
   },
-  "bundleHash": "sha256:5f069305bb8a3f6d86f72ec5f2e85bae891eafcebdb3d384a7a0ba96fed070f4"
+  "bundleHash": "sha256:edcc9427e391ae1f7faf1f11c49ca3a915e501f6e7ce4c46bb5a3cfd8dc803ff"
 }

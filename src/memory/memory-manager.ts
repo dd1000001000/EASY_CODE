@@ -25,12 +25,12 @@ import type {
   MemoryVectorSearchOptions,
   PreparedMemoryEmbedding,
 } from "./vector-index.js";
+import { memoryExpiryDays, memoryFreshnessWeight } from "./lifecycle.js";
 
 export interface MemorySearchOptions {
   readonly readOnly?: boolean;
   readonly workspaceRoot?: string;
   readonly limit?: number;
-  readonly minimumConfidence?: number;
   /** Include inactive audit-history rows. Ordinary retrieval stays active-only. */
   readonly includeInactive?: boolean;
 }
@@ -117,23 +117,17 @@ interface MemoryRow {
   category: LongTermMemory["category"];
   content: string;
   normalized_content: string;
-  confidence: number;
   status: LongTermMemory["status"];
   evidence: string | null;
   created_at: string;
   updated_at: string;
+  last_accessed_at: string | null;
 }
 
 interface MemoryProvenance {
   version: 1;
-  verification: "user_stated" | "observed" | "runtime_verified" | "model_observed";
   refs: string[];
   files: Array<{ path: string; hash: string }>;
-}
-
-interface MemoryAdmission {
-  confidence: number;
-  status: "active" | "needs_verification";
 }
 
 type MemoryAuditAction =
@@ -147,7 +141,6 @@ type MemoryAuditAction =
 interface MemorySnapshot {
   readonly category: LongTermMemory["category"];
   readonly content: string;
-  readonly confidence: number;
   readonly status: LongTermMemory["status"];
 }
 
@@ -177,8 +170,6 @@ export const MEMORY_ID_PATTERN = /^memory_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{
 const SAFE_CONTEXT_ID = /^[\p{L}\p{N}._:-]{1,160}$/u;
 const MAX_EVIDENCE_HISTORY_ENTRIES = 24;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
-const TENTATIVE_MEMORY = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;
-const EXPLICIT_DURABLE_USER_CUE = /(?:以后|今后|始终|总是|统一|默认|偏好|喜欢|习惯|所有项目|每个项目|跨项目|约定|规范|prefer|always|by default|from now on|convention)/iu;
 
 function normalizeContent(value: string): string {
   return value
@@ -260,29 +251,10 @@ function memoryReason(value: string): string {
   return reason;
 }
 
-function memoryAdmission(provenance: MemoryProvenance | undefined): MemoryAdmission {
-  switch (provenance?.verification) {
-    case "runtime_verified":
-      return { confidence: 0.9, status: "active" };
-    case "observed":
-      return { confidence: 0.82, status: "active" };
-    case "user_stated":
-      return { confidence: 0.8, status: "active" };
-    case "model_observed":
-      return { confidence: 0.55, status: "needs_verification" };
-    default:
-      // Direct/internal callers without a captured model turn retain the
-      // historical trusted behavior. Agent-originated mutations always carry
-      // a provenance document, even when no source reference was supplied.
-      return { confidence: 0.8, status: "active" };
-  }
-}
-
 function snapshot(row: MemoryRow): MemorySnapshot {
   return {
     category: row.category,
     content: redactSensitiveInformation(row.content),
-    confidence: row.confidence,
     status: row.status,
   };
 }
@@ -382,7 +354,6 @@ function toMemory(row: MemoryRow): Readonly<LongTermMemory> {
     scope: row.scope,
     category: row.category,
     content: redactSensitiveInformation(row.content),
-    confidence: row.confidence,
     status: row.status,
     evidence: row.evidence ? redactSensitiveInformation(row.evidence) : undefined,
     createdAt: row.created_at,
@@ -434,7 +405,7 @@ export class MemoryManager {
     query: string,
     options: MemorySearchOptions | number = {},
   ): ReadonlyArray<Readonly<LongTermMemory>> {
-    return this.searchLexical(workspaceId, query, options, true);
+    return this.searchLexical(workspaceId, query, options);
   }
 
   scopeGenerationKey(projectId: string): string {
@@ -445,6 +416,8 @@ export class MemoryManager {
   }
 
   getAccessible(projectId: string, memoryId: string): Readonly<LongTermMemory> | undefined {
+    this.expireDueMemories(projectId);
+    this.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
     return this.get(projectId, memoryId) ?? this.get(GLOBAL_MEMORY_WORKSPACE_ID, memoryId);
   }
 
@@ -453,6 +426,8 @@ export class MemoryManager {
     if (scope !== "all") {
       return this.list(scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId, options);
     }
+    this.expireDueMemories(projectId);
+    this.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
     const limit = safeLimit(options.limit, 100, 500);
     const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0;
     const status = options.status ?? "active";
@@ -484,9 +459,11 @@ export class MemoryManager {
       ...options, limit, workspaceRoot: undefined,
     });
     const preferences = !hasGlobal || !options.includeGlobalPreferences ? []
-      : this.list(GLOBAL_MEMORY_WORKSPACE_ID, { status: "active", limit: 8 })
-        .filter((memory) => memory.category === "preference" || memory.category === "convention")
-        .slice(0, 3);
+      : this.storage.db.prepare<[string], MemoryRow>(
+        `SELECT * FROM memories WHERE workspace_id = ? AND status = 'active'
+           AND category IN ('preference', 'convention')
+         ORDER BY COALESCE(last_accessed_at, created_at) DESC LIMIT 3`,
+      ).all(GLOBAL_MEMORY_WORKSPACE_ID).map(toMemory);
     const globalCandidates = [...new Map([...preferences, ...global].map((memory) => [memory.id, memory])).values()];
     const reservedGlobal = Math.min(2, globalCandidates.length, limit);
     const seen = new Set<string>();
@@ -510,10 +487,6 @@ export class MemoryManager {
     workspaceId = assertWorkspaceId(workspaceId);
     const resolvedOptions = typeof options === "number" ? { limit: options } : options;
     const limit = safeLimit(resolvedOptions.limit, 6, 50);
-    const requestedConfidence = resolvedOptions.minimumConfidence;
-    const minimumConfidence = Number.isFinite(requestedConfidence)
-      ? Math.max(0, Math.min(requestedConfidence as number, 1))
-      : 0.55;
     const includeInactive = resolvedOptions.includeInactive === true;
     const boundedQuery = query.slice(0, MAX_MEMORY_SEARCH_CHARS);
     const candidateLimit = Math.min(50, Math.max(limit * 4, 20));
@@ -522,15 +495,12 @@ export class MemoryManager {
       boundedQuery,
       {
         limit: candidateLimit,
-        minimumConfidence,
         includeInactive,
       },
-      false,
     );
 
     if (!this.vectorIndex || !boundedQuery.trim()) {
       const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
-      if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
 
@@ -538,17 +508,14 @@ export class MemoryManager {
     try {
       semantic = await this.vectorIndex.search(workspaceId, boundedQuery, {
         limit: candidateLimit,
-        minimumSimilarity: 0.1,
-        minimumConfidence,
-        // Retrieve tentative candidates from the derived index too. The
-        // authoritative status filter below still excludes expired and
+        minimumSimilarity: this.limits.memoryVectorMinSimilarity,
+        // The authoritative status filter below excludes expired and
         // superseded memories unless the caller explicitly requests them.
         includeInactive: true,
       });
     } catch (error) {
       this.reportVectorError(error);
       const selected = await this.currentCandidates(workspaceId, lexical, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
-      if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
       return Object.freeze(selected);
     }
 
@@ -566,8 +533,7 @@ export class MemoryManager {
       const memory = this.get(workspaceId, hit.id);
       if (
         !memory ||
-        (!includeInactive && memory.status !== "active" && memory.status !== "needs_verification") ||
-        memory.confidence < minimumConfidence
+        (!includeInactive && memory.status !== "active" && memory.status !== "needs_verification")
       ) {
         continue;
       }
@@ -587,19 +553,16 @@ export class MemoryManager {
           ? 0
           : 1 - candidate.lexicalRank / (lexical.length + 1);
         const score =
-          (candidate.semanticScore ?? 0) * 0.72 +
-          lexicalScore * 0.23 +
-          candidate.memory.confidence * 0.05;
-        return { ...candidate, score };
+          (candidate.semanticScore ?? 0) * 0.76 +
+          lexicalScore * 0.24;
+        return { ...candidate, score: score * this.freshness(candidate.memory) };
       })
       .sort((left, right) =>
         right.score - left.score ||
-        right.memory.confidence - left.memory.confidence ||
         right.memory.updatedAt.localeCompare(left.memory.updatedAt),
       )
       .map((candidate) => candidate.memory);
     const selected = await this.currentCandidates(workspaceId, ranked, resolvedOptions.workspaceRoot, limit, resolvedOptions.readOnly);
-    if (!resolvedOptions.readOnly) this.touch(workspaceId, selected.map((memory) => memory.id));
     return Object.freeze(selected);
   }
 
@@ -619,14 +582,15 @@ export class MemoryManager {
           if (relative.startsWith("..") || path.isAbsolute(relative) || sha256(await readFile(target)) !== file.hash) stale = true;
         } catch { stale = true; }
       }
-      if (stale && memory.status === "active") {
-        if (readOnly) continue;
-        this.storage.db.transaction(() => {
-          this.storage.db.prepare("UPDATE memories SET status = 'needs_verification', updated_at = ? WHERE id = ? AND workspace_id = ?")
-            .run(new Date().toISOString(), memory.id, workspaceId);
-          this.appendRevision(memory.id, "runtime", "revalidation");
-        })();
-        this.vectorIndex?.invalidate?.(workspaceId);
+      if (stale) {
+        if (memory.status === "active" && !readOnly) {
+          this.storage.db.transaction(() => {
+            this.storage.db.prepare("UPDATE memories SET status = 'needs_verification', updated_at = ? WHERE id = ? AND workspace_id = ?")
+              .run(new Date().toISOString(), memory.id, workspaceId);
+            this.appendRevision(memory.id, "runtime", "revalidation");
+          })();
+          this.vectorIndex?.invalidate?.(workspaceId);
+        }
         continue;
       }
       selected.push(memory);
@@ -656,31 +620,18 @@ export class MemoryManager {
     if (state.threadId !== input.threadId) throw new Error("Memory evidence belongs to another thread");
     const refs = [...new Set(mutation.sourceRefs ?? [])];
     const files: MemoryProvenance["files"] = [];
-    let verification: MemoryProvenance["verification"] = "model_observed";
-    const promote = (candidate: MemoryProvenance["verification"]): void => {
-      const rank: Record<MemoryProvenance["verification"], number> = {
-        model_observed: 0,
-        user_stated: 1,
-        observed: 2,
-        runtime_verified: 3,
-      };
-      if (rank[candidate] > rank[verification]) verification = candidate;
-    };
     for (const ref of refs) {
       if (ref === "user") {
-        if (input.userInput?.trim() && EXPLICIT_DURABLE_USER_CUE.test(input.userInput) &&
-            (mutation.category === "preference" || mutation.category === "convention" || mutation.category === "decision")) {
-          promote("user_stated");
-        }
+        if (!input.userInput?.trim()) throw new Error("Memory source user is not present in this turn");
         continue;
       }
       const workspaceId = input.workspaceId ?? workspaceIdFromRoot(input.workspaceRoot ?? state.workspaceRoot);
       const row = this.storage.db.prepare<[string, string, string], { content: string; truncated: number; tool: string }>(
         "SELECT content, truncated, tool FROM context_evidence WHERE id = ? AND thread_id = ? AND workspace_id = ?"
       ).get(ref, input.threadId, workspaceId);
-      if (!row || row.truncated) continue;
+      if (!row || row.truncated) throw new Error("Memory source reference is unavailable in this turn");
       let observed: any;
-      try { observed = JSON.parse(row.content); } catch { continue; }
+      try { observed = JSON.parse(row.content); } catch { throw new Error("Memory source reference is invalid"); }
       if (observed?.ok !== true) continue;
       if (["read_file", "create_file", "update_file"].includes(row.tool) &&
           typeof observed.data?.path === "string" && typeof observed.data?.contentHash === "string") {
@@ -692,36 +643,20 @@ export class MemoryManager {
         const relativeProject = path.relative(projectRoot, absolute);
         if (relativeProject.startsWith("..") || path.isAbsolute(relativeProject)) continue;
         files.push({ path: relativeProject, hash: observed.data.contentHash });
-        promote("observed");
-        continue;
-      }
-      const validation = observed.data?.validation;
-      const lifecycle = observed.data?.lifecycle;
-      if (["run_command", "poll_command"].includes(row.tool) &&
-          validation?.status === "passed" && validation?.confidence === "high" &&
-          lifecycle?.cleanup === "confirmed") {
-        promote("runtime_verified");
       }
     }
-    if (TENTATIVE_MEMORY.test(mutation.content) || TENTATIVE_MEMORY.test(mutation.reason)) {
-      verification = "model_observed";
-    }
-    return { version: 1, verification, refs, files };
+    return { version: 1, refs, files };
   }
 
   private searchLexical(
     workspaceId: string,
     query: string,
     options: MemorySearchOptions | number,
-    trackAccess: boolean,
   ): ReadonlyArray<Readonly<LongTermMemory>> {
     workspaceId = assertWorkspaceId(workspaceId);
+    this.expireDueMemories(workspaceId);
     const resolvedOptions = typeof options === "number" ? { limit: options } : options;
     const limit = safeLimit(resolvedOptions.limit, 6, 50);
-    const requestedConfidence = resolvedOptions.minimumConfidence;
-    const minimumConfidence = Number.isFinite(requestedConfidence)
-      ? Math.max(0, Math.min(requestedConfidence as number, 1))
-      : 0.55;
     const includeInactive = resolvedOptions.includeInactive === true;
     const boundedQuery = query.slice(0, MAX_MEMORY_SEARCH_CHARS);
     const candidateRows = new Map<string, MemoryRow>();
@@ -730,22 +665,20 @@ export class MemoryManager {
     if (expression) {
       try {
         const rows = this.storage.db
-          .prepare<[string, string, number, number, number], MemoryRow>(
+          .prepare<[string, string, number, number], MemoryRow>(
             `SELECT m.*
                FROM memories_fts
                JOIN memories AS m ON m.rowid = memories_fts.rowid
               WHERE memories_fts MATCH ?
                 AND m.workspace_id = ?
                 AND (? = 1 OR m.status IN ('active', 'needs_verification'))
-                AND m.confidence >= ?
-              ORDER BY bm25(memories_fts), m.confidence DESC
+              ORDER BY bm25(memories_fts)
               LIMIT ?`,
           )
           .all(
             expression,
             workspaceId,
             includeInactive ? 1 : 0,
-            minimumConfidence,
             Math.max(limit * 4, 20),
           );
         for (const row of rows) candidateRows.set(row.id, row);
@@ -756,15 +689,14 @@ export class MemoryManager {
     }
 
     const fallbackRows = this.storage.db
-      .prepare<[string, number, number], MemoryRow>(
+      .prepare<[string, number], MemoryRow>(
         `SELECT * FROM memories
           WHERE workspace_id = ?
             AND (? = 1 OR status IN ('active', 'needs_verification'))
-            AND confidence >= ?
-          ORDER BY confidence DESC, updated_at DESC
+          ORDER BY updated_at DESC
           LIMIT 200`,
       )
-      .all(workspaceId, includeInactive ? 1 : 0, minimumConfidence);
+      .all(workspaceId, includeInactive ? 1 : 0);
     for (const row of fallbackRows) candidateRows.set(row.id, row);
 
     const normalizedQuery = normalizeContent(boundedQuery);
@@ -777,30 +709,69 @@ export class MemoryManager {
         for (const token of queryTokens) {
           if (content.includes(token)) relevance += 1;
         }
-        return { row, score: relevance + row.confidence };
+        const weight = memoryFreshnessWeight(row.last_accessed_at, row.created_at,
+          memoryExpiryDays(row.scope, this.limits));
+        return { row, score: relevance * weight, relevance };
       })
-      .filter((candidate) => normalizedQuery.length === 0 || candidate.score > candidate.row.confidence)
-      .sort((left, right) => right.score - left.score || right.row.confidence - left.row.confidence)
+      .filter((candidate) => normalizedQuery.length === 0 || candidate.relevance > 0)
+      .sort((left, right) => right.score - left.score || right.row.updated_at.localeCompare(left.row.updated_at))
       .slice(0, limit);
-
-    if (trackAccess) this.touch(workspaceId, scored.map((item) => item.row.id));
 
     return Object.freeze(scored.map((item) => toMemory(item.row)));
   }
 
-  private touch(workspaceId: string, memoryIds: readonly string[]): void {
+  /** Call only after the record is actually delivered to a model request or read_memory. */
+  recordRecall(threadId: string, turnId: string, memoryIds: readonly string[]): void {
     if (memoryIds.length === 0) return;
+    this.storage.db.transaction(() => this.recordUseInTransaction(threadId, turnId, memoryIds))();
+  }
+
+  /** Also used by an explicit user confirmation while a memory write transaction is open. */
+  private recordUseInTransaction(threadId: string, turnId: string, memoryIds: readonly string[]): void {
     const now = new Date().toISOString();
+    const insert = this.storage.db.prepare(
+      "INSERT OR IGNORE INTO memory_recall_events(memory_id, thread_id, turn_id, recalled_at) VALUES (?, ?, ?, ?)",
+    );
     const update = this.storage.db.prepare(
       `UPDATE memories
           SET last_accessed_at = ?, access_count = access_count + 1
-        WHERE workspace_id = ? AND id = ?`,
+        WHERE id = ? AND status IN ('active', 'needs_verification')`,
     );
+    for (const memoryId of new Set(memoryIds)) {
+      if (!MEMORY_ID_PATTERN.test(memoryId)) continue;
+      const active = this.storage.db.prepare<[string], { id: string }>(
+        "SELECT id FROM memories WHERE id = ? AND status IN ('active', 'needs_verification')",
+      ).get(memoryId);
+      if (active && insert.run(memoryId, threadId, turnId, now).changes) update.run(now, memoryId);
+    }
+  }
+
+  private freshness(memory: Readonly<LongTermMemory>): number {
+    const row = this.storage.db.prepare<[string], Pick<MemoryRow, "last_accessed_at" | "created_at">>(
+      "SELECT last_accessed_at, created_at FROM memories WHERE id = ?",
+    ).get(memory.id);
+    return row ? memoryFreshnessWeight(row.last_accessed_at, row.created_at,
+      memoryExpiryDays(memory.scope, this.limits)) : 0;
+  }
+
+  /** Soft expiration is idempotent and preserves content, provenance and revisions. */
+  expireDueMemories(workspaceId: string): number {
+    workspaceId = assertWorkspaceId(workspaceId);
+    const rows = this.storage.db.prepare<[string], MemoryRow>(
+      "SELECT * FROM memories WHERE workspace_id = ? AND status IN ('active', 'needs_verification')",
+    ).all(workspaceId);
+    const due = rows.filter((row) => memoryFreshnessWeight(row.last_accessed_at, row.created_at,
+      memoryExpiryDays(row.scope, this.limits)) === 0);
+    if (!due.length) return 0;
     this.storage.db.transaction(() => {
-      for (const memoryId of new Set(memoryIds)) {
-        update.run(now, workspaceId, memoryId);
+      for (const row of due) {
+        this.storage.db.prepare("UPDATE memories SET status = 'expired', updated_at = ? WHERE id = ?")
+          .run(new Date().toISOString(), row.id);
+        this.appendRevision(row.id, "runtime", "expiry");
       }
     })();
+    this.vectorIndex?.invalidate?.(workspaceId);
+    return due.length;
   }
 
   get(
@@ -820,6 +791,7 @@ export class MemoryManager {
     options: MemoryListOptions = {},
   ): ReadonlyArray<Readonly<LongTermMemory>> {
     workspaceId = assertWorkspaceId(workspaceId);
+    this.expireDueMemories(workspaceId);
     const limit = safeLimit(options.limit, 100, 500);
     const offset = Number.isFinite(options.offset)
       ? Math.max(0, Math.trunc(options.offset as number))
@@ -855,8 +827,9 @@ export class MemoryManager {
    */
   applyModelMutations(
     input: ApplyModelMemoryMutationsInput,
+    onCommitted?: () => void,
   ): ApplyModelMemoryMutationsResult {
-    return this.commitModelMutations(input);
+    return this.commitModelMutations(input, undefined, onCommitted);
   }
 
   /**
@@ -909,6 +882,7 @@ export class MemoryManager {
   private commitModelMutations(
     input: ApplyModelMemoryMutationsInput,
     preparedByContent?: ReadonlyMap<string, PreparedMemoryEmbedding>,
+    onCommitted?: () => void,
   ): ApplyModelMemoryMutationsResult {
     const rootWorkspaceId = input.workspaceRoot
       ? workspaceIdFromRoot(input.workspaceRoot)
@@ -930,20 +904,13 @@ export class MemoryManager {
     if (input.outcome !== "success" && input.outcome !== "planned") {
       throw new Error("Model memory mutations require a successful or planned turn");
     }
-    if (
-      input.outcome === "planned" &&
-      !EXPLICIT_DURABLE_USER_CUE.test(input.userInput ?? "")
-    ) {
-      throw new Error(
-        "Planned turns may commit memory only when the current user message explicitly states a durable preference or convention",
-      );
-    }
     if (input.mutations.length > MAX_MEMORY_MUTATIONS_PER_TURN) {
       throw new Error(
         `A turn can commit at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory mutations`,
       );
     }
     if (input.mutations.length === 0) {
+      if (onCommitted) this.storage.db.transaction(onCommitted)();
       return Object.freeze({ applied: 0, memoryIds: [] });
     }
 
@@ -955,13 +922,13 @@ export class MemoryManager {
     );
     const insert = this.storage.db.prepare(
       `INSERT INTO memories(
-         id, workspace_id, scope, category, content, normalized_content, confidence,
+         id, workspace_id, scope, category, content, normalized_content,
          status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const updateActive = this.storage.db.prepare(
       `UPDATE memories
-          SET category = ?, content = ?, normalized_content = ?, confidence = ?,
+          SET category = ?, content = ?, normalized_content = ?,
               status = ?, evidence = ?, source_thread_id = ?,
               source_turn_id = ?, updated_at = ?
         WHERE workspace_id = ? AND id = ?`,
@@ -973,25 +940,15 @@ export class MemoryManager {
     const updateScope = this.storage.db.prepare(
       "UPDATE memories SET workspace_id = ?, scope = ?, evidence = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
     );
+    const confirmRevision = this.storage.db.prepare(
+      "UPDATE memories SET last_accessed_at = ? WHERE workspace_id = ? AND id = ?",
+    );
     const memoryIds: string[] = [];
     const provenanceByMutation = new Map(input.mutations.map((mutation) => [mutation, this.provenance(input, mutation)]));
     let activeProvenance: MemoryProvenance | undefined;
     let applied = 0;
     const affectedScopes = new Set<string>();
 
-    const assertOutcomeCategory = (
-      category: LongTermMemory["category"],
-    ): void => {
-      if (
-        input.outcome === "planned" &&
-        category !== "preference" &&
-        category !== "convention"
-      ) {
-        throw new Error(
-          `Planned turns cannot commit ${category} memories; only preference and convention are allowed`,
-        );
-      }
-    };
     const evidenceSource = (reason: string): ModelMemoryEvidence => ({
       threadId,
       turnId,
@@ -1003,6 +960,23 @@ export class MemoryManager {
         "INSERT INTO memory_provenance(memory_id, document_json) VALUES (?, ?) ON CONFLICT(memory_id) DO UPDATE SET document_json = excluded.document_json"
       ).run(memoryId, JSON.stringify(activeProvenance));
       this.appendRevision(memoryId, threadId, turnId);
+    };
+    const retainProvenance = (memoryId: string): void => {
+      if (!activeProvenance) return;
+      const stored = this.storage.db.prepare<[string], { document_json: string }>(
+        "SELECT document_json FROM memory_provenance WHERE memory_id = ?",
+      ).get(memoryId);
+      if (!stored) return;
+      try {
+        const previous = JSON.parse(stored.document_json) as MemoryProvenance;
+        const files = new Map<string, { path: string; hash: string }>();
+        for (const file of [...(previous.files ?? []), ...activeProvenance.files]) {
+          if (typeof file.path === "string" && typeof file.hash === "string") files.set(file.path, file);
+        }
+        activeProvenance = { version: 1,
+          refs: [...new Set([...(previous.refs ?? []), ...activeProvenance.refs])].slice(-32),
+          files: [...files.values()] };
+      } catch { /* Preserve the validated current-turn reference if old audit data is damaged. */ }
     };
     const storeEmbedding = (
       memoryId: string,
@@ -1024,22 +998,11 @@ export class MemoryManager {
     this.storage.db.transaction(() => {
       for (const mutation of input.mutations) {
         activeProvenance = provenanceByMutation.get(mutation);
-        const admission = memoryAdmission(activeProvenance);
         const now = new Date().toISOString();
         if (mutation.action === "remember") {
           const scope = mutation.scope ?? "project";
           const workspaceId = ownerId(scope);
           const category = assertCategory(mutation.category);
-          if (scope === "global") {
-            if (category !== "preference" && category !== "convention") {
-              throw new Error("Global memory may contain only preferences or conventions");
-            }
-            if (input.sourceState && (!mutation.sourceRefs?.includes("user") ||
-                !EXPLICIT_DURABLE_USER_CUE.test(input.userInput ?? ""))) {
-              throw new Error("Global memory requires an explicit durable user preference in this turn");
-            }
-          }
-          assertOutcomeCategory(category);
           const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
           const normalized = normalizeContent(content);
           const reason = memoryReason(mutation.reason);
@@ -1054,17 +1017,17 @@ export class MemoryManager {
             existing.category === category
           ) {
             // Exact normalized content that is already active is not a durable
-            // state change. Do not rewrite its timestamps/audit trail, inflate
-            // confidence, or refresh its embedding merely because a later turn
+            // state change. Do not rewrite its timestamps/audit trail or
+            // refresh its embedding merely because a later turn
             // proposed the same fact again.
+            if (input.sourceState && mutation.sourceRefs?.includes("user")) {
+              this.recordUseInTransaction(threadId, turnId, [existing.id]);
+            }
             continue;
           }
           if (existing) {
             affectedScopes.add(workspaceId);
-            const confidence = admission.status === "active"
-              ? Math.min(0.95, Math.max(existing.confidence, admission.confidence) + 0.03)
-              : Math.max(existing.confidence, admission.confidence);
-            const status = existing.status === "active" ? "active" : admission.status;
+            retainProvenance(existing.id);
             const evidence = appendEvidence(
               existing.evidence,
               modelEvidence(evidenceSource(reason), "upsert", now, {
@@ -1075,8 +1038,7 @@ export class MemoryManager {
               category,
               content,
               normalized,
-              confidence,
-              status,
+              "active",
               evidence,
               threadId,
               turnId,
@@ -1084,6 +1046,7 @@ export class MemoryManager {
               workspaceId,
               existing.id,
             );
+            confirmRevision.run(now, workspaceId, existing.id);
             storeEmbedding(existing.id, content, now);
             if (!selectById.get(workspaceId, existing.id)) {
               throw new Error("Memory upsert verification failed");
@@ -1105,8 +1068,7 @@ export class MemoryManager {
             category,
             content,
             normalized,
-            admission.confidence,
-            admission.status,
+            "active",
             evidence,
             threadId,
             turnId,
@@ -1136,15 +1098,6 @@ export class MemoryManager {
 
         if (mutation.action === "move") {
           const targetId = ownerId(mutation.scope);
-          if (mutation.scope === "global") {
-            if (existing.category !== "preference" && existing.category !== "convention") {
-              throw new Error("Only preferences and conventions may move to global memory");
-            }
-            if (input.sourceState && (!mutation.sourceRefs?.includes("user") ||
-                !EXPLICIT_DURABLE_USER_CUE.test(input.userInput ?? ""))) {
-              throw new Error("Moving memory to global requires an explicit durable user preference");
-            }
-          }
           if (selectByContent.get(targetId, existing.normalized_content)) {
             throw new Error("Target scope already contains this memory; revise the existing entry instead");
           }
@@ -1160,7 +1113,6 @@ export class MemoryManager {
         }
 
         if (mutation.action === "forget") {
-          assertOutcomeCategory(existing.category);
           if (existing.status === "expired" || existing.status === "superseded") {
             continue;
           }
@@ -1187,10 +1139,7 @@ export class MemoryManager {
           );
         }
         const category = assertCategory(mutation.category);
-        if (existing.scope === "global" && category !== "preference" && category !== "convention") {
-          throw new Error("Global memory may contain only preferences or conventions");
-        }
-        assertOutcomeCategory(category);
+        retainProvenance(existing.id);
         const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
         const normalized = normalizeContent(content);
         const reason = memoryReason(mutation.reason);
@@ -1198,10 +1147,6 @@ export class MemoryManager {
         if (conflict && conflict.id !== existing.id) {
           throw new Error(`Replacement content already belongs to memory ${conflict.id}`);
         }
-        const confidence = Math.max(existing.confidence, admission.confidence);
-        const status = existing.status === "active" && normalized === existing.normalized_content
-          ? "active"
-          : admission.status;
 
         if (normalized === existing.normalized_content) {
           const evidence = appendEvidence(
@@ -1214,8 +1159,7 @@ export class MemoryManager {
             category,
             content,
             normalized,
-            confidence,
-            status,
+            "active",
             evidence,
             threadId,
             turnId,
@@ -1223,6 +1167,7 @@ export class MemoryManager {
             workspaceId,
             existing.id,
           );
+          confirmRevision.run(now, workspaceId, existing.id);
           storeEmbedding(existing.id, content, now);
           if (!selectById.get(workspaceId, existing.id)) {
             throw new Error("Memory revision verification failed");
@@ -1261,8 +1206,7 @@ export class MemoryManager {
           category,
           content,
           normalized,
-          confidence,
-          admission.status,
+          "active",
           newEvidence,
           threadId,
           turnId,
@@ -1278,6 +1222,7 @@ export class MemoryManager {
         recordId(replacementId);
         applied += 1;
       }
+      onCommitted?.();
     })();
 
     if (applied > 0) {

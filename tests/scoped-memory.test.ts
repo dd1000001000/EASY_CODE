@@ -63,7 +63,7 @@ describe("global and project long-term memory", () => {
       });
       const state = new ThreadStore(f.storage).create({ threadId: "thread_scoped", workspaceRoot: f.a,
         mode: "code", provider: "deepseek", model: "test", thinkingEffort: "low" });
-      const selected = selectMemoryContext({ state, memories: found, evidence: [], queries: ["database migration"],
+      const selected = selectMemoryContext({ state, memories: found, evidence: [],
         tokenBudget: 1000 });
       assert.equal(selected.memories.length, 1);
       assert.equal(selected.memories[0]?.scope, "global");
@@ -97,7 +97,7 @@ describe("global and project long-term memory", () => {
     } finally { f.dispose(); }
   });
 
-  it("rejects an agent-proposed global fact without a current user preference", () => {
+  it("uses the model-selected global scope without a keyword gate", () => {
     const f = fixture();
     try {
       const state = new ThreadStore(f.storage).create({ threadId: "thread_global_source", workspaceRoot: f.a,
@@ -105,10 +105,10 @@ describe("global and project long-term memory", () => {
       const base = { sourceState: state, workspaceRoot: f.a, threadId: state.threadId,
         turnId: "turn_global_source", outcome: "success" as const,
         userInput: "Inspect the project files." };
-      assert.throws(() => f.manager.applyModelMutations({ ...base, mutations: [{ action: "remember",
+      const selected = f.manager.applyModelMutations({ ...base, mutations: [{ action: "remember",
         scope: "global", category: "preference", content: "The user prefers concise answers.",
-        reason: "Unsubstantiated model claim." }] }), /explicit durable user preference/u);
-      assert.equal(f.manager.list(GLOBAL_MEMORY_WORKSPACE_ID).length, 0);
+        reason: "Model-selected global memory." }] });
+      assert.equal(selected.applied, 1);
       const accepted = f.manager.applyModelMutations({ ...base,
         userInput: "From now on, I prefer concise answers in every project.",
         mutations: [{ action: "remember", scope: "global", category: "preference",

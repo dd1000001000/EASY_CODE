@@ -77,7 +77,11 @@ memory_recall_tokens = 12000
 memory_max_items = 6
 memory_max_queries = 3
 memory_search_limit = 6
-memory_min_relevant_terms = 1
+memory_vector_min_similarity = 0.1
+memory_consolidation_match_limit = 6
+# User-level config.toml only: a project cannot change shared-memory expiry policy.
+memory_project_expiry_days = 90
+memory_global_expiry_days = 180
 max_durable_memory_tokens = 400
 search_max_entries = 10000
 search_max_depth = 64

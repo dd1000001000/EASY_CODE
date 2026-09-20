@@ -179,6 +179,8 @@ function assertSafeWorkspaceLayer(
   if (layer.dataDir !== undefined) forbidden.push("data_dir");
   if (layer.cacheDir !== undefined) forbidden.push("cache_dir");
   if (layer.worktreeRoot !== undefined) forbidden.push("worktree_root");
+  if (layer.limits?.memoryProjectExpiryDays !== undefined) forbidden.push("limits.memory_project_expiry_days");
+  if (layer.limits?.memoryGlobalExpiryDays !== undefined) forbidden.push("limits.memory_global_expiry_days");
   if (forbidden.length) {
     throw new EasyCodeConfigError(
       `Workspace configuration cannot set trust-root fields: ${forbidden.join(", ")}`,

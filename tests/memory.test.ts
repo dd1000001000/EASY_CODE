@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, it } from "./harness.js";
 import { MemoryManager, MemoryVectorIndex } from "../src/memory/index.js";
 import { createStorage } from "../src/storage/index.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 
 function temporaryDataDir(): string {
   return mkdtempSync(path.join(os.tmpdir(), "easy-code-memory-"));
@@ -49,7 +50,7 @@ describe("model-managed long-term memory", () => {
       assert.equal(manager.list("workspace_a").length, 2);
       assert.equal(manager.list("workspace_b").length, 0);
       assert.equal(manager.search("workspace_b", "TypeScript").length, 0);
-      assert.equal(manager.search("workspace_a", "TypeScript")[0]?.confidence, 0.8);
+      assert.equal(manager.search("workspace_a", "TypeScript")[0]?.status, "active");
 
       const duplicate = manager.applyModelMutations({
         ...mutationContext({ turnId: "turn_b" }),
@@ -64,7 +65,6 @@ describe("model-managed long-term memory", () => {
       assert.deepEqual(duplicate.memoryIds, []);
       assert.equal(manager.list("workspace_a").length, 2);
       const strictMemory = manager.get("workspace_a", committed.memoryIds[0]!);
-      assert.equal(strictMemory?.confidence, 0.8);
       const evidence = JSON.parse(strictMemory?.evidence ?? "{}") as {
         history?: Array<{ threadId: string; turnId: string; action: string }>;
       };
@@ -103,8 +103,9 @@ describe("model-managed long-term memory", () => {
         ],
       });
       const deploymentId = seeded.memoryIds[0]!;
-      let vectorOptions: { minimumConfidence?: number; includeInactive?: boolean } | undefined;
+      let vectorOptions: { includeInactive?: boolean; minimumSimilarity?: number } | undefined;
       const hybridManager = new MemoryManager(storage, {
+        limits: { ...defaultRuntimeLimits(), memoryVectorMinSimilarity: 0.37 },
         vectorIndex: {
           search: async (_workspaceId, _query, options) => {
             vectorOptions = options;
@@ -118,10 +119,9 @@ describe("model-managed long-term memory", () => {
         "release without downtime",
       );
       assert.equal(semantic[0]?.id, deploymentId);
-      assert.equal(vectorOptions?.minimumConfidence, 0.55);
-      // The derived index must return both active and low-confidence candidates;
-      // MemoryManager applies the authoritative active/needs_verification filter.
+      // The authoritative status filter is applied after vector retrieval.
       assert.equal(vectorOptions?.includeInactive, true);
+      assert.equal(vectorOptions?.minimumSimilarity, 0.37);
 
       let reportedError = false;
       const fallbackManager = new MemoryManager(storage, {
@@ -190,7 +190,7 @@ describe("model-managed long-term memory", () => {
     }
   });
 
-  it("rolls back a batch on invalid, sensitive, cross-workspace, or planned repository facts", () => {
+  it("rolls back sensitive or cross-workspace batches and lets the model choose plan memories", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
     try {
@@ -217,20 +217,13 @@ describe("model-managed long-term memory", () => {
       );
       assert.equal(manager.list("workspace_a").length, 0);
 
-      assert.throws(
-        () => manager.applyModelMutations({
-          ...mutationContext({ workspaceId: "workspace_plan_no_cue", outcome: "planned" }),
-          userInput: "Please inspect the dependency setup.",
-          mutations: [{
-            action: "remember",
-            category: "preference",
-            content: "The user prefers npm for dependency installation.",
-            reason: "The model inferred a preference that the user did not state.",
-          }],
-        }),
-        /explicitly states a durable preference or convention/iu,
-      );
-      assert.equal(manager.list("workspace_plan_no_cue").length, 0);
+      const plannedWithoutCue = manager.applyModelMutations({
+        ...mutationContext({ workspaceId: "workspace_plan_no_cue", outcome: "planned" }),
+        userInput: "Please inspect the dependency setup.",
+        mutations: [{ action: "remember", category: "preference",
+          content: "The user prefers npm for dependency installation.", reason: "Model-selected memory." }],
+      });
+      assert.equal(plannedWithoutCue.applied, 1);
 
       const plannedPreference = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_preference", outcome: "planned" }),
@@ -245,8 +238,7 @@ describe("model-managed long-term memory", () => {
       assert.equal(plannedPreference.applied, 1);
       assert.equal(manager.list("workspace_plan_preference").length, 1);
 
-      assert.throws(
-        () => manager.applyModelMutations({
+      const plannedArchitecture = manager.applyModelMutations({
           ...mutationContext({ workspaceId: "workspace_plan", outcome: "planned" }),
           userInput: "From now on, always use npm and keep this as a project convention.",
           mutations: [
@@ -263,10 +255,9 @@ describe("model-managed long-term memory", () => {
               reason: "The plan proposes this repository structure.",
             },
           ],
-        }),
-        /Planned turns cannot commit architecture/iu,
-      );
-      assert.equal(manager.list("workspace_plan").length, 0);
+        });
+      assert.equal(plannedArchitecture.applied, 2);
+      assert.equal(manager.list("workspace_plan").length, 2);
 
       const seeded = manager.applyModelMutations({
         ...mutationContext(),

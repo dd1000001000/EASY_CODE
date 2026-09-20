@@ -4,7 +4,6 @@ import { estimateTextTokens } from "./manager.js";
 import { sha256 } from "../utils/hash.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
-import { isTransientMemory } from "../memory/admission.js";
 import { unresolvedCommands } from "./runtime-state.js";
 
 /** Separate bounded intents; never feed the entire conversation to embedding. */
@@ -42,7 +41,6 @@ export function selectMemoryContext(input: {
   memories: readonly Readonly<LongTermMemory>[];
   evidence: readonly Readonly<ContextSearchHit>[];
   tokenBudget: number;
-  queries?: readonly string[];
   presentText?: readonly string[];
   limits?: Readonly<RuntimeLimits>;
 }): MemorySelection {
@@ -51,7 +49,6 @@ export function selectMemoryContext(input: {
   const dropped = { duplicate: 0, stale: 0, budget: 0 };
   const seen = new Set<string>();
   const limits = input.limits ?? DEFAULT_RUNTIME_LIMITS;
-  const terms = relevantTerms((input.queries ?? []).join(" "));
   const present = input.presentText ?? [];
   let estimatedTokens = 0;
   const take = (key: string, content: string): boolean => {
@@ -63,23 +60,18 @@ export function selectMemoryContext(input: {
     return true;
   };
   const ranges = new Map<string, Array<[number, number]>>();
-  // Compare reciprocal ranks, not unrelated vector/confidence score scales.
-  // A shared lexical signal favors evidence about the actual current target.
+  // Preserve the retrieval systems' ranks; do not override semantic results
+  // with a second word-overlap filter.
   const candidates = [
     ...input.memories.map((memory, rank) => ({ memory, hit: undefined, rank, content: memory.content })),
     ...input.evidence.map((hit, rank) => ({ memory: undefined, hit, rank, content: hit.content })),
-  ].map((candidate) => ({ ...candidate, relevance: terms.filter((term) => candidate.content.toLowerCase().includes(term)).length }))
-    .sort((a, b) => (b.relevance + 1 / (60 + b.rank + 1)) - (a.relevance + 1 / (60 + a.rank + 1)) ||
+  ].sort((a, b) => a.rank - b.rank ||
+      Number(Boolean(b.memory)) - Number(Boolean(a.memory)) ||
       (a.memory?.id ?? a.hit!.id).localeCompare(b.memory?.id ?? b.hit!.id));
   for (const candidate of candidates) {
     const { memory, hit } = candidate;
-    if (memory && (!["active", "needs_verification"].includes(memory.status) || isTransientMemory(memory.content))) { dropped.stale += 1; continue; }
+    if (memory && !["active", "needs_verification"].includes(memory.status)) { dropped.stale += 1; continue; }
     // Exact evidence is deduplicated; near-matches/negations/version changes are not merged.
-    const standingGlobalPreference = memory?.scope === "global" &&
-      (memory.category === "preference" || memory.category === "convention");
-    if (input.queries && candidate.relevance < limits.memoryMinRelevantTerms && !standingGlobalPreference) {
-      dropped.budget += 1; continue;
-    }
     if (!hit?.metadata?.fileHash && candidate.content.length >= 16 && present.some((text) => text.includes(candidate.content))) {
       dropped.duplicate += 1; continue;
     }
@@ -121,14 +113,6 @@ export function optionalMemoryTokenBudget(maxContextChars: number, maxContextTok
   const maximum = expanded ? limits.memoryRecallTokens : limits.memoryAutoTokens;
   return Math.max(0, Math.min(maximum, maxContextTokens
     ? Math.floor(maxContextTokens * 0.08) : Math.floor(maxContextChars / 24)));
-}
-
-function relevantTerms(text: string): string[] {
-  const stop = new Set(["the", "and", "this", "that", "with", "from", "please", "code", "task", "inspect", "file", "fix", "修改", "代码", "一下", "任务"]);
-  const words = text.toLowerCase().match(/[a-z0-9_./-]{2,}|[\p{Script=Han}]+/gu) ?? [];
-  return [...new Set(words.flatMap((word) => /\p{Script=Han}/u.test(word)
-    ? Array.from({ length: Math.max(0, word.length - 1) }, (_, index) => word.slice(index, index + 2)) : [word]))]
-    .filter((word) => !stop.has(word)).slice(0, 64);
 }
 
 /** Bounded expansion after an observed failure, not after neutral status polls. */

@@ -144,6 +144,29 @@ function contextRuntime(provider, tools, events = [], purposes = []) {
     });
 }
 describe("AgentRuntime", () => {
+    it("records a selected long-term memory only after a successful model request", async () => {
+        const remembered = {
+            id: "memory_12345678-1234-4234-8234-123456789abc", workspaceId: "memory_global",
+            scope: "global", category: "preference", content: "Always answer in concise Chinese.",
+            status: "active", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        };
+        const recalls = [];
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async (request) => {
+                assert.match(JSON.stringify(request.messages), /Always answer in concise Chinese/u);
+                assert.equal(recalls.length, 0);
+                return { message: { role: "assistant", content: "Done." } };
+            } }, toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [remembered],
+            recordMemoryRecall: (threadId, turnId, ids) => recalls.push({ threadId, turnId, ids }),
+            appendEvent: async () => {}, requestApproval: async () => false,
+        });
+        const result = await runtime.run(state(), "Explain this project", degradationOptions);
+        assert.equal(result.reason, "success");
+        assert.equal(recalls.length, 1);
+        assert.deepEqual(recalls[0].ids, [remembered.id]);
+    });
     it("never executes or persists tools from an incomplete stream before retry acceptance", async () => {
         const current = state();
         let requests = 0, executions = 0;

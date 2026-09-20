@@ -480,6 +480,7 @@ export interface AgentRuntimeDependencies {
       readonly scope?: "all" | "global" | "project" },
   ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   memoryGeneration?: () => string;
+  recordMemoryRecall?: (threadId: string, turnId: string, memoryIds: readonly string[]) => void;
   /**
    * Builds derived, Thread-private context layers. Failures must never replace
    * the event journal or prevent an otherwise valid model request.
@@ -1291,7 +1292,7 @@ export class AgentRuntime {
               const allowance = optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens, this.dependencies.limits);
               const selection = selectMemoryContext({ state, memories: [], evidence: context.evidence ?? [],
                 tokenBudget: allowance, limits: this.dependencies.limits,
-                queries: memoryQueries(state, memoryContext.userInput), presentText: [state.workingSummary] });
+                presentText: [state.workingSummary] });
               const evidenceText = context.evidence ? renderRetrievedContext(selection.evidence)
                 : requestTokens([{ role: "user", content: context.retrievedThreadEvidence ?? "" }]) <= allowance
                   ? context.retrievedThreadEvidence : undefined;
@@ -1690,7 +1691,7 @@ export class AgentRuntime {
       ): Promise<string> => {
         const selected = selectMemoryContext({ state, memories,
           evidence: context.evidence ?? [], tokenBudget: optionalAllowance, limits: memoryLimits,
-          queries, presentText: [state.workingSummary, ...state.constraints] });
+          presentText: [state.workingSummary, ...state.constraints] });
         selectedForStep = selected;
         selectedOptionalCount = selected.memories.length + selected.evidence.length +
           (context.evidence === undefined && optionalAllowance > 0 && context.retrievedThreadEvidence ? 1 : 0);
@@ -1840,7 +1841,7 @@ export class AgentRuntime {
       // all other messages byte-identical: no re-selection can evict their proof.
       if (selectedForStep && selectedOptionalCount > 0) {
         const subset = selectMemoryContext({ state, memories: selectedForStep.memories, evidence: selectedForStep.evidence,
-          tokenBudget: optionalAllowance, limits: memoryLimits, queries,
+          tokenBudget: optionalAllowance, limits: memoryLimits,
           presentText: [state.workingSummary, ...state.constraints, ...visibleMemoryText(messages.filter((message) =>
             message.content !== stepRuntimeContext))] });
         const reducedContext = renderStepMemory(subset, layeredContext);
@@ -1853,6 +1854,7 @@ export class AgentRuntime {
             stale: selectedForStep.dropped.stale + subset.dropped.stale,
             budget: selectedForStep.dropped.budget + subset.dropped.budget } };
           selectedOptionalCount -= selectedForStep.memories.length + selectedForStep.evidence.length - subset.memories.length - subset.evidence.length;
+          selectedForStep = subset;
           requestInspection = this.dependencies.contextManager.inspectProviderRequest({ state,
             maxContextChars: options.maxContextChars, messages, tools: enabledTools.map((tool) => tool.definition) });
         }
@@ -1931,6 +1933,15 @@ export class AgentRuntime {
           continue;
         }
         response = attempted.value;
+        if (agentIdentity.role === "main_agent" && selectedForStep?.memories.length &&
+            messages.some((message) => message.role === "user" && message.content === stepRuntimeContext)) {
+          try {
+            this.dependencies.recordMemoryRecall?.(state.threadId, turnId,
+              selectedForStep.memories.map((memory) => memory.id));
+          } catch {
+            // Recall accounting is derived state, never a reason to discard a model response.
+          }
+        }
         const compactOnly =
           response.message.tool_calls?.length === 1 &&
           response.message.tool_calls[0]?.function.name === "compact_context";
@@ -2397,6 +2408,8 @@ export class AgentRuntime {
               model: state.model,
               toolCallId: call.id,
               searchProjectMemory: this.dependencies.searchMemories,
+              recordMemoryRecall: (memoryIds: readonly string[]) =>
+                this.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
               recallContext: async (input: { evidenceId: string; offset: number; limit: number }) => recallThreadContext(state, input,
                 this.dependencies.readToolEvidence ? (id, offset, limit) =>
                   this.dependencies.readToolEvidence!(state, id, offset, limit) : undefined, this.dependencies.limits),

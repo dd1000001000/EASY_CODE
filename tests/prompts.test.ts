@@ -87,7 +87,6 @@ describe("system prompt builder", () => {
           scope: "project",
           category: "convention",
           content: "The project uses strict TypeScript",
-          confidence: 0.8,
           status: "active",
           createdAt: "2026-08-26T00:00:00.000Z",
           updatedAt: "2026-08-27T00:00:00.000Z",
@@ -149,7 +148,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /preserve uncertainty and the next validation step/);
       assert.match(prompt, /shared configured correction budget/);
       assert.match(prompt, /delete_file deletes a previously read regular file/);
-      assert.match(prompt, /write_memory is the only model tool.*automatic long-term memory/);
+      assert.match(prompt, /write_memory is the only path that creates long-term memory/);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/);
       assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
       assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
@@ -167,7 +166,6 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Store one atomic, self-contained fact per call/);
       assert.match(prompt, /parallel write_memory calls/);
       assert.match(prompt, /at most eight staged changes per turn/);
-      assert.match(prompt, /not a user-editing interface/);
       assert.match(prompt, /Before your final answer.*durable memory/);
       assert.doesNotMatch(prompt, /this-must-not-enter-the-prompt/);
       assert.doesNotMatch(prompt, /glm-key-must-not-enter-the-prompt/);
@@ -216,7 +214,7 @@ describe("system prompt builder", () => {
       assert.doesNotMatch(prompt, /manage_tasks is available only/u);
       assert.doesNotMatch(prompt, /manage_subagents is exposed only/u);
       assert.doesNotMatch(prompt, /Supply currentWork and nextStep/u);
-      assert.doesNotMatch(prompt, /write_memory is the only model tool/u);
+      assert.doesNotMatch(prompt, /write_memory is the only path/u);
       assert.doesNotMatch(prompt, /best-effort housekeeping/u);
       assert.doesNotMatch(prompt, /Before your final answer.*durable memory/u);
     } finally {
@@ -267,7 +265,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Use the original commandId and omit waitMs/u);
       assert.match(prompt, /Use cancel_command only when a background command/u);
       assert.match(prompt, /Supply currentWork and nextStep/u);
-      assert.match(prompt, /write_memory is the only model tool/u);
+      assert.match(prompt, /write_memory is the only path/u);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/u);
       assert.match(prompt, /Before your final answer.*durable memory/u);
       assert.doesNotMatch(prompt, /\bpropose_plan\b/u);
@@ -337,7 +335,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Never expose credentials/u);
       assert.match(prompt, /AUTO_DIRECT_PROJECT_POLICY_TOKEN/u);
       assert.doesNotMatch(prompt, /read_file reads bounded workspace text/u);
-      assert.doesNotMatch(prompt, /write_memory is the only model tool/u);
+      assert.doesNotMatch(prompt, /write_memory is the only path/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }

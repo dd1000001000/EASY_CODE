@@ -227,7 +227,8 @@ describe("split long-term memory tools", () => {
       assert.equal(beforeRead.ok, false);
       assert.match(beforeRead.error ?? "", /read_memory in this turn/iu);
 
-      const nextTurn = { ...toolContext, turnId: "turn_next" };
+      const nextTurn = { ...toolContext, turnId: "turn_next",
+        recordMemoryRecall: (ids: readonly string[]) => manager.recordRecall(toolContext.threadId, "turn_next", ids) };
       const found = await tools.read.execute({ query: memoryId }, nextTurn);
       assert.equal(found.ok, true, found.error);
       const modelMemory = (found.data as { memories: Array<Record<string, unknown>> })
@@ -235,6 +236,8 @@ describe("split long-term memory tools", () => {
       assert.equal(modelMemory.id, memoryId);
       assert.equal("workspaceId" in modelMemory, false);
       assert.equal("evidence" in modelMemory, false);
+      assert.equal(storage.db.prepare<[string], { access_count: number }>(
+        "SELECT access_count FROM memories WHERE id = ?").get(memoryId)?.access_count, 1);
       const forgotten = await tools.write.execute(
         { operation: "forget", memoryId, reason: "The preference changed." },
         nextTurn,
@@ -248,7 +251,7 @@ describe("split long-term memory tools", () => {
     }
   });
 
-  it("stages independent facts while preserving plan, secret, role, and workspace boundaries", async () => {
+  it("lets the model stage plan facts while preserving secret, role, and workspace boundaries", async () => {
     const workspaceA = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-a-"));
     const workspaceB = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-b-"));
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-memory-data-"));
@@ -291,8 +294,7 @@ describe("split long-term memory tools", () => {
         },
         context(rootA.root, manager, "plan"),
       );
-      assert.equal(planFact.ok, false);
-      assert.match(planFact.error ?? "", /Plan mode may maintain/iu);
+      assert.equal(planFact.ok, true, planFact.error);
 
       const secret = await toolsA.write.execute(
         {

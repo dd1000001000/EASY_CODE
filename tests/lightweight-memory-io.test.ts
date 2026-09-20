@@ -55,14 +55,14 @@ describe("lightweight optional memory", () => {
     assert.equal(optionalMemoryTokenBudget(250000, 16000, limits, true), 1280);
     assert.equal(expandedMemoryRecall(state()), false);
   });
-  it("lets directly relevant evidence compete ahead of unrelated long-term records", () => {
+  it("preserves retrieval ranking without a second word-overlap gate", () => {
     const result = selectMemoryContext({ state: state(), memories: [memory("old", "Project uses SQLite")],
       evidence: [evidence("Authentication JWT refresh expiration")], tokenBudget: 2000,
-      queries: ["JWT refresh expiration"], limits: { ...limits, memoryMaxItems: 1 } });
-    assert.equal(result.evidence.length, 1);
-    assert.equal(result.memories.length, 0);
+      limits: { ...limits, memoryMaxItems: 1 } });
+    assert.equal(result.evidence.length, 0);
+    assert.equal(result.memories.length, 1);
     assert.equal(selectMemoryContext({ state: state(), memories: [memory("old", "Uses SQLite")],
-      evidence: [], tokenBudget: 2000, queries: ["JWT"] }).memories.length, 0);
+      evidence: [], tokenBudget: 2000 }).memories.length, 1);
   });
   it("deduplicates exact facts but not negations or distinct file versions", () => {
     const content = "Authentication tokens expire after 30 minutes";
@@ -77,8 +77,8 @@ describe("lightweight optional memory", () => {
     assert.equal(selectMemoryContext({ state: state(), memories: [], evidence: [first,
       { ...first, id: "new", metadata: { ...first.metadata, fileHash: "v2" } }], tokenBudget: 2000 }).evidence.length, 2);
   });
-  it("rejects task diaries without deleting or rewriting stable facts", () => {
-    assert.throws(() => assertDurableMemory("This task changed authentication and 10 tests passed"), /Journal/u);
+  it("leaves durability semantics to the model while enforcing size", () => {
+    assert.doesNotThrow(() => assertDurableMemory("This task changed authentication and 10 tests passed"));
     assert.doesNotThrow(() => assertDurableMemory("The project uses SQLite for local persistence"));
     assert.throws(() => assertDurableMemory("a".repeat(1000), { ...limits, maxDurableMemoryTokens: 64 }), /maxDurableMemoryTokens/u);
   });

@@ -578,7 +578,7 @@ describe("embedding model installer", () => {
       readonly id: string;
       readonly workspaceId: string;
       readonly status: string;
-      readonly confidence: number;
+      readonly priority: number;
       readonly embedding: readonly number[];
     }
 
@@ -588,7 +588,7 @@ describe("embedding model installer", () => {
       readonly where?: {
         readonly workspaceId?: { readonly eq?: string };
         readonly status?: { readonly eq?: string };
-        readonly confidence?: { readonly gte?: number };
+        readonly priority?: { readonly gte?: number };
       };
     }
 
@@ -618,12 +618,12 @@ describe("embedding model installer", () => {
           searchOptions.push(options);
           const workspaceId = options.where?.workspaceId?.eq;
           const status = options.where?.status?.eq;
-          const minimumConfidence = options.where?.confidence?.gte;
+          const minimumPriority = options.where?.priority?.gte;
           const matches = [...documents.values()].filter(
             (document) =>
               (workspaceId === undefined || document.workspaceId === workspaceId) &&
               (status === undefined || document.status === status) &&
-              (minimumConfidence === undefined || document.confidence >= minimumConfidence),
+              (minimumPriority === undefined || document.priority >= minimumPriority),
           );
           return {
             hits: matches.slice(0, options.limit).map((document) => ({
@@ -663,7 +663,7 @@ describe("embedding model installer", () => {
       assert.equal(options.includeVectors, true);
       assert.equal(options.where?.workspaceId?.eq, "install_check");
       assert.equal(options.where?.status?.eq, "active");
-      assert.equal(typeof options.where?.confidence?.gte, "number");
+      assert.equal(typeof options.where?.priority?.gte, "number");
     }
   });
 });

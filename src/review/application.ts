@@ -224,7 +224,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
             ? undefined : { scope: "project" })))).flat();
         const evidence = (await Promise.all(queries.map(query => deps.index.search(workspaceId, threadId, query,
           { limit: deps.limits.memorySearchLimit, beforeMessageIndex: reviewer!.compactedMessageCount })))).flat();
-        const selected = selectMemoryContext({ state: reviewer!, memories, evidence, queries, limits: deps.limits,
+        const selected = selectMemoryContext({ state: reviewer!, memories, evidence, limits: deps.limits,
           tokenBudget: optionalMemoryTokenBudget(deps.limits.maxContextChars, deps.limits.maxContextTokens, deps.limits) });
         return JSON.stringify({ memories: selected.memories.map(memory => ({ id: memory.id,
           scope: memory.scope, category: memory.category, content: memory.content,

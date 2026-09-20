@@ -97,7 +97,7 @@ describe("unified memory control", () => {
     } finally { f.dispose(); }
   });
 
-  it("grades memory evidence, retains revisions, and excludes changed-file facts", async () => {
+  it("retains source references and revisions and excludes changed-file facts", async () => {
     const f = fixture();
     try {
       const manager = new MemoryManager(f.storage);
@@ -121,15 +121,13 @@ describe("unified memory control", () => {
         ...input.mutations[0]!, content: "The project may use a generated API client", sourceRefs: [],
       }] });
       const tentativeMemory = manager.get("workspace_test", tentative.memoryIds[0]!);
-      assert.equal(tentativeMemory?.status, "needs_verification");
-      assert.equal(tentativeMemory?.confidence, 0.55);
+      assert.equal(tentativeMemory?.status, "active");
       assert.ok((await manager.searchHybrid("workspace_test", "generated API client", { workspaceRoot: f.directory }))
         .some((memory) => memory.id === tentativeMemory?.id));
 
-      const missing = manager.applyModelMutations({ ...input, turnId: "turn_3", mutations: [{
+      assert.throws(() => manager.applyModelMutations({ ...input, turnId: "turn_3", mutations: [{
         ...input.mutations[0]!, content: "The frontend uses generated route metadata", sourceRefs: ["evidence_missing"],
-      }] });
-      assert.equal(manager.get("workspace_test", missing.memoryIds[0]!)?.status, "needs_verification");
+      }] }), /source reference is unavailable/u);
 
       const commandRef = manager.evidenceStore.capture("workspace_test", f.state.threadId, "test_1", "run_command", {
         ok: true, summary: "tests passed", data: {
@@ -142,7 +140,6 @@ describe("unified memory control", () => {
       }] });
       const verifiedMemory = manager.get("workspace_test", verified.memoryIds[0]!);
       assert.equal(verifiedMemory?.status, "active");
-      assert.equal(verifiedMemory?.confidence, 0.9);
     } finally { f.dispose(); }
   });
 

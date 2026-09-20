@@ -271,7 +271,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 
 [threads/](../src/threads) 以追加式 JSONL 保存事件序号、身份和控制记录，并执行持久化追加。事件折叠恢复会话/控制状态；租约与回合所有权防止竞争写入。恢复会保守处理损坏尾记录，而不是随意忽略日志中间的损坏。
 
-[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、严格 Schema、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。仅支持一次范围明确的 V1→V2 结构升级，让现有会话继续可读并为记忆增加作用域列；旧记忆行会转为非活跃状态，不猜测其新项目归属。其他不受支持的开发期数据库身份仍被拒绝。仓储包括线程索引/检查点、全局与项目记忆、来源记录、证据、摘要快照和检索状态。
+[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、严格 Schema、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。V3→V4 升级移除旧记忆的证据等级字段，同时保留现有会话与记忆；更早且不受支持的数据库身份会被拒绝。仓储包括线程索引/检查点、全局与项目记忆、来源记录、证据、摘要快照和检索状态。
 
 当前开发协议在 [protocol/versions.ts](../src/protocol/versions.ts) 统一声明：Journal Event V2、Session State V2、Checkpoint Delta V2、语义摘要 V3、压缩元数据 V2、Worktree Descriptor V2、VS Code Bridge V2、安装清单 V2。运行路径只解析这些当前格式；版本缺失或不匹配时保留原始文件并明确拒绝恢复，不在 Agent 循环中迁移、猜测或补写不受支持的开发期状态。正常 CLI 中不存在兼容或旧路径发现模块。
 
@@ -316,7 +316,13 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 
 ### 9.3 全局/项目长期记忆与 RAG
 
-[memory/](../src/memory) 将跨项目用户偏好/约定与当前项目的架构、决策、环境等事实分开。项目由当前 Git 检出目录根（非 Git 项目取工作区根）标识，与 Thread ID 无关；不同物理 Worktree 有不同的项目作用域。`read_memory` 默认搜索两层，`write_memory` 默认写项目层并在回合成功时提交；`/memory long [global|project]`、`/memory move` 与 `/memory forget` 供用户查看和管理。模型写全局记忆需有当前用户明确表达的长期偏好。源文件变化后，相关项目记忆可以被标为待验证并停止自动注入，工作摘要和 Reviewer 猜测不会自动升级为已验证事实。
+[memory/](../src/memory) 提供全局和当前项目两个作用域。项目由当前 Git 检出目录根（非 Git 项目取工作区根）标识，与 Thread ID 无关；不同物理 Worktree 有不同的项目作用域。模型决定是否调用 `write_memory` 以及写入哪个作用域，默认是项目层；`read_memory` 默认搜索两层，`/memory long [global|project]`、`/memory move` 与 `/memory forget` 供用户管理。Runtime 校验归属、来源引用、长度和敏感信息，不再计算证据等级或置信分数。源文件变化后，相关项目记忆仍可标为待验证并停止自动注入。
+
+检索排序使用二次新鲜度系数 `1 - min(距上次真实召回天数 / 过期天数, 1)^2`：初期下降慢，接近期限时下降加快。项目记忆默认 90 天，全局记忆默认 180 天，只能在用户级 `[limits]` 中调整。仅被检索为候选不会续期；实际注入模型上下文或由 `read_memory` 成功返回才算一次召回，同一回合每条记忆最多记一次。到期后标记 `expired`，保留来源和审计记录；延长时限不会自动恢复已过期记忆。
+
+交互会话空闲时，[记忆后台整理](../src/memory/maintenance.ts)只处理已经通过 `write_memory` 提交的记录，不从对话内容自行创建记忆。一次有界模型调用将新记录与同作用域的混合检索候选比较，并合并兼容内容；合并会产生修订后的记录，并通过记忆事务使旧记录和冗余的新记录失效。后台调用会消耗供应商 Token，其用量记录在整理任务中。项目与全局之间不合并；失败或中断的整理不会留下部分提交，也不会阻塞主任务。Benchmark 环境不运行后台整理。
+
+`[limits]` 中的 `memory_vector_min_similarity`（默认 `0.1`）控制向量候选门槛，`memory_consolidation_match_limit`（默认 `6`）控制每条新记忆取多少条混合检索结果。两者都不是自动合并阈值；候选陈述能否合并仍由模型判断。
 
 本地检索流程：
 
