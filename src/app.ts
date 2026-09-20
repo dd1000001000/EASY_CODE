@@ -85,8 +85,8 @@ import {
   type ClipboardImageReader,
 } from "./images/index.js";
 import { LocalEmbeddingModel } from "./memory/embedding-model.js";
-import { MemoryManager } from "./memory/memory-manager.js";
-import { projectMemoryIdFromRoot } from "./memory/memory-manager.js";
+import { GLOBAL_MEMORY_WORKSPACE_ID, MemoryManager, projectMemoryIdFromRoot } from "./memory/memory-manager.js";
+import { MemoryMaintenance } from "./memory/maintenance.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
 import { formatPlanProposal } from "./plans/plan.js";
@@ -537,6 +537,9 @@ export class EasyCodeApp {
   private hostAccessEpoch = 0;
   private approvalQueue = new ApprovalQueue();
   private lastProviderContext: ProviderContextSnapshot | undefined;
+  private memoryMaintenanceTimer?: NodeJS.Timeout;
+  private memoryMaintenanceController?: AbortController;
+  private memoryMaintenanceWork?: Promise<void>;
 
   private constructor(
     private readonly config: EasyCodeConfig,
@@ -888,8 +891,48 @@ export class EasyCodeApp {
   private uninstallController?: AbortController;
   requestUninstallShutdown(): void {
     this.uninstallRequested = true;
+    this.memoryMaintenanceController?.abort();
     if (this.uninstallController) this.uninstallController.abort();
     else this.terminal.close();
+  }
+
+  private startMemoryMaintenance(): void {
+    if (this.trustedOuterSandbox || this.memoryMaintenanceTimer) return;
+    this.memoryMaintenanceTimer = setInterval(() => { void this.maintainMemoryWhenIdle(); }, 60_000);
+    this.memoryMaintenanceTimer.unref();
+  }
+
+  private async maintainMemoryWhenIdle(): Promise<void> {
+    if (this.closed || this.uninstallRequested || this.uninstallController ||
+        this.state.activeTurnId || this.memoryMaintenanceWork) return;
+    const controller = new AbortController();
+    this.memoryMaintenanceController = controller;
+    const work = (async () => {
+      try {
+        const maintenance = new MemoryMaintenance(this.storage,
+          this.memoryManager, this.workspace.root);
+        maintenance.recover(this.state.threadId);
+        this.memoryManager.expireDueMemories(projectMemoryIdFromRoot(this.workspace.root));
+        this.memoryManager.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
+        maintenance.enqueueCompleted(this.state.threadId);
+        if (!maintenance.hasPending(this.state.threadId)) return;
+        this.requireProviderApiKey(this.state.provider);
+        const provider = createProvider(this.effectiveConfig(), this.state.provider, this.state.model);
+        await maintenance.processNext(this.state.threadId, this.state, provider, controller.signal);
+      } catch {
+        // Idle maintenance must never interrupt input or the main agent.
+      }
+    })();
+    this.memoryMaintenanceWork = work;
+    try { await work; } finally {
+      if (this.memoryMaintenanceController === controller) this.memoryMaintenanceController = undefined;
+      if (this.memoryMaintenanceWork === work) this.memoryMaintenanceWork = undefined;
+    }
+  }
+
+  private async pauseMemoryMaintenance(wait = false): Promise<void> {
+    this.memoryMaintenanceController?.abort();
+    if (wait) await this.memoryMaintenanceWork;
   }
 
   async runInteractive(): Promise<void> {
@@ -908,6 +951,7 @@ export class EasyCodeApp {
     printBanner(this.terminal);
     if (!this.terminal.isInlineShell()) this.printStatus();
     this.announceResumeRecovery();
+    this.startMemoryMaintenance();
 
     while (!this.closed && !this.uninstallRequested) {
       this.syncTerminalView();
@@ -1331,6 +1375,11 @@ export class EasyCodeApp {
   }
 
   close(): void {
+    if (this.memoryMaintenanceWork) {
+      throw new Error("Cannot close synchronously while background memory maintenance is running; use closeAsync().");
+    }
+    if (this.memoryMaintenanceTimer) clearInterval(this.memoryMaintenanceTimer);
+    this.memoryMaintenanceTimer = undefined;
     if (!this.closed && this.hasRunningCommands()) {
       throw new Error(
         "Cannot close synchronously while background commands are running; use closeAsync() so they are canceled and audited first.",
@@ -1400,6 +1449,9 @@ export class EasyCodeApp {
   async closeAsync(): Promise<void> {
     if (this.closed) return;
     const cleanupErrors: unknown[] = [];
+    if (this.memoryMaintenanceTimer) clearInterval(this.memoryMaintenanceTimer);
+    this.memoryMaintenanceTimer = undefined;
+    try { await this.pauseMemoryMaintenance(true); } catch (error) { cleanupErrors.push(error); }
     try {
       await this.cancelRunningCommands();
     } catch (error) {
@@ -1568,6 +1620,7 @@ export class EasyCodeApp {
     presentReasoning = false,
     runtimeOptions: ExecutePromptOptions = {},
   ): Promise<AgentRunResult> {
+    await this.pauseMemoryMaintenance();
     if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
       throw new Error("This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.");
     }
@@ -1806,6 +1859,8 @@ export class EasyCodeApp {
           includeInactive: options?.includeInactive, scope: options?.scope,
           includeGlobalPreferences: options === undefined }),
       memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
+      recordMemoryRecall: (threadId, turnId, memoryIds) =>
+        this.memoryManager.recordRecall(threadId, turnId, memoryIds),
       captureToolEvidence: (state, callId, tool, result) =>
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
       readToolEvidence: (state, id, offset, limit) =>

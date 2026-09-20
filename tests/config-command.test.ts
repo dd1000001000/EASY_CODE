@@ -377,6 +377,25 @@ describe("config commands", () => {
 });
 
 describe("credential configuration loading", () => {
+  it("keeps memory expiry periods in user configuration, not project overrides", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "easy-code-memory-policy-"));
+    const configDir = path.join(root, "user-config");
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true });
+      await mkdir(configDir, { recursive: true });
+      await writeFile(path.join(root, ".easycode", "config.toml"),
+        "[limits]\nmemory_project_expiry_days = 7\n", "utf8");
+      await assert.rejects(loadEasyCodeConfig({ workspaceRoot: root, configDir,
+        credentialStore: false, env: {} }), /limits\.memory_project_expiry_days/u);
+      await writeFile(path.join(root, ".easycode", "config.toml"), "", "utf8");
+      await writeFile(path.join(configDir, "config.toml"),
+        "[limits]\nmemory_project_expiry_days = 120\nmemory_global_expiry_days = 240\n", "utf8");
+      const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir,
+        credentialStore: false, env: {} });
+      assert.equal(config.limits.memoryProjectExpiryDays, 120);
+      assert.equal(config.limits.memoryGlobalExpiryDays, 240);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("rejects a user TOML API key without exposing its value", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "easy-code-no-plaintext-key-"));
     const configDir = path.join(root, "config");

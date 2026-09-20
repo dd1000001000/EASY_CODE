@@ -346,7 +346,7 @@ function normalizeMemories(
         if (typeof item === "string") return item.trim();
         return (
           `[memory_id=${item.id}] [category=${item.category}] ` +
-          `[status=${item.status}] [confidence=${item.confidence.toFixed(2)}] ` +
+          `[status=${item.status}] ` +
           item.content.trim()
         );
       })

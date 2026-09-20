@@ -46,21 +46,19 @@ function insertMemory(
     readonly content: string;
     readonly status?: string;
     readonly workspaceId?: string;
-    readonly confidence?: number;
   },
 ): void {
   const now = new Date().toISOString();
   storage.db.prepare(
     `INSERT INTO memories(
-       id, workspace_id, category, content, normalized_content, confidence,
+       id, workspace_id, category, content, normalized_content,
        status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-     ) VALUES (?, ?, 'decision', ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+     ) VALUES (?, ?, 'decision', ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
   ).run(
     input.id,
     input.workspaceId ?? WORKSPACE_ID,
     input.content,
     input.content.toLocaleLowerCase(),
-    input.confidence ?? 0.8,
     input.status ?? "active",
     now,
     now,

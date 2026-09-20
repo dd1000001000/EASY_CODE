@@ -4,18 +4,18 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 2;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-scoped-memory";
+const CURRENT_SCHEMA_VERSION = 4;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-model-directed-memory";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 2),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 4),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (2, 'easy-code-0.1.0-scoped-memory');
+      VALUES (4, 'easy-code-0.1.0-model-directed-memory');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
@@ -72,7 +72,6 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
         category TEXT NOT NULL,
         content TEXT NOT NULL,
         normalized_content TEXT NOT NULL,
-        confidence REAL NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
         evidence TEXT,
         source_thread_id TEXT,
@@ -182,7 +181,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
       END;
 
       CREATE TRIGGER memories_vector_state_update
-      AFTER UPDATE OF workspace_id, category, content, normalized_content, confidence, status
+      AFTER UPDATE OF workspace_id, category, content, normalized_content, status
       ON memories BEGIN
         INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
         VALUES (new.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -438,7 +437,56 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
     );
     CREATE INDEX context_token_samples_scope_idx ON context_token_samples(scope, sequence);`,
   },
+  {
+    sql: `CREATE TABLE memory_recall_events (
+      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      recalled_at TEXT NOT NULL,
+      PRIMARY KEY(memory_id, thread_id, turn_id)
+    );
+    CREATE INDEX memory_recall_events_turn_idx ON memory_recall_events(thread_id, turn_id);
+    CREATE TABLE memory_maintenance_jobs (
+      turn_id TEXT PRIMARY KEY REFERENCES turns(id) ON DELETE CASCADE,
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'done', 'failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      model_requests INTEGER NOT NULL DEFAULT 0,
+      prompt_tokens INTEGER NOT NULL DEFAULT 0,
+      completion_tokens INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      error TEXT
+    );
+    CREATE INDEX memory_maintenance_jobs_status_idx ON memory_maintenance_jobs(status, updated_at);`,
+  },
 ];
+
+function upgradeMemoryGrades(db: SqliteDatabase): void {
+  db.exec("DROP TRIGGER memories_vector_state_update");
+  db.exec("ALTER TABLE memories DROP COLUMN confidence");
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS memories_vector_state_update
+    AFTER UPDATE OF workspace_id, category, content, normalized_content, status
+    ON memories BEGIN
+      INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+      VALUES (new.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT(workspace_id) DO UPDATE SET
+        generation = memory_vector_state.generation + 1,
+        updated_at = excluded.updated_at;
+      INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
+      SELECT old.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE old.workspace_id <> new.workspace_id
+      ON CONFLICT(workspace_id) DO UPDATE SET
+        generation = memory_vector_state.generation + 1,
+        updated_at = excluded.updated_at;
+    END;
+  `);
+  db.exec("UPDATE memory_provenance SET document_json = json_remove(document_json, '$.verification') WHERE json_valid(document_json)");
+  db.exec("DROP TABLE easy_code_schema");
+  db.exec("CREATE TABLE easy_code_schema (schema_version INTEGER PRIMARY KEY CHECK(schema_version = 4), schema_id TEXT NOT NULL UNIQUE)");
+  db.exec("INSERT INTO easy_code_schema(schema_version, schema_id) VALUES (4, 'easy-code-0.1.0-model-directed-memory')");
+  db.pragma("user_version = 4");
+}
 
 export function initializeCurrentSchema(db: SqliteDatabase): void {
   const objects = db.prepare<[], { name: string }>(
@@ -461,17 +509,8 @@ export function initializeCurrentSchema(db: SqliteDatabase): void {
     "SELECT schema_version, schema_id FROM easy_code_schema",
   ).get();
   const userVersion = db.pragma("user_version", { simple: true });
-  if (identity?.schema_version === 1 && identity.schema_id === "easy-code-0.1.0-baseline" && userVersion === 1) {
-    db.transaction(() => {
-      // The old workspace IDs do not identify the new project scope reliably.
-      // Keep the rows for manual recovery, but do not silently recall them.
-      db.exec("UPDATE memories SET status = 'expired' WHERE status IN ('active', 'needs_verification')");
-      db.exec("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'project' CHECK(scope IN ('project', 'global'))");
-      db.exec("DROP TABLE easy_code_schema");
-      db.exec("CREATE TABLE easy_code_schema (schema_version INTEGER PRIMARY KEY CHECK(schema_version = 2), schema_id TEXT NOT NULL UNIQUE)");
-      db.exec("INSERT INTO easy_code_schema(schema_version, schema_id) VALUES (2, 'easy-code-0.1.0-scoped-memory')");
-      db.pragma("user_version = 2");
-    })();
+  if (identity?.schema_version === 3 && identity.schema_id === "easy-code-0.1.0-memory-lifecycle" && userVersion === 3) {
+    db.transaction(() => upgradeMemoryGrades(db))();
     return;
   }
   if (

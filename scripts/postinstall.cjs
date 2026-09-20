@@ -183,7 +183,7 @@ async function validateOrama(options = {}) {
     schema: {
       workspaceId: "enum",
       status: "enum",
-      confidence: "number",
+      priority: "number",
       embedding: "vector[2]",
     },
   });
@@ -192,28 +192,28 @@ async function validateOrama(options = {}) {
       id: "easy_code_vector_a",
       workspaceId: "install_check",
       status: "active",
-      confidence: 0.95,
+      priority: 0.95,
       embedding: [0.9, 0.1],
     },
     {
       id: "easy_code_vector_b",
       workspaceId: "other_workspace",
       status: "active",
-      confidence: 0.95,
+      priority: 0.95,
       embedding: [1, 0],
     },
     {
       id: "easy_code_vector_c",
       workspaceId: "install_check",
       status: "active",
-      confidence: 0.2,
+      priority: 0.2,
       embedding: [1, 0],
     },
     {
       id: "easy_code_vector_d",
       workspaceId: "install_check",
       status: "inactive",
-      confidence: 0.95,
+      priority: 0.95,
       embedding: [1, 0],
     },
   ], 100);
@@ -223,7 +223,7 @@ async function validateOrama(options = {}) {
     where: {
       workspaceId: { eq: "install_check" },
       status: { eq: "active" },
-      confidence: { gte: 0.8 },
+      priority: { gte: 0.8 },
     },
     similarity: 0,
     offset: 0,

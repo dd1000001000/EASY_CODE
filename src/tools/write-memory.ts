@@ -173,14 +173,7 @@ export class WriteMemoryTool implements AgentTool {
         const content = this.requireField(parsed.content, "content", parsed.operation);
         const category = this.requireField(parsed.category, "category", parsed.operation);
         const scope = parsed.scope ?? "project";
-        if (scope === "global" && category !== "preference" && category !== "convention") {
-          throw new Error("Global memory is reserved for cross-project preferences and conventions");
-        }
-        if (scope === "global" && !parsed.sourceRefs?.includes("user")) {
-          throw new Error("Global memory requires sourceRefs: [\"user\"] from this turn");
-        }
         this.assertSafeWrite(content, parsed.reason);
-        this.assertPlanCategory(context, category);
         return {
           ok: true,
           summary:
@@ -212,12 +205,6 @@ export class WriteMemoryTool implements AgentTool {
         const scope = this.requireField(parsed.scope, "scope", parsed.operation);
         if (scope === existing.scope) throw new Error("Memory already belongs to the target scope");
         this.assertSafeWrite(undefined, parsed.reason);
-        if (scope === "global" && existing.category !== "preference" && existing.category !== "convention") {
-          throw new Error("Only preferences and conventions may move to global memory");
-        }
-        if (scope === "global" && !parsed.sourceRefs?.includes("user")) {
-          throw new Error("Moving memory to global requires sourceRefs: [\"user\"] from this turn");
-        }
         return {
           ok: true,
           summary: `Memory ${memoryId} scope change was staged until this turn succeeds.`,
@@ -230,11 +217,7 @@ export class WriteMemoryTool implements AgentTool {
       if (parsed.operation === "revise") {
         const content = this.requireField(parsed.content, "content", parsed.operation);
         const category = parsed.category ?? existing.category;
-        if (existing.scope === "global" && category !== "preference" && category !== "convention") {
-          throw new Error("Global memory may contain only preferences or conventions");
-        }
         this.assertSafeWrite(content, parsed.reason);
-        this.assertPlanCategory(context, category);
         return {
           ok: true,
           summary:
@@ -253,7 +236,6 @@ export class WriteMemoryTool implements AgentTool {
       }
 
       this.assertSafeWrite(undefined, parsed.reason);
-      this.assertPlanCategory(context, existing.category);
       return {
         ok: true,
         summary:
@@ -294,18 +276,4 @@ export class WriteMemoryTool implements AgentTool {
     }
   }
 
-  private assertPlanCategory(
-    context: ToolContext,
-    category: "preference" | "convention" | "architecture" | "decision" | "environment",
-  ): void {
-    if (
-      context.mode === "plan" &&
-      category !== "preference" &&
-      category !== "convention"
-    ) {
-      throw new Error(
-        "Plan mode may maintain preference and convention memories only; repository facts require completed work",
-      );
-    }
-  }
 }

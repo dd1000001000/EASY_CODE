@@ -34,7 +34,6 @@ export interface PreparedMemoryEmbedding {
 export interface MemoryVectorSearchOptions {
   readonly limit?: number;
   readonly minimumSimilarity?: number;
-  readonly minimumConfidence?: number;
   readonly includeInactive?: boolean;
 }
 
@@ -72,7 +71,6 @@ interface BackfillRow extends MemoryContentRow {
 interface IndexRow extends MemoryContentRow {
   workspace_id: string;
   status: string;
-  confidence: number;
   content_hash: string;
   embedding: unknown;
 }
@@ -91,7 +89,6 @@ interface CachedIndex {
 type MemoryVectorSchema = {
   workspaceId: "enum";
   status: "enum";
-  confidence: "number";
   embedding: `vector[${number}]`;
 };
 
@@ -399,7 +396,6 @@ export class MemoryVectorIndex {
     if (!query.trim()) return Object.freeze([]);
     const limit = boundedInteger(options.limit, DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT);
     const minimumSimilarity = boundedUnit(options.minimumSimilarity, 0);
-    const minimumConfidence = boundedUnit(options.minimumConfidence, 0);
     let queryVector: Float32Array | undefined;
 
     for (let attempt = 0; attempt < MAX_CACHE_RETRIES; attempt += 1) {
@@ -425,7 +421,6 @@ export class MemoryVectorIndex {
 
       const where: Partial<WhereCondition<MemoryVectorSchema>> = {
         workspaceId: { eq: workspaceId },
-        confidence: { gte: minimumConfidence },
         ...(options.includeInactive === true ? {} : { status: { eq: "active" } }),
       };
       const result = await search(index.database, {
@@ -578,7 +573,6 @@ export class MemoryVectorIndex {
     const schema: MemoryVectorSchema = {
       workspaceId: "enum",
       status: "enum",
-      confidence: "number",
       embedding: vectorType,
     };
     const database = await create({
@@ -588,7 +582,6 @@ export class MemoryVectorIndex {
       id: string;
       workspaceId: string;
       status: string;
-      confidence: number;
       embedding: number[];
     }> = [];
     for (const row of snapshot.rows) {
@@ -598,7 +591,6 @@ export class MemoryVectorIndex {
           id: row.id,
           workspaceId: row.workspace_id,
           status: row.status,
-          confidence: row.confidence,
           embedding: Array.from(decodeFloat32(row.embedding, this.provider.dimension)),
         });
       } catch {
@@ -625,7 +617,7 @@ export class MemoryVectorIndex {
           string,
           number,
         ], IndexRow>(
-          `SELECT m.id, m.workspace_id, m.content, m.status, m.confidence,
+          `SELECT m.id, m.workspace_id, m.content, m.status,
                   e.content_hash, e.embedding
              FROM memories AS m
              JOIN memory_embeddings AS e ON e.memory_id = m.id

@@ -518,6 +518,8 @@ export interface ToolContext {
     options?: { readonly limit?: number; readonly includeInactive?: boolean;
       readonly scope?: "all" | LongTermMemoryScope },
   ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
+  /** A returned read_memory result counts as one genuine recall per memory and turn. */
+  recordMemoryRecall?: (memoryIds: readonly string[]) => void;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
     absolutePath: string;
@@ -942,7 +944,6 @@ export interface LongTermMemory {
   scope: LongTermMemoryScope;
   category: LongTermMemoryCategory;
   content: string;
-  confidence: number;
   status: "active" | "needs_verification" | "superseded" | "expired";
   evidence?: string;
   createdAt: string;

@@ -25,7 +25,6 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
     scope: memory.scope,
     category: memory.category,
     content: memory.content,
-    confidence: memory.confidence,
     status: memory.status,
     updatedAt: memory.updatedAt,
   };
@@ -92,6 +91,8 @@ export class ReadMemoryTool implements AgentTool {
         includeInactive: parsed.includeInactive,
       })).slice(0, parsed.limit);
       this.session.record(context.turnId, memories.map((memory) => memory.id));
+      context.recordMemoryRecall?.(memories.filter((memory) =>
+        memory.status === "active" || memory.status === "needs_verification").map((memory) => memory.id));
       return toolSuccess(`Found ${memories.length} long-term memories.`, {
         memories: memories.map(memoryForModel),
         count: memories.length,
