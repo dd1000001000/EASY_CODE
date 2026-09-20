@@ -261,7 +261,24 @@ describe("config commands", () => {
     terminal.write("abc\u001b[Dd\bZ\r");
     assert.equal(await result, "密abcZ");
     assert.deepEqual(terminal.transitions, [true, false]);
-    assert.equal(output.value, "API key: \n");
+    assert.equal(output.value, "API key: •••••\b \b•\n");
+    assert.doesNotMatch(output.value, /密|abcZ/u);
+  });
+
+  it("masks pasted characters and erases only visible dots on backspace", async () => {
+    class TestTerminal extends PassThrough {
+      readonly isTTY = true;
+      isRaw = false;
+      setRawMode(mode: boolean): this { this.isRaw = mode; return this; }
+    }
+    const terminal = new TestTerminal();
+    const output = new StringOutput();
+    const result = readSecretInput(terminal, output, "API key: ");
+    terminal.write("\bsecret\b\bX\r");
+    assert.equal(await result, "secrX");
+    assert.equal(output.value, "API key: ••••••\b \b\b \b•\n");
+    assert.doesNotMatch(output.value, /secret|secrX/u);
+    assert.equal(terminal.isRaw, false);
   });
 
   it("rejects a terminal disconnect and restores raw mode", async () => {

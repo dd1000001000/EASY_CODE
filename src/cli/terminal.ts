@@ -296,6 +296,7 @@ export class Terminal {
   private closed = false;
   private promptActive = false;
   private guardedInputActive = false;
+  private secretInputActive = false;
   private activePromptController?: AbortController;
   private externalOperationController?: AbortController;
   private readlineInputFilter?: PrivateOscInputFilter;
@@ -1212,7 +1213,8 @@ export class Terminal {
 
   async readSecret(prompt: string): Promise<string> {
     if (this.closed) return Promise.reject(new Error("Terminal input is closed."));
-    if (this.rl || this.promptActive || this.guardedInputActive) throw new Error("Secret input must be read before the prompt is opened.");
+    if (this.rl || this.promptActive || this.guardedInputActive || this.secretInputActive) throw new Error("Secret input must be read before the prompt is opened.");
+    this.secretInputActive = true;
     if (this.inlineShellActive) this.screen?.clearLive();
     try {
       return await this.withPrivateProtocolFilteredInput((input) =>
@@ -1223,6 +1225,7 @@ export class Terminal {
         ),
       );
     } finally {
+      this.secretInputActive = false;
       // readSecretInput necessarily writes masked input directly. When the
       // permanent frame owns the alternate buffer, force a cache-invalidating
       // repaint so those direct pixels cannot remain embedded in the UI.
@@ -3812,6 +3815,7 @@ export class Terminal {
   }
 
   private refresh(): void {
+    if (this.secretInputActive) return;
     if (this.disclosureViewer) {
       this.refreshDisclosureViewer();
       return;

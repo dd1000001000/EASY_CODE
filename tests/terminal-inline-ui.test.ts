@@ -259,6 +259,28 @@ async function settlePromptInput(): Promise<void> {
 }
 
 describe("Terminal retained inline shell", () => {
+  it("keeps API key dots visible while other shell updates arrive", async () => {
+    await withInteractiveEnvironment(async () => {
+      const input = new TtyInput();
+      const output = new TtyOutput();
+      const captured = captureOutput(output);
+      const terminal = new Terminal(input, output);
+      try {
+        assert.equal(terminal.beginShell(session()), true);
+        const secret = terminal.readSecret("API key: ");
+        input.write("abc");
+        const visible = captured();
+        assert.match(visible, /API key: •••/u);
+        assert.doesNotMatch(visible, /abc/u);
+        terminal.setSessionInfo(session({ model: "deepseek-v4-flash" }));
+        assert.equal(captured(), visible);
+        input.write("\bZ\r");
+        assert.equal(await secret, "abZ");
+        assert.equal(input.isRaw, false);
+      } finally { terminal.close(); }
+    });
+  });
+
   it("enables only for a usable interactive TTY and remains safe across retries", async () => {
     await withInteractiveEnvironment(() => {
       const plain = new Terminal(new PassThrough(), new PassThrough());
