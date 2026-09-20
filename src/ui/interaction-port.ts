@@ -8,6 +8,7 @@ import type {
   ProviderStreamEvent,
   ThinkingEffort,
 } from "../core/types.js";
+import type { Language } from "../i18n/language.js";
 import type { VisionSupport } from "../models/catalog.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
@@ -116,6 +117,7 @@ export interface AgentDecisionPort {
 
 /** The existing CLI session lifecycle, kept separate from the Agent's decisions. */
 export interface SessionInteractionPort {
+  setLanguage?(language: Language): void;
   configureStreaming(limits: { streamFlushIntervalMs: number; streamPreviewMaxChars: number }): void;
   setContextTokensProvider(provider: (() => number) | undefined): void;
   isInteractive(): boolean;

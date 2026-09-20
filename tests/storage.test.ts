@@ -16,6 +16,7 @@ import path from "node:path";
 import { repairInterruptedTurn } from "../src/app.js";
 import { describe, it } from "./harness.js";
 import { createStorage } from "../src/storage/index.js";
+import { executeLanguageCommand, readLanguage } from "../src/i18n/language.js";
 import { SqliteDatabase } from "../src/storage/sqlite-database.js";
 import { initializeCurrentSchema } from "../src/storage/schema.js";
 import {
@@ -67,6 +68,21 @@ async function waitForOutput(
 }
 
 describe("storage", () => {
+  it("persists the interface language in the existing preferences table", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      assert.equal(readLanguage(storage), "en_us");
+      assert.deepEqual(executeLanguageCommand(storage, ["zh_cn"]), { language: "zh_cn", changed: true });
+      assert.equal(readLanguage(storage), "zh_cn");
+      assert.deepEqual(executeLanguageCommand(storage, []), { language: "zh_cn", changed: false });
+      assert.throws(() => executeLanguageCommand(storage, ["fr_fr"]), /用法：\/language/u);
+      assert.equal(readLanguage(storage), "zh_cn");
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
   it("does not migrate a previous development database", () => {
     const db = new SqliteDatabase(":memory:");
     try {

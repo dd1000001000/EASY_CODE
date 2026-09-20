@@ -19,6 +19,7 @@ import { createStorage, type EasyCodeStorage } from "../storage/database.js";
 import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
 import { deleteThreadTree } from "../threads/delete-thread.js";
 import { pickLocalFolder } from "./folder-picker.js";
+import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
 import type { WebPatch } from "../web-contracts.js";
 
 const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
@@ -100,6 +101,7 @@ export class EasyCodeWebServer {
   private stopping = false;
   private readonly projects: ProjectIndex;
   private readonly projectStorage: EasyCodeStorage;
+  private broadcastLanguageValue: Language = "en_us";
   private readonly dataDir: string;
 
   constructor(private app: EasyCodeApp | undefined, private port: WebInteraction, dataDir: string, assetsRoot?: string,
@@ -107,6 +109,8 @@ export class EasyCodeWebServer {
     this.staticRoot = assetsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
     this.dataDir = dataDir;
     this.projectStorage = createStorage(this.dataDir);
+    this.broadcastLanguageValue = readLanguage(this.projectStorage);
+    this.port.setLanguage(this.broadcastLanguageValue);
     this.projects = new ProjectIndex(this.projectStorage);
   }
 
@@ -125,6 +129,16 @@ export class EasyCodeWebServer {
   private broadcastStatus(): void {
     const data = JSON.stringify({ runningThreadIds: this.busyThreadIds() });
     for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: status\ndata: ${data}\n\n`);
+  }
+
+  private broadcastLanguage(): void {
+    const language = readLanguage(this.projectStorage);
+    if (language === this.broadcastLanguageValue) return;
+    this.broadcastLanguageValue = language;
+    this.port.setLanguage(language);
+    for (const host of this.hosts.values()) host.port.setLanguage(language);
+    const data = JSON.stringify({ language });
+    for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: language\ndata: ${data}\n\n`);
   }
 
   private attachHost(app: EasyCodeApp, port: WebInteraction): HostedThread {
@@ -213,6 +227,7 @@ export class EasyCodeWebServer {
     const page = this.port.historyPage();
     return {
       ...current,
+      language: readLanguage(this.projectStorage),
       view: { ...current.view, entries: page.entries },
       history: this.port.historyState(page),
       plan: this.app?.pendingPlan() ?? null,
@@ -362,7 +377,10 @@ export class EasyCodeWebServer {
       response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive" });
       this.streams.add(response);
       response.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
-      const heartbeat = setInterval(() => { if (!response.destroyed) response.write(": heartbeat\n\n"); }, 25_000);
+      const heartbeat = setInterval(() => {
+        this.broadcastLanguage();
+        if (!response.destroyed) response.write(": heartbeat\n\n");
+      }, 25_000);
       request.once("close", () => { clearInterval(heartbeat); this.streams.delete(response); });
       return;
     }
@@ -380,6 +398,17 @@ export class EasyCodeWebServer {
       json(response, 200, { image: { id: image.id, label: image.label, mediaType: image.mediaType } }); return;
     }
     const input = await jsonBody(request);
+    if (pathname === "/api/command" || pathname === "/api/message" &&
+      typeof input.text === "string" && parseSlashCommand(input.text)?.name === "language") {
+      if (Array.isArray(input.imageIds) && input.imageIds.length) {
+        throw new Error("Send /language without attached images.");
+      }
+      const command = typeof input.text === "string" ? parseSlashCommand(input.text) : null;
+      if (command?.name !== "language") throw new Error("Only /language is available without a conversation.");
+      const result = executeLanguageCommand(this.projectStorage, command.args);
+      if (result.changed) this.broadcastLanguage();
+      json(response, 200, result); return;
+    }
     if (pathname === "/api/folder/pick") {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 6 * 60_000);

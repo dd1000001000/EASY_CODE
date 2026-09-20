@@ -1,6 +1,8 @@
 import { Chalk, type ChalkInstance } from "chalk";
 
 import { formatTokenCount } from "../../cli/token-count.js";
+import { DEFAULT_LANGUAGE, type Language } from "../../i18n/language.js";
+import { translate } from "../../i18n/catalog.js";
 import { redactSensitiveInformation } from "../../memory/sensitive.js";
 import { providerLabel as catalogProviderLabel } from "../../models/catalog.js";
 import type { SubagentStatus, SubagentView } from "../../subagents/types.js";
@@ -24,6 +26,23 @@ export const MAX_COMPACT_TASK_ROWS = 5;
 export const MAX_COMPACT_AGENT_ROWS = 5;
 export const MAX_THINKING_PANEL_ROWS = 12;
 
+function localizedMode(language: Language, mode: string | undefined): string {
+  if (language !== "zh_cn") return safeInline(mode ?? "") || "auto";
+  return translate(language, mode === "plan" ? "ui.modePlan" : mode === "code" ? "ui.modeCode" : "ui.modeAuto");
+}
+
+function localizedEffort(language: Language, effort: string | undefined): string {
+  if (language !== "zh_cn") return safeInline(effort ?? "") || "none";
+  return translate(language, effort === "low" ? "ui.effortLow" : effort === "medium" ? "ui.effortMedium" :
+    effort === "high" ? "ui.effortHigh" : "ui.effortNone");
+}
+
+function localizedEnvironment(language: Language, environment: string): string {
+  if (language !== "zh_cn") return environment;
+  return translate(language, environment === "host" ? "ui.environmentHost" :
+    environment === "container" ? "ui.environmentContainer" : "ui.environmentSandbox");
+}
+
 export const ACTIVITY_SPINNER_FRAMES = [
   "⠋",
   "⠙",
@@ -39,6 +58,7 @@ export const ACTIVITY_SPINNER_FRAMES = [
 
 /** Shared, process-independent settings for all pure terminal views. */
 export interface RenderViewOptions {
+  readonly language?: Language;
   /** Terminal display cells. */
   readonly columns?: number;
   /** Physical terminal rows used to keep modal controls visible. */
@@ -91,18 +111,18 @@ export function renderSessionHeader(
   const body: string[] = [];
 
   if (!session) {
-    body.push(palette.gray("Starting session…"));
+    body.push(palette.gray(translate(options.language ?? DEFAULT_LANGUAGE, "cli.starting")));
   } else {
     const context = formatContext(session);
     body.push([
-      palette.cyan(safeInline(session.mode) || "auto"),
+      palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)),
       palette.bold(formatProviderModel(session, true)),
-      palette.gray(`thinking:${safeInline(session.thinkingEffort) || "none"}`),
-      palette.gray(`context:${context}`),
+      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thinkingEffort")}:${localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort)}`),
+      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.context")}:${context}`),
     ].join(palette.gray(" · ")));
     body.push([
       safeInline(session.workspaceRoot) || ".",
-      palette.gray(`thread: ${safeInline(session.threadId) || "unknown"}`),
+      palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.thread")}: ${safeInline(session.threadId) || "unknown"}`),
     ].join(palette.gray(" · ")));
   }
 
@@ -295,24 +315,24 @@ export function renderComposerFooter(
   const danger = renderDangerStatusLabel(state, options);
 
   if (session) {
-    metadata.push(palette.cyan(safeInline(session.mode) || "auto"));
+    metadata.push(palette.cyan(localizedMode(options.language ?? DEFAULT_LANGUAGE, session.mode)));
     if (session.commandExecutionMode) {
-      metadata.push(palette.gray(`approval:${session.commandExecutionMode === "auto_approve" ? "agent" : session.commandExecutionMode === "unrestricted" ? "none" : "manual"}`));
-      metadata.push(palette.gray(`env:${session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox")}`));
+      metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.approval")}:${session.commandExecutionMode === "auto_approve" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.agent") : session.commandExecutionMode === "unrestricted" ? translate(options.language ?? DEFAULT_LANGUAGE, "cli.none") : translate(options.language ?? DEFAULT_LANGUAGE, "cli.manual")}`));
+      metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.env")}:${localizedEnvironment(options.language ?? DEFAULT_LANGUAGE, session.commandEnvironment ?? (session.commandExecutionMode === "unrestricted" ? "host" : "sandbox"))}`));
     }
     metadata.push(palette.bold(formatProviderModel(session, false)));
-    metadata.push(safeInline(session.thinkingEffort) || "none");
-    metadata.push(palette.gray(`DAG/agents ${session.orchestrationEnabled ? "on" : "off"}`));
+    metadata.push(localizedEffort(options.language ?? DEFAULT_LANGUAGE, session.thinkingEffort));
+    metadata.push(palette.gray(`DAG/${translate(options.language ?? DEFAULT_LANGUAGE, "cli.agentsLower")} ${translate(options.language ?? DEFAULT_LANGUAGE, session.orchestrationEnabled ? "cli.on" : "cli.off")}`));
     metadata.push(palette.gray(`ctx ${formatContext(session)}`));
   } else {
-    metadata.push(palette.gray("starting"));
+    metadata.push(palette.gray(translate(options.language ?? DEFAULT_LANGUAGE, "cli.startingShort")));
   }
   metadata.push(palette.gray(
-    task ? `task ${task.current}/${task.total}` : "task –",
+    task ? `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} ${task.current}/${task.total}` : `${translate(options.language ?? DEFAULT_LANGUAGE, "cli.task")} –`,
   ));
-  metadata.push(palette.gray(`agents ${activeAgents}`));
+  metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${activeAgents}`));
   if (state.composer.pendingSubmissions > 0) {
-    metadata.push(palette.gray(`steering ${state.composer.pendingSubmissions}`));
+    metadata.push(palette.gray(`${translate(options.language ?? DEFAULT_LANGUAGE, "cli.steering")} ${state.composer.pendingSubmissions}`));
   }
 
   const columns = viewColumns(options);
@@ -625,7 +645,7 @@ export function renderTaskStatusLines(
   );
   const focusIndex = Math.max(0, position.current - 1);
   const heading = palette.bold(truncateToWidth(
-    `Tasks ${position.current}/${position.total}`,
+    `${translate(options.language ?? DEFAULT_LANGUAGE, "ui.tasks")} ${position.current}/${position.total}`,
     columns,
     { preserveAnsi: false },
   ));
@@ -707,7 +727,7 @@ export function renderAgentStatusLines(
     99,
   );
   const heading = palette.bold(truncateToWidth(
-    `Agents ${active}/${capacity}`,
+    `${translate(options.language ?? DEFAULT_LANGUAGE, "ui.agents")} ${active}/${capacity}`,
     columns,
     { preserveAnsi: false },
   ));

@@ -27,6 +27,8 @@ import {
 } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
 import { readLastModel, writeLastModel } from "./config/last-model.js";
+import { executeLanguageCommand, readLanguage } from "./i18n/language.js";
+import { languageName, translate } from "./i18n/catalog.js";
 import { McpConfigStore, USER_MCP_CONFIG_PATH, type RemoteMcpServerConfig } from "./mcp/config.js";
 import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { authorizeMcpServer, McpOauthCredentials, storedMcpOauthProvider } from "./mcp/oauth.js";
@@ -720,6 +722,7 @@ export class EasyCodeApp {
         workspace.root,
       );
       storage = createStorage(config.dataDir);
+      terminal.setLanguage?.(readLanguage(storage));
       if (!options.resumeThreadId && !harborProviderApiKey) {
         const last = readLastModel(storage);
         if (last) {
@@ -1077,7 +1080,7 @@ export class EasyCodeApp {
     ) return;
     if (!(await this.prepareInteractiveStartup())) return;
     this.syncTerminalView();
-    printBanner(this.terminal);
+    printBanner(this.terminal, readLanguage(this.storage));
     if (!this.terminal.isInlineShell()) this.printStatus();
     this.announceResumeRecovery();
     this.startMemoryMaintenance();
@@ -1282,6 +1285,14 @@ export class EasyCodeApp {
     if (!command) return false;
 
     switch (command.name) {
+      case "language": {
+        const result = executeLanguageCommand(this.storage, command.args);
+        this.terminal.setLanguage?.(result.language);
+        this.terminal.success(translate(result.language,
+          command.args.length ? "language.changed" : "language.current",
+          { language: languageName(result.language) }));
+        return false;
+      }
       case "mode": {
         this.assertNoRunningSubagents("switch modes");
         const mode = command.args[0] as AgentMode | undefined;
@@ -1302,7 +1313,9 @@ export class EasyCodeApp {
         this.dirty = true;
         this.save();
         this.terminal.setSessionInfo(this.terminalSessionInfo());
-        this.terminal.success(`Mode switched to ${mode}`);
+        const language = readLanguage(this.storage);
+        this.terminal.success(translate(language, "cli.modeSwitched", { mode: language === "zh_cn"
+          ? translate(language, mode === "plan" ? "ui.modePlan" : mode === "code" ? "ui.modeCode" : "ui.modeAuto") : mode }));
         return false;
       }
       case "provider": {
@@ -1364,7 +1377,7 @@ export class EasyCodeApp {
         if (command.rawArgs.toLowerCase() === "clear") {
           const count = this.pendingImages.length;
           await this.clearPendingImages();
-          this.terminal.success(`Cleared ${count} queued image(s).`);
+          this.terminal.success(translate(readLanguage(this.storage), "cli.imagesCleared", { count }));
           return false;
         }
         this.requireCurrentModelVision();
@@ -1373,7 +1386,7 @@ export class EasyCodeApp {
             nextThreadImageNumber(this.state.messages, this.pendingImages),
           );
           this.pendingImages.push(attachment);
-          this.terminal.success(`Queued ${attachment.label} from the clipboard.`);
+          this.terminal.success(translate(readLanguage(this.storage), "cli.imageQueued", { label: attachment.label }));
           return false;
         }
         await this.queueImagePath(command.rawArgs, true);
@@ -1436,14 +1449,14 @@ export class EasyCodeApp {
         if (command.args.length > 1) throw new Error("Usage: /resume [thread-id]");
         const threadId = command.args[0] ?? await this.selectResumeThread();
         if (!threadId) {
-          this.terminal.info("Resume canceled.");
+          this.terminal.info(translate(readLanguage(this.storage), "cli.resumeCanceled"));
           return false;
         }
         if (!command.args.length) return this.handleSlashCommand(`/resume ${threadId}`);
         await this.clearPendingImages();
         await this.resumeThread(threadId);
         this.syncTerminalView(true);
-        this.terminal.success(`Resumed thread ${this.state.threadId}`);
+        this.terminal.success(translate(readLanguage(this.storage), "cli.resumedThread", { id: this.state.threadId }));
         this.announceResumeRecovery();
         return false;
       }
@@ -1453,13 +1466,13 @@ export class EasyCodeApp {
         await this.newThread();
         this.terminal.resetForNewThread(this.terminalSessionInfo());
         this.syncTerminalView();
-        this.terminal.success(`Created thread ${this.state.threadId}`);
+        this.terminal.success(translate(readLanguage(this.storage), "cli.createdThread", { id: this.state.threadId }));
         return false;
       case "clear":
         this.terminal.clearScreen();
         return false;
       case "help":
-        this.terminal.write(`${helpText().trim()}\n`);
+        this.terminal.write(`${helpText(readLanguage(this.storage)).trim()}\n`);
         return false;
       case "exit":
         await this.clearPendingImages();
@@ -3282,9 +3295,9 @@ export class EasyCodeApp {
     }
     this.pendingImages.push(attachment);
     if (announce) {
-      this.terminal.success(
-        `Queued ${attachment.label}: ${attachment.width}x${attachment.height} ${attachment.mediaType}.`,
-      );
+      this.terminal.success(translate(readLanguage(this.storage), "cli.queuedImageFile", {
+        label: attachment.label, width: attachment.width, height: attachment.height, mediaType: attachment.mediaType,
+      }));
     }
     return attachment;
   }
@@ -3312,7 +3325,7 @@ export class EasyCodeApp {
     if (this.startupInteraction === "select-model") {
       const selected = await this.selectProviderAndModel();
       if (!selected) {
-        this.terminal.info("Startup model selection canceled.");
+        this.terminal.info(translate(readLanguage(this.storage), "cli.startupModelCanceled"));
         return false;
       }
       selection = selected;
@@ -3333,38 +3346,40 @@ export class EasyCodeApp {
         selection.model,
         selection.thinkingEffort,
       );
-      this.terminal.success(
-        `Selected ${providerLabel(selection.provider)} / ${selection.model} / ` +
-          `thinking ${selection.thinkingEffort}${applied ? "" : " (saved, not applied)"}`,
-      );
+      const language = readLanguage(this.storage);
+      this.terminal.success(translate(language, "cli.selectedModel", {
+        provider: providerLabel(selection.provider), model: selection.model, effort: selection.thinkingEffort,
+        suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
+      }));
     }
     return true;
   }
 
   private async selectCommandExecutionMode(announceCancellation = true, requested?: CommandExecutionMode): Promise<void> {
+    const language = readLanguage(this.storage);
     const selected = requested ?? await this.terminal.selectChoice(
-      "Select command execution mode",
+      translate(language, "cli.selectApproval"),
       [
         {
           id: "manual",
-          label: "Manual approval",
-          detail: "Every new command asks you; thread permission prefixes apply. Disables orchestration when idle.",
+          label: translate(language, "ui.manualApproval"),
+          detail: translate(language, "cli.manualApprovalDetail"),
         },
         {
           id: "auto_approve",
-          label: "Approve for me",
-          detail: "Independent approval agent; rejected or unavailable reviews come to you",
+          label: translate(language, "cli.autoApprove"),
+          detail: translate(language, "cli.autoApproveDetail"),
         },
         {
           id: "unrestricted",
-          label: "Full access",
-          detail: "No command sandbox or approval prompts; commands run with your system account permissions",
+          label: translate(language, "ui.fullAccess"),
+          detail: translate(language, "cli.fullAccessDetail"),
         },
       ],
       this.commandExecutionMode,
     ) as CommandExecutionMode | undefined;
     if (!selected) {
-      if (announceCancellation) this.terminal.info("Command execution mode selection canceled.");
+      if (announceCancellation) this.terminal.info(translate(language, "cli.approvalCanceled"));
       return;
     }
     if (!requested) {
@@ -3373,36 +3388,34 @@ export class EasyCodeApp {
     }
 
     if (this.trustedOuterSandbox === "harbor") {
-      this.terminal.info("Benchmark permissions are fixed: container full access, external networking disabled.");
+      this.terminal.info(translate(language, "cli.benchmarkPermissions"));
       return;
     }
     if (selected === "manual" && this.hasActiveOrchestration()) {
-      this.terminal.info("DAG/subagents have not finished. Manual approval cannot be selected until all work has ended; nothing was changed.");
+      this.terminal.info(translate(language, "cli.activeOrchestration"));
       return;
     }
 
     if (selected === "unrestricted") {
-      this.terminal.warning(
-        "FULL ACCESS: commands can read/write host files and use networking with your account privileges, without individual approval. Plan does not make commands read-only.",
-      );
+      this.terminal.warning(translate(language, "cli.fullAccessWarning"));
       const confirmed = await this.terminal.selectChoice(
-        "Enable host full access without a command sandbox?",
+        translate(language, "cli.fullAccessQuestion"),
         [
           {
             id: "cancel",
-            label: "No, keep current protections",
-            detail: "Recommended: retain command policy and the workspace sandbox",
+            label: translate(language, "cli.fullAccessNo"),
+            detail: translate(language, "cli.fullAccessNoDetail"),
           },
           {
             id: "confirm",
-            label: "Yes, execute without individual prompts",
-            detail: "Host files and network become accessible; this is not sandboxed execution",
+            label: translate(language, "cli.fullAccessYes"),
+            detail: translate(language, "cli.fullAccessYesDetail"),
           },
         ],
         "cancel",
       );
       if (confirmed !== "confirm") {
-        if (announceCancellation) this.terminal.info("Full access was not enabled.");
+        if (announceCancellation) this.terminal.info(translate(language, "cli.fullAccessCanceled"));
         return;
       }
     }
@@ -3410,7 +3423,7 @@ export class EasyCodeApp {
     const previousMode = this.commandExecutionMode;
     // No await between recheck and commit: dispatch sees either old or new state.
     if (selected === "manual" && this.hasActiveOrchestration()) {
-      this.terminal.info("DAG/subagents have not finished; wait until they finish before selecting manual approval.");
+      this.terminal.info(translate(language, "cli.activeOrchestration"));
       return;
     }
     if ((previousMode === "unrestricted") !== (selected === "unrestricted")) {
@@ -3431,28 +3444,18 @@ export class EasyCodeApp {
     // posture immediately without duplicating the EASY CODE title.
     this.syncTerminalView();
     if (selected === "manual") {
-      this.terminal.success(
-        previousMode === "unrestricted"
-          ? "Manual approval restored; orchestration disabled."
-          : "Manual approval enabled; orchestration disabled.",
-      );
+      this.terminal.success(translate(language, previousMode === "unrestricted" ? "cli.manualRestored" : "cli.manualEnabled"));
     } else if (selected === "auto_approve") {
-      this.terminal.success(
-        previousMode === "unrestricted"
-          ? "Independent approval agent enabled; default workspace sandbox restored."
-          : "Independent approval agent enabled; rejected actions will require your decision.",
-      );
+      this.terminal.success(translate(language, previousMode === "unrestricted" ? "cli.autoRestored" : "cli.autoEnabled"));
     } else {
-      this.terminal.warning(
-        "FULL ACCESS: host command execution without sandbox or approvals. Plan commands may write files. Use /approval to change this mode.",
-      );
+      this.terminal.warning(translate(language, "cli.fullAccessEnabled"));
     }
   }
 
   private async selectModelFromPicker(announceCancellation: boolean): Promise<void> {
     const selection = await this.selectProviderAndModel();
     if (!selection) {
-      if (announceCancellation) this.terminal.info("Model selection canceled.");
+      if (announceCancellation) this.terminal.info(translate(readLanguage(this.storage), "cli.modelCanceled"));
       return;
     }
     if (!(await this.ensureProviderApiKey(selection.provider))) return;
@@ -3484,12 +3487,14 @@ export class EasyCodeApp {
     );
     if (!model) return undefined;
     const canonicalModel = requireCatalogModel(provider, model).id;
+    const language = readLanguage(this.storage);
     const thinkingEffort = await this.terminal.selectThinkingEffort(
       providerLabel(provider),
       canonicalModel,
       THINKING_EFFORTS.map((effort) => ({
         id: effort,
-        label: effort[0]!.toUpperCase() + effort.slice(1),
+        label: translate(language, effort === "none" ? "ui.effortNone" :
+          effort === "low" ? "ui.effortLow" : effort === "medium" ? "ui.effortMedium" : "ui.effortHigh"),
         applied: thinkingEffortIsApplied(provider, canonicalModel, effort),
       })),
       this.state.thinkingEffort,
@@ -3506,15 +3511,16 @@ export class EasyCodeApp {
           `Run easy-code config set ${apiKeyConfigKey(provider)}.`,
       );
     }
-    this.terminal.info(`No API key is configured for ${providerLabel(provider)}.`);
+    const language = readLanguage(this.storage);
+    this.terminal.info(translate(language, "cli.missingApiKey", { provider: providerLabel(provider) }));
     let value: string;
     try {
       value = await this.terminal.readSecret(
-        `Enter the ${providerLabel(provider)} API key (characters shown as dots): `,
+        translate(language, "cli.enterApiKey", { provider: providerLabel(provider) }),
       );
     } catch (error) {
       if (error instanceof Error && error.message === "API key input was canceled.") {
-        this.terminal.info("API key input canceled.");
+        this.terminal.info(translate(language, "cli.apiKeyCanceled"));
         return false;
       }
       throw error;
@@ -3523,9 +3529,7 @@ export class EasyCodeApp {
       this.credentialStore, provider, value, this.config.providers[provider]?.baseUrl,
     );
     this.config.providers[provider]!.apiKey = normalized;
-    this.terminal.success(
-      `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
-    );
+    this.terminal.success(translate(language, "cli.apiKeySaved", { key: apiKeyConfigKey(provider) }));
     return true;
   }
 
@@ -3565,16 +3569,17 @@ export class EasyCodeApp {
       throw error;
     }
     this.rememberLastModel();
+    this.syncTerminalView();
     const applied = thinkingEffortIsApplied(provider, canonicalModel, thinkingEffort);
-    this.terminal.success(
-      `${verb} ${providerLabel(provider)} / ${canonicalModel} / thinking ${thinkingEffort}` +
-        (applied ? "" : " (saved, not applied)"),
-    );
+    const language = readLanguage(this.storage);
+    const verbKey = verb === "Selected" ? "cli.selectedModel" : verb === "Provider switched to"
+      ? "cli.providerSwitched" : "cli.modelSwitched";
+    this.terminal.success(translate(language, verbKey, {
+      provider: providerLabel(provider), model: canonicalModel, effort: thinkingEffort,
+      suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
+    }));
     if (this.pendingImages.length && !modelSupportsVision(provider, canonicalModel)) {
-      this.terminal.info(
-        `${this.pendingImages.length} queued image(s) remain attached, but this model cannot receive them. ` +
-          "Choose an image-capable model before submitting the task.",
-      );
+      this.terminal.info(translate(language, "cli.imagesUnsupported", { count: this.pendingImages.length }));
     }
   }
 
@@ -3799,16 +3804,17 @@ export class EasyCodeApp {
   }
 
   private async updateOrchestration(args: readonly string[] = [], reportCancel = true): Promise<void> {
+    const language = readLanguage(this.storage);
     if (args.length > 1 || (args[0] && !["on", "off"].includes(args[0]))) {
       throw new Error("Usage: /orchestration [on|off]");
     }
     const selected = args[0] ?? await this.terminal.selectChoice(
-      "DAG and subagent creation (reviewer stays enabled)", [
-        { id: "off", label: "Off — lightweight", detail: "No new DAGs or subagents; existing work can still finish." },
-        { id: "on", label: "On — allow orchestration", detail: "Allow DAGs and subagents within configured budgets." },
+      translate(language, "cli.orchestrationTitle"), [
+        { id: "off", label: translate(language, "cli.orchestrationOff"), detail: translate(language, "cli.orchestrationOffDetail") },
+        { id: "on", label: translate(language, "cli.orchestrationOn"), detail: translate(language, "cli.orchestrationOnDetail") },
       ], this.orchestrationEnabled() ? "on" : "off");
     if (!selected) {
-      if (reportCancel) this.terminal.info("Orchestration selection canceled.");
+      if (reportCancel) this.terminal.info(translate(language, "cli.orchestrationCanceled"));
       return;
     }
     if (!args.length) {
@@ -3816,9 +3822,9 @@ export class EasyCodeApp {
       return;
     }
     if (selected === "on" && this.commandExecutionMode === "manual") {
-      const confirmed = await this.terminal.selectChoice("Enable orchestration and independent command approvals?", [
-        { id: "cancel", label: "Cancel", detail: "Keep manual approval and orchestration off" },
-        { id: "enable", label: "Enable both", detail: "Approval agent reviews new commands; denied requests come to you" },
+      const confirmed = await this.terminal.selectChoice(translate(language, "cli.orchestrationQuestion"), [
+        { id: "cancel", label: translate(language, "ui.cancel"), detail: translate(language, "cli.orchestrationKeep") },
+        { id: "enable", label: translate(language, "cli.orchestrationBoth"), detail: translate(language, "cli.orchestrationBothDetail") },
       ], "cancel");
       if (confirmed !== "enable") return;
     }
@@ -3831,7 +3837,9 @@ export class EasyCodeApp {
     this.save();
     if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
     this.syncTerminalView();
-    this.terminal.success(`DAG/subagent creation ${selected}; reviewer remains enabled.`);
+    this.terminal.success(translate(language, "cli.orchestrationChanged", {
+      state: translate(language, selected === "on" ? "cli.on" : "cli.off"),
+    }));
   }
 
   private hasActiveOrchestration(): boolean {

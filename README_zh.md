@@ -75,6 +75,7 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | 命令 | 用途 |
 | --- | --- |
 | `/model`、`/mode` | 切换模型、工作模式 |
+| `/language [en_us\|zh_cn]` | 查看或切换 CLI 与网页界面语言 |
 | `/approval`、`/permissions` | 切换审批方式、查看与撤销授权 |
 | `/orchestration` | 开关 DAG / 子 Agent 创建功能 |
 | `/sessions`、`/resume`、`/new` | 查看、恢复、新建会话 |
@@ -82,6 +83,8 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | `/mcp` | 查看、授权、连接、断开或移除 MCP Server |
 | `/skills` | 列出用户级与项目级 Skill |
 | `/context`、`/usage`、`/help` | 查看上下文、用量和完整帮助 |
+
+网页右上角可选择 English／简体中文；该设置与 CLI 共用，保存在现有用户偏好中。模型回答、文件内容和已有对话历史不会自动翻译。
 
 可让 Agent 创建、修改或删除 Skill，也可手动放到 `~/.easy_code_skills/<名称>/SKILL.md`（用户级）或 `<项目根目录>/.easy_code_skills/<名称>/SKILL.md`（同项目跨 Thread 共享）。`SKILL.md` 需包含 YAML 格式的 `name`、`description` 和后续操作说明；可用 `references/`、`assets/`、`scripts/` 存放辅助内容。`/skills` 列出两处 Skill。Agent 修改 Skill 需经过工具审批；删除时会归档以便恢复。
 

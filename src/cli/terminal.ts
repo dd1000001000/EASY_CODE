@@ -1,5 +1,7 @@
 import readline from "node:readline";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
+import { translate } from "../i18n/catalog.js";
 import chalk from "chalk";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
@@ -261,6 +263,7 @@ export class Terminal implements AppInteractionPort {
 
   private rl?: readline.Interface;
   private closed = false;
+  private language: Language = DEFAULT_LANGUAGE;
   private promptActive = false;
   private guardedInputActive = false;
   private secretInputActive = false;
@@ -370,6 +373,11 @@ export class Terminal implements AppInteractionPort {
     this.vscodeMenuBridge?.onDisclosureToggle((kind, id) => {
       this.handleDisclosureToggle(kind, id);
     });
+  }
+
+  setLanguage(language: Language): void {
+    this.language = language;
+    this.refresh();
   }
 
   /**
@@ -3843,6 +3851,7 @@ export class Terminal implements AppInteractionPort {
 
   private viewOptions(): {
     columns: number;
+    language: Language;
     rows?: number;
     color: boolean;
     agentConcurrencyLimit?: number;
@@ -3850,6 +3859,7 @@ export class Terminal implements AppInteractionPort {
   } {
     const rows = Number((this.output as NodeJS.WriteStream).rows);
     return {
+      language: this.language,
       columns: this.screen?.columns ??
         (Number((this.output as NodeJS.WriteStream).columns) || 80),
       ...(Number.isFinite(rows) && rows > 0 ? { rows: Math.floor(rows) } : {}),
@@ -4257,21 +4267,22 @@ function countCodePoints(value: string): number {
   return count;
 }
 
-export function printBanner(terminal: Pick<AppInteractionPort, "isInlineShell" | "showSessionHeader" | "info" | "write">): void {
+export function printBanner(terminal: Pick<AppInteractionPort, "isInlineShell" | "showSessionHeader" | "info" | "write">,
+  language: Language = DEFAULT_LANGUAGE): void {
   if (terminal.isInlineShell()) {
     terminal.showSessionHeader();
-    terminal.info("Type /help for commands, /model to switch models, or /exit to quit.");
+    terminal.info(translate(language, "cli.helpHint"));
     return;
   }
-  terminal.write(chalk.bold.cyan("\nEASY CODE") + chalk.gray(" — local CLI coding agent\n"));
-  terminal.write(chalk.gray("Type /help for commands, or /exit to quit.\n\n"));
+  terminal.write(chalk.bold.cyan("\nEASY CODE") + chalk.gray(` — ${translate(language, "cli.localAgent")}\n`));
+  terminal.write(chalk.gray(`${translate(language, "cli.shortHelpHint")}\n\n`));
   terminal.write(
     chalk.gray(
       process.platform === "win32"
-        ? "Paste an image with Ctrl+V in VS Code. Use /image clipboard in terminals that intercept it.\n\n"
+        ? `${translate(language, "cli.pasteWindows")}\n\n`
         : process.platform === "darwin"
-          ? "Paste an image with Command+V in VS Code. Use /image clipboard in terminals that intercept it.\n\n"
-          : "Paste an image with Ctrl+Shift+V in VS Code. Use /image clipboard in terminals that intercept it.\n\n",
+          ? `${translate(language, "cli.pasteMac")}\n\n`
+          : `${translate(language, "cli.pasteLinux")}\n\n`,
     ),
   );
 }

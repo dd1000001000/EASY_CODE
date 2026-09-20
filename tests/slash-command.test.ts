@@ -43,6 +43,14 @@ describe("parseSlashCommand", () => {
     assert.match(helpText(), /\/skills\s+Show user and project Skills/u);
   });
 
+  it("recognizes the language command and documents both locales", () => {
+    assert.deepEqual(parseSlashCommand("/language zh_cn"), {
+      name: "language", args: ["zh_cn"], rawArgs: "zh_cn",
+    });
+    assert.match(helpText(), /\/language \[en_us\|zh_cn\]/u);
+    assert.match(helpText("zh_cn"), /\/language \[en_us\|zh_cn\].*界面语言/u);
+  });
+
   it("offers presentation-only command-name completion", () => {
     assert.deepEqual(completeSlashCommandPrefix("/approv", 7), {
       replacement: "/approval",

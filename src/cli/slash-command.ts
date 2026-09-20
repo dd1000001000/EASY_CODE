@@ -1,5 +1,6 @@
 import { THINKING_EFFORTS, type ProviderName, type ThinkingEffort } from "../core/types.js";
 import { PROVIDER_CATALOG } from "../models/catalog.js";
+import type { Language } from "../i18n/language.js";
 
 export interface SlashCommand {
   name: SlashCommandName;
@@ -9,6 +10,7 @@ export interface SlashCommand {
 
 export const SLASH_COMMAND_NAMES = [
   "mode",
+  "language",
   "provider",
   "model",
   "approval",
@@ -141,12 +143,46 @@ function isModelId(value: string | undefined): value is string {
   );
 }
 
-export function helpText(): string {
+export function helpText(language: Language = "en_us"): string {
   const providers = providerUsage();
+  if (language === "zh_cn") return `
+EASY CODE 指令
+
+  /mode plan|auto|code       切换工作模式
+  /language [en_us|zh_cn]    查看或切换界面语言
+  /provider ${providers}
+                              切换模型供应商
+  /model                     打开模型选择器
+  /model <model>             切换当前供应商的模型
+  /model ${providers} <id>
+                              切换供应商和模型
+  /model ${providers} <id> <effort>
+                              同时切换思考强度
+  /approval [manual|auto_approve|unrestricted]
+                              选择手动批准、审批智能体或完全访问
+  /orchestration [on|off]    控制 DAG 和子智能体；审查智能体保持开启
+  /status                    查看当前状态
+  /workspace [refresh]       查看或刷新工作区清单
+  /image <path|clipboard|clear>  添加图片或清空待发送图片
+  /tools                     查看可用工具
+  /skills                    查看用户级和项目级技能
+  /mcp [server-id action]    管理 MCP 服务器
+  /permissions               查看权限与沙箱状态
+  /context                   查看上下文预算
+  /usage                     查看模型报告的 Token 用量
+  /memory                    查看或管理记忆
+  /sessions                  列出历史对话
+  /resume [id]               恢复对话
+  /new                       新建对话
+  /clear                     清空终端显示
+  /help                      显示帮助
+  /exit                      保存并退出
+`;
   return `
 EASY CODE commands
 
   /mode plan|auto|code       Switch working mode
+  /language [en_us|zh_cn]    Show or change the interface language
   /provider ${providers}
                               Switch provider
   /model                     Open the provider and model selector

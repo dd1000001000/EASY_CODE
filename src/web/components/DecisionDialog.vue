@@ -4,6 +4,7 @@ import { ElButton, ElCard, ElInput, ElScrollbar, type InputInstance } from "elem
 import { Check } from "@element-plus/icons-vue";
 import type { WebDecision } from "../../web-contracts.js";
 import { useOutsideDismiss } from "../use-outside-dismiss.js";
+import { t } from "../i18n.js";
 
 const props = defineProps<{ decision: WebDecision }>();
 const emit = defineEmits<{ submit: [id: string, value: string | undefined] }>();
@@ -13,12 +14,17 @@ const secretInput = ref<InputInstance>();
 const panelContent = ref<HTMLElement>();
 const panelRoot = ref<{ $el: HTMLElement }>();
 let submitted = false;
-const isApprovalModePicker = computed(() => props.decision.title === "Select command execution mode");
-const isOrchestrationPicker = computed(() => props.decision.title === "DAG and subagent creation (reviewer stays enabled)");
+const choiceIds = computed(() => new Set(props.decision.choices?.map(choice => choice.id) ?? []));
+const isApprovalModePicker = computed(() => props.decision.kind === "choice" &&
+  ["manual", "auto_approve", "unrestricted"].every(id => choiceIds.value.has(id)));
+const isOrchestrationPicker = computed(() => props.decision.kind === "choice" &&
+  choiceIds.value.has("off") && choiceIds.value.has("on") && props.decision.choices?.length === 2);
 const isSettingsPicker = computed(() => props.decision.kind === "choice" && (
-  props.decision.title === "Select provider" ||
+  props.decision.title === "Select provider" || props.decision.title === "选择供应商" ||
   props.decision.title.startsWith("Select ") && props.decision.title.endsWith(" model") ||
+  props.decision.title.startsWith("选择 ") && props.decision.title.endsWith(" 的模型") ||
   props.decision.title.startsWith("Thinking effort for ") ||
+  props.decision.title.endsWith(" 的思考强度") ||
   isApprovalModePicker.value || isOrchestrationPicker.value
 ));
 function submit(value: string | undefined): void {
@@ -52,11 +58,11 @@ function choose(value: string): void {
       <div ref="panelContent" class="decision-content">
         <p v-if="decision.description" class="entry-text decision-description">{{ decision.description }}</p>
         <form v-if="decision.kind === 'secret'" @submit.prevent="submit(secret)">
-          <ElInput ref="secretInput" v-model="secret" type="password" autocomplete="off" placeholder="Enter API key" />
-          <div class="decision-actions"><ElButton native-type="button" @click="cancel">Cancel</ElButton><ElButton type="primary" native-type="submit">Save</ElButton></div>
+          <ElInput ref="secretInput" v-model="secret" type="password" autocomplete="off" :placeholder="t('ui.enterApiKey')" />
+          <div class="decision-actions"><ElButton native-type="button" @click="cancel">{{ t('ui.cancel') }}</ElButton><ElButton type="primary" native-type="submit">{{ t('ui.save') }}</ElButton></div>
         </form>
         <template v-else>
-          <ElInput v-if="decision.kind === 'plan'" v-model="feedback" type="textarea" :rows="3" placeholder="Feedback if requesting changes" />
+          <ElInput v-if="decision.kind === 'plan'" v-model="feedback" type="textarea" :rows="3" :placeholder="t('ui.planFeedback')" />
           <div class="decision-options">
             <ElButton v-for="choice in decision.choices" :key="choice.id" class="decision-option"
               :class="{ 'is-selected': choice.id === decision.initialId }"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElButton, ElCard, ElMessageBox, ElNotification } from "element-plus";
+import { ElButton, ElCard, ElMessageBox, ElNotification, ElOption, ElSelect } from "element-plus";
 import { Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
 import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 import type { WebCommandEntry } from "../web-command-catalog.js";
@@ -8,6 +8,8 @@ import type { PlanProposal } from "../core/types.js";
 import { bootstrap, fetchHistoryPage, request, type ProjectItem, type ThreadItem, type WebSnapshot } from "./api.js";
 import { displayProject, displayTitle, isConversationEntry, isNoticeEntry } from "./display-content.js";
 import { useOutsideDismiss } from "./use-outside-dismiss.js";
+import { language, setLanguage, t } from "./i18n.js";
+import { parseLanguage, type Language } from "../i18n/language.js";
 import Composer from "./components/Composer.vue";
 import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
@@ -50,6 +52,17 @@ let events: EventSource | undefined;
 let sequence = -1;
 let keepBottom = true;
 const MAX_LIVE_ENTRIES = 200;
+const EMPTY_THREAD_TITLES = [
+  "ui.emptyThreadTitle", "ui.emptyThreadTitleIdea", "ui.emptyThreadTitleSmallChange",
+  "ui.emptyThreadTitleFeature", "ui.emptyThreadTitleHelp", "ui.emptyThreadTitleStuck",
+  "ui.emptyThreadTitleForward", "ui.emptyThreadTitleExplore",
+] as const;
+const emptyThreadTitleIndex = ref(0);
+const emptyThreadOpenSerial = ref(0);
+function pickEmptyThreadTitle(): void {
+  emptyThreadTitleIndex.value = Math.floor(Math.random() * EMPTY_THREAD_TITLES.length);
+  emptyThreadOpenSerial.value += 1;
+}
 
 const session = computed(() => view.value.session);
 const displayedEntries = computed(() => archiveEntries.value ?? view.value.entries);
@@ -62,18 +75,23 @@ const activeProject = computed(() => displayProject(
 ));
 const headerTitle = computed(() => displayTitle(activeThread.value, activeProject.value, threads.value));
 const reviewLabel = computed(() => view.value.review?.phase === "main_brief"
-  ? "Main agent is preparing the reviewer brief" : "Reviewer is independently inspecting the workspace");
+  ? t("ui.reviewBrief") : t("ui.reviewInspect"));
 const taskCount = computed(() => view.value.tasks?.tasks.length ?? 0);
 const modelLabel = computed(() => session.value
-  ? `${session.value.provider}/${session.value.model} · ${session.value.thinkingEffort}` : "Model");
+  ? `${session.value.provider}/${session.value.model} · ${session.value.thinkingEffort === "none" ? t("ui.effortNone") :
+    session.value.thinkingEffort === "low" ? t("ui.effortLow") : session.value.thinkingEffort === "medium" ? t("ui.effortMedium") : t("ui.effortHigh")}` : t("ui.model"));
+const modeLabel = computed(() => session.value?.mode === "plan" ? t("ui.modePlan")
+  : session.value?.mode === "code" ? t("ui.modeCode") : t("ui.modeAuto"));
+const environmentLabel = computed(() => session.value?.commandEnvironment === "host" ? t("ui.environmentHost")
+  : session.value?.commandEnvironment === "container" ? t("ui.environmentContainer") : t("ui.environmentSandbox"));
 const approvalLabel = computed(() => {
   switch (session.value?.commandExecutionMode) {
-    case "auto_approve": return "Approval agent";
-    case "unrestricted": return "Full access";
-    default: return "Manual approval";
+    case "auto_approve": return t("ui.approvalAgent");
+    case "unrestricted": return t("ui.fullAccess");
+    default: return t("ui.manualApproval");
   }
 });
-const orchestrationLabel = computed(() => session.value?.orchestrationEnabled ? "DAG/agents on" : "DAG/agents off");
+const orchestrationLabel = computed(() => session.value?.orchestrationEnabled ? t("ui.dagOn") : t("ui.dagOff"));
 const liveAgents = computed(() => view.value.subagents.filter(agent => agent.status === "running" || agent.status === "stopping"));
 const monitorActive = computed(() => view.value.tasks !== null || liveAgents.value.length > 0 || view.value.review !== null || view.value.activities.length > 0);
 const unassignedAgents = computed(() => liveAgents.value.filter(agent => !view.value.tasks?.tasks.some(task => task.id === agent.taskId && agent.assignmentKind === "dag")));
@@ -83,13 +101,13 @@ function projectRunning(projectId: string): boolean {
 function agentForTask(taskId: string) { return liveAgents.value.find(agent => agent.assignmentKind === "dag" && agent.taskId === taskId); }
 function agentStatus(agent: (typeof liveAgents.value)[number]): string {
   const activity = agent.activity;
-  return `${activity?.kind === "thinking" ? "Thinking" : activity?.kind === "tool" ? `Tool: ${activity.label ?? "working"}` : agent.status} · ${elapsed(Date.parse(activity?.startedAt ?? agent.startedAt))}`;
+  return `${activity?.kind === "thinking" ? t("ui.thinking") : activity?.kind === "tool" ? `${t("ui.tool")}: ${activity.label ?? t("ui.working")}` : agent.status} · ${elapsed(Date.parse(activity?.startedAt ?? agent.startedAt))}`;
 }
 
 function notify(text: string, kind: "info" | "success" | "warning" | "error" = "info"): void {
   activeNotification?.close();
   activeNotification = ElNotification({
-    title: kind === "error" ? "Error" : kind === "warning" ? "Notice" : kind === "success" ? "Done" : "EASY CODE",
+    title: kind === "error" ? t("ui.errorTitle") : kind === "warning" ? t("ui.noticeTitle") : kind === "success" ? t("ui.doneTitle") : "EASY CODE",
     message: noticePreview(text), type: kind, duration: 15_000, showClose: true, position: "top-right",
   });
 }
@@ -113,6 +131,7 @@ function webCommandName(text: string): string | undefined {
 
 function applySnapshot(snapshot: WebSnapshot): void {
   if (snapshot.view.session?.threadId === view.value.session?.threadId && snapshot.sequence < sequence) return;
+  setLanguage(snapshot.language);
   const sameHistory = snapshot.view.session?.threadId === view.value.session?.threadId &&
     snapshot.history.epoch === history.value.epoch;
   const preserveLoaded = sameHistory && (historyExpanded.value || !keepBottom);
@@ -155,7 +174,7 @@ function applyPatch(patch: WebPatch, nextSequence: number): void {
     if (patch.entry.kind === "user" && !history.value.markers.some(marker => marker.id === patch.entry.id)) {
       history.value = { ...history.value, markers: [...history.value.markers, {
         id: patch.entry.id,
-        preview: (patch.entry.text.replace(/\s+/gu, " ").trim() || (patch.entry.images?.length ? "Image attachment" : "Your message")).slice(0, 120),
+        preview: (patch.entry.text.replace(/\s+/gu, " ").trim() || (patch.entry.images?.length ? t("ui.imageAttachment") : t("ui.yourMessage"))).slice(0, 120),
       }] };
     }
     if (isNoticeEntry(patch.entry)) {
@@ -207,6 +226,9 @@ function connect(): void {
     runningThreadIds.value = new Set(ids);
     if (completed) void refresh();
   });
+  events.addEventListener("language", event => {
+    setLanguage(parseLanguage((JSON.parse((event as MessageEvent).data) as { language: string }).language));
+  });
   events.onerror = () => { connected.value = false; };
   events.onopen = () => { connected.value = true; };
 }
@@ -223,7 +245,12 @@ watch(error, message => {
   notify(message, "error");
   error.value = "";
 });
-watch(activeThread, (next, previous) => { if (next !== previous) { resetCommandOutput(); commandPanelName.value = null; } });
+watch(activeThread, (next, previous) => {
+  if (next === previous) return;
+  resetCommandOutput();
+  commandPanelName.value = null;
+  if (next) pickEmptyThreadTitle();
+});
 onMounted(() => { void start(); timer = window.setInterval(() => { now.value = Date.now(); }, 1000); });
 onUnmounted(() => {
   activeNotification?.close();
@@ -339,7 +366,7 @@ async function send(text: string, imageIds: string[]): Promise<void> {
   const command = webCommandName(text);
   if (command && view.value.busy) {
     composer.value?.failed();
-    error.value = "Wait for the current request to finish before running a command.";
+    error.value = t("ui.waitCurrent");
     return;
   }
   if (command) beginCommandOutput(`/${command}`); else resetCommandOutput();
@@ -382,13 +409,23 @@ async function chooseSetting(setting: "model" | "approval" | "orchestration"): P
   try { await request(`/api/ui/${setting}`, { threadId: activeThread.value }); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
+async function changeLanguage(value: string): Promise<void> {
+  try {
+    const requested = parseLanguage(value);
+    const result = await request<{ language: Language }>("/api/command", { text: `/language ${requested}` });
+    setLanguage(result.language);
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+}
 async function switchThread(action: "new" | "resume", threadId?: string, projectId?: string): Promise<void> {
   if (switching.value) return;
+  const previousThreadId = activeThread.value;
   switching.value = true;
   try {
     await request("/api/thread", { action, ...(threadId ? { threadId } : {}), ...(projectId ? { projectId } : {}) });
     error.value = "";
     await refresh();
+    if (action === "resume" && threadId === previousThreadId && activeThread.value === threadId)
+      pickEmptyThreadTitle();
     switching.value = false;
   }
   catch (reason) { switching.value = false; error.value = reason instanceof Error ? reason.message : String(reason); }
@@ -416,66 +453,66 @@ async function addProject(): Promise<void> {
 }
 async function renameProject(project: ProjectItem): Promise<void> {
   let name: string;
-  try { ({ value: name } = await ElMessageBox.prompt("Project name", "Rename project", { inputValue: project.name, inputPattern: /\S/u, inputErrorMessage: "Enter a name" })); }
+  try { ({ value: name } = await ElMessageBox.prompt(t("ui.projectRenamePrompt"), t("ui.renameProjectTitle"), { inputValue: project.name, inputPattern: /\S/u, inputErrorMessage: t("ui.enterName") })); }
   catch { return; }
   name = name.trim();
   if (!name || name === project.name) return;
-  try { await request("/api/project/rename", { projectId: project.id, name }); await refresh(); notify("Project renamed", "success"); }
+  try { await request("/api/project/rename", { projectId: project.id, name }); await refresh(); notify(t("ui.projectRenamed"), "success"); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 async function renameThread(thread: ThreadItem): Promise<void> {
   let name: string;
-  try { ({ value: name } = await ElMessageBox.prompt("Choose a permanent conversation name", "Name conversation", { inputValue: thread.title, inputPattern: /\S/u, inputErrorMessage: "Enter a name" })); }
+  try { ({ value: name } = await ElMessageBox.prompt(t("ui.permanentName"), t("ui.renameConversationTitle"), { inputValue: thread.title, inputPattern: /\S/u, inputErrorMessage: t("ui.enterName") })); }
   catch { return; }
   name = name.trim();
   if (!name || name === thread.title) return;
-  try { await request("/api/thread/rename", { threadId: thread.threadId, name }); await refresh(); notify("Conversation named", "success"); }
+  try { await request("/api/thread/rename", { threadId: thread.threadId, name }); await refresh(); notify(t("ui.conversationNamed"), "success"); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 async function deleteThread(thread: ThreadItem): Promise<void> {
   const message = h("div", { class: "easy-code-confirm__body" }, [
-    h("p", "This conversation and its saved memory will be permanently deleted."),
+    h("p", t("ui.deleteConversationBody")),
     h("div", { class: "easy-code-confirm__target" }, thread.title),
-    h("small", "Project files will not be changed."),
+    h("small", t("ui.filesUnchanged")),
   ]);
-  try { await ElMessageBox.confirm(message, "Delete conversation?", {
+  try { await ElMessageBox.confirm(message, t("ui.deleteConversationQuestion"), {
     customClass: "easy-code-confirm", showClose: false, closeOnClickModal: false,
-    cancelButtonText: "Keep conversation", confirmButtonText: "Delete conversation",
+    cancelButtonText: t("ui.keepConversation"), confirmButtonText: t("ui.deleteConversationTitle"),
     confirmButtonClass: "easy-code-confirm__danger",
   }); }
   catch { return; }
   try {
     await request("/api/thread/delete", { threadId: thread.threadId, confirmThreadId: thread.threadId });
-    await refresh(); notify("Conversation deleted", "success");
+    await refresh(); notify(t("ui.conversationDeleted"), "success");
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 async function deleteProject(project: ProjectItem): Promise<void> {
   const message = h("div", { class: "easy-code-confirm__body" }, [
-    h("p", "This project will be removed from EASY CODE along with its conversations and associated memories."),
+    h("p", t("ui.removeProjectBody")),
     h("div", { class: "easy-code-confirm__target" }, [h("strong", project.name), h("small", project.root)]),
-    h("small", "The folder and its source files will not be deleted."),
+    h("small", t("ui.folderUnchanged")),
   ]);
-  try { await ElMessageBox.confirm(message, "Remove project?", {
+  try { await ElMessageBox.confirm(message, t("ui.removeProjectQuestion"), {
     customClass: "easy-code-confirm", showClose: false, closeOnClickModal: false,
-    cancelButtonText: "Keep project", confirmButtonText: "Remove project",
+    cancelButtonText: t("ui.keepProject"), confirmButtonText: t("ui.removeProjectTitle"),
     confirmButtonClass: "easy-code-confirm__danger",
   }); }
   catch { return; }
   try {
     await request("/api/project/delete", { projectId: project.id, confirmRoot: project.root });
-    await refresh(); notify("Project removed", "success");
+    await refresh(); notify(t("ui.projectRemoved"), "success");
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 async function decide(id: string, value: string | undefined): Promise<void> {
   try {
     const result = await request<{ accepted: boolean }>("/api/decision", { threadId: activeThread.value, id, value });
-    if (!result.accepted) throw new Error("That decision is no longer available.");
+    if (!result.accepted) throw new Error(t("ui.decisionExpired"));
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
 async function decidePlan(action: "approve" | "reject" | "adjust" | "defer"): Promise<void> {
   let feedback: string | undefined;
   if (action === "adjust") {
-    try { feedback = (await ElMessageBox.prompt("What should change in the plan?", "Request plan changes", { inputPattern: /\S/u, inputErrorMessage: "Describe the changes" })).value.trim(); }
+    try { feedback = (await ElMessageBox.prompt(t("ui.planPrompt"), t("ui.planPromptTitle"), { inputPattern: /\S/u, inputErrorMessage: t("ui.planPromptError") })).value.trim(); }
     catch { return; }
     if (!feedback) return;
   }
@@ -494,68 +531,76 @@ function noticePreview(text: string): string {
 <template>
   <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
-      <div v-if="sidebarCollapsed" class="brand brand--collapsed">
-        <ElButton class="brand-expand" text title="Expand sidebar" aria-label="Expand sidebar" @click="sidebarCollapsed = false">
+      <Transition name="sidebar-brand" mode="out-in">
+        <div v-if="sidebarCollapsed" class="brand brand--collapsed">
+          <ElButton class="brand-expand" text :title="t('ui.expandSidebar')" :aria-label="t('ui.expandSidebar')" @click="sidebarCollapsed = false">
+            <img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" />
+          </ElButton>
+        </div>
+        <div v-else class="brand brand--expanded">
           <img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" />
-        </ElButton>
-      </div>
-      <div v-else class="brand brand--expanded">
-        <img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" />
-        <div class="brand-copy"><strong>EASY CODE</strong><small>Local coding agent</small></div>
-        <ElButton class="brand-collapse" text :icon="Fold" title="Collapse sidebar" aria-label="Collapse sidebar" @click="sidebarCollapsed = true" />
-      </div>
-      <div v-if="!sidebarCollapsed" class="sidebar-heading project-heading"><span>PROJECTS</span><ElButton class="project-add" text :icon="Plus" title="Add local project folder" aria-label="Add local project folder" :disabled="switching" @click="addProject" /></div>
-      <nav v-if="!sidebarCollapsed" class="thread-list" aria-label="Projects and conversations">
+          <div class="brand-copy"><strong>EASY CODE</strong><small>{{ t('ui.localAgent') }}</small></div>
+          <ElButton class="brand-collapse" text :icon="Fold" :title="t('ui.collapseSidebar')" :aria-label="t('ui.collapseSidebar')" @click="sidebarCollapsed = true" />
+        </div>
+      </Transition>
+      <Transition name="sidebar-content">
+        <div v-if="!sidebarCollapsed" class="sidebar-content">
+          <div class="sidebar-heading project-heading"><span>{{ t('ui.projects') }}</span><ElButton class="project-add" text :icon="Plus" :title="t('ui.addProject')" :aria-label="t('ui.addProject')" :disabled="switching" @click="addProject" /></div>
+          <nav class="thread-list" :aria-label="t('ui.projectNavigation')">
         <section v-for="project in projects" :key="project.id" class="project-group">
           <div class="project-row" :class="{ current: activeProject?.id === project.id }">
             <ElButton class="project-toggle" text :title="project.root" :aria-expanded="expandedProjects.has(project.id)" @click="toggleProject(project.id)">
-              <FolderOpened v-if="expandedProjects.has(project.id)" class="project-folder" /><Folder v-else class="project-folder" /><span class="project-name">{{ project.name }}</span><Loading v-if="projectRunning(project.id)" class="project-loading" aria-label="Project is active" />
+              <FolderOpened v-if="expandedProjects.has(project.id)" class="project-folder" /><Folder v-else class="project-folder" /><span class="project-name">{{ project.name }}</span><Loading v-if="projectRunning(project.id)" class="project-loading" :aria-label="t('ui.projectActive')" />
             </ElButton>
-            <ElButton class="project-action project-action--add" text :icon="Plus" title="New conversation in this project" aria-label="New conversation in this project" :disabled="switching" @click="switchThread('new', undefined, project.id)" />
-            <ElButton class="project-action" text :icon="Edit" title="Rename project" aria-label="Rename project" :disabled="switching" @click="renameProject(project)" />
-            <ElButton class="project-action danger" text :icon="Delete" title="Remove project and conversations" aria-label="Remove project and conversations" :disabled="switching" @click="deleteProject(project)" />
+            <ElButton class="project-action project-action--add" text :icon="Plus" :title="t('ui.newConversation')" :aria-label="t('ui.newConversation')" :disabled="switching" @click="switchThread('new', undefined, project.id)" />
+            <ElButton class="project-action" text :icon="Edit" :title="t('ui.renameProject')" :aria-label="t('ui.renameProject')" :disabled="switching" @click="renameProject(project)" />
+            <ElButton class="project-action danger" text :icon="Delete" :title="t('ui.removeProject')" :aria-label="t('ui.removeProject')" :disabled="switching" @click="deleteProject(project)" />
           </div>
           <div v-if="expandedProjects.has(project.id)" class="project-threads">
             <div v-for="thread in projectThreads(project.id)" :key="thread.threadId" class="thread-item" :class="{ active: activeThread === thread.threadId }">
               <ElButton class="thread-row" text :disabled="switching" :title="thread.threadId" @click="switchThread('resume', thread.threadId)">
                 <Loading v-if="runningThreadIds.has(thread.threadId)" class="thread-loading" /><span v-else class="thread-icon">◌</span><span>{{ thread.title }}</span>
               </ElButton>
-              <ElButton v-if="thread.canRename" class="project-action" text :icon="Edit" title="Name conversation" aria-label="Name conversation" :disabled="switching" @click="renameThread(thread)" />
-              <ElButton class="project-action danger" text :icon="Delete" title="Delete conversation and its memory" aria-label="Delete conversation and its memory" :disabled="switching" @click="deleteThread(thread)" />
+              <ElButton v-if="thread.canRename" class="project-action" text :icon="Edit" :title="t('ui.nameConversation')" :aria-label="t('ui.nameConversation')" :disabled="switching" @click="renameThread(thread)" />
+              <ElButton class="project-action danger" text :icon="Delete" :title="t('ui.deleteConversation')" :aria-label="t('ui.deleteConversation')" :disabled="switching" @click="deleteThread(thread)" />
             </div>
           </div>
         </section>
-      </nav>
-      <div v-if="!sidebarCollapsed" class="sidebar-footer"><span :class="connected ? 'online-dot' : 'offline-dot'"></span>{{ connected ? 'Local connection active' : 'Reconnecting…' }}</div>
+          </nav>
+          <div class="sidebar-footer"><span :class="connected ? 'online-dot' : 'offline-dot'"></span>{{ connected ? t('ui.connected') : t('ui.reconnecting') }}</div>
+        </div>
+      </Transition>
     </aside>
 
     <main class="main-column">
       <header class="topbar">
-        <div><h1>{{ headerTitle }}</h1><p>{{ session ? `Mode: ${session.mode} · Environment: ${session.commandEnvironment} · Tasks: ${taskCount} · Agents: ${liveAgents.length}` : activeProject?.root || 'Choose a local working folder' }}</p></div>
-        <div class="top-actions"><span class="context-pill">ctx {{ session?.contextTokens ?? 0 }}</span></div>
+        <div><h1>{{ headerTitle }}</h1><p>{{ session ? `${t('ui.mode')}: ${modeLabel} · ${t('ui.environment')}: ${environmentLabel} · ${t('ui.tasks')}: ${taskCount} · ${t('ui.agents')}: ${liveAgents.length} · ctx ${session.contextTokens ?? 0}` : activeProject?.root || t('ui.chooseFolder') }}</p></div>
+        <div class="top-actions"><ElSelect class="language-switcher" :model-value="language" :aria-label="t('ui.selectLanguage')" @change="changeLanguage"><ElOption label="English" value="en_us" /><ElOption label="简体中文" value="zh_cn" /></ElSelect></div>
       </header>
 
-      <div v-if="loading" class="loading-state">Connecting to EASY CODE…</div>
+      <div v-if="loading" class="loading-state">{{ t('ui.connecting') }}</div>
       <div v-else class="transcript-frame">
         <MessageRail :markers="history.markers" :visible-ids="visibleMessageIds" @navigate="jumpToEntry" />
-        <ElButton v-if="archiveEntries" class="return-to-latest" round @click="returnToLatest">Back to latest messages</ElButton>
+        <ElButton v-if="archiveEntries" class="return-to-latest" round @click="returnToLatest">{{ t('ui.backToLatest') }}</ElButton>
         <div ref="transcript" class="transcript" @scroll="onScroll" @toggle.capture="updateVisibleMessages">
           <div class="conversation-width">
-            <div v-if="archiveEntries ? archiveHasEarlier : history.hasEarlier" class="history-load"><ElButton text :loading="historyLoading" @click="loadOlder">Load earlier messages</ElButton></div>
-            <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" class="empty-state"><img class="empty-symbol" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><h2>{{ activeThread ? 'What would you like to work on?' : activeProject ? 'Open a conversation' : 'Add a local project' }}</h2><p>{{ activeThread ? 'Ask about your code, make a change, or explore this workspace.' : activeProject ? 'Choose an existing conversation or create one with the + button.' : 'Use the + next to Projects to choose a working folder.' }}</p></div>
+            <div v-if="archiveEntries ? archiveHasEarlier : history.hasEarlier" class="history-load"><ElButton text :loading="historyLoading" @click="loadOlder">{{ t('ui.loadEarlier') }}</ElButton></div>
+            <Transition name="empty-state" mode="out-in">
+              <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" :key="`${activeThread ?? activeProject?.id ?? 'no-project'}:${emptyThreadOpenSerial}`" class="empty-state"><img class="empty-symbol" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><h2>{{ activeThread ? t(EMPTY_THREAD_TITLES[emptyThreadTitleIndex]!) : activeProject ? t('ui.emptyProjectTitle') : t('ui.emptyNoProjectTitle') }}</h2><p>{{ activeThread ? t('ui.emptyThreadHint') : activeProject ? t('ui.emptyProjectHint') : t('ui.emptyNoProjectHint') }}</p></div>
+            </Transition>
             <TranscriptEntry v-for="entry in conversationEntries" :key="entry.id" :entry="entry" />
-            <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">Load newer messages</ElButton></div>
-            <section v-if="plan" class="plan-actions"><strong>Plan awaiting your decision</strong><div><ElButton type="primary" @click="decidePlan('approve')">Approve and run</ElButton><ElButton @click="decidePlan('adjust')">Request changes</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">Reject</ElButton><ElButton @click="decidePlan('defer')">Later</ElButton></div></section>
+            <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">{{ t('ui.loadNewer') }}</ElButton></div>
+            <section v-if="plan" class="plan-actions"><strong>{{ t('ui.planAwaiting') }}</strong><div><ElButton type="primary" @click="decidePlan('approve')">{{ t('ui.approveRun') }}</ElButton><ElButton @click="decidePlan('adjust')">{{ t('ui.requestChanges') }}</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">{{ t('ui.reject') }}</ElButton><ElButton @click="decidePlan('defer')">{{ t('ui.later') }}</ElButton></div></section>
           </div>
         </div>
         <ElCard v-if="monitorActive" class="task-monitor-card" shadow="always">
-          <section v-if="view.tasks" class="monitor-section"><h3>Tasks {{ view.tasks.completed }}/{{ view.tasks.total }}</h3><ul><li v-for="task in view.tasks.tasks" :key="task.id">{{ task.status === 'completed' ? '✓' : '○' }} {{ task.title }}<div v-if="agentForTask(task.id)" class="task-agent">{{ agentForTask(task.id)?.taskTitle }} · {{ agentStatus(agentForTask(task.id)!) }}</div></li></ul></section>
-          <section v-if="unassignedAgents.length" class="monitor-section"><h3>Subagents</h3><ul><li v-for="agent in unassignedAgents" :key="agent.id">{{ agent.taskTitle }} · {{ agentStatus(agent) }}</li></ul></section>
-          <section v-if="view.review" class="monitor-section"><h3>Reviewer</h3><p>{{ reviewLabel }} · {{ elapsed(view.review.startedAt) }}</p></section>
-          <section v-if="view.activities.length" class="monitor-section"><h3>In progress</h3><ul><li v-for="activity in view.activities" :key="activity.id">{{ activity.text }}</li></ul></section>
+          <section v-if="view.tasks" class="monitor-section"><h3>{{ t('ui.tasks') }} {{ view.tasks.completed }}/{{ view.tasks.total }}</h3><ul><li v-for="task in view.tasks.tasks" :key="task.id">{{ task.status === 'completed' ? '✓' : '○' }} {{ task.title }}<div v-if="agentForTask(task.id)" class="task-agent">{{ agentForTask(task.id)?.taskTitle }} · {{ agentStatus(agentForTask(task.id)!) }}</div></li></ul></section>
+          <section v-if="unassignedAgents.length" class="monitor-section"><h3>{{ t('ui.subagents') }}</h3><ul><li v-for="agent in unassignedAgents" :key="agent.id">{{ agent.taskTitle }} · {{ agentStatus(agent) }}</li></ul></section>
+          <section v-if="view.review" class="monitor-section"><h3>{{ t('ui.reviewer') }}</h3><p>{{ reviewLabel }} · {{ elapsed(view.review.startedAt) }}</p></section>
+          <section v-if="view.activities.length" class="monitor-section"><h3>{{ t('ui.inProgress') }}</h3><ul><li v-for="activity in view.activities" :key="activity.id">{{ activity.text }}</li></ul></section>
         </ElCard>
-        <ElCard v-if="commandOutput.length && !commandOutputDismissed && !selectedCommand" ref="commandOutputRoot" class="command-output-overlay" shadow="always" aria-label="Command output">
-          <div class="command-output-heading"><strong>{{ commandOutputLabel || 'Command output' }}</strong></div>
+        <ElCard v-if="commandOutput.length && !commandOutputDismissed && !selectedCommand" ref="commandOutputRoot" class="command-output-overlay" shadow="always" :aria-label="t('ui.commandOutput')">
+          <div class="command-output-heading"><strong>{{ commandOutputLabel || t('ui.commandOutput') }}</strong></div>
           <div class="command-output-body"><pre v-for="entry in commandOutput" :key="entry.id">{{ entry.text }}</pre></div>
         </ElCard>
       </div>
