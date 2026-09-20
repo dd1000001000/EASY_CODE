@@ -21,6 +21,7 @@ import {
   SaveLocalMcpServerTool,
   SaveRemoteMcpServerTool,
   ManageTasksTool,
+  NameThreadTool,
   ProposePlanTool,
   PollCommandTool,
   ReadFileTool,
@@ -47,6 +48,8 @@ import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { McpConfigStore } from "../src/mcp/config.js";
 import { SkillStore } from "../src/skills/store.js";
+import { ThreadTitleStore } from "../src/threads/thread-title.js";
+import type { EasyCodeStorage } from "../src/storage/database.js";
 import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
 
 function actualDefinitions() {
@@ -76,6 +79,7 @@ function actualDefinitions() {
     new DisableMcpServerTool(workspace, new McpConfigStore()).definition,
     new RemoveMcpServerTool(workspace, new McpConfigStore()).definition,
     new ManageTasksTool().definition,
+    new NameThreadTool(new ThreadTitleStore({} as EasyCodeStorage)).definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
     new ReadSkillTool(workspace, skills).definition,
@@ -111,6 +115,7 @@ describe("Prompt Bundle tool metadata", () => {
       "manage_subagents",
       "manage_tasks",
       "modify_skill",
+      "name_thread",
       "poll_command",
       "propose_plan",
       "read_file",

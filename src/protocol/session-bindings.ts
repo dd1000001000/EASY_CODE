@@ -2,7 +2,6 @@ import type { PromptBundleBinding, SessionState } from "../core/types.js";
 
 export interface CurrentSessionBindings {
   readonly promptBundle: PromptBundleBinding;
-  readonly modelRegistryHash: string;
 }
 
 function promptBundleMatches(
@@ -32,15 +31,6 @@ export function assertCurrentSessionBindings(
     throw new Error(
       `Thread ${state.threadId} is bound to a different Prompt Bundle. ` +
       "Restore the matching installation or create a new task.",
-    );
-  }
-  if (!state.modelRegistryHash) {
-    throw new Error(`Thread ${state.threadId} has no current model-registry binding.`);
-  }
-  if (state.modelRegistryHash !== current.modelRegistryHash) {
-    throw new Error(
-      `Thread ${state.threadId} is bound to a different ~/.easy_code/models.toml. ` +
-      "Restore that registry or start a new thread; endpoints and wire protocols are never changed silently on Resume.",
     );
   }
 }

@@ -1,0 +1,1 @@
+This Thread has not been named yet. Include `threadTitle` in your single controller tool call. Make it a concise, specific title for the user's current request, without secrets. This title is submitted once to the same naming rule used by the main agent and user; it does not change project files.

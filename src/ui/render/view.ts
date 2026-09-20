@@ -211,7 +211,7 @@ export function renderFixedBottomRegions(
   );
 
   const desiredTaskRows = Math.min(
-    renderTaskStatusLines(state.live.tasks, options).length,
+    renderTaskStatusLines(state.live.tasks, options, undefined, state.live.subagents, nowMs).length,
     physicalRowBudget(budget.taskRows),
   );
   const desiredAgentRows = Math.min(
@@ -227,11 +227,14 @@ export function renderFixedBottomRegions(
     state.live.tasks,
     options,
     allocation.taskRows,
+    state.live.subagents,
+    nowMs,
   );
   const agents = renderAgentStatusLines(
     state,
     options,
     allocation.agentRows,
+    nowMs,
   );
   const lines = [...status, ...tasks, ...agents];
   return { status, tasks, agents, lines };
@@ -376,7 +379,7 @@ export function renderThinkingPanel(
     body.push(palette.gray(`  … [Thinking truncated${source}.]`));
   }
   const header = palette.gray(
-    `↕ Thinking #${panel.id} · /thinking ${panel.id} · ` +
+    `↕ Thinking #${panel.id} · ` +
       "VS Code Ctrl/Cmd+click to toggle",
   );
   return [header, ...body].join("\n");
@@ -605,6 +608,8 @@ export function renderTaskStatusLines(
   graph: Readonly<TaskGraphView> | null,
   options: RenderViewOptions = {},
   rowBudget?: number,
+  agents: readonly SubagentView[] = [],
+  nowMs = Date.now(),
 ): readonly string[] {
   if (!graph || graph.tasks.length === 0) return [];
   const physicalRows = physicalRowBudget(rowBudget);
@@ -639,7 +644,7 @@ export function renderTaskStatusLines(
     );
     const window = compactWindow(graph.tasks.length, focusIndex, itemCapacity);
     const lines = [heading];
-    appendTaskRows(lines, graph, window.start, window.end, columns, palette);
+    appendTaskRows(lines, graph, window.start, window.end, columns, palette, agents, nowMs);
     const hidden = graph.tasks.length - (window.end - window.start);
     if (hidden > 0 && lines.length < physicalRows) {
       lines.push(palette.gray(truncateToWidth(
@@ -660,7 +665,7 @@ export function renderTaskStatusLines(
       { preserveAnsi: false },
     )));
   }
-  appendTaskRows(lines, graph, window.start, window.end, columns, palette);
+  appendTaskRows(lines, graph, window.start, window.end, columns, palette, agents, nowMs);
   if (window.end < graph.tasks.length) {
     lines.push(palette.gray(truncateToWidth(
       `  … ${graph.tasks.length - window.end} more`,
@@ -679,8 +684,10 @@ export function renderAgentStatusLines(
   state: Readonly<UIState>,
   options: RenderViewOptions = {},
   rowBudget?: number,
+  nowMs = Date.now(),
 ): readonly string[] {
-  const agents = state.live.subagents;
+  const agents = state.live.subagents.filter(agent => isActiveAgent(agent.status) &&
+    !(agent.assignmentKind === "dag" && state.live.tasks?.tasks.some(task => task.id === agent.taskId)));
   if (agents.length === 0) return [];
   const physicalRows = physicalRowBudget(rowBudget);
   if (physicalRows === 0) return [];
@@ -726,7 +733,7 @@ export function renderAgentStatusLines(
     // assignment the user actually needs to monitor. Keep a stable short
     // identity while reserving the row for the task title/status detail.
     const label = shortAgentLabel(agent.id);
-    const detail = agentDetail(agent);
+    const detail = agentDetail(agent, nowMs);
     const text = `  ${agentIcon(agent.status)} ${label}` +
       `${detail ? `  ${detail}` : ""}`;
     lines.push(styleAgentStatus(
@@ -753,6 +760,8 @@ function appendTaskRows(
   end: number,
   columns: number,
   palette: ChalkInstance,
+  agents: readonly SubagentView[],
+  nowMs: number,
 ): void {
   for (let index = start; index < end; index += 1) {
     const task = graph.tasks[index];
@@ -767,6 +776,11 @@ function appendTaskRows(
       truncateToWidth(text, columns, { preserveAnsi: false }),
       palette,
     ));
+    const child = agents.find(agent => agent.assignmentKind === "dag" && agent.taskId === task.id && isActiveAgent(agent.status));
+    if (child) lines.push(palette.gray(truncateToWidth(
+      `      ↳ ${shortAgentLabel(child.id)} · ${agentDetail(child, nowMs)}`,
+      columns, { preserveAnsi: false },
+    )));
   }
 }
 
@@ -1057,11 +1071,17 @@ function isActiveAgent(status: SubagentStatus): boolean {
   return status === "running" || status === "stopping";
 }
 
-function agentDetail(agent: Readonly<SubagentView>): string {
+function agentDetail(agent: Readonly<SubagentView>, nowMs: number): string {
   const taskTitle = safeInline(agent.taskTitle);
+  if (agent.activity && isActiveAgent(agent.status)) {
+    const detail = agent.activity.kind === "tool"
+      ? `Tool ${safeInline(agent.activity.label ?? "running")}`
+      : agent.activity.kind === "thinking" ? "Thinking" : "Working";
+    return `${taskTitle ? `${taskTitle} · ` : ""}${detail} · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.activity.startedAt)))}`;
+  }
   switch (agent.status) {
-    case "running": return taskTitle;
-    case "stopping": return `Stopping${taskTitle ? ` · ${taskTitle}` : ""}`;
+    case "running": return `${taskTitle ? `${taskTitle} · ` : ""}Working · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
+    case "stopping": return `Stopping${taskTitle ? ` · ${taskTitle}` : ""} · ${formatElapsed(Math.max(0, nowMs - Date.parse(agent.startedAt)))}`;
     case "completed":
       return safeInline(agent.result?.summary ?? "Completed");
     case "blocked":

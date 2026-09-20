@@ -9,6 +9,11 @@ export interface McpMenuState {
   readonly benchmark: boolean;
 }
 
+/** Actions accepted by /mcp <server-id> <action>; Back only navigates the picker. */
+export const MCP_SERVER_ACTION_IDS = [
+  "details", "authenticate", "clear_auth", "connect", "disconnect", "disable", "remove",
+] as const;
+
 /** Presentation only: execution still rechecks approval and credentials. */
 export function mcpServerActions(server: McpServerConfig, state: McpMenuState): InteractionChoice[] {
   const choices: InteractionChoice[] = [

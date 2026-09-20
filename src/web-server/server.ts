@@ -7,14 +7,33 @@ import { fileURLToPath } from "node:url";
 import type { EasyCodeApp } from "../app.js";
 import type { ImageAttachment } from "../core/types.js";
 import { MAX_IMAGE_BYTES, validateImageAttachmentCollection } from "../images/image-store.js";
-import { parseSlashCommand } from "../cli/slash-command.js";
+import { assertDataDirectoryOutsideWorkspace } from "../images/path-policy.js";
+import { parseSlashCommand, SLASH_COMMAND_NAMES } from "../cli/slash-command.js";
+import { WEB_COMMAND_DESCRIPTIONS } from "../web-command-catalog.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import { projectWebHistory } from "./history.js";
 import { WebInteraction } from "./interaction.js";
+import { ProjectIndex } from "./projects.js";
+import { createStorage, type EasyCodeStorage } from "../storage/database.js";
+import { ThreadStore, type ThreadSummary } from "../threads/thread-store.js";
+import { deleteThreadTree } from "../threads/delete-thread.js";
+import { pickLocalFolder } from "./folder-picker.js";
 import type { WebPatch } from "../web-contracts.js";
 
+const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
+  "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear",
+]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES;
+class MissingThreadError extends Error {}
+interface HostedThread {
+  app: EasyCodeApp;
+  port: WebInteraction;
+  running?: Promise<void>;
+  staged: Map<string, ImageAttachment>;
+  unsubscribe: () => void;
+}
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
@@ -74,14 +93,60 @@ export class EasyCodeWebServer {
   private readonly cookie = randomBytes(32).toString("base64url");
   private readonly server = http.createServer((request, response) => { void this.handle(request, response); });
   private readonly streams = new Set<ServerResponse>();
-  private readonly staged = new Map<string, ImageAttachment>();
+  private readonly hosts = new Map<string, HostedThread>();
   private readonly staticRoot: string;
   private origin = "";
-  private running?: Promise<void>;
+  private transitioning = false;
   private stopping = false;
+  private readonly projects: ProjectIndex;
+  private readonly projectStorage: EasyCodeStorage;
+  private readonly dataDir: string;
 
-  constructor(private readonly app: EasyCodeApp, private readonly port: WebInteraction, assetsRoot?: string) {
+  constructor(private app: EasyCodeApp | undefined, private port: WebInteraction, dataDir: string, assetsRoot?: string,
+    private readonly createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction) => Promise<EasyCodeApp>) {
     this.staticRoot = assetsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
+    this.dataDir = dataDir;
+    this.projectStorage = createStorage(this.dataDir);
+    this.projects = new ProjectIndex(this.projectStorage);
+  }
+
+  private hostFor(threadId: unknown): HostedThread {
+    if (typeof threadId !== "string") throw new MissingThreadError("Select a conversation before continuing.");
+    const host = this.hosts.get(threadId);
+    if (!host) throw new MissingThreadError("Conversation is not open. Select it in the sidebar first.");
+    return host;
+  }
+
+  private busyThreadIds(): string[] {
+    return [...this.hosts].filter(([, host]) => host.running || host.app.isRequestActive() || host.port.snapshot().view.busy ||
+      host.port.snapshot().view.subagents.some(agent => agent.status === "running" || agent.status === "stopping")).map(([id]) => id);
+  }
+
+  private broadcastStatus(): void {
+    const data = JSON.stringify({ runningThreadIds: this.busyThreadIds() });
+    for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: status\ndata: ${data}\n\n`);
+  }
+
+  private attachHost(app: EasyCodeApp, port: WebInteraction): HostedThread {
+    const threadId = app.sessionInfo().threadId;
+    const host: HostedThread = { app, port, staged: new Map(), unsubscribe: () => undefined };
+    host.unsubscribe = port.subscribe(change => {
+      const patch: WebPatch | undefined = change.patch?.kind === "entries.reset"
+        ? { kind: "entries.reset", entries: port.historyPage().entries, history: port.historyState() }
+        : change.patch;
+      const data = JSON.stringify({ threadId, sequence: change.sequence, patch });
+      for (const stream of this.streams) if (!stream.destroyed) stream.write(`event: patch\ndata: ${data}\n\n`);
+      this.broadcastStatus();
+    });
+    this.hosts.set(threadId, host);
+    app.startHostedSession();
+    port.loadHistory(projectWebHistory(app.threadEvents()));
+    return host;
+  }
+
+  private allThreads(): readonly ThreadSummary[] {
+    const store = new ThreadStore(this.projectStorage);
+    return store.list({ limit: 100_000 }).filter(item => !store.isBoundSubagentThread(item.threadId));
   }
 
   async serve(): Promise<void> {
@@ -94,8 +159,7 @@ export class EasyCodeWebServer {
     if (!existsSync(path.join(this.staticRoot, "index.html"))) {
       throw new Error("Web assets are missing. Run npm run build before easy-code --web.");
     }
-    this.app.startHostedSession();
-    this.port.loadHistory(projectWebHistory(this.app.threadEvents()));
+    if (this.app) this.attachHost(this.app, this.port);
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
       this.server.listen(0, "127.0.0.1", () => { this.server.off("error", reject); resolve(); });
@@ -122,46 +186,120 @@ export class EasyCodeWebServer {
   async stop(): Promise<void> {
     if (this.stopping) return;
     this.stopping = true;
-    this.app.cancelActiveRequest();
-    this.port.cancelExternalOperation();
-    this.port.cancelPendingDecisions();
+    for (const host of this.hosts.values()) {
+      host.app.cancelActiveRequest();
+      host.port.cancelExternalOperation();
+      host.port.cancelPendingDecisions();
+    }
     for (const response of this.streams) response.end();
     this.streams.clear();
-    await this.running?.catch(() => undefined);
-    await this.clearStaged().catch(error => {
-      process.stderr.write(`Could not remove staged browser images: ${error instanceof Error ? error.message : String(error)}\n`);
-    });
+    await Promise.all([...this.hosts.values()].map(async host => {
+      await host.running?.catch(() => undefined);
+      await this.clearStaged(host).catch(error => {
+        process.stderr.write(`Could not remove staged browser images: ${error instanceof Error ? error.message : String(error)}\n`);
+      });
+    }));
     await new Promise<void>(resolve => this.server.close(() => resolve()));
+    try { await Promise.all([...this.hosts.values()].map(async host => {
+      host.unsubscribe();
+      await host.app.closeAsync();
+      host.port.close();
+    })); }
+    finally { this.projectStorage.close(); }
   }
 
   private snapshot(): unknown {
+    const current = this.port.snapshot();
+    const page = this.port.historyPage();
     return {
-      ...this.port.snapshot(),
-      plan: this.app.pendingPlan() ?? null,
-      threads: this.app.workspaceThreads(),
+      ...current,
+      view: { ...current.view, entries: page.entries },
+      history: this.port.historyState(page),
+      plan: this.app?.pendingPlan() ?? null,
+      runningThreadIds: this.busyThreadIds(),
+      ...this.projects.list(this.allThreads()),
     };
   }
 
-  private run(action: () => Promise<void>): void {
-    if (this.running) throw new Error("Another session operation is still running.");
+  private run(host: HostedThread, action: () => Promise<void>): void {
+    if (host.running) throw new Error("Another operation is still running in this conversation.");
     const work = Promise.resolve().then(action);
-    this.running = work;
-    void work.catch(error => this.port.error(error instanceof Error ? error.message : String(error)))
-      .finally(() => { if (this.running === work) this.running = undefined; });
+    host.running = work;
+    this.broadcastStatus();
+    void work.catch(error => host.port.error(error instanceof Error ? error.message : String(error)))
+      .finally(() => { if (host.running === work) host.running = undefined; this.broadcastStatus(); });
   }
 
-  private takeImages(ids: unknown): ImageAttachment[] {
+  private async switchSession(root: string, threadId?: string): Promise<void> {
+    if (this.transitioning) throw new Error("A conversation is already opening.");
+    if (!this.createApp) throw new Error("Project switching is unavailable in this host.");
+    this.transitioning = true;
+    try {
+      const existing = threadId && this.hosts.get(threadId);
+      if (existing) {
+        this.app = existing.app;
+        this.port = existing.port;
+        return;
+      }
+      const nextPort = new WebInteraction();
+      let next: EasyCodeApp;
+      try { next = await this.createApp(root, threadId, nextPort); }
+      catch (error) { nextPort.close(); throw error; }
+      if (path.resolve(next.dataDirectory()) !== path.resolve(this.dataDir)) {
+        await next.closeAsync();
+        nextPort.close();
+        throw new Error("This project uses a different EASY CODE data directory.");
+      }
+      this.attachHost(next, nextPort);
+      this.app = next;
+      this.port = nextPort;
+    } finally { this.transitioning = false; }
+  }
+
+  private async leaveCurrentSession(): Promise<void> {
+    this.app = undefined;
+    this.port = new WebInteraction();
+  }
+
+  private deleteConversation(threadId: string): readonly string[] {
+    const storage = createStorage(this.dataDir);
+    try { return deleteThreadTree(storage, new ThreadStore(storage), threadId); }
+    finally { storage.close(); }
+  }
+
+  private async prepareDelete(targetThreadId: string, deletedProjectId?: string): Promise<void> {
+    if (this.transitioning || this.hosts.get(targetThreadId)?.running || this.hosts.get(targetThreadId)?.app.isRequestActive() ||
+      this.hosts.get(targetThreadId)?.port.snapshot().view.subagents.some(agent => agent.status === "running" || agent.status === "stopping"))
+      throw new Error("Stop this conversation before deleting it.");
+    const host = this.hosts.get(targetThreadId);
+    if (host) {
+      await this.clearStaged(host);
+      host.unsubscribe();
+      this.hosts.delete(targetThreadId);
+      await host.app.closeAsync();
+      host.port.close();
+    }
+    if (this.app?.sessionInfo().threadId !== targetThreadId) return;
+    this.app = undefined;
+    this.port = new WebInteraction();
+    const replacement = this.allThreads().filter(item => item.threadId !== targetThreadId &&
+      item.workspaceId !== deletedProjectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    if (replacement) await this.switchSession(replacement.workspaceRoot, replacement.threadId);
+    else await this.leaveCurrentSession();
+  }
+
+  private takeImages(host: HostedThread, ids: unknown): ImageAttachment[] {
     if (ids === undefined) return [];
     if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("Invalid image IDs.");
     const unique = new Set(ids as string[]);
     if (unique.size !== ids.length) throw new Error("Duplicate image IDs.");
     const images = [...unique].map(id => {
-      const image = this.staged.get(id);
+      const image = host.staged.get(id);
       if (!image) throw new Error(`Image ${id} is not staged for this Thread.`);
       return image;
     });
     validateImageAttachmentCollection(images);
-    for (const image of images) this.staged.delete(image.id);
+    for (const image of images) host.staged.delete(image.id);
     return images;
   }
 
@@ -172,7 +310,7 @@ export class EasyCodeWebServer {
       response.setHeader("X-Content-Type-Options", "nosniff");
       response.setHeader("Referrer-Policy", "no-referrer");
       response.setHeader("X-Frame-Options", "DENY");
-      response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+      response.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
       const pathname = new URL(request.url ?? "/", this.origin).pathname;
       if (request.method === "POST") {
         if (request.headers.origin !== this.origin) { json(response, 403, { error: "Invalid Origin." }); return; }
@@ -196,116 +334,216 @@ export class EasyCodeWebServer {
       await this.staticFile(pathname, request, response);
     } catch (error) {
       if (response.headersSent) { response.end(); return; }
-      json(response, 400, { error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)) });
+      json(response, error instanceof MissingThreadError ? 409 : 400,
+        { error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)) });
     }
   }
 
   private async api(pathname: string, request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (pathname === "/api/state" && request.method === "GET") { json(response, 200, this.snapshot()); return; }
+    if (pathname === "/api/history" && request.method === "GET") {
+      const params = new URL(request.url ?? pathname, this.origin).searchParams;
+      const host = this.hostFor(params.get("threadId"));
+      const epoch = params.get("epoch");
+      if (!epoch || epoch !== host.port.historyState().epoch) throw new Error("History changed; refresh the conversation.");
+      const before = params.get("before") ?? undefined;
+      const after = params.get("after") ?? undefined;
+      const around = params.get("around") ?? undefined;
+      if ([before, after, around].some(cursor => cursor && cursor.length > 200)) throw new Error("Invalid history cursor.");
+      const page = host.port.historyPage({ before, after, around });
+      json(response, 200, { threadId: host.app.sessionInfo().threadId, epoch, ...page }); return;
+    }
+    if (pathname === "/api/commands" && request.method === "GET") {
+      json(response, 200, { commands: SLASH_COMMAND_NAMES
+        .filter(name => !WEB_UNAVAILABLE_SLASH_COMMANDS.has(name) && WEB_COMMAND_DESCRIPTIONS[name])
+        .map(name => ({ name, description: WEB_COMMAND_DESCRIPTIONS[name] })) }); return;
+    }
     if (pathname === "/api/events" && request.method === "GET") {
       response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-store", Connection: "keep-alive" });
       this.streams.add(response);
       response.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
-      const unsubscribe = this.port.subscribe(change => {
-        if (response.destroyed) return;
-        response.write(`id: ${change.sequence}\nevent: patch\ndata: ${JSON.stringify(change.patch as WebPatch)}\n\n`);
-      });
       const heartbeat = setInterval(() => { if (!response.destroyed) response.write(": heartbeat\n\n"); }, 25_000);
-      request.once("close", () => { clearInterval(heartbeat); unsubscribe(); this.streams.delete(response); });
+      request.once("close", () => { clearInterval(heartbeat); this.streams.delete(response); });
       return;
     }
     if (request.method !== "POST") { json(response, 405, { error: "Method not allowed." }); return; }
     if (pathname === "/api/image") {
-      if (this.staged.size >= 20) throw new Error("Too many staged images.");
+      const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
+      if (host.staged.size >= 20) throw new Error("Too many staged images.");
       const contentType = request.headers["content-type"]?.split(";")[0];
       if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(contentType ?? "")) throw new Error("Unsupported image type.");
       const data = await body(request, MAX_UPLOAD_BYTES);
-      const image = await this.app.importHostedImage(data, this.app.nextHostedImageLabel(this.staged.size), "browser-upload");
-      try { validateImageAttachmentCollection([...this.staged.values(), image]); }
-      catch (error) { await this.app.discardHostedImage(image); throw error; }
-      this.staged.set(image.id, image);
+      const image = await host.app.importHostedImage(data, host.app.nextHostedImageLabel(host.staged.size), "browser-upload");
+      try { validateImageAttachmentCollection([...host.staged.values(), image]); }
+      catch (error) { await host.app.discardHostedImage(image); throw error; }
+      host.staged.set(image.id, image);
       json(response, 200, { image: { id: image.id, label: image.label, mediaType: image.mediaType } }); return;
     }
     const input = await jsonBody(request);
+    if (pathname === "/api/folder/pick") {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 6 * 60_000);
+      try { json(response, 200, { path: await pickLocalFolder(controller.signal) ?? null }); }
+      finally { clearTimeout(timeout); }
+      return;
+    }
     if (pathname === "/api/image/discard") {
+      const host = this.hostFor(input.threadId);
       if (typeof input.id !== "string") throw new Error("Invalid image ID.");
-      const image = this.staged.get(input.id);
+      const image = host.staged.get(input.id);
       if (image) {
-        await this.app.discardHostedImage(image);
-        this.staged.delete(input.id);
+        await host.app.discardHostedImage(image);
+        host.staged.delete(input.id);
       }
       json(response, 200, { discarded: Boolean(image) }); return;
     }
+    if (pathname === "/api/ui/command/cancel") {
+      const host = this.hostFor(input.threadId);
+      json(response, 200, { canceled: host.port.cancelExternalOperation() }); return;
+    }
+    if (pathname === "/api/ui/model" || pathname === "/api/ui/approval" || pathname === "/api/ui/orchestration") {
+      const host = this.hostFor(input.threadId);
+      if (host.running || host.app.isRequestActive()) throw new Error("Wait for the current request to finish.");
+      this.run(host, () => pathname === "/api/ui/model"
+        ? host.app.selectHostedModel() : pathname === "/api/ui/approval"
+          ? host.app.selectHostedApproval() : host.app.selectHostedOrchestration());
+      json(response, 202, { accepted: true }); return;
+    }
     if (pathname === "/api/message") {
-      if (this.running || this.app.isRequestActive()) throw new Error("A request is already running; use the adjustment composer.");
+      const host = this.hostFor(input.threadId);
+      if (host.running || host.app.isRequestActive()) throw new Error("A request is already running; use the adjustment composer.");
       if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid message text.");
       if (parseSlashCommand(input.text) && Array.isArray(input.imageIds) && input.imageIds.length) {
         throw new Error("Send slash commands without attached images; images remain available in the composer.");
       }
-      const images = this.takeImages(input.imageIds);
+      const images = this.takeImages(host, input.imageIds);
       if (!input.text.trim() && !images.length) throw new Error("A message needs text or an image.");
       if (parseSlashCommand(input.text) && !images.length) {
-        this.run(async () => {
-          const previousThreadId = this.app.sessionInfo().threadId;
-          const exit = await this.app.handleSlashCommand(input.text as string);
-          if (exit) this.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
-          if (this.app.sessionInfo().threadId !== previousThreadId) {
-            this.port.loadHistory(projectWebHistory(this.app.threadEvents()));
-          }
+        const command = parseSlashCommand(input.text);
+        if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
+          throw new Error(`/${command.name} is not available as a Web command.`);
+        this.run(host, async () => {
+          const exit = await host.app.handleSlashCommand(input.text as string);
+          if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
         });
       } else {
-        this.port.presentUser(input.text, images);
-        this.run(async () => {
-          const result = await this.app.submitUserMessage(input.text as string || "Analyze the attached image(s).", images);
-          if (result.planProposal) this.port.showPlan(result.planProposal);
+        host.port.presentUser(input.text, images);
+        this.run(host, async () => {
+          const result = await host.app.submitUserMessage(input.text as string || "Analyze the attached image(s).", images);
+          if (result.planProposal) host.port.showPlan(result.planProposal);
         });
       }
       json(response, 202, { accepted: true }); return;
     }
     if (pathname === "/api/adjustment") {
+      const host = this.hostFor(input.threadId);
       if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid adjustment text.");
-      const images = this.takeImages(input.imageIds);
+      const command = parseSlashCommand(input.text);
+      if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
+        throw new Error(`/${command.name} is not available as a Web command.`);
+      const images = this.takeImages(host, input.imageIds);
       let sequence: number;
-      try { sequence = await this.app.submitAdjustment(input.text, images); }
+      try { sequence = await host.app.submitAdjustment(input.text, images); }
       catch (error) {
-        for (const image of images) this.staged.set(image.id, image);
+        for (const image of images) host.staged.set(image.id, image);
         throw error;
       }
       json(response, 200, { sequence }); return;
     }
-    if (pathname === "/api/cancel") { json(response, 200, { canceled: this.app.cancelActiveRequest() }); return; }
+    if (pathname === "/api/cancel") { json(response, 200, { canceled: this.hostFor(input.threadId).app.cancelActiveRequest() }); return; }
     if (pathname === "/api/decision") {
+      const host = this.hostFor(input.threadId);
       if (typeof input.id !== "string" || (input.value !== undefined && typeof input.value !== "string") ||
         (typeof input.value === "string" && input.value.length > 8192)) throw new Error("Invalid decision.");
-      json(response, 200, { accepted: this.port.resolveDecision(input.id, input.value as string | undefined) }); return;
+      json(response, 200, { accepted: host.port.resolveDecision(input.id, input.value as string | undefined) }); return;
     }
     if (pathname === "/api/plan") {
-      if (this.running) throw new Error("Another session operation is running.");
+      const host = this.hostFor(input.threadId);
+      if (host.running) throw new Error("Another session operation is running.");
       if (input.action !== "approve" && input.action !== "reject" && input.action !== "adjust" && input.action !== "defer") throw new Error("Invalid plan decision.");
       const decision = input.action === "adjust"
         ? { action: "adjust" as const, feedback: String(input.feedback ?? "").trim() }
         : { action: input.action } as { action: "approve" | "reject" | "defer" };
       if (decision.action === "adjust" && !decision.feedback) throw new Error("Plan feedback is required.");
-      this.run(() => this.app.reviewHostedPlan(decision));
+      this.run(host, () => host.app.reviewHostedPlan(decision));
       json(response, 202, { accepted: true }); return;
     }
     if (pathname === "/api/thread") {
-      if (this.running || this.app.isRequestActive()) throw new Error("Wait for the active operation before switching Threads.");
+      const threads = this.allThreads();
       if (input.action === "new") {
-        this.run(async () => { await this.clearStaged(); await this.app.startNewHostedThread(); this.port.loadHistory(projectWebHistory(this.app.threadEvents())); });
+        const project = typeof input.projectId === "string"
+          ? this.projects.get(input.projectId)
+          : this.app ? this.projects.add(this.app.sessionInfo().workspaceRoot) : undefined;
+        if (!project) throw new Error("Choose a project folder first.");
+        await this.switchSession(project.root);
       } else if (input.action === "resume" && typeof input.threadId === "string") {
-        this.run(async () => { await this.clearStaged(); await this.app.resumeHostedThread(input.threadId as string); this.port.loadHistory(projectWebHistory(this.app.threadEvents())); });
+        const thread = threads.find(item => item.threadId === input.threadId);
+        if (!thread) throw new Error("Conversation not found.");
+        await this.switchSession(thread.workspaceRoot, thread.threadId);
       } else throw new Error("Invalid Thread action.");
-      json(response, 202, { accepted: true }); return;
+      json(response, 200, { accepted: true }); return;
     }
-    if (pathname === "/api/external-cancel") { json(response, 200, { canceled: this.port.cancelExternalOperation() }); return; }
+    if (pathname === "/api/project/add") {
+      if (typeof input.path !== "string") throw new Error("Choose a local folder.");
+      if (this.transitioning) throw new Error("A project is already opening.");
+      this.transitioning = true;
+      try {
+        await assertDataDirectoryOutsideWorkspace(this.dataDir, input.path);
+        const project = this.projects.add(input.path);
+        await this.leaveCurrentSession();
+        json(response, 200, { project }); return;
+      } finally { this.transitioning = false; }
+    }
+    if (pathname === "/api/project/rename") {
+      if (typeof input.projectId !== "string" || typeof input.name !== "string") throw new Error("Invalid project rename.");
+      this.projects.renameProject(input.projectId, input.name);
+      json(response, 200, { accepted: true }); return;
+    }
+    if (pathname === "/api/thread/rename") {
+      if (typeof input.threadId !== "string" || typeof input.name !== "string") throw new Error("Invalid conversation rename.");
+      const thread = this.allThreads().find(item => item.threadId === input.threadId);
+      if (!thread) throw new Error("Conversation not found.");
+      this.projects.renameThread(thread, input.name);
+      json(response, 200, { accepted: true }); return;
+    }
+    if (pathname === "/api/thread/delete") {
+      if (typeof input.threadId !== "string" || input.confirmThreadId !== input.threadId) throw new Error("Confirm the exact conversation ID to delete.");
+      const thread = this.allThreads().find(item => item.threadId === input.threadId);
+      if (!thread) throw new Error("Conversation not found.");
+      await this.prepareDelete(thread.threadId);
+      const deleted = this.deleteConversation(thread.threadId);
+      json(response, 200, { deleted }); return;
+    }
+    if (pathname === "/api/project/delete") {
+      if (typeof input.projectId !== "string") throw new Error("Invalid project ID.");
+      const project = this.projects.get(input.projectId);
+      if (input.confirmRoot !== project.root) throw new Error("Confirm the exact project folder path to remove.");
+      const threads = this.allThreads().filter(item => item.workspaceId === project.id);
+      const busy = new Set(this.busyThreadIds());
+      if (threads.some(thread => busy.has(thread.threadId)))
+        throw new Error("Stop the project's active conversations before removing it.");
+      for (const thread of threads) {
+        if (!this.allThreads().some(item => item.threadId === thread.threadId)) continue;
+        await this.prepareDelete(thread.threadId, project.id);
+        this.deleteConversation(thread.threadId);
+      }
+      const memoryId = (() => { try { return projectMemoryIdFromRoot(project.root); } catch { return project.id; } })();
+      const sharedMemory = this.projects.list(this.allThreads()).projects.some(item =>
+        item.id !== project.id && (() => { try { return projectMemoryIdFromRoot(item.root); } catch { return item.id; } })() === memoryId);
+      if (!sharedMemory) this.projectStorage.db.prepare<[string]>(
+        "DELETE FROM memories WHERE workspace_id = ? AND scope = 'project'",
+      ).run(memoryId);
+      this.projects.forgetProject(project.id);
+      json(response, 200, { removed: project.id, deletedThreads: threads.length }); return;
+    }
+    if (pathname === "/api/external-cancel") { json(response, 200, { canceled: this.hostFor(input.threadId).port.cancelExternalOperation() }); return; }
     json(response, 404, { error: "Unknown API route." });
   }
 
-  private async clearStaged(): Promise<void> {
+  private async clearStaged(host: HostedThread): Promise<void> {
     let failure: unknown;
-    for (const image of this.staged.values()) {
-      try { await this.app.discardHostedImage(image); this.staged.delete(image.id); }
+    for (const image of host.staged.values()) {
+      try { await host.app.discardHostedImage(image); host.staged.delete(image.id); }
       catch (error) { failure ??= error; }
     }
     if (failure) throw failure;
@@ -321,8 +559,11 @@ export class EasyCodeWebServer {
   }
 }
 
-export async function serveWeb(app: EasyCodeApp, port: WebInteraction): Promise<void> {
-  const server = new EasyCodeWebServer(app, port);
+export async function serveWeb(dataDir: string, port: WebInteraction,
+  createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction) => Promise<EasyCodeApp>, signal?: AbortSignal): Promise<void> {
+  const server = new EasyCodeWebServer(undefined, port, dataDir, undefined, createApp);
+  const stop = () => { void server.stop(); };
+  signal?.addEventListener("abort", stop, { once: true });
   try { await server.serve(); }
-  finally { await server.stop(); }
+  finally { signal?.removeEventListener("abort", stop); await server.stop(); }
 }

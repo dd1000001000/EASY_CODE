@@ -43,17 +43,15 @@ function state(overrides: Partial<SessionState> = {}): SessionState {
 }
 
 describe("current session bindings", () => {
-  it("accepts only an exact Prompt Bundle and model-registry identity", () => {
+  it("accepts the current Prompt Bundle regardless of model-registry changes", () => {
     assert.doesNotThrow(() => assertCurrentSessionBindings(state(), {
       promptBundle: bundle,
-      modelRegistryHash: `sha256:${"4".repeat(64)}`,
     }));
     for (const changed of ["bundleVersion", "bundleHash", "manifestHash", "toolCatalogHash"] as const) {
       assert.throws(() => assertCurrentSessionBindings(state(), {
         promptBundle: { ...bundle, [changed]: changed === "bundleVersion"
           ? "1.2.2"
           : `sha256:${"5".repeat(64)}` },
-        modelRegistryHash: `sha256:${"4".repeat(64)}`,
       }), /different Prompt Bundle/u);
     }
   });
@@ -61,11 +59,6 @@ describe("current session bindings", () => {
   it("rejects malformed development bindings instead of filling them during Resume", () => {
     assert.throws(() => assertCurrentSessionBindings(state({ promptBundle: undefined as never }), {
       promptBundle: bundle,
-      modelRegistryHash: `sha256:${"4".repeat(64)}`,
     }), /no current Prompt Bundle binding/u);
-    assert.throws(() => assertCurrentSessionBindings(state({ modelRegistryHash: undefined }), {
-      promptBundle: bundle,
-      modelRegistryHash: `sha256:${"4".repeat(64)}`,
-    }), /no current model-registry binding/u);
   });
 });

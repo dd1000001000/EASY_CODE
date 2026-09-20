@@ -1,4 +1,4 @@
-import type { ProviderName } from "../core/types.js";
+import { THINKING_EFFORTS, type ProviderName, type ThinkingEffort } from "../core/types.js";
 import { PROVIDER_CATALOG } from "../models/catalog.js";
 
 export interface SlashCommand {
@@ -16,19 +16,13 @@ export const SLASH_COMMAND_NAMES = [
   "status",
   "workspace",
   "image",
-  "changes",
-  "tasks",
-  "agents",
   "tools",
   "skills",
   "mcp",
   "permissions",
-  "commands",
   "context",
   "usage",
   "memory",
-  "thinking",
-  "adjustment",
   "sessions",
   "resume",
   "new",
@@ -44,17 +38,12 @@ export interface SlashCommandCompletion {
   readonly suffix: string;
 }
 
-const SLASH_COMMAND_ALIASES: Readonly<Record<string, SlashCommandName>> = {
-  quit: "exit",
-  subagents: "agents",
-};
-
 const slashCommandNames = new Set<string>(SLASH_COMMAND_NAMES);
 
 function canonicalSlashCommandName(value: string): SlashCommandName | undefined {
   const normalized = value.toLowerCase();
   if (slashCommandNames.has(normalized)) return normalized as SlashCommandName;
-  return SLASH_COMMAND_ALIASES[normalized];
+  return undefined;
 }
 
 export type ModelCommandRequest =
@@ -63,6 +52,7 @@ export type ModelCommandRequest =
       action: "switch";
       provider?: ProviderName;
       model: string;
+      thinkingEffort?: ThinkingEffort;
     };
 
 function registeredProviders(): readonly ProviderName[] {
@@ -77,7 +67,7 @@ function providerUsage(): string {
 }
 
 function modelCommandUsage(): string {
-  return `Usage: /model | /model <model-id> | /model <${providerUsage()}> <model-id>`;
+  return `Usage: /model | /model <model-id> | /model <${providerUsage()}> <model-id> [thinking-effort]`;
 }
 
 export function parseSlashCommand(input: string): SlashCommand | null {
@@ -119,17 +109,21 @@ export function completeSlashCommandPrefix(
 /** Parse /model without conflating provider names with arbitrary model IDs. */
 export function parseModelCommand(args: readonly string[]): ModelCommandRequest {
   if (args.length === 0) return { action: "select" };
-  if (args.length > 2) throw new Error(modelCommandUsage());
+  if (args.length > 3) throw new Error(modelCommandUsage());
 
   const first = args[0];
   if (!first) throw new Error(modelCommandUsage());
   const normalizedProvider = first.toLowerCase();
   const provider = registeredProviders().find((name) => name === normalizedProvider);
 
-  if (args.length === 2) {
+  if (args.length >= 2) {
     const model = args[1];
     if (!provider || !isModelId(model)) throw new Error(modelCommandUsage());
-    return { action: "switch", provider, model };
+    const thinkingEffort = args[2];
+    if (thinkingEffort && !(THINKING_EFFORTS as readonly string[]).includes(thinkingEffort))
+      throw new Error(modelCommandUsage());
+    return { action: "switch", provider, model,
+      ...(thinkingEffort ? { thinkingEffort: thinkingEffort as ThinkingEffort } : {}) };
   }
 
   // A bare provider is intentionally rejected rather than being interpreted
@@ -159,7 +153,10 @@ EASY CODE commands
   /model <model>             Switch the current provider's model
   /model ${providers} <id>
                               Switch both provider and model
-  /approval                 Select user approval, independent approval agent, or full host access
+  /model ${providers} <id> <effort>
+                              Switch provider, model and thinking effort
+  /approval [manual|auto_approve|unrestricted]
+                              Select user approval, independent approval agent, or full host access
   /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
   /status                    Show current status
   /workspace                 Show workspace summary
@@ -167,23 +164,18 @@ EASY CODE commands
   /image <path>              Queue an image file for the next task
   /image clipboard           Queue the current clipboard image
   /image clear               Remove all queued, unsent images
-  /changes                   Show file changes in this thread
-  /tasks                     Show the current model-managed task DAG
-  /agents                    Show child sessions, tasks, isolation, and handoff
   /tools                     Show available tools
   /skills                    Show user and project Skills
   /mcp                       Manage user MCP servers
+  /mcp <server-id> <action>  Run an available MCP server action
   /permissions               Show command permissions and sandbox status
   /permissions revoke <index> Revoke a saved command/network prefix for this Thread
-  /commands                  Show recent commands
   /context                   Show context budget
   /usage                     Show cumulative provider-reported Token usage
   /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
   /memory long [global|project] [id]  Show scoped long-term memory
   /memory move <id> <global|project>  Move one memory between scopes
   /memory forget <id>        Expire one long-term memory
-  /thinking [id|last]        Show the expanded model thinking
-  /adjustment [id|last]      Show one retained queued adjustment
   /sessions                  List previous threads
   /resume [id]               Pick or resume a thread
   /new                       Start a new thread

@@ -1,0 +1,9 @@
+{
+  "id": "name_thread",
+  "contractVersion": "1.0.0",
+  "description": "Give the current Thread one concise title related to the first user request. The title can be set only once. This changes EASY CODE conversation metadata, not project files. Do not call it again after a successful title or if the user has already named the Thread.",
+  "propertyDescriptions": {
+    "title": "A short, specific title describing the user's first request; do not include secrets or unrelated details."
+  },
+  "guidance": "When handling the first user request in an unnamed Thread, call name_thread once with a short, relevant title. It is available in Plan, Auto-effective and Code modes, and names only the current Thread. A previously claimed title cannot be replaced, even by the user; do not retry a rejected naming call."
+}

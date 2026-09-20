@@ -273,6 +273,7 @@ describe("subagent task journal recovery", () => {
         signal: new AbortController().signal,
         drainFollowUps: () => [],
         reportEnvironment: () => undefined,
+        reportActivity: () => undefined,
         isPauseRequested: () => false,
       } as SubagentExecutionRequest;
 
@@ -476,6 +477,7 @@ describe("subagent task journal recovery", () => {
         signal: controller.signal,
         drainFollowUps: () => [],
         reportEnvironment: () => undefined,
+        reportActivity: () => undefined,
         isPauseRequested: () => pauseRequested,
       } as SubagentExecutionRequest;
 

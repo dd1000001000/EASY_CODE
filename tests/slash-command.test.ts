@@ -5,6 +5,7 @@ import {
   helpText,
   parseModelCommand,
   parseSlashCommand,
+  SLASH_COMMAND_NAMES,
 } from "../src/cli/slash-command.js";
 
 describe("parseSlashCommand", () => {
@@ -25,9 +26,14 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("/approv"), null);
   });
 
-  it("canonicalizes command aliases", () => {
-    assert.equal(parseSlashCommand("/quit")?.name, "exit");
-    assert.equal(parseSlashCommand("/subagents")?.name, "agents");
+  it("does not recognize removed commands or legacy aliases", () => {
+    const supported = new Set<string>(SLASH_COMMAND_NAMES);
+    for (const name of ["changes", "quit", "subagents", "tasks", "agents", "commands", "thinking", "adjustment"]) {
+      assert.equal(parseSlashCommand(`/${name}`), null);
+      assert.ok(!supported.has(name));
+      assert.equal(completeSlashCommandPrefix(`/${name}`, name.length + 1), undefined);
+    }
+    assert.doesNotMatch(helpText(), /\/(?:changes|quit|subagents|tasks|agents|commands|thinking|adjustment)(?:\s|$)/mu);
   });
 
   it("recognizes the MCP server menu", () => {
@@ -71,6 +77,9 @@ describe("parseSlashCommand", () => {
       provider: "glm",
       model: "GLM-5.3-Flash",
     });
+    assert.deepEqual(parseModelCommand(["glm", "GLM-5.3-Flash", "high"]), {
+      action: "switch", provider: "glm", model: "GLM-5.3-Flash", thinkingEffort: "high",
+    });
     assert.deepEqual(
       parseModelCommand(["kimi", "k3"]),
       {
@@ -102,9 +111,6 @@ describe("parseSlashCommand", () => {
     const HELP_TEXT = helpText();
     assert.match(HELP_TEXT, /\/model/u);
     assert.match(HELP_TEXT, /qwen\|deepseek\|kimi\|glm\|glm-coding-plan/u);
-    assert.match(HELP_TEXT, /\/thinking \[id\|last\]/u);
-    assert.match(HELP_TEXT, /\/agents/u);
-    assert.match(HELP_TEXT, /child sessions, tasks, isolation, and handoff/u);
     assert.match(HELP_TEXT, /\/memory short \[limit\]/u);
     assert.match(HELP_TEXT, /\/usage/u);
     assert.match(HELP_TEXT, /\/approval/u);

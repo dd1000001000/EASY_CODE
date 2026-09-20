@@ -15,7 +15,7 @@ describe("Thinking terminal presentation", () => {
 
     assert.equal(
       renderReasoningMarker(block),
-      "▶ Thinking #1 · 38 chars · /thinking 1 · VS Code Ctrl/Cmd+click to toggle\n" +
+      "▶ Thinking #1 · 38 chars · VS Code Ctrl/Cmd+click to toggle\n" +
         "  Inspect the repository before editing.\n",
     );
     assert.match(renderReasoningMarker(block, { color: true }), /\u001b\[90m/u);
@@ -32,7 +32,7 @@ describe("Thinking terminal presentation", () => {
     assert.equal(
       renderReasoningMarker(block, { previewChars: 19 }),
       `▶ Thinking #1 · ${block.sourceChars} chars · ` +
-        `/thinking 1 · VS Code Ctrl/Cmd+click to toggle\n` +
+        `VS Code Ctrl/Cmd+click to toggle\n` +
         "  First line second l...\n",
     );
   });
@@ -49,7 +49,7 @@ describe("Thinking terminal presentation", () => {
         },
       }),
       "▶ Thinking #1 · 48,320 chars · still receiving · last delta 0.4s ago · " +
-        "/thinking 1 · VS Code Ctrl/Cmd+click to toggle\n" +
+        "VS Code Ctrl/Cmd+click to toggle\n" +
         "  Inspect the repository before editing.\n" +
         "  [Live preview limited to 16,000 chars]\n",
     );

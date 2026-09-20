@@ -154,7 +154,7 @@ export function renderAdjustmentMarker(
   const omitted = retained.truncated || block.truncated;
   return palette.gray(
     `▶ Queued adjustment #${block.id} · ${adjustmentSummary(block)} · ` +
-      `/adjustment ${block.id} · VS Code Ctrl/Cmd+click to toggle\n` +
+      `VS Code Ctrl/Cmd+click to toggle\n` +
       `  ${retained.text}${omitted ? "..." : ""}\n`,
   );
 }
@@ -173,7 +173,7 @@ export function renderAdjustmentHistoryMarker(
   const retained = takeCodePoints(content, previewLimit);
   return palette.gray(
     `• Queued adjustment #${block.id} · ${adjustmentSummary(block)} · ` +
-      `use /adjustment ${block.id} for retained content\n` +
+      `retained in thread history\n` +
       `  ${retained.text}${retained.truncated || block.truncated ? "..." : ""}\n`,
   );
 }
@@ -198,7 +198,6 @@ export function renderAdjustmentPanel(
   const header = palette.gray(
     `↕ Queued adjustment #${block.id}` +
       `${hiddenBadges ? ` · ${hiddenBadges}` : ""} · ` +
-      `/adjustment ${block.id} · ` +
       "VS Code Ctrl/Cmd+click to toggle",
   );
   return [header, ...body].join("\n");

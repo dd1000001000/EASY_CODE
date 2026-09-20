@@ -640,7 +640,7 @@ describe("three-stage model selector", () => {
       terminal.modelChoices.map(({ id, vision }) => ({ id, vision })),
       [
         { id: "glm-5.3", vision: "unsupported" },
-        { id: "glm-5.3-flash", vision: "unsupported" },
+        { id: "glm-5.3-flash", vision: "supported" },
         { id: "glm-5.2", vision: "unsupported" },
       ],
     );

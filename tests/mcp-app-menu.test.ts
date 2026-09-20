@@ -50,15 +50,26 @@ describe("MCP app menu navigation", () => {
   it("returns to the main request after showing server details", async () => {
     const fixture = menuApp(remote, ["sample", "details"]);
     await fixture.app.showMcpServers();
-    assert.equal(fixture.reads, 1);
+    assert.equal(fixture.reads, 2); // Re-read the server before executing the parsed action.
     assert.equal(fixture.prompts.length, 2);
     assert.match(fixture.messages.join("\n"), /mcp\.example\.com/u);
+  });
+
+  it("routes an explicit MCP action through the same parser and rejects unavailable actions", async () => {
+    const fixture = menuApp(remote, []);
+    await (fixture.app as unknown as EasyCodeApp).handleSlashCommand("/mcp sample details");
+    assert.equal(fixture.prompts.length, 0);
+    assert.match(fixture.messages.join("\n"), /mcp\.example\.com/u);
+    await assert.rejects(
+      (fixture.app as unknown as EasyCodeApp).handleSlashCommand("/mcp sample authenticate"),
+      /not available/u,
+    );
   });
 
   it("returns to the main request after connecting a remote server", async () => {
     const fixture = menuApp(remote, ["sample", "connect", "connect"]);
     await fixture.app.showMcpServers();
-    assert.equal(fixture.reads, 1);
+    assert.equal(fixture.reads, 2);
     assert.equal(fixture.prompts.length, 3);
     assert.equal(fixture.connections, 1);
     assert.deepEqual(fixture.enabled, [["sample", true]]);
@@ -67,7 +78,7 @@ describe("MCP app menu navigation", () => {
   it("explicit Back still returns to the server list", async () => {
     const fixture = menuApp(remote, ["sample", "back", "sample", "details"]);
     await fixture.app.showMcpServers();
-    assert.equal(fixture.reads, 2);
+    assert.equal(fixture.reads, 3);
     assert.equal(fixture.prompts.length, 4);
   });
 

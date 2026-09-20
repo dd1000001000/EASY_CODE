@@ -4,18 +4,18 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 4;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-model-directed-memory";
+const CURRENT_SCHEMA_VERSION = 5;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-project-library";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 4),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 5),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (4, 'easy-code-0.1.0-model-directed-memory');
+      VALUES (5, 'easy-code-0.1.0-project-library');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
@@ -25,6 +25,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
         provider TEXT NOT NULL,
         model TEXT NOT NULL,
         goal TEXT,
+        title TEXT,
         constraints_json TEXT NOT NULL DEFAULT '[]',
         working_summary TEXT NOT NULL DEFAULT '',
         active_turn_id TEXT,
@@ -35,6 +36,18 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
 
       CREATE INDEX threads_workspace_updated_idx
         ON threads(workspace_id, updated_at DESC);
+
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        workspace_root TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE preferences (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL
+      );
 
       CREATE TABLE turns (
         id TEXT PRIMARY KEY,
@@ -461,33 +474,6 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   },
 ];
 
-function upgradeMemoryGrades(db: SqliteDatabase): void {
-  db.exec("DROP TRIGGER memories_vector_state_update");
-  db.exec("ALTER TABLE memories DROP COLUMN confidence");
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_vector_state_update
-    AFTER UPDATE OF workspace_id, category, content, normalized_content, status
-    ON memories BEGIN
-      INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
-      VALUES (new.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      ON CONFLICT(workspace_id) DO UPDATE SET
-        generation = memory_vector_state.generation + 1,
-        updated_at = excluded.updated_at;
-      INSERT INTO memory_vector_state(workspace_id, generation, updated_at)
-      SELECT old.workspace_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE old.workspace_id <> new.workspace_id
-      ON CONFLICT(workspace_id) DO UPDATE SET
-        generation = memory_vector_state.generation + 1,
-        updated_at = excluded.updated_at;
-    END;
-  `);
-  db.exec("UPDATE memory_provenance SET document_json = json_remove(document_json, '$.verification') WHERE json_valid(document_json)");
-  db.exec("DROP TABLE easy_code_schema");
-  db.exec("CREATE TABLE easy_code_schema (schema_version INTEGER PRIMARY KEY CHECK(schema_version = 4), schema_id TEXT NOT NULL UNIQUE)");
-  db.exec("INSERT INTO easy_code_schema(schema_version, schema_id) VALUES (4, 'easy-code-0.1.0-model-directed-memory')");
-  db.pragma("user_version = 4");
-}
-
 export function initializeCurrentSchema(db: SqliteDatabase): void {
   const objects = db.prepare<[], { name: string }>(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -509,10 +495,6 @@ export function initializeCurrentSchema(db: SqliteDatabase): void {
     "SELECT schema_version, schema_id FROM easy_code_schema",
   ).get();
   const userVersion = db.pragma("user_version", { simple: true });
-  if (identity?.schema_version === 3 && identity.schema_id === "easy-code-0.1.0-memory-lifecycle" && userVersion === 3) {
-    db.transaction(() => upgradeMemoryGrades(db))();
-    return;
-  }
   if (
     identity?.schema_version !== CURRENT_SCHEMA_VERSION ||
     identity.schema_id !== CURRENT_SCHEMA_ID ||

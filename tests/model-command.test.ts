@@ -229,6 +229,36 @@ function assertMissingKey(
   };
 }
 
+describe("/mode", () => {
+  it("updates the displayed session immediately after switching modes", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const displayed: string[] = [];
+    const original = fixture.terminal.setSessionInfo.bind(fixture.terminal);
+    fixture.terminal.setSessionInfo = (session, announce) => {
+      displayed.push(session.mode);
+      original(session, announce);
+    };
+    try {
+      await fixture.app.handleSlashCommand("/mode code");
+      assert.equal(fixture.app.sessionInfo().mode, "code");
+      assert.equal(displayed.at(-1), "code");
+    } finally { fixture.close(); }
+  });
+});
+
+describe("hosted setting pickers", () => {
+  it("keeps canceled model, approval and orchestration selections out of Web notices", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" }, {});
+    fixture.terminal.selectChoice = async () => undefined;
+    try {
+      await fixture.app.selectHostedModel();
+      await fixture.app.selectHostedApproval();
+      await fixture.app.selectHostedOrchestration();
+      assert.doesNotMatch(fixture.output(), /Model selection canceled|Command execution mode selection canceled|Orchestration selection canceled/u);
+    } finally { fixture.close(); }
+  });
+});
+
 describe("/orchestration", () => {
   it("uses the standard picker, keeps reviewer enabled and persists the selection", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
@@ -312,7 +342,7 @@ describe("/approval", () => {
       assert.match(fixture.output(), /Independent approval agent enabled/u);
       assert.deepEqual(sessionAnnouncements, [false, false, false]);
       await assert.rejects(
-        fixture.app.handleSlashCommand("/approval unrestricted"),
+        fixture.app.handleSlashCommand("/approval unsupported"),
         /Usage: \/approval/u,
       );
     } finally {
@@ -490,7 +520,7 @@ describe("/model", () => {
         codingPlanOnly.output(),
         /"provider": "glm-coding-plan"/u,
       );
-      assert.match(codingPlanOnly.output(), /"vision": false/u);
+      assert.match(codingPlanOnly.output(), /"vision": true/u);
       assert.doesNotMatch(codingPlanOnly.output(), /coding-plan-test-key/u);
     } finally {
       codingPlanOnly.close();
@@ -615,47 +645,9 @@ describe("/model", () => {
     }
   });
 
-  it("keeps the user-facing task DAG command read-only", async () => {
+  it("reports child-agent concurrency in status without a separate slash command", async () => {
     const fixture = await createAppFixture({ qwen: "qwen-test-key" });
     try {
-      await fixture.app.handleSlashCommand("/tasks");
-      assert.match(fixture.output(), /This thread has no task DAG/u);
-      const internal = fixture.app as unknown as { state: SessionState };
-      internal.state.taskGraph = applyTaskGraphOperation(undefined, {
-        action: "create",
-        goal: "Show this graph without changing it",
-        tasks: [{
-          id: "inspect",
-          title: "Inspect",
-          description: "Inspect the current state",
-          dependencies: [],
-          inputs: ["Thread state"],
-          expectedArtifacts: ["Read-only output"],
-          completionChecks: ["The state is displayed"],
-          failureHandling: "Block if state cannot be read",
-        }],
-      }, { turnId: "turn_cli_tasks" });
-      const before = JSON.stringify(internal.state.taskGraph);
-      await fixture.app.handleSlashCommand("/tasks");
-      assert.match(fixture.output(), /Show this graph without changing it/u);
-      assert.match(fixture.output(), /□ 1\. \[inspect\] Inspect/u);
-      assert.equal(JSON.stringify(internal.state.taskGraph), before);
-      await assert.rejects(
-        fixture.app.handleSlashCommand("/tasks complete"),
-        /Usage: \/tasks/u,
-      );
-    } finally {
-      fixture.close();
-    }
-  });
-
-  it("shows child-agent assignments through read-only slash commands", async () => {
-    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
-    try {
-      await fixture.app.handleSlashCommand("/agents");
-      await fixture.app.handleSlashCommand("/subagents");
-      assert.match(fixture.output(), /Child agents · 0\/4 active · 0 total/u);
-      assert.match(fixture.output(), /No child agents in this runtime/u);
       const internal = fixture.app as unknown as {
         state: SessionState;
         terminalSessionInfo(): { agentConcurrencyLimit: number };
@@ -664,16 +656,10 @@ describe("/model", () => {
         internal.state.thinkingEffort = effort;
         assert.equal(internal.terminalSessionInfo().agentConcurrencyLimit, limit);
         const before = fixture.output().length;
-        await fixture.app.handleSlashCommand("/agents");
         await fixture.app.handleSlashCommand("/status");
         const output = fixture.output().slice(before);
-        assert.match(output, new RegExp(`Child agents · 0/${limit} active · 0 total`, "u"));
         assert.match(output, new RegExp(`"subagentConcurrency": \\{\\s*"active": 0,\\s*"limit": ${limit}`, "u"));
       }
-      await assert.rejects(
-        fixture.app.handleSlashCommand("/agents stop"),
-        /Usage: \/agents/u,
-      );
     } finally {
       fixture.close();
     }
@@ -956,39 +942,6 @@ describe("/usage", () => {
         fixture.app.handleSlashCommand("/usage extra"),
         /Usage: \/usage/u,
       );
-    } finally {
-      fixture.close();
-    }
-  });
-});
-
-describe("thinking commands", () => {
-  it("shows indexed thinking and invalidates old blocks when the thread changes", async () => {
-    const fixture = await createAppFixture(
-      { qwen: "configured-for-test" },
-      {},
-    );
-    try {
-      const firstId = fixture.terminal.addReasoning("First private reasoning block.");
-      assert.equal(firstId, 1);
-      await fixture.app.handleSlashCommand("/thinking");
-      assert.match(fixture.output(), /▼ Thinking #1[\s\S]*First private reasoning block\./u);
-
-      await assert.rejects(
-        fixture.app.handleSlashCommand("/thinking 0"),
-        /Usage: \/thinking \[id\|last\]/u,
-      );
-      await fixture.app.handleSlashCommand("/new");
-      await fixture.app.handleSlashCommand(`/thinking ${firstId}`);
-      assert.match(
-        fixture.output(),
-        /Thinking block #1 is not available in this thread\./u,
-      );
-
-      const secondId = fixture.terminal.addReasoning("Second thread reasoning.");
-      assert.equal(secondId, 2);
-      await fixture.app.handleSlashCommand("/thinking last");
-      assert.match(fixture.output(), /▼ Thinking #2[\s\S]*Second thread reasoning\./u);
     } finally {
       fixture.close();
     }

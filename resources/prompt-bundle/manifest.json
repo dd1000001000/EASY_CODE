@@ -107,8 +107,8 @@
       "bytes": 161
     },
     "controllers/auto-router.md": {
-      "sha256": "sha256:81148141cb1e6156960c845a8c6d716621f304c54f943f218ff392d34404b769",
-      "bytes": 938
+      "sha256": "sha256:d3a5cbfec70997a127c4342a3e68e61b66513e0cc2fb7e9822f8a2215b134fac",
+      "bytes": 1153
     },
     "controllers/current-request.md": {
       "sha256": "sha256:4ed870e2e3961fc87ce3898d98d7694773623cc3a43c7365ced966c11d1cc34a",
@@ -137,6 +137,10 @@
     "controllers/thread-summary.md": {
       "sha256": "sha256:fd42c5692c7cca0edfca9b95c6771898246d8cc2588c1bf98dde21f74d92e6eb",
       "bytes": 28
+    },
+    "controllers/thread-title-unclaimed.md": {
+      "sha256": "sha256:ec966e38afd7cebc182b55d98cbb5a791567cc5c28529aa979efbb7cda664dd9",
+      "bytes": 298
     },
     "modes/auto-effective.md": {
       "sha256": "sha256:048f1f49696808e6831e57f8c7ba03fee5836d340840cfb97ccc4c797f7664e7",
@@ -371,8 +375,8 @@
       "bytes": 432
     },
     "tools/manage_subagents.json": {
-      "sha256": "sha256:7ae67825b43abd95b8509bfcb4865114e77be6f17dc098d75fbe342c811a0dcb",
-      "bytes": 3160
+      "sha256": "sha256:262a87ef8ad2dda16b2d77600f24969a706c542916a56d3137923c3af1873c59",
+      "bytes": 3517
     },
     "tools/manage_tasks.json": {
       "sha256": "sha256:802225edefa80dc4be6f41a52015a49cfb7357f3c8e6874efa44e9edee38bc66",
@@ -381,6 +385,10 @@
     "tools/modify_skill.json": {
       "sha256": "sha256:36b8afbc30efdedfa003183e5335caef71f579c7fa815bbcbc79e3c137839ef9",
       "bytes": 1087
+    },
+    "tools/name_thread.json": {
+      "sha256": "sha256:3b9b42ed0393d0bfa3803ac8abd2481278bf207d5d45a81ff06433a19951707f",
+      "bytes": 816
     },
     "tools/poll_command.json": {
       "sha256": "sha256:4e48e7579fb56c263771bec620efd23f1ccf2a1f69adeaf35369c44a40cbb5eb",
@@ -415,8 +423,8 @@
       "bytes": 419
     },
     "tools/respond_directly.json": {
-      "sha256": "sha256:95835d373e4b0d3ee274a58a7c30a00c5070a7c9cd06d20f8f703fdae77640b3",
-      "bytes": 871
+      "sha256": "sha256:b32432d259f4eddf3fba4e06094eabdd63d3d446bb717fa2278394f8a0001f53",
+      "bytes": 1054
     },
     "tools/run_command.json": {
       "sha256": "sha256:560a70fabb99afb2fe28ed84cefa02aa719cac77fc28b1704c53a2836037339a",
@@ -439,8 +447,8 @@
       "bytes": 1876
     },
     "tools/select_mode.json": {
-      "sha256": "sha256:ed2ffd862d1217590c921b1922d68e241eb1b94528ebd58f0c4be71dfa9a7058",
-      "bytes": 763
+      "sha256": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b",
+      "bytes": 851
     },
     "tools/start_command.json": {
       "sha256": "sha256:c43f4989e65a4cec1e98043db22ec7ce74b223529ba1bf74efaed2e8819d83d3",
@@ -512,8 +520,8 @@
     },
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
-      "contractVersion": "1.0.0",
-      "contentHash": "sha256:7ae67825b43abd95b8509bfcb4865114e77be6f17dc098d75fbe342c811a0dcb"
+      "contractVersion": "1.1.0",
+      "contentHash": "sha256:262a87ef8ad2dda16b2d77600f24969a706c542916a56d3137923c3af1873c59"
     },
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
@@ -524,6 +532,11 @@
       "path": "tools/modify_skill.json",
       "contractVersion": "1.0.0",
       "contentHash": "sha256:36b8afbc30efdedfa003183e5335caef71f579c7fa815bbcbc79e3c137839ef9"
+    },
+    "name_thread": {
+      "path": "tools/name_thread.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:3b9b42ed0393d0bfa3803ac8abd2481278bf207d5d45a81ff06433a19951707f"
     },
     "poll_command": {
       "path": "tools/poll_command.json",
@@ -568,7 +581,7 @@
     "respond_directly": {
       "path": "tools/respond_directly.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:95835d373e4b0d3ee274a58a7c30a00c5070a7c9cd06d20f8f703fdae77640b3"
+      "contentHash": "sha256:b32432d259f4eddf3fba4e06094eabdd63d3d446bb717fa2278394f8a0001f53"
     },
     "run_command": {
       "path": "tools/run_command.json",
@@ -598,7 +611,7 @@
     "select_mode": {
       "path": "tools/select_mode.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:ed2ffd862d1217590c921b1922d68e241eb1b94528ebd58f0c4be71dfa9a7058"
+      "contentHash": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b"
     },
     "start_command": {
       "path": "tools/start_command.json",
@@ -621,5 +634,5 @@
       "contentHash": "sha256:319d069ae34255633c19f0e510370d27f462adf338fa07dc30c79eeb2e4e40d5"
     }
   },
-  "bundleHash": "sha256:edcc9427e391ae1f7faf1f11c49ca3a915e501f6e7ce4c46bb5a3cfd8dc803ff"
+  "bundleHash": "sha256:4bc2ddb5d502bcef1e94f0c8a16f248d5bb339a5aea75f6b34afed490bb366f4"
 }

@@ -14,6 +14,7 @@ export * from "./memory-tool-session.js";
 export * from "./read-memory.js";
 export * from "./manage-subagents.js";
 export * from "./manage-tasks.js";
+export * from "./name-thread.js";
 export * from "./mcp-config-tools.js";
 export * from "./metadata.js";
 export * from "./propose-plan.js";

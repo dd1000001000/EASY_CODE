@@ -6,6 +6,7 @@ import type {
   SubagentLifecycleUpdate,
   SubagentTaskReport,
   TaskGraph,
+  ThinkingEffort,
   ToolContext,
   ToolExecutionResult,
 } from "../src/core/types.js";
@@ -15,6 +16,7 @@ import {
   type SubagentExecutionOutcome,
   type SubagentExecutionRequest,
 } from "../src/subagents/coordinator.js";
+import type { SpawnSubagentRequest } from "../src/subagents/types.js";
 import { applyTaskGraphOperation, taskGraphView } from "../src/tasks/task-graph.js";
 import { describe, it } from "./harness.js";
 
@@ -139,6 +141,86 @@ function resultArtifact(
 }
 
 describe("SubagentCoordinator", () => {
+  it("uses an explicitly lower child effort or inherits the parent effort", async () => {
+    const cases: ReadonlyArray<{
+      parent: ThinkingEffort;
+      child?: ThinkingEffort;
+      expected: ThinkingEffort;
+    }> = [
+      { parent: "none", child: "none", expected: "none" },
+      { parent: "low", child: "none", expected: "none" },
+      { parent: "medium", child: "low", expected: "low" },
+      { parent: "high", child: "medium", expected: "medium" },
+      { parent: "high", expected: "high" },
+    ];
+    for (const { parent, child, expected } of cases) {
+      const coordinator = new SubagentCoordinator({
+        createAgentId: idFactory([AGENT_ONE]),
+        run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+      });
+      const spawned = await coordinator.spawn({
+        action: "spawn",
+        task: {
+          title: "Inspect",
+          description: "Inspect an isolated source.",
+          completionChecks: ["Evidence is reported"],
+        },
+        instructions: "Inspect only.",
+        ...(child ? { thinkingEffort: child } : {}),
+      }, context(undefined, { thinkingEffort: parent }));
+      assert.equal(spawned.subagentAssignment?.thinkingEffort, expected);
+      assert.equal(coordinator.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, expected);
+      assert.equal((spawned.data as { concurrency: { limit: number } }).concurrency.limit,
+        maxConcurrentSubagents(parent));
+    }
+  });
+
+  it("rejects effort above the parent before allocating a child, for both assignment forms", async () => {
+    const taskForms: SpawnSubagentRequest[] = [
+      { action: "spawn", taskId: "inspect", instructions: "Inspect only." },
+      { action: "spawn", task: { title: "Inspect", description: "Inspect an isolated source.",
+        completionChecks: ["Evidence is reported"] }, instructions: "Inspect only." },
+    ];
+    for (const task of taskForms) {
+      const coordinator = new SubagentCoordinator({
+        createAgentId: idFactory([AGENT_ONE]),
+        run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+      });
+      const parentContext = context("taskId" in task ? graph(["inspect"]) : undefined,
+        { thinkingEffort: "low" });
+      await assert.rejects(
+        coordinator.spawn({ ...task, thinkingEffort: "medium" }, parentContext),
+        /cannot exceed the parent's low/u,
+      );
+      assert.deepEqual(coordinator.snapshot(parentContext.threadId), []);
+      const accepted = await coordinator.spawn({ ...task, thinkingEffort: "none" }, parentContext);
+      assert.equal(accepted.subagentAssignment?.agentId, AGENT_ONE);
+      assert.equal(accepted.subagentAssignment?.thinkingEffort, "none");
+    }
+  });
+
+  it("restores the assigned child effort independently of the parent's later selection", async () => {
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    const spawned = await coordinator.spawn({
+      action: "spawn",
+      task: { title: "Inspect", description: "Inspect an isolated source.",
+        completionChecks: ["Evidence is reported"] },
+      instructions: "Inspect only.",
+      thinkingEffort: "low",
+    }, context(undefined, { thinkingEffort: "high" }));
+    const assignment = spawned.subagentAssignment;
+    assert.ok(assignment);
+    const restored = new SubagentCoordinator({
+      run: async () => new Promise<SubagentExecutionOutcome>(() => undefined),
+    });
+    restored.restore({ parentThreadId: "thread_subagent_coordinator",
+      createdByTurnId: "turn_subagent_coordinator", assignment }, { deferActivation: true });
+    assert.equal(restored.snapshot("thread_subagent_coordinator")[0]?.thinkingEffort, "low");
+  });
+
   it("scales the default concurrency limit as 2, 2, 4, and 8", async () => {
     assert.deepEqual(
       (["none", "low", "medium", "high"] as const).map(maxConcurrentSubagents),

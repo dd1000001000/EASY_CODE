@@ -2109,8 +2109,8 @@ export class Terminal implements AppInteractionPort {
         images: images.map((image) => ({ ...image })),
       } as const;
       if (this.inlineShellActive) {
-        // The adjustment registry remains available to `/adjustment`, while
-        // the main transcript shows only the user-authored message. Runtime
+        // The adjustment registry remains available to the disclosure viewer,
+        // while the main transcript shows only the user-authored message. Runtime
         // queue terminology and disclosure controls are implementation detail.
         this.commitTranscript(entry);
         this.refresh();
@@ -2135,7 +2135,7 @@ export class Terminal implements AppInteractionPort {
     return this.openDisclosureViewer("adjustment", id);
   }
 
-  /** Rebuild `/thinking` history for a resumed Thread without replaying old markers. */
+  /** Rebuild retained Thinking history for a resumed Thread without replaying old markers. */
   restoreReasoning(texts: readonly string[]): number {
     this.closeDisclosureViewer();
     this.retainedReasoningDisclosures.clear();
@@ -2674,7 +2674,7 @@ export class Terminal implements AppInteractionPort {
     if (!this.disclosureAvailable(kind, id)) {
       const label = kind === "thinking" ? "Thinking block" : "Queued adjustment";
       this.writeStableStatus(
-        `${label} #${id} is historical or unavailable; use /${kind === "thinking" ? "thinking" : "adjustment"} ${id} to view retained content.`,
+        `${label} #${id} is historical or unavailable in the current terminal view.`,
         "info",
       );
       return false;
@@ -3512,8 +3512,8 @@ export class Terminal implements AppInteractionPort {
       id: this.virtualDisclosureId("thinking", block.id),
       kind: "thinking",
       title: active
-        ? chalk.gray(`↕ Thinking #${block.id} · /thinking ${block.id} · VS Code Ctrl/Cmd+click to toggle`)
-        : chalk.gray(marker[0] ?? `▶ Thinking #${block.id} · /thinking ${block.id}`),
+        ? chalk.gray(`↕ Thinking #${block.id} · VS Code Ctrl/Cmd+click to toggle`)
+        : chalk.gray(marker[0] ?? `▶ Thinking #${block.id}`),
       preview: chalk.gray(marker.slice(1).join("\n")),
       body: chalk.gray(
         (block.text || "(No visible Thinking text.)")
@@ -3542,8 +3542,8 @@ export class Terminal implements AppInteractionPort {
       id: this.virtualDisclosureId("adjustment", block.id),
       kind: "adjustment",
       title: active
-        ? chalk.gray(`↕ Queued adjustment #${block.id} · /adjustment ${block.id} · VS Code Ctrl/Cmd+click to toggle`)
-        : chalk.gray(marker[0] ?? `▶ Queued adjustment #${block.id} · /adjustment ${block.id}`),
+        ? chalk.gray(`↕ Queued adjustment #${block.id} · VS Code Ctrl/Cmd+click to toggle`)
+        : chalk.gray(marker[0] ?? `▶ Queued adjustment #${block.id}`),
       preview: chalk.gray(marker.slice(1).join("\n")),
       body: chalk.gray(
         `${completeText.split("\n").map((line) => `  ${line}`).join("\n")}` +

@@ -11,6 +11,7 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { loadPromptBundleCatalog } from "../prompt-bundle/index.js";
 import { documentToolSchema } from "../tools/metadata.js";
 import { boundedText } from "../utils/bounded-text.js";
+import { normalizeThreadTitle } from "../threads/thread-title.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { completeWithApiRetries, incompleteModelOutput } from "./model-retry.js";
 
@@ -18,6 +19,7 @@ export interface AutoModeSelection {
   readonly kind: "route";
   mode: "plan" | "code";
   reason: string;
+  threadTitle?: string;
   readonly attempts: readonly AutoRouteAttempt[];
 }
 
@@ -25,6 +27,7 @@ export interface AutoDirectResponse {
   readonly kind: "direct_response";
   readonly content: string;
   readonly reasoningContent?: string;
+  readonly threadTitle?: string;
   readonly attempts: readonly AutoRouteAttempt[];
 }
 
@@ -40,6 +43,7 @@ export interface AutoRouteAttempt {
 export interface AutoRouteContext {
   readonly workingSummary?: string;
   readonly priorMessages?: readonly ChatMessage[];
+  readonly threadNeedsTitle?: boolean;
 }
 
 export const MAX_AUTO_ROUTE_CONTEXT_CHARS = 12_000;
@@ -89,8 +93,9 @@ function selectModeTool(): ToolDefinition {
             minLength: 1,
             maxLength: MAX_AUTO_ROUTE_REASON_CHARS,
           },
+          threadTitle: { type: "string", minLength: 0, maxLength: 120 },
         },
-        required: ["mode", "reason"],
+        required: ["mode", "reason", "threadTitle"],
       }),
     },
   };
@@ -118,8 +123,9 @@ function respondDirectlyTool(): ToolDefinition {
             minLength: 1,
             maxLength: MAX_AUTO_DIRECT_RESPONSE_CHARS,
           },
+          threadTitle: { type: "string", minLength: 0, maxLength: 120 },
         },
-        required: ["content"],
+        required: ["content", "threadTitle"],
       }),
     },
   };
@@ -282,13 +288,15 @@ function buildRouterMessages(
         controllerPolicy: controllerPolicy.trim(),
       })
     : "";
+  const namingInstruction = context?.threadNeedsTitle
+    ? `\n\n${catalog.readText("controllers/thread-title-unclaimed.md").trim()}` : "";
   return [
     {
       role: "system",
       content: catalog.render("controllers/auto-router.md", {
         controllerPolicyPrefix,
         retryInstruction,
-      }).trimEnd(),
+      }).trimEnd() + namingInstruction,
     },
     {
       role: "user",
@@ -308,6 +316,7 @@ type ParsedAutoRouteDecision =
 
 function parseAutoRouteDecision(
   message: Extract<ChatMessage, { role: "assistant" }>,
+  threadNeedsTitle = false,
 ): ParsedAutoRouteDecision | undefined {
   const calls = message.tool_calls;
   if (!calls || calls.length !== 1) return undefined;
@@ -330,8 +339,21 @@ function parseAutoRouteDecision(
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
   const record = input as Record<string, unknown>;
   const keys = Object.keys(record).sort();
+  const allowedKeys = call.function.name === RESPOND_DIRECTLY_TOOL_NAME
+    ? ["content", "threadTitle"] : ["mode", "reason", "threadTitle"];
+  if (keys.some(key => !allowedKeys.includes(key))) return undefined;
+  if (threadNeedsTitle && !keys.includes("threadTitle")) return undefined;
+  let threadTitle: string | undefined;
+  if (record.threadTitle !== undefined) {
+    if (typeof record.threadTitle !== "string") return undefined;
+    const candidate = sanitizeRouteContextText(record.threadTitle);
+    if (candidate) {
+      try { threadTitle = normalizeThreadTitle(candidate); }
+      catch { return undefined; }
+    } else if (threadNeedsTitle) return undefined;
+  }
   if (call.function.name === RESPOND_DIRECTLY_TOOL_NAME) {
-    if (keys.length !== 1 || keys[0] !== "content") return undefined;
+    if (!keys.includes("content")) return undefined;
     if (typeof record.content !== "string") return undefined;
     const content = boundedText(sanitizeRouteContextText(record.content), MAX_AUTO_DIRECT_RESPONSE_CHARS);
     if (!content || content.length > MAX_AUTO_DIRECT_RESPONSE_CHARS) return undefined;
@@ -344,11 +366,12 @@ function parseAutoRouteDecision(
     return {
       kind: "direct_response",
       content,
+      ...(threadTitle ? { threadTitle } : {}),
       ...(reasoningContent ? { reasoningContent } : {}),
     };
   }
 
-  if (keys.length !== 2 || keys[0] !== "mode" || keys[1] !== "reason") {
+  if (!keys.includes("mode") || !keys.includes("reason")) {
     return undefined;
   }
   if (record.mode !== "plan" && record.mode !== "code") return undefined;
@@ -359,6 +382,7 @@ function parseAutoRouteDecision(
     kind: "route",
     mode: record.mode,
     reason,
+    ...(threadTitle ? { threadTitle } : {}),
   };
 }
 
@@ -418,7 +442,8 @@ export async function determineAutoRoute(
       }
       throw error;
     }
-    const decision = incompleteModelOutput(response) ? undefined : parseAutoRouteDecision(response.message);
+    const decision = incompleteModelOutput(response) ? undefined
+      : parseAutoRouteDecision(response.message, context?.threadNeedsTitle);
     attempts.push(
       routeAttempt(attempt + 1, decision?.kind ?? "invalid", response),
     );

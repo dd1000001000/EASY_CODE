@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { EasyCodeApp } from "../src/app.js";
 import type { ApprovalRequest, EventRecord } from "../src/core/types.js";
 import { projectWebHistory } from "../src/web-server/history.js";
-import { WebInteraction } from "../src/web-server/interaction.js";
+import { WEB_HISTORY_PAGE_SIZE, WebInteraction } from "../src/web-server/interaction.js";
 import { EasyCodeWebServer } from "../src/web-server/server.js";
 import { describe, it } from "./harness.js";
 
@@ -15,6 +15,14 @@ function event(sequence: number, type: EventRecord["type"], payload: unknown): E
 }
 
 describe("Web conversation projection", () => {
+  it("restores sanitized expanded tool details without exposing result evidence", () => {
+    const entries = projectWebHistory([event(1, "tool.result", {
+      tool: "run_command", message: { content: "private output" },
+      toolDetails: [{ label: "Command", value: "ls -l" }],
+    })]);
+    assert.deepEqual(entries[0]?.toolDetails, [{ label: "Command", value: "ls -l" }]);
+    assert.ok(!JSON.stringify(entries).includes("private output"));
+  });
   it("keeps user, reasoning, answer, and tool evidence in event order", () => {
     const entries = projectWebHistory([
       event(1, "message.user", { message: { role: "user", content: "Fix the issue" } }),
@@ -31,6 +39,71 @@ describe("Web conversation projection", () => {
 });
 
 describe("Web interaction host", () => {
+  it("pages stable history and keeps a lightweight index of every user message", () => {
+    const host = new WebInteraction();
+    for (let index = 0; index < WEB_HISTORY_PAGE_SIZE + 15; index += 1) {
+      host.presentUser(`Message ${index}`);
+    }
+    const recent = host.historyPage();
+    assert.equal(recent.entries.length, WEB_HISTORY_PAGE_SIZE);
+    assert.equal(recent.hasEarlier, true);
+    assert.equal(recent.hasLater, false);
+    assert.equal(host.historyState(recent).markers.length, WEB_HISTORY_PAGE_SIZE + 15);
+    const earlier = host.historyPage({ before: recent.entries[0]!.id });
+    assert.equal(earlier.entries.length, 15);
+    assert.equal(earlier.hasEarlier, false);
+    assert.equal(earlier.hasLater, true);
+    const newer = host.historyPage({ after: earlier.entries.at(-1)!.id });
+    assert.equal(newer.entries[0]?.id, recent.entries[0]?.id);
+    assert.equal(newer.hasLater, false);
+    const around = host.historyPage({ around: earlier.entries[0]!.id });
+    assert.equal(around.entries[0]?.text, "Message 0");
+    assert.throws(() => host.historyPage({ before: "missing" }), /cursor/u);
+    const epoch = host.historyState().epoch;
+    host.clearScreen();
+    assert.notEqual(host.historyState().epoch, epoch);
+    assert.deepEqual(host.historyPage().entries, []);
+    host.close();
+  });
+  it("clears orphaned activity and reviewer status when a request ends", () => {
+    const host = new WebInteraction();
+    host.startActivity("Running", "tool");
+    host.startReview();
+    host.clearCurrentRequest();
+    assert.deepEqual(host.snapshot().view.activities, []);
+    assert.equal(host.snapshot().view.review, null);
+    host.close();
+  });
+  it("removes a completed DAG from the live monitor without erasing conversation history", () => {
+    const host = new WebInteraction();
+    host.presentUser("Run the task");
+    const base = { id: "graph", goal: "Finish", currentTask: null, startableTasks: [],
+      completed: 0, total: 0, tasks: [] };
+    host.taskGraph({ ...base, status: "active" });
+    assert.ok(host.snapshot().view.tasks);
+    host.taskGraph({ ...base, status: "completed" });
+    assert.equal(host.snapshot().view.tasks, null);
+    assert.equal(host.snapshot().view.entries[0]?.text, "Run the task");
+    host.close();
+  });
+  it("keeps tool target details separate from the collapsed summary", () => {
+    const host = new WebInteraction();
+    host.toolCompleted("run_command", true, "completed", undefined, [{ label: "Command", value: "ls -l" }]);
+    const entry = host.snapshot().view.entries[0];
+    assert.equal(entry?.text, "✓ run_command — completed");
+    assert.deepEqual(entry?.toolDetails, [{ label: "Command", value: "ls -l" }]);
+    host.close();
+  });
+  it("publishes a one-time title change as a live patch", () => {
+    const host = new WebInteraction();
+    host.resetForNewThread({ threadId: "thread_test", workspaceRoot: "C:\\work" } as Parameters<WebInteraction["resetForNewThread"]>[0]);
+    const patches: unknown[] = [];
+    const unsubscribe = host.subscribe(change => patches.push(change.patch));
+    host.threadTitleChanged("Inspect backend");
+    assert.ok(patches.some(patch => (patch as { kind?: string; title?: string }).kind === "thread.title" &&
+      (patch as { title?: string }).title === "Inspect backend"));
+    unsubscribe(); host.close();
+  });
   it("reconciles streamed content without duplicate final answers", () => {
     const host = new WebInteraction();
     host.modelStream({ kind: "started", streamId: "one", sequence: 0 });
@@ -57,18 +130,40 @@ describe("Web interaction host", () => {
     assert.equal(await decision, "reject");
     host.close();
   });
+
+  it("marks the current choice for the composer picker without changing selection behavior", async () => {
+    const host = new WebInteraction();
+    const selected = host.selectChoice("Select provider", [
+      { id: "glm", label: "GLM" }, { id: "deepseek", label: "DeepSeek" },
+    ], "glm");
+    const pending = host.snapshot().view.decision;
+    assert.equal(pending?.initialId, "glm");
+    assert.equal(host.resolveDecision(pending!.id, "deepseek"), true);
+    assert.equal(await selected, "deepseek");
+    host.close();
+  });
 });
 
 describe("loopback Web service", () => {
   it("requires the local bootstrap token and cookie for session APIs", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-web-test-"));
+    const projectRoot = path.join(directory, "project");
+    await mkdir(projectRoot);
     await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
     const host = new WebInteraction();
     const imageId = "image_12345678-1234-4123-8123-123456789abc";
     let discarded = 0;
+    let modelSelections = 0;
+    let approvalSelections = 0;
+    let orchestrationSelections = 0;
     const app = {
+      dataDirectory: () => directory,
+      sessionInfo: () => ({ workspaceRoot: directory, threadId: "thread_test" }),
+      allThreads: () => [],
+      closeAsync: async () => {},
       startHostedSession() {},
       cancelActiveRequest: () => false,
+      isRequestActive: () => false,
       threadEvents: () => [],
       workspaceThreads: () => [],
       pendingPlan: () => undefined,
@@ -77,8 +172,11 @@ describe("loopback Web service", () => {
         storageKey: `attachments/${"a".repeat(32)}/${imageId}.png`, sha256: "0".repeat(64),
         byteSize: 4, width: 1, height: 1 }),
       discardHostedImage: async () => { discarded += 1; },
+      selectHostedModel: async () => { modelSelections += 1; },
+      selectHostedApproval: async () => { approvalSelections += 1; },
+      selectHostedOrchestration: async () => { orchestrationSelections += 1; },
     } as unknown as EasyCodeApp;
-    const service = new EasyCodeWebServer(app, host, directory);
+    const service = new EasyCodeWebServer(app, host, directory, directory);
     try {
       const origin = await service.start(false);
       assert.equal((await fetch(origin)).status, 200);
@@ -94,21 +192,183 @@ describe("loopback Web service", () => {
       assert.equal(authenticated.status, 200);
       const cookie = authenticated.headers.get("set-cookie")?.split(";")[0];
       assert.ok(cookie);
-      assert.equal((await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } })).status, 200);
-      assert.equal((await fetch(`${origin}/api/state`, { headers: { Cookie: "easy_code_web=wrong" } })).status, 401);
+      const initialState = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      assert.equal(initialState.status, 200);
+      const initialProjects = (await initialState.json() as { projects: { id: string; name: string }[] }).projects;
+      assert.equal(initialProjects.length, 0);
+      for (let index = 0; index < WEB_HISTORY_PAGE_SIZE + 5; index += 1) host.presentUser(`History ${index}`);
+      const pagedState = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      const pagedSnapshot = await pagedState.json() as {
+        view: { entries: { id: string }[] };
+        history: { epoch: string; hasEarlier: boolean; markers: { id: string }[] };
+      };
+      assert.equal(pagedSnapshot.view.entries.length, WEB_HISTORY_PAGE_SIZE);
+      assert.equal(pagedSnapshot.history.markers.length, WEB_HISTORY_PAGE_SIZE + 5);
+      const query = new URLSearchParams({ threadId: "thread_test", epoch: pagedSnapshot.history.epoch,
+        before: pagedSnapshot.view.entries[0]!.id });
+      const older = await fetch(`${origin}/api/history?${query}`, { headers: { Cookie: cookie } });
+      assert.equal(older.status, 200);
+      assert.equal((await older.json() as { entries: { id: string }[] }).entries.length, 5);
+      query.set("epoch", "stale");
+      assert.equal((await fetch(`${origin}/api/history?${query}`, { headers: { Cookie: cookie } })).status, 400);
+      assert.equal((await fetch(`${origin}/api/commands`)).status, 401);
+      const commandResponse = await fetch(`${origin}/api/commands`, { headers: { Cookie: cookie } });
+      assert.equal(commandResponse.status, 200);
+      const commandEntries = (await commandResponse.json() as { commands: { name: string; description: string }[] }).commands;
+      const commandNames = commandEntries.map(command => command.name);
+      assert.equal(commandEntries.length, 11);
+      for (const command of commandEntries) assert.ok(command.description.length > 10, `/${command.name} needs an English description`);
+      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "sessions", "new", "resume", "exit",
+        "tasks", "agents", "commands", "thinking", "adjustment"])
+        assert.ok(!commandNames.includes(name), `/${name} should not be offered in Web`);
+      assert.ok(commandNames.includes("mode"));
+      assert.ok(!commandNames.includes("changes"));
+      const post = (route: string, payload: unknown) => fetch(`${origin}${route}`, {
+        method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "sessions"])
+        assert.equal((await post("/api/message", { threadId: "thread_test", text: `/${name}` })).status, 400);
+      assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/model" })).status, 400);
+      assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/orchestration off" })).status, 400);
+      assert.equal((await post("/api/ui/model", { threadId: "thread_test" })).status, 202);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await post("/api/ui/approval", { threadId: "thread_test" })).status, 202);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await post("/api/ui/orchestration", { threadId: "thread_test" })).status, 202);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(modelSelections, 1);
+      assert.equal(approvalSelections, 1);
+      assert.equal(orchestrationSelections, 1);
       const uploaded = await fetch(`${origin}/api/image`, { method: "POST", headers: {
-        Cookie: cookie!, Origin: origin, "Content-Type": "image/png",
+        Cookie: cookie!, Origin: origin, "Content-Type": "image/png", "X-Easy-Code-Thread-Id": "thread_test",
       }, body: Buffer.from([1, 2, 3, 4]) });
       assert.equal(uploaded.status, 200);
       const discardedResponse = await fetch(`${origin}/api/image/discard`, { method: "POST", headers: {
         Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
-      }, body: JSON.stringify({ id: imageId }) });
+      }, body: JSON.stringify({ threadId: "thread_test", id: imageId }) });
       assert.equal(discardedResponse.status, 200);
       assert.deepEqual(await discardedResponse.json(), { discarded: true });
       assert.equal(discarded, 1);
+      const added = await fetch(`${origin}/api/project/add`, { method: "POST", headers: {
+        Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
+      }, body: JSON.stringify({ path: projectRoot }) });
+      assert.equal(added.status, 200, await added.clone().text());
+      const project = (await added.json() as { project: { id: string } }).project;
+      const renamed = await fetch(`${origin}/api/project/rename`, { method: "POST", headers: {
+        Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
+      }, body: JSON.stringify({ projectId: project.id, name: "Renamed workspace" }) });
+      assert.equal(renamed.status, 200);
+      const stateAfterRename = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      assert.equal((await stateAfterRename.json() as { projects: { name: string }[] }).projects[0]?.name, "Renamed workspace");
+      assert.equal((await fetch(`${origin}/api/state`, { headers: { Cookie: "easy_code_web=wrong" } })).status, 401);
     } finally {
       await service.stop();
       host.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("starts empty, keeps project registration separate from Thread creation, and gates sending", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-empty-web-"));
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-empty-project-"));
+    await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
+    const host = new WebInteraction();
+    let created = 0;
+    const service = new EasyCodeWebServer(undefined, host, directory, directory, async (root, _threadId, threadPort) => {
+      created += 1;
+      return {
+        dataDirectory: () => directory,
+        sessionInfo: () => ({ workspaceRoot: root, threadId: "thread_new" }),
+        startHostedSession: () => threadPort.resetForNewThread({ workspaceRoot: root, threadId: "thread_new" } as Parameters<WebInteraction["resetForNewThread"]>[0]), threadEvents: () => [], allThreads: () => [],
+        closeAsync: async () => {}, cancelActiveRequest: () => false,
+        isRequestActive: () => false, pendingPlan: () => undefined,
+      } as unknown as EasyCodeApp;
+    });
+    try {
+      const origin = await service.start(false);
+      const token = (service as unknown as { token: string }).token;
+      const login = await fetch(`${origin}/api/bootstrap`, { method: "POST", headers: {
+        "Content-Type": "application/json", Origin: origin,
+      }, body: JSON.stringify({ token }) });
+      const cookie = login.headers.get("set-cookie")?.split(";")[0];
+      assert.ok(cookie);
+      const state = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      const snapshot = await state.json() as { view: { session: unknown }; projects: unknown[]; threads: unknown[] };
+      assert.equal(snapshot.view.session, null);
+      assert.deepEqual(snapshot.projects, []);
+      assert.deepEqual(snapshot.threads, []);
+      const post = (route: string, payload: unknown, contentType = "application/json") => fetch(`${origin}${route}`, {
+        method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": contentType },
+        body: contentType === "application/json" ? JSON.stringify(payload) : Buffer.from([1, 2, 3, 4]),
+      });
+      assert.equal((await post("/api/message", { text: "hello" })).status, 409);
+      assert.equal((await post("/api/adjustment", { text: "hello" })).status, 409);
+      assert.equal((await post("/api/image", {}, "image/png")).status, 409);
+      const projectResponse = await post("/api/project/add", { path: projectRoot });
+      assert.equal(projectResponse.status, 200);
+      const project = (await projectResponse.json() as { project: { id: string } }).project;
+      assert.equal(created, 0);
+      const afterAdd = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      const added = await afterAdd.json() as { view: { session: unknown }; projects: unknown[] };
+      assert.equal(added.view.session, null);
+      assert.equal(added.projects.length, 1);
+      assert.equal((await post("/api/message", { text: "still blocked" })).status, 409);
+      assert.equal((await post("/api/thread", { action: "new", projectId: project.id })).status, 200);
+      assert.equal(created, 1);
+      const opened = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
+      assert.equal((await opened.json() as { view: { session: { threadId: string } } }).view.session.threadId, "thread_new");
+    } finally {
+      await service.stop(); host.close(); await rm(directory, { recursive: true, force: true });
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a running conversation alive while opening and sending in another", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-parallel-web-"));
+    const projectRoot = path.join(directory, "project");
+    await mkdir(projectRoot);
+    await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
+    let created = 0;
+    let releaseFirst: (() => void) | undefined;
+    const firstWork = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const service = new EasyCodeWebServer(undefined, new WebInteraction(), directory, directory, async (root, _threadId, port) => {
+      const threadId = `thread_parallel_${++created}`;
+      const session = { workspaceRoot: root, threadId };
+      return {
+        dataDirectory: () => directory,
+        sessionInfo: () => session,
+        startHostedSession: () => port.resetForNewThread(session as Parameters<WebInteraction["resetForNewThread"]>[0]),
+        threadEvents: () => [], allThreads: () => [], pendingPlan: () => undefined,
+        closeAsync: async () => {}, cancelActiveRequest: () => false, isRequestActive: () => false,
+        submitUserMessage: async () => { if (threadId === "thread_parallel_1") await firstWork; return {}; },
+      } as unknown as EasyCodeApp;
+    });
+    try {
+      const origin = await service.start(false);
+      const token = (service as unknown as { token: string }).token;
+      const login = await fetch(`${origin}/api/bootstrap`, { method: "POST", headers: {
+        "Content-Type": "application/json", Origin: origin,
+      }, body: JSON.stringify({ token }) });
+      const cookie = login.headers.get("set-cookie")?.split(";")[0];
+      const post = (route: string, payload: unknown) => fetch(`${origin}${route}`, {
+        method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const added = await post("/api/project/add", { path: projectRoot });
+      const projectId = (await added.json() as { project: { id: string } }).project.id;
+      assert.equal((await post("/api/thread", { action: "new", projectId })).status, 200);
+      assert.equal((await post("/api/message", { threadId: "thread_parallel_1", text: "First task" })).status, 202);
+      assert.equal((await post("/api/thread", { action: "new", projectId })).status, 200);
+      const state = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie! } });
+      const snapshot = await state.json() as { view: { session: { threadId: string } }; runningThreadIds: string[] };
+      assert.equal(snapshot.view.session.threadId, "thread_parallel_2");
+      assert.ok(snapshot.runningThreadIds.includes("thread_parallel_1"));
+      assert.equal((await post("/api/message", { threadId: "thread_parallel_2", text: "Second task" })).status, 202);
+      releaseFirst?.();
+    } finally {
+      releaseFirst?.();
+      await service.stop();
       await rm(directory, { recursive: true, force: true });
     }
   });

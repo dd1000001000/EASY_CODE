@@ -150,12 +150,12 @@ describe("resume state recovery", () => {
             assert.equal(restored.state.changes.length, 1);
             assert.equal(restored.workspace.getChangeSet().length, 1);
             assert.equal(restored.state.commands.length, 1);
-            await resumed.handleSlashCommand("/thinking 1");
+            assert.equal(resumedTerminal.showReasoning(1), true);
             assert.match(transcript, /Recovered private model reasoning\./u);
             await resumed.handleSlashCommand("/new");
             resumedTerminal.addReasoning("A different Thread's Thinking block.");
             await resumed.handleSlashCommand(`/resume ${threadId}`);
-            await resumed.handleSlashCommand("/thinking 1");
+            assert.equal(resumedTerminal.showReasoning(1), true);
             assert.equal((transcript.match(/Recovered private model reasoning\./gu) ?? []).length, 2);
         }
         finally {

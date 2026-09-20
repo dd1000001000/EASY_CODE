@@ -142,6 +142,22 @@ function assertBoundedLines(value: string, columns: number): void {
 }
 
 describe("pure terminal UI views", () => {
+  it("nests active DAG children under their task and omits finished agents from live rows", () => {
+    const startedAt = "2026-08-29T00:00:00.000Z";
+    const child: SubagentView = { ...agent(0), assignmentKind: "dag", taskId: "task_1",
+      activity: { kind: "tool", label: "read_file", startedAt } };
+    const terminal: SubagentView = { ...agent(2), finishedAt: startedAt };
+    const state = applyEvents(createUIState(), [
+      { type: "tasks.set", tasks: graph() },
+      { type: "subagents.set", subagents: [child, agent(1), terminal] },
+    ]);
+    const nowMs = Date.parse(startedAt) + 5_000;
+    const taskRows = renderTaskStatusLines(state.live.tasks, { columns: 100, color: false }, undefined, state.live.subagents, nowMs);
+    assert.ok(taskRows.some(row => row.includes("agent-1") && row.includes("Tool read_file") && row.includes("5s")));
+    const agentRows = renderAgentStatusLines(state, { columns: 100, color: false }, undefined, nowMs);
+    assert.ok(agentRows.some(row => row.includes("agent-2")));
+    assert.ok(!agentRows.some(row => row.includes("agent-1") || row.includes("agent-3")));
+  });
   it("renders review stages and real elapsed time in the fixed footer without replacing model activity", () => {
     const review = { id: "review_ui", startedAt: 1_000,
       phase: "independent_review" as const };
@@ -317,7 +333,7 @@ describe("pure terminal UI views", () => {
     assert.equal(agents.length, 3);
     assert.match(agents[0] ?? "", /^Agents 2\/4/u);
     assert.match(agents[1] ?? "", /● agent-1/u);
-    assert.match(agents[2] ?? "", /… 6 more/u);
+    assert.match(agents[2] ?? "", /agent-2/u);
     assertBoundedLines(tasks.join("\n"), 28);
     assertBoundedLines(agents.join("\n"), 28);
 
@@ -615,7 +631,7 @@ describe("pure terminal UI views", () => {
       color: true,
       maxThinkingRows: 3,
     });
-    assert.match(plainPanel, /^↕ Thinking #4 · \/thinking 4/u);
+    assert.match(plainPanel, /^↕ Thinking #4 · VS Code Ctrl\/Cmd\+click to toggle/u);
     assert.match(plainPanel, /Inspect the repository before editing\./u);
     assert.match(plainPanel, /api_key=\[REDACTED\]/u);
     assert.doesNotMatch(plainPanel, new RegExp(secret, "u"));

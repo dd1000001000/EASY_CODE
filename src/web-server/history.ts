@@ -2,6 +2,7 @@ import type { EventRecord, ImageAttachment } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import type { WebEntry, WebEntryKind } from "../web-contracts.js";
+import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -20,11 +21,21 @@ function imageLabels(value: unknown): WebEntry["images"] {
       : [];
   });
 }
+function toolDetails(value: unknown): WebEntry["toolDetails"] {
+  if (!Array.isArray(value)) return undefined;
+  const details = safeToolDisplayDetails(value.flatMap(item => {
+    const entry = object(item);
+    return typeof entry?.label === "string" && typeof entry.value === "string"
+      ? [{ label: entry.label, value: entry.value }] : [];
+  }));
+  return details.length ? details : undefined;
+}
 
 /** Project only user-facing conversation facts; never expose raw Journal payloads or credentials. */
 export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   const entries: WebEntry[] = [];
-  const append = (event: EventRecord, kind: WebEntryKind, text: string, suffix = "", images?: WebEntry["images"]): void => {
+  const append = (event: EventRecord, kind: WebEntryKind, text: string, suffix = "", images?: WebEntry["images"],
+    details?: WebEntry["toolDetails"]): void => {
     if (!text.trim() && !images?.length) return;
     entries.push({
       id: `${event.eventId}${suffix}`,
@@ -32,6 +43,7 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
       text: safe(text),
       timestamp: Date.parse(event.timestamp) || 0,
       ...(images?.length ? { images } : {}),
+      ...(details?.length ? { toolDetails: details } : {}),
     });
   };
   for (const event of events) {
@@ -60,7 +72,8 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
       // Journal tool payloads can contain entire files or command output. The
       // conversation needs the outcome, not a replay of private raw evidence.
       const completed = event.phase === "completed";
-      append(event, "tool", `${completed ? "✓" : "✗"} ${name} — ${event.phase ?? "completed"}`, ":result");
+      append(event, "tool", `${completed ? "✓" : "✗"} ${name} — ${event.phase ?? "completed"}`,
+        ":result", undefined, toolDetails(payload?.toolDetails));
     }
   }
   return entries;

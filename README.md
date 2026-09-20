@@ -76,7 +76,7 @@ Use `/approval` to select Manual, Approve for me or Full access. `-y` enables an
 | --- | --- |
 | `/model`, `/mode` | Change model or working mode |
 | `/approval`, `/permissions` | Change approval mode; inspect and revoke grants |
-| `/orchestration`, `/tasks`, `/agents` | Enable and inspect DAG / child agents |
+| `/orchestration` | Enable or disable DAG / child-agent creation |
 | `/sessions`, `/resume`, `/new` | List, resume or create sessions |
 | `/image ./screenshot.png` | Attach an image for a vision-capable model |
 | `/mcp` | View, authenticate, connect, disconnect or remove MCP servers |

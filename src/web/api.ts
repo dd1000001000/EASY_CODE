@@ -1,19 +1,38 @@
 import type { PlanProposal } from "../core/types.js";
-import type { WebPatch, WebView } from "../web-contracts.js";
+import type { WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 
 export interface ThreadItem {
   threadId: string;
+  workspaceId: string;
+  workspaceRoot: string;
+  title: string;
+  canRename: boolean;
   goal?: string;
   mode: string;
   provider: string;
   model: string;
   updatedAt: string;
 }
+export interface ProjectItem { id: string; root: string; name: string }
 export interface WebSnapshot {
   sequence: number;
   view: WebView;
   plan: PlanProposal | null;
   threads: ThreadItem[];
+  projects: ProjectItem[];
+  runningThreadIds: string[];
+  history: WebHistoryState;
+}
+
+export interface FetchedHistoryPage extends WebHistoryPage { threadId: string; epoch: string }
+
+export async function fetchHistoryPage(threadId: string, epoch: string,
+  cursor: { before?: string; after?: string; around?: string }): Promise<FetchedHistoryPage> {
+  const query = new URLSearchParams({ threadId, epoch });
+  if (cursor.before) query.set("before", cursor.before);
+  if (cursor.after) query.set("after", cursor.after);
+  if (cursor.around) query.set("around", cursor.around);
+  return request<FetchedHistoryPage>(`/api/history?${query.toString()}`);
 }
 
 export async function request<T>(route: string, data?: unknown): Promise<T> {
@@ -37,18 +56,18 @@ export async function bootstrap(): Promise<WebSnapshot> {
   return request<WebSnapshot>("/api/state");
 }
 
-export async function uploadImage(file: File): Promise<{ id: string; label: string; mediaType: string }> {
+export async function uploadImage(file: File, threadId: string): Promise<{ id: string; label: string; mediaType: string }> {
   const response = await fetch("/api/image", {
     method: "POST", body: file, credentials: "same-origin",
-    headers: { "Content-Type": file.type },
+    headers: { "Content-Type": file.type, "X-Easy-Code-Thread-Id": threadId },
   });
   const result = await response.json() as { image?: { id: string; label: string; mediaType: string }; error?: string };
   if (!response.ok || !result.image) throw new Error(result.error ?? `Image upload failed (${response.status})`);
   return result.image;
 }
 
-export async function discardImage(id: string): Promise<void> {
-  await request("/api/image/discard", { id });
+export async function discardImage(id: string, threadId: string): Promise<void> {
+  await request("/api/image/discard", { id, threadId });
 }
 
 export type { WebPatch };
