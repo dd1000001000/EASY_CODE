@@ -132,18 +132,18 @@ timeout_ms = 41000
       assert.equal(config.worktreeBaseMode, "fresh");
       assert.equal(config.worktreeRoot, path.join(temporary, "environment-worktrees"));
       assert.equal(config.limits.maxManagedWorktrees, 23);
-      assert.equal(config.providers.qwen!.apiKey, "qwen-env-key");
+      assert.equal(config.providers.qwen!.apiKey, undefined);
       assert.equal(config.providers.qwen!.model, "workspace-qwen");
       assert.equal(config.providers.qwen!.baseUrl, "https://user-qwen.example/v1");
       assert.equal(config.providers.qwen!.timeoutMs, 51_000);
       assert.equal(config.providers.deepseek!.model, "user-deepseek");
-      assert.equal(config.providers.deepseek!.apiKey, "deepseek-env-key");
+      assert.equal(config.providers.deepseek!.apiKey, undefined);
       assert.equal(config.providers.kimi!.model, "user-kimi");
       assert.equal(config.providers.kimi!.baseUrl, "https://user-kimi.example/coding/v1");
-      assert.equal(config.providers.kimi!.apiKey, "kimi-env-key");
+      assert.equal(config.providers.kimi!.apiKey, undefined);
       assert.equal(config.providers.glm!.model, "user-glm");
       assert.equal(config.providers.glm!.baseUrl, "https://user-glm.example/v4");
-      assert.equal(config.providers.glm!.apiKey, "glm-env-key");
+      assert.equal(config.providers.glm!.apiKey, undefined);
       assert.equal(config.providers["glm-coding-plan"]!.model, "user-glm-coding-plan");
       assert.equal(
         config.providers["glm-coding-plan"]!.baseUrl,
@@ -151,9 +151,8 @@ timeout_ms = 41000
       );
       assert.equal(
         config.providers["glm-coding-plan"]!.apiKey,
-        "glm-coding-plan-env-key",
+        undefined,
       );
-      assert.notEqual(config.providers.glm!.apiKey, config.providers["glm-coding-plan"]!.apiKey);
       assert.equal(config.workspaceRoot, path.resolve(workspace));
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -186,15 +185,15 @@ timeout_ms = 41000
       assert.equal(config.limits.maxManagedWorktrees, 15);
       assert.equal(config.providers.qwen!.model, DEFAULT_QWEN_MODEL);
       assert.equal(config.providers.qwen!.timeoutMs, undefined);
-      assert.equal(config.providers.qwen!.apiKey, "dashscope-key");
+      assert.equal(config.providers.qwen!.apiKey, undefined);
       assert.equal(config.providers.deepseek!.baseUrl, DEFAULT_DEEPSEEK_BASE_URL);
       assert.equal(config.providers.deepseek!.model, DEFAULT_DEEPSEEK_MODEL);
       assert.equal(config.providers.kimi!.baseUrl, DEFAULT_KIMI_BASE_URL);
       assert.equal(config.providers.kimi!.model, DEFAULT_KIMI_MODEL);
-      assert.equal(config.providers.kimi!.apiKey, "kimi-key");
+      assert.equal(config.providers.kimi!.apiKey, undefined);
       assert.equal(config.providers.glm!.baseUrl, DEFAULT_GLM_BASE_URL);
       assert.equal(config.providers.glm!.model, DEFAULT_GLM_MODEL);
-      assert.equal(config.providers.glm!.apiKey, "glm-alias-key");
+      assert.equal(config.providers.glm!.apiKey, undefined);
       assert.equal(
         config.providers["glm-coding-plan"]!.baseUrl,
         DEFAULT_GLM_CODING_PLAN_BASE_URL,
@@ -202,15 +201,14 @@ timeout_ms = 41000
       assert.equal(config.providers["glm-coding-plan"]!.model, DEFAULT_GLM_CODING_PLAN_MODEL);
       assert.equal(
         config.providers["glm-coding-plan"]!.apiKey,
-        "glm-coding-plan-key",
+        undefined,
       );
-      assert.notEqual(config.providers.glm!.apiKey, config.providers["glm-coding-plan"]!.apiKey);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("never falls back between standard GLM and GLM Coding Plan API keys", async () => {
+  it("never loads either GLM key from environment variables", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-glm-key-isolation-"));
     try {
       const standardOnly = await loadEasyCodeConfig({
@@ -221,7 +219,7 @@ timeout_ms = 41000
         env: { ZAI_API_KEY: "standard-only-key" },
         credentialStore: false,
       });
-      assert.equal(standardOnly.providers.glm!.apiKey, "standard-only-key");
+      assert.equal(standardOnly.providers.glm!.apiKey, undefined);
       assert.equal(standardOnly.providers["glm-coding-plan"]!.apiKey, undefined);
 
       const codingPlanOnly = await loadEasyCodeConfig({
@@ -235,7 +233,7 @@ timeout_ms = 41000
       assert.equal(codingPlanOnly.providers.glm!.apiKey, undefined);
       assert.equal(
         codingPlanOnly.providers["glm-coding-plan"]!.apiKey,
-        "coding-plan-only-key",
+        undefined,
       );
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -310,7 +308,7 @@ timeout_ms = 41000
       await mkdir(workspaceConfigDir, { recursive: true });
       await writeFile(
         path.join(workspaceConfigDir, "config.toml"),
-        `[providers.glm]\napi_key = "workspace-secret"\nbase_url = "https://attacker.invalid/v1"`,
+        `[providers.glm]\nbase_url = "https://attacker.invalid/v1"`,
         "utf8",
       );
       await assert.rejects(
@@ -341,7 +339,7 @@ timeout_ms = 41000
       await mkdir(workspaceConfigDir, { recursive: true });
       await writeFile(
         path.join(workspaceConfigDir, "config.toml"),
-        `[providers.glm-coding-plan]\napi_key = "workspace-plan-secret"\nbase_url = "https://attacker.invalid/coding"`,
+        `[providers.glm-coding-plan]\nbase_url = "https://attacker.invalid/coding"`,
         "utf8",
       );
       await assert.rejects(

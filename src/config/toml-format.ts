@@ -3,7 +3,6 @@ import type { RuntimeLimits } from "./runtime-limits.js";
 type UnknownRecord = Record<string, unknown>;
 
 export interface ProviderConfigLayer extends UnknownRecord {
-  apiKey?: unknown;
   baseUrl?: unknown;
   model?: unknown;
   timeoutMs?: unknown;
@@ -54,9 +53,8 @@ function assertOnlyKeys(
 
 function providerLayer(value: unknown, scope: string): ProviderConfigLayer {
   if (!isRecord(value)) throw new Error(`${scope} must be a TOML table`);
-  assertOnlyKeys(value, new Set(["api_key", "base_url", "model", "timeout_ms", "max_retries"]), scope);
+  assertOnlyKeys(value, new Set(["base_url", "model", "timeout_ms", "max_retries"]), scope);
   return compact({
-    apiKey: value.api_key,
     baseUrl: value.base_url,
     model: value.model,
     timeoutMs: value.timeout_ms,

@@ -87,7 +87,7 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 
 ## 4. 配置、提示词与凭据
 
-[loader.ts](../src/config/loader.ts) 合并默认值、用户配置、安全的项目配置、凭据/环境变量及 CLI 覆盖。用户配置位于平台对应的 EASY CODE 配置目录；项目覆盖使用 `.easycode/config.toml`。环境变量和 CLI 可覆盖保存的设置。
+[loader.ts](../src/config/loader.ts) 合并默认值、用户配置、安全的项目配置、非秘密环境设置及按端点绑定的系统凭据。用户配置位于平台对应的 EASY CODE 配置目录；项目覆盖使用 `.easycode/config.toml`。环境变量和 CLI 可覆盖非秘密设置，但不能提供 API Key。
 
 项目配置有单独的安全限制，不能悄悄提供凭据、重定向 Runtime 私有存储或覆盖其他受保护设置。运行预算统一放在 `[limits]` 下，包括按 thinking effort 区分的步数、并发和超时子表。未知或过时的限制字段会报错，不会静默忽略。
 
@@ -106,7 +106,7 @@ HTTP 成功、命令退出码为零、用户任务完成是三种不同结果。
 
 运行 `easy-code config defaults` 可查看完整 TOML。字符、Token、字节、时间和次数是不同单位，不能相互替代。
 
-[凭据模块](../src/config/credentials.ts) 通常通过系统 Keyring 和隐藏输入保存 API Key。密钥不应进入项目 TOML、提示词、会话日志或 Benchmark 任务卷。
+[凭据模块](../src/config/credentials.ts) 只通过系统凭据库和隐藏输入保存 API Key。普通 EASY CODE 与 Benchmark 使用不同的系统凭据服务名，各供应商条目绑定 HTTPS 端点；端点改变不会静默沿用原 Key。Linux 上明确指定 Secret Service，不使用重启后不保留的内核 Keyring 回退；系统凭据库不可用时失败关闭。不再从环境变量或 TOML 回退读取 Key。Harbor 单次任务所需的受保护临时副本不属于第二个持久配置来源。
 
 [Prompt Bundle](../resources/prompt-bundle) 将系统规则、模式提示和工具描述与可执行代码分离。构建生成版本化资源；安装通过 Manifest、哈希及兼容性检查后激活。提示词或工具说明 JSON 本身不能授予 Runtime 未开放的权限。模型/供应商配置与 Prompt Bundle 分离，见下一节。
 
@@ -122,7 +122,6 @@ Runtime 的权威模型注册表是固定路径 `~/.easy_code/models.toml`。[mo
 | --- | --- |
 | `default_model` | 启动时默认模型的别名。 |
 | `providers.<id>.base_url` / `wire_api` | HTTPS 基础端点，以及 `chat_completions` 或 `responses` 协议。 |
-| `providers.<id>.env_key` | 可能保存该供应商密钥的环境变量名；文件中不保存密钥本身。 |
 | `providers.<id>.supports_streaming` | 是否把该端点作为 SSE 流请求和解析；缺失时安全地默认为 `false`。 |
 | `providers.<id>.supports_stream_usage` | Chat Completions 流式请求是否发送 `stream_options.include_usage`；默认 `false`，内置 Qwen 和 DeepSeek 开启。Responses 直接读取终态用量。 |
 | `providers.<id>.tool_stream` | 带工具的流式 Chat Completions 请求是否发送非标准 Wire 参数 `tool_stream = true`；缺失时安全地默认为 `false`，内置 Qwen 和 GLM 端点开启。 |
@@ -258,7 +257,7 @@ Benchmark 是独立边界：可信适配器选择 [BenchmarkContainerBackend](..
 
 [uninstall/](../src/uninstall) 先生成只读清单。维护入口绕过模型注册表初始化，因此模型配置损坏不会导致检查时重建文件。CLI 只询问一次 `y`；`--yes` 表示相同授权，`--dry-run` 不执行删除。用户项目、源码工作区和共享软件不属于删除范围。
 
-[install/ownership.ts](../src/install/ownership.ts) 使用原子替换维护私有 `installation-manifest.json`。资源先登记为 `creating`，创建并核验身份后变为 `ready`；卸载只处理当前 V2 清单中已登记的资源，不通过目录扫描猜测所有权。
+[install/ownership.ts](../src/install/ownership.ts) 使用原子替换维护私有 `installation-manifest.json`。资源先登记为 `creating`，创建并核验身份后变为 `ready`；文件与目录仍只按当前 V2 清单中的归属记录删除。凭据记录仅保存系统服务名与条目名，不保存 Key。卸载覆盖内置及当前自定义供应商在普通、Benchmark 两个服务中的条目，也会删除有归属记录的已退役供应商条目。既不在配置中、也不在清单中的旧自定义条目无法自动发现；凭据删除失败会阻止后续数据与 CLI 删除。
 
 确认后取得维护锁，阻止新会话并等待现有任务、命令和快照所有者退出，不凭记录随意杀 PID。沙箱某步失败后可以继续独立的资源/集成清理，但只要仍有未完成项，就保留数据、配置、归属记录和 CLI。用户目录下、不在删除目标中的 `.easy-code-uninstall-state.json` 记录已完成及失败步骤。再次执行先重新盘点并检查实际结果，不盲信旧完成列表。
 
@@ -272,7 +271,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 
 [threads/](../src/threads) 以追加式 JSONL 保存事件序号、身份和控制记录，并执行持久化追加。事件折叠恢复会话/控制状态；租约与回合所有权防止竞争写入。恢复会保守处理损坏尾记录，而不是随意忽略日志中间的损坏。
 
-[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、严格基线 Schema、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。非空数据库只有在 Schema 身份和版本与当前基线完全一致时才会打开；Runtime 不迁移开发期数据库。仓储包括线程索引/检查点、项目记忆、来源记录、证据、摘要快照和检索状态。
+[storage/database.ts](../src/storage/database.ts) 使用 SQLite、外键、严格 Schema、忙等待和应用级锁。当前 Journal 模式是 **DELETE，不是 WAL**。仅支持一次范围明确的 V1→V2 结构升级，让现有会话继续可读并为记忆增加作用域列；旧记忆行会转为非活跃状态，不猜测其新项目归属。其他不受支持的开发期数据库身份仍被拒绝。仓储包括线程索引/检查点、全局与项目记忆、来源记录、证据、摘要快照和检索状态。
 
 当前开发协议在 [protocol/versions.ts](../src/protocol/versions.ts) 统一声明：Journal Event V2、Session State V2、Checkpoint Delta V2、语义摘要 V3、压缩元数据 V2、Worktree Descriptor V2、VS Code Bridge V2、安装清单 V2。运行路径只解析这些当前格式；版本缺失或不匹配时保留原始文件并明确拒绝恢复，不在 Agent 循环中迁移、猜测或补写不受支持的开发期状态。正常 CLI 中不存在兼容或旧路径发现模块。
 
@@ -281,7 +280,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 | 数据 | 定位 |
 | --- | --- |
 | Thread 事件 Journal | 会话与控制状态重放的权威事件历史 |
-| 项目记忆、原始工具证据 | SQLite 中的持久化主数据，并非都能从较短的会话 Journal 重建 |
+| 全局/项目记忆、原始工具证据 | SQLite 中的持久化主数据，并非都能从较短的会话 Journal 重建 |
 | Checkpoint、事件查询索引 | 恢复和查询加速结构，必须与权威事件一致 |
 | FTS、Embedding、Orama 索引 | 可以从保留的源数据重建的派生检索结构 |
 | 工作区文件、图片制品、命令归档 | 独立持久化制品，各自有生命周期和配额 |
@@ -294,7 +293,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 
 [ContextManager](../src/context/manager.ts) 和 [memory-controller.ts](../src/context/memory-controller.ts) 区分模型的活跃上下文、原始事件及留存证据。主 Agent、子 Agent、审查参与者复用上下文/检索机制，但各自拥有私有历史。
 
-| 角色 | 私有短期历史 | 项目长期记忆 |
+| 角色 | 私有短期历史 | 全局与当前项目长期记忆 |
 | --- | --- | --- |
 | 主 Agent | 自己的 Thread | 读取；经暂存、校验后写入 |
 | 子 Agent | 自己的任务、工具交互和结果 | 只读 |
@@ -315,9 +314,9 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 
 近期召回证据会暂时受到保护，避免刚展开又被折叠。Journal、证据库和命令归档各有边界，“保留”不代表无限容量，也不保证任何结果都完整保存了全部字节。
 
-### 9.3 项目长期记忆与 RAG
+### 9.3 全局/项目长期记忆与 RAG
 
-[memory/](../src/memory) 保存项目级的小型事实，分为偏好、约定、架构、决策和环境。主 Agent 的写入先暂存，再校验来源；明确用户要求或版本化源码证据用于支持持久化更新。源文件变化后，相关记忆可以被标为待验证并停止自动注入。工作摘要和 Reviewer 猜测不会自动升级为已验证长期事实。
+[memory/](../src/memory) 将跨项目用户偏好/约定与当前项目的架构、决策、环境等事实分开。项目由当前 Git 检出目录根（非 Git 项目取工作区根）标识，与 Thread ID 无关；不同物理 Worktree 有不同的项目作用域。`read_memory` 默认搜索两层，`write_memory` 默认写项目层并在回合成功时提交；`/memory long [global|project]`、`/memory move` 与 `/memory forget` 供用户查看和管理。模型写全局记忆需有当前用户明确表达的长期偏好。源文件变化后，相关项目记忆可以被标为待验证并停止自动注入，工作摘要和 Reviewer 猜测不会自动升级为已验证事实。
 
 本地检索流程：
 
@@ -325,7 +324,7 @@ Worktree 通过 Git 删除，只处理核验通过的当前布局托管目录，
 2. 分批切块保留覆盖范围，不只索引大材料的开头与结尾。
 3. 使用 SQLite FTS5 词法检索及多语言/CJK 处理。
 4. 可选地使用 Hugging Face tokenizers 和 ONNX Runtime，在本地生成 384 维 MiniLM 向量，执行池化与归一化。
-5. 融合词法/语义排序、去重、检查相关性，再按共享记忆预算注入。
+5. 分别搜索当前项目与全局记忆，带作用域标签有界合并，并在同一记忆预算内注入。少量全局偏好可在查询词不匹配时保留。
 
 固定版本的 `Xenova/paraphrase-multilingual-MiniLM-L12-v2` 有较短的单窗口输入限制，长文本通过窗口/切块处理，而不是整段会话一次嵌入。Orama 加速派生向量查询；向量缺失或生成失败退化为词法检索，不直接中止任务。
 

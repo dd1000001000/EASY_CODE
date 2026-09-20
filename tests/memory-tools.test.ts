@@ -72,6 +72,11 @@ function memoryTools(manager: MemoryManager, workspace: WorkspaceManager) {
 describe("split long-term memory tools", () => {
   it("keeps read, write, and historical recall parameters disjoint", () => {
     assert.equal(readMemoryInputSchema.safeParse({ query: "architecture" }).success, true);
+    assert.equal(readMemoryInputSchema.safeParse({ query: "preferences", scope: "global" }).success, true);
+    assert.equal(readMemoryInputSchema.safeParse({ query: "preferences", scope: "another-project" }).success, false);
+    assert.equal(writeMemoryInputSchema.safeParse({ operation: "remember", scope: "global",
+      category: "preference", content: "The user prefers brief explanations.",
+      reason: "Current user preference", sourceRefs: ["user"] }).success, true);
     assert.equal(
       readMemoryInputSchema.safeParse({ query: "architecture", operation: "remember" }).success,
       false,

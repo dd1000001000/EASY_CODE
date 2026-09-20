@@ -22,6 +22,7 @@ const MAX_MEMORY_RESULTS = 20;
 function memoryForModel(memory: Readonly<LongTermMemory>): object {
   return {
     id: memory.id,
+    scope: memory.scope,
     category: memory.category,
     content: memory.content,
     confidence: memory.confidence,
@@ -33,6 +34,7 @@ function memoryForModel(memory: Readonly<LongTermMemory>): object {
 export const readMemoryInputSchema = z.object({
   query: z.string().trim().min(1).max(MAX_MEMORY_SEARCH_CHARS),
   limit: z.number().int().min(1).max(MAX_MEMORY_RESULTS).default(6),
+  scope: z.enum(["all", "global", "project"]).default("all"),
   includeInactive: z.boolean().default(false),
 }).strict();
 
@@ -58,6 +60,7 @@ export class ReadMemoryTool implements AgentTool {
             maxLength: MAX_MEMORY_SEARCH_CHARS,
           },
           limit: { type: "integer", minimum: 1, maximum: MAX_MEMORY_RESULTS },
+          scope: { type: "string", enum: ["all", "global", "project"] },
           includeInactive: { type: "boolean" },
         },
         required: ["query"],
@@ -85,6 +88,7 @@ export class ReadMemoryTool implements AgentTool {
       }
       const memories = (await context.searchProjectMemory(parsed.query, {
         limit: parsed.limit,
+        scope: parsed.scope,
         includeInactive: parsed.includeInactive,
       })).slice(0, parsed.limit);
       this.session.record(context.turnId, memories.map((memory) => memory.id));

@@ -6,9 +6,9 @@ import type { Command } from "commander";
 import type { ProviderName } from "../core/types.js";
 import {
   PROVIDER_CATALOG,
-  providerApiKeyEnvironmentVariables,
   providerCredentialConfigKey,
 } from "../models/catalog.js";
+import { loadEasyCodeConfig } from "./loader.js";
 import {
   SystemKeyringCredentialStore,
   apiKeyConfigKey,
@@ -36,8 +36,9 @@ export interface ConfigCommandRuntime {
 }
 
 type ApiKeyStatus =
-  | { state: "configured"; source: string }
-  | { state: "unavailable-or-not-configured" };
+  | { state: "configured" }
+  | { state: "not-configured" }
+  | { state: "unavailable" };
 
 export function registerConfigCommands(
   program: Command,
@@ -84,23 +85,17 @@ export function registerConfigCommands(
     .action(async (rawKey: string) => {
       const { key, provider } = parseApiKeyConfigKey(rawKey);
       const resources = resolveRuntime(runtime);
+      const endpoint = await endpointFor(provider, resources);
       const value = await readSecretInput(
         resources.input,
         resources.errorOutput,
         `API key for ${provider}: `,
       );
-      await storeVerifiedApiKey(resources.credentialStore, provider, value);
+      await storeVerifiedApiKey(resources.credentialStore, provider, value, endpoint);
       writeLine(
         resources.output,
         `Stored ${key} in the operating system credential store.`,
       );
-      const overridingEnvironment = environmentApiKeySource(provider, resources.env);
-      if (overridingEnvironment) {
-        writeLine(
-          resources.errorOutput,
-          `Note: ${key} remains overridden by environment variable ${overridingEnvironment}.`,
-        );
-      }
     });
 
   config
@@ -133,14 +128,6 @@ export function registerConfigCommands(
         resources.output,
         `Deleted ${key} from the operating system credential store.`,
       );
-
-      const remaining = await remainingExternalSource(provider, resources);
-      if (remaining) {
-        writeLine(
-          resources.errorOutput,
-          `Note: ${key} remains configured through ${remaining}; unset does not modify that source.`,
-        );
-      }
     });
 
   config
@@ -165,6 +152,7 @@ export function registerConfigCommands(
 interface ResolvedRuntime {
   credentialStore: ApiKeyCredentialStore;
   env: NodeJS.ProcessEnv;
+  configDir: string;
   input: SecretInputStream;
   output: SecretOutputStream;
   errorOutput: SecretOutputStream;
@@ -182,6 +170,7 @@ function resolveRuntime(runtime: ConfigCommandRuntime): ResolvedRuntime {
     credentialStore:
       runtime.credentialStore ?? new SystemKeyringCredentialStore(),
     env,
+    configDir,
     input: runtime.input ?? process.stdin,
     output: runtime.output ?? process.stdout,
     errorOutput: runtime.errorOutput ?? process.stderr,
@@ -195,48 +184,31 @@ async function apiKeyStatus(
   provider: ProviderName,
   runtime: ResolvedRuntime,
 ): Promise<ApiKeyStatus> {
-  const environment = environmentApiKeySource(provider, runtime.env);
-  if (environment) {
-    return { state: "configured", source: `environment variable ${environment}` };
-  }
-
+  const endpoint = await endpointFor(provider, runtime);
   try {
-    if (await runtime.credentialStore.get(provider)) {
-      return {
-        state: "configured",
-        source: "operating system credential store",
-      };
-    }
+    return await runtime.credentialStore.get(provider, endpoint)
+      ? { state: "configured" } : { state: "not-configured" };
   } catch {
-    // A read error and an absent entry cannot be distinguished reliably by all
-    // supported native backends. Keep the public status deliberately ambiguous.
+    return { state: "unavailable" };
   }
-
-  return { state: "unavailable-or-not-configured" };
 }
 
-async function remainingExternalSource(
+async function endpointFor(
   provider: ProviderName,
   runtime: ResolvedRuntime,
-): Promise<string | undefined> {
-  const environment = environmentApiKeySource(provider, runtime.env);
-  if (environment) return `environment variable ${environment}`;
-  return undefined;
-}
-
-function environmentApiKeySource(
-  provider: ProviderName,
-  env: NodeJS.ProcessEnv,
-): string | undefined {
-  const names = providerApiKeyEnvironmentVariables(provider);
-  return names.find((name) => Boolean(env[name]?.trim()));
+): Promise<string> {
+  const config = await loadEasyCodeConfig({
+    env: runtime.env, configDir: runtime.configDir,
+    userConfigPath: runtime.userConfigPath, credentialStore: false,
+  });
+  return config.providers[provider]!.baseUrl;
 }
 
 function formatStatus(key: ApiKeyConfigKey, status: ApiKeyStatus): string {
   if (status.state === "configured") {
-    return `${key}=[configured] (${status.source})`;
+    return `${key}=[configured] (operating system credential store)`;
   }
-  return `${key}=[unavailable or not configured]`;
+  return `${key}=[${status.state === "unavailable" ? "credential store unavailable" : "not configured for this endpoint"}]`;
 }
 
 function writeLine(output: SecretOutputStream, value: string): void {

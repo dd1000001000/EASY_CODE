@@ -5,7 +5,6 @@ import path from "node:path";
 
 import {
   ACTIVE_MODEL_REGISTRY_HASH,
-  ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES,
   DEFAULT_MODEL_IDS,
   PACKAGED_MODEL_REGISTRY_SOURCE,
   PROVIDER_CATALOG,
@@ -48,7 +47,7 @@ describe("user model registry", () => {
     assert.equal(DEFAULT_MODEL_IDS.qwen, "qwen3.7-max");
     assert.equal(modelsForProvider("kimi")[0]?.id, "k3");
     assert.equal(modelVisionSupport("qwen", "qwen3-coder-plus"), "unsupported");
-    assert.ok(ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES.includes("KIMI_API_KEY"));
+    assert.equal("apiKey" in providerCatalogEntry("kimi").environment, false);
     assert.match(ACTIVE_MODEL_REGISTRY_HASH, /^sha256:[a-f0-9]{64}$/u);
   });
 

@@ -91,7 +91,7 @@ the package has not been installed globally.
 
 ```powershell
 npm run build
-easy-code config set glm-coding-plan.api-key
+easy-code benchmark credential set glm-coding-plan
 easy-code benchmark swe-bench setup
 easy-code benchmark swe-bench doctor
 ```
@@ -116,11 +116,11 @@ not cut off by the default setup deadline.
 
 ## Provider credential handling
 
-The integrated runner reads only the `env_key`/aliases and credential slot of
+The integrated runner reads only the Benchmark credential-store namespace for
 the provider selected by the active benchmark profile. With the bundled
-profile this means `GLM_CODING_PLAN_API_KEY` or the separate key saved by
-`easy-code config set glm-coding-plan.api-key`; standard GLM and Coding Plan
-keys remain intentionally independent.
+profile, configure it using `easy-code benchmark credential set glm-coding-plan`.
+Ordinary EASY CODE, standard GLM, and Benchmark keys remain independent;
+environment variables and ordinary CLI credentials are not fallback sources.
 Before Harbor starts, the launcher places the key in a random, ACL-protected
 file under the F-drive benchmark root. Harbor receives only that path, not the
 credential value. The temporary host file is removed when the run exits.

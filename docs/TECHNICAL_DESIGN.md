@@ -87,7 +87,7 @@ A successful HTTP response, a command exit code of zero, and a completed user ta
 
 ## 4. Configuration, prompts and credentials
 
-[loader.ts](../src/config/loader.ts) combines defaults, user configuration, safe project configuration, credentials/environment and CLI overrides. User configuration lives under the OS-specific EASY CODE config directory; project overrides use `.easycode/config.toml`. CLI and environment settings can override stored values.
+[loader.ts](../src/config/loader.ts) combines defaults, user configuration, safe project configuration, non-secret environment settings, and endpoint-bound OS credentials. User configuration lives under the OS-specific EASY CODE config directory; project overrides use `.easycode/config.toml`. CLI and environment settings can override non-secret values, but cannot supply an API key.
 
 Project configuration is restricted: it cannot silently supply credentials or redirect private Runtime storage and other protected settings. Operational limits are grouped under `[limits]`, including nested effort-based step, concurrency and timeout settings. Unknown or obsolete limit fields are rejected rather than silently ignored.
 
@@ -106,7 +106,7 @@ Selected operational defaults (other module-specific budgets are explained below
 
 Use `easy-code config defaults` for the complete TOML representation. Character, Token, byte, time and count budgets are deliberately distinct units.
 
-Provider API keys are managed through the [credential layer](../src/config/credentials.ts), normally using the OS keyring and hidden terminal input. They do not belong in project TOML, prompts, thread logs or benchmark task volumes.
+Provider API keys are managed only through the [credential layer](../src/config/credentials.ts) and hidden terminal input. Ordinary EASY CODE and Benchmark use separate OS credential-store service names, each with provider-specific entries bound to an HTTPS endpoint. A changed endpoint does not silently inherit its previous key. On Linux, the native binding is pinned to Secret Service rather than its nonpersistent kernel-keyring fallback; an unavailable store fails closed. No API-key environment or TOML fallback is used. Harbor receives a protected, one-shot temporary copy for a trial, not another persistent configuration source.
 
 The [prompt bundle](../resources/prompt-bundle) separates system instructions, mode prompts and tool descriptions from executable logic. The build produces versioned resources; installation validates manifests, hashes and compatibility before activation. A prompt or tool-description JSON file cannot grant a capability that Runtime has not exposed. Model/provider configuration is intentionally separate and is described below.
 
@@ -122,7 +122,6 @@ The authoritative runtime registry is the fixed user file `~/.easy_code/models.t
 | --- | --- |
 | `default_model` | Alias of the initial model. |
 | `providers.<id>.base_url` / `wire_api` | HTTPS base endpoint and `chat_completions` or `responses` protocol. |
-| `providers.<id>.env_key` | Name of the environment variable that may contain this provider's key; the key itself is never stored here. |
 | `providers.<id>.supports_streaming` | Whether this endpoint is requested and parsed as an SSE stream. Missing values fail safely to `false`. |
 | `providers.<id>.supports_stream_usage` | Whether Chat Completions streaming requests send `stream_options.include_usage`. Defaults to `false`; enabled for packaged Qwen and DeepSeek endpoints. Responses uses terminal-event usage instead. |
 | `providers.<id>.tool_stream` | Whether streamed Chat Completions requests containing tools send the non-standard `tool_stream = true` wire flag. Missing values fail safely to `false`; packaged Qwen and GLM endpoints enable it. |
@@ -258,7 +257,7 @@ Test-runner discovery reads manifests through the backend's workspace mapping an
 
 [uninstall/](../src/uninstall) builds a read-only plan before changing anything. The maintenance route bypasses model-registry initialization, so a broken model configuration cannot recreate files or prevent inspection. The CLI asks once for `y`; `--yes` carries the same consent and `--dry-run` never executes removal. User projects, source checkouts and shared software remain outside deletion scope.
 
-[install/ownership.ts](../src/install/ownership.ts) atomically writes a versioned `installation-manifest.json` for current-user data, configuration, cache, credentials and extensions. Resource creation uses explicit `creating → ready` states and records filesystem identity before a path can authorize deletion. Unsupported manifest versions block normal uninstall without mutation.
+[install/ownership.ts](../src/install/ownership.ts) atomically writes a versioned `installation-manifest.json` for current-user data, configuration, cache, credentials and extensions. Resource creation uses explicit `creating → ready` states and records filesystem identity before a path can authorize deletion. Credential receipts name the exact OS service and account without secret values. Uninstall targets ordinary and Benchmark services for packaged and current custom providers, plus recorded retired-provider accounts. Unknown custom-provider slots absent from both registry and manifest cannot be discovered. A failed credential deletion blocks data and CLI removal; unsupported manifest versions also block normal uninstall without mutation.
 
 Confirmation obtains a maintenance lock, prevents new sessions and waits for existing task/command/snapshot owners. It never kills arbitrary recorded PIDs. Independent resource/integration cleanup steps may continue after a sandbox failure, but data, configuration, ownership records and CLI removal are withheld while any cleanup remains unresolved. The per-user `.easy-code-uninstall-state.json`, outside deletion targets, records completed and failed steps. Reinvocation performs a fresh inventory and checks postconditions rather than blindly trusting an old completed list.
 
@@ -272,7 +271,7 @@ Uninstall does not enumerate or mutate container engines, WSL distributions, Doc
 
 [threads/](../src/threads) stores append-only JSONL events with sequence/identity information and durable append behavior. Event folding reconstructs conversation and control state; leases and turn ownership prevent competing writers. Recovery handles a damaged trailing record conservatively rather than ignoring arbitrary interior corruption.
 
-[storage/database.ts](../src/storage/database.ts) uses SQLite with foreign keys, a strict baseline schema, a busy timeout and application locking. The current journal mode is **DELETE, not WAL**. A non-empty database is opened only when its schema identity and version exactly match the current baseline; Runtime does not migrate development databases. Repositories cover thread indexes/checkpoints, project memory, provenance, evidence, summary snapshots and retrieval state.
+[storage/database.ts](../src/storage/database.ts) uses SQLite with foreign keys, a strict schema, a busy timeout and application locking. The current journal mode is **DELETE, not WAL**. A narrow V1-to-V2 schema upgrade keeps existing sessions readable and adds the memory-scope column; old memory rows are made inactive rather than guessed into a new project scope. Unsupported development database identities are still rejected. Repositories cover thread indexes/checkpoints, global and project memory, provenance, evidence, summary snapshots and retrieval state.
 
 The current development protocol set is declared centrally in [protocol/versions.ts](../src/protocol/versions.ts): Journal Event V2, Session State V2, Checkpoint Delta V2, semantic summary V3, compaction metadata V2, Worktree Descriptor V2, VS Code Bridge V2 and installation manifest V2. Runtime paths parse only these current formats. Missing or mismatched versions preserve the source files and reject recovery explicitly; the agent loop does not migrate, infer or patch unsupported development state. There is no compatibility or retired-path discovery module in the normal CLI.
 
@@ -281,7 +280,7 @@ The storage layers do not all have the same recoverability:
 | Data | Role |
 | --- | --- |
 | Thread event Journal | Authoritative event history for conversation/control replay |
-| Project-memory records, raw captured evidence | Durable primary data in SQLite; not all reproducible from a shortened conversation Journal |
+| Global/project-memory records, raw captured evidence | Durable primary data in SQLite; not all reproducible from a shortened conversation Journal |
 | Checkpoints and event-query indexes | Recovery/query accelerators; must agree with authoritative events |
 | FTS/embedding/Orama indexes | Derived retrieval structures that can be rebuilt from retained source data |
 | Workspace files, image artifacts, command archives | Separate durable artifacts with their own lifetime and quota constraints |
@@ -294,7 +293,7 @@ Clearing active context does not delete these stores. `/clear` affects terminal 
 
 [ContextManager](../src/context/manager.ts) and [memory-controller.ts](../src/context/memory-controller.ts) distinguish active model context from canonical events and retained evidence. Main agents, children and review participants reuse the context/retrieval mechanisms but have separate private histories.
 
-| Actor | Private short-term history | Project long-term memory |
+| Actor | Private short-term history | Global and current-project long-term memory |
 | --- | --- | --- |
 | Main agent | Own thread | Read; staged, validated writes |
 | Child agent | Own assignment, tools and results | Read only |
@@ -315,9 +314,9 @@ Recent native reasoning remains part of the active exchange where required. Olde
 
 Recent recalled evidence is temporarily protected against immediate re-folding. Journal capture, evidence storage and command archives have different bounds; “retained” does not mean unlimited or always byte-complete.
 
-### 9.3 Project memory and RAG
+### 9.3 Global/project memory and RAG
 
-[memory/](../src/memory) stores small project-scoped facts in preference, convention, architecture, decision and environment categories. Main-agent writes are staged and provenance-checked; user requests or versioned source evidence support durable updates. Stale source-backed memories can be withheld pending verification. Summaries and reviewer guesses do not automatically become verified long-term facts.
+[memory/](../src/memory) separates cross-project user preferences/conventions from current-project facts, including architecture, decisions and environment. The current Git checkout root (or non-Git workspace root) identifies the project independently of Thread IDs; a different physical Worktree has a different project scope. `read_memory` searches both scopes by default, while `write_memory` defaults to project scope and stages mutations until turn success. `/memory long [global|project]`, `/memory move` and `/memory forget` expose the scopes to the user. Explicit user preferences are required for model-proposed global writes. Stale source-backed project memories can be withheld pending verification; summaries and reviewer guesses are not verified facts.
 
 The local retrieval pipeline is:
 
@@ -325,7 +324,7 @@ The local retrieval pipeline is:
 2. Chunk the source in bounded batches; preserve coverage instead of indexing only a large document's beginning/end.
 3. Run SQLite FTS5 lexical retrieval, with multilingual/CJK handling.
 4. Optionally generate local 384-dimensional MiniLM embeddings using Hugging Face tokenizers and ONNX Runtime; pool/normalize model output.
-5. Fuse lexical/semantic results, deduplicate, check relevance and inject within the shared memory budget.
+5. Search current-project and global memory separately, merge bounded results with source labels, and inject them within one shared memory budget. A small global preference subset can remain available even when it lacks query terms.
 
 The pinned `Xenova/paraphrase-multilingual-MiniLM-L12-v2` model has a short per-window input limit; longer text is handled through windows/chunks, not by sending an entire agent transcript into one embedding. Orama accelerates derived vector lookup. Missing or failed embeddings degrade to lexical retrieval, not task failure.
 

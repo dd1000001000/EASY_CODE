@@ -143,8 +143,16 @@ async function readTomlLayer(configPath: string): Promise<EasyCodeConfigLayer> {
   }
 
   try {
+    const document = parseToml(source) as unknown;
+    if (isRecord(document) && isRecord(document.providers) &&
+        Object.values(document.providers).some(value => isRecord(value) && "api_key" in value)) {
+      throw new EasyCodeConfigError(
+        `Provider API keys in TOML are no longer supported: ${configPath}. Remove api_key and use easy-code config set <provider>.api-key.`,
+        configPath,
+      );
+    }
     return normalizeCurrentTomlConfig(
-      parseToml(source) as unknown,
+      document,
       PROVIDER_CATALOG.map(({ provider }) => provider),
       DEFAULT_RUNTIME_LIMITS,
     );
@@ -165,7 +173,6 @@ function assertSafeWorkspaceLayer(
   const forbidden: string[] = [];
   if (layer.approvalModel !== undefined) forbidden.push("approval_model");
   for (const [provider, providerLayer] of Object.entries(layer.providers ?? {})) {
-    if (providerLayer.apiKey !== undefined) forbidden.push(`providers.${provider}.api_key`);
     if (providerLayer.baseUrl !== undefined) forbidden.push(`providers.${provider}.base_url`);
   }
   if (layer.configDir !== undefined) forbidden.push("config_dir");
@@ -224,7 +231,6 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
     PROVIDER_CATALOG.map(({ provider }) => {
       const names = providerEnvironment(provider);
       return [provider, compact({
-        apiKey: envValue(env, ...names.apiKey),
         baseUrl: envValue(env, ...names.baseUrl),
         model: envValue(env, ...names.model),
         timeoutMs: envInteger(env, ...names.timeoutMs),
@@ -251,19 +257,13 @@ function environmentLayer(env: NodeJS.ProcessEnv): EasyCodeConfigLayer {
 
 async function credentialLayer(
   store: ApiKeyCredentialStore | false,
-  environment: EasyCodeConfigLayer,
+  config: EasyCodeConfig,
 ): Promise<EasyCodeConfigLayer> {
   if (store === false) return {};
 
-  const read = async (
-    provider: ProviderName,
-    environmentValue: unknown,
-  ): Promise<string | undefined> => {
-    // An environment key has highest priority and avoids touching the system
-    // credential store at all for that provider.
-    if (environmentValue !== undefined) return undefined;
+  const read = async (provider: ProviderName): Promise<string | undefined> => {
     try {
-      return await store.get(provider);
+      return await store.get(provider, config.providers[provider]?.baseUrl);
     } catch {
       // Starting the agent should remain possible on headless/keyring-less
       // systems. The config command reports keyring failures explicitly.
@@ -274,7 +274,7 @@ async function credentialLayer(
   const entries = await Promise.all(
     PROVIDER_CATALOG.map(async ({ provider }) => [
       provider,
-      compact({ apiKey: await read(provider, environment.providers?.[provider]?.apiKey) }),
+      compact({ apiKey: await read(provider) }),
     ] as const),
   );
   return { providers: Object.fromEntries(entries) };
@@ -305,8 +305,8 @@ function validationMessage(error: ZodError): string {
 }
 
 /**
- * Load defaults, user TOML, workspace TOML, system credentials, and finally
- * environment values. Explicit path options are applied last.
+ * Load non-secret configuration first, then bind system credentials to each
+ * provider's effective endpoint. Explicit path options are applied last.
  * Explicit loader path/workspace options determine where configuration is found.
  */
 export async function loadEasyCodeConfig(
@@ -352,16 +352,13 @@ export async function loadEasyCodeConfig(
   ]);
   assertSafeWorkspaceLayer(workspaceLayer, workspaceConfigPath);
   const environment = environmentLayer(env);
-  const credentials = await credentialLayer(
-    options.credentialStore ?? new SystemKeyringCredentialStore(),
-    environment,
-  );
-
   let config = createDefaultEasyCodeConfig(workspaceRoot, paths);
   config = applyLayer(config, userLayer);
   config = applyLayer(config, workspaceLayer);
-  config = applyLayer(config, credentials);
   config = applyLayer(config, environment);
+  config = applyLayer(config, await credentialLayer(
+    options.credentialStore ?? new SystemKeyringCredentialStore(), config,
+  ));
   config = applyLayer(
     config,
     compact({

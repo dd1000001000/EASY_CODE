@@ -8,7 +8,7 @@ EASY CODE is a local CLI coding agent. Its bundled model registry includes Qwen,
 
 - Auto / Plan / Code modes, with interactive sessions and one-shot tasks.
 - File editing, command approval, test verification and diff display.
-- Saved sessions, Resume, context management and project memory.
+- Saved sessions, Resume, context management, and global user/project memory.
 - Reusable user and project Skills that the agent can discover, read and maintain.
 - Optional DAG / child-agent collaboration, vision-model image input and VS Code terminal integration.
 
@@ -36,7 +36,7 @@ easy-code config set qwen.api-key
 easy-code --workspace /path/to/project
 ```
 
-The first installation creates `~/.easy_code/models.toml`. Edit that file to maintain provider endpoints, credential environment-variable names, wire protocol (`chat_completions` or `responses`), endpoint streaming and `tool_stream` support, model IDs, context windows, vision/tool/reasoning capabilities and the benchmark profile. EASY CODE validates it at startup and never overwrites an existing copy. API keys remain in the OS credential store or the configured environment variable; do not put them in `models.toml`.
+The first installation creates `~/.easy_code/models.toml`. Edit that file to maintain provider endpoints, wire protocol (`chat_completions` or `responses`), endpoint streaming and `tool_stream` support, model IDs, context windows, vision/tool/reasoning capabilities and the benchmark profile. EASY CODE validates it at startup and never overwrites an existing copy. Provider API keys are stored only in the OS credential store, bound to their provider endpoint; environment variables and TOML are not key sources. Benchmark keys use a separate credential-store namespace and are set with `easy-code benchmark credential set <provider>`.
 
 Select a model, then describe a task, such as “Fix the login error and run the relevant tests.”
 
@@ -89,7 +89,7 @@ easy-code uninstall --dry-run
 easy-code uninstall
 ~~~
 
-Uninstall asks once: enter `y` to remove current-user configuration, stored API keys, history/memory, caches, terminal integration, managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. User projects, linked source checkouts, Benchmark projects and shared system software are preserved. On Windows, the upstream native sandbox accounts are shared OS infrastructure and are not owned or removed by EASY CODE.
+Uninstall asks once: enter `y` to remove current-user configuration, ordinary and Benchmark API-key entries, history/memory, caches, terminal integration, managed Worktrees and the global CLI. `--yes` confirms the same plan without prompts; `--dry-run` shows every target. User projects, linked source checkouts, Benchmark projects and shared system software are preserved. On Windows, the upstream native sandbox accounts are shared OS infrastructure and are not owned or removed by EASY CODE.
 
 More: [Configuration example](./docs/config.example.toml) · [Architecture and module documentation](./docs/TECHNICAL_DESIGN.md) · [Benchmark guide](./benchmarks/swebench_verified/README.md)
 

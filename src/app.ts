@@ -86,6 +86,7 @@ import {
 } from "./images/index.js";
 import { LocalEmbeddingModel } from "./memory/embedding-model.js";
 import { MemoryManager } from "./memory/memory-manager.js";
+import { projectMemoryIdFromRoot } from "./memory/memory-manager.js";
 import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
 import { formatPlanProposal } from "./plans/plan.js";
@@ -99,7 +100,6 @@ import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
   modelsForProvider,
-  providerApiKeyEnvironmentVariables,
   providerLabel,
   requireCatalogModel,
   requireVisionModel,
@@ -636,17 +636,6 @@ export class EasyCodeApp {
       trustedOuterSandbox,
     );
     const benchmarkProvider = sweBenchVerified50Profile().provider;
-    const [benchmarkApiKeyEnvironment] =
-      providerApiKeyEnvironmentVariables(benchmarkProvider);
-    if (!benchmarkApiKeyEnvironment) {
-      throw new Error(`${benchmarkProvider} has no configured API-key environment variable`);
-    }
-    const configEnvironment = harborProviderApiKey
-      ? {
-          ...process.env,
-          [benchmarkApiKeyEnvironment]: harborProviderApiKey,
-        }
-      : process.env;
     // Library consumers do not pass through CLI main(), so activate the same
     // verified immutable Bundle here as well. This is idempotent.
     await ensurePromptBundle();
@@ -656,9 +645,9 @@ export class EasyCodeApp {
       : options.credentialStore ?? new SystemKeyringCredentialStore();
     let config = await loadEasyCodeConfig({
       workspaceRoot: options.workspaceRoot,
-      env: configEnvironment,
-      credentialStore: credentialStore ?? false,
+      credentialStore: harborProviderApiKey ? false : credentialStore ?? false,
     });
+    if (harborProviderApiKey) config.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
     const terminal = options.terminal ?? new Terminal();
     if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
 
@@ -680,9 +669,9 @@ export class EasyCodeApp {
         );
         const discoveredConfig = await loadEasyCodeConfig({
           workspaceRoot: savedWorkspace,
-          env: configEnvironment,
-          credentialStore: credentialStore ?? false,
+          credentialStore: harborProviderApiKey ? false : credentialStore ?? false,
         });
+        if (harborProviderApiKey) discoveredConfig.providers[benchmarkProvider]!.apiKey = harborProviderApiKey;
         if (!samePath(discoveredConfig.dataDir, config.dataDir)) {
           throw new Error(
             `Thread ${options.resumeThreadId} resolves to a different EASY CODE data directory. ` +
@@ -1768,6 +1757,7 @@ export class EasyCodeApp {
       { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
     );
     const workspaceId = workspaceIdFromRoot(this.workspace.root);
+    const projectMemoryId = projectMemoryIdFromRoot(this.workspace.root);
     const commandRuntime = this.createCommandRuntime(this.workspace);
     const commandOwner = {
       threadId: this.state.threadId,
@@ -1811,9 +1801,11 @@ export class EasyCodeApp {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.workspace.getManifestSummary()),
-      searchMemories: async (query, options) => this.memoryManager.searchHybrid(workspaceId, query,
+      searchMemories: async (query, options) => this.memoryManager.searchScoped(projectMemoryId, query,
         { workspaceRoot: this.workspace.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
-          includeInactive: options?.includeInactive }),
+          includeInactive: options?.includeInactive, scope: options?.scope,
+          includeGlobalPreferences: options === undefined }),
+      memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
       captureToolEvidence: (state, callId, tool, result) =>
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
       readToolEvidence: (state, id, offset, limit) =>
@@ -2301,6 +2293,7 @@ export class EasyCodeApp {
       }
       const toolCatalog = await childToolCatalog.snapshot();
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
+      const projectMemoryId = projectMemoryIdFromRoot(this.workspace.root);
       const assignment = json({
         agentId: request.record.id,
         childThreadId: request.record.childThreadId,
@@ -2391,12 +2384,14 @@ export class EasyCodeApp {
         readToolEvidence: (state, id, offset, limit) =>
           this.memoryManager.evidenceStore.read(workspaceId, state.threadId, id, offset, limit),
         searchMemories: async (query, options) =>
-          this.memoryManager.searchHybrid(
-            workspaceId,
+          this.memoryManager.searchScoped(
+            projectMemoryId,
             `${request.task.title}\n${request.task.description}\n${query}`,
             { workspaceRoot: childWorkspace?.root, limit: options?.limit ?? this.config.limits.memorySearchLimit,
-              includeInactive: options?.includeInactive, readOnly: true },
+              includeInactive: options?.includeInactive, readOnly: true, scope: options?.scope,
+              includeGlobalPreferences: options === undefined },
           ),
+        memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
         getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
           const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
           const hits = await this.contextArtifactIndex.search(
@@ -3344,8 +3339,8 @@ export class EasyCodeApp {
     if (this.config.providers[provider]?.apiKey) return true;
     if (!this.credentialStore) {
       throw new Error(
-        `No ${provider} API key is configured, and the system credential store is unavailable. ` +
-          `Run easy-code config set ${apiKeyConfigKey(provider)} or set the corresponding environment variable.`,
+          `No ${provider} API key is configured, and the system credential store is unavailable. ` +
+          `Run easy-code config set ${apiKeyConfigKey(provider)}.`,
       );
     }
     this.terminal.info(`No API key is configured for ${providerLabel(provider)}.`);
@@ -3361,7 +3356,9 @@ export class EasyCodeApp {
       }
       throw error;
     }
-    const normalized = await storeVerifiedApiKey(this.credentialStore, provider, value);
+    const normalized = await storeVerifiedApiKey(
+      this.credentialStore, provider, value, this.config.providers[provider]?.baseUrl,
+    );
     this.config.providers[provider]!.apiKey = normalized;
     this.terminal.success(
       `Saved ${apiKeyConfigKey(provider)} to the operating system credential store.`,
@@ -4091,11 +4088,9 @@ export class EasyCodeApp {
 
   private requireProviderApiKey(provider: ProviderName): void {
     if (this.config.providers[provider]?.apiKey) return;
-    const environment = providerApiKeyEnvironmentVariables(provider).join(" or ");
     throw new Error(
       `No ${provider} API key is configured. Run ` +
-      `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), ` +
-      `or set the ${environment} environment variable, then restart EASY CODE.`,
+      `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), then restart EASY CODE.`,
     );
   }
 
@@ -4575,22 +4570,49 @@ export class EasyCodeApp {
       return;
     }
 
-    if (kind === "long" && args.length <= 2) {
-      const memories = this.memoryManager.list(workspaceIdFromRoot(this.workspace.root), {
+    if (kind === "long" && args.length <= 3) {
+      const projectId = projectMemoryIdFromRoot(this.workspace.root);
+      const scope = args[1] === "global" || args[1] === "project" || args[1] === "all"
+        ? args[1] : "all";
+      const id = scope === "all" && args[1] !== "all" ? args[1] : args[2];
+      const memories = this.memoryManager.listScoped(projectId, scope, {
         limit: 500,
         status: "all",
       });
-      if (args[1]) {
-        const memory = memories.find((entry) => entry.id === args[1]);
-        if (!memory) throw new Error(`Long-term memory not found: ${args[1]}`);
+      if (id) {
+        const memory = memories.find((entry) => entry.id === id);
+        if (!memory) throw new Error(`Long-term memory not found: ${id}`);
         this.terminal.write(`${json(memory)}\n`);
       } else {
-        this.terminal.write(memories.length ? `${json(memories)}\n` : "This workspace has no long-term memories.\n");
+        this.terminal.write(memories.length ? `${json({ global: memories.filter(memory => memory.scope === "global"),
+          project: memories.filter(memory => memory.scope === "project") })}\n`
+          : "No long-term memories in the selected scope.\n");
       }
       return;
     }
 
-    throw new Error("Usage: /memory short [limit] | /memory long [id]");
+    if ((kind === "move" && args.length === 3) || (kind === "forget" && args.length === 2)) {
+      const projectId = projectMemoryIdFromRoot(this.workspace.root);
+      const memory = this.memoryManager.getAccessible(projectId, args[1]!);
+      if (!memory) throw new Error(`Long-term memory not found: ${args[1]}`);
+      const mutation = kind === "move"
+        ? { action: "move" as const, memoryId: memory.id,
+            scope: args[2] as "global" | "project", reason: "Explicit /memory move command" }
+        : { action: "forget" as const, memoryId: memory.id, scope: memory.scope,
+            reason: "Explicit /memory forget command" };
+      if (kind === "move" && (args[2] !== "global" && args[2] !== "project" || args[2] === memory.scope)) {
+        throw new Error("Usage: /memory move <id> <global|project> (target must differ from current scope)");
+      }
+      const result = this.memoryManager.applyModelMutations({
+        workspaceRoot: this.workspace.root, threadId: this.state.threadId,
+        turnId: this.state.activeTurnId ?? createId("turn"), outcome: "success",
+        mutations: [mutation],
+      });
+      this.terminal.info(`${kind === "move" ? "Moved" : "Expired"} memory ${memory.id} (${result.applied} change).`);
+      return;
+    }
+
+    throw new Error("Usage: /memory short [limit] | /memory long [global|project] [id] | /memory move <id> <global|project> | /memory forget <id>");
   }
 
   private printSessions(): void {

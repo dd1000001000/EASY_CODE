@@ -2,7 +2,7 @@
 # Generate the current defaults with: easy-code config defaults
 # All TOML keys use snake_case. Unknown keys are errors.
 # Provider/model metadata lives in the fixed user file ~/.easy_code/models.toml.
-# It includes endpoints, credential environment names, wire protocols, exact
+# It includes endpoints, wire protocols, exact
 # model IDs, labels and capabilities. EASY CODE validates it on every startup
 # and never overwrites an existing copy. API keys do not belong in that file.
 # Provider overrides use the single [providers.<id>] namespace. Workspace
@@ -183,7 +183,7 @@ low = 300000
 medium = 450000
 high = 600000
 
-# User-level provider overrides (credentials are better kept in the OS keyring).
+# User-level provider overrides (API keys are stored only in the OS credential store).
 [providers.qwen]
 # base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 # model = "qwen3.7-plus"

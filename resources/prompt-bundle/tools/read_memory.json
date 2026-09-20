@@ -1,11 +1,12 @@
 {
   "id": "read_memory",
   "contractVersion": "1.0.0",
-  "description": "Search read-only workspace-scoped long-term memory. Results are durable project facts or preferences, not current-file verification. Use recall_context instead for archived tool output and historical messages.",
+  "description": "Search read-only global user memory and current-project memory. Results are durable preferences or project facts, not current-file verification. Use recall_context for archived tool output and historical messages.",
   "propertyDescriptions": {
-    "query": "A concise query describing the durable project fact or preference to retrieve.",
+    "query": "A concise query describing the durable fact or preference to retrieve.",
     "limit": "Maximum returned memories, from 1 to 20.",
+    "scope": "all (default), global user memory, or current-project memory. The model cannot select another project.",
     "includeInactive": "Include superseded and expired audit-history entries. Leave false for ordinary work."
   },
-  "guidance": "Use read_memory for long-term project memory only. Search before revise or forget so write_memory receives an ID returned in the same turn. Do not treat a remembered fact as proof of the current checkout; inspect current files or run validation when freshness matters. Use search_context and recall_context for current-thread history."
+  "guidance": "Use read_memory for global user and current-project long-term memory. Search before revise, forget, or move so write_memory receives an ID returned in the same turn. Each result names its scope. Do not treat a remembered fact as proof of the current checkout; inspect current files or run validation when freshness matters. Use search_context and recall_context for current-thread history."
 }

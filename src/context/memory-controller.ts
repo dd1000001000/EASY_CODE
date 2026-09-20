@@ -75,12 +75,16 @@ export function selectMemoryContext(input: {
     const { memory, hit } = candidate;
     if (memory && (!["active", "needs_verification"].includes(memory.status) || isTransientMemory(memory.content))) { dropped.stale += 1; continue; }
     // Exact evidence is deduplicated; near-matches/negations/version changes are not merged.
-    if (input.queries && candidate.relevance < limits.memoryMinRelevantTerms) { dropped.budget += 1; continue; }
+    const standingGlobalPreference = memory?.scope === "global" &&
+      (memory.category === "preference" || memory.category === "convention");
+    if (input.queries && candidate.relevance < limits.memoryMinRelevantTerms && !standingGlobalPreference) {
+      dropped.budget += 1; continue;
+    }
     if (!hit?.metadata?.fileHash && candidate.content.length >= 16 && present.some((text) => text.includes(candidate.content))) {
       dropped.duplicate += 1; continue;
     }
     if (memory) {
-      if (take(`text:${sha256(memory.content)}`, JSON.stringify({ id: memory.id, category: memory.category,
+      if (take(`text:${sha256(memory.content)}`, JSON.stringify({ id: memory.id, scope: memory.scope, category: memory.category,
         content: memory.content, status: memory.status }))) memories.push(memory);
       continue;
     }

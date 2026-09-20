@@ -392,11 +392,14 @@ export type LongTermMemoryCategory =
   | "decision"
   | "environment";
 
+export type LongTermMemoryScope = "global" | "project";
+
 export const MAX_MEMORY_MUTATIONS_PER_TURN = 8;
 
 export type MemoryMutationRequest = (
   | {
       action: "remember";
+      scope?: LongTermMemoryScope;
       category: LongTermMemoryCategory;
       content: string;
       reason: string;
@@ -404,6 +407,7 @@ export type MemoryMutationRequest = (
   | {
       action: "revise";
       memoryId: string;
+      scope?: LongTermMemoryScope;
       category: LongTermMemoryCategory;
       content: string;
       reason: string;
@@ -411,6 +415,13 @@ export type MemoryMutationRequest = (
   | {
       action: "forget";
       memoryId: string;
+      scope?: LongTermMemoryScope;
+      reason: string;
+    }
+  | {
+      action: "move";
+      memoryId: string;
+      scope: LongTermMemoryScope;
       reason: string;
     }) & { sourceRefs?: string[] };
 
@@ -504,7 +515,8 @@ export interface ToolContext {
   recallContext?: (input: { evidenceId: string; offset: number; limit: number }) => Promise<ToolExecutionResult>;
   searchProjectMemory?: (
     query: string,
-    options?: { readonly limit?: number; readonly includeInactive?: boolean },
+    options?: { readonly limit?: number; readonly includeInactive?: boolean;
+      readonly scope?: "all" | LongTermMemoryScope },
   ) => Promise<ReadonlyArray<Readonly<LongTermMemory>>>;
   recordCommand?: (entry: CommandAuditEntry) => void;
   attachImage?: (input: {
@@ -927,6 +939,7 @@ export interface EventRecord {
 export interface LongTermMemory {
   id: string;
   workspaceId: string;
+  scope: LongTermMemoryScope;
   category: LongTermMemoryCategory;
   content: string;
   confidence: number;

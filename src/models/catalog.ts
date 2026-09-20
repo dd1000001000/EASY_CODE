@@ -25,7 +25,6 @@ export interface ModelCatalogEntry {
 }
 
 export interface ProviderEnvironmentCatalog {
-  readonly apiKey: readonly string[];
   readonly baseUrl: readonly string[];
   readonly model: readonly string[];
   readonly timeoutMs: readonly string[];
@@ -107,8 +106,10 @@ const providerSchema = z.object({
     const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
   }, "must be an HTTPS URL without credentials, query, or fragment"),
-  env_key: envSchema,
-  accepted_env_keys: z.array(envSchema).default([]),
+  // Old model registries may contain these inert names. They are never read
+  // as credential sources; the native store is the only persistent authority.
+  env_key: envSchema.optional(),
+  accepted_env_keys: z.array(envSchema).optional(),
   wire_api: z.enum(["chat_completions", "responses"]),
   // Optional wire features are disabled unless the registry explicitly opts in.
   supports_streaming: z.boolean().default(false),
@@ -200,15 +201,6 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
   const defaultEntry = parsed.data.models[parsed.data.default_model];
   if (!defaultEntry) throw new Error(`default_model ${parsed.data.default_model} is not defined`);
 
-  const credentialEnvironmentOwners = new Map<string, string>();
-  for (const [provider, value] of Object.entries(parsed.data.providers)) {
-    for (const environmentName of [value.env_key, ...value.accepted_env_keys]) {
-      const owner = credentialEnvironmentOwners.get(environmentName);
-      if (owner) throw new Error(`Credential environment variable ${environmentName} is shared by providers ${owner} and ${provider}`);
-      credentialEnvironmentOwners.set(environmentName, provider);
-    }
-  }
-
   const providers = Object.entries(parsed.data.providers).map(([provider, value]) => {
     const models = modelsByProvider.get(provider) ?? [];
     if (models.length === 0) throw new Error(`Provider ${provider} has no models`);
@@ -247,7 +239,6 @@ function parseSource(source: string, sourceName: string): ModelCatalog {
           }
         : {}),
       environment: Object.freeze({
-        apiKey: Object.freeze([value.env_key, ...value.accepted_env_keys]),
         baseUrl: Object.freeze([`EASY_CODE_${prefix}_BASE_URL`]),
         model: Object.freeze([`EASY_CODE_${prefix}_MODEL`]),
         timeoutMs: Object.freeze([`EASY_CODE_${prefix}_TIMEOUT_MS`]),
@@ -282,15 +273,11 @@ export let PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = activeModelCatalo
 export let PROVIDER_NAMES: readonly string[] = Object.freeze(PROVIDER_CATALOG.map(({ provider }) => provider));
 export let DEFAULT_MODEL_IDS: Readonly<Record<string, string>> = defaultModelIds(PROVIDER_CATALOG);
 export let BENCHMARK_PROFILES: ModelCatalog["profiles"] = activeModelCatalog.profiles;
-export let ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES: readonly string[] = allApiKeyVariables(PROVIDER_CATALOG);
 export let ACTIVE_MODEL_REGISTRY_HASH = activeModelCatalog.sourceHash;
 export let DEFAULT_PROVIDER_NAME: ProviderName = providerForDefaultModel(activeModelCatalog);
 
 function defaultModelIds(providers: readonly ProviderCatalogEntry[]): Readonly<Record<string, string>> {
   return Object.freeze(Object.fromEntries(providers.map((entry) => [entry.provider, entry.defaultModel])));
-}
-function allApiKeyVariables(providers: readonly ProviderCatalogEntry[]): readonly string[] {
-  return Object.freeze([...new Set(providers.flatMap((entry) => entry.environment.apiKey))]);
 }
 function providerForDefaultModel(catalog: ModelCatalog): ProviderName {
   const provider = catalog.providers.find((entry) =>
@@ -306,7 +293,6 @@ export function activateModelRegistry(source: string, sourceName = USER_MODEL_RE
   PROVIDER_NAMES = Object.freeze(parsed.providers.map(({ provider }) => provider));
   DEFAULT_MODEL_IDS = defaultModelIds(parsed.providers);
   BENCHMARK_PROFILES = parsed.profiles;
-  ALL_PROVIDER_API_KEY_ENVIRONMENT_VARIABLES = allApiKeyVariables(parsed.providers);
   ACTIVE_MODEL_REGISTRY_HASH = parsed.sourceHash;
   DEFAULT_PROVIDER_NAME = providerForDefaultModel(parsed);
   return parsed;
@@ -336,7 +322,6 @@ export function isProviderName(value: unknown): value is ProviderName { return t
 export function isProviderIdentifier(value: unknown): value is ProviderName { return typeof value === "string" && /^[a-z][a-z0-9-]{0,63}$/u.test(value); }
 export function providerLabel(provider: ProviderName): string { return providerCatalogEntry(provider).label; }
 export function providerEnvironment(provider: ProviderName): ProviderEnvironmentCatalog { return providerCatalogEntry(provider).environment; }
-export function providerApiKeyEnvironmentVariables(provider: ProviderName): readonly string[] { return providerEnvironment(provider).apiKey; }
 export function providerCredentialConfigKey(provider: ProviderName): `${string}.api-key` { return providerCatalogEntry(provider).configKey; }
 export function sweBenchVerified50Profile(): BenchmarkProfile { return BENCHMARK_PROFILES.sweBenchVerified50; }
 export function modelsForProvider(provider: ProviderName): readonly ModelCatalogEntry[] { return providerCatalogEntry(provider).models; }
