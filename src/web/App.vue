@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { ElButton, ElCard, ElMessageBox, ElNotification } from "element-plus";
-import { Delete, Edit, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
+import { Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
 import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 import type { WebCommandEntry } from "../web-command-catalog.js";
 import type { PlanProposal } from "../core/types.js";
@@ -40,6 +40,7 @@ const error = ref("");
 const connected = ref(false);
 const loading = ref(true);
 const switching = ref(false);
+const sidebarCollapsed = ref(false);
 const transcript = ref<HTMLElement>();
 const visibleMessageIds = ref<Set<string>>(new Set());
 const composer = ref<InstanceType<typeof Composer>>();
@@ -491,11 +492,20 @@ function noticePreview(text: string): string {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="sidebar">
-      <div class="brand"><img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><div><strong>EASY CODE</strong><small>Local coding agent</small></div></div>
-      <div class="sidebar-heading project-heading"><span>PROJECTS</span><ElButton class="project-add" text :icon="Plus" title="Add local project folder" aria-label="Add local project folder" :disabled="switching" @click="addProject" /></div>
-      <nav class="thread-list" aria-label="Projects and conversations">
+      <div v-if="sidebarCollapsed" class="brand brand--collapsed">
+        <ElButton class="brand-expand" text title="Expand sidebar" aria-label="Expand sidebar" @click="sidebarCollapsed = false">
+          <img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" />
+        </ElButton>
+      </div>
+      <div v-else class="brand brand--expanded">
+        <img class="brand-mark" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" />
+        <div class="brand-copy"><strong>EASY CODE</strong><small>Local coding agent</small></div>
+        <ElButton class="brand-collapse" text :icon="Fold" title="Collapse sidebar" aria-label="Collapse sidebar" @click="sidebarCollapsed = true" />
+      </div>
+      <div v-if="!sidebarCollapsed" class="sidebar-heading project-heading"><span>PROJECTS</span><ElButton class="project-add" text :icon="Plus" title="Add local project folder" aria-label="Add local project folder" :disabled="switching" @click="addProject" /></div>
+      <nav v-if="!sidebarCollapsed" class="thread-list" aria-label="Projects and conversations">
         <section v-for="project in projects" :key="project.id" class="project-group">
           <div class="project-row" :class="{ current: activeProject?.id === project.id }">
             <ElButton class="project-toggle" text :title="project.root" :aria-expanded="expandedProjects.has(project.id)" @click="toggleProject(project.id)">
@@ -516,7 +526,7 @@ function noticePreview(text: string): string {
           </div>
         </section>
       </nav>
-      <div class="sidebar-footer"><span :class="connected ? 'online-dot' : 'offline-dot'"></span>{{ connected ? 'Local connection active' : 'Reconnecting…' }}</div>
+      <div v-if="!sidebarCollapsed" class="sidebar-footer"><span :class="connected ? 'online-dot' : 'offline-dot'"></span>{{ connected ? 'Local connection active' : 'Reconnecting…' }}</div>
     </aside>
 
     <main class="main-column">
@@ -532,7 +542,7 @@ function noticePreview(text: string): string {
         <div ref="transcript" class="transcript" @scroll="onScroll" @toggle.capture="updateVisibleMessages">
           <div class="conversation-width">
             <div v-if="archiveEntries ? archiveHasEarlier : history.hasEarlier" class="history-load"><ElButton text :loading="historyLoading" @click="loadOlder">Load earlier messages</ElButton></div>
-            <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" class="empty-state"><div class="empty-symbol">✦</div><h2>{{ activeThread ? 'What would you like to work on?' : activeProject ? 'Open a conversation' : 'Add a local project' }}</h2><p>{{ activeThread ? 'Ask about your code, make a change, or explore this workspace.' : activeProject ? 'Choose an existing conversation or create one with the + button.' : 'Use the + next to Projects to choose a working folder.' }}</p></div>
+            <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" class="empty-state"><img class="empty-symbol" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><h2>{{ activeThread ? 'What would you like to work on?' : activeProject ? 'Open a conversation' : 'Add a local project' }}</h2><p>{{ activeThread ? 'Ask about your code, make a change, or explore this workspace.' : activeProject ? 'Choose an existing conversation or create one with the + button.' : 'Use the + next to Projects to choose a working folder.' }}</p></div>
             <TranscriptEntry v-for="entry in conversationEntries" :key="entry.id" :entry="entry" />
             <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">Load newer messages</ElButton></div>
             <section v-if="plan" class="plan-actions"><strong>Plan awaiting your decision</strong><div><ElButton type="primary" @click="decidePlan('approve')">Approve and run</ElButton><ElButton @click="decidePlan('adjust')">Request changes</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">Reject</ElButton><ElButton @click="decidePlan('defer')">Later</ElButton></div></section>
