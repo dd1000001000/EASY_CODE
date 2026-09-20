@@ -12,6 +12,7 @@ export interface SecretOutputStream {
 }
 
 const MAX_SECRET_BYTES = 16_384;
+const SECRET_MASK = "•";
 
 export async function readSecretInput(
   input: SecretInputStream,
@@ -132,13 +133,19 @@ function readHiddenSecret(
           return;
         }
         if (character === "\b" || character === "\u007F") {
-          value = Array.from(value).slice(0, -1).join("");
+          if (value) {
+            value = Array.from(value).slice(0, -1).join("");
+            output.write("\b \b");
+          }
           continue;
         }
-        if (character >= " " && character !== "\u007F") value += character;
-        if (Buffer.byteLength(value, "utf8") > MAX_SECRET_BYTES) {
-          finish(new Error("API key input is too long."));
-          return;
+        if (character >= " " && character !== "\u007F") {
+          if (Buffer.byteLength(value + character, "utf8") > MAX_SECRET_BYTES) {
+            finish(new Error("API key input is too long."));
+            return;
+          }
+          value += character;
+          output.write(SECRET_MASK);
         }
       }
     };

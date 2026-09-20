@@ -79,7 +79,7 @@ export function registerConfigCommands(
     .allowExcessArguments(false)
     .addHelpText(
       "after",
-      "\nThe API key is read through hidden terminal input, or from standard input when piped. " +
+      "\nThe API key is masked with dots in an interactive terminal, or read from standard input when piped. " +
         "It cannot be passed as a command argument.\n",
     )
     .action(async (rawKey: string) => {

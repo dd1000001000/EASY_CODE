@@ -3402,7 +3402,7 @@ export class EasyCodeApp {
     let value: string;
     try {
       value = await this.terminal.readSecret(
-        `Enter the ${providerLabel(provider)} API key (input is hidden): `,
+        `Enter the ${providerLabel(provider)} API key (characters shown as dots): `,
       );
     } catch (error) {
       if (error instanceof Error && error.message === "API key input was canceled.") {
