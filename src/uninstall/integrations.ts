@@ -1,27 +1,60 @@
 import { createRequire } from "node:module";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { assertPlainAncestors } from "../install/ownership.js";
+import { EASY_CODE_BENCHMARK_KEYRING_SERVICE, EASY_CODE_KEYRING_SERVICE } from "../config/credentials.js";
+import { PACKAGED_MODEL_REGISTRY_SOURCE, parseModelCatalog } from "../models/catalog.js";
 import { addPath, children, identity, readJson, type UninstallPlan } from "./plan.js";
 import { checked, runSystem, type SystemRunner } from "./system.js";
 
 const require = createRequire(import.meta.url);
 export const EXTENSION_ID = "dd1000001000.easy-code-image-paste";
 export function packageRoot(): string { return fileURLToPath(new URL("../../", import.meta.url)); }
-export async function addCredentials(plan: UninstallPlan, remove?: (slot: string) => Promise<void>): Promise<void> {
-  const slots = new Set<string>();
-  for (const record of plan.resources) if (record.kind === "credential" && record.name) slots.add(record.name);
-  for (const slot of slots) {
+const PACKAGED_API_KEY_SLOTS = parseModelCatalog(PACKAGED_MODEL_REGISTRY_SOURCE).providers.map(provider => provider.configKey);
+
+function currentUserApiKeySlots(plan: UninstallPlan): string[] {
+  const registry = path.join(plan.home, ".easy_code", "models.toml");
+  try {
+    const stat = lstatSync(registry);
+    assertPlainAncestors(registry);
+    if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new Error("unsafe model registry");
+    return parseModelCatalog(readFileSync(registry, "utf8")).providers.map(provider => provider.configKey);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    // Uninstall must still work if the user-maintained registry is invalid.
+    // The packaged slots and installation receipts remain available.
+    plan.warnings.push("Cannot inspect the current model registry; unregistered custom-provider API keys may remain in the system credential store.");
+    return [];
+  }
+}
+
+export async function addCredentials(plan: UninstallPlan, remove?: (service: string, slot: string) => Promise<void>): Promise<void> {
+  const services = [EASY_CODE_KEYRING_SERVICE, EASY_CODE_BENCHMARK_KEYRING_SERVICE] as const;
+  const currentSlots = [...PACKAGED_API_KEY_SLOTS, ...currentUserApiKeySlots(plan)];
+  const entries = new Map<string, { service: string; slot: string }>();
+  const add = (service: string, slot: string) => entries.set(`${service}/${slot}`, { service, slot });
+  for (const service of services) for (const slot of currentSlots) add(service, slot);
+  for (const record of plan.resources) if (record.kind === "credential" && record.name)
+    add(record.connection ?? EASY_CODE_KEYRING_SERVICE, record.name);
+  plan.warnings.push("Custom-provider credentials absent from both the current model registry and installation manifest cannot be discovered automatically.");
+  for (const { service, slot } of entries.values()) {
+    if (!services.includes(service as typeof services[number])) {
+      plan.blockers.push("Invalid credential service identifier"); continue;
+    }
     if (!/^(?:[a-z][a-z0-9-]{0,63}\.api-key|mcp-oauth-[a-f0-9]{32}\.key)$/u.test(slot)) {
       plan.blockers.push("Invalid credential identifier"); continue;
     }
-    plan.actions.push({ id: "credential:" + slot, phase: 50, target: "keyring:easy-code-agent/" + slot, description: "Delete EASY CODE's stored API key (if present)",
+    plan.actions.push({ id: `credential:${service}:${slot}`, phase: 50, target: `keyring:${service}/` + slot, description: "Delete EASY CODE's stored credential (if present)",
       execute: async () => {
-        if (remove) return remove(slot);
+        if (remove) return remove(service, slot);
         const { AsyncEntry } = require("@napi-rs/keyring");
-        try { await new AsyncEntry("easy-code-agent", slot).deleteCredential(); }
-        catch { throw new Error("Cannot remove credential " + slot + "; unlock the system credential store. No key value was read."); }
+        try {
+          const entry = new AsyncEntry(service, slot, { linux: { store: "secret-service" } });
+          const removed = await entry.deleteCredential();
+          if (!removed && await entry.getPassword()) throw new Error("credential remains");
+        }
+        catch { throw new Error("Cannot confirm removal of credential " + service + "/" + slot + "; unlock the system credential store and retry."); }
       } });
   }
 }

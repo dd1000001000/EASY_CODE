@@ -4,18 +4,18 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 1;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-baseline";
+const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-scoped-memory";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 1),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 2),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (1, 'easy-code-0.1.0-baseline');
+      VALUES (2, 'easy-code-0.1.0-scoped-memory');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
@@ -68,6 +68,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
       CREATE TABLE memories (
         id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'project' CHECK(scope IN ('project', 'global')),
         category TEXT NOT NULL,
         content TEXT NOT NULL,
         normalized_content TEXT NOT NULL,
@@ -460,6 +461,19 @@ export function initializeCurrentSchema(db: SqliteDatabase): void {
     "SELECT schema_version, schema_id FROM easy_code_schema",
   ).get();
   const userVersion = db.pragma("user_version", { simple: true });
+  if (identity?.schema_version === 1 && identity.schema_id === "easy-code-0.1.0-baseline" && userVersion === 1) {
+    db.transaction(() => {
+      // The old workspace IDs do not identify the new project scope reliably.
+      // Keep the rows for manual recovery, but do not silently recall them.
+      db.exec("UPDATE memories SET status = 'expired' WHERE status IN ('active', 'needs_verification')");
+      db.exec("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'project' CHECK(scope IN ('project', 'global'))");
+      db.exec("DROP TABLE easy_code_schema");
+      db.exec("CREATE TABLE easy_code_schema (schema_version INTEGER PRIMARY KEY CHECK(schema_version = 2), schema_id TEXT NOT NULL UNIQUE)");
+      db.exec("INSERT INTO easy_code_schema(schema_version, schema_id) VALUES (2, 'easy-code-0.1.0-scoped-memory')");
+      db.pragma("user_version = 2");
+    })();
+    return;
+  }
   if (
     identity?.schema_version !== CURRENT_SCHEMA_VERSION ||
     identity.schema_id !== CURRENT_SCHEMA_ID ||

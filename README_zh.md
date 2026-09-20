@@ -8,7 +8,7 @@ EASY CODE 是本地运行的 CLI 编程 Agent。内置模型注册表包含 Qwen
 
 - Auto / Plan / Code 工作模式，支持交互式对话和单次任务。
 - 文件编辑、命令审批、测试验证与 Diff 展示。
-- 自动保存会话，支持 Resume、上下文管理与项目记忆。
+- 自动保存会话，支持 Resume、上下文管理、全局用户记忆与项目记忆。
 - 可复用的用户级和项目级 Skill，支持 Agent 按需发现、读取和维护。
 - 可选 DAG / 子 Agent 协作；支持视觉模型图片输入与 VS Code 终端增强。
 
@@ -36,7 +36,7 @@ easy-code config set qwen.api-key
 easy-code --workspace /path/to/project
 ```
 
-首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、密钥环境变量名、协议（`chat_completions` 或 `responses`）、端点流式及 `tool_stream` 能力、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。API Key 仍应保存在系统凭据库或配置的环境变量中，不要写入 `models.toml`。
+首次安装会创建固定文件 `~/.easy_code/models.toml`。用户可在这里统一维护供应商端点、协议（`chat_completions` 或 `responses`）、端点流式及 `tool_stream` 能力、模型 ID、上下文窗口、视觉/工具/reasoning 能力及 Benchmark Profile。EASY CODE 每次启动都会严格校验，并且不会覆盖已存在的文件。供应商 API Key 只保存在系统凭据库，并绑定对应端点；环境变量和 TOML 不再提供 Key。Benchmark 使用独立的凭据库命名空间，通过 `easy-code benchmark credential set <provider>` 设置。
 
 在选择器中选择模型，然后输入任务，例如：“修复登录错误，并运行相关测试”。
 
@@ -87,7 +87,7 @@ easy-code uninstall --dry-run
 easy-code uninstall
 ~~~
 
-卸载只确认一次：输入 `y` 后删除当前用户的配置、已存 API Key、会话与记忆、缓存、终端插件、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。用户项目、链接的源码仓库、Benchmark 项目和共享系统软件保留。Windows 上游原生沙箱使用的系统账户属于共享 OS 基础设施，不归 EASY CODE 所有，因此不会在卸载时删除。
+卸载只确认一次：输入 `y` 后删除当前用户的配置、普通及 Benchmark API Key 条目、会话与记忆、缓存、终端插件、托管 Worktree 和全局 CLI。`--yes` 无交互确认同一份清单；`--dry-run` 查看所有具体目标。用户项目、链接的源码仓库、Benchmark 项目和共享系统软件保留。Windows 上游原生沙箱使用的系统账户属于共享 OS 基础设施，不归 EASY CODE 所有，因此不会在卸载时删除。
 
 更多资料：[配置示例](./docs/config.example.toml) · [架构与模块技术文档](./docs/TECHNICAL_DESIGN_ZH.md) · [Benchmark 指南](./benchmarks/swebench_verified/README.md)
 

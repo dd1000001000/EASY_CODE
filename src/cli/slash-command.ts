@@ -179,8 +179,9 @@ EASY CODE commands
   /context                   Show context budget
   /usage                     Show cumulative provider-reported Token usage
   /memory short [limit]      Show recent short-term memory previews (default 8, max 500)
-  /memory long               Show automatic long-term memory
-  /memory long <id>          Show one long-term memory entry
+  /memory long [global|project] [id]  Show scoped long-term memory
+  /memory move <id> <global|project>  Move one memory between scopes
+  /memory forget <id>        Expire one long-term memory
   /thinking [id|last]        Show the expanded model thinking
   /adjustment [id|last]      Show one retained queued adjustment
   /sessions                  List previous threads

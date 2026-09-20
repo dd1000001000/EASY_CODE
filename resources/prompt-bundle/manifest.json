@@ -315,8 +315,8 @@
       "bytes": 534
     },
     "system/common-tools.md": {
-      "sha256": "sha256:3a0619e8c5b7322a05b2722d5d48cbead7e26ed2244dddc0b78bf3bbb35f5f03",
-      "bytes": 1555
+      "sha256": "sha256:98f5a5f2e6487df88975c2fdc8a08e67b897692adbb2b9e661ad0b57c85d8e3b",
+      "bytes": 1860
     },
     "system/environment.md": {
       "sha256": "sha256:0400369612ec6aeb15e374b51fa1f22179750108ad352156f93b1f7a17e5e9a5",
@@ -399,8 +399,8 @@
       "bytes": 647
     },
     "tools/read_memory.json": {
-      "sha256": "sha256:f53b81adc0c0d0fa4d311b65e908e7553a3a8218fa6091eccd4ca2161bb790fc",
-      "bytes": 933
+      "sha256": "sha256:afed8efce2dd378df121fee9ed81ade1e5d8b0a1dba2c97ab57a927d4fa2b5a6",
+      "bytes": 1103
     },
     "tools/read_skill.json": {
       "sha256": "sha256:78de3cbf02698a0f34fd9cad8cd0ce52adb070c6b489c22325989df60adc0c28",
@@ -455,8 +455,8 @@
       "bytes": 908
     },
     "tools/write_memory.json": {
-      "sha256": "sha256:30a0d497b19bc4f1c8c617c19fcf052f132606bef54b17ee246dbe10cda969a3",
-      "bytes": 2145
+      "sha256": "sha256:6d6a7eae9332a2ae3f76568849b535a741e960716ee420f39fd8108070472f53",
+      "bytes": 2437
     }
   },
   "tools": {
@@ -548,7 +548,7 @@
     "read_memory": {
       "path": "tools/read_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:f53b81adc0c0d0fa4d311b65e908e7553a3a8218fa6091eccd4ca2161bb790fc"
+      "contentHash": "sha256:afed8efce2dd378df121fee9ed81ade1e5d8b0a1dba2c97ab57a927d4fa2b5a6"
     },
     "read_skill": {
       "path": "tools/read_skill.json",
@@ -618,8 +618,8 @@
     "write_memory": {
       "path": "tools/write_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:30a0d497b19bc4f1c8c617c19fcf052f132606bef54b17ee246dbe10cda969a3"
+      "contentHash": "sha256:6d6a7eae9332a2ae3f76568849b535a741e960716ee420f39fd8108070472f53"
     }
   },
-  "bundleHash": "sha256:3564cc19527105b5a2bacb275cf07a8092f74f99b62bbef143ccfa3c5f1cf577"
+  "bundleHash": "sha256:5f069305bb8a3f6d86f72ec5f2e85bae891eafcebdb3d384a7a0ba96fed070f4"
 }

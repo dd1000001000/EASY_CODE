@@ -11,6 +11,8 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Readable } from "node:stream";
+import { Command } from "commander";
 
 import {
   EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV,
@@ -21,13 +23,57 @@ import {
   buildHarborRunArgs,
   consumeHarborProviderApiKeyFile,
   resolveHarborOuterSandbox,
+  registerSweBenchCommands,
   summarizeSweBenchContextMetrics,
   validateSweBenchRoot,
 } from "../src/benchmarks/swebench.js";
 import { PROVIDER_CATALOG, sweBenchVerified50Profile } from "../src/models/catalog.js";
+import type { ProviderName } from "../src/core/types.js";
 import { describe, it } from "./harness.js";
 
 const BENCHMARK_PROFILE = sweBenchVerified50Profile();
+
+describe("Benchmark-only credentials", () => {
+  it("sets, reports, and deletes a provider key without reading normal CLI credentials or environment", async () => {
+    const values = new Map<string, string>();
+    const calls: string[] = [];
+    const output: string[] = [];
+    const store = {
+      async get(provider: ProviderName, endpoint?: string) {
+        calls.push(`get:${provider}:${endpoint}`);
+        return values.get(provider);
+      },
+      async set(provider: ProviderName, value: string, endpoint?: string) {
+        calls.push(`set:${provider}:${endpoint}`);
+        values.set(provider, value);
+      },
+      async delete(provider: ProviderName) {
+        calls.push(`delete:${provider}`);
+        return values.delete(provider);
+      },
+    };
+    const invoke = async (args: string[], input = "") => {
+      const program = new Command().name("easy-code").exitOverride();
+      registerSweBenchCommands(program, {
+        credentialStore: store,
+        env: { GLM_CODING_PLAN_API_KEY: "ignored-environment-key" },
+        input: Readable.from([input]),
+        stdout: { write: value => { output.push(String(value)); return true; } },
+      });
+      await program.parseAsync(["node", "easy-code", "benchmark", "credential", ...args]);
+    };
+    await invoke(["get", "glm-coding-plan"]);
+    assert.match(output.join(""), /not configured for this endpoint/u);
+    await invoke(["set", "glm-coding-plan"], "benchmark-only-key\n");
+    await invoke(["get", "glm-coding-plan"]);
+    assert.match(output.join(""), /configured/u);
+    assert.ok(calls.some(value => value.startsWith("set:glm-coding-plan:https://open.bigmodel.cn/api/coding/paas/v4")));
+    assert.equal(values.get("glm-coding-plan"), "benchmark-only-key");
+    assert.doesNotMatch(output.join(""), /benchmark-only-key|ignored-environment-key/u);
+    await invoke(["unset", "glm-coding-plan"]);
+    assert.equal(values.has("glm-coding-plan"), false);
+  });
+});
 const BENCHMARK_PROVIDER = PROVIDER_CATALOG.find(
   (provider) => provider.provider === BENCHMARK_PROFILE.provider,
 );
@@ -261,9 +307,7 @@ describe("SWE-bench Verified integration", () => {
   it("keeps the benchmark agent on the reviewed EASY CODE execution profile", () => {
     assert.ok(BENCHMARK_PROVIDER);
     assert.equal(BENCHMARK_PROFILE.provider, "glm-coding-plan");
-    assert.deepEqual(BENCHMARK_PROVIDER.environment.apiKey, [
-      "GLM_CODING_PLAN_API_KEY",
-    ]);
+    assert.equal("apiKey" in BENCHMARK_PROVIDER.environment, false);
     assert.deepEqual(BENCHMARK_PROVIDER.environment.baseUrl, [
       "EASY_CODE_GLM_CODING_PLAN_BASE_URL",
     ]);

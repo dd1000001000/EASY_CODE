@@ -2,6 +2,7 @@ import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentRunResult,
   type LongTermMemory,
+  type LongTermMemoryScope,
   type MemoryMutationRequest,
   type SessionState,
 } from "../core/types.js";
@@ -13,6 +14,7 @@ import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-li
 import { assertDurableMemory } from "./admission.js";
 import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
+import { projectRootFromWorkspace } from "../workspace/project-root.js";
 import { sha256 } from "../utils/hash.js";
 import {
   containsSensitiveInformation,
@@ -32,6 +34,14 @@ export interface MemorySearchOptions {
   /** Include inactive audit-history rows. Ordinary retrieval stays active-only. */
   readonly includeInactive?: boolean;
 }
+
+export const GLOBAL_MEMORY_WORKSPACE_ID = "memory_global";
+
+export function projectMemoryIdFromRoot(workspaceRoot: string): string {
+  return workspaceIdFromRoot(projectRootFromWorkspace(workspaceRoot));
+}
+
+export type MemoryScopeFilter = LongTermMemoryScope | "all";
 
 export interface MemoryListOptions {
   readonly limit?: number;
@@ -103,6 +113,7 @@ interface ModelMemoryEvidence {
 interface MemoryRow {
   id: string;
   workspace_id: string;
+  scope: LongTermMemoryScope;
   category: LongTermMemory["category"];
   content: string;
   normalized_content: string;
@@ -130,7 +141,8 @@ type MemoryAuditAction =
   | "upsert"
   | "revise"
   | "supersede"
-  | "forget";
+  | "forget"
+  | "move";
 
 interface MemorySnapshot {
   readonly category: LongTermMemory["category"];
@@ -166,7 +178,7 @@ const SAFE_CONTEXT_ID = /^[\p{L}\p{N}._:-]{1,160}$/u;
 const MAX_EVIDENCE_HISTORY_ENTRIES = 24;
 const MAX_EVIDENCE_BYTES = 64 * 1024;
 const TENTATIVE_MEMORY = /(?:可能|也许|猜测|未验证|perhaps|maybe|might|unverified)/iu;
-const EXPLICIT_DURABLE_USER_CUE = /(?:以后|今后|始终|总是|统一|默认|偏好|约定|规范|prefer|always|by default|from now on|convention)/iu;
+const EXPLICIT_DURABLE_USER_CUE = /(?:以后|今后|始终|总是|统一|默认|偏好|喜欢|习惯|所有项目|每个项目|跨项目|约定|规范|prefer|always|by default|from now on|convention)/iu;
 
 function normalizeContent(value: string): string {
   return value
@@ -367,6 +379,7 @@ function toMemory(row: MemoryRow): Readonly<LongTermMemory> {
   return Object.freeze({
     id: row.id,
     workspaceId: row.workspace_id,
+    scope: row.scope,
     category: row.category,
     content: redactSensitiveInformation(row.content),
     confidence: row.confidence,
@@ -422,6 +435,66 @@ export class MemoryManager {
     options: MemorySearchOptions | number = {},
   ): ReadonlyArray<Readonly<LongTermMemory>> {
     return this.searchLexical(workspaceId, query, options, true);
+  }
+
+  scopeGenerationKey(projectId: string): string {
+    const read = this.storage.db.prepare<[string], { generation: number }>(
+      "SELECT generation FROM memory_vector_state WHERE workspace_id = ?",
+    );
+    return `${read.get(projectId)?.generation ?? 0}:${read.get(GLOBAL_MEMORY_WORKSPACE_ID)?.generation ?? 0}`;
+  }
+
+  getAccessible(projectId: string, memoryId: string): Readonly<LongTermMemory> | undefined {
+    return this.get(projectId, memoryId) ?? this.get(GLOBAL_MEMORY_WORKSPACE_ID, memoryId);
+  }
+
+  listScoped(projectId: string, scope: MemoryScopeFilter = "all", options: MemoryListOptions = {}):
+    ReadonlyArray<Readonly<LongTermMemory>> {
+    if (scope !== "all") {
+      return this.list(scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : projectId, options);
+    }
+    const limit = safeLimit(options.limit, 100, 500);
+    const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset as number)) : 0;
+    const status = options.status ?? "active";
+    const rows = status === "all"
+      ? this.storage.db.prepare<[string, string, number, number], MemoryRow>(
+        "SELECT * FROM memories WHERE workspace_id IN (?, ?) ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+      ).all(assertWorkspaceId(projectId), GLOBAL_MEMORY_WORKSPACE_ID, limit, offset)
+      : this.storage.db.prepare<[string, string, string, number, number], MemoryRow>(
+        "SELECT * FROM memories WHERE workspace_id IN (?, ?) AND status = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+      ).all(assertWorkspaceId(projectId), GLOBAL_MEMORY_WORKSPACE_ID, status, limit, offset);
+    return Object.freeze(rows.map(toMemory));
+  }
+
+  async searchScoped(
+    projectId: string,
+    query: string,
+    options: MemorySearchOptions & { scope?: MemoryScopeFilter; includeGlobalPreferences?: boolean } = {},
+  ): Promise<ReadonlyArray<Readonly<LongTermMemory>>> {
+    const limit = safeLimit(options.limit, 6, 50);
+    const scope = options.scope ?? "all";
+    const hasGlobal = scope !== "project" && !!this.storage.db.prepare<[string, number], { present: number }>(
+      "SELECT 1 AS present FROM memories WHERE workspace_id = ? AND (? = 1 OR status IN ('active', 'needs_verification')) LIMIT 1",
+    ).get(GLOBAL_MEMORY_WORKSPACE_ID, options.includeInactive ? 1 : 0);
+    const project = scope === "global" ? [] : await this.searchHybrid(projectId, query, {
+      ...options, limit, workspaceRoot: options.workspaceRoot
+        ? projectRootFromWorkspace(options.workspaceRoot) : undefined,
+    });
+    const global = !hasGlobal ? [] : await this.searchHybrid(GLOBAL_MEMORY_WORKSPACE_ID, query, {
+      ...options, limit, workspaceRoot: undefined,
+    });
+    const preferences = !hasGlobal || !options.includeGlobalPreferences ? []
+      : this.list(GLOBAL_MEMORY_WORKSPACE_ID, { status: "active", limit: 8 })
+        .filter((memory) => memory.category === "preference" || memory.category === "convention")
+        .slice(0, 3);
+    const globalCandidates = [...new Map([...preferences, ...global].map((memory) => [memory.id, memory])).values()];
+    const reservedGlobal = Math.min(2, globalCandidates.length, limit);
+    const seen = new Set<string>();
+    return Object.freeze([...project.slice(0, limit - reservedGlobal), ...globalCandidates].filter((memory) => {
+      if (seen.has(memory.id)) return false;
+      seen.add(memory.id);
+      return true;
+    }).slice(0, limit));
   }
 
   /**
@@ -577,7 +650,7 @@ export class MemoryManager {
   }
 
   private provenance(input: ApplyModelMemoryMutationsInput, mutation: MemoryMutationRequest): MemoryProvenance | undefined {
-    if (!input.sourceState || mutation.action === "forget") return undefined;
+    if (!input.sourceState || mutation.action === "forget" || mutation.action === "move") return undefined;
     assertDurableMemory(mutation.content, this.limits);
     const state = input.sourceState;
     if (state.threadId !== input.threadId) throw new Error("Memory evidence belongs to another thread");
@@ -611,9 +684,14 @@ export class MemoryManager {
       if (observed?.ok !== true) continue;
       if (["read_file", "create_file", "update_file"].includes(row.tool) &&
           typeof observed.data?.path === "string" && typeof observed.data?.contentHash === "string") {
-        const relative = path.relative(state.workspaceRoot, path.resolve(state.workspaceRoot, observed.data.path));
-        if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
-        files.push({ path: relative, hash: observed.data.contentHash });
+        const absolute = path.resolve(state.workspaceRoot, observed.data.path);
+        const relativeWorkspace = path.relative(state.workspaceRoot, absolute);
+        if (relativeWorkspace.startsWith("..") || path.isAbsolute(relativeWorkspace)) continue;
+        const projectRoot = input.workspaceRoot
+          ? projectRootFromWorkspace(input.workspaceRoot) : state.workspaceRoot;
+        const relativeProject = path.relative(projectRoot, absolute);
+        if (relativeProject.startsWith("..") || path.isAbsolute(relativeProject)) continue;
+        files.push({ path: relativeProject, hash: observed.data.contentHash });
         promote("observed");
         continue;
       }
@@ -797,14 +875,17 @@ export class MemoryManager {
       return this.commitModelMutations(input);
     }
 
-    const workspaceId = input.workspaceId ?? (input.workspaceRoot ? workspaceIdFromRoot(input.workspaceRoot) : "");
+    const workspaceId = input.workspaceRoot
+      ? projectMemoryIdFromRoot(input.workspaceRoot)
+      : input.workspaceId ?? "";
     const contents = [...new Set(input.mutations.flatMap((mutation) => {
-      if (mutation.action === "forget") return [];
+      if (mutation.action === "forget" || mutation.action === "move") return [];
       const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
       if (mutation.action === "remember") {
+        const targetId = mutation.scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : workspaceId;
         const existing = this.storage.db.prepare<[string, string], { status: string; category: string }>(
           "SELECT status, category FROM memories WHERE workspace_id = ? AND normalized_content = ?"
-        ).get(workspaceId, normalizeContent(content));
+        ).get(targetId, normalizeContent(content));
         if (existing?.status === "active" && existing.category === mutation.category) return [];
       }
       return [content];
@@ -839,7 +920,11 @@ export class MemoryManager {
     ) {
       throw new Error("workspaceId does not match workspaceRoot");
     }
-    const workspaceId = assertWorkspaceId(input.workspaceId ?? rootWorkspaceId ?? "");
+    const evidenceWorkspaceId = assertWorkspaceId(input.workspaceId ?? rootWorkspaceId ?? "");
+    const projectId = assertWorkspaceId(input.workspaceRoot
+      ? projectMemoryIdFromRoot(input.workspaceRoot) : evidenceWorkspaceId);
+    const ownerId = (scope: LongTermMemoryScope): string => scope === "global"
+      ? GLOBAL_MEMORY_WORKSPACE_ID : projectId;
     const threadId = assertContextId(input.threadId, "threadId");
     const turnId = assertContextId(input.turnId, "turnId");
     if (input.outcome !== "success" && input.outcome !== "planned") {
@@ -870,9 +955,9 @@ export class MemoryManager {
     );
     const insert = this.storage.db.prepare(
       `INSERT INTO memories(
-         id, workspace_id, category, content, normalized_content, confidence,
+         id, workspace_id, scope, category, content, normalized_content, confidence,
          status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     const updateActive = this.storage.db.prepare(
       `UPDATE memories
@@ -885,10 +970,14 @@ export class MemoryManager {
       `UPDATE memories SET status = ?, evidence = ?, updated_at = ?
         WHERE workspace_id = ? AND id = ?`,
     );
+    const updateScope = this.storage.db.prepare(
+      "UPDATE memories SET workspace_id = ?, scope = ?, evidence = ?, updated_at = ? WHERE workspace_id = ? AND id = ?",
+    );
     const memoryIds: string[] = [];
     const provenanceByMutation = new Map(input.mutations.map((mutation) => [mutation, this.provenance(input, mutation)]));
     let activeProvenance: MemoryProvenance | undefined;
     let applied = 0;
+    const affectedScopes = new Set<string>();
 
     const assertOutcomeCategory = (
       category: LongTermMemory["category"],
@@ -938,7 +1027,18 @@ export class MemoryManager {
         const admission = memoryAdmission(activeProvenance);
         const now = new Date().toISOString();
         if (mutation.action === "remember") {
+          const scope = mutation.scope ?? "project";
+          const workspaceId = ownerId(scope);
           const category = assertCategory(mutation.category);
+          if (scope === "global") {
+            if (category !== "preference" && category !== "convention") {
+              throw new Error("Global memory may contain only preferences or conventions");
+            }
+            if (input.sourceState && (!mutation.sourceRefs?.includes("user") ||
+                !EXPLICIT_DURABLE_USER_CUE.test(input.userInput ?? ""))) {
+              throw new Error("Global memory requires an explicit durable user preference in this turn");
+            }
+          }
           assertOutcomeCategory(category);
           const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
           const normalized = normalizeContent(content);
@@ -960,6 +1060,7 @@ export class MemoryManager {
             continue;
           }
           if (existing) {
+            affectedScopes.add(workspaceId);
             const confidence = admission.status === "active"
               ? Math.min(0.95, Math.max(existing.confidence, admission.confidence) + 0.03)
               : Math.max(existing.confidence, admission.confidence);
@@ -1000,6 +1101,7 @@ export class MemoryManager {
           insert.run(
             memoryId,
             workspaceId,
+            scope,
             category,
             content,
             normalized,
@@ -1016,14 +1118,45 @@ export class MemoryManager {
             throw new Error("Memory creation verification failed");
           }
           recordId(memoryId);
+          affectedScopes.add(workspaceId);
           applied += 1;
           continue;
         }
 
         const memoryId = assertMemoryId(mutation.memoryId);
+        const sourceScope = mutation.action === "move"
+          ? (mutation.scope === "global" ? "project" : "global")
+          : mutation.scope ?? "project";
+        const workspaceId = ownerId(sourceScope);
         const existing = selectById.get(workspaceId, memoryId);
         if (!existing) {
           throw new Error("Long-term memory was not found in this workspace");
+        }
+        affectedScopes.add(workspaceId);
+
+        if (mutation.action === "move") {
+          const targetId = ownerId(mutation.scope);
+          if (mutation.scope === "global") {
+            if (existing.category !== "preference" && existing.category !== "convention") {
+              throw new Error("Only preferences and conventions may move to global memory");
+            }
+            if (input.sourceState && (!mutation.sourceRefs?.includes("user") ||
+                !EXPLICIT_DURABLE_USER_CUE.test(input.userInput ?? ""))) {
+              throw new Error("Moving memory to global requires an explicit durable user preference");
+            }
+          }
+          if (selectByContent.get(targetId, existing.normalized_content)) {
+            throw new Error("Target scope already contains this memory; revise the existing entry instead");
+          }
+          const reason = memoryReason(mutation.reason);
+          const evidence = appendEvidence(existing.evidence,
+            modelEvidence(evidenceSource(reason), "move", now, { previous: snapshot(existing) }));
+          updateScope.run(targetId, mutation.scope, evidence, now, workspaceId, memoryId);
+          recordId(memoryId);
+          affectedScopes.add(workspaceId);
+          affectedScopes.add(targetId);
+          applied += 1;
+          continue;
         }
 
         if (mutation.action === "forget") {
@@ -1054,6 +1187,9 @@ export class MemoryManager {
           );
         }
         const category = assertCategory(mutation.category);
+        if (existing.scope === "global" && category !== "preference" && category !== "convention") {
+          throw new Error("Global memory may contain only preferences or conventions");
+        }
         assertOutcomeCategory(category);
         const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
         const normalized = normalizeContent(content);
@@ -1121,6 +1257,7 @@ export class MemoryManager {
         insert.run(
           replacementId,
           workspaceId,
+          existing.scope,
           category,
           content,
           normalized,
@@ -1143,8 +1280,8 @@ export class MemoryManager {
       }
     })();
 
-    if (preparedByContent?.size && applied > 0) {
-      this.vectorIndex?.invalidate?.(workspaceId);
+    if (applied > 0) {
+      for (const scopeId of affectedScopes) this.vectorIndex?.invalidate?.(scopeId);
     }
 
     return Object.freeze({ applied, memoryIds: [...memoryIds] });

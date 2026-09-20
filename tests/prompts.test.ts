@@ -84,6 +84,7 @@ describe("system prompt builder", () => {
         memories: [{
           id: "memory_00000000-0000-4000-8000-000000000001",
           workspaceId: "workspace_test",
+          scope: "project",
           category: "convention",
           content: "The project uses strict TypeScript",
           confidence: 0.8,

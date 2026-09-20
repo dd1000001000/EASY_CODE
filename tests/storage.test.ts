@@ -17,6 +17,7 @@ import { repairInterruptedTurn } from "../src/app.js";
 import { describe, it } from "./harness.js";
 import { createStorage } from "../src/storage/index.js";
 import { SqliteDatabase } from "../src/storage/sqlite-database.js";
+import { initializeCurrentSchema } from "../src/storage/schema.js";
 import {
   deserializeChatMessage,
   deserializeSessionState,
@@ -66,6 +67,24 @@ async function waitForOutput(
 }
 
 describe("storage", () => {
+  it("keeps old memory rows inactive when upgrading the database layout", () => {
+    const db = new SqliteDatabase(":memory:");
+    try {
+      db.exec("CREATE TABLE easy_code_schema(schema_version INTEGER PRIMARY KEY, schema_id TEXT NOT NULL)");
+      db.exec("INSERT INTO easy_code_schema VALUES (1, 'easy-code-0.1.0-baseline')");
+      db.exec("CREATE TABLE memories(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, status TEXT NOT NULL)");
+      db.exec("INSERT INTO memories VALUES ('old_memory', 'old_workspace', 'active')");
+      db.pragma("user_version = 1");
+      initializeCurrentSchema(db);
+      assert.deepEqual(db.prepare<[], { status: string; scope: string }>(
+        "SELECT status, scope FROM memories WHERE id = 'old_memory'",
+      ).get(), { status: "expired", scope: "project" });
+      assert.equal(db.pragma("user_version", { simple: true }), 2);
+    } finally {
+      db.close();
+    }
+  });
+
   it("creates the current SQLite baseline with the required safety pragmas", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);
@@ -113,10 +132,10 @@ describe("storage", () => {
           )
           .get();
         assert.deepEqual(identity, {
-          schema_version: 1,
-          schema_id: "easy-code-0.1.0-baseline",
+          schema_version: 2,
+          schema_id: "easy-code-0.1.0-scoped-memory",
         });
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 1);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 2);
       } finally {
         reopened.close();
       }

@@ -19,6 +19,7 @@ import {
   containsSensitiveInformation,
   redactSensitiveInformation,
 } from "../memory/sensitive.js";
+import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import { displayTextSchema, projectText } from "../utils/bounded-text.js";
 import { sha256 } from "../utils/hash.js";
@@ -45,7 +46,8 @@ const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
  * ignored; read-side fields remain unknown and are rejected before execution.
  */
 export const writeMemoryInputSchema = z.object({
-  operation: z.enum(["remember", "revise", "forget"]),
+  operation: z.enum(["remember", "revise", "forget", "move"]),
+  scope: z.enum(["global", "project"]).optional(),
   sourceRefs: z.array(z.string().min(1).max(100)).min(1).max(8).optional(),
   memoryId: memoryIdSchema.optional(),
   content: memoryContentSchema.optional(),
@@ -72,8 +74,9 @@ export class WriteMemoryTool implements AgentTool {
           properties: {
             operation: {
               type: "string",
-              enum: ["remember", "revise", "forget"],
+              enum: ["remember", "revise", "forget", "move"],
             },
+            scope: { type: "string", enum: ["global", "project"] },
             sourceRefs: {
               type: "array",
               minItems: 1,
@@ -122,6 +125,7 @@ export class WriteMemoryTool implements AgentTool {
       }
       const parsed = this.inputSchema.parse(input);
       this.session.beginTurn(context.turnId);
+      const projectId = projectMemoryIdFromRoot(this.workspace.root);
       const workspaceId = workspaceIdFromRoot(this.workspace.root);
 
       if (parsed.operation === "remember" || parsed.operation === "revise") {
@@ -168,15 +172,23 @@ export class WriteMemoryTool implements AgentTool {
       if (parsed.operation === "remember") {
         const content = this.requireField(parsed.content, "content", parsed.operation);
         const category = this.requireField(parsed.category, "category", parsed.operation);
+        const scope = parsed.scope ?? "project";
+        if (scope === "global" && category !== "preference" && category !== "convention") {
+          throw new Error("Global memory is reserved for cross-project preferences and conventions");
+        }
+        if (scope === "global" && !parsed.sourceRefs?.includes("user")) {
+          throw new Error("Global memory requires sourceRefs: [\"user\"] from this turn");
+        }
         this.assertSafeWrite(content, parsed.reason);
         this.assertPlanCategory(context, category);
         return {
           ok: true,
           summary:
             "The long-term memory proposal was staged and will be committed only if this turn completes successfully.",
-          data: { staged: true, operation: parsed.operation },
+          data: { staged: true, operation: parsed.operation, scope },
           memoryMutation: {
             action: "remember",
+            scope,
             ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             content,
             category,
@@ -187,14 +199,40 @@ export class WriteMemoryTool implements AgentTool {
 
       const memoryId = this.requireField(parsed.memoryId, "memoryId", parsed.operation);
       this.session.assertReturned(context.turnId, memoryId);
-      const existing = this.manager.get(workspaceId, memoryId);
+      const existing = this.manager.getAccessible(projectId, memoryId);
       if (!existing) {
-        throw new Error("Long-term memory was not found in this workspace");
+        throw new Error("Long-term memory was not found in the current project or global scope");
+      }
+
+      if (parsed.operation !== "move" && parsed.scope && parsed.scope !== existing.scope) {
+        throw new Error("Changing memory scope requires the move operation");
+      }
+
+      if (parsed.operation === "move") {
+        const scope = this.requireField(parsed.scope, "scope", parsed.operation);
+        if (scope === existing.scope) throw new Error("Memory already belongs to the target scope");
+        this.assertSafeWrite(undefined, parsed.reason);
+        if (scope === "global" && existing.category !== "preference" && existing.category !== "convention") {
+          throw new Error("Only preferences and conventions may move to global memory");
+        }
+        if (scope === "global" && !parsed.sourceRefs?.includes("user")) {
+          throw new Error("Moving memory to global requires sourceRefs: [\"user\"] from this turn");
+        }
+        return {
+          ok: true,
+          summary: `Memory ${memoryId} scope change was staged until this turn succeeds.`,
+          data: { staged: true, operation: parsed.operation, memoryId, scope },
+          memoryMutation: { action: "move", memoryId, scope, reason: parsed.reason,
+            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}) },
+        };
       }
 
       if (parsed.operation === "revise") {
         const content = this.requireField(parsed.content, "content", parsed.operation);
         const category = parsed.category ?? existing.category;
+        if (existing.scope === "global" && category !== "preference" && category !== "convention") {
+          throw new Error("Global memory may contain only preferences or conventions");
+        }
         this.assertSafeWrite(content, parsed.reason);
         this.assertPlanCategory(context, category);
         return {
@@ -204,6 +242,7 @@ export class WriteMemoryTool implements AgentTool {
           data: { staged: true, operation: parsed.operation, memoryId },
           memoryMutation: {
             action: "revise",
+            scope: existing.scope,
             ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             memoryId,
             content,
@@ -222,6 +261,7 @@ export class WriteMemoryTool implements AgentTool {
         data: { staged: true, operation: parsed.operation, memoryId },
         memoryMutation: {
           action: "forget",
+          scope: existing.scope,
           memoryId,
           reason: parsed.reason,
         },

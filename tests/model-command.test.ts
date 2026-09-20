@@ -11,6 +11,7 @@ import type {
   ThinkingEffortSelectorChoice,
 } from "../src/cli/model-selector.js";
 import { Terminal } from "../src/cli/terminal.js";
+import type { ApiKeyCredentialStore } from "../src/config/credentials.js";
 import type {
   ProviderName,
   SessionState,
@@ -141,16 +142,17 @@ async function createAppFixture(
   delete process.env.GLM_CODING_PLAN_API_KEY;
   delete process.env.KIMI_API_KEY;
   delete process.env.KIMI_MODEL;
-  if (keys.qwen) process.env.QWEN_API_KEY = keys.qwen;
-  else delete process.env.QWEN_API_KEY;
-  if (keys.deepseek) process.env.DEEPSEEK_API_KEY = keys.deepseek;
-  else delete process.env.DEEPSEEK_API_KEY;
-  if (keys.glm) process.env.ZAI_API_KEY = keys.glm;
-  else delete process.env.ZAI_API_KEY;
-  if (keys.glmCodingPlan) {
-    process.env.GLM_CODING_PLAN_API_KEY = keys.glmCodingPlan;
-  }
-  if (keys.kimi) process.env.KIMI_API_KEY = keys.kimi;
+  const storedKeys = new Map<ProviderName, string>();
+  if (keys.qwen) storedKeys.set("qwen", keys.qwen);
+  if (keys.deepseek) storedKeys.set("deepseek", keys.deepseek);
+  if (keys.glm) storedKeys.set("glm", keys.glm);
+  if (keys.glmCodingPlan) storedKeys.set("glm-coding-plan", keys.glmCodingPlan);
+  if (keys.kimi) storedKeys.set("kimi", keys.kimi);
+  const credentialStore: ApiKeyCredentialStore = {
+    get: async provider => storedKeys.get(provider),
+    set: async (provider, value) => { storedKeys.set(provider, value); },
+    delete: async provider => storedKeys.delete(provider),
+  };
 
   const input = new PassThrough();
   const output = new PassThrough();
@@ -174,7 +176,7 @@ async function createAppFixture(
       workspaceRoot: workspace,
       terminal,
       // Never inspect the developer's real operating-system credentials.
-      credentialStore: false,
+      credentialStore,
     });
     let closed = false;
     return {

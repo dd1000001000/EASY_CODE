@@ -4,8 +4,6 @@ default_model = "qwen-default"
 [providers.qwen]
 name = "Alibaba Qwen"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-env_key = "QWEN_API_KEY"
-accepted_env_keys = ["DASHSCOPE_API_KEY"]
 wire_api = "chat_completions"
 supports_streaming = true
 supports_stream_usage = true
@@ -27,7 +25,6 @@ large_image_media_types = ["image/png", "image/jpeg"]
 [providers.deepseek]
 name = "DeepSeek"
 base_url = "https://api.deepseek.com"
-env_key = "DEEPSEEK_API_KEY"
 wire_api = "chat_completions"
 supports_streaming = true
 supports_stream_usage = true
@@ -39,7 +36,6 @@ supports_strict_tools = true
 [providers.kimi]
 name = "Kimi Coding Plan"
 base_url = "https://api.kimi.com/coding/v1"
-env_key = "KIMI_API_KEY"
 wire_api = "chat_completions"
 supports_streaming = true
 tool_stream = false
@@ -50,8 +46,6 @@ supports_strict_tools = true
 [providers.glm]
 name = "Zhipu GLM"
 base_url = "https://open.bigmodel.cn/api/paas/v4"
-env_key = "GLM_API_KEY"
-accepted_env_keys = ["ZAI_API_KEY", "ZHIPUAI_API_KEY"]
 wire_api = "chat_completions"
 supports_streaming = true
 tool_stream = true
@@ -62,7 +56,6 @@ supports_strict_tools = false
 [providers.glm-coding-plan]
 name = "GLM Coding Plan"
 base_url = "https://open.bigmodel.cn/api/coding/paas/v4"
-env_key = "GLM_CODING_PLAN_API_KEY"
 wire_api = "chat_completions"
 supports_streaming = true
 tool_stream = true

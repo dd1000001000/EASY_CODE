@@ -12,6 +12,8 @@ import { normalizeCurrentTomlConfig } from "../src/config/toml-format.js";
 import { PROVIDER_CATALOG } from "../src/models/catalog.js";
 
 import {
+  EASY_CODE_BENCHMARK_KEYRING_SERVICE,
+  EASY_CODE_KEYRING_SERVICE,
   SystemKeyringCredentialStore,
   loadEasyCodeConfig,
   parseApiKeyConfigKey,
@@ -282,65 +284,55 @@ describe("config commands", () => {
     assert.deepEqual(terminal.transitions, [true, false]);
   });
 
-  it("reports effective source precedence without revealing any key", async () => {
+  it("reports only system-store credentials without revealing any key", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-config-command-"));
     const configDir = path.join(temporary, "config");
     const userConfigPath = path.join(configDir, "config.toml");
     const store = new MemoryCredentialStore();
-    const secrets = [
-      "environment-secret",
-      "keyring-secret",
-      "legacy-secret",
-      "coding-plan-environment-secret",
-      "kimi-environment-secret",
-    ];
+    const secrets = ["environment-secret", "keyring-secret", "coding-plan-environment-secret"];
     try {
       await mkdir(configDir, { recursive: true });
       await writeFile(
         userConfigPath,
-        `[qwen]\napi_key = "${secrets[2]}"\n`,
+        `[providers.qwen]\nmodel = "qwen3.7-max"\n`,
         "utf8",
       );
       store.values.set("qwen", "shadowed-keyring-secret");
-      store.values.set("deepseek", secrets[1] as string);
+      store.values.set("deepseek", secrets[1]!);
 
       const listed = commandRun(["config", "list"], {
         credentialStore: store,
         env: {
           QWEN_API_KEY: secrets[0],
           ZAI_API_KEY: "glm-environment-secret",
-          GLM_CODING_PLAN_API_KEY: secrets[3],
-          KIMI_API_KEY: secrets[4],
+          GLM_CODING_PLAN_API_KEY: secrets[2],
         },
         userConfigPath,
       });
       await listed.run;
-      assert.match(listed.output.value, /qwen\.api-key=\[configured\] \(environment variable QWEN_API_KEY\)/u);
+      assert.match(listed.output.value, /qwen\.api-key=\[configured\] \(operating system credential store\)/u);
       assert.match(listed.output.value, /deepseek\.api-key=\[configured\] \(operating system credential store\)/u);
-      assert.match(listed.output.value, /kimi\.api-key=\[configured\] \(environment variable KIMI_API_KEY\)/u);
-      assert.match(listed.output.value, /glm\.api-key=\[configured\] \(environment variable ZAI_API_KEY\)/u);
-      assert.match(
-        listed.output.value,
-        /glm-coding-plan\.api-key=\[configured\] \(environment variable GLM_CODING_PLAN_API_KEY\)/u,
-      );
+      assert.match(listed.output.value, /kimi\.api-key=\[not configured for this endpoint\]/u);
+      assert.match(listed.output.value, /glm\.api-key=\[not configured for this endpoint\]/u);
+      assert.match(listed.output.value, /glm-coding-plan\.api-key=\[not configured for this endpoint\]/u);
 
       store.values.delete("qwen");
-      const unsupportedTomlCredential = commandRun(["config", "get", "qwen.api-key"], {
+      const absentCredential = commandRun(["config", "get", "qwen.api-key"], {
         credentialStore: store,
         env: {},
         userConfigPath,
       });
-      await unsupportedTomlCredential.run;
-      assert.match(unsupportedTomlCredential.output.value, /unavailable or not configured/u);
+      await absentCredential.run;
+      assert.match(absentCredential.output.value, /not configured for this endpoint/u);
 
-      const transcript = listed.output.value + listed.errorOutput.value + unsupportedTomlCredential.output.value;
+      const transcript = listed.output.value + listed.errorOutput.value + absentCredential.output.value;
       for (const secret of secrets) assert.doesNotMatch(transcript, new RegExp(secret, "u"));
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("keeps an absent or unreadable credential status deliberately ambiguous", async () => {
+  it("reports an unreadable credential store distinctly", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-config-unknown-"));
     try {
       const store = new MemoryCredentialStore();
@@ -351,14 +343,14 @@ describe("config commands", () => {
         configDir: temporary,
       });
       await command.run;
-      assert.match(command.output.value, /\[unavailable or not configured\]/u);
+      assert.match(command.output.value, /\[credential store unavailable\]/u);
       assert.doesNotMatch(command.output.value, /\[not set\]/u);
     } finally {
       await rm(temporary, { recursive: true, force: true });
     }
   });
 
-  it("unsets only the keyring value and reports other effective sources", async () => {
+  it("unsets only the keyring value without an environment fallback", async () => {
     const store = new MemoryCredentialStore();
     store.values.set("qwen", "keyring-secret");
     const command = commandRun(["config", "unset", "qwen.api-key"], {
@@ -368,7 +360,7 @@ describe("config commands", () => {
     await command.run;
     assert.equal(store.values.has("qwen"), false);
     assert.match(command.output.value, /Deleted qwen\.api-key/u);
-    assert.match(command.errorOutput.value, /remains configured.*QWEN_API_KEY/u);
+    assert.equal(command.errorOutput.value, "");
     assert.doesNotMatch(command.output.value + command.errorOutput.value, /environment-secret|keyring-secret/u);
   });
 
@@ -385,17 +377,31 @@ describe("config commands", () => {
 });
 
 describe("credential configuration loading", () => {
-  it("loads environment over keyring over current user TOML", async () => {
+  it("rejects a user TOML API key without exposing its value", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "easy-code-no-plaintext-key-"));
+    const configDir = path.join(root, "config");
+    try {
+      await mkdir(configDir, { recursive: true });
+      await writeFile(path.join(configDir, "config.toml"),
+        `[providers.qwen]\napi_key = "private-plaintext-secret"\n`, "utf8");
+      await assert.rejects(loadEasyCodeConfig({
+        workspaceRoot: root, configDir, credentialStore: false, env: {},
+      }), error => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /API keys in TOML are no longer supported/u);
+        assert.doesNotMatch(error.message, /private-plaintext-secret/u);
+        return true;
+      });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("loads only system credentials and ignores API-key environment variables", async () => {
     const temporary = await mkdtemp(path.join(tmpdir(), "easy-code-key-precedence-"));
     const configDir = path.join(temporary, "config");
     const store = new MemoryCredentialStore();
     try {
       await mkdir(configDir, { recursive: true });
-      await writeFile(
-        path.join(configDir, "config.toml"),
-        `[providers.qwen]\napi_key = "toml-qwen"\n[providers.deepseek]\napi_key = "toml-deepseek"\n[providers.glm]\napi_key = "toml-glm"\n[providers.glm-coding-plan]\napi_key = "toml-glm-coding-plan"\n`,
-        "utf8",
-      );
+      await writeFile(path.join(configDir, "config.toml"), `[providers.qwen]\nmodel = "qwen3.7-max"\n`, "utf8");
       store.values.set("qwen", "keyring-qwen");
       store.values.set("deepseek", "keyring-deepseek");
       store.values.set("glm", "keyring-glm");
@@ -413,12 +419,12 @@ describe("credential configuration loading", () => {
         },
         credentialStore: store,
       });
-      assert.equal(withEnvironment.providers.qwen!.apiKey, "environment-qwen");
+      assert.equal(withEnvironment.providers.qwen!.apiKey, "keyring-qwen");
       assert.equal(withEnvironment.providers.deepseek!.apiKey, "keyring-deepseek");
-      assert.equal(withEnvironment.providers.glm!.apiKey, "environment-glm");
+      assert.equal(withEnvironment.providers.glm!.apiKey, "keyring-glm");
       assert.equal(
         withEnvironment.providers["glm-coding-plan"]!.apiKey,
-        "environment-glm-coding-plan",
+        "keyring-glm-coding-plan",
       );
       assert.notEqual(
         withEnvironment.providers.glm!.apiKey,
@@ -445,14 +451,9 @@ describe("credential configuration loading", () => {
     }
   });
 
-  it("round-trips an isolated Windows credential with Node 20.11.0 when requested", async () => {
-    if (
-      process.platform !== "win32" ||
-      process.env.EASY_CODE_RUN_KEYRING_INTEGRATION !== "1"
-    ) {
-      return;
-    }
-    assert.equal(process.versions.node, "20.11.0");
+  it("round-trips an isolated native credential on Windows, macOS, or Linux when requested", async () => {
+    if (process.env.EASY_CODE_RUN_KEYRING_INTEGRATION !== "1") return;
+    assert.ok(["win32", "darwin", "linux"].includes(process.platform));
 
     const service = `easy-code-agent-test-${process.pid}-${randomUUID()}`;
     const secret = `easy-code-test-${randomUUID()}`;
@@ -465,5 +466,33 @@ describe("credential configuration loading", () => {
     } finally {
       await store.delete("qwen").catch(() => false);
     }
+  });
+
+  it("isolates Runtime and Benchmark entries and binds each key to its HTTPS endpoint", async () => {
+    const entries = new Map<string, string>();
+    class FakeEntry {
+      constructor(private readonly service: string, private readonly account: string) {}
+      async getPassword() { return entries.get(`${this.service}/${this.account}`) ?? null; }
+      async setPassword(value: string) { entries.set(`${this.service}/${this.account}`, value); }
+      async deleteCredential() { return entries.delete(`${this.service}/${this.account}`); }
+    }
+    const loader = () => ({ AsyncEntry: FakeEntry }) as never;
+    const ordinary = new SystemKeyringCredentialStore(EASY_CODE_KEYRING_SERVICE, loader);
+    const benchmark = new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE, loader);
+    const endpoint = "https://open.bigmodel.cn/api/coding/paas/v4";
+    await ordinary.set("glm-coding-plan", "ordinary-key", endpoint);
+    await benchmark.set("glm-coding-plan", "benchmark-key", endpoint);
+    assert.equal(await ordinary.get("glm-coding-plan", endpoint), "ordinary-key");
+    assert.equal(await benchmark.get("glm-coding-plan", endpoint), "benchmark-key");
+    assert.equal(await benchmark.get("glm-coding-plan", "https://different.example/v1"), undefined);
+    assert.equal(await ordinary.delete("glm-coding-plan"), true);
+    assert.equal(await ordinary.get("glm-coding-plan", endpoint), undefined);
+    assert.equal(await benchmark.get("glm-coding-plan", endpoint), "benchmark-key");
+    entries.set(`${EASY_CODE_BENCHMARK_KEYRING_SERVICE}/glm-coding-plan.api-key`, "obsolete-plain-key");
+    await assert.rejects(benchmark.get("glm-coding-plan", endpoint), /Unable to read/u);
+    await assert.rejects(
+      benchmark.set("glm-coding-plan", "x".repeat(1500), endpoint),
+      /2560-byte limit/u,
+    );
   });
 });

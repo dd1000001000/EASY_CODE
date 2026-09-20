@@ -5,6 +5,7 @@ import type { ModelProvider, SessionState, ToolContext, ChatMessage, EventRecord
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { ThreadStore } from "../threads/thread-store.js";
 import type { MemoryManager } from "../memory/memory-manager.js";
+import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import type { ContextArtifactIndex } from "../context/artifact-index.js";
 import type { TaskBudget } from "../runtime/task-budget.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
@@ -150,6 +151,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     await emit({ type: "applied", id, fresh: false });
     return { decision: "unavailable", requests: 0, reused: false, reason: session.reason }; }
   const root = copies.root, workspaceId = workspaceIdFromRoot(deps.workspace.root);
+  const projectMemoryId = projectMemoryIdFromRoot(deps.workspace.root);
   const workspace = await WorkspaceManager.create(root, { ignoredDirectoryNames: new Set([
     ".git", ".easycode", ".easy_code", "node_modules", ".venv", "venv", "dist", "build",
   ]) });
@@ -195,9 +197,10 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       limits: deps.limits, agentRole: "subagent", agentId: `${id}_reviewer`, assignedTaskId: id,
       signal: input.signal, commandTimeoutMs: deps.limits.commandTimeoutMs, maxOutputChars: deps.limits.maxOutputChars,
       requestApproval: async request => deps.approve(context, request),
-      searchProjectMemory: (query, options) => deps.memory.searchHybrid(workspaceId, query, {
+      searchProjectMemory: (query, options) => deps.memory.searchScoped(projectMemoryId, query, {
         workspaceRoot: root, readOnly: true, limit: options?.limit ?? deps.limits.memorySearchLimit,
-        includeInactive: options?.includeInactive,
+        includeInactive: options?.includeInactive, scope: options?.scope,
+        includeGlobalPreferences: options === undefined,
       }),
       recallContext: async value => {
         try { return recallThreadContext(reviewer!, value, (evidenceId, offset, limit) =>
@@ -216,12 +219,16 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       optionalMemory: async () => {
         const queries = memoryQueries(reviewer!, input.userInput);
         await deps.index.checkpoint(workspaceId, reviewer!);
-        const memories = (await Promise.all(queries.map(query => context.searchProjectMemory!(query)))).flat();
+        const memories = (await Promise.all(queries.map((query, index) =>
+          context.searchProjectMemory!(query, index === 0 || query === input.userInput
+            ? undefined : { scope: "project" })))).flat();
         const evidence = (await Promise.all(queries.map(query => deps.index.search(workspaceId, threadId, query,
           { limit: deps.limits.memorySearchLimit, beforeMessageIndex: reviewer!.compactedMessageCount })))).flat();
         const selected = selectMemoryContext({ state: reviewer!, memories, evidence, queries, limits: deps.limits,
           tokenBudget: optionalMemoryTokenBudget(deps.limits.maxContextChars, deps.limits.maxContextTokens, deps.limits) });
-        return JSON.stringify({ memories: selected.memories, historicalEvidence: selected.evidence });
+        return JSON.stringify({ memories: selected.memories.map(memory => ({ id: memory.id,
+          scope: memory.scope, category: memory.category, content: memory.content,
+          status: memory.status })), historicalEvidence: selected.evidence });
       },
       append: async (type, payload) => {
         durableReviewWrite(() => type === "message" ? deps.store.recordMessage(threadId, payload as ChatMessage, id)

@@ -7,6 +7,7 @@ import path from "node:path";
 import { auth, type OAuthClientProvider, type OAuthDiscoveryState,
   type StoredOAuthClientInformation, type StoredOAuthTokens } from "@modelcontextprotocol/client";
 import { resolveEasyCodePaths } from "../config/defaults.js";
+import { EASY_CODE_KEYRING_SERVICE } from "../config/credentials.js";
 import { assertPlainAncestors, recordOwnedResource } from "../install/ownership.js";
 
 type KeyringModule = typeof import("@napi-rs/keyring");
@@ -36,7 +37,7 @@ export type McpKeyringEntryFactory = (account: string) => SecretEntry;
 
 function systemEntry(account: string): SecretEntry {
   const { AsyncEntry } = require("@napi-rs/keyring") as KeyringModule;
-  return new AsyncEntry("easy-code-agent", account);
+  return new AsyncEntry(EASY_CODE_KEYRING_SERVICE, account, { linux: { store: "secret-service" } });
 }
 
 interface EncryptedCredentialFile {
@@ -73,7 +74,7 @@ export class McpOauthCredentials implements McpOauthCredentialStore {
     // Retry ownership registration if a prior process saved the short key but
     // exited before recording the uninstall receipt.
     if (encoded && create && this.entryFactory === systemEntry) {
-      recordOwnedResource({ kind: "credential", name: this.keyAccount });
+      recordOwnedResource({ kind: "credential", name: this.keyAccount, connection: EASY_CODE_KEYRING_SERVICE });
     }
     if (!encoded) return undefined;
     const key = Buffer.from(encoded, "base64");

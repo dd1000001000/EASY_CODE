@@ -24,12 +24,16 @@ import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
 
 import {
+  EASY_CODE_BENCHMARK_KEYRING_SERVICE,
   SystemKeyringCredentialStore,
+  storeVerifiedApiKey,
   type ApiKeyCredentialStore,
 } from "../config/credentials.js";
+import { readSecretInput, type SecretInputStream } from "../config/secret-input.js";
 import {
   PROVIDER_CATALOG,
   USER_MODEL_REGISTRY_PATH,
+  isProviderName,
   providerCatalogEntry,
   sweBenchVerified50Profile,
 } from "../models/catalog.js";
@@ -60,11 +64,6 @@ const SWE_BENCH_MODEL_PROFILE = (() => {
       `The SWE-bench model ${JSON.stringify(profile.model)} is absent from provider ${JSON.stringify(provider.provider)}.`,
     );
   }
-  if (provider.environment.apiKey.length < 1) {
-    throw new Error(
-      "The SWE-bench provider must define an API-key environment name.",
-    );
-  }
   const endpoint = new URL(provider.defaultBaseUrl);
   if (endpoint.protocol !== "https:" || !endpoint.hostname) {
     throw new Error("The SWE-bench provider must use a valid HTTPS endpoint.");
@@ -73,12 +72,10 @@ const SWE_BENCH_MODEL_PROFILE = (() => {
     provider: profile.provider,
     providerLabel: provider.label,
     credentialSlot: provider.credentialSlot,
-    configKey: provider.configKey,
     model: profile.model,
     mode: profile.mode,
     thinkingEffort: profile.thinkingEffort,
     baseUrl: provider.defaultBaseUrl,
-    apiKeyEnvironment: provider.environment.apiKey,
     harborModel: `${profile.provider}/${profile.model}`,
   });
 })();
@@ -415,9 +412,25 @@ function nonNegativeMetric(value: unknown): number {
     : 0;
 }
 
+function inspectCredentialStaging(root: string): BenchmarkDoctorCheck {
+  const temporaryRoot = path.join(root, "tmp");
+  try {
+    if (!existsSync(temporaryRoot)) return { label: "Temporary Benchmark credentials", status: "ok", detail: "no staged credential directories" };
+    const count = readdirSync(temporaryRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && /^provider-secret-[a-zA-Z0-9]+$/u.test(entry.name))
+      .length;
+    return count === 0
+      ? { label: "Temporary Benchmark credentials", status: "ok", detail: "no staged credential directories" }
+      : { label: "Temporary Benchmark credentials", status: "warn", detail: `${count} staging director${count === 1 ? "y" : "ies"} found; verify no Benchmark run is active before removing stale copies` };
+  } catch {
+    return { label: "Temporary Benchmark credentials", status: "warn", detail: "staging directory could not be inspected" };
+  }
+}
+
 export interface SweBenchCommandRuntime {
   readonly credentialStore?: ApiKeyCredentialStore;
   readonly env?: NodeJS.ProcessEnv;
+  readonly input?: SecretInputStream;
   readonly stdout?: Pick<NodeJS.WritableStream, "write">;
   readonly stderr?: Pick<NodeJS.WritableStream, "write">;
   readonly platform?: NodeJS.Platform;
@@ -573,7 +586,8 @@ export function registerSweBenchCommands(
   const env = runtime.env ?? process.env;
   const platform = runtime.platform ?? process.platform;
   const packageRoot = runtime.packageRoot ?? findPackageRoot();
-  const credentialStore = runtime.credentialStore ?? new SystemKeyringCredentialStore();
+  const credentialStore = runtime.credentialStore ??
+    new SystemKeyringCredentialStore(EASY_CODE_BENCHMARK_KEYRING_SERVICE);
   const setExitCode = runtime.setExitCode ?? ((code: number) => {
     process.exitCode = code;
   });
@@ -584,6 +598,41 @@ export function registerSweBenchCommands(
   const benchmark = program
     .command("benchmark")
     .description("run reproducible coding-agent benchmarks");
+  const credential = benchmark.command("credential")
+    .description("manage EASY CODE Benchmark API keys in its separate system credential namespace");
+  const requireProvider = (value: string) => {
+    if (!isProviderName(value)) throw new Error(`Unknown benchmark provider: ${value}`);
+    return value;
+  };
+  credential.command("set")
+    .argument("<provider>", "provider ID from the model registry")
+    .description("store a Benchmark-only API key")
+    .action(async (rawProvider: string) => {
+      const provider = requireProvider(rawProvider);
+      const value = await readSecretInput(
+        runtime.input ?? process.stdin, stderr, `EASY CODE Benchmark API key for ${provider}: `,
+      );
+      await storeVerifiedApiKey(
+        credentialStore, provider, value, providerCatalogEntry(provider).defaultBaseUrl,
+      );
+      writeLine(`Stored EASY CODE Benchmark ${provider} API key in the system credential store.`);
+    });
+  credential.command("get")
+    .argument("<provider>", "provider ID from the model registry")
+    .description("show Benchmark API-key status without showing its value")
+    .action(async (rawProvider: string) => {
+      const provider = requireProvider(rawProvider);
+      const value = await credentialStore.get(provider, providerCatalogEntry(provider).defaultBaseUrl);
+      writeLine(`EASY CODE Benchmark ${provider} API key: ${value ? "configured" : "not configured for this endpoint"}.`);
+    });
+  credential.command("unset")
+    .argument("<provider>", "provider ID from the model registry")
+    .description("delete a Benchmark-only API key")
+    .action(async (rawProvider: string) => {
+      const provider = requireProvider(rawProvider);
+      if (!await credentialStore.delete(provider)) throw new Error(`EASY CODE Benchmark ${provider} API key was not removed.`);
+      writeLine(`Deleted EASY CODE Benchmark ${provider} API key.`);
+    });
   const sweBench = benchmark
     .command("swe-bench")
     .description(
@@ -803,18 +852,15 @@ export function registerSweBenchCommands(
         detail: manifest.detail,
       });
       checks.push(...inspectBenchmarkStorage(root, platform, env));
-      let hasCredential = Boolean(benchmarkApiKeyFromEnvironment(env));
-      if (!hasCredential) {
-        try {
-          hasCredential = Boolean(
-            await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot),
-          );
-        } catch {
-          hasCredential = false;
-        }
-      }
+      checks.push(inspectCredentialStaging(root));
+      let hasCredential = false;
+      try {
+        hasCredential = Boolean(await credentialStore.get(
+          SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl,
+        ));
+      } catch { /* Doctor reports the missing or unavailable store below. */ }
       checks.push({
-        label: `${SWE_BENCH_MODEL_PROFILE.providerLabel} API key`,
+        label: `EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key`,
         status: hasCredential ? "ok" : "fail",
         detail: hasCredential ? "configured (value hidden)" : "not available",
       });
@@ -922,30 +968,33 @@ export function registerSweBenchCommands(
             "Run easy-code benchmark swe-bench setup before retrying.",
         );
       }
-      const apiKey = benchmarkApiKeyFromEnvironment(env) ||
-        (await credentialStore.get(SWE_BENCH_MODEL_PROFILE.credentialSlot));
+      const apiKey = await credentialStore.get(
+        SWE_BENCH_MODEL_PROFILE.credentialSlot, SWE_BENCH_MODEL_PROFILE.baseUrl,
+      );
       if (!apiKey) {
         throw new Error(
-          `No ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available. ` +
-            `Run easy-code config set ${SWE_BENCH_MODEL_PROFILE.configKey} first.`,
+          `No EASY CODE Benchmark ${SWE_BENCH_MODEL_PROFILE.providerLabel} API key is available for this endpoint. ` +
+            `Run easy-code benchmark credential set ${SWE_BENCH_MODEL_PROFILE.credentialSlot} first.`,
         );
       }
       const stagedCredential = await stageBenchmarkCredential(root, apiKey, {
         platform,
         env,
       });
-      const childEnv = benchmarkEnvironment(root, env, {
-        EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
-        EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
-        [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
-        [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
-        EASY_CODE_PACKAGE_PATH: packagePath,
-        PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
-      });
-      writeLine(
-        "Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.",
-      );
+      const cleanupOnExit = () => stagedCredential.cleanup();
+      process.once("exit", cleanupOnExit);
       try {
+        const childEnv = benchmarkEnvironment(root, env, {
+          EASY_CODE_PROVIDER_KEY_FILE: stagedCredential.filename,
+          EASY_CODE_MODEL_REGISTRY_PATH: USER_MODEL_REGISTRY_PATH,
+          [EASY_CODE_BENCHMARK_CHECKPOINT_ROOT_ENV]: path.join(root, "checkpoints"),
+          [EASY_CODE_BENCHMARK_EMBEDDING_MODEL_DIR_ENV]: benchmarkEmbeddingModelDirectory(root),
+          EASY_CODE_PACKAGE_PATH: packagePath,
+          PYTHONPATH: prependPath(packageRoot, env.PYTHONPATH),
+        });
+        writeLine(
+          "Starting Harbor. It receives only an ACL-protected credential-file path; the key is never printed.",
+        );
         let harborCompleted = false;
         try {
           await runInherited(benchmarkHarbor(root, platform), args, {
@@ -982,6 +1031,7 @@ export function registerSweBenchCommands(
           }
         }
       } finally {
+        process.off("exit", cleanupOnExit);
         stagedCredential.cleanup();
       }
     });
@@ -1098,6 +1148,9 @@ export function benchmarkEnvironment(
   ]) {
     delete environment[name];
   }
+  for (const name of Object.keys(environment)) {
+    if (/(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN)$/iu.test(name)) delete environment[name];
+  }
   // Only the launcher's trusted staging step may add this host file path.
   if (!("EASY_CODE_PROVIDER_KEY_FILE" in extra)) {
     delete environment.EASY_CODE_PROVIDER_KEY_FILE;
@@ -1125,16 +1178,6 @@ export function benchmarkEnvironment(
   // silently disappears even though `docker version` continues to work.
   environment.DOCKER_CONFIG = dockerConfig;
   return environment;
-}
-
-function benchmarkApiKeyFromEnvironment(
-  env: Readonly<Record<string, string | undefined>>,
-): string | undefined {
-  for (const name of SWE_BENCH_MODEL_PROFILE.apiKeyEnvironment) {
-    const value = env[name]?.trim();
-    if (value) return value;
-  }
-  return undefined;
 }
 
 function prependPath(value: string, existing: string | undefined): string {
