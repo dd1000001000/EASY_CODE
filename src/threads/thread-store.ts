@@ -1151,7 +1151,7 @@ export class ThreadStore {
   }
 
   list(options: ThreadListOptions = {}): ThreadSummary[] {
-    const limit = Math.max(1, Math.min(options.limit ?? 100, 500));
+    const limit = Math.max(1, Math.min(options.limit ?? 100, 100_000));
     const rows = options.workspaceId
       ? this.storage.db
           .prepare<[string, number], ThreadRow>(

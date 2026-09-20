@@ -40,6 +40,10 @@ function loadKeyring(): KeyringModule {
 export const EASY_CODE_KEYRING_SERVICE = "easy-code-agent";
 export const EASY_CODE_BENCHMARK_KEYRING_SERVICE = "easy-code-agent-benchmark";
 
+export function isManagedCredentialService(service: string): boolean {
+  return service === EASY_CODE_KEYRING_SERVICE || service === EASY_CODE_BENCHMARK_KEYRING_SERVICE;
+}
+
 function canonicalEndpoint(provider: ProviderName, endpoint?: string): string {
   const url = new URL(endpoint ?? providerCatalogEntry(provider).defaultBaseUrl);
   if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
@@ -93,7 +97,7 @@ export class SystemKeyringCredentialStore implements ApiKeyCredentialStore {
       throw new Error("API key and endpoint exceed the system credential store's portable 2560-byte limit.");
     }
     try {
-      if (this.moduleLoader === loadKeyring)
+      if (this.moduleLoader === loadKeyring && isManagedCredentialService(this.service))
         recordOwnedResource({ kind: "credential", name: apiKeyConfigKey(provider), connection: this.service });
       await this.entry(provider).setPassword(payload);
     } catch {

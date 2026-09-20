@@ -1,4 +1,5 @@
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { THINKING_EFFORTS } from "../core/types.js";
 import type {
   CommandAuditEntry,
   FileChangeRecord,
@@ -50,6 +51,18 @@ export function maxConcurrentSubagents(thinkingEffort: ThinkingEffort): number {
   return DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents[thinkingEffort];
 }
 
+function childThinkingEffort(requested: ThinkingEffort | undefined, parent: ThinkingEffort | undefined): ThinkingEffort {
+  if (parent === undefined) throw new Error("The parent thinking effort is unavailable");
+  const parentRank = THINKING_EFFORTS.indexOf(parent);
+  if (parentRank < 0) throw new Error("The parent thinking effort is unavailable");
+  const selected = requested ?? parent;
+  const selectedRank = THINKING_EFFORTS.indexOf(selected);
+  if (selectedRank < 0 || selectedRank > parentRank) {
+    throw new Error(`Child thinking effort ${selected} cannot exceed the parent's ${parent}`);
+  }
+  return selected;
+}
+
 export interface SubagentExecutionRequest {
   readonly record: Readonly<SubagentRecord>;
   readonly task: Readonly<TaskNode>;
@@ -60,6 +73,7 @@ export interface SubagentExecutionRequest {
   readonly reportEnvironment: (environment: ExecutionEnvironmentSnapshot) => void;
   /** True only when the parent is preserving this child for a later resume. */
   readonly isPauseRequested: () => boolean;
+  readonly reportActivity: (kind: "working" | "thinking" | "tool", label?: string) => void;
 }
 
 export interface SubagentExecutionOutcome {
@@ -123,6 +137,7 @@ export interface SubagentCoordinatorOptions {
   readonly forceSharedIsolation?: boolean;
   readonly onWaitStart?: (text: string) => unknown;
   readonly onWaitEnd?: (activityToken: unknown) => void;
+  readonly onViewChange?: (parentThreadId: string) => void;
   readonly handoff?: (
     artifact: Readonly<ResultArtifact>,
     destination: { type: "local" } | { type: "branch"; branchName?: string },
@@ -171,6 +186,8 @@ export class SubagentCoordinator implements SubagentControl {
   private readonly onWaitStart: ((text: string) => unknown) | undefined;
   private readonly onWaitEnd: ((activityToken: unknown) => void) | undefined;
   private readonly handoffResult: SubagentCoordinatorOptions["handoff"];
+  private readonly onViewChange: SubagentCoordinatorOptions["onViewChange"];
+  private readonly liveActivity = new Map<string, NonNullable<SubagentView["activity"]>>();
 
   constructor(options: SubagentCoordinatorOptions) {
     this.runChild = options.run;
@@ -190,6 +207,7 @@ export class SubagentCoordinator implements SubagentControl {
     this.onWaitStart = options.onWaitStart;
     this.onWaitEnd = options.onWaitEnd;
     this.handoffResult = options.handoff;
+    this.onViewChange = options.onViewChange;
   }
 
   assertAuthorized(context: ToolContext): void {
@@ -208,6 +226,7 @@ export class SubagentCoordinator implements SubagentControl {
     request: SpawnSubagentRequest,
     context: ToolContext,
   ): Promise<ToolExecutionResult> {
+    const thinkingEffort = childThinkingEffort(request.thinkingEffort, context.thinkingEffort);
     if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("Subagent creation requires orchestration and at least independent approval. Enable with /orchestration.");
     if (context.limits && this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >= context.limits.maxSubagentsPerTurn) {
       throw new Error(`The ${context.limits.maxSubagentsPerTurn}-subagent turn budget is exhausted`);
@@ -279,7 +298,7 @@ export class SubagentCoordinator implements SubagentControl {
       mode: "code",
       provider: context.provider as NonNullable<ToolContext["provider"]>,
       model: context.model as string,
-      thinkingEffort: context.thinkingEffort as ThinkingEffort,
+      thinkingEffort,
       requestedIsolation: this.forceSharedIsolation ? "shared" : request.isolation ?? this.defaultIsolation,
       status: "running",
       revision: 1,
@@ -450,6 +469,7 @@ export class SubagentCoordinator implements SubagentControl {
       summary: `Queued follow-up guidance for ${request.agentId}.`,
       data: {
         agentId: request.agentId,
+        taskTitle: job.record.taskTitle,
         followUpCount: job.record.followUpCount + 1,
         delivery: "next_model_request_boundary",
       },
@@ -543,6 +563,7 @@ export class SubagentCoordinator implements SubagentControl {
       data: {
         agentId: job.record.id,
         taskId: job.record.taskId,
+        taskTitle: job.record.taskTitle,
         artifactId: artifact.id,
         status: artifact.status,
         delivery: artifact.delivery,
@@ -580,6 +601,7 @@ export class SubagentCoordinator implements SubagentControl {
       delete job.record.result;
       touch(job.record, this.now);
       job.controller.abort();
+      this.onViewChange?.(job.record.parentThreadId);
       if (job.record.finishedAt) {
         job.record.status = "stopped";
         touch(job.record, this.now);
@@ -674,7 +696,8 @@ export class SubagentCoordinator implements SubagentControl {
   }
 
   snapshot(threadId: string): ReadonlyArray<SubagentView> {
-    return this.recordsForThread(threadId).map(publicRecord);
+    return this.recordsForThread(threadId).map(record => ({ ...publicRecord(record),
+      ...(this.liveActivity.get(record.id) ? { activity: this.liveActivity.get(record.id) } : {}) }));
   }
 
   outstanding(threadId: string): ReadonlyArray<SubagentView> {
@@ -956,6 +979,10 @@ export class SubagentCoordinator implements SubagentControl {
           touch(job.record, this.now);
         },
         isPauseRequested: () => job.pauseRequested === true,
+        reportActivity: (kind, label) => {
+          this.liveActivity.set(job.record.id, { kind, ...(label ? { label } : {}), startedAt: this.now().toISOString() });
+          this.onViewChange?.(job.record.parentThreadId);
+        },
       });
       job.outcome = outcome;
       if (outcome.environment) job.record.environment = { ...outcome.environment };
@@ -1003,6 +1030,8 @@ export class SubagentCoordinator implements SubagentControl {
       job.record.finishedAt = finishedAt;
       job.record.updatedAt = finishedAt;
       job.record.revision += 1;
+      this.liveActivity.delete(job.record.id);
+      this.onViewChange?.(job.record.parentThreadId);
       job.resolveSettled();
     }
   }
@@ -1017,6 +1046,8 @@ export class SubagentCoordinator implements SubagentControl {
     job.record.finishedAt = this.now().toISOString();
     touch(job.record, this.now);
     job.outcome = { reason: status, error, changes: [], commands: [], presentations: [] };
+    this.liveActivity.delete(job.record.id);
+    this.onViewChange?.(job.record.parentThreadId);
     job.resolveSettled();
   }
 

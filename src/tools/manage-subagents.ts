@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { THINKING_EFFORTS } from "../core/types.js";
 
 import type {
   AgentTool,
@@ -32,6 +33,7 @@ const SUBAGENT_ID_PATTERN =
 const taskIdSchema = z.string().trim().regex(new RegExp(TASK_ID_PATTERN, "u"));
 const subagentIdSchema = z.string().trim().regex(new RegExp(SUBAGENT_ID_PATTERN, "u"));
 const isolationSchema = z.enum(["auto", "shared", "worktree"]);
+const thinkingEffortSchema = z.enum(THINKING_EFFORTS);
 const branchNameSchema = z
   .string()
   .trim()
@@ -76,6 +78,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
       taskId: taskIdSchema,
       instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
+      thinkingEffort: thinkingEffortSchema.optional(),
     })
     .strict(),
   z
@@ -84,6 +87,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
       task: standaloneTaskSchema,
       instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
+      thinkingEffort: thinkingEffortSchema.optional(),
     })
     .strict(),
   z
@@ -193,6 +197,10 @@ export class ManageSubagentsTool implements AgentTool {
           isolation: {
             type: "string",
             enum: ["auto", "shared", "worktree"],
+          },
+          thinkingEffort: {
+            type: "string",
+            enum: [...THINKING_EFFORTS],
           },
           agentId: {
             type: "string",

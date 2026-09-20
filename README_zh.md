@@ -76,7 +76,7 @@ easy-code --workspace /path/to/project --resume <thread-id>
 | --- | --- |
 | `/model`、`/mode` | 切换模型、工作模式 |
 | `/approval`、`/permissions` | 切换审批方式、查看与撤销授权 |
-| `/orchestration`、`/tasks`、`/agents` | 开关与查看 DAG / 子 Agent |
+| `/orchestration` | 开关 DAG / 子 Agent 创建功能 |
 | `/sessions`、`/resume`、`/new` | 查看、恢复、新建会话 |
 | `/image ./screenshot.png` | 向支持视觉的模型附加图片 |
 | `/mcp` | 查看、授权、连接、断开或移除 MCP Server |

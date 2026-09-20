@@ -7,6 +7,7 @@ import type { DownloadBroker } from "../downloads/broker.js";
 import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { McpConfigStore } from "../mcp/config.js";
 import { SkillStore } from "../skills/store.js";
+import type { ThreadTitleStore } from "../threads/thread-title.js";
 import {
   WorkspaceMutationLock,
   wrapAgentToolsWithWorkspaceMutationLock,
@@ -22,6 +23,7 @@ import { MemoryToolSession } from "./memory-tool-session.js";
 import { ReadMemoryTool } from "./read-memory.js";
 import { ManageSubagentsTool } from "./manage-subagents.js";
 import { ManageTasksTool } from "./manage-tasks.js";
+import { NameThreadTool } from "./name-thread.js";
 import {
   DisableMcpServerTool,
   ListMcpServersTool,
@@ -44,7 +46,7 @@ import { SubmitTaskResultTool } from "./submit-task-result.js";
 import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
 
-type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks">;
+type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks"> & Pick<Partial<TaskNode>, "title">;
 
 export interface BuiltinToolSourceOptions {
   readonly workspace: WorkspaceManager;
@@ -57,6 +59,7 @@ export interface BuiltinToolSourceOptions {
   readonly mcpConfigStore?: McpConfigStore;
   readonly onMcpConfigChanged?: (id: string) => Promise<void>;
   readonly boundTask?: BoundTask;
+  readonly threadTitleStore?: ThreadTitleStore;
 }
 
 /** Trusted in-process tools exposed through the same source contract as future adapters. */
@@ -98,6 +101,7 @@ export class BuiltinToolSource implements ToolSource {
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
       new ManageTasksTool(),
+      ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),
       ...(this.options.mcpConfigStore
         ? [
           new ListMcpServersTool(workspace, this.options.mcpConfigStore),

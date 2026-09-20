@@ -8,8 +8,11 @@ import chalk from "chalk";
 import { Command, Option } from "commander";
 
 import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
+import { prepareDataDirectoryOutsideWorkspace, resolveDataDirectoryOutsideWorkspace } from "./images/path-policy.js";
 import { WebInteraction } from "./web-server/interaction.js";
 import { serveWeb } from "./web-server/server.js";
+import { WorkspaceMutationLock } from "./subagents/workspace-mutation-lock.js";
+import { workspaceIdFromRoot } from "./storage/database.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
@@ -101,6 +104,7 @@ function appOptions(
     imagePaths: options.image,
     startupInteraction,
     sandboxStartup: startupInteraction !== "none",
+    keepInteractionOpen: options.web === true,
     ...(terminal ? { terminal } : {}),
   };
 }
@@ -130,6 +134,33 @@ async function withApp(
   } finally {
     try { await app?.closeAsync(); } finally { release(); }
   }
+}
+
+async function withWeb(options: CliOptions): Promise<void> {
+  const { loadEasyCodeConfig } = await import("./config/loader.js");
+  const config = await loadEasyCodeConfig({ workspaceRoot: options.workspace, credentialStore: false });
+  const dataDir = await resolveDataDirectoryOutsideWorkspace(config.dataDir, config.workspaceRoot);
+  const resources = (["data", "config", "cache"] as const).map(kind => ({
+    kind, path: kind === "data" ? dataDir : config[(kind + "Dir") as "configDir" | "cacheDir"],
+  }));
+  for (const resource of resources) beginOwnedResource(resource);
+  recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
+  const port = new WebInteraction();
+  const workspaceLocks = new Map<string, WorkspaceMutationLock>();
+  const shutdown = new AbortController();
+  const release = registerRuntimeSession(() => shutdown.abort());
+  try {
+    await prepareDataDirectoryOutsideWorkspace(dataDir, config.workspaceRoot);
+    for (const resource of resources) completeOwnedResource(resource);
+    await serveWeb(dataDir, port, (workspaceRoot, resumeThreadId, threadPort) => {
+      const id = workspaceIdFromRoot(workspaceRoot);
+      let lock = workspaceLocks.get(id);
+      if (!lock) { lock = new WorkspaceMutationLock(); workspaceLocks.set(id, lock); }
+      return EasyCodeApp.create({ ...appOptions(options, "none", threadPort), workspaceRoot, resumeThreadId,
+        provider: undefined, model: undefined, thinkingEffort: undefined, keepInteractionOpen: true,
+        workspaceMutationLock: lock });
+    }, shutdown.signal);
+  } finally { port.close(); release(); }
 }
 
 function addCommonOptions(command: Command): Command {
@@ -189,15 +220,13 @@ export async function main(argv = process.argv): Promise<void> {
   program.action(async (options: CliOptions) => {
     if (options.web) {
       if (options.image?.length) throw new Error("Use the Web composer to attach images when launching with --web.");
-      const port = new WebInteraction();
-      await withApp(options, async (app) => serveWeb(app, port), "none", port);
+      await withWeb(options);
       return;
     }
-    const explicitSelection = Boolean(options.provider || options.model || options.resume);
     await withApp(
       options,
       async (app) => app.runInteractive(),
-      explicitSelection ? "ensure-api-key" : "select-model",
+      "ensure-api-key",
     );
   });
 

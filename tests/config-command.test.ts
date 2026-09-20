@@ -14,6 +14,7 @@ import { PROVIDER_CATALOG } from "../src/models/catalog.js";
 import {
   EASY_CODE_BENCHMARK_KEYRING_SERVICE,
   EASY_CODE_KEYRING_SERVICE,
+  isManagedCredentialService,
   SystemKeyringCredentialStore,
   loadEasyCodeConfig,
   parseApiKeyConfigKey,
@@ -23,6 +24,7 @@ import {
   type ConfigCommandRuntime,
 } from "../src/config/index.js";
 import type { ProviderName } from "../src/core/types.js";
+import { readOwnedResources } from "../src/install/ownership.js";
 import { describe, it } from "./harness.js";
 
 class MemoryCredentialStore implements ApiKeyCredentialStore {
@@ -394,6 +396,11 @@ describe("config commands", () => {
 });
 
 describe("credential configuration loading", () => {
+  it("registers ownership only for the two production credential services", () => {
+    assert.equal(isManagedCredentialService(EASY_CODE_KEYRING_SERVICE), true);
+    assert.equal(isManagedCredentialService(EASY_CODE_BENCHMARK_KEYRING_SERVICE), true);
+    assert.equal(isManagedCredentialService("easy-code-agent-test-isolated"), false);
+  });
   it("keeps memory expiry periods in user configuration, not project overrides", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "easy-code-memory-policy-"));
     const configDir = path.join(root, "user-config");
@@ -494,6 +501,7 @@ describe("credential configuration loading", () => {
     const service = `easy-code-agent-test-${process.pid}-${randomUUID()}`;
     const secret = `easy-code-test-${randomUUID()}`;
     const store = new SystemKeyringCredentialStore(service);
+    assert.equal(readOwnedResources().some(item => item.kind === "credential" && item.connection === service), false);
     try {
       await store.set("qwen", secret);
       assert.equal(await store.get("qwen"), secret);
@@ -501,6 +509,7 @@ describe("credential configuration loading", () => {
       assert.equal(await store.get("qwen"), undefined);
     } finally {
       await store.delete("qwen").catch(() => false);
+      assert.equal(readOwnedResources().some(item => item.kind === "credential" && item.connection === service), false);
     }
   });
 

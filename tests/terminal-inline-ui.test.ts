@@ -627,7 +627,7 @@ describe("Terminal retained inline shell", () => {
         assert.match(rendered, /DeepSeek\/v4-pro/u);
         assert.match(rendered, /Tasks 2\/3/u);
         assert.match(rendered, /Implement backend/u);
-        assert.match(rendered, /Agents 1\/4/u);
+        assert.doesNotMatch(rendered, /Agents 1\/4/u);
         assert.match(rendered, /backend-auth/u);
         assert.match(rendered, /Waiting for deepseek-v4-pro/u);
 
@@ -659,7 +659,7 @@ describe("Terminal retained inline shell", () => {
         const footer = disclosureRegionText(terminal, "footer");
         const statusOffset = footer.indexOf("auto  deepseek/v4-pro");
         const tasksOffset = footer.indexOf("Tasks 2/3");
-        const agentsOffset = footer.indexOf("Agents 1/4");
+        const agentsOffset = footer.indexOf("backend-auth");
         assert.ok(statusOffset >= 0);
         assert.ok(statusOffset < tasksOffset);
         assert.ok(tasksOffset < agentsOffset);
@@ -904,10 +904,11 @@ describe("Terminal retained inline shell", () => {
         assert.match(activeComposer, /╭─ Request/u);
         const activeFooter = disclosureRegionText(terminal, "footer");
         const tasksOffset = activeFooter.indexOf("Tasks 2/3");
-        const agentsOffset = activeFooter.indexOf("Agents 1/4");
+        const agentsOffset = activeFooter.indexOf("backend-auth");
         const metadataOffset = activeFooter.indexOf("auto");
         assert.ok(metadataOffset >= 0 && metadataOffset < tasksOffset);
-        assert.ok(tasksOffset < agentsOffset);
+        assert.doesNotMatch(activeFooter, /Agents 1\/4/u);
+        if (agentsOffset >= 0) assert.ok(tasksOffset < agentsOffset);
         terminal.stopActivity();
 
         input.write("A request long enough to wrap across several terminal rows");
@@ -928,10 +929,7 @@ describe("Terminal retained inline shell", () => {
           afterStatusFooter.indexOf("auto  deepseek/v4-pro") <
             afterStatusFooter.indexOf("Tasks 2/3"),
         );
-        assert.ok(
-          afterStatusFooter.indexOf("Tasks 2/3") <
-            afterStatusFooter.indexOf("Agents 1/4"),
-        );
+        assert.doesNotMatch(afterStatusFooter, /Agents 1\/4/u);
 
         output.columns = 44;
         output.emit("resize");
@@ -2728,7 +2726,7 @@ describe("Terminal retained inline shell", () => {
         assert.equal(terminalState(terminal).live.thinking, null);
         assert.match(
           terminalState(terminal).transcript.at(-1)?.text ?? "",
-          /Thinking block #1 is historical or unavailable; use \/thinking 1 to view retained content\./u,
+          /Thinking block #1 is historical or unavailable in the current terminal view\./u,
         );
 
         terminal.clearReasoning();

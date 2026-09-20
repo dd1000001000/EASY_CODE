@@ -78,7 +78,9 @@ export interface AgentPresentationPort {
   warning(text: string): void;
   error(text: string): void;
   status(text: string): void;
-  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string): void;
+  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
+    details?: readonly import("../core/types.js").ToolDisplayDetail[]): void;
+  threadTitleChanged?(title: string): void;
   fileDiff(presentation: FileDiffPresentation): void;
   taskGraph(graph: Readonly<TaskGraphView>): void;
   showTaskGraphSnapshot(graph: Readonly<TaskGraphView>): void;

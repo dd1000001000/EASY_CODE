@@ -26,10 +26,11 @@ import {
   type ApiKeyCredentialStore,
 } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
+import { readLastModel, writeLastModel } from "./config/last-model.js";
 import { McpConfigStore, USER_MCP_CONFIG_PATH, type RemoteMcpServerConfig } from "./mcp/config.js";
 import { McpConnections, McpToolSource } from "./mcp/source.js";
 import { authorizeMcpServer, McpOauthCredentials, storedMcpOauthProvider } from "./mcp/oauth.js";
-import { mcpServerActions } from "./mcp/menu.js";
+import { MCP_SERVER_ACTION_IDS, mcpServerActions } from "./mcp/menu.js";
 import { openAuthorizationUrl } from "./mcp/open-authorization.js";
 import { SkillStore } from "./skills/store.js";
 import { sanitizeTerminalText } from "./ui/render/layout.js";
@@ -97,6 +98,8 @@ import {
   loadPromptBundleCatalog,
 } from "./prompt-bundle/index.js";
 import { assertCurrentSessionBindings } from "./protocol/session-bindings.js";
+import { deleteThreadTree } from "./threads/delete-thread.js";
+import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
   DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
@@ -189,6 +192,10 @@ export interface EasyCodeAppOptions {
   /** Dependency injection for sandbox startup tests. */
   sandboxStartupService?: SandboxStartupService;
   terminal?: AppInteractionPort;
+  /** Share this lock between concurrent hosted Threads in one workspace. */
+  workspaceMutationLock?: WorkspaceMutationLock;
+  /** Web hosts reuse one interaction stream while switching workspace sessions. */
+  keepInteractionOpen?: boolean;
   /** Dependency injection for isolated tests; false disables keyring reads. */
   credentialStore?: ApiKeyCredentialStore | false;
   /** Images queued before the first prompt; the option may be repeated by the CLI. */
@@ -529,9 +536,10 @@ export class EasyCodeApp {
   private readonly contextArtifactIndex: ContextArtifactIndex;
   private readonly memoryManager: MemoryManager;
   private readonly threadStore: ThreadStore;
+  private readonly threadTitles: ThreadTitleStore;
   private threadLease: ThreadLease | undefined;
   private readonly imageStore: ImageStore;
-  private readonly workspaceMutationLock = new WorkspaceMutationLock();
+  private readonly workspaceMutationLock: WorkspaceMutationLock;
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
   private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
@@ -560,6 +568,7 @@ export class EasyCodeApp {
     state: SessionState,
     threadLease: ThreadLease,
     private readonly terminal: AppInteractionPort,
+    private readonly keepInteractionOpen: boolean,
     private readonly assumeYes: boolean,
     private readonly trustedOuterSandbox: "harbor" | undefined,
     private readonly credentialStore: ApiKeyCredentialStore | undefined,
@@ -569,7 +578,10 @@ export class EasyCodeApp {
     private readonly toolSourceFactories: readonly ToolSourceFactory[],
     private readonly authorizeToolExecution: ToolExecutionAuthorizer | undefined,
     resumeRecovery?: ResumeRecoverySummary,
+    workspaceMutationLock?: WorkspaceMutationLock,
   ) {
+    this.workspaceMutationLock = workspaceMutationLock ?? new WorkspaceMutationLock();
+    this.threadTitles = new ThreadTitleStore(storage);
     this.workspace = workspace;
     this.terminal.configureStreaming(config.limits);
     this.state = state;
@@ -641,6 +653,9 @@ export class EasyCodeApp {
           this.terminal.stopActivity(activityToken);
         }
       },
+      onViewChange: (parentThreadId) => {
+        if (this.state.threadId === parentThreadId) this.printSubagents();
+      },
       handoff: (artifact, destination) =>
         this.handoffSubagentResult(artifact, destination),
     });
@@ -705,6 +720,16 @@ export class EasyCodeApp {
         workspace.root,
       );
       storage = createStorage(config.dataDir);
+      if (!options.resumeThreadId && !harborProviderApiKey) {
+        const last = readLastModel(storage);
+        if (last) {
+          if (!options.provider && !options.model) {
+            config.provider = last.provider;
+            config.providers[last.provider]!.model = last.model;
+          }
+          if (!options.thinkingEffort) config.thinkingEffort = last.thinkingEffort;
+        }
+      }
       threadStore = new ThreadStore(storage);
       let state: SessionState;
       let shouldCheckpoint = false;
@@ -725,8 +750,13 @@ export class EasyCodeApp {
         }
         assertCurrentSessionBindings(state, {
           promptBundle,
-          modelRegistryHash: config.modelRegistryHash,
         });
+        if (!config.providers[state.provider] || !resolveCatalogModel(state.provider, state.model)) {
+          terminal.warning(`The saved model ${state.provider}/${state.model} is no longer available. Using the current default; choose another with /model.`);
+          state.provider = config.provider;
+          state.model = config.providers[config.provider]!.model;
+          shouldCheckpoint = true;
+        }
         const previousMode = state.mode;
         const previousProvider = state.provider;
         const previousModel = state.model;
@@ -817,6 +847,7 @@ export class EasyCodeApp {
         state,
         threadLease,
         terminal,
+        options.keepInteractionOpen ?? false,
         options.assumeYes ?? false,
         trustedOuterSandbox,
         credentialStore,
@@ -830,6 +861,7 @@ export class EasyCodeApp {
         options.toolSourceFactories ?? [],
         options.authorizeToolExecution,
         resumeRecovery,
+        options.workspaceMutationLock,
       );
       try {
         await app.imageStore.initialize();
@@ -844,6 +876,7 @@ export class EasyCodeApp {
         for (const imagePath of options.imagePaths ?? []) {
           await app.queueImagePath(imagePath, false);
         }
+        if (!harborProviderApiKey) app.rememberLastModel();
       } catch (error) {
         const setupErrors: unknown[] = [error];
         try {
@@ -959,9 +992,31 @@ export class EasyCodeApp {
   }
 
   sessionInfo(): UISessionInfo { return this.terminalSessionInfo(); }
+  async selectHostedModel(): Promise<void> {
+    this.assertNoRunningSubagents("switch models or thinking effort");
+    await this.selectModelFromPicker(false);
+  }
+  async selectHostedApproval(): Promise<void> {
+    this.assertNoRunningCommands("change command execution mode");
+    await this.selectCommandExecutionMode(false);
+  }
+  async selectHostedOrchestration(): Promise<void> {
+    await this.updateOrchestration([], false);
+  }
+  dataDirectory(): string { return this.config.dataDir; }
+  allThreads(): readonly ThreadSummary[] {
+    return this.threadStore.list({ limit: 100_000 })
+      .filter(session => !this.threadStore.isBoundSubagentThread(session.threadId));
+  }
   isRequestActive(): boolean { return this.activeTurnController !== undefined; }
   threadEvents(): readonly EventRecord[] { return this.threadStore.journal(this.state.threadId).read(); }
   workspaceThreads(): readonly ThreadSummary[] { return this.resumableThreads(); }
+  deleteHostedThread(threadId: string): readonly string[] {
+    if (this.isRequestActive() || threadId === this.state.threadId) {
+      throw new Error("Switch away from the active conversation before deleting it.");
+    }
+    return deleteThreadTree(this.storage, this.threadStore, threadId);
+  }
   pendingPlan(): PlanProposal | undefined { return this.state.planReview?.proposal; }
   nextHostedImageLabel(stagedCount = 0): string {
     const number = nextThreadImageNumber(this.state.messages, this.pendingImages) + stagedCount;
@@ -1246,6 +1301,7 @@ export class EasyCodeApp {
         this.config.mode = mode;
         this.dirty = true;
         this.save();
+        this.terminal.setSessionInfo(this.terminalSessionInfo());
         this.terminal.success(`Mode switched to ${mode}`);
         return false;
       }
@@ -1271,60 +1327,25 @@ export class EasyCodeApp {
         this.assertNoRunningSubagents("switch models or thinking effort");
         const request = parseModelCommand(command.args);
         if (request.action === "select") {
-          const selection = await this.selectProviderAndModel();
-          if (!selection) {
-            this.terminal.info("Model selection canceled.");
-            return false;
-          }
-          if (!(await this.ensureProviderApiKey(selection.provider))) return false;
-          this.commitModelSelection(
-            selection.provider,
-            selection.model,
-            "Model switched to",
-            selection.thinkingEffort,
-          );
+          await this.selectModelFromPicker(true);
           return false;
         }
 
         const provider = request.provider ?? this.state.provider;
         const model = requireCatalogModel(provider, request.model).id;
         this.requireProviderApiKey(provider);
-        this.commitModelSelection(provider, model);
+        this.commitModelSelection(provider, model, "Model switched to", request.thinkingEffort);
         return false;
       }
       case "orchestration": {
-        if (command.args.length > 1 || (command.args[0] && !["on", "off"].includes(command.args[0]))) {
-          throw new Error("Usage: /orchestration [on|off]");
-        }
-        const selected = command.args[0] ?? await this.terminal.selectChoice(
-          "DAG and subagent creation (reviewer stays enabled)", [
-            { id: "off", label: "Off — lightweight", detail: "No new DAGs or subagents; existing work can still finish." },
-            { id: "on", label: "On — allow orchestration", detail: "Allow DAGs and subagents within configured budgets." },
-          ], this.orchestrationEnabled() ? "on" : "off");
-        if (!selected) { this.terminal.info("Orchestration selection canceled."); return false; }
-        if (selected === "on" && this.commandExecutionMode === "manual") {
-          const confirmed = await this.terminal.selectChoice("Enable orchestration and independent command approvals?", [
-            { id: "cancel", label: "Cancel", detail: "Keep manual approval and orchestration off" },
-            { id: "enable", label: "Enable both", detail: "Approval agent reviews new commands; denied requests come to you" },
-          ], "cancel");
-          if (confirmed !== "enable") return false;
-        }
-        const nextMode = selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
-        this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" } });
-        if (nextMode !== this.commandExecutionMode) this.config.approvalPolicy = "safe";
-        this.commandExecutionMode = nextMode;
-        this.state.orchestrationEnabled = selected === "on";
-        this.dirty = true;
-        this.save();
-        if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
-        this.syncTerminalView();
-        this.terminal.success(`DAG/subagent creation ${selected}; reviewer remains enabled.`);
+        await this.updateOrchestration(command.args);
         return false;
       }
       case "approval":
-        if (command.args.length) throw new Error("Usage: /approval");
+        if (command.args.length > 1 || (command.args[0] && !["manual", "auto_approve", "unrestricted"].includes(command.args[0])))
+          throw new Error("Usage: /approval [manual|auto_approve|unrestricted]");
         this.assertNoRunningCommands("change command execution mode");
-        await this.selectCommandExecutionMode();
+        await this.selectCommandExecutionMode(true, command.args[0] as CommandExecutionMode | undefined);
         return false;
       case "status":
         this.printStatus();
@@ -1358,26 +1379,6 @@ export class EasyCodeApp {
         await this.queueImagePath(command.rawArgs, true);
         return false;
       }
-      case "changes": {
-        this.syncWorkspaceState();
-        const changes = this.state.changes;
-        this.terminal.write(changes.length ? `${json(changes)}\n` : "This thread has no file changes.\n");
-        return false;
-      }
-      case "tasks": {
-        if (command.args.length) throw new Error("Usage: /tasks");
-        if (this.state.taskGraph) {
-          this.terminal.showTaskGraphSnapshot(taskGraphView(this.state.taskGraph));
-        } else {
-          this.terminal.write("This thread has no task DAG.\n");
-        }
-        this.printSubagents(true);
-        return false;
-      }
-      case "agents":
-        if (command.args.length) throw new Error("Usage: /agents");
-        this.printSubagents(true);
-        return false;
       case "tools":
         await this.printTools();
         return false;
@@ -1386,17 +1387,17 @@ export class EasyCodeApp {
         await this.showSkills();
         return false;
       case "mcp":
-        if (command.args.length) throw new Error("Usage: /mcp");
-        await this.showMcpServers();
+        if (command.args.length !== 0 && command.args.length !== 2)
+          throw new Error(`Usage: /mcp [server-id ${MCP_SERVER_ACTION_IDS.join("|")}]`);
+        if (command.args.length === 2 && (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/u.test(command.args[0]!) ||
+          !(MCP_SERVER_ACTION_IDS as readonly string[]).includes(command.args[1]!)))
+          throw new Error("Invalid MCP server or action.");
+        await this.showMcpServers(command.args.length === 2
+          ? { serverId: command.args[0]!, action: command.args[1]! } : undefined);
         return false;
       case "permissions":
         this.updatePermissions(command.args);
         return false;
-      case "commands": {
-        const commands = this.state.commands.slice(-20);
-        this.terminal.write(commands.length ? `${json(commands)}\n` : "This thread has no command history.\n");
-        return false;
-      }
       case "context":
         this.terminal.write(`${json({
           configuredWindowTokens: this.config.limits.maxContextTokens,
@@ -1428,56 +1429,6 @@ export class EasyCodeApp {
       case "memory":
         this.printMemory(command.args);
         return false;
-      case "thinking": {
-        if (command.args.length > 1) {
-          throw new Error("Usage: /thinking [id|last]");
-        }
-        const rawTarget = command.args[0]?.toLowerCase();
-        let target: number | "last" = "last";
-        if (rawTarget && rawTarget !== "last") {
-          if (!/^[1-9][0-9]{0,15}$/u.test(rawTarget)) {
-            throw new Error("Usage: /thinking [id|last]");
-          }
-          const id = Number(rawTarget);
-          if (!Number.isSafeInteger(id)) {
-            throw new Error("Usage: /thinking [id|last]");
-          }
-          target = id;
-        }
-        if (!this.terminal.showReasoning(target)) {
-          this.terminal.info(
-            target === "last"
-              ? "No Thinking content is available in this thread."
-              : `Thinking block #${target} is not available in this thread.`,
-          );
-        }
-        return false;
-      }
-      case "adjustment": {
-        if (command.args.length > 1) {
-          throw new Error("Usage: /adjustment [id|last]");
-        }
-        const rawTarget = command.args[0]?.toLowerCase();
-        let target: number | "last" = "last";
-        if (rawTarget && rawTarget !== "last") {
-          if (!/^[1-9][0-9]{0,15}$/u.test(rawTarget)) {
-            throw new Error("Usage: /adjustment [id|last]");
-          }
-          const id = Number(rawTarget);
-          if (!Number.isSafeInteger(id)) {
-            throw new Error("Usage: /adjustment [id|last]");
-          }
-          target = id;
-        }
-        if (!this.terminal.showAdjustment(target)) {
-          this.terminal.info(
-            target === "last"
-              ? "No queued adjustment is available in this thread."
-              : `Queued adjustment #${target} is not available in this thread.`,
-          );
-        }
-        return false;
-      }
       case "sessions":
         this.printSessions();
         return false;
@@ -1488,6 +1439,7 @@ export class EasyCodeApp {
           this.terminal.info("Resume canceled.");
           return false;
         }
+        if (!command.args.length) return this.handleSlashCommand(`/resume ${threadId}`);
         await this.clearPendingImages();
         await this.resumeThread(threadId);
         this.syncTerminalView(true);
@@ -1576,7 +1528,7 @@ export class EasyCodeApp {
       cleanupErrors.push(error);
     }
     try {
-      this.terminal.close();
+      if (!this.keepInteractionOpen) this.terminal.close();
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -1953,6 +1905,11 @@ export class EasyCodeApp {
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,
         effectiveConfig.providers[provider.name]!.baseUrl]), this.storage),
       toolCatalog,
+      threadTitle: {
+        isUnclaimed: (threadId) => this.threadTitles.isUnclaimed(threadId),
+        claim: (threadId, title) => this.threadTitles.claim(threadId, title),
+      },
+      onThreadTitleClaimed: (title) => this.terminal.threadTitleChanged?.(title),
       connectedMcpServers: this.mcpConnections?.connectedServers() ?? [],
       visionAvailable: visionCapable,
       authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
@@ -2071,13 +2028,18 @@ export class EasyCodeApp {
           await this.imageStore.commit(threadId, attachment);
         }
       },
-      onToolCompleted: async (_state, toolName, result, displayName) => {
+      onToolCompleted: async (_state, toolName, result, displayName, details) => {
         this.terminal.toolCompleted(
           displayName ?? toolName,
           result.ok,
           result.summary,
           result.error,
+          details,
         );
+        if (toolName === "name_thread" && result.ok) {
+          const title = (result.data as { title?: unknown } | undefined)?.title;
+          if (typeof title === "string") this.terminal.threadTitleChanged?.(title);
+        }
         let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
         if (result.ok && result.subagentLifecycle) {
           const artifacts = this.subagentCoordinator.commitLifecycle(
@@ -2366,7 +2328,6 @@ export class EasyCodeApp {
         childState = existingChild;
         assertCurrentSessionBindings(childState, {
           promptBundle: this.state.promptBundle,
-          modelRegistryHash: this.state.modelRegistryHash,
         });
       } else {
         childState = this.threadStore.create({
@@ -2506,6 +2467,10 @@ export class EasyCodeApp {
         assignedTaskId: request.task.id,
       };
       const runtime = new AgentRuntime({
+        onModelRequestStart: () => request.reportActivity("thinking"),
+        onModelRequestEnd: () => request.reportActivity("working"),
+        onToolExecutionStart: (toolName) => request.reportActivity("tool", toolName),
+        onToolExecutionEnd: () => request.reportActivity("working"),
         provider,
         limits: this.config.limits,
         taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
@@ -3376,8 +3341,8 @@ export class EasyCodeApp {
     return true;
   }
 
-  private async selectCommandExecutionMode(): Promise<void> {
-    const selected = await this.terminal.selectChoice(
+  private async selectCommandExecutionMode(announceCancellation = true, requested?: CommandExecutionMode): Promise<void> {
+    const selected = requested ?? await this.terminal.selectChoice(
       "Select command execution mode",
       [
         {
@@ -3399,7 +3364,11 @@ export class EasyCodeApp {
       this.commandExecutionMode,
     ) as CommandExecutionMode | undefined;
     if (!selected) {
-      this.terminal.info("Command execution mode selection canceled.");
+      if (announceCancellation) this.terminal.info("Command execution mode selection canceled.");
+      return;
+    }
+    if (!requested) {
+      await this.handleSlashCommand(`/approval ${selected}`);
       return;
     }
 
@@ -3433,7 +3402,7 @@ export class EasyCodeApp {
         "cancel",
       );
       if (confirmed !== "confirm") {
-        this.terminal.info("Full access was not enabled.");
+        if (announceCancellation) this.terminal.info("Full access was not enabled.");
         return;
       }
     }
@@ -3478,6 +3447,16 @@ export class EasyCodeApp {
         "FULL ACCESS: host command execution without sandbox or approvals. Plan commands may write files. Use /approval to change this mode.",
       );
     }
+  }
+
+  private async selectModelFromPicker(announceCancellation: boolean): Promise<void> {
+    const selection = await this.selectProviderAndModel();
+    if (!selection) {
+      if (announceCancellation) this.terminal.info("Model selection canceled.");
+      return;
+    }
+    if (!(await this.ensureProviderApiKey(selection.provider))) return;
+    await this.handleSlashCommand(`/model ${selection.provider} ${selection.model} ${selection.thinkingEffort}`);
   }
 
   private async selectProviderAndModel(): Promise<{
@@ -3585,6 +3564,7 @@ export class EasyCodeApp {
       this.dirty = previous.dirty;
       throw error;
     }
+    this.rememberLastModel();
     const applied = thinkingEffortIsApplied(provider, canonicalModel, thinkingEffort);
     this.terminal.success(
       `${verb} ${providerLabel(provider)} / ${canonicalModel} / thinking ${thinkingEffort}` +
@@ -3595,6 +3575,18 @@ export class EasyCodeApp {
         `${this.pendingImages.length} queued image(s) remain attached, but this model cannot receive them. ` +
           "Choose an image-capable model before submitting the task.",
       );
+    }
+  }
+
+  private rememberLastModel(): void {
+    try {
+      writeLastModel(this.storage, {
+        provider: this.state.provider,
+        model: this.state.model,
+        thinkingEffort: this.state.thinkingEffort,
+      });
+    } catch (error) {
+      this.terminal.warning(`Could not save the last-used model: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -3806,6 +3798,42 @@ export class EasyCodeApp {
     return this.commandExecutionMode !== "manual" && this.state.orchestrationEnabled;
   }
 
+  private async updateOrchestration(args: readonly string[] = [], reportCancel = true): Promise<void> {
+    if (args.length > 1 || (args[0] && !["on", "off"].includes(args[0]))) {
+      throw new Error("Usage: /orchestration [on|off]");
+    }
+    const selected = args[0] ?? await this.terminal.selectChoice(
+      "DAG and subagent creation (reviewer stays enabled)", [
+        { id: "off", label: "Off — lightweight", detail: "No new DAGs or subagents; existing work can still finish." },
+        { id: "on", label: "On — allow orchestration", detail: "Allow DAGs and subagents within configured budgets." },
+      ], this.orchestrationEnabled() ? "on" : "off");
+    if (!selected) {
+      if (reportCancel) this.terminal.info("Orchestration selection canceled.");
+      return;
+    }
+    if (!args.length) {
+      await this.handleSlashCommand(`/orchestration ${selected}`);
+      return;
+    }
+    if (selected === "on" && this.commandExecutionMode === "manual") {
+      const confirmed = await this.terminal.selectChoice("Enable orchestration and independent command approvals?", [
+        { id: "cancel", label: "Cancel", detail: "Keep manual approval and orchestration off" },
+        { id: "enable", label: "Enable both", detail: "Approval agent reviews new commands; denied requests come to you" },
+      ], "cancel");
+      if (confirmed !== "enable") return;
+    }
+    const nextMode = selected === "on" && this.commandExecutionMode === "manual" ? "auto_approve" : this.commandExecutionMode;
+    this.threadStore.appendEvent(this.state.threadId, { type: "approval.mode_changed", payload: { previousMode: this.commandExecutionMode, selected: nextMode, orchestrationEnabled: selected === "on" } });
+    if (nextMode !== this.commandExecutionMode) this.config.approvalPolicy = "safe";
+    this.commandExecutionMode = nextMode;
+    this.state.orchestrationEnabled = selected === "on";
+    this.dirty = true;
+    this.save();
+    if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activatePrepared(this.state.threadId);
+    this.syncTerminalView();
+    this.terminal.success(`DAG/subagent creation ${selected}; reviewer remains enabled.`);
+  }
+
   private hasActiveOrchestration(): boolean {
     return Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") ||
       this.subagentCoordinator.hasUnfinished(this.state.threadId) || this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
@@ -3950,6 +3978,7 @@ export class EasyCodeApp {
     let nextWorkspace: WorkspaceManager;
     let restoredWorkspace: WorkspaceRestoreSummary;
     let restoredChangesChanged = false;
+    let resumedModelChanged = false;
     let repairedInterruptedTurn: boolean;
     let releasedOrphanedSubagents = 0;
     try {
@@ -3962,8 +3991,13 @@ export class EasyCodeApp {
       recovered = this.threadStore.recover(threadId);
       assertCurrentSessionBindings(recovered, {
         promptBundle: activePromptBundleBinding(),
-        modelRegistryHash: this.config.modelRegistryHash,
       });
+      if (!this.config.providers[recovered.provider] || !resolveCatalogModel(recovered.provider, recovered.model)) {
+        this.terminal.warning(`The saved model ${recovered.provider}/${recovered.model} is no longer available. Using the current default; choose another with /model.`);
+        recovered.provider = this.config.provider;
+        recovered.model = this.config.providers[this.config.provider]!.model;
+        resumedModelChanged = true;
+      }
       if (!samePath(recovered.workspaceRoot, this.workspace.root)) {
         throw new Error(
           `Thread ${threadId} belongs to ${recovered.workspaceRoot}; restart with --workspace for that directory.`,
@@ -4053,6 +4087,7 @@ export class EasyCodeApp {
     this.dirty =
       restoredWorkspace.staleReadVersions > 0 ||
       restoredChangesChanged ||
+      resumedModelChanged ||
       repairedInterruptedTurn ||
       releasedOrphanedSubagents > 0;
     const restoredReasoningBlocks = this.restoreReasoningHistory();
@@ -4071,6 +4106,7 @@ export class EasyCodeApp {
       recoveredStandaloneSubagents,
     };
     this.save();
+    this.rememberLastModel();
   }
 
   private requireThreadLease(): ThreadLease {
@@ -4253,21 +4289,13 @@ export class EasyCodeApp {
     );
   }
 
-  private printSubagents(snapshot = false): void {
+  private printSubagents(): void {
     const taskGraph = this.state.taskGraph
       ? taskGraphView(this.state.taskGraph)
       : undefined;
     const agents = this.subagentCoordinator.snapshot(this.state.threadId);
     const concurrencyLimit = this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort];
-    if (snapshot) {
-      this.terminal.showSubagentsSnapshot(
-        agents,
-        taskGraph,
-        concurrencyLimit,
-      );
-    } else {
-      this.terminal.subagents(agents, taskGraph, concurrencyLimit);
-    }
+    this.terminal.subagents(agents.filter(agent => agent.status === "running" || agent.status === "stopping"), taskGraph, concurrencyLimit);
   }
 
   private requireProviderApiKey(provider: ProviderName): void {
@@ -4291,6 +4319,7 @@ export class EasyCodeApp {
         id: toolMetadata(tool).identity.id,
         source: toolMetadata(tool).identity.sourceId,
         name: tool.name,
+        description: tool.definition.function.description,
         available:
           availableForMode,
         mutating: tool.mutating,
@@ -4314,15 +4343,16 @@ export class EasyCodeApp {
     for (const warning of listing.warnings) this.terminal.warning(`Skill skipped: ${safeLine(warning)}`);
   }
 
-  private async showMcpServers(): Promise<void> {
+  private async showMcpServers(requested?: { serverId: string; action: string }): Promise<void> {
     for (;;) {
       const config = await this.mcpConfigStore.read();
       const servers = Object.entries(config.servers).sort(([left], [right]) => left.localeCompare(right));
       if (servers.length === 0) {
+        if (requested) throw new Error(`MCP server ${requested.serverId} is not configured.`);
         this.terminal.info(`User MCPs (${this.mcpConfigStore.filePath}): none configured. Ask the agent to add a server.`);
         return;
       }
-      const selected = await this.terminal.selectChoice(
+      const selected = requested?.serverId ?? await this.terminal.selectChoice(
         `User MCPs (${this.mcpConfigStore.filePath})`,
         servers.map(([id, server]) => ({
           id,
@@ -4334,7 +4364,10 @@ export class EasyCodeApp {
       );
       if (!selected) return;
       const server = config.servers[selected];
-      if (!server) continue;
+      if (!server) {
+        if (requested) throw new Error(`MCP server ${selected} is not configured.`);
+        continue;
+      }
       let authenticated = false;
       let authStoreReady = true;
       if (server.transport !== "stdio" && server.auth === "oauth") {
@@ -4350,11 +4383,21 @@ export class EasyCodeApp {
       if (!bearerReady) {
         this.terminal.warning(`Set ${server.bearerTokenEnvVar} in EASY CODE's environment before connecting.`);
       }
-      const action = await this.terminal.selectChoice(`MCP server: ${selected}`, mcpServerActions(server, {
+      const availableActions = mcpServerActions(server, {
         connected, authenticated, bearerReady, authStoreReady,
         benchmark: this.trustedOuterSandbox === "harbor",
-      }));
-      if (!action || action === "back") continue;
+      });
+      const action = requested?.action ?? await this.terminal.selectChoice(`MCP server: ${selected}`, availableActions);
+      if (!action || action === "back") {
+        if (requested) return;
+        continue;
+      }
+      if (!availableActions.some(choice => choice.id === action && !choice.disabled))
+        throw new Error(`MCP action ${action} is not available for ${selected}.`);
+      if (!requested) {
+        await this.handleSlashCommand(`/mcp ${selected} ${action}`);
+        return;
+      }
       if (action === "details") {
         this.terminal.write(`${json(server.transport === "stdio"
           ? { id: selected, transport: server.transport, command: server.command, args: server.args,
@@ -4597,6 +4640,7 @@ export class EasyCodeApp {
         downloadBroker,
         limits: this.config.limits,
         mutationLock: this.workspaceMutationLock,
+        threadTitleStore: this.threadTitles,
         ...(this.trustedOuterSandbox ? {} : {
           mcpConfigStore: this.mcpConfigStore,
           onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),

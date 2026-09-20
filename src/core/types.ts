@@ -31,6 +31,7 @@ export type BuiltinToolName =
   | "manage_tasks"
   | "list_mcp_servers"
   | "list_skills"
+  | "name_thread"
   | "read_skill"
   | "create_skill"
   | "modify_skill"
@@ -339,6 +340,11 @@ export interface ToolExecutionResult {
    * message after all matching textual tool results have been appended.
    */
   imageAttachments?: ImageAttachment[];
+}
+
+export interface ToolDisplayDetail {
+  label: string;
+  value: string;
 }
 
 export type ToolContent =

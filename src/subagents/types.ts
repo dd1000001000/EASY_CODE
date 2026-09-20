@@ -65,6 +65,7 @@ export type SpawnSubagentRequest =
       task?: never;
       instructions: string;
       isolation?: SubagentIsolationMode;
+      thinkingEffort?: ThinkingEffort;
     }
   | {
       action: "spawn";
@@ -72,6 +73,7 @@ export type SpawnSubagentRequest =
       task: StandaloneSubagentTask;
       instructions: string;
       isolation?: SubagentIsolationMode;
+      thinkingEffort?: ThinkingEffort;
     };
 
 export interface SubagentStatusRequest {
@@ -172,6 +174,8 @@ export interface SubagentView {
   environment?: SubagentEnvironmentView;
   resultArtifact?: SubagentArtifactView;
   status: SubagentStatus;
+  /** Ephemeral live activity; durable child records remain the source of truth. */
+  activity?: { kind: "working" | "thinking" | "tool"; label?: string; startedAt: string };
   revision: number;
   followUpCount: number;
   result?: SubagentTaskReport;

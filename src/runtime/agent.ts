@@ -1,5 +1,6 @@
 import { unresolvedCommands } from "../context/runtime-state.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
+import { safeToolDisplayDetails, toolDisplayDetails } from "./tool-display-details.js";
 import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
@@ -519,12 +520,19 @@ export interface AgentRuntimeDependencies {
   runReviewSession?: (input: import("../review/application.js").WorkspaceReviewRequest) =>
     Promise<import("../review/application.js").WorkspaceReviewResult>;
   requestApproval: ApprovalHandler;
+  /** Optional conversation metadata service; never controls task execution. */
+  threadTitle?: {
+    isUnclaimed(threadId: string): boolean;
+    claim(threadId: string, title: string): boolean;
+  };
+  onThreadTitleClaimed?: (title: string) => void;
   recordCommand?: (turnId: string, entry: CommandAuditEntry) => void;
   onToolCompleted?: (
     state: SessionState,
     toolName: string,
     result: ToolExecutionResult,
     displayName?: string,
+    details?: readonly import("../core/types.js").ToolDisplayDetail[],
   ) => Promise<void>;
   /** Roll back a prepared child lifecycle when its authoritative event cannot commit. */
   onSubagentLifecycleRollback?: (update: SubagentLifecycleUpdate) => void;
@@ -637,6 +645,11 @@ function availableTools(
     orchestrationAvailable,
     visionAvailable,
   });
+}
+
+function threadTitleUnclaimed(dependencies: AgentRuntimeDependencies, threadId: string): boolean {
+  try { return dependencies.threadTitle?.isUnclaimed(threadId) ?? false; }
+  catch { return false; } // Naming metadata must not block the user's request.
 }
 
 function resultForModel(result: ToolExecutionResult, maximumChars: number): string {
@@ -1253,6 +1266,7 @@ export class AgentRuntime {
             const autoRouteContext: AutoRouteContext = {
               workingSummary: state.workingSummary,
               priorMessages: state.messages.slice(priorMessagesStart, turnHistoryStart),
+              threadNeedsTitle: threadTitleUnclaimed(this.dependencies, state.threadId),
             };
             const autoRouteBoundary = priorMessagesStart +
               projectAutoRouteContext(autoRouteContext).priorMessageBoundary;
@@ -1416,6 +1430,16 @@ export class AgentRuntime {
           }
           const decision = routed.value;
           await this.reportAutoRouteUsage(state, turnId, decision.attempts);
+          if (decision.threadTitle) {
+            try {
+              if (this.dependencies.threadTitle?.claim(state.threadId, decision.threadTitle)) {
+                this.dependencies.onThreadTitleClaimed?.(decision.threadTitle);
+              }
+            }
+            catch (error) {
+              this.dependencies.onStatus?.(`Thread naming was skipped: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
           if (await this.takeAndApplySteering(
             state,
             turnId,
@@ -1518,7 +1542,7 @@ export class AgentRuntime {
       state.thinkingEffort,
       this.orchestrationToolsAvailable(state, options),
       this.dependencies.visionAvailable ?? true,
-    );
+    ).filter(tool => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId));
     const exposedToolCatalog = snapshotToolSet(
       exposedTools,
       this.dependencies.toolCatalog.revision,
@@ -2772,6 +2796,13 @@ export class AgentRuntime {
         if (!result.ok) rollbackPreparedSubagent();
         const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
         const contextReconciliation = reconciliationObservation(state, toolName, result);
+        let displayDetails: ReturnType<typeof safeToolDisplayDetails> = [];
+        try {
+          displayDetails = safeToolDisplayDetails(toolDisplayDetails(
+            tool, toolName, call.function.arguments, result, state));
+        } catch {
+          // Presentation metadata must never prevent a tool result from being committed.
+        }
         try {
           await this.dependencies.appendEvent({
             eventId: toolResultEventId,
@@ -2787,6 +2818,7 @@ export class AgentRuntime {
                 ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
                 : {}),
               message: toolMessage,
+              ...(displayDetails.length ? { toolDetails: displayDetails } : {}),
               progressObservation,
               ...(contextCommand ? { contextCommand } : {}),
               ...(contextReconciliation ? { contextReconciliation } : {}),
@@ -2838,7 +2870,7 @@ export class AgentRuntime {
         if (toolName === "write_memory" && result.ok && result.memoryMutation) {
           memoryContext.mutations.push(result.memoryMutation);
         }
-        await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName);
+        await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
       }
 
       if (environmentFault) {

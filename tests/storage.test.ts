@@ -67,27 +67,13 @@ async function waitForOutput(
 }
 
 describe("storage", () => {
-  it("migrates the current memory database once without retaining evidence grades", () => {
+  it("does not migrate a previous development database", () => {
     const db = new SqliteDatabase(":memory:");
     try {
-      db.exec("CREATE TABLE easy_code_schema(schema_version INTEGER PRIMARY KEY CHECK(schema_version = 3), schema_id TEXT NOT NULL UNIQUE)");
-      db.exec("INSERT INTO easy_code_schema VALUES (3, 'easy-code-0.1.0-memory-lifecycle')");
-      db.exec("CREATE TABLE memories(id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, scope TEXT NOT NULL, category TEXT NOT NULL, content TEXT NOT NULL, normalized_content TEXT NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL)");
-      db.exec("CREATE TABLE memory_vector_state(workspace_id TEXT PRIMARY KEY, generation INTEGER NOT NULL, updated_at TEXT NOT NULL)");
-      db.exec("CREATE TRIGGER memories_vector_state_update AFTER UPDATE OF confidence ON memories BEGIN SELECT 1; END");
-      db.exec("CREATE TABLE memory_provenance(memory_id TEXT PRIMARY KEY, document_json TEXT NOT NULL)");
-      db.exec("INSERT INTO memories VALUES ('existing', 'project', 'project', 'convention', 'kept', 'kept', 0.82, 'active')");
-      db.exec("INSERT INTO memory_provenance VALUES ('existing', '{\"version\":1,\"verification\":\"observed\",\"refs\":[],\"files\":[]}')");
-      db.pragma("user_version = 3");
-      initializeCurrentSchema(db);
-      assert.equal(db.pragma("user_version", { simple: true }), 4);
-      assert.equal(db.prepare<[], { content: string }>(
-        "SELECT content FROM memories WHERE id = 'existing'").get()?.content, "kept");
-      assert.equal(db.prepare<[], { name: string }>("PRAGMA table_info(memories)").all()
-        .some((column) => column.name === "confidence"), false);
-      assert.deepEqual(JSON.parse(db.prepare<[], { document_json: string }>(
-        "SELECT document_json FROM memory_provenance WHERE memory_id = 'existing'").get()!.document_json),
-        { version: 1, refs: [], files: [] });
+      db.exec("CREATE TABLE easy_code_schema(schema_version INTEGER PRIMARY KEY, schema_id TEXT NOT NULL UNIQUE)");
+      db.exec("INSERT INTO easy_code_schema VALUES (4, 'easy-code-0.1.0-model-directed-memory')");
+      db.pragma("user_version = 4");
+      assert.throws(() => initializeCurrentSchema(db), /Unsupported EASY CODE development database/u);
     } finally { db.close(); }
   });
   it("does not provide compatibility for older database layouts", () => {
@@ -138,6 +124,8 @@ describe("storage", () => {
         "thread_leases",
         "memory_recall_events",
         "memory_maintenance_jobs",
+        "projects",
+        "preferences",
       ]) {
         assert.ok(tables.includes(required), `missing table ${required}`);
       }
@@ -153,10 +141,10 @@ describe("storage", () => {
           )
           .get();
         assert.deepEqual(identity, {
-          schema_version: 4,
-          schema_id: "easy-code-0.1.0-model-directed-memory",
+          schema_version: 5,
+          schema_id: "easy-code-0.1.0-project-library",
         });
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 4);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 5);
       } finally {
         reopened.close();
       }

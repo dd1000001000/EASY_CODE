@@ -15,7 +15,13 @@ import type {
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/approval.js";
-import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebPatch, WebView } from "../web-contracts.js";
+import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
+
+export const WEB_HISTORY_PAGE_SIZE = 80;
+function userMarker(entry: WebEntry): WebHistoryMarker {
+  return { id: entry.id,
+    preview: (entry.text.replace(/\s+/gu, " ").trim() || (entry.images?.length ? "Image attachment" : "Your message")).slice(0, 120) };
+}
 
 interface PendingDecision {
   readonly request: WebDecision;
@@ -27,6 +33,9 @@ interface PendingDecision {
 /** Browser presentation only. Runtime decisions still pass through the existing app boundary. */
 export class WebInteraction implements AppInteractionPort {
   private entries: WebEntry[] = [];
+  private readonly entryById = new Map<string, WebEntry>();
+  private userMarkers: WebHistoryMarker[] = [];
+  private historyEpoch = randomUUID();
   private session: UISessionInfo | null = null;
   private tasks: TaskGraphView | null = null;
   private subagentsView: readonly SubagentView[] = [];
@@ -45,12 +54,51 @@ export class WebInteraction implements AppInteractionPort {
   private externalOperation?: AbortController;
 
   snapshot(): WebChange { return { sequence: this.sequence, view: this.view() }; }
+  historyPage(options: { before?: string; after?: string; around?: string } = {}): WebHistoryPage {
+    if ([options.before, options.after, options.around].filter(Boolean).length > 1) {
+      throw new Error("Choose one history cursor.");
+    }
+    let start = Math.max(0, this.entries.length - WEB_HISTORY_PAGE_SIZE);
+    let end = this.entries.length;
+    if (options.before) {
+      end = this.entries.findIndex(entry => entry.id === options.before);
+      if (end < 0) throw new Error("History cursor is no longer available.");
+      start = Math.max(0, end - WEB_HISTORY_PAGE_SIZE);
+    } else if (options.after) {
+      const index = this.entries.findIndex(entry => entry.id === options.after);
+      if (index < 0) throw new Error("History cursor is no longer available.");
+      start = index + 1;
+      end = Math.min(this.entries.length, start + WEB_HISTORY_PAGE_SIZE);
+    } else if (options.around) {
+      const index = this.entries.findIndex(entry => entry.id === options.around);
+      if (index < 0) throw new Error("History target is no longer available.");
+      start = Math.max(0, index - Math.floor(WEB_HISTORY_PAGE_SIZE / 2));
+      end = Math.min(this.entries.length, start + WEB_HISTORY_PAGE_SIZE);
+      start = Math.max(0, end - WEB_HISTORY_PAGE_SIZE);
+    }
+    if (!options.after && start > 0) {
+      // Keep a nearby user turn intact without allowing one huge turn to defeat paging.
+      for (let index = start; index >= Math.max(0, start - 24); index -= 1) {
+        if (this.entries[index]?.kind === "user") { start = index; break; }
+      }
+    }
+    return { entries: this.entries.slice(start, end).map(entry => ({ ...entry })),
+      hasEarlier: start > 0, hasLater: end < this.entries.length };
+  }
+  historyState(page = this.historyPage()): WebHistoryState {
+    return { epoch: this.historyEpoch, hasEarlier: page.hasEarlier,
+      markers: this.userMarkers.map(marker => ({ ...marker })) };
+  }
   subscribe(listener: (change: WebChange) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
   loadHistory(entries: readonly WebEntry[]): void {
     this.entries = entries.map(entry => ({ ...entry }));
+    this.entryById.clear();
+    for (const entry of this.entries) this.entryById.set(entry.id, entry);
+    this.userMarkers = this.entries.filter(entry => entry.kind === "user").map(userMarker);
+    this.historyEpoch = randomUUID();
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
     this.emit({ kind: "entries.reset", entries: this.entries });
@@ -107,19 +155,23 @@ export class WebInteraction implements AppInteractionPort {
   private safe(text: string): string {
     return redactSensitiveInformation(sanitizeTerminalText(text, { allowSgr: false }));
   }
-  private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[], diff?: FileDiffPresentation): string {
+  private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[], diff?: FileDiffPresentation,
+    toolDetails?: WebEntry["toolDetails"]): string {
     const id = randomUUID();
     const entry: WebEntry = {
       id, kind, text: this.safe(text), timestamp: Date.now(),
       ...(images?.length ? { images: images.map(({ id, label, mediaType }) => ({ id, label, mediaType })) } : {}),
       ...(diff ? { diff } : {}),
+      ...(toolDetails?.length ? { toolDetails: toolDetails.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) } : {}),
     };
     this.entries.push(entry);
+    this.entryById.set(id, entry);
+    if (kind === "user") this.userMarkers.push(userMarker(entry));
     this.emit({ kind: "entry.append", entry });
     return id;
   }
   private replace(id: string, text: string): void {
-    const entry = this.entries.find(item => item.id === id);
+    const entry = this.entryById.get(id);
     if (!entry) return;
     entry.text = this.safe(text);
     this.emit({ kind: "entry.replace", entry });
@@ -140,8 +192,13 @@ export class WebInteraction implements AppInteractionPort {
   warning(text: string): void { this.append("warning", text); }
   error(text: string): void { this.append("error", text); }
   status(text: string): void { this.append("info", text); }
-  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string): void {
-    this.append("tool", `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`);
+  toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
+    details?: WebEntry["toolDetails"]): void {
+    this.append("tool", `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`,
+      undefined, undefined, details);
+  }
+  threadTitleChanged(title: string): void {
+    if (this.session) this.emit({ kind: "thread.title", threadId: this.session.threadId, title: this.safe(title) });
   }
   fileDiff(presentation: FileDiffPresentation): void {
     this.append("diff", `${presentation.operation ?? "update"}: ${presentation.path}`, undefined,
@@ -172,11 +229,11 @@ export class WebInteraction implements AppInteractionPort {
       return;
     } else if (event.kind === "reasoning_delta") {
       if (!this.currentReasoningId) this.currentReasoningId = this.append("thinking", "");
-      const entry = this.entries.find(item => item.id === this.currentReasoningId);
+      const entry = this.entryById.get(this.currentReasoningId);
       this.replace(this.currentReasoningId, (entry?.text ?? "") + event.text);
     } else if (event.kind === "text_delta") {
       if (!this.currentAnswerId) this.currentAnswerId = this.append("assistant", "");
-      const entry = this.entries.find(item => item.id === this.currentAnswerId);
+      const entry = this.entryById.get(this.currentAnswerId);
       this.replace(this.currentAnswerId, (entry?.text ?? "") + event.text);
     }
   }
@@ -241,13 +298,12 @@ export class WebInteraction implements AppInteractionPort {
     return value === "allow_once" || value === "allow_prefix" ? value : "reject";
   }
   selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string): Promise<string | undefined> {
-    void initialId;
-    return this.awaitDecision({ id: randomUUID(), kind: "choice", title: this.safe(title), choices });
+    return this.awaitDecision({ id: randomUUID(), kind: "choice", title: this.safe(title), choices,
+      ...(initialId ? { initialId } : {}) });
   }
   selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined> {
-    void initialProvider;
     return this.selectChoice("Select provider", choices.map(item => ({ id: item.provider, label: item.label,
-      detail: item.apiKeyConfigured ? "API key configured" : "API key required" }))) as Promise<ProviderSelectorChoice["provider"] | undefined>;
+      detail: item.apiKeyConfigured ? "API key configured" : "API key required" })), initialProvider) as Promise<ProviderSelectorChoice["provider"] | undefined>;
   }
   selectModel(providerName: string, choices: readonly ModelSelectorChoice[], initialModel?: string): Promise<string | undefined> {
     return this.selectChoice(`Select ${providerName} model`, choices.map(item => ({ id: item.id, label: item.label,
@@ -287,15 +343,32 @@ export class WebInteraction implements AppInteractionPort {
   setCurrentRequest(_text: string, _images?: readonly Readonly<ImageAttachment>[], _options?: Readonly<CurrentRequestOptions>): void {
     this.busy = true; this.emit();
   }
-  clearCurrentRequest(): void { this.busy = false; this.emit(); }
+  clearCurrentRequest(): void {
+    this.busy = false;
+    this.activities.clear();
+    this.review = null;
+    this.emit();
+  }
   async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> { return seal(); }
   resetForNewThread(session: Readonly<UISessionInfo>): void {
     this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.entryById.clear();
+    this.userMarkers = [];
+    this.historyEpoch = randomUUID();
     this.session = { ...session };
     this.emit({ kind: "entries.reset", entries: [] });
     this.emit();
   }
-  clearScreen(): void { this.entries = []; this.emit({ kind: "entries.reset", entries: [] }); }
+  clearHostedSession(): void {
+    this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.entryById.clear();
+    this.userMarkers = [];
+    this.historyEpoch = randomUUID();
+    this.session = null; this.busy = false; this.cancelPendingDecisions();
+    this.emit({ kind: "entries.reset", entries: [] });
+    this.emit();
+  }
+  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
   emergencyRestore(): void { this.clearCurrentRequest(); }
   close(): void {
     this.closed = true; this.externalOperation?.abort();

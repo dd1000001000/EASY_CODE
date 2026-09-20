@@ -110,6 +110,7 @@ describe("subagent control tools", () => {
       action: "spawn",
       taskId: "implementation",
       instructions: "Inspect the target and implement the focused change.",
+      thinkingEffort: "low",
     }, context())).ok, true);
     assert.equal((await tool.execute({
       action: "status",
@@ -148,6 +149,8 @@ describe("subagent control tools", () => {
     assert.equal(wait?.action, "wait");
     if (wait?.action === "wait") assert.equal(wait.timeoutMs, 30_000);
     assert.equal(control.authorizationChecks, 6);
+    assert.equal(control.calls[0]?.action, "spawn");
+    if (control.calls[0]?.action === "spawn") assert.equal(control.calls[0].thinkingEffort, "low");
     assert.equal(tool.definition.function.strict, true);
     assert.equal(tool.definition.function.parameters.additionalProperties, false);
   });
@@ -182,6 +185,7 @@ describe("subagent control tools", () => {
         completionChecks: ["The findings are verified"],
       },
       instructions: "Return concise evidence.",
+      thinkingEffort: "none",
     }, context());
     assert.equal(standalone.ok, true);
     const call = control.calls[0];
@@ -191,6 +195,7 @@ describe("subagent control tools", () => {
     }
     assert.equal(call.task.title, "Audit authentication");
     assert.deepEqual(call.task.completionChecks, ["The findings are verified"]);
+    assert.equal(call.thinkingEffort, "none");
 
     assert.equal((await tool.execute({
       action: "spawn",
@@ -218,6 +223,16 @@ describe("subagent control tools", () => {
       taskId: "implementation",
       instructions: "Do the task",
       agentId: AGENT_ONE,
+    }, context())).ok, false);
+    assert.equal((await tool.execute({
+      action: "spawn",
+      taskId: "implementation",
+      instructions: "Do the task",
+      thinkingEffort: "ultra",
+    }, context())).ok, false);
+    assert.equal((await tool.execute({
+      action: "status",
+      thinkingEffort: "low",
     }, context())).ok, false);
     assert.equal((await tool.execute({
       action: "wait",

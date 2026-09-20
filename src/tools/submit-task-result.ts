@@ -54,7 +54,7 @@ export const submitTaskResultInputSchema = createSubmitTaskResultInputSchema();
 
 export type SubmitTaskResultInput = z.infer<typeof submitTaskResultInputSchema>;
 
-type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks">;
+type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks"> & Pick<Partial<TaskNode>, "title">;
 
 /**
  * Child-only terminal protocol. Runtime binds the assignment at construction,
@@ -108,6 +108,7 @@ export class SubmitTaskResultTool implements AgentTool {
   constructor(task: Readonly<BoundTask>, private readonly limits = DEFAULT_RUNTIME_LIMITS) {
     this.task = {
       id: task.id,
+      title: task.title,
       status: task.status,
       completionChecks: [...task.completionChecks],
     };
@@ -153,6 +154,7 @@ export class SubmitTaskResultTool implements AgentTool {
             : `Submitted a blocker for task ${report.taskId}.`,
         data: {
           taskId: report.taskId,
+          ...(this.task.title ? { taskTitle: this.task.title } : {}),
           outcome: report.outcome,
           ...(report.outcome === "completed"
             ? { evidenceCount: report.completionEvidence.length }

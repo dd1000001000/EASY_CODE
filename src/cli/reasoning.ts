@@ -225,7 +225,7 @@ export function renderReasoningMarker(
     : "";
   return palette.gray(
     `▶ Thinking #${block.id} · ${formatCount(sourceChars)} chars${liveStatus} · ` +
-      `/thinking ${block.id} · VS Code Ctrl/Cmd+click to toggle\n` +
+      `VS Code Ctrl/Cmd+click to toggle\n` +
       `  ${preview}${omitted ? "..." : ""}\n` +
       limitNotice,
   );
@@ -234,8 +234,8 @@ export function renderReasoningMarker(
 /**
  * Render a completed Thinking item after its turn leaves the redrawable tail.
  * Historical terminal scrollback cannot be rewritten safely, so this variant
- * deliberately avoids the clickable toggle prefix while keeping `/thinking` as
- * an explicit way to inspect the retained body.
+ * deliberately avoids the clickable toggle prefix; the complete block remains
+ * in the Thread's durable history.
  */
 export function renderReasoningHistoryMarker(
   block: ReasoningBlock,
@@ -253,7 +253,7 @@ export function renderReasoningHistoryMarker(
   const omitted = retainedPreview.truncated || block.truncated;
   return palette.gray(
     `• Thinking #${block.id} · ${block.sourceChars} chars · ` +
-      `use /thinking ${block.id} for retained content\n` +
+      `retained in thread history\n` +
       `  ${preview}${omitted ? "..." : ""}\n`,
   );
 }

@@ -52,6 +52,7 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "read_file",
   "search_files",
   "list_skills",
+  "name_thread",
   "read_skill",
   "create_skill",
   "modify_skill",

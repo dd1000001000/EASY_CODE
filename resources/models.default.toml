@@ -221,7 +221,7 @@ name = "GLM-5.3-Flash"
 provider = "glm-coding-plan"
 model = "glm-5.3-flash"
 context_window = 1000000
-input_modalities = ["text"]
+input_modalities = ["text", "image"]
 tool_calling = true
 reasoning = true
 

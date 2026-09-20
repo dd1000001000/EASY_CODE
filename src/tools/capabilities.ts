@@ -56,6 +56,8 @@ const BUILTIN_POLICIES = {
     idempotent: true },
   list_skills: { effects: ["workspace_read", "external_read"], modes: ALL_MODES, roles: BOTH,
     idempotent: true },
+  name_thread: { effects: ["agent_control"], modes: ALL_MODES, roles: MAIN,
+    controlPlane: true },
   read_skill: { effects: ["workspace_read", "external_read"], modes: ALL_MODES, roles: BOTH,
     idempotent: true, resultClass: "file_read" },
   create_skill: { effects: ["workspace_write", "external_write"], modes: WORK_MODES, roles: MAIN,

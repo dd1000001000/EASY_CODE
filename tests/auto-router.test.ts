@@ -26,7 +26,7 @@ function selectModeCall(
     type: "function",
     function: {
       name: "select_mode",
-      arguments: JSON.stringify({ mode, reason }),
+      arguments: JSON.stringify({ mode, reason, threadTitle: "" }),
     },
   };
 }
@@ -37,7 +37,7 @@ function respondDirectlyCall(content: string): FunctionToolCall {
     type: "function",
     function: {
       name: "respond_directly",
-      arguments: JSON.stringify({ content }),
+      arguments: JSON.stringify({ content, threadTitle: "" }),
     },
   };
 }
@@ -76,6 +76,20 @@ async function expectCodeFallback(pending: ReturnType<typeof determineAutoRoute>
 }
 
 describe("tool-only Auto Router", () => {
+  it("collects a title in the same direct-response request for an unnamed Thread", async () => {
+    let requests = 0;
+    const decision = await determineAutoRoute({ name: "deepseek", model: "mock-model", async complete(request) {
+      requests += 1;
+      assert.deepEqual((request.tools?.find(tool => tool.function.name === "respond_directly")?.function.parameters as
+        { required?: string[] }).required, ["content", "threadTitle"]);
+      return { message: { role: "assistant", content: null, tool_calls: [{ id: "call_title", type: "function",
+        function: { name: "respond_directly", arguments: JSON.stringify({ content: "Done.", threadTitle: "Review login flow" }) } }] } };
+    } }, "Review the login flow", undefined, [], undefined, { threadNeedsTitle: true });
+    assert.equal(requests, 1);
+    assert.equal(decision.kind, "direct_response");
+    assert.equal(decision.threadTitle, "Review login flow");
+  });
+
   it("accepts oversized valid reasons and direct replies after local clipping without retry", async () => {
     for (const call of [selectModeCall("code", "x".repeat(500)), respondDirectlyCall("x".repeat(MAX_AUTO_DIRECT_RESPONSE_CHARS + 500))]) {
       let requests = 0;
@@ -107,7 +121,7 @@ describe("tool-only Auto Router", () => {
         assert.equal(directTool?.function.strict, true);
         assert.deepEqual(
           (tool?.function.parameters as { required?: string[] }).required,
-          ["mode", "reason"],
+          ["mode", "reason", "threadTitle"],
         );
       }),
       "Please only give me a plan. The ordinary-text hint must not override the tool call.",

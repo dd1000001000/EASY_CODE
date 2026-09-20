@@ -1039,7 +1039,7 @@ describe("image attachments", () => {
     assert.match(body, /data:image\/png;base64/u);
   });
 
-  it("never sends direct image input through GLM Coding Plan", async () => {
+  it("sends images through GLM Coding Plan Flash but not text-only models", async () => {
     const config = createDefaultEasyCodeConfig(process.cwd());
     config.providers["glm-coding-plan"]!.apiKey = "coding-plan-test-key";
     const attachment: ImageAttachment = {
@@ -1054,7 +1054,23 @@ describe("image attachments", () => {
       height: 1,
     };
 
-    for (const model of ["glm-5.3-flash", "glm-5.3", "glm-5.2"] as const) {
+    let flashBody = "";
+    const flash = createProvider(config, "glm-coding-plan", "glm-5.3-flash", {
+      loadImage: async () => PNG_1X1,
+      transport: async (request) => {
+        flashBody = request.body;
+        return successResponse();
+      },
+    });
+    await flash.complete({
+      messages: [{ role: "user", content: "Inspect it", images: [attachment] }],
+      currentTurnImageIds: [attachment.id],
+    });
+    assert.match(flashBody, /"model":"glm-5\.3-flash"/u);
+    assert.match(flashBody, /"type":"image_url"/u);
+    assert.match(flashBody, /data:image\/png;base64/u);
+
+    for (const model of ["glm-5.3", "glm-5.2"] as const) {
       let body = "";
       const provider = createProvider(config, "glm-coding-plan", model, {
         loadImage: async () => {
