@@ -100,6 +100,7 @@ interface BackgroundCommandJob {
 interface CommandExecutionHooks {
   readonly onStarted?: (snapshot: () => RunningCommandOutput) => void;
   readonly background?: boolean;
+  readonly backgroundKind?: "job" | "service";
 }
 
 const MAX_STATUS_WAIT_MS = 30_000;
@@ -245,6 +246,7 @@ export class CommandRuntime {
   async start(
     input: RunCommandInput,
     context: ToolContext,
+    backgroundKind: "job" | "service" = "job",
   ): Promise<CommandExecutionOutput> {
     this.pruneBackgroundJobs();
     const controller = new AbortController();
@@ -276,6 +278,7 @@ export class CommandRuntime {
       { ...context, signal: controller.signal },
       {
         background: true,
+        backgroundKind,
         onStarted: (snapshot) => {
           const running = snapshot();
           const job: BackgroundCommandJob = {
@@ -596,6 +599,7 @@ export class CommandRuntime {
       : resolveCommandTimeoutBudget(input.timeoutMs, context.commandTimeoutMs, policyDecision.capability, this.limits);
     const sandboxRequest: SandboxExecutionRequest = {
       timeoutMs: timeout.effectiveMs,
+      ...(hooks.backgroundKind ? { backgroundKind: hooks.backgroundKind } : {}),
       commandId,
       command: resolved,
       policyDecision,

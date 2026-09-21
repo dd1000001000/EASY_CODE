@@ -258,8 +258,12 @@ describe("Prompt Bundle tool metadata", () => {
       "cancel_command",
     ]);
     assert.deepEqual(
-      Object.keys((functions[0]?.parameters as { properties: object }).properties),
+      [...Object.keys((functions[0]?.parameters as { properties: object }).properties), "backgroundKind"],
       Object.keys((functions[1]?.parameters as { properties: object }).properties),
+    );
+    assert.deepEqual(
+      (functions[1]?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.backgroundKind?.enum,
+      ["job", "service"],
     );
     assert.deepEqual(
       (functions[0]?.parameters as { required: string[] }).required,

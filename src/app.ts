@@ -100,7 +100,6 @@ import {
   ensurePromptBundle,
   loadPromptBundleCatalog,
 } from "./prompt-bundle/index.js";
-import { assertCurrentSessionBindings } from "./protocol/session-bindings.js";
 import { deleteThreadTree } from "./threads/delete-thread.js";
 import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
@@ -752,9 +751,6 @@ export class EasyCodeApp {
             `Thread ${state.threadId} belongs to ${state.workspaceRoot}; launch EASY CODE with that --workspace first.`,
           );
         }
-        assertCurrentSessionBindings(state, {
-          promptBundle,
-        });
         if (!config.providers[state.provider] || !resolveCatalogModel(state.provider, state.model)) {
           terminal.warning(`The saved model ${state.provider}/${state.model} is no longer available. Using the current default; choose another with /model.`);
           state.provider = config.provider;
@@ -2341,9 +2337,6 @@ export class EasyCodeApp {
           existingChild.changes,
         );
         childState = existingChild;
-        assertCurrentSessionBindings(childState, {
-          promptBundle: this.state.promptBundle,
-        });
       } else {
         childState = this.threadStore.create({
           threadId: request.record.childThreadId,
@@ -2352,7 +2345,7 @@ export class EasyCodeApp {
           provider: request.record.provider,
           model: request.record.model,
           thinkingEffort: request.record.thinkingEffort,
-          promptBundle: this.state.promptBundle,
+          promptBundle: activePromptBundleBinding(),
           modelRegistryHash: this.state.modelRegistryHash,
           goal: request.task.title,
           constraints: [
@@ -3914,7 +3907,7 @@ export class EasyCodeApp {
       provider: this.state.provider,
       model: this.state.model,
       thinkingEffort: this.state.thinkingEffort,
-      promptBundle: this.state.promptBundle,
+      promptBundle: activePromptBundleBinding(),
       modelRegistryHash: this.state.modelRegistryHash,
     });
     let nextLease: ThreadLease | undefined = this.threadStore.acquireThreadLease(
@@ -3999,9 +3992,6 @@ export class EasyCodeApp {
       }
       nextLease = this.threadStore.acquireThreadLease(threadId);
       recovered = this.threadStore.recover(threadId);
-      assertCurrentSessionBindings(recovered, {
-        promptBundle: activePromptBundleBinding(),
-      });
       if (!this.config.providers[recovered.provider] || !resolveCatalogModel(recovered.provider, recovered.model)) {
         this.terminal.warning(`The saved model ${recovered.provider}/${recovered.model} is no longer available. Using the current default; choose another with /model.`);
         recovered.provider = this.config.provider;

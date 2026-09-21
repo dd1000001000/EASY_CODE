@@ -15,6 +15,7 @@ import { NativeSandboxBackend } from "../sandbox/native-backend.js";
 import { BenchmarkContainerBackend } from "../sandbox/benchmark-backend.js";
 import { BuiltinToolSource } from "../tools/builtin-source.js";
 import { ToolCatalog } from "../tools/catalog.js";
+import { activePromptBundleBinding } from "../prompt-bundle/index.js";
 import { recallThreadContext } from "../context/recall.js";
 import { recoveryScope } from "../context/capacity.js";
 import { memoryQueries, selectMemoryContext, optionalMemoryTokenBudget } from "../context/memory-controller.js";
@@ -159,7 +160,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   const threadId = session.reviewerThreadId;
   let reviewer = deps.store.get(threadId);
   if (!reviewer) reviewer = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root, mode: "code", provider: state.provider,
-    model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: state.promptBundle,
+    model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: activePromptBundleBinding(),
     modelRegistryHash: state.modelRegistryHash, goal: `Independent review ${id}`,
     constraints: ["Private review history. Project memory is read-only."] }));
   if (!session.brief) await emit({ type: "brief_ready", id, text: createMainReviewBrief(state, input) });

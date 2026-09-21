@@ -261,7 +261,7 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Known locations and small files may be read directly/u);
       assert.match(prompt, /update_file applies a checked update/u);
       assert.match(prompt, /Prefer direct test runners and existing scripts/u);
-      assert.match(prompt, /Use for a long-running build, test, verification/u);
+      assert.match(prompt, /Use backgroundKind=service for a dev\/API server/u);
       assert.match(prompt, /Use the original commandId and omit waitMs/u);
       assert.match(prompt, /Use cancel_command only when a background command/u);
       assert.match(prompt, /Supply currentWork and nextStep/u);
