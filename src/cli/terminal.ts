@@ -212,7 +212,7 @@ function classifyStatus(text: string): StatusPresentation {
   if (/^Tool:\s*\S/iu.test(text)) {
     return { destination: "live", kind: "tool" };
   }
-  if (/^Step\s+\d+\/\d+:?\s*requesting\b/iu.test(text)) {
+  if (/^Step\s+\d+(?:\/\d+)?:?\s*requesting\b/iu.test(text)) {
     return { destination: "live", kind: "step" };
   }
   if (

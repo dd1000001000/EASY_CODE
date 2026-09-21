@@ -72,6 +72,8 @@ easy-code --workspace "/path/to/project" --mode code -y run "Fix the login failu
 easy-code --workspace "/path/to/project" --resume <thread-id>
 ```
 
+Interactive CLI and Web tasks do not have a fixed model-request count limit. For an unattended one-shot run, add `--max-model-requests N` after `run` to cap the aggregate requests made by the main agent, child agents, reviewer, approvals, and context compaction.
+
 `-y` selects the independent command-approval agent. It does **not** grant unrestricted host access or guarantee that no user decision will be needed.
 
 ## Using the Web interface

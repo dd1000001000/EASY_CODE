@@ -219,7 +219,6 @@ describe("model-managed long-term memory", () => {
 
       const plannedWithoutCue = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_no_cue", outcome: "planned" }),
-        userInput: "Please inspect the dependency setup.",
         mutations: [{ action: "remember", category: "preference",
           content: "The user prefers npm for dependency installation.", reason: "Model-selected memory." }],
       });
@@ -227,7 +226,6 @@ describe("model-managed long-term memory", () => {
 
       const plannedPreference = manager.applyModelMutations({
         ...mutationContext({ workspaceId: "workspace_plan_preference", outcome: "planned" }),
-        userInput: "From now on, always use npm for dependency installation.",
         mutations: [{
           action: "remember",
           category: "preference",
@@ -240,7 +238,6 @@ describe("model-managed long-term memory", () => {
 
       const plannedArchitecture = manager.applyModelMutations({
           ...mutationContext({ workspaceId: "workspace_plan", outcome: "planned" }),
-          userInput: "From now on, always use npm and keep this as a project convention.",
           mutations: [
             {
               action: "remember",

@@ -5,7 +5,7 @@ import os from "node:os";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import chalk from "chalk";
-import { Command, Option } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 
 import { EasyCodeApp, type EasyCodeAppOptions } from "./app.js";
 import { prepareDataDirectoryOutsideWorkspace, resolveDataDirectoryOutsideWorkspace } from "./images/path-policy.js";
@@ -43,6 +43,7 @@ interface CliOptions {
   thinkingEffort?: ThinkingEffort;
   approval?: ApprovalPolicyName;
   yes?: boolean;
+  maxModelRequests?: number;
   resume?: string;
   image?: string[];
 }
@@ -100,6 +101,7 @@ function appOptions(
     thinkingEffort: options.thinkingEffort,
     approvalPolicy: options.approval,
     assumeYes: options.yes,
+    maxModelRequests: options.maxModelRequests,
     resumeThreadId: options.resume,
     imagePaths: options.image,
     startupInteraction,
@@ -234,6 +236,11 @@ export async function main(argv = process.argv): Promise<void> {
     .command("run")
     .description("run one prompt non-interactively")
     .argument("<prompt...>", "programming task")
+    .option(
+      "--max-model-requests <count>",
+      "stop after this many aggregate model API requests (main agent, children, reviewer, approvals, and compaction)",
+      parseModelRequestLimit,
+    )
     .action(async (promptParts: string[], _localOptions: unknown, command: Command) => {
       const options = command.optsWithGlobals() as CliOptions;
       await withApp(options, async (app) => {
@@ -251,6 +258,17 @@ export async function main(argv = process.argv): Promise<void> {
   registerInstallCommands(program);
   registerUninstallCommand(program);
   await program.parseAsync(argv);
+}
+
+export function parseModelRequestLimit(value: string): number {
+  if (!/^[1-9]\d*$/u.test(value)) {
+    throw new InvalidArgumentError("must be a positive integer");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new InvalidArgumentError("must be a positive safe integer");
+  }
+  return parsed;
 }
 
 if (isDirectExecution()) {

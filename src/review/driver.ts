@@ -88,7 +88,9 @@ export function createReviewDriver(input: ReviewDriverInput): { investigate(): P
   };
   const build = async () => {
     const nextRequest = { systemPrompt, runtimeContext: "", tools: definitions };
-    const remaining = Math.max(0, input.budget.maxRequests - input.budget.snapshot().requests - 1);
+    const remaining = input.budget.maxRequests === null
+      ? undefined
+      : Math.max(0, input.budget.maxRequests - input.budget.snapshot().requests - 1);
     const compact = await runCompactionTransaction({ state: p.state, manager, turnId: input.get().id,
       maxContextChars: input.limits.maxContextChars, limits: input.limits, required: false,
       maxRequests: remaining, signal: input.signal, nextRequest, tool: new CompactContextTool(input.limits).definition,

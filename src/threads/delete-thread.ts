@@ -44,7 +44,7 @@ export function deleteStoredThreads(storage: EasyCodeStorage,
       let restored = false;
       if (prior) {
         try {
-          const snapshot = JSON.parse(prior.snapshot_json) as { memory?: Record<string, unknown>; provenance?: unknown };
+          const snapshot = JSON.parse(prior.snapshot_json) as { memory?: Record<string, unknown> };
           const memory = snapshot.memory;
           if (memory && typeof memory.workspace_id === "string" && typeof memory.scope === "string" &&
               typeof memory.content === "string" && typeof memory.normalized_content === "string" &&
@@ -55,10 +55,6 @@ export function deleteStoredThreads(storage: EasyCodeStorage,
             ).run(memory.workspace_id, memory.scope, memory.category, memory.content,
               memory.normalized_content, memory.status, memory.evidence,
               memory.source_thread_id, memory.source_turn_id, memory.updated_at, memoryId);
-            if (snapshot.provenance) storage.db.prepare(
-              "INSERT INTO memory_provenance(memory_id, document_json) VALUES (?, ?) ON CONFLICT(memory_id) DO UPDATE SET document_json = excluded.document_json",
-            ).run(memoryId, JSON.stringify(snapshot.provenance));
-            else storage.db.prepare("DELETE FROM memory_provenance WHERE memory_id = ?").run(memoryId);
             storage.db.prepare("DELETE FROM memory_revisions WHERE memory_id = ? AND sequence >= ?").run(memoryId, first);
             restored = true;
           }

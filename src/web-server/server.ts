@@ -458,8 +458,7 @@ export class EasyCodeWebServer {
       } else {
         host.port.presentUser(input.text, images);
         this.run(host, async () => {
-          const result = await host.app.submitUserMessage(input.text as string || "Analyze the attached image(s).", images);
-          if (result.planProposal) host.port.showPlan(result.planProposal);
+          await host.app.submitUserMessage(input.text as string || "Analyze the attached image(s).", images);
         });
       }
       json(response, 202, { accepted: true }); return;
@@ -489,10 +488,10 @@ export class EasyCodeWebServer {
     if (pathname === "/api/plan") {
       const host = this.hostFor(input.threadId);
       if (host.running) throw new Error("Another session operation is running.");
-      if (input.action !== "approve" && input.action !== "reject" && input.action !== "adjust" && input.action !== "defer") throw new Error("Invalid plan decision.");
+      if (input.action !== "approve" && input.action !== "reject" && input.action !== "adjust") throw new Error("Invalid plan decision.");
       const decision = input.action === "adjust"
         ? { action: "adjust" as const, feedback: String(input.feedback ?? "").trim() }
-        : { action: input.action } as { action: "approve" | "reject" | "defer" };
+        : { action: input.action } as { action: "approve" | "reject" };
       if (decision.action === "adjust" && !decision.feedback) throw new Error("Plan feedback is required.");
       this.run(host, () => host.app.reviewHostedPlan(decision));
       json(response, 202, { accepted: true }); return;

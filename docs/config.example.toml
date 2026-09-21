@@ -50,8 +50,6 @@ max_managed_worktrees = 15
 max_subagents_per_turn = 8
 max_subagent_follow_ups = 8
 max_dag_nodes = 16
-# Shared by main agent, children, reviewer, routing and compaction; includes retries.
-max_model_requests = 120
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
 max_task_tokens = 0
 # Independent transport safety ceiling, not a summary/display limit (16 MiB).
@@ -154,12 +152,6 @@ context_compaction_min_saved_tokens = 8192
 context_compaction_min_savings_ratio = 0.1
 context_summary_max_chars = 64000
 context_semantic_field_max_chars = 4000
-
-[limits.steps]
-none = 40
-low = 40
-medium = 40
-high = 80
 
 # Local output reservation selected by thinking effort. No output-token ceiling
 # is sent to the provider. Values include reasoning, answer and tool arguments.

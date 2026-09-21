@@ -63,11 +63,10 @@ describe("long-term memory lifecycle", () => {
         mutations: [{ action: "remember", category: "preference", content,
           reason: "Explicit user preference" }] });
       const id = first.memoryIds[0]!;
-      const confirmed = f.manager.applyModelMutations({ sourceState: state, workspaceRoot: f.root,
+      const confirmed = f.manager.applyModelMutations({ workspaceRoot: f.root,
         threadId: state.threadId, turnId: "turn_confirmed", outcome: "success",
-        userInput: "以后请记住：回答尽量简洁，并用中文。",
         mutations: [{ action: "remember", category: "preference", content,
-          reason: "User confirmed the same preference", sourceRefs: ["user"] }] });
+          reason: "User confirmed the same preference" }] });
       assert.equal(confirmed.applied, 0);
       assert.equal(f.manager.get(projectMemoryIdFromRoot(f.root), id)?.status, "active");
       assert.equal(f.storage.db.prepare<[string], { access_count: number }>(

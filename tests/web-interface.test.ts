@@ -52,6 +52,20 @@ describe("Web conversation projection", () => {
 });
 
 describe("Web interaction host", () => {
+  it("does not duplicate a proposed plan or expose its transport JSON", () => {
+    const host = new WebInteraction();
+    host.showPlan({
+      id: "plan_web_single_source",
+      revision: 1,
+      proposedByTurnId: "turn_web_single_source",
+      proposedAt: "2026-09-21T00:00:00.000Z",
+      title: "Build the feature",
+      overview: "Implement and verify the requested behavior.",
+      steps: [{ title: "Implement", description: "Change the code.", verification: "Run tests." }],
+    });
+    assert.deepEqual(host.snapshot().view.entries, []);
+    host.close();
+  });
   it("automatically approves only the current command and plan after their unattended timeout", async () => {
     const host = new WebInteraction(15);
     const request: ApprovalRequest = { id: "approval_timeout", title: "Run tool", description: "Read file",
@@ -62,6 +76,8 @@ describe("Web interaction host", () => {
     assert.equal(host.snapshot().view.decision, null);
     const plan = host.reviewPlan();
     assert.equal(host.snapshot().view.decision?.kind, "plan");
+    assert.deepEqual(host.snapshot().view.decision?.choices?.map(choice => choice.id),
+      ["approve", "reject", "adjust"]);
     assert.deepEqual(await plan, { action: "approve" });
     host.close();
   });

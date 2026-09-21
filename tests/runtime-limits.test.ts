@@ -14,7 +14,7 @@ import { AgentRuntime } from "../src/runtime/agent.js";
 import { ContextManager } from "../src/context/manager.js";
 import { tokenBudget } from "../src/context/token-budget.js";
 import { ProviderError } from "../src/providers/errors.js";
-import type { SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
+import type { AgentTool, SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
 import { ManageTasksTool } from "../src/tools/manage-tasks.js";
 import { ReadFileTool } from "../src/tools/read-file.js";
 import { PollCommandTool } from "../src/tools/run-command.js";
@@ -45,7 +45,11 @@ describe("central runtime limits", () => {
       PROVIDER_CATALOG.map(({ provider }) => provider),
       defaultRuntimeLimits(),
     );
-      assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), defaultRuntimeLimits());
+      const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
+        ...documentedLimits } = defaultRuntimeLimits();
+      void legacySteps;
+      void legacyMaxModelRequests;
+      assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), documentedLimits);
       assert.equal(example.limits?.memoryVectorMinSimilarity, 0.1);
       assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
     const budget = new ToolRecoveryBudget(3, { compact_context: 1 });
@@ -155,6 +159,57 @@ describe("central runtime limits", () => {
     assert.throws(() => budget.reserve(request), /request limit/u);
   });
 
+  it("supports an explicitly unlimited shared request budget", () => {
+    const budget = new TaskBudget(null, 0);
+    for (let index = 0; index < 150; index += 1) budget.reserve(request, () => 1)();
+    assert.deepEqual(budget.snapshot(), {
+      requests: 150,
+      tokens: 15150,
+      reservedTokens: 0,
+      maxRequests: null,
+      maxTokens: 0,
+    });
+  });
+
+  it("continues past the former interactive 40/120 request ceilings when no limit is configured", async () => {
+    let calls = 0;
+    const tool: AgentTool = {
+      name: "progress_tick",
+      mutating: false,
+      metadata: {
+        identity: { id: "external:test:progress_tick", name: "progress_tick", displayName: "progress_tick",
+          sourceId: "test", sourceKind: "external" },
+        effects: [], allowedModes: ["code"], allowedRoles: ["main_agent"], requiresOrchestration: false,
+        requiresVision: false, validationSensitive: false, idempotent: true, controlPlane: false,
+        resultClass: "generic",
+      },
+      definition: { type: "function", function: { name: "progress_tick", description: "Record unique progress",
+        parameters: { type: "object", properties: { value: { type: "integer" } }, required: ["value"],
+          additionalProperties: false } } },
+      async execute(input) {
+        const value = (input as { value: number }).value;
+        return { ok: true, summary: `progress ${value}`, data: { value } };
+      },
+    };
+    const budget = new TaskBudget(null, 0);
+    const runtime = new AgentRuntime({ limits: defaultRuntimeLimits(), taskBudget: budget,
+      toolCatalog: snapshotToolSet([tool]), contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "",
+      searchMemories: async () => [], appendEvent: async () => undefined, requestApproval: async () => false,
+      provider: { name: "qwen", model: "mock", complete: async () => {
+        calls += 1;
+        return calls <= 125
+          ? { message: { role: "assistant", content: null, tool_calls: [{ id: `tick_${calls}`, type: "function",
+              function: { name: "progress_tick", arguments: JSON.stringify({ value: calls }) } }] } }
+          : { message: { role: "assistant", content: "Done." } };
+      } } });
+    const { maxSteps: _formerLimit, ...unlimited } = options;
+    const result = await runtime.run(state(), "Complete every progress tick", unlimited);
+    assert.equal(result.reason, "success");
+    assert.equal(calls, 126);
+    assert.equal(budget.snapshot().requests, 126);
+  });
+
   it("uses configured context reserves without clipping active reasoning", () => {
     const limits = { ...defaultRuntimeLimits(),
       maxResponseTokens: { none: 1024, low: 1024, medium: 2048, high: 4096 },
@@ -179,6 +234,10 @@ describe("central runtime limits", () => {
     assert.equal(restored.snapshot().requests, 1);
     assert.equal(restored.snapshot().tokens, 150);
     assert.equal(restored.snapshot().reservedTokens, 0);
+    const unlimited = TaskBudget.restore(snapshots.at(-1), undefined, { maxRequests: null });
+    assert.equal(unlimited.snapshot().maxRequests, null);
+    for (let index = 0; index < 5; index += 1) unlimited.reserve(request, () => 1)();
+    assert.equal(unlimited.snapshot().requests, 6);
     let writes = 0;
     const failing = new TaskBudget(2, 0, () => { if (++writes > 1) throw new Error("journal unavailable"); });
     assert.throws(() => failing.reserve(request), /journal unavailable/u);
