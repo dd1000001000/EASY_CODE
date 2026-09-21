@@ -993,12 +993,12 @@ describe("storage", () => {
         type: "message.assistant",
         turnId: "turn_runtime",
         phase: "completed",
-        payload: { role: "assistant", content: "done" },
+        payload: { role: "assistant", content: "done", phase: "final_answer" },
       });
       threads.completeTurn(
         "thread_runtime_events",
         "turn_runtime",
-        { role: "assistant", content: "done" },
+        { role: "assistant", content: "done", phase: "final_answer" },
       );
       threads.recordToolAudit("thread_runtime_events", "turn_runtime", {
         id: "command_1",
@@ -1015,7 +1015,7 @@ describe("storage", () => {
       const recovered = threads.recover("thread_runtime_events");
       assert.deepEqual(recovered.messages, [
         { role: "user", content: "inspect the project" },
-        { role: "assistant", content: "done" },
+        { role: "assistant", content: "done", phase: "final_answer" },
       ]);
       assert.equal(
         storage.db

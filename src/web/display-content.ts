@@ -12,11 +12,60 @@ export function isNoticeEntry(entry: WebEntry): entry is WebEntry & { kind: "inf
   return noticeKinds.has(entry.kind);
 }
 
-export { toolRunContinuesAcross } from "../web-tool-run.js";
+export { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
 
 export type ConversationDisplayItem =
   | { kind: "entry"; id: string; entry: WebEntry }
   | { kind: "tool-group"; id: string; tools: readonly WebEntry[] };
+
+export interface ConversationTurnDisplay {
+  id: string;
+  status: "running" | "finalizing" | "completed";
+  request?: WebEntry;
+  /** Flat, current-order rows shown while a turn is running. */
+  liveItems: readonly ConversationDisplayItem[];
+  /** Everything except the initial request and accepted final answer. */
+  processItems: readonly ConversationDisplayItem[];
+  finalAnswer?: WebEntry;
+  startedAt: number;
+  completedAt?: number;
+}
+
+export interface ViewportRange { top: number; bottom: number }
+export interface ViewportUserMessage extends ViewportRange { id: string }
+export interface ViewportConversationTurn extends ViewportRange { requestId?: string }
+
+function intersectsViewport(item: ViewportRange, viewport: ViewportRange): boolean {
+  return item.bottom > viewport.top && item.top < viewport.bottom;
+}
+
+/** Resolve the user-message rail marker for the content currently being read. */
+export function activeMessageIdsForViewport(
+  viewport: ViewportRange,
+  users: readonly ViewportUserMessage[],
+  turns: readonly ViewportConversationTurn[],
+): string[] {
+  const visibleUsers = users.filter(user => intersectsViewport(user, viewport)).map(user => user.id);
+  if (visibleUsers.length) return visibleUsers;
+
+  const visibleTurns = turns.filter(turn => turn.requestId && intersectsViewport(turn, viewport));
+  if (visibleTurns.length) {
+    const containingTop = visibleTurns
+      .filter(turn => turn.top <= viewport.top && turn.bottom > viewport.top)
+      .sort((left, right) => right.top - left.top)[0];
+    const nearest = containingTop ?? [...visibleTurns].sort((left, right) => left.top - right.top)[0];
+    if (nearest?.requestId) return [nearest.requestId];
+  }
+
+  const nearestAbove = users
+    .filter(user => user.bottom <= viewport.top)
+    .sort((left, right) => right.bottom - left.bottom)[0];
+  if (nearestAbove) return [nearestAbove.id];
+  const nearestBelow = users
+    .filter(user => user.top >= viewport.bottom)
+    .sort((left, right) => left.top - right.top)[0];
+  return nearestBelow ? [nearestBelow.id] : [];
+}
 
 /** Group adjacent logical tool calls for the Web transcript only. */
 export function groupConversationTools(entries: readonly WebEntry[]): ConversationDisplayItem[] {
@@ -36,6 +85,35 @@ export function groupConversationTools(entries: readonly WebEntry[]): Conversati
   }
   flushTools();
   return items;
+}
+
+/** Project entries into Runtime turns without guessing from assistant-message position. */
+export function groupConversationTurns(entries: readonly WebEntry[]): ConversationTurnDisplay[] {
+  const grouped = new Map<string, WebEntry[]>();
+  for (const entry of entries) {
+    const id = entry.turnId ?? `unowned:${entry.id}`;
+    const existing = grouped.get(id);
+    if (existing) existing.push(entry);
+    else grouped.set(id, [entry]);
+  }
+  return [...grouped].map(([id, turnEntries]) => {
+    const request = turnEntries.find(entry => entry.kind === "user");
+    const finalAnswer = [...turnEntries].reverse().find(entry =>
+      entry.kind === "assistant" && (entry.answerState === "finalizing" || entry.answerState === "confirmed"));
+    const terminal = turnEntries.find(entry => entry.turnCompletedAt !== undefined);
+    const completedAt = terminal?.turnCompletedAt;
+    const processEntries = turnEntries.filter(entry => entry !== request && entry !== finalAnswer);
+    return {
+      id,
+      status: completedAt !== undefined ? "completed" : finalAnswer ? "finalizing" : "running",
+      ...(request ? { request } : {}),
+      liveItems: groupConversationTools(turnEntries),
+      processItems: groupConversationTools(processEntries),
+      ...(finalAnswer ? { finalAnswer } : {}),
+      startedAt: terminal?.turnStartedAt ?? turnEntries.find(entry => entry.turnStartedAt !== undefined)?.turnStartedAt ?? turnEntries[0]?.timestamp ?? 0,
+      ...(completedAt !== undefined ? { completedAt } : {}),
+    };
+  });
 }
 
 export function displayProject(

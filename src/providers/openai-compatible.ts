@@ -592,7 +592,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
     const output: CompletionMessage[] = [];
     for (const message of providerMessages) {
       if (message.role !== "user") {
-        output.push({ ...message });
+        if (message.role === "assistant") {
+          const { phase: _phase, ...completionMessage } = message;
+          output.push(completionMessage);
+        } else {
+          output.push({ ...message });
+        }
         continue;
       }
 

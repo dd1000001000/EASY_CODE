@@ -339,10 +339,11 @@ export function isChatMessage(value: unknown): value is ChatMessage {
     );
   }
   if (value.role !== "assistant") return false;
-  if (!hasOnlyKeys(value, ["role", "content", "tool_calls", "reasoning_content"])) {
+  if (!hasOnlyKeys(value, ["role", "content", "phase", "tool_calls", "reasoning_content"])) {
     return false;
   }
   if (value.content !== null && typeof value.content !== "string") return false;
+  if (value.phase !== undefined && value.phase !== "commentary" && value.phase !== "final_answer") return false;
   if (
     value.reasoning_content !== undefined &&
     value.reasoning_content !== null &&

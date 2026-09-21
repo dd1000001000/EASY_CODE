@@ -522,9 +522,10 @@ describe("AgentRuntime", () => {
                 }
                 assert.equal(request.responseMode, "stream");
                 request.onStreamEvent?.({ kind: "started", streamId: "stream", sequence: 1 });
-                request.onStreamEvent?.({ kind: "text_delta", streamId: "stream", sequence: 2, text: "done" });
-                request.onStreamEvent?.({ kind: "completed", streamId: "stream", sequence: 3, finishReason: "stop" });
-                return { message: { role: "assistant", content: "done" } };
+                request.onStreamEvent?.({ kind: "assistant_phase", streamId: "stream", sequence: 2, phase: "final_answer" });
+                request.onStreamEvent?.({ kind: "text_delta", streamId: "stream", sequence: 3, text: "done" });
+                request.onStreamEvent?.({ kind: "completed", streamId: "stream", sequence: 4, finishReason: "stop" });
+                return { message: { role: "assistant", content: "done", phase: "final_answer" } };
             },
         };
         const runtime = new AgentRuntime({
@@ -538,7 +539,8 @@ describe("AgentRuntime", () => {
             requestApproval: async () => false,
             onModelStream: (event) => notifications.push(event.kind),
         });
-        const result = await runtime.run(state("auto"), "Complete the task", {
+        const session = state("auto");
+        const result = await runtime.run(session, "Complete the task", {
             maxSteps: 2,
             maxContextChars: 20_000,
             maxOutputChars: 4_000,
@@ -546,7 +548,9 @@ describe("AgentRuntime", () => {
             approvalPolicy: "never",
         });
         assert.equal(result.reason, "success");
-        assert.deepEqual(notifications, ["started", "text_delta", "completed"]);
+        assert.deepEqual(notifications, ["started", "assistant_phase", "text_delta", "completed"]);
+        const finalMessage = session.messages.at(-1);
+        assert.equal(finalMessage?.role === "assistant" ? finalMessage.phase : undefined, "final_answer");
     });
     it("does not notify the UI when thinking effort is none", async () => {
         let notificationCount = 0;

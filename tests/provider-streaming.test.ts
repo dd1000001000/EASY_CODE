@@ -85,11 +85,17 @@ describe("provider streaming", () => {
     });
     const events: ProviderStreamEvent[] = [];
     const response = await provider.complete({
-      messages: [{ role: "user", content: "inspect" }],
+      messages: [
+        { role: "user", content: "previous" },
+        { role: "assistant", content: "previous answer", phase: "final_answer" },
+        { role: "user", content: "inspect" },
+      ],
       responseMode: "stream",
       onStreamEvent: (event) => events.push(event),
     });
-    assert.equal(JSON.parse(sent!.body).stream, true);
+    const sentBody = JSON.parse(sent!.body) as { stream: boolean; messages: Array<Record<string, unknown>> };
+    assert.equal(sentBody.stream, true);
+    assert.equal(sentBody.messages[1]?.phase, undefined);
     assert.equal(sent?.headers.accept, "text/event-stream");
     assert.equal(response.message.reasoning_content, "检查");
     assert.equal(response.message.content, "完成");
@@ -157,26 +163,38 @@ describe("provider streaming", () => {
       config.providers["openai-like"]!.apiKey = "test-key";
       const wire = [
         'event: response.reasoning_summary_text.delta\ndata: {"type":"response.reasoning_summary_text.delta","delta":"plan"}\n\n',
+        'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary","content":[]}}\n\n',
         'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"done"}\n\n',
         'event: response.output_item.added\ndata: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"item_1","call_id":"call_1","name":"read_file","arguments":""}}\n\n',
         'event: response.function_call_arguments.delta\ndata: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\\\"path\\\":\\\"README.md\\\"}"}\n\n',
-        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\\\"path\\\":\\\"README.md\\\"}"}],"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}\n\n',
+        'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed","output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"plan"}]},{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"done"}]},{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\\\"path\\\":\\\"README.md\\\"}"}],"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}\n\n',
       ].map((value) => Buffer.from(value, "utf8"));
       const events: ProviderStreamEvent[] = [];
+      let sent: JsonPostRequest | undefined;
       const provider = createProvider(config, "openai-like", undefined, {
-        transport: (request) => deliverStream(request, wire),
+        transport: (request) => {
+          sent = request;
+          return deliverStream(request, wire);
+        },
       });
       const response = await provider.complete({
-        messages: [{ role: "user", content: "inspect" }],
+        messages: [
+          { role: "user", content: "previous" },
+          { role: "assistant", content: "previous answer", phase: "final_answer" },
+          { role: "user", content: "inspect" },
+        ],
         responseMode: "stream",
         onStreamEvent: (event) => events.push(event),
       });
       assert.equal(response.message.content, "done");
+      assert.equal(response.message.phase, "commentary");
       assert.equal(response.message.reasoning_content, "plan");
       assert.equal(response.message.tool_calls?.[0]?.function.arguments, '{"path":"README.md"}');
       assert.equal(response.usage?.totalTokens, 9);
+      const sentInput = (JSON.parse(sent!.body) as { input: Array<Record<string, unknown>> }).input;
+      assert.equal(sentInput[1]?.phase, "final_answer");
       assert.deepEqual(events.map((event) => event.kind), [
-        "started", "reasoning_delta", "text_delta", "tool_call_delta",
+        "started", "reasoning_delta", "assistant_phase", "text_delta", "tool_call_delta",
         "tool_call_delta", "usage", "completed",
       ]);
     } finally {

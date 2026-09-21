@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { composeMessage, composerEnterAction, composerPrimaryAction, LONG_PASTE_THRESHOLD, matchingSlashCommands, pastedTextPreview } from "../src/web/composer-content.js";
-import { displayProject, displayTitle, groupConversationTools, isConversationEntry, isNoticeEntry, toolRunContinuesAcross } from "../src/web/display-content.js";
+import { activeMessageIdsForViewport, displayProject, displayTitle, groupConversationTools, groupConversationTurns, isConversationEntry, isNoticeEntry, toolRunContinuesAcross } from "../src/web/display-content.js";
 import type { WebEntry } from "../src/web-contracts.js";
 import { describe, it } from "./harness.js";
 
@@ -94,6 +94,67 @@ describe("Web conversation display", () => {
     assert.equal(toolRunContinuesAcross(entries, 1), true);
     assert.equal(toolRunContinuesAcross(entries, 2), true);
     assert.equal(toolRunContinuesAcross(entries, 3), false);
+  });
+  it("keeps a running turn flat, then separates only its accepted final answer", () => {
+    const base = { turnId: "turn-1", turnStartedAt: 1_000 };
+    const entries: WebEntry[] = [
+      { ...base, id: "request", kind: "user", text: "Fix it", timestamp: 1_000 },
+      { ...base, id: "thought", kind: "thinking", text: "Inspect", timestamp: 1_100 },
+      { ...base, id: "intermediate", kind: "assistant", text: "I will inspect.", timestamp: 1_200 },
+      { ...base, id: "tool", kind: "tool", text: "✓ read_file", timestamp: 1_300 },
+      { ...base, id: "final", kind: "assistant", text: "Done", timestamp: 3_500,
+        answerState: "confirmed", turnCompletedAt: 3_500 },
+    ];
+    const [turn] = groupConversationTurns(entries);
+    assert.equal(turn?.request?.id, "request");
+    assert.equal(turn?.finalAnswer?.id, "final");
+    assert.equal(turn?.status, "completed");
+    assert.equal(turn?.completedAt, 3_500);
+    assert.deepEqual(turn?.processItems.map(item => item.id), ["thought", "intermediate", "tool"]);
+    assert.deepEqual(turn?.liveItems.map(item => item.id), ["request", "thought", "intermediate", "tool", "final"]);
+  });
+  it("collapses process items as soon as an explicit final answer starts", () => {
+    const base = { turnId: "turn-live", turnStartedAt: 1_000 };
+    const [turn] = groupConversationTurns([
+      { ...base, id: "request", kind: "user", text: "Fix it", timestamp: 1_000 },
+      { ...base, id: "tool", kind: "tool", text: "✓ read_file", timestamp: 1_200 },
+      { ...base, id: "answer", kind: "assistant", text: "The fix is", timestamp: 1_300,
+        answerState: "finalizing" },
+    ]);
+    assert.equal(turn?.status, "finalizing");
+    assert.equal(turn?.completedAt, undefined);
+    assert.equal(turn?.finalAnswer?.id, "answer");
+    assert.deepEqual(turn?.processItems.map(item => item.id), ["tool"]);
+  });
+});
+
+describe("Web message rail location", () => {
+  const viewport = { top: 100, bottom: 300 };
+
+  it("uses directly visible user messages before a containing turn", () => {
+    assert.deepEqual(activeMessageIdsForViewport(viewport, [
+      { id: "first", top: 120, bottom: 150 },
+      { id: "second", top: 280, bottom: 320 },
+    ], [{ requestId: "older", top: 0, bottom: 500 }]), ["first", "second"]);
+  });
+
+  it("keeps the current turn highlighted after its request scrolls above the viewport", () => {
+    assert.deepEqual(activeMessageIdsForViewport(viewport,
+      [{ id: "request", top: 20, bottom: 60 }],
+      [{ requestId: "request", top: 20, bottom: 700 }]), ["request"]);
+  });
+
+  it("chooses the turn containing the viewport top when two turns are visible", () => {
+    assert.deepEqual(activeMessageIdsForViewport(viewport,
+      [{ id: "first", top: 0, bottom: 30 }, { id: "second", top: 310, bottom: 340 }],
+      [{ requestId: "first", top: 0, bottom: 130 }, { requestId: "second", top: 130, bottom: 500 }]), ["first"]);
+  });
+
+  it("falls back to the closest earlier request and stays empty for an empty thread", () => {
+    assert.deepEqual(activeMessageIdsForViewport(viewport, [
+      { id: "old", top: 0, bottom: 20 }, { id: "recent", top: 60, bottom: 90 },
+    ], []), ["recent"]);
+    assert.deepEqual(activeMessageIdsForViewport(viewport, [], []), []);
   });
 });
 

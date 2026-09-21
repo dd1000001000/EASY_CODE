@@ -1864,7 +1864,15 @@ export class EasyCodeApp {
       });
 
       this.syncWorkspaceState();
-      if (!this.terminal.finalizeStreamedAnswer(result.text)) {
+      const turnEvents = this.threadStore.journal(result.threadId).read()
+        .filter(event => event.turnId === result.turnId);
+      const startedAt = Date.parse(turnEvents.find(event =>
+        event.type === "turn.started" || event.type === "message.user")?.timestamp ?? "");
+      const completedAt = Date.parse([...turnEvents].reverse().find(event =>
+        event.type === "turn.completed")?.timestamp ?? "");
+      const timing = Number.isFinite(startedAt) && Number.isFinite(completedAt)
+        ? { startedAt, completedAt } : undefined;
+      if (!this.terminal.finalizeStreamedAnswer(result.text, timing)) {
         this.terminal.write(`\n${result.text.trim()}\n\n`);
       }
       return result;

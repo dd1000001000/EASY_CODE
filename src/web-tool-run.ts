@@ -10,3 +10,10 @@ export function toolRunContinuesAcross(entries: readonly WebEntry[], boundary: n
   while (right < entries.length && noticeKinds.has(entries[right]!.kind)) right += 1;
   return entries[left]?.kind === "tool" && entries[right]?.kind === "tool";
 }
+
+/** Whether a Runtime turn crosses an entry boundary. Used to keep pages and live trimming turn-atomic. */
+export function turnContinuesAcross(entries: readonly WebEntry[], boundary: number): boolean {
+  const left = entries[boundary - 1]?.turnId;
+  const right = entries[boundary]?.turnId;
+  return Boolean(left && right && left === right);
+}

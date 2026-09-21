@@ -241,7 +241,12 @@ export class EasyCodeWebServer {
     const work = Promise.resolve().then(action);
     host.running = work;
     this.broadcastStatus();
-    void work.catch(error => host.port.error(error instanceof Error ? error.message : String(error)))
+    void work.catch(error => {
+      // A request may fail before the app reaches its own presentation cleanup.
+      // Close any pending Web turn so its duration and disclosure do not remain live forever.
+      host.port.clearCurrentRequest();
+      host.port.error(error instanceof Error ? error.message : String(error));
+    })
       .finally(() => { if (host.running === work) host.running = undefined; this.broadcastStatus(); });
   }
 
