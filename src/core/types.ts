@@ -114,6 +114,9 @@ export interface FunctionToolCall {
   };
 }
 
+/** Provider-authored semantic phase for assistant output. Absence means unknown. */
+export type AssistantPhase = "commentary" | "final_answer";
+
 export type SupportedImageMediaType =
   | "image/png"
   | "image/jpeg"
@@ -143,6 +146,8 @@ export type ChatMessage =
   | {
       role: "assistant";
       content: string | null;
+      /** Responses-compatible providers may distinguish progress from the final closeout. */
+      phase?: AssistantPhase;
       tool_calls?: FunctionToolCall[];
       reasoning_content?: string | null;
     }
@@ -203,6 +208,7 @@ export interface ProviderResponse {
 export type ProviderStreamEvent =
   | { readonly kind: "started"; readonly streamId: string; readonly sequence: number }
   | { readonly kind: "reasoning_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
+  | { readonly kind: "assistant_phase"; readonly streamId: string; readonly sequence: number; readonly phase: AssistantPhase }
   | { readonly kind: "text_delta"; readonly streamId: string; readonly sequence: number; readonly text: string }
   | {
       readonly kind: "tool_call_delta";

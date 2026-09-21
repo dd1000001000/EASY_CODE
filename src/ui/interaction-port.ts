@@ -74,6 +74,11 @@ export interface CurrentRequestOptions {
   readonly onDiscardImages?: (images: readonly Readonly<ImageAttachment>[]) => void | Promise<void>;
 }
 
+export interface CompletedTurnTiming {
+  readonly startedAt: number;
+  readonly completedAt: number;
+}
+
 export interface RequestInputOptions {
   readonly initialImageCount?: number;
   readonly captureImage: (index: number, signal?: AbortSignal) => Promise<ImageAttachment>;
@@ -103,7 +108,7 @@ export interface AgentPresentationPort {
   showReasoning(id: number | "last"): boolean;
   showAdjustment(id: number | "last"): boolean;
   addQueuedAdjustment(sequence: number, text: string, images?: readonly Readonly<ImageAttachment>[]): void;
-  finalizeStreamedAnswer(text: string): boolean;
+  finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean;
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string | undefined;
   stopActivity(activityId?: string): void;
   startReview(): string;

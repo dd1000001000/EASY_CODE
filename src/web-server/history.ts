@@ -35,18 +35,33 @@ function toolDetails(value: unknown): WebEntry["toolDetails"] {
 export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   const entries: WebEntry[] = [];
   const pendingToolCalls = new Map<string, WebEntry>();
+  const turnStartedAt = new Map<string, number>();
+  const turnCompletedAt = new Map<string, number>();
+  for (const event of events) {
+    if (!event.turnId) continue;
+    const timestamp = Date.parse(event.timestamp) || 0;
+    if ((event.type === "turn.started" || event.type === "message.user") && !turnStartedAt.has(event.turnId)) {
+      turnStartedAt.set(event.turnId, timestamp);
+    }
+    if (event.type === "turn.completed" || event.type === "turn.recovered") {
+      turnCompletedAt.set(event.turnId, timestamp);
+    }
+  }
   const append = (event: EventRecord, kind: WebEntryKind, text: string, suffix = "", images?: WebEntry["images"],
-    details?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"]): WebEntry | undefined => {
+    details?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"],
+    answerState?: WebEntry["answerState"]): WebEntry | undefined => {
     if (!text.trim() && !images?.length) return undefined;
     const entry: WebEntry = {
       id: `${event.eventId}${suffix}`,
       kind,
       text: safe(text),
       timestamp: Date.parse(event.timestamp) || 0,
+      ...(event.turnId ? { turnId: event.turnId, turnStartedAt: turnStartedAt.get(event.turnId) } : {}),
       ...(images?.length ? { images } : {}),
       ...(details?.length ? { toolDetails: details } : {}),
       ...(toolName ? { toolName: safe(toolName) } : {}),
       ...(toolStatus ? { toolStatus } : {}),
+      ...(answerState ? { answerState } : {}),
     };
     entries.push(entry);
     return entry;
@@ -67,7 +82,8 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
       const message = object(event.payload);
       if (message?.role !== "assistant") continue;
       if (typeof message.reasoning_content === "string") append(event, "thinking", message.reasoning_content, ":thinking");
-      if (typeof message.content === "string") append(event, "assistant", message.content, ":answer");
+      if (typeof message.content === "string") append(event, "assistant", message.content, ":answer", undefined,
+        undefined, undefined, undefined, message.phase === "final_answer" ? "finalizing" : "streaming");
     } else if (event.type === "tool.call") {
       const call = object(event.payload);
       const fn = object(call?.function);
@@ -94,6 +110,17 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
           name, completed ? "completed" : "failed");
       }
     }
+  }
+  for (const [turnId, completedAt] of turnCompletedAt) {
+    const turnEntries = entries.filter(entry => entry.turnId === turnId);
+    const finalAnswer = [...turnEntries].reverse().find(entry => entry.kind === "assistant");
+    const terminal = finalAnswer ?? turnEntries.at(-1);
+    if (!terminal) continue;
+    for (const entry of turnEntries) {
+      if (entry.kind === "assistant" && entry.answerState === "finalizing") entry.answerState = "streaming";
+    }
+    terminal.turnCompletedAt = completedAt;
+    if (finalAnswer) finalAnswer.answerState = "confirmed";
   }
   return entries;
 }

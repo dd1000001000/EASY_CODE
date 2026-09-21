@@ -1467,6 +1467,7 @@ export class AgentRuntime {
             const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
               role: "assistant",
               content: decision.content,
+              phase: "final_answer",
               ...(decision.reasoningContent
                 ? { reasoning_content: decision.reasoningContent }
                 : {}),
@@ -1994,6 +1995,7 @@ export class AgentRuntime {
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: response.message.content,
+        ...(response.message.phase ? { phase: response.message.phase } : {}),
         tool_calls: executionToolCalls?.map(durableToolCall),
         reasoning_content: response.message.reasoning_content
       };
@@ -3220,7 +3222,7 @@ export class AgentRuntime {
       Boolean(lastMessage.tool_calls?.length) ||
       !lastMessage.content?.trim()
     )) {
-      const syntheticMessage: ChatMessage = { role: "assistant", content: text };
+      const syntheticMessage: ChatMessage = { role: "assistant", content: text, phase: "final_answer" };
       state.messages.push(syntheticMessage);
       await this.dependencies.appendEvent({
         threadId: state.threadId,

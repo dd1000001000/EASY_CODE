@@ -2,6 +2,7 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 
 import type {
+  AssistantPhase,
   ChatMessage,
   FunctionToolCall,
   ImageAttachment,
@@ -48,10 +49,15 @@ type StreamEventPayload = ProviderStreamEvent extends infer Event
 interface ResponsesStreamState {
   content: string;
   reasoning: string;
+  assistantPhase?: AssistantPhase;
   done: boolean;
   completed?: unknown;
   status?: string;
   readonly toolItems: Map<string, { id: string; callId: string; name: string; arguments: string }>;
+}
+
+function assistantPhase(value: unknown): AssistantPhase | undefined {
+  return value === "commentary" || value === "final_answer" ? value : undefined;
 }
 
 /** Generic implementation of the OpenAI Responses wire API. */
@@ -228,6 +234,13 @@ export class ResponsesProvider implements ModelProvider {
       return true;
     }
     if (type === "response.output_item.added" || type === "response.output_item.done") {
+      if (isRecord(value.item) && value.item.type === "message" && value.item.role === "assistant") {
+        const phase = assistantPhase(value.item.phase);
+        if (!phase || phase === state.assistantPhase) return false;
+        state.assistantPhase = phase;
+        emit({ kind: "assistant_phase", phase });
+        return true;
+      }
       if (isRecord(value.item) && value.item.type === "function_call") {
         const key = typeof value.output_index === "number"
           ? String(value.output_index)
@@ -331,7 +344,11 @@ export class ResponsesProvider implements ModelProvider {
     const output: ResponseInput[] = [];
     for (const message of projected) {
       if (message.role === "assistant") {
-        if (message.content) output.push({ role: "assistant", content: message.content });
+        if (message.content) output.push({
+          role: "assistant",
+          content: message.content,
+          ...(message.phase ? { phase: message.phase } : {}),
+        });
         for (const call of message.tool_calls ?? []) output.push({ type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments });
         continue;
       }
@@ -382,8 +399,10 @@ export class ResponsesProvider implements ModelProvider {
     const text: string[] = [];
     const reasoning: string[] = [];
     const toolCalls: FunctionToolCall[] = [];
+    let phase: AssistantPhase | undefined;
     for (const item of parsed.data.output) {
       if (item.type === "message" && Array.isArray(item.content)) {
+        phase = assistantPhase(item.phase) ?? phase;
         for (const part of item.content) if (isRecord(part) && part.type === "output_text" && typeof part.text === "string") text.push(part.text);
       } else if (item.type === "function_call") {
         if (typeof item.call_id !== "string" || !item.call_id || typeof item.name !== "string" || !item.name || typeof item.arguments !== "string") {
@@ -394,7 +413,11 @@ export class ResponsesProvider implements ModelProvider {
         for (const part of item.summary) if (isRecord(part) && typeof part.text === "string") reasoning.push(part.text);
       }
     }
-    const message: Extract<ChatMessage, { role: "assistant" }> = { role: "assistant", content: text.length ? redactImageDataUrls(text.join("")) : null };
+    const message: Extract<ChatMessage, { role: "assistant" }> = {
+      role: "assistant",
+      content: text.length ? redactImageDataUrls(text.join("")) : null,
+      ...(phase ? { phase } : {}),
+    };
     if (toolCalls.length) message.tool_calls = toolCalls;
     if (reasoning.length) message.reasoning_content = redactImageDataUrls(reasoning.join("\n"));
     const incompleteReason = parsed.data.incomplete_details?.reason;

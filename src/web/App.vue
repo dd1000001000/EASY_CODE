@@ -6,15 +6,14 @@ import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contra
 import type { WebCommandEntry } from "../web-command-catalog.js";
 import type { PlanProposal } from "../core/types.js";
 import { bootstrap, fetchHistoryPage, request, type ProjectItem, type ThreadItem, type WebSnapshot } from "./api.js";
-import { displayProject, displayTitle, groupConversationTools, isConversationEntry, isNoticeEntry, toolRunContinuesAcross } from "./display-content.js";
+import { activeMessageIdsForViewport, displayProject, displayTitle, groupConversationTurns, isConversationEntry, isNoticeEntry, toolRunContinuesAcross, turnContinuesAcross } from "./display-content.js";
 import { useOutsideDismiss } from "./use-outside-dismiss.js";
 import { language, setLanguage, t } from "./i18n.js";
 import { parseLanguage, type Language } from "../i18n/language.js";
 import Composer from "./components/Composer.vue";
 import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
-import TranscriptEntry from "./components/TranscriptEntry.vue";
-import ToolGroup from "./components/ToolGroup.vue";
+import ConversationTurn from "./components/ConversationTurn.vue";
 
 const view = ref<WebView>({ session: null, entries: [], tasks: null, subagents: [], activities: [], review: null, decision: null, busy: false });
 const history = ref<WebHistoryState>({ epoch: "", hasEarlier: false, markers: [] });
@@ -68,7 +67,7 @@ function pickEmptyThreadTitle(): void {
 const session = computed(() => view.value.session);
 const displayedEntries = computed(() => archiveEntries.value ?? view.value.entries);
 const conversationEntries = computed(() => displayedEntries.value.filter(isConversationEntry));
-const conversationItems = computed(() => groupConversationTools(conversationEntries.value));
+const conversationTurns = computed(() => groupConversationTurns(conversationEntries.value));
 const activeThread = computed(() => session.value?.threadId);
 const selectedCommand = computed(() => commands.value.find(command => command.name === commandPanelName.value));
 const sortedThreads = computed(() => [...threads.value].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
@@ -169,7 +168,7 @@ function applyPatch(patch: WebPatch, nextSequence: number): void {
     let entries = [...view.value.entries, patch.entry];
     if (keepBottom && !archiveEntries.value && entries.length > MAX_LIVE_ENTRIES) {
       let start = entries.length - MAX_LIVE_ENTRIES;
-      while (start > 0 && toolRunContinuesAcross(entries, start)) start -= 1;
+      while (start > 0 && (turnContinuesAcross(entries, start) || toolRunContinuesAcross(entries, start))) start -= 1;
       entries = entries.slice(start);
       history.value = { ...history.value, hasEarlier: true };
       historyExpanded.value = false;
@@ -255,18 +254,32 @@ watch(activeThread, (next, previous) => {
   commandPanelName.value = null;
   if (next) pickEmptyThreadTitle();
 });
-onMounted(() => { void start(); timer = window.setInterval(() => { now.value = Date.now(); }, 1000); });
+onMounted(() => {
+  void start();
+  timer = window.setInterval(() => { now.value = Date.now(); }, 1000);
+  window.addEventListener("resize", updateVisibleMessages);
+});
 onUnmounted(() => {
   activeNotification?.close();
   events?.close(); if (timer) clearInterval(timer);
+  window.removeEventListener("resize", updateVisibleMessages);
 });
 function updateVisibleMessages(): void {
   const viewport = transcript.value;
   if (!viewport) { visibleMessageIds.value = new Set(); return; }
   const bounds = viewport.getBoundingClientRect();
-  visibleMessageIds.value = new Set([...viewport.querySelectorAll<HTMLElement>(".entry--user[data-entry-id]")]
-    .filter(element => { const box = element.getBoundingClientRect(); return box.bottom > bounds.top && box.top < bounds.bottom; })
-    .map(element => element.dataset.entryId!).filter(Boolean));
+  const users = [...viewport.querySelectorAll<HTMLElement>(".entry--user[data-entry-id]")].flatMap(element => {
+    const id = element.dataset.entryId;
+    if (!id) return [];
+    const box = element.getBoundingClientRect();
+    return [{ id, top: box.top, bottom: box.bottom }];
+  });
+  const turns = [...viewport.querySelectorAll<HTMLElement>(".conversation-turn[data-user-entry-id]")].map(element => {
+    const box = element.getBoundingClientRect();
+    return { requestId: element.dataset.userEntryId, top: box.top, bottom: box.bottom };
+  });
+  visibleMessageIds.value = new Set(activeMessageIdsForViewport(
+    { top: bounds.top, bottom: bounds.bottom }, users, turns));
 }
 watch(displayedEntries, async () => { await nextTick(); updateVisibleMessages(); }, { flush: "post" });
 async function loadOlder(): Promise<void> {
@@ -338,6 +351,11 @@ async function jumpToEntry(id: string): Promise<void> {
     } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); return; }
   }
   if (!viewport || !element) return;
+  const hiddenProcess = element.closest<HTMLDetailsElement>("details.turn-process:not([open])");
+  if (hiddenProcess) {
+    hiddenProcess.open = true;
+    await nextTick();
+  }
   const top = element.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
   keepBottom = false;
   viewport.scrollTo({ top: Math.max(0, top - viewport.clientHeight / 4), behavior: "smooth" });
@@ -592,10 +610,7 @@ function noticePreview(text: string): string {
             <Transition name="empty-state" mode="out-in">
               <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" :key="`${activeThread ?? activeProject?.id ?? 'no-project'}:${emptyThreadOpenSerial}`" class="empty-state"><img class="empty-symbol" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><h2>{{ activeThread ? t(EMPTY_THREAD_TITLES[emptyThreadTitleIndex]!) : activeProject ? t('ui.emptyProjectTitle') : t('ui.emptyNoProjectTitle') }}</h2><p>{{ activeThread ? t('ui.emptyThreadHint') : activeProject ? t('ui.emptyProjectHint') : t('ui.emptyNoProjectHint') }}</p></div>
             </Transition>
-            <template v-for="item in conversationItems" :key="item.id">
-              <ToolGroup v-if="item.kind === 'tool-group'" :tools="item.tools" />
-              <TranscriptEntry v-else :entry="item.entry" />
-            </template>
+            <ConversationTurn v-for="turn in conversationTurns" :key="turn.id" :turn="turn" />
             <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">{{ t('ui.loadNewer') }}</ElButton></div>
             <section v-if="plan" class="plan-actions"><strong>{{ t('ui.planAwaiting') }}</strong><div><ElButton type="primary" @click="decidePlan('approve')">{{ t('ui.approveRun') }}</ElButton><ElButton @click="decidePlan('adjust')">{{ t('ui.requestChanges') }}</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">{{ t('ui.reject') }}</ElButton></div></section>
           </div>

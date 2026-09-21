@@ -38,6 +38,34 @@ describe("Web conversation projection", () => {
     assert.equal(entries[1]?.text, "Investigate first");
     assert.ok(!entries.some(entry => entry.text.includes("file contents")));
   });
+  it("restores turn timing and marks only the last assistant message as final", () => {
+    const turnId = "turn_timed";
+    const timed = (sequence: number, type: EventRecord["type"], payload: unknown, second: number): EventRecord => ({
+      ...event(sequence, type, payload), turnId, timestamp: `2026-09-20T00:00:${String(second).padStart(2, "0")}.000Z`,
+      ...(type === "turn.completed" ? { phase: "completed" as const } : {}),
+    });
+    const entries = projectWebHistory([
+      timed(1, "message.user", { message: { role: "user", content: "Fix it" } }, 1),
+      timed(2, "message.assistant", { role: "assistant", content: "I will inspect." }, 2),
+      timed(3, "tool.call", { id: "call", function: { name: "read_file" } }, 3),
+      timed(4, "tool.result", { callId: "call", tool: "read_file" }, 4),
+      timed(5, "message.assistant", { role: "assistant", content: "Done." }, 5),
+      timed(6, "turn.completed", { reason: "success" }, 9),
+    ]);
+    assert.ok(entries.every(entry => entry.turnId === turnId && entry.turnStartedAt === Date.parse("2026-09-20T00:00:01.000Z")));
+    assert.equal(entries.filter(entry => entry.answerState === "confirmed").length, 1);
+    assert.equal(entries.at(-1)?.answerState, "confirmed");
+    assert.equal(entries.at(-1)?.turnCompletedAt, Date.parse("2026-09-20T00:00:09.000Z"));
+  });
+  it("restores an explicit final phase before the turn completion event exists", () => {
+    const turnId = "turn_finalizing";
+    const entries = projectWebHistory([
+      { ...event(1, "message.user", { message: { role: "user", content: "Explain" } }), turnId },
+      { ...event(2, "message.assistant", { role: "assistant", content: "The answer", phase: "final_answer" }), turnId },
+    ]);
+    assert.equal(entries.at(-1)?.answerState, "finalizing");
+    assert.equal(entries.at(-1)?.turnCompletedAt, undefined);
+  });
   it("pairs MCP calls and results as one logical tool without revealing result evidence", () => {
     const entries = projectWebHistory([
       event(1, "tool.call", { id: "call_mcp", function: { name: "mcp__server__search" } }),
@@ -237,14 +265,45 @@ describe("Web interaction host", () => {
   });
   it("reconciles streamed content without duplicate final answers", () => {
     const host = new WebInteraction();
+    host.presentUser("Explain it");
+    host.setCurrentRequest("Explain it");
     host.modelStream({ kind: "started", streamId: "one", sequence: 0 });
     host.modelStream({ kind: "reasoning_delta", streamId: "one", sequence: 1, text: "think" });
     host.modelStream({ kind: "text_delta", streamId: "one", sequence: 2, text: "partial" });
+    assert.equal(host.snapshot().view.entries.at(-1)?.answerState, "streaming");
     host.addReasoning("complete thought");
     host.finalizeStreamedAnswer("complete answer");
     assert.deepEqual(host.snapshot().view.entries.map(item => [item.kind, item.text]), [
-      ["thinking", "complete thought"], ["assistant", "complete answer"],
+      ["user", "Explain it"], ["thinking", "complete thought"], ["assistant", "complete answer"],
     ]);
+    const entries = host.snapshot().view.entries;
+    assert.ok(entries.every(item => item.turnId === entries[0]?.turnId));
+    assert.equal(entries.at(-1)?.answerState, "confirmed");
+    assert.ok((entries.at(-1)?.turnCompletedAt ?? 0) >= (entries[0]?.turnStartedAt ?? Infinity));
+    host.close();
+  });
+  it("uses an explicit provider phase for early final-answer presentation", () => {
+    const host = new WebInteraction();
+    host.presentUser("Explain it");
+    host.setCurrentRequest("Explain it");
+    host.modelStream({ kind: "started", streamId: "phase", sequence: 1 });
+    host.modelStream({ kind: "assistant_phase", streamId: "phase", sequence: 2, phase: "final_answer" });
+    host.modelStream({ kind: "text_delta", streamId: "phase", sequence: 3, text: "Final" });
+    assert.equal(host.snapshot().view.entries.at(-1)?.answerState, "finalizing");
+    host.finalizeStreamedAnswer("Final answer");
+    assert.equal(host.snapshot().view.entries.at(-1)?.answerState, "confirmed");
+    host.close();
+  });
+  it("revokes a provisional final phase when the same response starts a tool call", () => {
+    const host = new WebInteraction();
+    host.presentUser("Fix it");
+    host.setCurrentRequest("Fix it");
+    host.modelStream({ kind: "started", streamId: "invalid", sequence: 1 });
+    host.modelStream({ kind: "assistant_phase", streamId: "invalid", sequence: 2, phase: "final_answer" });
+    host.modelStream({ kind: "text_delta", streamId: "invalid", sequence: 3, text: "I am done" });
+    host.modelStream({ kind: "tool_call_delta", streamId: "invalid", sequence: 4, index: 0,
+      id: "call", name: "read_file", arguments: "{}" });
+    assert.equal(host.snapshot().view.entries.at(-1)?.answerState, "streaming");
     host.close();
   });
 

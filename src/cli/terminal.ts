@@ -1746,6 +1746,8 @@ export class Terminal implements AppInteractionPort {
     const state = this.modelStreams.get(event.streamId);
     if (!state || state.completed || event.sequence <= state.sequence) return;
     state.sequence = event.sequence;
+    // Assistant phase is a Web presentation hint. CLI transcript behavior stays unchanged.
+    if (event.kind === "assistant_phase") return;
     if (event.kind === "reasoning_delta" || event.kind === "text_delta") {
       if (event.kind === "reasoning_delta") {
         state.reasoningSourceChars += countCodePoints(event.text);

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type {
-  ApprovalDecision, ApprovalRequest, FileDiffPresentation, ImageAttachment,
+  ApprovalDecision, ApprovalRequest, AssistantPhase, FileDiffPresentation, ImageAttachment,
   PlanProposal, ProviderStreamEvent, ThinkingEffort,
 } from "../core/types.js";
 import type { TaskGraphView } from "../tasks/task-graph.js";
 import type { SubagentView } from "../subagents/types.js";
 import type { UIActivityKind, UIReviewPhase, UISessionInfo } from "../ui/contracts.js";
 import type {
-  AppInteractionPort, CurrentRequestOptions, InteractionChoice,
+  AppInteractionPort, CompletedTurnTiming, CurrentRequestOptions, InteractionChoice,
   ModelSelectorChoice, PlanReviewDecision, PlanReviewInputOptions,
   ProviderSelectorChoice, RequestInputOptions, ThinkingEffortSelectorChoice,
   TimedChoiceOptions, UserSubmission,
@@ -18,7 +18,7 @@ import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/approval.js";
 import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
-import { toolRunContinuesAcross } from "../web-tool-run.js";
+import { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
 import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
@@ -59,6 +59,9 @@ export class WebInteraction implements AppInteractionPort {
   private currentAnswerId?: string;
   private currentReasoningId?: string;
   private currentStreamId?: string;
+  private currentStreamPhase?: AssistantPhase;
+  private currentTurnId?: string;
+  private currentTurnStartedAt?: number;
   private externalOperation?: AbortController;
   private language: Language = "en_us";
 
@@ -95,8 +98,8 @@ export class WebInteraction implements AppInteractionPort {
     }
     // A run of adjacent tool calls must remain one visible row, even when a
     // journal page boundary falls among status notices inside that run.
-    while (start > 0 && toolRunContinuesAcross(this.entries, start)) start -= 1;
-    while (end < this.entries.length && toolRunContinuesAcross(this.entries, end)) end += 1;
+    while (start > 0 && (turnContinuesAcross(this.entries, start) || toolRunContinuesAcross(this.entries, start))) start -= 1;
+    while (end < this.entries.length && (turnContinuesAcross(this.entries, end) || toolRunContinuesAcross(this.entries, end))) end += 1;
     return { entries: this.entries.slice(start, end).map(entry => ({ ...entry })),
       hasEarlier: start > 0, hasLater: end < this.entries.length };
   }
@@ -123,9 +126,15 @@ export class WebInteraction implements AppInteractionPort {
     this.historyEpoch = randomUUID();
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
+    this.currentStreamId = undefined;
+    this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined;
+    this.currentTurnStartedAt = undefined;
     this.emit({ kind: "entries.reset", entries: this.entries });
   }
   presentUser(text: string, images: readonly ImageAttachment[] = []): void {
+    this.currentTurnId = randomUUID();
+    this.currentTurnStartedAt = Date.now();
     this.append("user", text, images);
   }
   resolveDecision(id: string, value: string | undefined): boolean {
@@ -195,6 +204,8 @@ export class WebInteraction implements AppInteractionPort {
     const id = randomUUID();
     const entry: WebEntry = {
       id, kind, text: this.safe(text), timestamp: Date.now(),
+      ...(this.currentTurnId && (kind === "user" || kind === "assistant" || kind === "thinking" || kind === "tool" || kind === "plan")
+        ? { turnId: this.currentTurnId, turnStartedAt: this.currentTurnStartedAt } : {}),
       ...(images?.length ? { images: images.map(({ id, label, mediaType }) => ({ id, label, mediaType })) } : {}),
       ...(toolDetails?.length ? { toolDetails: toolDetails.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) } : {}),
       ...(toolName ? { toolName: this.safe(toolName) } : {}),
@@ -211,6 +222,18 @@ export class WebInteraction implements AppInteractionPort {
     if (!entry) return;
     entry.text = this.safe(text);
     this.emit({ kind: "entry.replace", entry });
+  }
+  private setAnswerState(id: string | undefined, state: WebEntry["answerState"]): void {
+    if (!id) return;
+    const entry = this.entryById.get(id);
+    if (!entry || entry.kind !== "assistant" || entry.answerState === state) return;
+    if (state === undefined) delete entry.answerState;
+    else entry.answerState = state;
+    this.emit({ kind: "entry.replace", entry });
+  }
+  private downgradeProvisionalAnswer(): void {
+    const entry = this.currentAnswerId ? this.entryById.get(this.currentAnswerId) : undefined;
+    if (entry?.answerState === "finalizing") this.setAnswerState(entry.id, "streaming");
   }
   private awaitDecision(request: WebDecision, signal?: AbortSignal,
     timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined> {
@@ -275,19 +298,35 @@ export class WebInteraction implements AppInteractionPort {
   }
   modelStream(event: Readonly<ProviderStreamEvent>): void {
     if (event.kind === "started") {
+      this.downgradeProvisionalAnswer();
       this.currentStreamId = event.streamId;
       this.currentAnswerId = undefined;
       this.currentReasoningId = undefined;
+      this.currentStreamPhase = undefined;
     } else if (event.streamId !== this.currentStreamId) {
       return;
+    } else if (event.kind === "assistant_phase") {
+      this.currentStreamPhase = event.phase;
+      this.setAnswerState(this.currentAnswerId, event.phase === "final_answer" ? "finalizing" : "streaming");
     } else if (event.kind === "reasoning_delta") {
       if (!this.currentReasoningId) this.currentReasoningId = this.append("thinking", "");
       const entry = this.entryById.get(this.currentReasoningId);
       this.replace(this.currentReasoningId, (entry?.text ?? "") + event.text);
     } else if (event.kind === "text_delta") {
       if (!this.currentAnswerId) this.currentAnswerId = this.append("assistant", "");
+      this.setAnswerState(this.currentAnswerId, this.currentStreamPhase === "final_answer" ? "finalizing" : "streaming");
       const entry = this.entryById.get(this.currentAnswerId);
       this.replace(this.currentAnswerId, (entry?.text ?? "") + event.text);
+    } else if (event.kind === "tool_call_delta") {
+      if (this.currentStreamPhase === "final_answer") {
+        this.downgradeProvisionalAnswer();
+        this.currentStreamPhase = undefined;
+      }
+    } else if (event.kind === "interrupted") {
+      this.downgradeProvisionalAnswer();
+      this.currentAnswerId = undefined;
+      this.currentReasoningId = undefined;
+      this.currentStreamPhase = undefined;
     }
   }
   addReasoning(text: string): number {
@@ -313,11 +352,29 @@ export class WebInteraction implements AppInteractionPort {
     this.adjustmentNumber = Math.max(sequence, this.adjustmentNumber);
     this.append("user", text, images as ImageAttachment[]);
   }
-  finalizeStreamedAnswer(text: string): boolean {
-    if (this.currentAnswerId) this.replace(this.currentAnswerId, text);
-    else this.append("assistant", text);
+  finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {
+    const completedAt = timing?.completedAt ?? Date.now();
+    const answerId = this.currentAnswerId ?? this.append("assistant", text);
+    const answer = this.entryById.get(answerId);
+    if (answer) {
+      answer.text = this.safe(text);
+      const downgraded: WebEntry[] = [];
+      for (const entry of this.entries) {
+        if (entry.turnId === answer.turnId && entry.kind === "assistant" && entry.id !== answer.id &&
+            entry.answerState === "finalizing") {
+          entry.answerState = "streaming";
+          downgraded.push(entry);
+        }
+      }
+      for (const entry of downgraded) this.emit({ kind: "entry.replace", entry });
+      answer.answerState = "confirmed";
+      if (timing) answer.turnStartedAt = timing.startedAt;
+      answer.turnCompletedAt = completedAt;
+      this.emit({ kind: "entry.replace", entry: answer });
+    }
     this.currentAnswerId = undefined;
     this.currentReasoningId = undefined;
+    this.currentStreamPhase = undefined;
     return true;
   }
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string {
@@ -410,6 +467,10 @@ export class WebInteraction implements AppInteractionPort {
     throw new Error("The Web host submits messages through the session API.");
   }
   setCurrentRequest(_text: string, _images?: readonly Readonly<ImageAttachment>[], _options?: Readonly<CurrentRequestOptions>): void {
+    if (!this.currentTurnId) {
+      this.currentTurnId = randomUUID();
+      this.currentTurnStartedAt = Date.now();
+    }
     this.busy = true; this.emit();
   }
   private interruptPendingTools(): void {
@@ -423,16 +484,32 @@ export class WebInteraction implements AppInteractionPort {
     this.pendingToolEntries = [];
   }
   clearCurrentRequest(): void {
+    this.downgradeProvisionalAnswer();
+    if (this.currentTurnId && !this.entries.some(entry => entry.turnId === this.currentTurnId && entry.turnCompletedAt !== undefined)) {
+      const terminal = [...this.entries].reverse().find(entry => entry.turnId === this.currentTurnId);
+      if (terminal) {
+        terminal.turnCompletedAt = Date.now();
+        this.emit({ kind: "entry.replace", entry: terminal });
+      }
+    }
     this.busy = false;
     this.activities.clear();
     this.review = null;
     this.interruptPendingTools();
+    this.currentAnswerId = undefined;
+    this.currentReasoningId = undefined;
+    this.currentStreamId = undefined;
+    this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined;
+    this.currentTurnStartedAt = undefined;
     this.emit();
   }
   async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> { return seal(); }
   resetForNewThread(session: Readonly<UISessionInfo>): void {
     this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
     this.pendingToolEntries = [];
+    this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined; this.currentTurnStartedAt = undefined;
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
@@ -443,6 +520,8 @@ export class WebInteraction implements AppInteractionPort {
   clearHostedSession(): void {
     this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
     this.pendingToolEntries = [];
+    this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined;
+    this.currentTurnId = undefined; this.currentTurnStartedAt = undefined;
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
@@ -450,7 +529,7 @@ export class WebInteraction implements AppInteractionPort {
     this.emit({ kind: "entries.reset", entries: [] });
     this.emit();
   }
-  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.pendingToolEntries = []; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
+  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.pendingToolEntries = []; this.currentAnswerId = undefined; this.currentReasoningId = undefined; this.currentStreamId = undefined; this.currentStreamPhase = undefined; this.currentTurnId = undefined; this.currentTurnStartedAt = undefined; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
   emergencyRestore(): void { this.clearCurrentRequest(); }
   close(): void {
     this.closed = true; this.externalOperation?.abort();
