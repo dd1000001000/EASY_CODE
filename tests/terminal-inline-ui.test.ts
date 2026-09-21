@@ -806,7 +806,7 @@ describe("Terminal retained inline shell", () => {
           false,
         );
         terminal.status(
-          "Context utilization is 90%; compact_context is required before other work.",
+          "Model response headers did not arrive within the configured interval. Retrying API attempt 2/3.",
         );
         terminal.write("Authentication flow inspected.\n");
         terminal.status("Step 3/3: requesting deepseek-v4-pro");
@@ -825,7 +825,7 @@ describe("Terminal retained inline shell", () => {
           ["tool", "warning", "raw"],
         );
         assert.match(transcript[0]?.text ?? "", /✓ Tool: read_file/u);
-        assert.match(transcript[1]?.text ?? "", /Context utilization is 90%/u);
+        assert.match(transcript[1]?.text ?? "", /Retrying API attempt 2\/3/u);
         assert.equal(transcript[2]?.text, "Authentication flow inspected.\n");
         assert.equal(
           transcript.filter((entry) => entry.kind === "tool").length,
@@ -914,12 +914,12 @@ describe("Terminal retained inline shell", () => {
         input.write("A request long enough to wrap across several terminal rows");
         await new Promise<void>((resolve) => setImmediate(resolve));
         terminal.status(
-          "Model usage accounting could not be saved: temporary database issue",
+          "Model stream made no semantic progress for the configured idle interval. Retrying API attempt 2/3.",
         );
         assert.equal(
           terminalState(terminal).transcript.some((entry) =>
             entry.kind === "warning" &&
-            entry.text.includes("Model usage accounting could not be saved")
+            entry.text.includes("Retrying API attempt 2/3")
           ),
           true,
         );
@@ -2133,7 +2133,7 @@ describe("Terminal retained inline shell", () => {
         });
         await settlePromptInput();
 
-        terminal.status("Auto mode selected code — inspect the workspace.");
+        terminal.status("Server rejected context capacity. Historical context cleared; retrying once with user requirements. Files, budgets and execution state are unchanged.");
         const firstThinking = terminal.addReasoning(
           "FIRST-THINKING-FULL-BODY: inspect README and package metadata.",
         );
@@ -2187,7 +2187,7 @@ describe("Terminal retained inline shell", () => {
         const orderedMarkers = [
           "PRIOR-TURN-MUST-STAY-OUTSIDE-VIEWER",
           "> 这个项目是做什么的",
-          "Auto mode selected code",
+          "Server rejected context capacity",
           "FIRST-THINKING-FULL-BODY",
           "> 以及这个项目怎么使用",
           "✓ Tool: read_file",

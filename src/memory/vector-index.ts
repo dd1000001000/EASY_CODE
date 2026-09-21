@@ -7,6 +7,11 @@ import {
 } from "@orama/orama";
 
 import type { EasyCodeStorage } from "../storage/database.js";
+import type {
+  LongTermMemory,
+  LongTermMemoryCategory,
+  LongTermMemoryScope,
+} from "../core/types.js";
 import { sha256 } from "../utils/hash.js";
 
 export interface EmbeddingProvider {
@@ -35,6 +40,10 @@ export interface MemoryVectorSearchOptions {
   readonly limit?: number;
   readonly minimumSimilarity?: number;
   readonly includeInactive?: boolean;
+  readonly scope?: LongTermMemoryScope;
+  readonly category?: LongTermMemoryCategory;
+  readonly status?: LongTermMemory["status"];
+  readonly excludeMemoryId?: string;
 }
 
 export interface MemoryVectorSearchHit {
@@ -70,6 +79,8 @@ interface BackfillRow extends MemoryContentRow {
 
 interface IndexRow extends MemoryContentRow {
   workspace_id: string;
+  scope: LongTermMemoryScope;
+  category: LongTermMemoryCategory;
   status: string;
   content_hash: string;
   embedding: unknown;
@@ -87,7 +98,10 @@ interface CachedIndex {
 }
 
 type MemoryVectorSchema = {
+  memoryId: "enum";
   workspaceId: "enum";
+  scope: "enum";
+  category: "enum";
   status: "enum";
   embedding: `vector[${number}]`;
 };
@@ -420,8 +434,13 @@ export class MemoryVectorIndex {
       }
 
       const where: Partial<WhereCondition<MemoryVectorSchema>> = {
+        ...(options.excludeMemoryId ? { memoryId: { nin: [options.excludeMemoryId] } } : {}),
         workspaceId: { eq: workspaceId },
-        ...(options.includeInactive === true ? {} : { status: { eq: "active" } }),
+        ...(options.scope ? { scope: { eq: options.scope } } : {}),
+        ...(options.category ? { category: { eq: options.category } } : {}),
+        ...(options.status
+          ? { status: { eq: options.status } }
+          : options.includeInactive === true ? {} : { status: { eq: "active" } }),
       };
       const result = await search(index.database, {
         mode: "vector",
@@ -571,7 +590,10 @@ export class MemoryVectorIndex {
     const snapshot = this.readIndexSnapshot(workspaceId);
     const vectorType = `vector[${this.provider.dimension}]` as `vector[${number}]`;
     const schema: MemoryVectorSchema = {
+      memoryId: "enum",
       workspaceId: "enum",
+      scope: "enum",
+      category: "enum",
       status: "enum",
       embedding: vectorType,
     };
@@ -580,7 +602,10 @@ export class MemoryVectorIndex {
     });
     const documents: Array<{
       id: string;
+      memoryId: string;
       workspaceId: string;
+      scope: LongTermMemoryScope;
+      category: LongTermMemoryCategory;
       status: string;
       embedding: number[];
     }> = [];
@@ -589,7 +614,10 @@ export class MemoryVectorIndex {
       try {
         documents.push({
           id: row.id,
+          memoryId: row.id,
           workspaceId: row.workspace_id,
+          scope: row.scope,
+          category: row.category,
           status: row.status,
           embedding: Array.from(decodeFloat32(row.embedding, this.provider.dimension)),
         });
@@ -617,7 +645,7 @@ export class MemoryVectorIndex {
           string,
           number,
         ], IndexRow>(
-          `SELECT m.id, m.workspace_id, m.content, m.status,
+          `SELECT m.id, m.workspace_id, m.scope, m.category, m.content, m.status,
                   e.content_hash, e.embedding
              FROM memories AS m
              JOIN memory_embeddings AS e ON e.memory_id = m.id

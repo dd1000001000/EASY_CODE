@@ -97,7 +97,7 @@ export function planDraftFromText(value: string): PlanDraft {
   }
   return normalizePlanDraft({
     title,
-    overview: "The model supplied this implementation plan directly. Runtime preserved it as ordered review sections without requesting a formatting-only retry.",
+    overview: "Proposed implementation plan.",
     steps: chunks.map((description, index) => ({
       title: chunks.length === 1 ? "Implementation" : `Plan section ${index + 1}`,
       description,
@@ -168,8 +168,6 @@ export function formatPlanProposal(plan: Readonly<PlanProposal>): string {
   const sections = [
     catalog.render("runtime/plan-proposal-header.md", {
       title: plan.title,
-      planId: plan.id,
-      revision: plan.revision,
       overview: plan.overview,
     }).trimEnd(),
     ...plan.steps.map((step, index) =>
@@ -177,7 +175,6 @@ export function formatPlanProposal(plan: Readonly<PlanProposal>): string {
         index: index + 1,
         title: step.title,
         description: step.description,
-        verification: step.verification,
       }).trimEnd()
     ),
   ];

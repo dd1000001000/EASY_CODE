@@ -114,135 +114,30 @@ type AuditedStatus =
 
 const AUDITED_RUNTIME_STATUSES: readonly AuditedStatus[] = [
   {
-    text: "Auto mode review transition: code — explicit review override",
-    destination: "stable",
-    kind: "info",
-  },
-  {
-    text: "Auto mode selected code — a previous direct response failed validation",
-    destination: "stable",
-    kind: "info",
-  },
-  {
     text: "Auto mode is choosing how to handle this request...",
     destination: "live",
     kind: "status",
-  },
-  {
-    text: "Auto mode answered directly without starting a second model request.",
-    destination: "stable",
-    kind: "info",
-  },
-  {
-    text: "Context utilization returned below 60% (42%).",
-    destination: "stable",
-    kind: "success",
-  },
-  {
-    text: "Context utilization is 64%; the model is advised to compact soon.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "Context utilization is 76%; compact_context is required before other work.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "Context utilization is 91%; Runtime is forcing a context compaction request.",
-    destination: "stable",
-    kind: "warning",
   },
   {
     text: "Step 2/18: requesting deepseek-v4-pro",
     destination: "live",
     kind: "step",
   },
-  {
-    text: "Ignored tools other than memory maintenance during task-DAG finalization.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "Reserved one correction step for required context compaction.",
-    destination: "live",
-    kind: "status",
-  },
-  {
-    text: "The model did not compact the required context; requesting one correction.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "The child attempted to finish without submit_task_result; requesting one correction.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "The model attempted to finish with outstanding child work; requesting collection.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "The model attempted to finish while the task DAG was incomplete; continuing.",
-    destination: "stable",
-    kind: "warning",
-  },
-  {
-    text: "The model did not submit its plan with propose_plan; requesting one correction.",
-    destination: "stable",
-    kind: "warning",
-  },
   { text: "Tool: read_file", destination: "live", kind: "tool" },
   {
-    text: "Context compacted through 24 messages into 1800 characters.",
-    destination: "stable",
-    kind: "success",
-  },
-  {
-    text: "The model violated the required compaction protocol; requesting one correction.",
+    text: "Model response headers did not arrive within the configured interval. Retrying API attempt 2/3.",
     destination: "stable",
     kind: "warning",
   },
   {
-    text: "Reserved one continuation step after required context compaction.",
-    destination: "live",
-    kind: "status",
-  },
-  {
-    text: "Reserved 2 finalization step(s) after memory maintenance.",
-    destination: "live",
-    kind: "status",
-  },
-  {
-    text: "Reserved one final response step after the task DAG reached a terminal state.",
-    destination: "live",
-    kind: "status",
-  },
-  {
-    text: "Pre-route context compaction 1/2: requesting deepseek-v4-pro",
-    destination: "live",
-    kind: "status",
-  },
-  {
-    text: "Context compacted before Auto routing through 32 messages into 2100 characters.",
-    destination: "stable",
-    kind: "success",
-  },
-  {
-    text: "Model usage accounting could not be saved: database unavailable",
+    text: "Server rejected context capacity. Historical context cleared; retrying once with user requirements. Files, budgets and execution state are unchanged.",
     destination: "stable",
     kind: "warning",
   },
   {
-    text: "Committed 3 long-term memory change(s).",
+    text: "Review review_1: reviewer is independently inspecting the workspace.",
     destination: "stable",
-    kind: "success",
-  },
-  {
-    text: "Long-term memory maintenance was not saved: database unavailable",
-    destination: "stable",
-    kind: "warning",
+    kind: "info",
   },
 ];
 
@@ -299,7 +194,7 @@ describe("Terminal runtime status routing", () => {
       const stableSecret = `AKIA${"B".repeat(16)}`;
       fixture.terminal.status(`Step 1/4: requesting ${liveSecret}`);
       fixture.terminal.status(
-        `Model usage accounting could not be saved: ${stableSecret}`,
+        `Model response headers did not arrive within the configured interval (${stableSecret}). Retrying API attempt 2/3.`,
       );
       fixture.terminal.startActivity(`Waiting for ${liveSecret}`);
 

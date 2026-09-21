@@ -86,6 +86,18 @@ describe("long-term memory lifecycle", () => {
         .run(new Date(Date.now() - 80 * DAY_MS).toISOString(), created.memoryIds[0]!);
       const lexical = f.manager.search("workspace_project", "TypeScript files use strict");
       assert.equal(lexical[0]?.id, created.memoryIds[1]);
+      const consolidationLexical = f.manager.search(
+        "workspace_project",
+        "TypeScript files use strict",
+        { ranking: "consolidation" },
+      );
+      assert.equal(consolidationLexical[0]?.id, created.memoryIds[0]);
+      const consolidationFallback = await f.manager.searchHybrid(
+        "workspace_project",
+        "TypeScript files use strict",
+        { ranking: "consolidation" },
+      );
+      assert.equal(consolidationFallback[0]?.id, created.memoryIds[0]);
       const hybridManager = new MemoryManager(f.storage, { limits: f.limits,
         vectorIndex: { async search() { return [
           { id: created.memoryIds[0]!, score: 1 },
@@ -93,6 +105,12 @@ describe("long-term memory lifecycle", () => {
         ]; } } });
       const hybrid = await hybridManager.searchHybrid("workspace_project", "TypeScript files use strict");
       assert.equal(hybrid[0]?.id, created.memoryIds[1]);
+      const consolidationHybrid = await hybridManager.searchHybrid(
+        "workspace_project",
+        "TypeScript files use strict",
+        { ranking: "consolidation" },
+      );
+      assert.equal(consolidationHybrid[0]?.id, created.memoryIds[0]);
     } finally { f.dispose(); }
   });
 

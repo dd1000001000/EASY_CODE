@@ -1461,7 +1461,6 @@ export class EasyCodeApp {
         await this.clearPendingImages();
         await this.resumeThread(threadId);
         this.syncTerminalView(true);
-        this.terminal.success(translate(readLanguage(this.storage), "cli.resumedThread", { id: this.state.threadId }));
         this.announceResumeRecovery();
         return false;
       }
@@ -1606,9 +1605,7 @@ export class EasyCodeApp {
       const proposal = review.proposal;
 
       if (review.status === "approved_pending_execution") {
-        this.terminal.info(
-          `Executing approved plan ${proposal.id} revision ${proposal.revision} in Auto mode.`,
-        );
+        this.terminal.info(translate(readLanguage(this.storage), "cli.planExecuting"));
         const result = await this.executePrompt(
           renderPromptBundleText("runtime/plan-approved.md", {
             planId: proposal.id,
@@ -1661,9 +1658,7 @@ export class EasyCodeApp {
         this.state.updatedAt = event.timestamp;
         this.dirty = true;
         this.save();
-        this.terminal.success(
-          `Approved plan ${proposal.id} revision ${proposal.revision}; mode is Auto.`,
-        );
+        this.terminal.success(translate(readLanguage(this.storage), "cli.planApprovedAuto"));
         shouldShowPlan = false;
         continue;
       }
@@ -1690,9 +1685,7 @@ export class EasyCodeApp {
         this.state.updatedAt = event.timestamp;
         this.dirty = true;
         this.save();
-        this.terminal.info(
-          `Rejected plan ${proposal.id} revision ${proposal.revision}.`,
-        );
+        this.terminal.info(translate(readLanguage(this.storage), "cli.planRejected"));
         return true;
       }
 
@@ -3121,7 +3114,6 @@ export class EasyCodeApp {
     const mode = this.commandExecutionMode ?? (this.assumeYes ? "auto_approve" : "manual");
     if (request.requiredReviewer !== "user" &&
       (request.network ? autoApproveNetwork(mode, request.network.effect) : autoApproveLocal(mode, request.risk))) {
-      this.terminal.info(`Approved automatically: ${request.title}`);
       request.observeDecision?.("allow_once");
       return true;
     }
@@ -3132,22 +3124,17 @@ export class EasyCodeApp {
         request.commandPrefix,
       ) || request.existingNetworkCommandPrefix !== undefined && isCommandApprovalPrefixGranted(this.state.commandApprovalPrefixes, request.existingNetworkCommandPrefix)
     ) {
-      this.terminal.info(
-        `Approved by this Thread's prefix grant: ${formatCommandApprovalPrefix(request.commandPrefix)}`,
-      );
       request.observeDecision?.("allow_prefix");
       return true;
     }
 
     let decision: import("./core/types.js").ApprovalDecision | undefined;
     if (mode === "auto_approve" && request.requiredReviewer !== "user") {
-      this.terminal.info(`Independent approval review: ${request.title}`);
       const review = await this.reviewApproval(request);
       this.threadStore.appendEvent(threadId, { type: "approval.reviewed", payload: { id: request.id, source: request.source, ...review } });
       if (request.signal?.aborted || threadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
       if (review.decision !== "reject" && (review.decision !== "allow_prefix" || canGrantCommandPrefix(request.commandPrefix))) decision = review.decision;
       else {
-        this.terminal.info(`Approval agent requires user decision: ${review.reason}`);
         request = { ...request, description: `${request.description}\nApproval agent: ${review.reason}` };
       }
     }
@@ -3737,54 +3724,13 @@ export class EasyCodeApp {
     const recovery = this.pendingResumeRecovery;
     if (!recovery) return;
     this.pendingResumeRecovery = undefined;
-    const controls = [
-      recovery.taskGraph
-        ? `DAG ${recovery.taskGraph.status} ${recovery.taskGraph.completed}/${recovery.taskGraph.total}` +
-          (recovery.taskGraph.currentTask
-            ? ` (current: ${recovery.taskGraph.currentTask})`
-            : "")
-        : undefined,
-      recovery.planReview
-        ? `plan ${recovery.planReview.status} (${recovery.planReview.id} r${recovery.planReview.revision})`
-        : undefined,
-    ].filter((item): item is string => Boolean(item));
-    this.terminal.info(
-      `Restored thread ${recovery.threadId}: ${recovery.messageCount} message(s), ` +
-        `${recovery.compactedMessageCount} compacted, ` +
-        `${recovery.workingSummaryRestored ? "working summary restored" : "no working summary"}, ` +
-        `${recovery.restoredReadVersions} verified file read(s), ` +
-        `${recovery.restoredChanges} change(s), ${recovery.restoredCommands} command(s), ` +
-        `${recovery.restoredReasoningBlocks} Thinking block(s)` +
-        (controls.length ? `; ${controls.join("; ")}` : "") +
-        ".",
-    );
-    if (recovery.staleReadVersions > 0) {
-      this.terminal.info(
-        `Discarded ${recovery.staleReadVersions} stale file read authorization(s) because the files changed or disappeared after the saved read.`,
-      );
-    }
-    if (recovery.discardedChanges > 0) {
-      this.terminal.info(
-        `Discarded ${recovery.discardedChanges} invalid or duplicate historical change record(s).`,
-      );
-    }
-    if (recovery.reconciledSubagentAssignments > 0) {
-      this.terminal.info(
-        `Reconciled ${recovery.reconciledSubagentAssignments} child assignment(s) from durable results; unfinished claims are pending again instead of being replayed.`,
-      );
-    }
-    if (recovery.recoveredStandaloneSubagents > 0) {
-      this.terminal.info(
-        `Recovered ${recovery.recoveredStandaloneSubagents} child session(s) or durable result(s); ` +
-          (this.commandExecutionMode === "manual"
-            ? "unfinished children remain paused. Use /approval to select independent approval or full access before continuing."
-            : "active children continue from their persisted thread and environment."),
-      );
+    const language = readLanguage(this.storage);
+    this.terminal.info(translate(language, "cli.resumedThread"));
+    if (recovery.recoveredStandaloneSubagents > 0 && this.commandExecutionMode === "manual") {
+      this.terminal.warning(translate(language, "cli.childrenPaused"));
     }
     if (recovery.interruptedTurnRepaired) {
-      this.terminal.info(
-        "The previous active turn was closed as interrupted. Completed results were preserved; unfinished tool calls were not replayed. Enter a continuation prompt to proceed safely.",
-      );
+      this.terminal.warning(translate(language, "cli.previousTurnInterrupted"));
     }
   }
 
@@ -4534,25 +4480,21 @@ export class EasyCodeApp {
       if (signal?.aborted || parentThreadId !== this.state.threadId) return false;
       const saved = this.threadStore.recover(threadId);
       if ((saved.toolApprovalGrants ?? []).includes(identity.key)) {
-        this.terminal.info(`Approved by this Thread's tool grant: ${identity.label}`);
         return true;
       }
       if (mode === "unrestricted") {
-        this.terminal.info(`Approved automatically: ${identity.label}`);
         return true;
       }
       const approvalId = createId("approval");
       let decision: "allow_once" | "allow_same_tool" | "reject" | undefined;
       let reviewerReason: string | undefined;
       if (mode === "auto_approve") {
-        this.terminal.info(`Independent approval review: ${identity.label}`);
         const review = await this.reviewCatalogToolApproval(identity, threadId, request.context.turnId, signal);
         this.threadStore.appendEvent(threadId, { type: "approval.reviewed", turnId: request.context.turnId,
           payload: { id: approvalId, tool: identity.label, decision: review.decision,
             reason: review.reason, unavailable: review.unavailable ?? false } });
         if (review.decision === "reject") {
           reviewerReason = review.reason;
-          this.terminal.info(`Approval agent requires user decision: ${review.reason}`);
         } else decision = review.decision;
       }
       if (signal?.aborted || parentThreadId !== this.state.threadId || mode !== this.commandExecutionMode) return false;
