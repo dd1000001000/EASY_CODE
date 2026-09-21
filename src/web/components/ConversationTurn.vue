@@ -7,7 +7,6 @@ import ToolGroup from "./ToolGroup.vue";
 
 const props = defineProps<{ turn: ConversationTurnDisplay }>();
 const process = ref<HTMLDetailsElement>();
-const processOpen = ref(false);
 
 function duration(milliseconds: number): string {
   let seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -29,7 +28,6 @@ function closeNestedDetails(root: HTMLDetailsElement): void {
 }
 function onToggle(event: Event): void {
   if (event.target !== process.value || !(event.target instanceof HTMLDetailsElement)) return;
-  processOpen.value = event.target.open;
   if (!event.target.open) closeNestedDetails(event.target);
 }
 function itemKey(item: ConversationDisplayItem): string { return item.id; }
@@ -48,7 +46,6 @@ function itemKey(item: ConversationDisplayItem): string { return item.id; }
       <details v-if="turn.processItems.length" ref="process" class="turn-process" @toggle="onToggle">
         <summary>
           <span>{{ turn.status === 'completed' ? `${t('ui.turnElapsed')} ${elapsed()}` : t('ui.finalAnswerStreaming') }}</span>
-          <span class="turn-process-action">{{ processOpen ? t('ui.collapseDetails') : t('ui.expandDetails') }}</span>
         </summary>
         <div class="turn-process-body">
           <template v-for="item in turn.processItems" :key="itemKey(item)">
