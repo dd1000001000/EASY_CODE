@@ -10,6 +10,7 @@
   "commandArchiveMaxBytes": 33554432,
   "commandThreadArchiveMaxBytes": 268435456,
   "commandTimeoutMs": 120000,
+  "commandBackgroundLifetimeMaxMs": 3600000,
   "sandboxStartupWindowsMs": 75000,
   "sandboxStartupPosixMs": 30000,
   "sandboxCleanupTimeoutMs": 45000,

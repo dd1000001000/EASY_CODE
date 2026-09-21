@@ -9,7 +9,6 @@ import {
   CommandPolicy,
   CommandResolver,
   CommandRuntime,
-  inspectExplicitShellInvocation,
   normalizeExplicitShellArgs,
   sanitizeCommandOutput,
   type RunCommandInput,
@@ -202,7 +201,7 @@ function explicitShellInput(command: string): RunCommandInput {
 }
 
 describe("command runtime", () => {
-  it("normalizes shell hosts and rejects encoded or login protocols", () => {
+  it("normalizes shell hosts and sanitizes command output", () => {
     assert.deepEqual(
       normalizeExplicitShellArgs("cmd", ["/c", "dir"]),
       ["/d", "/c", "dir"],
@@ -217,103 +216,6 @@ describe("command runtime", () => {
     );
     assert.deepEqual(normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "check.ps1"]);
-    assert.equal(inspectExplicitShellInvocation("pwsh", normalizeExplicitShellArgs("pwsh", ["-File", "check.ps1"]))?.valid, true);
-    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "node test.js &"])?.valid, false);
-    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "$result = & node test.js"])?.valid, true);
-    assert.equal(
-      inspectExplicitShellInvocation("powershell", ["-EncodedCommand", "ZQBjAGgAbwA="])?.valid,
-      false,
-    );
-    assert.equal(inspectExplicitShellInvocation("bash", ["-lc", "pwd"])?.valid, false);
-    assert.equal(inspectExplicitShellInvocation("sh", ["-c", "pwd"])?.valid, true);
-    assert.equal(
-      inspectExplicitShellInvocation("sh", ["-c", "node test.js > test.log 2>&1"])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("sh", ["-c", "node test.js &> test.log"])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("sh", [
-        "-c",
-        "printf '%s\\n' 'sleep 10 &' # sleep 30 &",
-      ])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("powershell", [
-        "-Command",
-        "Write-Output 'Start-Process node &' # Start-Sleep 30",
-      ])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("powershell", ["-Command", "node test.js 2>&1"])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("cmd", ["/c", "rem start /b node"])?.valid,
-      true,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("cmd", ["/d", "/c", "findstr /n file", "uninspected-tail"])?.reason,
-      "cmd /c accepts exactly one structured command-string argument",
-    );
-    assert.match(
-      inspectExplicitShellInvocation("sh", ["-c", "node test.js &"])?.reason ?? "",
-      /start_command/u,
-    );
-    for (const [program, args] of [
-      ["sh", ["-c", "sleep 0.1; tail test.log"]],
-      ["powershell", ["-Command", "Start-Sleep 1"]],
-      ["cmd", ["/c", "timeout /t 1"]],
-      ["sh", ["-c", "echo ready\nsleep 1"]],
-      ["sh", ["-c", "eval 'node test.js'"]],
-      ["sh", ["-c", "sh -c 'node test.js'"]],
-      ["sh", ["-c", "node <<EOF\ninput\nEOF"]],
-      ["bash", ["script.sh", "-i"]],
-      ["powershell", ["-File", "script.ps1", "-EncodedCommand"]],
-    ] as const) assert.equal(inspectExplicitShellInvocation(program, args)?.valid, true);
-    assert.match(
-      inspectExplicitShellInvocation("powershell", [
-        "-Command",
-        "Write-Output ready\r\nStart-Process node",
-      ])?.reason ?? "",
-      /synchronous run_command/u,
-    );
-    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "& 'node' test.js"])?.valid, true);
-    for (const command of [
-      "start node",
-      "saps node",
-      "sajb { Get-ChildItem }",
-      "Start-ThreadJob { Get-ChildItem }",
-    ]) {
-      assert.match(
-        inspectExplicitShellInvocation("powershell", ["-Command", command])?.reason ?? "",
-        /synchronous run_command/u,
-      );
-    }
-    assert.equal(inspectExplicitShellInvocation("powershell", ["-Command", "iex 'Write-Output ok'"])?.valid, true);
-    assert.match(
-      inspectExplicitShellInvocation("powershell", [
-        "-Command",
-        "ForEach-Object -Parallel { Write-Output ok } -AsJob",
-      ])?.reason ?? "",
-      /-AsJob/iu,
-    );
-    assert.equal(
-      inspectExplicitShellInvocation("powershell", [
-        "-Command",
-        "pwsh -Command 'Write-Output ok'",
-      ])?.valid,
-      true,
-    );
-    assert.match(
-      inspectExplicitShellInvocation("cmd", ["/c", "echo ready\r\nstart /b node"])?.reason ?? "",
-      /synchronous run_command/u,
-    );
-    assert.equal(inspectExplicitShellInvocation("zsh", ["-c", "pwd"]), undefined);
     assert.equal(
       sanitizeCommandOutput("cmd /c set TOKEN=top-secret-token-value").includes("top-secret-token-value"),
       false,

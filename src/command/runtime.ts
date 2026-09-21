@@ -24,16 +24,12 @@ import { CommandVerificationCollector, packageScriptRunner, validationCheckKey, 
 import { targetedValidationChanges } from "./validation-changes.js";
 import { inspectNetworkOperation } from "./network-policy.js";
 import { createCommandNetworkGate } from "./network-gate.js";
-import { networkCommandApprovalPrefix } from "./approval.js";
 import { requestNetworkApproval } from "./network-approval.js";
 import { commandGrantPrefix } from "./command-grant.js";
 import { sharedSandboxBoundaryStore, type SandboxBoundaryStore } from "./sandbox-boundary.js";
 import { UnrestrictedHostBackend } from "../sandbox/unrestricted-host-backend.js";
-import {
-  type CommandRequestValidationFailure,
-} from "./request-validation.js";
 import { CommandPolicyBoundaryError, CommandResolver } from "./resolver.js";
-import { resolveCommandTimeoutBudget } from "./timeout.js";
+import { resolveBackgroundCommandTimeoutBudget, resolveCommandTimeoutBudget } from "./timeout.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import { assertExecutionCapabilities, SandboxCapabilityError } from "../sandbox/capabilities.js";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
@@ -103,6 +99,7 @@ interface BackgroundCommandJob {
 
 interface CommandExecutionHooks {
   readonly onStarted?: (snapshot: () => RunningCommandOutput) => void;
+  readonly background?: boolean;
 }
 
 const MAX_STATUS_WAIT_MS = 30_000;
@@ -278,6 +275,7 @@ export class CommandRuntime {
       input,
       { ...context, signal: controller.signal },
       {
+        background: true,
         onStarted: (snapshot) => {
           const running = snapshot();
           const job: BackgroundCommandJob = {
@@ -593,8 +591,11 @@ export class CommandRuntime {
       return this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend);
     }
 
+    const timeout = hooks.background
+      ? resolveBackgroundCommandTimeoutBudget(input.timeoutMs, this.limits)
+      : resolveCommandTimeoutBudget(input.timeoutMs, context.commandTimeoutMs, policyDecision.capability, this.limits);
     const sandboxRequest: SandboxExecutionRequest = {
-      timeoutMs: resolveCommandTimeoutBudget(input.timeoutMs, context.commandTimeoutMs, policyDecision.capability, this.limits).effectiveMs,
+      timeoutMs: timeout.effectiveMs,
       commandId,
       command: resolved,
       policyDecision,
@@ -713,12 +714,6 @@ export class CommandRuntime {
         () => workspacePackageManifest(this.workspace, executionBackend.workspaceRelativeCwd
           ? executionBackend.workspaceRelativeCwd(resolved)
           : path.relative(this.workspace.root, resolved.cwdAbsolute))));
-    const timeout = resolveCommandTimeoutBudget(
-      input.timeoutMs,
-      context.commandTimeoutMs,
-      policyDecision.capability,
-      this.limits,
-    );
     const timeoutMs = timeout.effectiveMs;
     let timeoutPhase: "initialization" | "command" | "cleanup" | undefined;
     const workerStartedAt = Date.now();
@@ -1068,7 +1063,7 @@ export class CommandRuntime {
         ? {
             kind: "timeout",
             code: "command_timeout",
-            message: `Process exceeded the effective command timeout of ${timeoutMs}ms and was terminated`,
+            message: `Process exceeded the effective ${timeout.kind === "background" ? "background lifetime" : "command timeout"} of ${timeoutMs}ms and was terminated`,
             processStarted: true,
             retryable: false,
           }
@@ -1406,26 +1401,21 @@ export class CommandRuntime {
     error: unknown,
     context: ToolContext,
     executionBackend: CommandExecutionBackend,
-    validationFailure?: CommandRequestValidationFailure,
   ): RunCommandOutput {
     const message = sanitizeCommandOutput(error instanceof Error ? error.message : String(error));
     const policyBoundary = error instanceof CommandPolicyBoundaryError;
-    const notFound = !validationFailure && /Executable not found/iu.test(message);
+    const notFound = /Executable not found/iu.test(message);
     const policyDecision: CommandPolicyDecision = {
       id: createId("policy"),
       effect: "deny",
       capability: "destructive",
       risk: "destructive",
-      reason: validationFailure?.reason ?? `Command resolution failed: ${message}`,
-      matchedRule: validationFailure?.matchedRule ??
-        (policyBoundary
-          ? error.code
-          : notFound
-            ? "resolver.not_found"
-            : "resolver.boundary_or_schema"),
-      ...(validationFailure?.recommendation
-        ? { recommendation: validationFailure.recommendation }
-        : {}),
+      reason: `Command resolution failed: ${message}`,
+      matchedRule: policyBoundary
+        ? error.code
+        : notFound
+          ? "resolver.not_found"
+          : "resolver.boundary_or_schema",
     };
     const status: RunCommandOutput["status"] = notFound ? "spawn_failed" : "policy_denied";
     const redactedArgs = redactArguments(input.args ?? []);

@@ -14,6 +14,7 @@ import {
 import { Terminal, printBanner } from "./cli/terminal.js";
 import { formatTokenCount } from "./cli/token-count.js";
 import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.js";
+import { DECISION_TIMEOUT_MS } from "./ui/decision-timeout.js";
 import {
   helpText,
   parseModelCommand,
@@ -1627,6 +1628,7 @@ export class EasyCodeApp {
 
       if (shouldShowPlan) this.terminal.showPlan(proposal);
       const decision = suppliedDecision ?? await this.terminal.reviewPlan({
+        plan: proposal,
         captureText: async (signal) => this.clipboardImageReader.readText?.(signal),
       });
       suppliedDecision = undefined;
@@ -2153,8 +2155,8 @@ export class EasyCodeApp {
           this.terminal.stopActivity(activityToken);
         }
       },
-      onToolExecutionStart: (_toolName, text) =>
-        this.terminal.startActivity(text, "tool"),
+      onToolExecutionStart: (toolName, text) =>
+        this.terminal.startActivity(text, "tool", toolName),
       onToolExecutionEnd: (_toolName, activityToken) => {
         if (typeof activityToken === "string") {
           this.terminal.stopActivity(activityToken);
@@ -4563,7 +4565,7 @@ export class EasyCodeApp {
           { id: "allow_same_tool", label: "Allow this tool in this Thread",
             detail: "Later arguments may differ" },
           { id: "reject", label: "Reject", detail: reviewerReason?.slice(0, 160) },
-        ], "reject");
+        ], "allow_once", { idleTimeoutMs: DECISION_TIMEOUT_MS, idleChoiceId: "allow_once", signal });
         if (!selected) {
           this.threadStore.appendEvent(threadId, { type: "approval.user_required", turnId: request.context.turnId,
             payload: { id: approvalId, tool: identity.label } });
@@ -4827,28 +4829,7 @@ export class EasyCodeApp {
       return;
     }
 
-    if ((kind === "move" && args.length === 3) || (kind === "forget" && args.length === 2)) {
-      const projectId = projectMemoryIdFromRoot(this.workspace.root);
-      const memory = this.memoryManager.getAccessible(projectId, args[1]!);
-      if (!memory) throw new Error(`Long-term memory not found: ${args[1]}`);
-      const mutation = kind === "move"
-        ? { action: "move" as const, memoryId: memory.id,
-            scope: args[2] as "global" | "project", reason: "Explicit /memory move command" }
-        : { action: "forget" as const, memoryId: memory.id, scope: memory.scope,
-            reason: "Explicit /memory forget command" };
-      if (kind === "move" && (args[2] !== "global" && args[2] !== "project" || args[2] === memory.scope)) {
-        throw new Error("Usage: /memory move <id> <global|project> (target must differ from current scope)");
-      }
-      const result = this.memoryManager.applyModelMutations({
-        workspaceRoot: this.workspace.root, threadId: this.state.threadId,
-        turnId: this.state.activeTurnId ?? createId("turn"), outcome: "success",
-        mutations: [mutation],
-      });
-      this.terminal.info(`${kind === "move" ? "Moved" : "Expired"} memory ${memory.id} (${result.applied} change).`);
-      return;
-    }
-
-    throw new Error("Usage: /memory short [limit] | /memory long [global|project] [id] | /memory move <id> <global|project> | /memory forget <id>");
+    throw new Error("Usage: /memory short [limit] | /memory long [global|project] [id] (read-only)");
   }
 
   private printSessions(): void {

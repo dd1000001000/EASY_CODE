@@ -27,18 +27,72 @@ describe("Web conversation projection", () => {
     const entries = projectWebHistory([
       event(1, "message.user", { message: { role: "user", content: "Fix the issue" } }),
       event(2, "message.assistant", { role: "assistant", reasoning_content: "Investigate first", content: "I will inspect." }),
-      event(3, "tool.call", { function: { name: "read_file" } }),
-      event(4, "tool.result", { tool: "read_file", message: { content: "file contents" } }),
+      event(3, "tool.call", { id: "call_read", function: { name: "read_file" } }),
+      event(4, "tool.result", { callId: "call_read", tool: "read_file", message: { content: "file contents" } }),
       event(5, "message.assistant", { role: "assistant", reasoning_content: "Now fix", content: "Done." }),
     ]);
-    assert.deepEqual(entries.map(entry => entry.kind), ["user", "thinking", "assistant", "tool", "tool", "thinking", "assistant"]);
+    assert.deepEqual(entries.map(entry => entry.kind), ["user", "thinking", "assistant", "tool", "thinking", "assistant"]);
+    assert.equal(entries[3]?.toolName, "read_file");
+    assert.equal(entries[3]?.toolStatus, "failed");
     assert.equal(entries.at(-1)?.text, "Done.");
     assert.equal(entries[1]?.text, "Investigate first");
     assert.ok(!entries.some(entry => entry.text.includes("file contents")));
   });
+  it("pairs MCP calls and results as one logical tool without revealing result evidence", () => {
+    const entries = projectWebHistory([
+      event(1, "tool.call", { id: "call_mcp", function: { name: "mcp__server__search" } }),
+      { ...event(2, "tool.result", { callId: "call_mcp", tool: "mcp__server__search",
+        message: { content: "secret response" } }), phase: "completed" },
+    ]);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.toolName, "mcp__server__search");
+    assert.equal(entries[0]?.toolStatus, "completed");
+    assert.ok(!JSON.stringify(entries).includes("secret response"));
+  });
 });
 
 describe("Web interaction host", () => {
+  it("automatically approves only the current command and plan after their unattended timeout", async () => {
+    const host = new WebInteraction(15);
+    const request: ApprovalRequest = { id: "approval_timeout", title: "Run tool", description: "Read file",
+      risk: "read", commandPrefix: "once:v1:read" };
+    const approval = host.approve(request);
+    assert.equal(host.snapshot().view.decision?.kind, "approval");
+    assert.equal(await approval, "allow_once");
+    assert.equal(host.snapshot().view.decision, null);
+    const plan = host.reviewPlan();
+    assert.equal(host.snapshot().view.decision?.kind, "plan");
+    assert.deepEqual(await plan, { action: "approve" });
+    host.close();
+  });
+  it("times a tool approval only while visible, and cancels on explicit dismissal or abort", async () => {
+    const host = new WebInteraction(15);
+    const blocker = host.selectChoice("Settings", [{ id: "keep", label: "Keep" }]);
+    const tool = host.selectChoice("Allow tool?", [
+      { id: "allow_once", label: "Allow once" }, { id: "reject", label: "Reject" },
+    ], "allow_once", { idleTimeoutMs: 15, idleChoiceId: "allow_once" });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(host.snapshot().view.decision?.title, "Settings");
+    assert.equal(host.resolveDecision(host.snapshot().view.decision!.id, "keep"), true);
+    assert.equal(await blocker, "keep");
+    assert.equal(host.snapshot().view.decision?.title, "Allow tool?");
+    assert.equal(await tool, "allow_once");
+
+    const canceled = host.selectChoice("Allow tool?", [
+      { id: "allow_once", label: "Allow once" }, { id: "reject", label: "Reject" },
+    ], "allow_once", { idleTimeoutMs: 15, idleChoiceId: "allow_once" });
+    assert.equal(host.resolveDecision(host.snapshot().view.decision!.id, undefined), true);
+    assert.equal(await canceled, undefined);
+
+    const controller = new AbortController();
+    const aborted = host.selectChoice("Allow tool?", [
+      { id: "allow_once", label: "Allow once" }, { id: "reject", label: "Reject" },
+    ], "allow_once", { idleTimeoutMs: 15, idleChoiceId: "allow_once", signal: controller.signal });
+    controller.abort();
+    assert.equal(await aborted, undefined);
+    assert.equal(host.snapshot().view.decision, null);
+    host.close();
+  });
   it("pages stable history and keeps a lightweight index of every user message", () => {
     const host = new WebInteraction();
     for (let index = 0; index < WEB_HISTORY_PAGE_SIZE + 15; index += 1) {
@@ -92,6 +146,59 @@ describe("Web interaction host", () => {
     const entry = host.snapshot().view.entries[0];
     assert.equal(entry?.text, "✓ run_command — completed");
     assert.deepEqual(entry?.toolDetails, [{ label: "Command", value: "ls -l" }]);
+    host.close();
+  });
+  it("does not publish file change previews in the Web conversation", () => {
+    const host = new WebInteraction();
+    const patches: string[] = [];
+    const unsubscribe = host.subscribe(change => patches.push(change.patch?.kind ?? "state"));
+    host.fileDiff({ type: "file_diff", operation: "update", path: "src/app.ts",
+      before: "private old code", after: "private new code" });
+    assert.deepEqual(host.snapshot().view.entries, []);
+    assert.deepEqual(patches, []);
+    unsubscribe(); host.close();
+  });
+  it("updates a running Web tool row in place when it completes", () => {
+    const host = new WebInteraction();
+    const patches: string[] = [];
+    const unsubscribe = host.subscribe(change => patches.push(change.patch?.kind ?? "state"));
+    const activity = host.startActivity("Running Tool: read_file", "tool", "read_file");
+    const running = host.snapshot().view.entries[0];
+    assert.equal(running?.toolStatus, "running");
+    host.stopActivity(activity);
+    host.toolCompleted("read_file", true, "Read README.md");
+    const completed = host.snapshot().view.entries;
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0]?.id, running?.id);
+    assert.equal(completed[0]?.toolStatus, "completed");
+    assert.match(completed[0]?.text ?? "", /Read README\.md/u);
+    assert.ok(patches.includes("entry.replace"));
+    unsubscribe(); host.close();
+  });
+  it("reuses an unfinished tool row after restoring a running conversation", () => {
+    const host = new WebInteraction();
+    host.loadHistory([{ id: "ongoing", kind: "tool", text: "Calling mcp__server__search",
+      toolName: "mcp__server__search", toolStatus: "running", timestamp: 0 }]);
+    const activity = host.startActivity("Running Tool: mcp__server__search", "tool", "mcp__server__search");
+    host.stopActivity(activity);
+    host.toolCompleted("mcp__server__search", true, "Found matches");
+    assert.equal(host.snapshot().view.entries.length, 1);
+    assert.equal(host.snapshot().view.entries[0]?.id, "ongoing");
+    assert.equal(host.snapshot().view.entries[0]?.toolStatus, "completed");
+    host.close();
+  });
+  it("keeps a long tool run together across history page boundaries", () => {
+    const host = new WebInteraction();
+    host.loadHistory([
+      { id: "user", kind: "user", text: "Inspect", timestamp: 0 },
+      ...Array.from({ length: WEB_HISTORY_PAGE_SIZE + 9 }, (_, index) => ({
+        id: `tool_${index}`, kind: "tool" as const, text: `✓ read_file ${index}`, timestamp: index + 1,
+      })),
+      { id: "answer", kind: "assistant", text: "Done", timestamp: 100 },
+    ]);
+    const page = host.historyPage();
+    assert.equal(page.entries.filter(entry => entry.kind === "tool").length, WEB_HISTORY_PAGE_SIZE + 9);
+    assert.equal(page.entries.at(-1)?.id, "answer");
     host.close();
   });
   it("publishes a one-time title change as a live patch", () => {

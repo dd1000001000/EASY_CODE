@@ -86,19 +86,6 @@ async function revoke(index: number, prefix: string): Promise<void> {
     execute(`/permissions revoke ${index}`);
   } catch { /* Confirmation dismissed. */ }
 }
-async function forget(id: string): Promise<void> {
-  try {
-    await ElMessageBox.confirm(t("ui.forgetPrompt", { id }), t("ui.forgetTitle"), { type: "warning", confirmButtonText: t("ui.forget") });
-    execute(`/memory forget ${id}`);
-  } catch { /* Confirmation dismissed. */ }
-}
-async function move(id: string, scope: string): Promise<void> {
-  const target = scope === "global" ? "project" : "global";
-  try {
-    await ElMessageBox.confirm(t("ui.movePrompt", { id, scope: localizedScope(scope), target: localizedScope(target) }), t("ui.moveTitle"), { type: "warning", confirmButtonText: t("ui.confirm") });
-    execute(`/memory move ${id} ${target}`);
-  } catch { /* Confirmation dismissed. */ }
-}
 function memoryQuery(): void {
   if (memoryTab.value === "short") execute(`/memory short ${memoryLimit.value}`);
   else execute(`/memory long ${memoryScope.value}`);
@@ -145,7 +132,7 @@ useOutsideDismiss(panelRoot, close);
           </ElTabs>
           <div class="web-command-controls" v-if="memoryTab === 'short'"><span>{{ t('ui.recentMessages') }}</span><ElSelect v-model="memoryLimit" style="width:110px" @change="memoryQuery"><ElOption v-for="count in ['8','20','50','100']" :key="count" :label="count" :value="count" /></ElSelect><ElButton :icon="Refresh" text :disabled="running" @click="memoryQuery">{{ t('ui.refresh') }}</ElButton></div>
           <div class="web-command-controls" v-else><span>{{ t('ui.scope') }}</span><ElSelect v-model="memoryScope" style="width:160px" @change="memoryQuery"><ElOption :label="t('ui.all')" value="all" /><ElOption :label="t('ui.global')" value="global" /><ElOption :label="t('ui.project')" value="project" /></ElSelect><ElButton :icon="Refresh" text :disabled="running" @click="memoryQuery">{{ t('ui.refresh') }}</ElButton></div>
-          <div v-if="memoryTab === 'long' && memoryRows.length" class="web-command-records"><div v-for="memory in memoryRows" :key="String(memory.id)" class="web-command-record"><div class="web-command-record-title"><strong>{{ memory.category }}</strong><ElTag size="small">{{ localizedScope(String(memory.scope)) }}</ElTag><ElTag size="small" :type="memory.status === 'active' ? 'success' : 'info'">{{ memory.status }}</ElTag></div><p>{{ memory.content }}</p><small>{{ memory.id }} · {{ memory.updatedAt }}</small><div v-if="memory.status === 'active'" class="web-command-actions"><ElButton size="small" :disabled="running" @click="move(String(memory.id), String(memory.scope))">{{ t('ui.moveTo', { scope: localizedScope(memory.scope === 'global' ? 'project' : 'global') }) }}</ElButton><ElButton size="small" type="danger" plain :disabled="running" @click="forget(String(memory.id))">{{ t('ui.forget') }}</ElButton></div></div></div>
+          <div v-if="memoryTab === 'long' && memoryRows.length" class="web-command-records"><div v-for="memory in memoryRows" :key="String(memory.id)" class="web-command-record"><div class="web-command-record-title"><strong>{{ memory.category }}</strong><ElTag size="small">{{ localizedScope(String(memory.scope)) }}</ElTag><ElTag size="small" :type="memory.status === 'active' ? 'success' : 'info'">{{ memory.status }}</ElTag></div><p>{{ memory.content }}</p><small>{{ memory.id }} · {{ memory.updatedAt }}</small></div></div>
         </template>
         <template v-else-if="command.name === 'permissions'">
           <p class="web-command-note">{{ formatValue(objectData.osSandbox) }}</p>

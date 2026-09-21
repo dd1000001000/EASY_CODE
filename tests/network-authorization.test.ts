@@ -61,7 +61,7 @@ describe("network authorization", () => {
     }
     assert.equal(inspectNetworkOperation(command("curl", ["-q", "--output", "file", "https://example.invalid"]))?.effect, "download");
     assert.equal(inspectNetworkOperation(command("curl", ["-q", "--data", "body", "https://example.invalid"]))?.effect, "upload");
-    assert.deepEqual(inspectNetworkOperation(command("git", ["fetch", "origin"]))?.prefixArgs, ["fetch"]);
+    assert.equal(inspectNetworkOperation(command("git", ["fetch", "origin"]))?.effect, "download");
     assert.equal(inspectNetworkOperation(command("git", ["push"]))?.effect, "upload");
     assert.equal(inspectNetworkOperation(command("python", ["-m", "pip", "install", "thing"]))?.effect, "download");
     assert.equal(inspectNetworkOperation(command("node", ["script.js"])), undefined);

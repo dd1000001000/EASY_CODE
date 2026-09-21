@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { CommandPolicy, CommandRuntime } from "../src/command/index.js";
+import { defaultRuntimeLimits, type RuntimeLimits } from "../src/config/runtime-limits.js";
 import type { ToolContext } from "../src/core/types.js";
 import type {
   CommandExecutionBackend,
@@ -19,6 +20,7 @@ import { describe, it } from "./harness.js";
 
 class TrackingHostBackend implements CommandExecutionBackend {
   prepareCalls = 0;
+  requestedTimeouts: number[] = [];
 
   describe(): PreparedCommand["metadata"] {
     return {
@@ -33,6 +35,7 @@ class TrackingHostBackend implements CommandExecutionBackend {
     request: Parameters<CommandExecutionBackend["prepare"]>[0],
   ): Promise<PreparedCommand> {
     this.prepareCalls += 1;
+    this.requestedTimeouts.push(request.timeoutMs ?? 0);
     return {
       executablePath: request.command.executablePath,
       args: [...request.command.args],
@@ -68,12 +71,13 @@ async function withTool(
       cancel: CancelCommandTool;
     },
   ) => Promise<void>,
+  limits?: RuntimeLimits,
 ): Promise<void> {
   const root = await mkdtemp(path.join(process.cwd(), ".easy-code-command-contract-"));
   try {
     const manager = await WorkspaceManager.create(root);
     const backend = new TrackingHostBackend();
-    const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, backend);
+    const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, backend, { ...(limits ? { limits } : {}) });
     await run(root, new RunCommandTool(manager, runtime), backend, {
       start: new StartCommandTool(manager, runtime),
       poll: new PollCommandTool(manager, runtime),
@@ -217,10 +221,10 @@ describe("run_command model contract", () => {
       };
       assert.equal(running.status, "running");
       assert.deepEqual(running.timeout, {
+        kind: "background",
         requestedMs: 5_000,
-        effectiveMs: 2_000,
-        configuredLimitMs: 2_000,
-        capabilityLimitMs: 15 * 60_000,
+        effectiveMs: 5_000,
+        configuredLimitMs: 60 * 60_000,
       });
 
       const polled = await lifecycle.poll.execute(
@@ -244,5 +248,61 @@ describe("run_command model contract", () => {
         running.timeout,
       );
     });
+  });
+
+  it("keeps a server running past the foreground budget until explicit cancellation", async () => {
+    const limits = { ...defaultRuntimeLimits(), commandBackgroundLifetimeMaxMs: 2_000 };
+    await withTool(async (root, _tool, backend, lifecycle) => {
+      await writeFile(path.join(root, "server.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const owner = context(root, 150);
+      const started = await lifecycle.start.execute({
+        program: "node", args: ["server.cjs"], intent: "run",
+      }, owner);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const running = started.data as { commandId: string; status: string; timeout: { effectiveMs: number } };
+      assert.equal(running.status, "running");
+      assert.equal(running.timeout.effectiveMs, 2_000);
+      assert.deepEqual(backend.requestedTimeouts, [2_000]);
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const polled = await lifecycle.poll.execute({ commandId: running.commandId, waitMs: 0 }, owner);
+      assert.equal((polled.data as { status: string }).status, "running");
+      const canceled = await lifecycle.cancel.execute({ commandId: running.commandId }, owner);
+      assert.equal((canceled.data as { status: string }).status, "canceled");
+    }, limits);
+  });
+
+  it("enforces an explicit background lifetime and retains its terminal result", async () => {
+    const limits = { ...defaultRuntimeLimits(), commandBackgroundLifetimeMaxMs: 2_000 };
+    await withTool(async (root, _tool, _backend, lifecycle) => {
+      await writeFile(path.join(root, "lifetime.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const owner = context(root, 1_000);
+      const started = await lifecycle.start.execute({
+        program: "node", args: ["lifetime.cjs"], intent: "run", timeoutMs: 300,
+      }, owner);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const running = started.data as { commandId: string; timeout: { effectiveMs: number } };
+      assert.equal(running.timeout.effectiveMs, 300);
+      const polled = await lifecycle.poll.execute({ commandId: running.commandId, waitMs: 1_500 }, owner);
+      assert.equal((polled.data as { status: string }).status, "timed_out");
+      assert.equal((polled.data as { failure: { code: string; message: string } }).failure.code, "command_timeout");
+      assert.match((polled.data as { failure: { message: string } }).failure.message, /background lifetime/u);
+    }, limits);
+  });
+
+  it("cancels background jobs during runtime shutdown", async () => {
+    const limits = { ...defaultRuntimeLimits(), commandBackgroundLifetimeMaxMs: 2_000 };
+    await withTool(async (root, _tool, _backend, lifecycle) => {
+      await writeFile(path.join(root, "shutdown.cjs"), "setInterval(() => {}, 1000);\n", "utf8");
+      const owner = context(root, 150);
+      const started = await lifecycle.start.execute({
+        program: "node", args: ["shutdown.cjs"], intent: "run",
+      }, owner);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const commandId = (started.data as { commandId: string }).commandId;
+      await lifecycle.start.runtime.cancelAll();
+      const polled = await lifecycle.poll.execute({ commandId }, owner);
+      assert.equal((polled.data as { status: string }).status, "canceled");
+      assert.equal(lifecycle.start.runtime.hasRunningCommands(), false);
+    }, limits);
   });
 });

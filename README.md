@@ -129,8 +129,6 @@ These typed commands are available in both CLI and Web. Web also offers panels f
 | `/context`, `/usage` | Inspect context capacity or provider-reported token usage. |
 | `/memory short [limit]` | Inspect recent conversation previews. |
 | `/memory long [global\|project] [id]` | Inspect long-term memory by scope or ID. |
-| `/memory move <id> <global\|project>` | Move a memory between scopes. |
-| `/memory forget <id>` | Expire a long-term memory. |
 | `/help` | Show command help. |
 
 `/language [en_us|zh_cn]` shows or changes the shared language preference in either interface. In Web, the upper-right selector is the usual entry point.
@@ -156,7 +154,7 @@ There are no command aliases. Unknown slash-prefixed text is ordinary input, not
 
 **MCP** connects additional tools. Ask the agent to add or edit a server in `~/.easy_code/mcp.toml`, then use `/mcp` to authorize and connect it. Editing configuration alone does not connect a server. Local stdio servers run in the workspace sandbox; remote servers support HTTP/SSE connections and configured bearer authentication or OAuth. Remote URLs require HTTPS except for loopback HTTP. MCP calls require approval; server descriptions do not grant permissions.
 
-**Memory** is separate from Skills and conversation history. Global memory carries preferences across projects; project memory retains relevant project knowledge. The agent can save useful information; `/memory` lets you inspect, move or forget it. Context compaction makes room for longer work, but summaries and recalled memories do not replace checking current files. Background memory consolidation may make additional model requests and consume tokens.
+**Memory** is separate from Skills and conversation history. Global memory carries preferences across projects; project memory retains relevant project knowledge. The agent can save useful information; `/memory` lets you inspect it, but manual changes to long-term memory are not supported in CLI or Web. Context compaction makes room for longer work, but summaries and recalled memories do not replace checking current files. Background memory consolidation may make additional model requests and consume tokens.
 
 ## Configuration and troubleshooting
 

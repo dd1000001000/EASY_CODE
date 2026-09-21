@@ -29,6 +29,8 @@ export type PlanReviewDecision =
 
 export interface PlanReviewInputOptions {
   readonly captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
+  readonly plan?: Readonly<PlanProposal>;
+  readonly idleTimeoutMs?: number;
 }
 
 export interface InteractionChoice {
@@ -36,6 +38,13 @@ export interface InteractionChoice {
   readonly label: string;
   readonly detail?: string;
   readonly disabled?: boolean;
+}
+
+/** Only approval choices opt into an unattended, request-scoped selection. */
+export interface TimedChoiceOptions {
+  readonly idleTimeoutMs: number;
+  readonly idleChoiceId: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface ProviderSelectorChoice {
@@ -95,7 +104,7 @@ export interface AgentPresentationPort {
   showAdjustment(id: number | "last"): boolean;
   addQueuedAdjustment(sequence: number, text: string, images?: readonly Readonly<ImageAttachment>[]): void;
   finalizeStreamedAnswer(text: string): boolean;
-  startActivity(text: string, kind?: UIActivityKind): string | undefined;
+  startActivity(text: string, kind?: UIActivityKind, toolName?: string): string | undefined;
   stopActivity(activityId?: string): void;
   startReview(): string;
   updateReview(id: string, phase: UIReviewPhase): void;
@@ -105,7 +114,8 @@ export interface AgentPresentationPort {
 /** Explicit decisions remain owned by the current interactive host. */
 export interface AgentDecisionPort {
   approve(request: ApprovalRequest): Promise<ApprovalDecision>;
-  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string): Promise<string | undefined>;
+  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string,
+    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined>;
   selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined>;
   selectModel(providerName: string, choices: readonly ModelSelectorChoice[], initialModel?: string): Promise<string | undefined>;
   selectThinkingEffort(providerName: string, model: string, choices: readonly ThinkingEffortSelectorChoice[], initialEffort: ThinkingEffort): Promise<ThinkingEffort | undefined>;

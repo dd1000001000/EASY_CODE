@@ -37,7 +37,7 @@
     "bundle:build": "node scripts/build-prompt-bundle.cjs",
     "clean:build": "node scripts/clean-build.cjs dist",
     "clean:build:test": "node scripts/clean-build.cjs dist-test",
-    "build": "npm run bundle:build && npm run clean:build && tsc -p tsconfig.json && npm run build:web",
+    "build": "npm run bundle:build && npm run clean:build && tsc -p tsconfig.json && npm run build:web && node scripts/verify-web-server-build.cjs",
     "build:web": "vue-tsc -p src/web/tsconfig.json --noEmit && vite build --config src/web/vite.config.ts",
     "dev": "npm run build && node dist/index.js",
     "start": "node dist/index.js",

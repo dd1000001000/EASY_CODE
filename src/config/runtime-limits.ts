@@ -14,6 +14,7 @@ export const runtimeLimitsSchema = z.object({
   commandArchiveMaxBytes: integer(1024, 268435456),
   commandThreadArchiveMaxBytes: integer(1024, 2147483648),
   commandTimeoutMs: integer(1, 1200000),
+  commandBackgroundLifetimeMaxMs: integer(1, 86400000),
   sandboxStartupWindowsMs: integer(1000, 300000),
   sandboxStartupPosixMs: integer(1000, 300000),
   sandboxCleanupTimeoutMs: integer(1000, 300000),

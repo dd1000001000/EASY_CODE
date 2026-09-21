@@ -52,6 +52,9 @@ export interface MenuSelectorOptions {
   readonly navigation?: MenuSelectorNavigation;
   /** Resolve false to fail closed when a choice cannot be reviewed safely. */
   readonly canConfirm?: () => boolean;
+  /** Starts only after the menu's first visible frame. */
+  readonly idleTimeoutMs?: number;
+  readonly idleSelectionIndex?: number;
 }
 
 const HIDE_CURSOR = "\u001B[?25l";
@@ -150,6 +153,7 @@ export function selectMenuIndex(
     let escapeIntroducer: "[" | "O" | undefined;
     let escapeBody = "";
     let escapeTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let releaseNavigation: (() => void) | undefined;
 
     const clearEscapeTimer = (): void => {
@@ -159,6 +163,8 @@ export function selectMenuIndex(
     const cleanup = (): void => {
       options.signal?.removeEventListener("abort", onAbort);
       clearEscapeTimer();
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = undefined;
       try {
         releaseNavigation?.();
       } catch {
@@ -189,6 +195,25 @@ export function selectMenuIndex(
       cleanup();
       if (error) reject(error);
       else resolve(index);
+    };
+    const armIdleTimer = (): void => {
+      if (settled || !rendered || idleTimer || options.idleTimeoutMs === undefined) return;
+      const timeoutIndex = options.idleSelectionIndex;
+      if (!Number.isSafeInteger(options.idleTimeoutMs) || options.idleTimeoutMs <= 0 ||
+        timeoutIndex === undefined || !Number.isSafeInteger(timeoutIndex) ||
+        timeoutIndex < 0 || timeoutIndex >= choiceCount) return;
+      idleTimer = setTimeout(() => {
+        // A pending Esc may be waiting for its short CSI disambiguation window.
+        // Never let the unattended approval timer race past that user input.
+        if (options.signal?.aborted || escapeState !== "none" || !rendered || !renderEnabled) {
+          finish(undefined);
+          return;
+        }
+        let allowed = true;
+        try { allowed = options.canConfirm?.() ?? true; }
+        catch { allowed = false; }
+        finish(allowed ? timeoutIndex : undefined);
+      }, options.idleTimeoutMs);
     };
     const startEscapeTimer = (delayMs = 60): void => {
       clearEscapeTimer();
@@ -434,6 +459,7 @@ export function selectMenuIndex(
           renderEnabled = true;
           try {
             render();
+            armIdleTimer();
           } catch {
             finish(
               undefined,
@@ -444,6 +470,7 @@ export function selectMenuIndex(
       } else {
         renderEnabled = true;
         render();
+        armIdleTimer();
       }
     } catch {
       finish(undefined, new Error("Unable to start the interactive selection."));
