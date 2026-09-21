@@ -28,13 +28,6 @@ function characterCount(text: string): number { return Array.from(text).length; 
         </div>
       </dl>
     </details>
-    <details v-else-if="entry.kind === 'diff' && entry.diff" class="disclosure tool-disclosure">
-      <summary>{{ entry.text }}</summary>
-      <div class="diff-grid">
-        <section><h4>{{ t('ui.before') }}</h4><pre>{{ entry.diff.before }}</pre></section>
-        <section><h4>{{ t('ui.after') }}</h4><pre>{{ entry.diff.after }}</pre></section>
-      </div>
-    </details>
     <details v-else-if="entry.kind === 'plan'" class="disclosure plan-disclosure" open>
       <summary>{{ t('ui.proposedPlan') }}</summary>
       <div class="entry-text disclosure-body">{{ entry.text }}</div>

@@ -6,7 +6,7 @@ import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contra
 import type { WebCommandEntry } from "../web-command-catalog.js";
 import type { PlanProposal } from "../core/types.js";
 import { bootstrap, fetchHistoryPage, request, type ProjectItem, type ThreadItem, type WebSnapshot } from "./api.js";
-import { displayProject, displayTitle, isConversationEntry, isNoticeEntry } from "./display-content.js";
+import { displayProject, displayTitle, groupConversationTools, isConversationEntry, isNoticeEntry, toolRunContinuesAcross } from "./display-content.js";
 import { useOutsideDismiss } from "./use-outside-dismiss.js";
 import { language, setLanguage, t } from "./i18n.js";
 import { parseLanguage, type Language } from "../i18n/language.js";
@@ -14,6 +14,7 @@ import Composer from "./components/Composer.vue";
 import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
 import TranscriptEntry from "./components/TranscriptEntry.vue";
+import ToolGroup from "./components/ToolGroup.vue";
 
 const view = ref<WebView>({ session: null, entries: [], tasks: null, subagents: [], activities: [], review: null, decision: null, busy: false });
 const history = ref<WebHistoryState>({ epoch: "", hasEarlier: false, markers: [] });
@@ -67,6 +68,7 @@ function pickEmptyThreadTitle(): void {
 const session = computed(() => view.value.session);
 const displayedEntries = computed(() => archiveEntries.value ?? view.value.entries);
 const conversationEntries = computed(() => displayedEntries.value.filter(isConversationEntry));
+const conversationItems = computed(() => groupConversationTools(conversationEntries.value));
 const activeThread = computed(() => session.value?.threadId);
 const selectedCommand = computed(() => commands.value.find(command => command.name === commandPanelName.value));
 const sortedThreads = computed(() => [...threads.value].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
@@ -104,10 +106,10 @@ function agentStatus(agent: (typeof liveAgents.value)[number]): string {
   return `${activity?.kind === "thinking" ? t("ui.thinking") : activity?.kind === "tool" ? `${t("ui.tool")}: ${activity.label ?? t("ui.working")}` : agent.status} · ${elapsed(Date.parse(activity?.startedAt ?? agent.startedAt))}`;
 }
 
-function notify(text: string, kind: "info" | "success" | "warning" | "error" = "info"): void {
+function notify(text: string, kind: "success" | "warning" | "error"): void {
   activeNotification?.close();
   activeNotification = ElNotification({
-    title: kind === "error" ? t("ui.errorTitle") : kind === "warning" ? t("ui.noticeTitle") : kind === "success" ? t("ui.doneTitle") : "EASY CODE",
+    title: kind === "error" ? t("ui.errorTitle") : kind === "warning" ? t("ui.noticeTitle") : t("ui.doneTitle"),
     message: noticePreview(text), type: kind, duration: 15_000, showClose: true, position: "top-right",
   });
 }
@@ -166,7 +168,9 @@ function applyPatch(patch: WebPatch, nextSequence: number): void {
   if (patch.kind === "entry.append") {
     let entries = [...view.value.entries, patch.entry];
     if (keepBottom && !archiveEntries.value && entries.length > MAX_LIVE_ENTRIES) {
-      entries = entries.slice(-MAX_LIVE_ENTRIES);
+      let start = entries.length - MAX_LIVE_ENTRIES;
+      while (start > 0 && toolRunContinuesAcross(entries, start)) start -= 1;
+      entries = entries.slice(start);
       history.value = { ...history.value, hasEarlier: true };
       historyExpanded.value = false;
     }
@@ -180,7 +184,7 @@ function applyPatch(patch: WebPatch, nextSequence: number): void {
     if (isNoticeEntry(patch.entry)) {
       if (commandCaptureThreadId === activeThread.value && (patch.entry.kind === "info" || commandPanelName.value))
         commandOutput.value = [...commandOutput.value, patch.entry].slice(-20);
-      else notify(patch.entry.text, patch.entry.kind);
+      else if (patch.entry.kind !== "info") notify(patch.entry.text, patch.entry.kind);
     }
   }
   else if (patch.kind === "entry.replace") view.value = { ...view.value,
@@ -588,7 +592,10 @@ function noticePreview(text: string): string {
             <Transition name="empty-state" mode="out-in">
               <div v-if="!conversationEntries.length && !(archiveEntries ? archiveHasEarlier : history.hasEarlier)" :key="`${activeThread ?? activeProject?.id ?? 'no-project'}:${emptyThreadOpenSerial}`" class="empty-state"><img class="empty-symbol" src="/easy-code-icon.svg?v=origami-dog" alt="" aria-hidden="true" /><h2>{{ activeThread ? t(EMPTY_THREAD_TITLES[emptyThreadTitleIndex]!) : activeProject ? t('ui.emptyProjectTitle') : t('ui.emptyNoProjectTitle') }}</h2><p>{{ activeThread ? t('ui.emptyThreadHint') : activeProject ? t('ui.emptyProjectHint') : t('ui.emptyNoProjectHint') }}</p></div>
             </Transition>
-            <TranscriptEntry v-for="entry in conversationEntries" :key="entry.id" :entry="entry" />
+            <template v-for="item in conversationItems" :key="item.id">
+              <ToolGroup v-if="item.kind === 'tool-group'" :tools="item.tools" />
+              <TranscriptEntry v-else :entry="item.entry" />
+            </template>
             <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">{{ t('ui.loadNewer') }}</ElButton></div>
             <section v-if="plan" class="plan-actions"><strong>{{ t('ui.planAwaiting') }}</strong><div><ElButton type="primary" @click="decidePlan('approve')">{{ t('ui.approveRun') }}</ElButton><ElButton @click="decidePlan('adjust')">{{ t('ui.requestChanges') }}</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">{{ t('ui.reject') }}</ElButton><ElButton @click="decidePlan('defer')">{{ t('ui.later') }}</ElButton></div></section>
           </div>

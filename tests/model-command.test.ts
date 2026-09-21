@@ -807,6 +807,24 @@ describe("/model", () => {
 });
 
 describe("memory commands", () => {
+  it("rejects manual long-term memory changes while retaining read access", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    try {
+      const offset = fixture.output().length;
+      await fixture.app.handleSlashCommand("/memory long");
+      assert.match(fixture.output().slice(offset), /No long-term memories|"global"/u);
+
+      for (const command of [
+        "/memory move memory_00000000-0000-4000-8000-000000000001 global",
+        "/memory forget memory_00000000-0000-4000-8000-000000000001",
+      ]) {
+        await assert.rejects(fixture.app.handleSlashCommand(command), /read-only/u);
+      }
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("shows the last eight active short-term message previews by default", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     try {

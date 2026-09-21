@@ -8,7 +8,6 @@ import { WorkspaceManager } from "../src/workspace/manager.js";
 import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { observeToolResult, parseProgressObservation } from "../src/progress/observation.js";
 import { createProgressGuardState, foldProgressObservation } from "../src/progress/guard.js";
-import { validateCommandRequest } from "../src/command/request-validation.js";
 import { AgentRuntime } from "./approved-runtime.js";
 import { ContextManager } from "../src/context/manager.js";
 import type { SessionState, ToolContext, ToolExecutionResult } from "../src/core/types.js";
@@ -114,13 +113,6 @@ describe("project discovery regression", () => {
     assert.equal(state.searchWarning?.scopeKey, "a");
     assert.equal(state.searchWarning?.count, 2);
   }));
-  it("offers a valid cmd builtin correction without weakening shell policy", () => {
-    const failure = validateCommandRequest({ program: "cmd", args: ["/c", "dir", "/b"] });
-    assert.match(failure!.recommendation, /search_files/u);
-    assert.match(failure!.recommendation, /args=\["\/c", "dir \/b"\]/u);
-    assert.equal(validateCommandRequest({ program: "cmd", args: ["/c", "dir /b"] }), undefined);
-    assert.ok(validateCommandRequest({ program: "cmd", args: ["/k", "dir"] }));
-  });
   it("injects a repeated-search hint once without a reviewer or task termination", async () => fixture(async (root, tool) => {
     const current: SessionState = { ...baseSessionState(), threadId: "discovery", mode: "code", provider: "qwen", model: "mock", thinkingEffort: "medium",
       workspaceRoot: root, constraints: [], messages: [], filesRead: new Map(), changes: [], commands: [],

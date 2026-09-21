@@ -10,13 +10,15 @@ import type {
   AppInteractionPort, CurrentRequestOptions, InteractionChoice,
   ModelSelectorChoice, PlanReviewDecision, PlanReviewInputOptions,
   ProviderSelectorChoice, RequestInputOptions, ThinkingEffortSelectorChoice,
-  UserSubmission,
+  TimedChoiceOptions, UserSubmission,
 } from "../ui/interaction-port.js";
+import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import { canGrantCommandPrefix, formatCommandApprovalPrefix } from "../command/approval.js";
 import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
+import { toolRunContinuesAcross } from "../web-tool-run.js";
 import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
@@ -30,10 +32,13 @@ interface PendingDecision {
   readonly resolve: (value: string | undefined) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
+  readonly timed?: Readonly<TimedChoiceOptions>;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /** Browser presentation only. Runtime decisions still pass through the existing app boundary. */
 export class WebInteraction implements AppInteractionPort {
+  constructor(private readonly decisionTimeoutMs = DECISION_TIMEOUT_MS) {}
   private entries: WebEntry[] = [];
   private readonly entryById = new Map<string, WebEntry>();
   private userMarkers: WebHistoryMarker[] = [];
@@ -42,6 +47,7 @@ export class WebInteraction implements AppInteractionPort {
   private tasks: TaskGraphView | null = null;
   private subagentsView: readonly SubagentView[] = [];
   private activities = new Map<string, { id: string; text: string; kind?: UIActivityKind }>();
+  private pendingToolEntries: string[] = [];
   private review: WebView["review"] = null;
   private decisions: PendingDecision[] = [];
   private listeners = new Set<(change: WebChange) => void>();
@@ -87,6 +93,10 @@ export class WebInteraction implements AppInteractionPort {
         if (this.entries[index]?.kind === "user") { start = index; break; }
       }
     }
+    // A run of adjacent tool calls must remain one visible row, even when a
+    // journal page boundary falls among status notices inside that run.
+    while (start > 0 && toolRunContinuesAcross(this.entries, start)) start -= 1;
+    while (end < this.entries.length && toolRunContinuesAcross(this.entries, end)) end += 1;
     return { entries: this.entries.slice(start, end).map(entry => ({ ...entry })),
       hasEarlier: start > 0, hasLater: end < this.entries.length };
   }
@@ -100,6 +110,13 @@ export class WebInteraction implements AppInteractionPort {
   }
   loadHistory(entries: readonly WebEntry[]): void {
     this.entries = entries.map(entry => ({ ...entry }));
+    this.pendingToolEntries = [];
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index]!;
+      if (entry.kind === "info" || entry.kind === "success" || entry.kind === "warning" || entry.kind === "error") continue;
+      if (entry.kind === "tool" && entry.toolStatus === "running") this.pendingToolEntries.push(entry.id);
+      break;
+    }
     this.entryById.clear();
     for (const entry of this.entries) this.entryById.set(entry.id, entry);
     this.userMarkers = this.entries.filter(entry => entry.kind === "user").map(userMarker);
@@ -114,18 +131,31 @@ export class WebInteraction implements AppInteractionPort {
   resolveDecision(id: string, value: string | undefined): boolean {
     const index = this.decisions.findIndex(item => item.request.id === id);
     if (index < 0) return false;
-    const [pending] = this.decisions.splice(index, 1);
+    const pending = this.decisions[index];
     if (!pending) return false;
+    if (pending.signal?.aborted && value !== undefined) return false;
     if (value !== undefined && pending.request.kind !== "secret" &&
       !(pending.request.kind === "plan" && value.startsWith("adjust:")) &&
       !pending.request.choices?.some(choice => choice.id === value && !choice.disabled)) {
-      this.decisions.splice(index, 0, pending);
       return false;
     }
+    this.decisions.splice(index, 1);
+    if (pending.timer) clearTimeout(pending.timer);
     pending.signal?.removeEventListener("abort", pending.onAbort!);
     pending.resolve(value);
+    if (index === 0) this.armHeadDecisionTimeout();
     this.emit();
     return true;
+  }
+  private armHeadDecisionTimeout(): void {
+    const pending = this.decisions[0];
+    if (!pending?.timed || pending.timer || this.closed) return;
+    const choice = pending.request.choices?.find(item => item.id === pending.timed?.idleChoiceId && !item.disabled);
+    if (!choice || !Number.isSafeInteger(pending.timed.idleTimeoutMs) || pending.timed.idleTimeoutMs <= 0) return;
+    pending.timer = setTimeout(() => {
+      if (this.closed || pending.signal?.aborted || this.decisions[0] !== pending) return;
+      this.resolveDecision(pending.request.id, choice.id);
+    }, pending.timed.idleTimeoutMs);
   }
   cancelExternalOperation(): boolean {
     if (!this.externalOperation || this.externalOperation.signal.aborted) return false;
@@ -160,14 +190,15 @@ export class WebInteraction implements AppInteractionPort {
   private safe(text: string): string {
     return redactSensitiveInformation(sanitizeTerminalText(text, { allowSgr: false }));
   }
-  private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[], diff?: FileDiffPresentation,
-    toolDetails?: WebEntry["toolDetails"]): string {
+  private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[],
+    toolDetails?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"]): string {
     const id = randomUUID();
     const entry: WebEntry = {
       id, kind, text: this.safe(text), timestamp: Date.now(),
       ...(images?.length ? { images: images.map(({ id, label, mediaType }) => ({ id, label, mediaType })) } : {}),
-      ...(diff ? { diff } : {}),
       ...(toolDetails?.length ? { toolDetails: toolDetails.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) } : {}),
+      ...(toolName ? { toolName: this.safe(toolName) } : {}),
+      ...(toolStatus ? { toolStatus } : {}),
     };
     this.entries.push(entry);
     this.entryById.set(id, entry);
@@ -181,12 +212,15 @@ export class WebInteraction implements AppInteractionPort {
     entry.text = this.safe(text);
     this.emit({ kind: "entry.replace", entry });
   }
-  private awaitDecision(request: WebDecision, signal?: AbortSignal): Promise<string | undefined> {
+  private awaitDecision(request: WebDecision, signal?: AbortSignal,
+    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined> {
     if (this.closed || signal?.aborted) return Promise.resolve(undefined);
     return new Promise(resolve => {
       const onAbort = () => this.resolveDecision(request.id, undefined);
-      this.decisions.push({ request, resolve, signal, onAbort });
+      this.decisions.push({ request, resolve, signal, onAbort, timed });
       signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { this.resolveDecision(request.id, undefined); return; }
+      this.armHeadDecisionTimeout();
       this.emit();
     });
   }
@@ -199,15 +233,25 @@ export class WebInteraction implements AppInteractionPort {
   status(text: string): void { this.append("info", text); }
   toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
     details?: WebEntry["toolDetails"]): void {
-    this.append("tool", `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`,
-      undefined, undefined, details);
+    const text = `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`;
+    const pendingId = this.pendingToolEntries.shift();
+    const pending = pendingId ? this.entryById.get(pendingId) : undefined;
+    if (!pending) {
+      this.append("tool", text, undefined, details, toolName, ok ? "completed" : "failed");
+      return;
+    }
+    pending.text = this.safe(text);
+    pending.toolName = this.safe(toolName);
+    pending.toolStatus = ok ? "completed" : "failed";
+    pending.toolDetails = details?.length
+      ? details.map(item => ({ label: this.safe(item.label), value: this.safe(item.value) })) : undefined;
+    this.emit({ kind: "entry.replace", entry: pending });
   }
   threadTitleChanged(title: string): void {
     if (this.session) this.emit({ kind: "thread.title", threadId: this.session.threadId, title: this.safe(title) });
   }
-  fileDiff(presentation: FileDiffPresentation): void {
-    this.append("diff", `${presentation.operation ?? "update"}: ${presentation.path}`, undefined,
-      { ...presentation, path: this.safe(presentation.path), before: this.safe(presentation.before), after: this.safe(presentation.after) });
+  fileDiff(_presentation: FileDiffPresentation): void {
+    // Tool summaries remain visible; source before/after previews are not sent to the Web transcript.
   }
   taskGraph(graph: Readonly<TaskGraphView>): void {
     this.tasks = graph.status === "completed" ? null : { ...graph };
@@ -272,8 +316,17 @@ export class WebInteraction implements AppInteractionPort {
     this.currentReasoningId = undefined;
     return true;
   }
-  startActivity(text: string, kind?: UIActivityKind): string {
-    const id = randomUUID(); this.activities.set(id, { id, text, kind }); this.emit(); return id;
+  startActivity(text: string, kind?: UIActivityKind, toolName?: string): string {
+    const id = randomUUID(); this.activities.set(id, { id, text, kind }); this.emit();
+    if (kind === "tool" && toolName) {
+      const pending = this.entryById.get(this.pendingToolEntries[0] ?? "");
+      if (pending?.toolName !== toolName || pending.toolStatus !== "running") {
+        this.interruptPendingTools();
+        this.pendingToolEntries.push(this.append("tool", `Calling ${toolName}`, undefined,
+          undefined, toolName, "running"));
+      }
+    }
+    return id;
   }
   stopActivity(activityId?: string): void {
     if (activityId) this.activities.delete(activityId); else this.activities.clear();
@@ -299,12 +352,13 @@ export class WebInteraction implements AppInteractionPort {
           ? [{ id: "allow_prefix", label: translate(this.language, "cli.allowThread"), detail: this.safe(formatCommandApprovalPrefix(request.commandPrefix)) }]
           : []),
       ],
-    }, request.signal);
+    }, request.signal, { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "allow_once" });
     return value === "allow_once" || value === "allow_prefix" ? value : "reject";
   }
-  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string): Promise<string | undefined> {
+  selectChoice(title: string, choices: readonly InteractionChoice[], initialId?: string,
+    timed?: Readonly<TimedChoiceOptions>): Promise<string | undefined> {
     return this.awaitDecision({ id: randomUUID(), kind: "choice", title: this.safe(title), choices,
-      ...(initialId ? { initialId } : {}) });
+      ...(initialId ? { initialId } : {}) }, timed?.signal, timed);
   }
   selectProvider(choices: readonly ProviderSelectorChoice[], initialProvider: ProviderSelectorChoice["provider"]): Promise<ProviderSelectorChoice["provider"] | undefined> {
     return this.selectChoice(translate(this.language, "cli.providerSelect"), choices.map(item => ({ id: item.provider, label: item.label,
@@ -326,7 +380,8 @@ export class WebInteraction implements AppInteractionPort {
     void options;
     const value = await this.awaitDecision({ id: randomUUID(), kind: "plan", title: translate(this.language, "cli.reviewPlan"),
       choices: [{ id: "approve", label: translate(this.language, "ui.approveRun") }, { id: "reject", label: translate(this.language, "ui.reject") },
-        { id: "adjust", label: translate(this.language, "ui.requestChanges") }, { id: "defer", label: translate(this.language, "ui.later") }] });
+        { id: "adjust", label: translate(this.language, "ui.requestChanges") }, { id: "defer", label: translate(this.language, "ui.later") }] },
+      undefined, { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "approve" });
     if (value?.startsWith("adjust:")) return { action: "adjust", feedback: value.slice(7) };
     return value === "approve" || value === "reject" ? { action: value } : { action: "defer" };
   }
@@ -348,15 +403,27 @@ export class WebInteraction implements AppInteractionPort {
   setCurrentRequest(_text: string, _images?: readonly Readonly<ImageAttachment>[], _options?: Readonly<CurrentRequestOptions>): void {
     this.busy = true; this.emit();
   }
+  private interruptPendingTools(): void {
+    for (const id of this.pendingToolEntries) {
+      const entry = this.entryById.get(id);
+      if (!entry || entry.toolStatus !== "running") continue;
+      entry.toolStatus = "failed";
+      entry.text = this.safe(`✗ ${entry.toolName ?? "Tool"} — interrupted`);
+      this.emit({ kind: "entry.replace", entry });
+    }
+    this.pendingToolEntries = [];
+  }
   clearCurrentRequest(): void {
     this.busy = false;
     this.activities.clear();
     this.review = null;
+    this.interruptPendingTools();
     this.emit();
   }
   async sealCurrentRequestSteering<T>(seal: () => T | undefined | Promise<T | undefined>): Promise<T | undefined> { return seal(); }
   resetForNewThread(session: Readonly<UISessionInfo>): void {
     this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.pendingToolEntries = [];
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
@@ -366,6 +433,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   clearHostedSession(): void {
     this.entries = []; this.tasks = null; this.subagentsView = []; this.activities.clear(); this.review = null;
+    this.pendingToolEntries = [];
     this.entryById.clear();
     this.userMarkers = [];
     this.historyEpoch = randomUUID();
@@ -373,7 +441,7 @@ export class WebInteraction implements AppInteractionPort {
     this.emit({ kind: "entries.reset", entries: [] });
     this.emit();
   }
-  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
+  clearScreen(): void { this.entries = []; this.entryById.clear(); this.userMarkers = []; this.pendingToolEntries = []; this.historyEpoch = randomUUID(); this.emit({ kind: "entries.reset", entries: [] }); }
   emergencyRestore(): void { this.clearCurrentRequest(); }
   close(): void {
     this.closed = true; this.externalOperation?.abort();

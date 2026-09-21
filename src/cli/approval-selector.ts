@@ -1,5 +1,6 @@
 import type { ApprovalDecision } from "../core/types.js";
 import { canGrantCommandPrefix, commandPrefixApprovalLabel } from "../command/approval.js";
+import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import {
   renderMenu,
   selectMenuIndex,
@@ -47,6 +48,8 @@ export async function selectApproval(
       renderApprovalSelector(commandPrefix, selectedIndex, options.color ?? true),
     {
       ...options,
+      idleTimeoutMs: options.idleTimeoutMs ?? DECISION_TIMEOUT_MS,
+      idleSelectionIndex: 0,
       canConfirm: () =>
         hasSafeApprovalHeight(options.output.rows) &&
         (callerGuard?.() ?? true),

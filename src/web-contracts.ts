@@ -1,16 +1,17 @@
-import type { FileDiffPresentation, ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
+import type { ImageAttachment, PlanProposal, ToolDisplayDetail } from "./core/types.js";
 import type { UISessionInfo, UIActivityKind, UIReviewPhase } from "./ui/contracts.js";
 import type { TaskGraphView } from "./tasks/task-graph.js";
 import type { SubagentView } from "./subagents/types.js";
 import type { InteractionChoice } from "./ui/interaction-port.js";
 
-export type WebEntryKind = "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "diff" | "plan";
+export type WebEntryKind = "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "plan";
 export interface WebEntry {
   id: string;
   kind: WebEntryKind;
   text: string;
+  toolName?: string;
+  toolStatus?: "running" | "completed" | "failed";
   images?: readonly Pick<ImageAttachment, "id" | "label" | "mediaType">[];
-  diff?: FileDiffPresentation;
   toolDetails?: readonly ToolDisplayDetail[];
   timestamp: number;
 }

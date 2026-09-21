@@ -56,6 +56,18 @@ function approvalRequest(commandPrefix = "E:\\tools\\git.exe"): ApprovalRequest 
 }
 
 describe("command approval selector", () => {
+  it("allows only this command once after an unattended timeout", async () => {
+    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const result = selectApproval("git", { input, output, color: false, idleTimeoutMs: 15 });
+    assert.equal(await result, "allow_once");
+    assert.equal(input.isRaw, false);
+  });
+  it("keeps an explicit cancellation denied even when a timeout is configured", async () => {
+    const input = new TtyInput(), output = new TtyOutput(); output.resume();
+    const result = selectApproval("git", { input, output, color: false, idleTimeoutMs: 15 });
+    input.write("\u001B");
+    assert.equal(await result, "reject");
+  });
   it("offers only one-shot approval or rejection for interpreters", async () => {
     const input = new TtyInput(), output = new TtyOutput(); output.resume();
     const result = selectApproval("C:\\tools\\node.exe", { input, output, color: false });

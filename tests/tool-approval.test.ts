@@ -22,8 +22,11 @@ import { describe, it } from "./harness.js";
 class ApprovalTerminal extends Terminal {
   readonly decisions: string[] = [];
   readonly titles: string[] = [];
-  override async selectChoice(title: string): Promise<string | undefined> {
+  readonly defaults: Array<{ initialId?: string; timeoutMs?: number; choiceId?: string }> = [];
+  override async selectChoice(title: string, _choices: readonly import("../src/ui/interaction-port.js").InteractionChoice[],
+    initialId?: string, timed?: Readonly<import("../src/ui/interaction-port.js").TimedChoiceOptions>): Promise<string | undefined> {
     this.titles.push(title);
+    this.defaults.push({ initialId, timeoutMs: timed?.idleTimeoutMs, choiceId: timed?.idleChoiceId });
     return this.decisions.shift();
   }
   override info(): void {}
@@ -141,6 +144,8 @@ describe("tool approval identity and durable grants", () => {
       assert.deepEqual(fixture.calls, ["get_accounts", "get_accounts"]);
       assert.equal((await invoke("place_order")).ok, true);
       assert.equal(terminal.titles.length, 3, "once approval is not reusable");
+      assert.ok(terminal.defaults.every(value => value.initialId === "allow_once" &&
+        value.choiceId === "allow_once" && value.timeoutMs === 15 * 60_000));
       assert.equal(threads.recover(first.threadId).toolApprovalGrants?.length, 1);
       const fresh = threads.create({ threadId: "another-thread", workspaceRoot,
         mode: "code", provider: "deepseek", model: "test" });

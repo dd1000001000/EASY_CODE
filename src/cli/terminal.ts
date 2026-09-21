@@ -16,6 +16,7 @@ import type {
   ThinkingEffort,
 } from "../core/types.js";
 import { selectApproval } from "./approval-selector.js";
+import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
 import { formatCommandApprovalPrefix } from "../command/approval.js";
 import {
   formatPlanProposal,
@@ -80,6 +81,7 @@ import type {
   InteractionChoice,
   PlanReviewDecision,
   PlanReviewInputOptions,
+  TimedChoiceOptions,
 } from "../ui/interaction-port.js";
 import { applyEvent, createUIState } from "../ui/store.js";
 import { ScreenWriter } from "../ui/render/screen-writer.js";
@@ -1312,7 +1314,9 @@ export class Terminal implements AppInteractionPort {
     options: Readonly<PlanReviewInputOptions> = {},
   ): Promise<PlanReviewDecision> {
     if (!this.isInteractive()) return { action: "defer" };
-    if (this.inlineShellActive && this.lastPlan) {
+    const plan = options.plan ?? this.lastPlan;
+    if (plan && this.input.isTTY && (this.output as NodeJS.WriteStream).isTTY &&
+      typeof this.input.setRawMode === "function") {
       const choices = [
         "Yes, use Auto mode",
         "No, reject plan",
@@ -1332,11 +1336,11 @@ export class Terminal implements AppInteractionPort {
             input,
             output: this.output as ModelSelectorOutput,
             color: this.colorEnabled(),
-            overlay: this.menuOverlay(
-              this.lastPlan?.id ?? "plan-review",
-              "plan-review",
-              this.lastPlan,
-            ),
+            idleTimeoutMs: options.idleTimeoutMs ?? DECISION_TIMEOUT_MS,
+            idleSelectionIndex: 0,
+            ...(this.inlineShellActive ? { overlay: this.menuOverlay(
+              plan.id, "plan-review", plan,
+            ) } : {}),
             ...(this.vscodeMenuBridge
               ? { navigation: this.vscodeMenuBridge }
               : {}),
@@ -1397,6 +1401,7 @@ export class Terminal implements AppInteractionPort {
     title: string,
     choices: readonly InteractionChoice[],
     initialId?: string,
+    timed?: Readonly<TimedChoiceOptions>,
   ): Promise<string | undefined> {
     if (this.closed || choices.length === 0) return undefined;
     if (
@@ -1426,6 +1431,11 @@ export class Terminal implements AppInteractionPort {
           input,
           output: this.output as ModelSelectorOutput,
           color: this.colorEnabled(),
+          ...(timed?.signal ? { signal: timed.signal } : {}),
+          ...(timed ? {
+            idleTimeoutMs: timed.idleTimeoutMs,
+            idleSelectionIndex: choices.findIndex(choice => choice.id === timed.idleChoiceId && !choice.disabled),
+          } : {}),
           ...(this.inlineShellActive
             ? {
                 overlay: this.menuOverlay(`choice-${Date.now()}`, "picker"),

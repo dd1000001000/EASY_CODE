@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import {
   commandCapabilityTimeoutLimitMs,
   formatCommandTimeoutBudget,
+  resolveBackgroundCommandTimeoutBudget,
   resolveCommandTimeoutBudget,
 } from "../src/command/timeout.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
 import { describe, it } from "./harness.js";
 
 describe("command timeout budget", () => {
@@ -44,6 +46,27 @@ describe("command timeout budget", () => {
       ),
       "timeout requested=1800000ms, effective=120000ms, " +
         "configured limit=120000ms, capability limit=900000ms",
+    );
+  });
+
+  it("gives background jobs an independent lifetime and honors explicit shorter limits", () => {
+    const limits = { ...defaultRuntimeLimits(), commandBackgroundLifetimeMaxMs: 2_000 };
+    assert.deepEqual(resolveBackgroundCommandTimeoutBudget(undefined, limits), {
+      kind: "background",
+      requestedMs: 2_000,
+      effectiveMs: 2_000,
+      configuredLimitMs: 2_000,
+    });
+    assert.deepEqual(resolveBackgroundCommandTimeoutBudget(500, limits), {
+      kind: "background",
+      requestedMs: 500,
+      effectiveMs: 500,
+      configuredLimitMs: 2_000,
+    });
+    assert.equal(resolveBackgroundCommandTimeoutBudget(5_000, limits).effectiveMs, 2_000);
+    assert.equal(
+      formatCommandTimeoutBudget(resolveBackgroundCommandTimeoutBudget(500, limits)),
+      "background lifetime requested=500ms, effective=500ms, lifetime limit=2000ms",
     );
   });
 });

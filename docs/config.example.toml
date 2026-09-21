@@ -23,7 +23,11 @@ max_context_tokens = 1000000
 # Captured raw tool evidence and model-facing results are separate budgets.
 max_output_chars = 256000
 max_tool_result_chars = 64000
+# Foreground run_command budget. Background start_command uses a separate lifetime.
 command_timeout_ms = 120000
+# Maximum lifetime for a background process (default 1 hour); an explicit
+# start_command timeout_ms may shorten it. Cancel servers when work is done.
+command_background_lifetime_max_ms = 3600000
 sandbox_startup_windows_ms = 75000
 sandbox_startup_posix_ms = 30000
 sandbox_cleanup_timeout_ms = 45000

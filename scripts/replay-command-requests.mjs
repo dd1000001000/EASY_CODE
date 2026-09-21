@@ -5,7 +5,6 @@ import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { runCommandInputSchema, pollCommandInputSchema, cancelCommandInputSchema } from '../dist/tools/run-command.js';
-import { validateCommandRequest } from '../dist/command/request-validation.js';
 import { CommandPolicy } from '../dist/command/policy.js';
 
 const root = process.argv[2];
@@ -44,8 +43,6 @@ for (const filename of files) {
       for (const issue of parsed.error.issues) increment(report.rejectionCounts, `parameter.${issue.path.join('.') || 'input'}`);
       continue;
     }
-    const failure = launch ? validateCommandRequest(parsed.data) : undefined;
-    if (failure) { increment(report.rejectionCounts, failure.matchedRule); continue; }
     report.acceptedShape++;
     if (!launch) continue;
     const input = parsed.data;

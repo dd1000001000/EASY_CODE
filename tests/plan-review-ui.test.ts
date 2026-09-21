@@ -74,6 +74,15 @@ function plan(): PlanProposal {
 }
 
 describe("plan review terminal UI", () => {
+  it("approves only the supplied current plan after an unattended menu timeout", async () => {
+    const input = new TtyInput();
+    const output = new TtyOutput(); output.resume();
+    const terminal = new Terminal(input, output);
+    const decision = await terminal.reviewPlan({ plan: plan(), idleTimeoutMs: 15 });
+    assert.deepEqual(decision, { action: "approve" });
+    assert.equal(input.isRaw, false);
+    terminal.close();
+  });
   it("shows the structured proposal and accepts Yes/use Auto", async () => {
     const terminal = new ScriptedPlanTerminal(["1"]);
     terminal.showPlan(plan());

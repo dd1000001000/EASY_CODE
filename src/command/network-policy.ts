@@ -4,8 +4,6 @@ import type { ResolvedCommand } from "./types.js";
 export type NetworkEffect = "read" | "download" | "upload" | "unknown";
 export interface NetworkOperation {
   effect: NetworkEffect;
-  /** Structured argv prefix, not a substring of the displayed command. */
-  prefixArgs: string[];
   description: string;
 }
 
@@ -16,14 +14,13 @@ const basename = (value: string) => path.basename(value).replace(/\.(exe|cmd|bat
 export function inspectNetworkOperation(command: ResolvedCommand): NetworkOperation | undefined {
   let name = basename(command.executablePath);
   let args = command.args;
-  let prefixArgs: string[] = [];
   if (/^python(?:\d+(?:\.\d+)*)?$/u.test(name) && args[0] === "-m" && args[1] === "pip") {
-    name = "pip"; args = args.slice(2); prefixArgs = ["-m", "pip"];
+    name = "pip"; args = args.slice(2);
   }
   if (!clients.has(name)) return undefined;
   const nonConfigArgs = args.filter(a => a !== "-q");
   if (nonConfigArgs.length === 1 && ["--version", "--help", "-h"].includes(nonConfigArgs[0]!)) return undefined;
-  const op = (effect: NetworkEffect, prefix = prefixArgs): NetworkOperation => ({ effect, prefixArgs: prefix,
+  const op = (effect: NetworkEffect): NetworkOperation => ({ effect,
     description: `${name}: ${effect === "read" ? "read remote content" : effect === "download" ? "download files/dependencies" : effect === "upload" ? "send data or change remote state" : "network behavior is not statically known"}` });
   if (name === "curl") {
     // Only this small exact recipe can auto-approve. Unknown flags (including
@@ -50,15 +47,15 @@ export function inspectNetworkOperation(command: ResolvedCommand): NetworkOperat
   if (name === "wget") return op(args.some(a => /^--(?:post-data|post-file|body-data|body-file|method)(?:=|$)/u.test(a)) ? "upload" : "download");
   const sub = args[0];
   if (name === "git") {
-    if (["fetch", "clone", "pull"].includes(sub ?? "")) return op("download", [sub!]);
-    if (sub === "push" || sub === "send-email") return op("upload", [sub]);
-    if (sub === "ls-remote") return op("unknown", [sub]); // URL rewrites/helpers may execute repository code.
+    if (["fetch", "clone", "pull"].includes(sub ?? "")) return op("download");
+    if (sub === "push" || sub === "send-email") return op("upload");
+    if (sub === "ls-remote") return op("unknown"); // URL rewrites/helpers may execute repository code.
     return sub?.startsWith("-") ? op("unknown") : undefined; // Options can change config/helpers; never auto-read.
   }
   if (name === "npm" || name === "pip" || name === "pip3") {
-    if (["install", "i", "add", "ci", "download"].includes(sub ?? "")) return op("download", [...prefixArgs, sub!]);
-    if (["publish", "unpublish", "deprecate"].includes(sub ?? "")) return op("upload", [...prefixArgs, sub!]);
-    if (["view", "info", "search", "index"].includes(sub ?? "")) return op("unknown", [...prefixArgs, sub!]);
+    if (["install", "i", "add", "ci", "download"].includes(sub ?? "")) return op("download");
+    if (["publish", "unpublish", "deprecate"].includes(sub ?? "")) return op("upload");
+    if (["view", "info", "search", "index"].includes(sub ?? "")) return op("unknown");
     return undefined;
   }
   return op("unknown");

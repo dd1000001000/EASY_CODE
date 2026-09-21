@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { composeMessage, composerEnterAction, composerPrimaryAction, LONG_PASTE_THRESHOLD, matchingSlashCommands, pastedTextPreview } from "../src/web/composer-content.js";
-import { displayProject, displayTitle, isConversationEntry, isNoticeEntry } from "../src/web/display-content.js";
+import { displayProject, displayTitle, groupConversationTools, isConversationEntry, isNoticeEntry, toolRunContinuesAcross } from "../src/web/display-content.js";
 import type { WebEntry } from "../src/web-contracts.js";
 import { describe, it } from "./harness.js";
 
@@ -68,10 +68,32 @@ describe("Web conversation display", () => {
   const entry = (kind: WebEntry["kind"]): WebEntry => ({ id: kind, kind, text: kind, timestamp: 0 });
 
   it("keeps conversation evidence in the transcript and routes notices elsewhere", () => {
-    for (const kind of ["user", "assistant", "thinking", "tool", "diff", "plan"] as const)
+    for (const kind of ["user", "assistant", "thinking", "tool", "plan"] as const)
       assert.equal(isConversationEntry(entry(kind)), true);
     for (const kind of ["info", "success", "warning", "error"] as const)
       assert.equal(isNoticeEntry(entry(kind)), true);
+  });
+  it("groups adjacent tool calls but leaves a single call and conversation boundaries unchanged", () => {
+    const tool = (id: string): WebEntry => ({ id, kind: "tool", text: `✓ ${id}`, toolName: id, timestamp: 0 });
+    assert.deepEqual(groupConversationTools([tool("one")]).map(item => item.kind), ["entry"]);
+    const grouped = groupConversationTools([
+      entry("user"), tool("read_file"), tool("mcp__server__search"),
+      entry("thinking"), tool("run_command"), tool("create_file"), entry("assistant"),
+    ]);
+    assert.deepEqual(grouped.map(item => item.kind), ["entry", "tool-group", "entry", "tool-group", "entry"]);
+    assert.deepEqual(grouped[1]?.kind === "tool-group" ? grouped[1].tools.map(item => item.toolName) : [],
+      ["read_file", "mcp__server__search"]);
+  });
+  it("keeps a tool run intact across hidden notices and a live-window cutoff", () => {
+    const entries: WebEntry[] = [
+      { id: "a", kind: "tool", text: "✓ read_file", timestamp: 0 },
+      { id: "status", kind: "info", text: "Step 2", timestamp: 1 },
+      { id: "b", kind: "tool", text: "✓ mcp__server__search", timestamp: 2 },
+      { id: "answer", kind: "assistant", text: "Done", timestamp: 3 },
+    ];
+    assert.equal(toolRunContinuesAcross(entries, 1), true);
+    assert.equal(toolRunContinuesAcross(entries, 2), true);
+    assert.equal(toolRunContinuesAcross(entries, 3), false);
   });
 });
 
