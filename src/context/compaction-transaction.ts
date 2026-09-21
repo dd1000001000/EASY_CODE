@@ -182,7 +182,7 @@ export interface CompactionResult { requests: number; committed: boolean; paused
 
 export async function runCompactionTransaction(input: {
   state: SessionState; manager: ContextManager; turnId: string; maxContextChars: number;
-  required: boolean; maxRequests: number; retainRecentExchanges?: number;
+  required: boolean; maxRequests?: number; retainRecentExchanges?: number;
   maxAttempts?: number;
   limits?: Readonly<RuntimeLimits>; signal?: AbortSignal; skipSummary?: boolean; forceRecovery?: boolean;
   nextRequest: NormalRequestEnvelope; tool?: ToolDefinition; inventory?: () => string;
@@ -285,7 +285,9 @@ export async function runCompactionTransaction(input: {
   const end = selected ?? (last !== undefined && boundaryCapacity(last).fits ? last : undefined);
   if (!end) return recover("No retained complete-exchange tail fits the input budget.");
   if (tx?.status !== "pending") {
-    if (!state.compactionControl?.seed && (input.maxRequests <= 0 || !input.tool)) return recover("No summary request budget or summary tool is available.");
+    if (!state.compactionControl?.seed &&
+        ((input.maxRequests !== undefined && input.maxRequests <= 0) || !input.tool))
+      return recover("No summary request budget or summary tool is available.");
     await emit("context.compaction.started", { id: createId("compaction"), start: state.compactedMessageCount,
       end, sourceHash: prefixHash(state, end), attempts: 0, maxAttempts: Math.min(limits.modelContentRetries + 1, input.maxAttempts ?? limits.modelContentRetries + 1),
       status: "pending", snapshot: compactionSnapshot(state, end) });
@@ -344,7 +346,8 @@ export async function runCompactionTransaction(input: {
         break;
       }
     }
-    if (stopRequests || current.attempts >= maximum || requests >= input.maxRequests || !input.tool) {
+    if (stopRequests || current.attempts >= maximum ||
+        (input.maxRequests !== undefined && requests >= input.maxRequests) || !input.tool) {
       if (!lastBody) return recover("Summary corrections exhausted without usable body text.");
       // Last nonempty BODY only: native reasoning and malformed tool arguments are excluded.
       await emit("context.compaction.prepared", { id: current.id,

@@ -588,6 +588,53 @@ describe("AgentRuntime", () => {
         });
         assert.equal(notificationCount, 0);
     });
+    it("keeps recorded verification failures internal to the Runtime", async () => {
+        const currentState = state();
+        currentState.commands.push({
+            id: "failed_verification",
+            program: "node",
+            args: ["--test"],
+            cwd: currentState.workspaceRoot,
+            status: "exited",
+            exitCode: 1,
+            durationMs: 1,
+            timestamp: new Date().toISOString(),
+            summary: "tests failed",
+            verificationKind: "unit_test",
+            validation: {
+                status: "failed",
+                confidence: "high",
+                source: "framework_summary",
+                coverage: "terminal",
+                reason: "test failure",
+                targetKey: "sha256:" + "a".repeat(64),
+                checkKey: "sha256:" + "b".repeat(64),
+            },
+        });
+        const rendered = [];
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async () => ({
+                message: { role: "assistant", content: "Task delivered.", tool_calls: [] },
+            }) },
+            toolCatalog: snapshotToolSet([]),
+            contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system",
+            getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [],
+            appendEvent: async () => undefined,
+            requestApproval: async () => false,
+            onText: (text) => rendered.push(text),
+        });
+        const result = await runtime.run(currentState, "Report the result", {
+            maxSteps: 1,
+            maxContextChars: 20_000,
+            maxOutputChars: 4_000,
+            commandTimeoutMs: 1_000,
+            approvalPolicy: "never",
+        });
+        assert.equal(result.text, "Task delivered.");
+        assert.deepEqual(rendered, ["Task delivered."]);
+    });
     it("keeps a throwing reasoning presentation hook from interrupting the turn", async () => {
         const provider = {
             name: "qwen",
@@ -2506,7 +2553,7 @@ describe("AgentRuntime", () => {
                 } },
             async execute() {
                 return { ok: false, summary: "Memory proposal skipped.", failure: {
-                        version: 1, kind: "protocol", code: "memory_source_invalid",
+                        version: 1, kind: "protocol", code: "invalid_tool_arguments",
                         execution: "not_started", recovery: "correct_arguments", issues: [],
                         instruction: "The cited evidence is unavailable.",
                     } };

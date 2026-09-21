@@ -24,7 +24,6 @@ const consolidationSchema = z.object({
 interface JobRow {
   turn_id: string;
   thread_id: string;
-  user_message_json: string | null;
   result_reason: "success" | "planned";
 }
 
@@ -33,20 +32,11 @@ interface CandidateMemory {
   scope: "project" | "global";
   category: "preference" | "convention" | "architecture" | "decision" | "environment";
   content: string;
-  sourceRefs?: string[];
 }
 
 function parseJsonResponse(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
   return JSON.parse(trimmed);
-}
-
-function messageContent(serialized: string | null): string {
-  if (!serialized) return "";
-  try {
-    const message = JSON.parse(serialized) as { content?: unknown };
-    return typeof message.content === "string" ? message.content : "";
-  } catch { return ""; }
 }
 
 /** Persistent, best-effort consolidation of memories already written by the main agent. */
@@ -83,7 +73,7 @@ export class MemoryMaintenance {
 
   private next(threadId: string): JobRow | undefined {
     return this.storage.db.prepare<[string], JobRow>(
-      `SELECT j.turn_id, j.thread_id, t.user_message_json, t.result_reason
+      `SELECT j.turn_id, j.thread_id, t.result_reason
        FROM memory_maintenance_jobs j JOIN turns t ON t.id = j.turn_id
        WHERE j.thread_id = ? AND j.status = 'queued' ORDER BY t.completed_at LIMIT 1`,
     ).get(threadId);
@@ -94,25 +84,12 @@ export class MemoryMaintenance {
   }
 
   private candidates(threadId: string, turnId: string): CandidateMemory[] {
-    const rows = this.storage.db.prepare<[string, string, string, string, number], CandidateMemory>(
+    return this.storage.db.prepare<[string, string, string, string, number], CandidateMemory>(
       `SELECT id, scope, category, content FROM memories
        WHERE source_thread_id = ? AND source_turn_id = ? AND status = 'active'
          AND workspace_id IN (?, ?)
        ORDER BY id LIMIT ?`,
     ).all(threadId, turnId, this.projectId, GLOBAL_MEMORY_WORKSPACE_ID, MAX_CANDIDATES);
-    const source = this.storage.db.prepare<[string], { document_json: string }>(
-      "SELECT document_json FROM memory_provenance WHERE memory_id = ?",
-    );
-    const localRef = this.storage.db.prepare<[string, string], { id: string }>(
-      "SELECT id FROM context_evidence WHERE id = ? AND thread_id = ?",
-    );
-    return rows.map((row) => {
-      try {
-        const refs = (JSON.parse(source.get(row.id)?.document_json ?? "{}") as { refs?: unknown }).refs;
-        return Array.isArray(refs) ? { ...row, sourceRefs: refs.filter((ref): ref is string =>
-          typeof ref === "string" && (ref === "user" || localRef.get(ref, threadId) !== undefined)) } : row;
-      } catch { return row; }
-    });
   }
 
   private async modelJson(jobId: string, provider: ModelProvider, instruction: string, input: object,
@@ -182,15 +159,13 @@ export class MemoryMaintenance {
             decision.content.length > this.manager.limits.memoryContentMaxChars) continue;
         if (mutations.length + 2 > MAX_MEMORY_MUTATIONS_PER_TURN) break;
         mutations.push({ action: "revise", memoryId: decision.memoryId, scope: candidate.scope,
-          category: candidate.category, content: decision.content, reason: "Background consolidation of existing memory",
-          ...(candidate.sourceRefs?.length ? { sourceRefs: candidate.sourceRefs } : {}) });
+          category: candidate.category, content: decision.content, reason: "Background consolidation of existing memory" });
         mutations.push({ action: "forget", memoryId: candidate.id, scope: candidate.scope,
           reason: "Merged into an existing compatible memory" });
       }
       if (signal?.aborted) throw new Error("Memory maintenance interrupted");
-      this.manager.applyModelMutations({ sourceState: state, workspaceRoot: state.workspaceRoot,
+      this.manager.applyModelMutations({ workspaceRoot: state.workspaceRoot,
         threadId, turnId: job.turn_id, outcome: job.result_reason,
-        userInput: messageContent(job.user_message_json),
         mutations }, () => this.complete(job.turn_id));
       return true;
     } catch (error) {

@@ -513,7 +513,7 @@ async function decide(id: string, value: string | undefined): Promise<void> {
     if (!result.accepted) throw new Error(t("ui.decisionExpired"));
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
-async function decidePlan(action: "approve" | "reject" | "adjust" | "defer"): Promise<void> {
+async function decidePlan(action: "approve" | "reject" | "adjust"): Promise<void> {
   let feedback: string | undefined;
   if (action === "adjust") {
     try { feedback = (await ElMessageBox.prompt(t("ui.planPrompt"), t("ui.planPromptTitle"), { inputPattern: /\S/u, inputErrorMessage: t("ui.planPromptError") })).value.trim(); }
@@ -597,7 +597,7 @@ function noticePreview(text: string): string {
               <TranscriptEntry v-else :entry="item.entry" />
             </template>
             <div v-if="archiveEntries && archiveHasLater" class="history-load"><ElButton text :loading="historyLoading" @click="loadNewer">{{ t('ui.loadNewer') }}</ElButton></div>
-            <section v-if="plan" class="plan-actions"><strong>{{ t('ui.planAwaiting') }}</strong><div><ElButton type="primary" @click="decidePlan('approve')">{{ t('ui.approveRun') }}</ElButton><ElButton @click="decidePlan('adjust')">{{ t('ui.requestChanges') }}</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">{{ t('ui.reject') }}</ElButton><ElButton @click="decidePlan('defer')">{{ t('ui.later') }}</ElButton></div></section>
+            <section v-if="plan" class="plan-actions"><strong>{{ t('ui.planAwaiting') }}</strong><div><ElButton type="primary" @click="decidePlan('approve')">{{ t('ui.approveRun') }}</ElButton><ElButton @click="decidePlan('adjust')">{{ t('ui.requestChanges') }}</ElButton><ElButton type="danger" plain @click="decidePlan('reject')">{{ t('ui.reject') }}</ElButton></div></section>
           </div>
         </div>
         <ElCard v-if="monitorActive" class="task-monitor-card" shadow="always">

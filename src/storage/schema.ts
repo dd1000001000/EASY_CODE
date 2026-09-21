@@ -414,10 +414,6 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   },
   {
     sql: `
-      CREATE TABLE memory_provenance (
-        memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
-        document_json TEXT NOT NULL
-      );
       CREATE TABLE memory_revisions (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,

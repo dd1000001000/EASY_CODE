@@ -428,7 +428,7 @@ export type MemoryMutationRequest = (
       memoryId: string;
       scope: LongTermMemoryScope;
       reason: string;
-    }) & { sourceRefs?: string[] };
+    });
 
 export interface FileDiffPresentation {
   type: "file_diff";

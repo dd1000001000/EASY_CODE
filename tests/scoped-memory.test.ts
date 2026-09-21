@@ -102,18 +102,16 @@ describe("global and project long-term memory", () => {
     try {
       const state = new ThreadStore(f.storage).create({ threadId: "thread_global_source", workspaceRoot: f.a,
         mode: "code", provider: "deepseek", model: "test", thinkingEffort: "low" });
-      const base = { sourceState: state, workspaceRoot: f.a, threadId: state.threadId,
-        turnId: "turn_global_source", outcome: "success" as const,
-        userInput: "Inspect the project files." };
+      const base = { workspaceRoot: f.a, threadId: state.threadId,
+        turnId: "turn_global_source", outcome: "success" as const };
       const selected = f.manager.applyModelMutations({ ...base, mutations: [{ action: "remember",
         scope: "global", category: "preference", content: "The user prefers concise answers.",
         reason: "Model-selected global memory." }] });
       assert.equal(selected.applied, 1);
       const accepted = f.manager.applyModelMutations({ ...base,
-        userInput: "From now on, I prefer concise answers in every project.",
         mutations: [{ action: "remember", scope: "global", category: "preference",
           content: "The user prefers concise answers in every project.",
-          reason: "Current user preference.", sourceRefs: ["user"] }] });
+          reason: "Current user preference." }] });
       assert.equal(accepted.applied, 1);
       assert.equal(f.manager.get(GLOBAL_MEMORY_WORKSPACE_ID, accepted.memoryIds[0]!)?.scope, "global");
     } finally { f.dispose(); }

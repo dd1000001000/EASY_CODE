@@ -76,7 +76,7 @@ describe("split long-term memory tools", () => {
     assert.equal(readMemoryInputSchema.safeParse({ query: "preferences", scope: "another-project" }).success, false);
     assert.equal(writeMemoryInputSchema.safeParse({ operation: "remember", scope: "global",
       category: "preference", content: "The user prefers brief explanations.",
-      reason: "Current user preference", sourceRefs: ["user"] }).success, true);
+      reason: "Current user preference" }).success, true);
     assert.equal(
       readMemoryInputSchema.safeParse({ query: "architecture", operation: "remember" }).success,
       false,
@@ -95,7 +95,7 @@ describe("split long-term memory tools", () => {
       assert.deepEqual(rejected.error.issues[0]?.code, "unrecognized_keys");
       assert.deepEqual(
         "keys" in rejected.error.issues[0]! ? rejected.error.issues[0].keys : [],
-        ["evidenceId"],
+        ["sourceRefs", "evidenceId"],
       );
     }
     let diagnostic = "";
@@ -120,9 +120,10 @@ describe("split long-term memory tools", () => {
     } catch (error) {
       diagnostic = describeToolFailure(error).issues[0]?.message ?? "";
     }
+    assert.match(diagnostic, /sourceRefs/u);
     assert.match(diagnostic, /evidenceId/u);
     assert.doesNotMatch(diagnostic, new RegExp("b".repeat(64), "u"));
-    const { evidenceId: _removed, ...valid } = failedThreadPayload;
+    const { evidenceId: _evidenceId, sourceRefs: _sourceRefs, ...valid } = failedThreadPayload;
     assert.equal(writeMemoryInputSchema.safeParse(valid).success, true);
   });
 

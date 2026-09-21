@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElInput, ElMessageBox, ElOption, ElScrollbar, ElSelect, ElTabPane, ElTabs, ElTag } from "element-plus";
+import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElInput, ElInputNumber, ElMessageBox, ElOption, ElScrollbar, ElSelect, ElTabPane, ElTabs, ElTag } from "element-plus";
 import { Refresh } from "@element-plus/icons-vue";
 import type { WebEntry, WebDecision } from "../../web-contracts.js";
 import type { WebCommandEntry } from "../../web-command-catalog.js";
@@ -27,7 +27,9 @@ const search = ref("");
 const toolPage = ref(0);
 const skillsTab = ref("user");
 const memoryTab = ref("short");
-const memoryLimit = ref("8");
+const memoryLimit = ref<number | undefined>(8);
+const validMemoryLimit = computed(() => Number.isSafeInteger(memoryLimit.value) &&
+  memoryLimit.value !== undefined && memoryLimit.value >= 1 && memoryLimit.value <= 100);
 const memoryScope = ref("all");
 const panelRoot = ref<{ $el: HTMLElement }>();
 const parsed = computed<unknown>(() => {
@@ -87,7 +89,9 @@ async function revoke(index: number, prefix: string): Promise<void> {
   } catch { /* Confirmation dismissed. */ }
 }
 function memoryQuery(): void {
-  if (memoryTab.value === "short") execute(`/memory short ${memoryLimit.value}`);
+  if (memoryTab.value === "short") {
+    if (validMemoryLimit.value) execute(`/memory short ${memoryLimit.value}`);
+  }
   else execute(`/memory long ${memoryScope.value}`);
 }
 function formatValue(value: unknown): string {
@@ -130,7 +134,7 @@ useOutsideDismiss(panelRoot, close);
           <ElTabs v-model="memoryTab" @tab-change="memoryQuery">
             <ElTabPane :label="t('ui.shortTerm')" name="short" /><ElTabPane :label="t('ui.longTerm')" name="long" />
           </ElTabs>
-          <div class="web-command-controls" v-if="memoryTab === 'short'"><span>{{ t('ui.recentMessages') }}</span><ElSelect v-model="memoryLimit" style="width:110px" @change="memoryQuery"><ElOption v-for="count in ['8','20','50','100']" :key="count" :label="count" :value="count" /></ElSelect><ElButton :icon="Refresh" text :disabled="running" @click="memoryQuery">{{ t('ui.refresh') }}</ElButton></div>
+          <div class="web-command-controls" v-if="memoryTab === 'short'"><span>{{ t('ui.recentMessages') }}</span><ElInputNumber v-model="memoryLimit" :min="1" :max="100" :precision="0" :controls="false" :disabled="running" :aria-label="t('ui.recentMessages')" style="width:110px" @keydown.enter.stop.prevent="memoryQuery" /><ElButton :icon="Refresh" text :disabled="running || !validMemoryLimit" @click="memoryQuery">{{ t('ui.refresh') }}</ElButton></div>
           <div class="web-command-controls" v-else><span>{{ t('ui.scope') }}</span><ElSelect v-model="memoryScope" style="width:160px" @change="memoryQuery"><ElOption :label="t('ui.all')" value="all" /><ElOption :label="t('ui.global')" value="global" /><ElOption :label="t('ui.project')" value="project" /></ElSelect><ElButton :icon="Refresh" text :disabled="running" @click="memoryQuery">{{ t('ui.refresh') }}</ElButton></div>
           <div v-if="memoryTab === 'long' && memoryRows.length" class="web-command-records"><div v-for="memory in memoryRows" :key="String(memory.id)" class="web-command-record"><div class="web-command-record-title"><strong>{{ memory.category }}</strong><ElTag size="small">{{ localizedScope(String(memory.scope)) }}</ElTag><ElTag size="small" :type="memory.status === 'active' ? 'success' : 'info'">{{ memory.status }}</ElTag></div><p>{{ memory.content }}</p><small>{{ memory.id }} · {{ memory.updatedAt }}</small></div></div>
         </template>

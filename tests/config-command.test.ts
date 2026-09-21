@@ -78,7 +78,7 @@ function commandRun(
 }
 
 describe("config commands", () => {
-  it("prints a complete parseable limits template without touching credentials", async () => {
+  it("prints the active parseable limits template without retired request ceilings or credentials", async () => {
     const command = commandRun(["config", "defaults"], {});
     await command.run;
     const parsed = normalizeCurrentTomlConfig(
@@ -86,7 +86,12 @@ describe("config commands", () => {
       PROVIDER_CATALOG.map(({ provider }) => provider),
       defaultRuntimeLimits(),
     );
-    assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), defaultRuntimeLimits());
+    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
+      ...activeLimits } = defaultRuntimeLimits();
+    void legacySteps;
+    void legacyMaxModelRequests;
+    assert.deepEqual(JSON.parse(JSON.stringify(parsed.limits)), activeLimits);
+    assert.doesNotMatch(command.output.value, /max_model_requests|limits\.steps/u);
     assert.equal(parsed.orchestrationEnabled, false);
     assert.doesNotMatch(command.output.value, /apiKey|api_key/u);
   });

@@ -48,7 +48,6 @@ const memoryIdSchema = z.string().trim().regex(MEMORY_ID_PATTERN);
 export const writeMemoryInputSchema = z.object({
   operation: z.enum(["remember", "revise", "forget", "move"]),
   scope: z.enum(["global", "project"]).optional(),
-  sourceRefs: z.array(z.string().min(1).max(100)).min(1).max(8).optional(),
   memoryId: memoryIdSchema.optional(),
   content: memoryContentSchema.optional(),
   category: memoryCategorySchema.optional(),
@@ -77,12 +76,6 @@ export class WriteMemoryTool implements AgentTool {
               enum: ["remember", "revise", "forget", "move"],
             },
             scope: { type: "string", enum: ["global", "project"] },
-            sourceRefs: {
-              type: "array",
-              minItems: 1,
-              maxItems: 8,
-              items: { type: "string" },
-            },
             memoryId: { type: "string", pattern: MEMORY_ID_PATTERN.source },
             content: {
               type: "string",
@@ -182,7 +175,6 @@ export class WriteMemoryTool implements AgentTool {
           memoryMutation: {
             action: "remember",
             scope,
-            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             content,
             category,
             reason: parsed.reason,
@@ -209,8 +201,7 @@ export class WriteMemoryTool implements AgentTool {
           ok: true,
           summary: `Memory ${memoryId} scope change was staged until this turn succeeds.`,
           data: { staged: true, operation: parsed.operation, memoryId, scope },
-          memoryMutation: { action: "move", memoryId, scope, reason: parsed.reason,
-            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}) },
+          memoryMutation: { action: "move", memoryId, scope, reason: parsed.reason },
         };
       }
 
@@ -226,7 +217,6 @@ export class WriteMemoryTool implements AgentTool {
           memoryMutation: {
             action: "revise",
             scope: existing.scope,
-            ...(parsed.sourceRefs ? { sourceRefs: parsed.sourceRefs } : {}),
             memoryId,
             content,
             category,

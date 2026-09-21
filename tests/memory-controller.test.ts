@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "./harness.js";
@@ -97,49 +97,31 @@ describe("unified memory control", () => {
     } finally { f.dispose(); }
   });
 
-  it("retains source references and revisions and excludes changed-file facts", async () => {
+  it("stores durable memories without evidence references or file-backed invalidation", async () => {
     const f = fixture();
     try {
       const manager = new MemoryManager(f.storage);
-      const source = "export const database = 'sqlite';";
-      writeFileSync(path.join(f.directory, "config.ts"), source);
-      const ref = manager.evidenceStore.capture("workspace_test", f.state.threadId, "read_1", "read_file",
-        { ok: true, summary: "config", data: { path: "config.ts", contentHash: sha256(source), content: source } });
-      const input = { workspaceId: "workspace_test", threadId: f.state.threadId, turnId: "turn_1", sourceState: f.state,
-        outcome: "success" as const, userInput: "Inspect the database", mutations: [{ action: "remember" as const,
-          category: "architecture" as const, content: "The database configuration uses SQLite", reason: "Read configuration", sourceRefs: [ref] }] };
+      const input = { workspaceId: "workspace_test", threadId: f.state.threadId, turnId: "turn_1",
+        outcome: "success" as const, mutations: [{ action: "remember" as const,
+          category: "architecture" as const, content: "The database configuration uses SQLite",
+          reason: "Established project architecture" }] };
       const saved = manager.applyModelMutations(input);
       assert.equal(saved.applied, 1);
       assert.equal((await manager.searchHybrid("workspace_test", "SQLite", { workspaceRoot: f.directory })).length, 1);
-      writeFileSync(path.join(f.directory, "config.ts"), "export const database = 'postgres';");
-      assert.equal((await manager.searchHybrid("workspace_test", "SQLite", { workspaceRoot: f.directory })).length, 0);
-      assert.equal(manager.get("workspace_test", saved.memoryIds[0]!)?.status, "needs_verification");
+      assert.equal(manager.get("workspace_test", saved.memoryIds[0]!)?.status, "active");
       const revisions = f.storage.db.prepare<[], { n: number }>("SELECT count(*) AS n FROM memory_revisions").get();
-      assert.equal(revisions?.n, 2);
+      assert.equal(revisions?.n, 1);
+      assert.equal(f.storage.db.prepare<[], { n: number }>(
+        "SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name = 'memory_provenance'"
+      ).get()?.n, 0);
 
-      const tentative = manager.applyModelMutations({ ...input, turnId: "turn_2", mutations: [{
-        ...input.mutations[0]!, content: "The project may use a generated API client", sourceRefs: [],
+      const additional = manager.applyModelMutations({ ...input, turnId: "turn_2", mutations: [{
+        ...input.mutations[0]!, category: "environment", content: "The development server uses port 8000",
       }] });
-      const tentativeMemory = manager.get("workspace_test", tentative.memoryIds[0]!);
-      assert.equal(tentativeMemory?.status, "active");
-      assert.ok((await manager.searchHybrid("workspace_test", "generated API client", { workspaceRoot: f.directory }))
-        .some((memory) => memory.id === tentativeMemory?.id));
-
-      assert.throws(() => manager.applyModelMutations({ ...input, turnId: "turn_3", mutations: [{
-        ...input.mutations[0]!, content: "The frontend uses generated route metadata", sourceRefs: ["evidence_missing"],
-      }] }), /source reference is unavailable/u);
-
-      const commandRef = manager.evidenceStore.capture("workspace_test", f.state.threadId, "test_1", "run_command", {
-        ok: true, summary: "tests passed", data: {
-          validation: { status: "passed", confidence: "high" },
-          lifecycle: { cleanup: "confirmed" },
-        },
-      });
-      const verified = manager.applyModelMutations({ ...input, turnId: "turn_4", mutations: [{
-        ...input.mutations[0]!, content: "The integration test starts the API on port 8000", sourceRefs: [commandRef],
-      }] });
-      const verifiedMemory = manager.get("workspace_test", verified.memoryIds[0]!);
-      assert.equal(verifiedMemory?.status, "active");
+      const environmentMemory = manager.get("workspace_test", additional.memoryIds[0]!);
+      assert.equal(environmentMemory?.status, "active");
+      assert.ok((await manager.searchHybrid("workspace_test", "port 8000", { workspaceRoot: f.directory }))
+        .some((memory) => memory.id === environmentMemory?.id));
     } finally { f.dispose(); }
   });
 

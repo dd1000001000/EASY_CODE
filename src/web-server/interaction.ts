@@ -375,12 +375,17 @@ export class WebInteraction implements AppInteractionPort {
   async readSecret(prompt: string): Promise<string> {
     return await this.awaitDecision({ id: randomUUID(), kind: "secret", title: this.safe(prompt) }) ?? "";
   }
-  showPlan(plan: Readonly<PlanProposal>): void { this.append("plan", JSON.stringify(plan, null, 2)); }
+  showPlan(_plan: Readonly<PlanProposal>): void {
+    // AgentRuntime already presents the complete plan as its final assistant
+    // response. The browser reads the authoritative pending proposal through
+    // /api/state for its review controls, so adding another transcript entry
+    // here would duplicate the plan and expose its transport JSON.
+  }
   async reviewPlan(options?: Readonly<PlanReviewInputOptions>): Promise<PlanReviewDecision> {
     void options;
     const value = await this.awaitDecision({ id: randomUUID(), kind: "plan", title: translate(this.language, "cli.reviewPlan"),
       choices: [{ id: "approve", label: translate(this.language, "ui.approveRun") }, { id: "reject", label: translate(this.language, "ui.reject") },
-        { id: "adjust", label: translate(this.language, "ui.requestChanges") }, { id: "defer", label: translate(this.language, "ui.later") }] },
+        { id: "adjust", label: translate(this.language, "ui.requestChanges") }] },
       undefined, { idleTimeoutMs: this.decisionTimeoutMs, idleChoiceId: "approve" });
     if (value?.startsWith("adjust:")) return { action: "adjust", feedback: value.slice(7) };
     return value === "approve" || value === "reject" ? { action: value } : { action: "defer" };

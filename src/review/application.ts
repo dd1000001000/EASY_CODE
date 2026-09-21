@@ -31,7 +31,7 @@ import { createReviewDriver, type ReviewParticipant } from "./driver.js";
 
 export interface WorkspaceReviewRequest {
   state: SessionState; turnId: string; userInput: string;
-  incidentId?: string; remainingModelRequests: number; signal?: AbortSignal;
+  incidentId?: string; remainingModelRequests?: number; signal?: AbortSignal;
   maxContextTokens?: number;
 }
 export interface WorkspaceReviewResult {
@@ -99,7 +99,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   const previous = state.reviewSessions.find(session => session.key === key);
   if (previous?.status === "applied") return { decision: previous.report && previous.fresh ? "reported" : "inconclusive",
     requests: 0, reused: true, reason: previous.reason, report: previous.report };
-  if (!previous && input.remainingModelRequests < 1)
+  if (!previous && input.remainingModelRequests !== undefined && input.remainingModelRequests < 1)
     return { decision: "unavailable", requests: 0, reused: true,
       reason: "The shared task budget does not leave a request for independent review." };
 

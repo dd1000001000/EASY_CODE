@@ -1,4 +1,3 @@
-import { unresolvedCommands } from "../context/runtime-state.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import { safeToolDisplayDetails, toolDisplayDetails } from "./tool-display-details.js";
 import {
@@ -501,15 +500,11 @@ export interface AgentRuntimeDependencies {
   captureToolEvidence?: (state: Readonly<SessionState>, callId: string, tool: string,
     result: ToolExecutionResult) => string;
   readToolEvidence?: (state: Readonly<SessionState>, id: string, offset: number, limit: number) => object;
-  validateMemorySources?: (state: Readonly<SessionState>, turnId: string, userInput: string,
-    mutation: MemoryMutationRequest) => void;
   commitMemoryMutations?: (input: {
-    sourceState: Readonly<SessionState>;
     workspaceRoot: string;
     threadId: string;
     turnId: string;
     outcome: "success" | "planned";
-    userInput: string;
     mutations: readonly MemoryMutationRequest[];
   }) => Promise<{ applied: number; memoryIds: string[] }>;
   appendEvent: (
@@ -616,7 +611,10 @@ export interface AgentRunOptions {
   orchestrationEnabled?: boolean;
   isOrchestrationEnabled?: () => boolean;
   maxContextTokens?: number;
-  maxSteps: number;
+  /** Optional per-actor model-request ceiling. Interactive hosts leave this unset. */
+  maxModelRequests?: number;
+  /** @deprecated Test/library compatibility alias; hosts should use maxModelRequests. */
+  maxSteps?: number;
   maxContextChars: number;
   maxOutputChars: number;
   commandTimeoutMs: number;
@@ -779,7 +777,8 @@ export class AgentRuntime {
     return options.orchestrationEnabled !== false || Boolean(state.taskGraph && state.taskGraph.status !== "completed") ||
       (this.dependencies.getOutstandingSubagents?.().length ?? 0) > 0;
   }
-  private remainingRequests = Infinity;
+  private requestLimit: number | undefined;
+  private modelRequestsUsed = 0;
   private retryContext?: { state: SessionState; turnId: string };
   private readonly requestPrefixTracker = new RequestPrefixTracker();
   constructor(private readonly dependencies: AgentRuntimeDependencies) {
@@ -791,7 +790,8 @@ export class AgentRuntime {
       get name() { return provider.name; },
       get model() { return provider.model; },
       complete: async (request) => {
-        if (this.remainingRequests <= 0) throw new TaskBudgetExceeded("actor step limit reached");
+        if (this.requestLimit !== undefined && this.modelRequestsUsed >= this.requestLimit)
+          throw new TaskBudgetExceeded("actor model-request limit reached");
         const limits = dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
         const capacity = dependencies.contextManager.tokenCapacity;
         const effortReserve = request.thinkingEffort === undefined
@@ -800,7 +800,7 @@ export class AgentRuntime {
         const sent = budgetedRequest({ ...request,
           outputReserveTokens: request.outputReserveTokens ?? effortReserve }, capacity,
           dependencies.contextManager.estimateRequestTokens);
-        this.remainingRequests -= 1; // Logical model step, not physical API attempts.
+        this.modelRequestsUsed += 1; // Logical model request, not physical transport retries.
         let actualRequest = sent;
         const response = await completeWithApiRetries(provider, sent, {
           limits,
@@ -873,7 +873,7 @@ export class AgentRuntime {
     state: SessionState;
     turnId: string;
     userInput: string;
-    remainingModelRequests: number;
+    remainingModelRequests?: number;
     signal?: AbortSignal;
   }): Promise<number> {
     const runReviewSession = this.dependencies.runReviewSession;
@@ -891,6 +891,16 @@ export class AgentRuntime {
       incidentId: pending?.incidentId ?? unfinished?.incidentId,
     });
     return result.requests;
+  }
+
+  private requestLimitReached(): boolean {
+    return this.requestLimit !== undefined && this.modelRequestsUsed >= this.requestLimit;
+  }
+
+  private remainingRequestAllowance(): number | undefined {
+    return this.requestLimit === undefined
+      ? undefined
+      : Math.max(0, this.requestLimit - this.modelRequestsUsed);
   }
 
   private observeProviderContext(input: {
@@ -1053,7 +1063,15 @@ export class AgentRuntime {
     input: string | AgentUserInput,
     options: AgentRunOptions
   ): Promise<AgentRunResult> {
-    this.remainingRequests = options.maxSteps;
+    if (options.maxModelRequests !== undefined && options.maxSteps !== undefined &&
+        options.maxModelRequests !== options.maxSteps)
+      throw new RangeError("maxModelRequests and the legacy maxSteps alias must match");
+    const configuredRequestLimit = options.maxModelRequests ?? options.maxSteps;
+    if (configuredRequestLimit !== undefined &&
+        (!Number.isSafeInteger(configuredRequestLimit) || configuredRequestLimit < 1))
+      throw new RangeError("maxModelRequests must be a positive safe integer when provided");
+    this.requestLimit = configuredRequestLimit;
+    this.modelRequestsUsed = 0;
     this.dependencies.contextManager.configureTokenBudget(
       effectiveContextWindow(state.provider, state.model, options.maxContextTokens),
       this.dependencies.limits,
@@ -1183,15 +1201,15 @@ export class AgentRuntime {
             reservedTokens: optionalMemoryTokenBudget(options.maxContextChars, options.maxContextTokens,
               this.dependencies.limits, true) };
           const compacted = await this.maintainContext(state, turnId, turnImages, memoryContext,
-            options, nextRequest, false, options.maxSteps);
+            options, nextRequest, false, this.remainingRequestAllowance());
           phaseCompactionRequestsUsed += compacted.requests;
           if (compacted.paused) return this.finish(state, turnId,
             `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History and task state are preserved.`,
             "limit_reached", phaseCompactionRequestsUsed, memoryContext, undefined, undefined,
             { code: "context_capacity_exhausted", tool: "runtime", attempts: state.compactionControl?.transaction?.attempts ?? 0, recoverable: true });
-          if (phaseCompactionRequestsUsed >= options.maxSteps) return this.finish(state, turnId,
+          if (this.requestLimitReached()) return this.finish(state, turnId,
             "The shared model-request budget was exhausted during pre-route context compaction.",
-            "limit_reached", phaseCompactionRequestsUsed, memoryContext);
+            "limit_reached", this.modelRequestsUsed, memoryContext);
         }
       }
       const backgroundCommandHandleOpenAtRoute =
@@ -1578,19 +1596,13 @@ export class AgentRuntime {
       state.progressGuard?.lastObservedResponseOrdinal ?? 0;
     const progressVerificationCommands = new Map<string, VerificationKind>();
 
-    const stepLimit = options.maxSteps;
     const toolRecovery = new ToolRecoveryBudget((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1);
     let invalidOutputAttempts = 0;
     const commandRetries = new CommandRetryTracker((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries);
     let lastContextPressureLevel: ContextPressureLevel = "normal";
-    let progressReviewModelRequestsUsed = 0;
     // Once execution becomes uncertain, this run never re-enables mutations.
     // Recovery is an explicit external repair followed by Resume.
-    for (
-      let step = 1;
-      step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed <= Math.min(stepLimit, options.maxSteps) && this.remainingRequests > 0;
-      step += 1
-    ) {
+    for (let step = 1; !this.requestLimitReached(); step += 1) {
       if (options.signal?.aborted) {
         return this.finish(
           state,
@@ -1629,23 +1641,30 @@ export class AgentRuntime {
           memoryContext,
         );
         const shared = this.dependencies.taskBudget?.snapshot();
-        const remainingModelRequests = Math.min(this.remainingRequests,
-          shared ? shared.maxRequests - shared.requests : Infinity,
-          stepLimit - phaseCompactionRequestsUsed - ((step - 1) + progressReviewModelRequestsUsed));
-        progressReviewModelRequestsUsed += await this.processProgressIntervention({
+        const sharedRemaining = shared?.maxRequests === null || shared === undefined
+          ? undefined
+          : Math.max(0, shared.maxRequests - shared.requests);
+        const localRemaining = this.remainingRequestAllowance();
+        const remainingModelRequests = localRemaining === undefined
+          ? sharedRemaining
+          : sharedRemaining === undefined
+            ? localRemaining
+            : Math.min(localRemaining, sharedRemaining);
+        const reviewRequests = await this.processProgressIntervention({
           state,
           turnId,
           userInput: memoryContext.userInput,
           remainingModelRequests,
           signal: options.signal,
         });
-        if (step + progressReviewModelRequestsUsed + phaseCompactionRequestsUsed > stepLimit) {
+        this.modelRequestsUsed += reviewRequests;
+        if (this.requestLimitReached()) {
           return this.finish(
             state,
             turnId,
             "The shared model-request budget was exhausted while reviewing stalled progress.",
             "limit_reached",
-            step - 1,
+            this.modelRequestsUsed,
             memoryContext,
           );
         }
@@ -1829,7 +1848,7 @@ export class AgentRuntime {
           { systemPrompt, runtimeContext: stepRuntimeContext, tools: ordinaryToolDefinitions,
             reservedTokens: Math.max(0, optionalAllowance - memorySelectionInfo.estimatedTokens) },
           contextUtilization >= memoryLimits.contextCompactionTriggerRatio,
-          stepLimit - step + 1 - progressReviewModelRequestsUsed - phaseCompactionRequestsUsed);
+          this.remainingRequestAllowance());
         phaseCompactionRequestsUsed += compacted.requests;
         if (compacted.paused) return this.finish(state, turnId,
           `Context paused: ${compacted.paused.reason} Required ${compacted.paused.usage} / ${compacted.paused.capacity} ${compacted.paused.unit}. History, files and pending operations are preserved. Reduce required input or use a larger supported window to resume.`,
@@ -1903,7 +1922,7 @@ export class AgentRuntime {
         actualRequest: requestInspection,
       });
       this.dependencies.onStatus?.(
-        `Step ${step}/${options.maxSteps}: requesting ${this.dependencies.provider.model}`
+        `Step ${step}${this.requestLimit === undefined ? "" : `/${this.requestLimit}`}: requesting ${this.dependencies.provider.model}`
       );
 
       let response;
@@ -2000,7 +2019,7 @@ export class AgentRuntime {
           turnId,
           interrupted ? "The task was interrupted by the user." : `Model request failed: ${message}`,
           interrupted ? "interrupted" : error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
-          error instanceof TaskBudgetExceeded ? options.maxSteps - this.remainingRequests : step,
+          error instanceof TaskBudgetExceeded ? this.modelRequestsUsed : step,
           memoryContext,
           undefined,
           undefined,
@@ -2188,10 +2207,6 @@ export class AgentRuntime {
         // Finalization seals user steering exactly once. Reviewer advice, when
         // present, was already injected before this model request.
         if (await this.takeAndApplySteering(state, turnId, "before_final", turnImages, true, memoryContext)) continue;
-        const unresolvedVerification = unresolvedCommands(state).filter(command => Boolean(command.verificationKind));
-        if (agentIdentity.role === "main_agent" && unresolvedVerification.length) text +=
-          `\n\nVerification note: ${unresolvedVerification.length} recorded verification target(s) still have a failed or uncertain terminal outcome. ` +
-          "Do not describe those targets as passed without a new same-target check.";
         this.dependencies.onText?.(text);
         const reason = state.taskGraph?.status === "terminal_blocked"
           ? "blocked"
@@ -2677,14 +2692,6 @@ export class AgentRuntime {
           submittedTaskReport = undefined;
         }
 
-        if (result.ok && result.memoryMutation && this.dependencies.validateMemorySources) {
-          try {
-            this.dependencies.validateMemorySources(state, turnId, memoryContext.userInput, result.memoryMutation);
-          } catch (error) {
-            result = { ok: false, summary: "Memory source validation failed; nothing was staged.",
-              failure: protocolToolFailure("memory_source_invalid", error instanceof Error ? error.message : String(error)) };
-          }
-        }
         result = normalizeToolFailure(result);
         if (toolName === "write_memory" && !result.ok && result.failure) {
           // Long-term memory is a best-effort projection of completed work. A
@@ -2998,15 +3005,18 @@ export class AgentRuntime {
         : "completion_protocol";
       return this.finish(state, turnId,
         `Task paused at the model-request limit with ${obligations.length} unresolved completion obligation(s).`,
-        "paused", options.maxSteps - this.remainingRequests, memoryContext, undefined, undefined, undefined,
+        "paused", this.modelRequestsUsed, memoryContext, undefined, undefined, undefined,
         { cause, resumable: true, requiredAction: obligations.map(item => item.requiredAction).join(" "), obligations });
+    }
+    if (this.requestLimit === undefined) {
+      throw new Error("Agent loop ended without completion or a configured model-request limit");
     }
     return this.finish(
       state,
       turnId,
-      `Reached the hard limit of ${options.maxSteps} model requests before the task could be confirmed complete.`,
+      `Reached the hard limit of ${this.requestLimit} model requests before the task could be confirmed complete.`,
       "limit_reached",
-      options.maxSteps - this.remainingRequests,
+      this.modelRequestsUsed,
       memoryContext,
     );
     } catch (error) {
@@ -3021,7 +3031,7 @@ export class AgentRuntime {
           ? "Context paused: the required request exceeds the model capacity. History and pending work are preserved; reduce required input or use a supported larger window before resuming."
           : `Agent run failed: ${message}`,
         reason: interrupted ? "interrupted" : capacityExhausted || error instanceof TaskBudgetExceeded ? "limit_reached" : "failed",
-        steps: error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined ? options.maxSteps - this.remainingRequests : protocolFailure?.steps ?? 0,
+        steps: error instanceof TaskBudgetExceeded || error instanceof CommandEnvironmentQuarantined ? this.modelRequestsUsed : protocolFailure?.steps ?? 0,
         threadId: state.threadId,
         turnId,
         ...(controlFailure ? { failure: controlFailure } : {}),
@@ -3058,7 +3068,7 @@ export class AgentRuntime {
 
   private async maintainContext(state: SessionState, turnId: string, images: ImageAttachment[],
     memoryContext: { userInput: string }, options: AgentRunOptions, nextRequest: NormalRequestEnvelope,
-    required: boolean, maxRequests: number, forceRecovery = false): Promise<CompactionResult> {
+    required: boolean, maxRequests?: number, forceRecovery = false): Promise<CompactionResult> {
     const compactTool = this.dependencies.toolCatalog.tools
       .find((tool) => tool.name === "compact_context");
     const result = await runCompactionTransaction({ state, manager: this.dependencies.contextManager, turnId,
@@ -3313,12 +3323,10 @@ export class AgentRuntime {
     ) {
       try {
         const committed = await this.dependencies.commitMemoryMutations({
-          sourceState: state,
           workspaceRoot: state.workspaceRoot,
           threadId: state.threadId,
           turnId,
           outcome: reason,
-          userInput: memoryContext.userInput,
           mutations: memoryContext.mutations,
         });
         await this.dependencies.appendEvent({

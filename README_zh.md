@@ -72,6 +72,8 @@ easy-code --workspace "/path/to/project" --mode code -y run "修复登录失败�
 easy-code --workspace "/path/to/project" --resume <thread-id>
 ```
 
+交互式 CLI 和网页任务不设置固定的模型请求次数上限。对于无人值守的单次运行，可在 `run` 后添加 `--max-model-requests N`，统一限制主 Agent、子 Agent、Reviewer、审批和上下文压缩产生的模型请求总数。
+
 `-y` 启用独立的命令审批 Agent，**不是**授予完全访问权限，也不保证整个过程无需用户决策。
 
 ## 网页使用方法

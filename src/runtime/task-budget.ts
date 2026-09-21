@@ -5,7 +5,7 @@ import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const snapshotSchema = z.object({ requests: count, tokens: count, reservedTokens: count,
-  heldRequests: count.optional(), heldTokens: count.optional(), maxRequests: count.min(1), maxTokens: count }).strict();
+  heldRequests: count.optional(), heldTokens: count.optional(), maxRequests: count.min(1).nullable(), maxTokens: count }).strict();
 export type TaskBudgetSnapshot = z.infer<typeof snapshotSchema>;
 
 export class TaskBudgetExceeded extends Error {
@@ -22,7 +22,7 @@ export class TaskBudget {
   private reserved = 0;
   private heldRequests = 0;
   private heldTokens = 0;
-  constructor(readonly maxRequests: number, readonly maxTokens: number,
+  constructor(readonly maxRequests: number | null, readonly maxTokens: number,
     private readonly persist?: (snapshot: TaskBudgetSnapshot) => void, restored?: TaskBudgetSnapshot) {
     if (restored) {
       this.requests = restored.requests;
@@ -32,9 +32,15 @@ export class TaskBudget {
     snapshotSchema.parse(this.snapshot());
     this.persist?.(this.snapshot());
   }
-  static restore(value: unknown, persist?: (snapshot: TaskBudgetSnapshot) => void): TaskBudget {
+  static restore(value: unknown, persist?: (snapshot: TaskBudgetSnapshot) => void,
+    overrides?: { maxRequests?: number | null; maxTokens?: number }): TaskBudget {
     const saved = snapshotSchema.parse(value);
-    return new TaskBudget(saved.maxRequests, saved.maxTokens, persist, saved);
+    return new TaskBudget(
+      overrides && "maxRequests" in overrides ? overrides.maxRequests ?? null : saved.maxRequests,
+      overrides?.maxTokens ?? saved.maxTokens,
+      persist,
+      saved,
+    );
   }
   snapshot() { return { requests: this.requests, tokens: this.tokens, reservedTokens: this.reserved,
     ...(this.heldRequests ? { heldRequests: this.heldRequests, heldTokens: this.heldTokens } : {}),
@@ -44,8 +50,8 @@ export class TaskBudget {
   hold(count: number, tokensPerRequest: number) {
     if (!Number.isSafeInteger(count) || count < 1 || !Number.isSafeInteger(tokensPerRequest) || tokensPerRequest < 0)
       throw new Error("Invalid task budget hold");
-    if (this.requests + this.heldRequests + count > this.maxRequests || this.maxTokens > 0 &&
-        this.tokens + this.reserved + this.heldTokens + count * tokensPerRequest > this.maxTokens)
+    if ((this.maxRequests !== null && this.requests + this.heldRequests + count > this.maxRequests) ||
+        (this.maxTokens > 0 && this.tokens + this.reserved + this.heldTokens + count * tokensPerRequest > this.maxTokens))
       throw new TaskBudgetExceeded("cannot reserve independent closing summaries");
     let remaining = count;
     this.heldRequests += count; this.heldTokens += count * tokensPerRequest;
@@ -66,7 +72,8 @@ export class TaskBudget {
     // Reservation is an estimate, not a server-enforced ceiling. Settle actual usage.
     const reservation = estimate(request.messages, request.tools) + (request.outputReserveTokens ??
       responseTokenReserve(DEFAULT_RUNTIME_LIMITS, request.thinkingEffort ?? "none"));
-    if (this.requests + this.heldRequests >= this.maxRequests) throw new TaskBudgetExceeded("shared model-request limit reached");
+    if (this.maxRequests !== null && this.requests + this.heldRequests >= this.maxRequests)
+      throw new TaskBudgetExceeded("shared model-request limit reached");
     if (this.maxTokens > 0 && this.tokens + this.reserved + this.heldTokens + reservation > this.maxTokens) {
       throw new TaskBudgetExceeded("next request does not fit the shared token budget");
     }

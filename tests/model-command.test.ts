@@ -590,8 +590,8 @@ describe("/model", () => {
       assert.match(fixture.output(), /"provider": "deepseek"/u);
       assert.match(fixture.output(), /"thinkingEffort": "high"/u);
       assert.match(fixture.output(), /"thinkingApplied": false/u);
-      assert.match(fixture.output(), /"steps":/u);
-      assert.match(fixture.output(), /"stepLimit": 80/u);
+      assert.doesNotMatch(fixture.output(), /"steps":/u);
+      assert.match(fixture.output(), /"modelRequestLimit": null/u);
       assert.match(fixture.output(), /"contextCharLimit": 250000/u);
       assert.match(fixture.output(), /"configuredBudgetChars": 250000/u);
       assert.match(fixture.output(), /"budgetChars": 250000/u);
@@ -645,7 +645,7 @@ describe("/model", () => {
       assert.match(fixture.output(), /"model": "qwen3\.7-max"/u);
       assert.match(fixture.output(), /"thinkingEffort": "medium"/u);
       assert.match(fixture.output(), /"thinkingApplied": false/u);
-      assert.match(fixture.output(), /"stepLimit": 40/u);
+      assert.match(fixture.output(), /"modelRequestLimit": null/u);
       assert.doesNotMatch(fixture.output(), /Model switched to DeepSeek/u);
     } finally {
       fixture.close();

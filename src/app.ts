@@ -187,6 +187,8 @@ export interface EasyCodeAppOptions {
   approvalPolicy?: ApprovalPolicyName;
   thinkingEffort?: ThinkingEffort;
   assumeYes?: boolean;
+  /** Optional aggregate model-request limit for one non-interactive task. */
+  maxModelRequests?: number;
   resumeThreadId?: string;
   startupInteraction?: "none" | "select-model" | "ensure-api-key";
   /** Run the retained-UI sandbox readiness guide before model selection. */
@@ -572,6 +574,7 @@ export class EasyCodeApp {
     private readonly terminal: AppInteractionPort,
     private readonly keepInteractionOpen: boolean,
     private readonly assumeYes: boolean,
+    private readonly maxModelRequests: number | undefined,
     private readonly trustedOuterSandbox: "harbor" | undefined,
     private readonly credentialStore: ApiKeyCredentialStore | undefined,
     private readonly startupInteraction: "none" | "select-model" | "ensure-api-key",
@@ -664,6 +667,10 @@ export class EasyCodeApp {
   }
 
   static async create(options: EasyCodeAppOptions = {}): Promise<EasyCodeApp> {
+    if (options.maxModelRequests !== undefined &&
+        (!Number.isSafeInteger(options.maxModelRequests) || options.maxModelRequests < 1)) {
+      throw new RangeError("maxModelRequests must be a positive safe integer when provided");
+    }
     // Validate the benchmark-only outer boundary before creating a Thread or
     // touching workspace state. Invalid host claims fail without side effects.
     const trustedOuterSandbox = resolveHarborOuterSandbox();
@@ -849,6 +856,7 @@ export class EasyCodeApp {
         terminal,
         options.keepInteractionOpen ?? false,
         options.assumeYes ?? false,
+        options.maxModelRequests,
         trustedOuterSandbox,
         credentialStore,
         options.startupInteraction ?? "none",
@@ -1846,7 +1854,7 @@ export class EasyCodeApp {
       });
       const runtime = await this.createRuntime(presentReasoning, steeringNotifier);
       const result = await runtime.run(this.state, { text: userInput, images }, {
-        maxSteps: this.activeStepLimit(),
+        maxModelRequests: this.maxModelRequests,
         orchestrationEnabled: this.orchestrationEnabled(),
         isOrchestrationEnabled: () => this.orchestrationEnabled(),
         maxContextChars: this.activeContextCharLimit(),
@@ -1961,10 +1969,6 @@ export class EasyCodeApp {
         this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
       readToolEvidence: (state, id, offset, limit) =>
         this.memoryManager.evidenceStore.read(workspaceId, sharedReviewEvidenceOwner(state, id), id, offset, limit),
-      validateMemorySources: (state, turnId, userInput, mutation) => this.memoryManager.validateSources({
-        sourceState: state, workspaceId, threadId: state.threadId, turnId, userInput,
-        outcome: "success", mutations: [mutation],
-      }),
       getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
         const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
         const hits = await this.contextArtifactIndex.search(
@@ -1990,12 +1994,10 @@ export class EasyCodeApp {
       getEnvironmentFault: () => commandRuntime.environmentFault(),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
-          sourceState: input.sourceState,
           workspaceRoot: input.workspaceRoot,
           threadId: input.threadId,
           turnId: input.turnId,
           outcome: input.outcome,
-          userInput: input.userInput,
           mutations: input.mutations,
         }),
       appendEvent: async (event) => {
@@ -2632,7 +2634,7 @@ export class EasyCodeApp {
               ? promptBundleText("agents/child-resume.md")
               : promptBundleText("agents/child-start.md"),
             {
-              maxSteps: this.config.limits.steps[request.record.thinkingEffort],
+              maxModelRequests: this.maxModelRequests,
               maxContextChars: this.config.limits.maxContextChars,
               maxOutputChars: this.config.limits.maxOutputChars,
               maxContextTokens: this.config.limits.maxContextTokens || undefined,
@@ -3786,10 +3788,6 @@ export class EasyCodeApp {
     }
   }
 
-  private activeStepLimit(): number {
-    return this.config.limits.steps[this.state.thinkingEffort];
-  }
-
   private activeContextCharLimit(): number {
     return this.config.limits.maxContextChars;
   }
@@ -3848,7 +3846,12 @@ export class EasyCodeApp {
     if (!budget) {
       const saved = [...this.threadStore.journal(threadId).read()].reverse()
         .find((event) => event.type === "runtime.task_budget");
-      budget = saved ? TaskBudget.restore(saved.payload, this.persistTaskBudget(threadId)) : this.newTaskBudget(threadId);
+      budget = saved
+        ? TaskBudget.restore(saved.payload, this.persistTaskBudget(threadId), {
+            maxRequests: this.maxModelRequests ?? null,
+            maxTokens: this.config.limits.maxTaskTokens,
+          })
+        : this.newTaskBudget(threadId);
       this.taskBudgets.set(threadId, budget);
     }
     return budget;
@@ -3859,7 +3862,8 @@ export class EasyCodeApp {
   }
 
   private newTaskBudget(threadId: string): TaskBudget {
-    return new TaskBudget(this.config.limits.maxModelRequests, this.config.limits.maxTaskTokens, this.persistTaskBudget(threadId));
+    return new TaskBudget(this.maxModelRequests ?? null, this.config.limits.maxTaskTokens,
+      this.persistTaskBudget(threadId));
   }
 
   private syncWorkspaceState(): void {
@@ -4230,6 +4234,10 @@ export class EasyCodeApp {
   private printStatus(): void {
     const providerConfig = this.effectiveConfig().providers[this.state.provider];
     if (!providerConfig) throw new Error(`Provider ${this.state.provider} is not configured`);
+    const { steps: legacySteps, maxModelRequests: legacyMaxModelRequests,
+      ...activeLimits } = this.config.limits;
+    void legacySteps;
+    void legacyMaxModelRequests;
     this.terminal.write(
       `${json({
         agent: "EASY CODE",
@@ -4243,11 +4251,11 @@ export class EasyCodeApp {
           this.state.model,
           this.state.thinkingEffort,
         ),
-        limits: this.config.limits,
+        limits: activeLimits,
         orchestrationEnabled: this.orchestrationEnabled(),
         reviewerEnabled: true,
         taskBudget: this.taskBudgets.get(this.state.threadId)?.snapshot(),
-        stepLimit: this.activeStepLimit(),
+        modelRequestLimit: this.maxModelRequests ?? null,
         contextCharLimit: this.activeContextCharLimit(),
         vision: modelSupportsVision(this.state.provider, this.state.model),
         pendingImages: this.pendingImages.map((image) => image.label),
