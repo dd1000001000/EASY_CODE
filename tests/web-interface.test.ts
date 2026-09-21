@@ -66,6 +66,14 @@ describe("Web interaction host", () => {
     assert.deepEqual(host.snapshot().view.entries, []);
     host.close();
   });
+  it("keeps transient Runtime status out of browser history", () => {
+    const host = new WebInteraction();
+    host.status("Step 2: requesting model");
+    host.status("Tool: read_file");
+    host.status("Internal context maintenance completed.");
+    assert.deepEqual(host.snapshot().view.entries, []);
+    host.close();
+  });
   it("automatically approves only the current command and plan after their unattended timeout", async () => {
     const host = new WebInteraction(15);
     const request: ApprovalRequest = { id: "approval_timeout", title: "Run tool", description: "Read file",

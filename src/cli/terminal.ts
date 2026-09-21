@@ -216,27 +216,16 @@ function classifyStatus(text: string): StatusPresentation {
     return { destination: "live", kind: "step" };
   }
   if (
-    /^Auto mode is choosing how to handle this request\.\.\.$/iu.test(text) ||
-    /^Pre-route context compaction\s+\d+\/\d+:/iu.test(text) ||
-    /^Reserved (?:one correction step for required context compaction|one continuation step after required context compaction|\d+ finalization step\(s\) after memory maintenance|one final response step after the task DAG reached a terminal state)\.$/iu.test(text)
+    /^Auto mode is choosing how to handle this request\.\.\.$/iu.test(text)
   ) {
     return { destination: "live", kind: "status" };
   }
 
   if (
-    /^Context utilization is\b/iu.test(text) ||
-    /^Ignored\b/iu.test(text) ||
-    /^The (?:model|child) (?:did not|attempted|violated)\b/iu.test(text) ||
-    /^Model usage accounting could not be saved\b/iu.test(text) ||
-    /^Long-term memory maintenance was not saved\b/iu.test(text)
+    /^Model (?:response headers did not arrive|stream made no semantic progress)\b/iu.test(text) ||
+    /^Server rejected context capacity\b/iu.test(text)
   ) {
     return { destination: "stable", kind: "warning" };
-  }
-  if (/^(?:Context utilization returned below|Context compacted|Committed\b)/iu.test(text)) {
-    return { destination: "stable", kind: "success" };
-  }
-  if (/^Auto mode (?:review transition|selected|answered directly)\b/iu.test(text)) {
-    return { destination: "stable", kind: "info" };
   }
   if (/\b(?:error|failed|failure|fatal)\b/iu.test(text)) {
     return { destination: "stable", kind: "error" };

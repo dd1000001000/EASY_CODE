@@ -130,7 +130,7 @@ describe("background subagent approvals", () => {
     try {
       assert.equal(await harness.request(approvalRequest()), true);
       assert.equal(harness.terminal.approvalCalls, 0);
-      assert.ok(harness.terminal.infoCalls >= 1);
+      assert.equal(harness.terminal.infoCalls, 0);
 
       const different = {
         ...approvalRequest(),

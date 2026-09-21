@@ -75,18 +75,27 @@ describe("idle memory maintenance", () => {
     try {
       const search = f.manager.searchHybrid.bind(f.manager);
       const observedLimits: number[] = [];
+      const observedOptions: Array<Record<string, unknown>> = [];
       f.manager.searchHybrid = async (workspaceId, query, options = {}) => {
         observedLimits.push(typeof options === "number" ? options : options.limit ?? 0);
+        if (typeof options !== "number") observedOptions.push(options as unknown as Record<string, unknown>);
         return search(workspaceId, query, options);
       };
       const oldId = f.write("This project uses strict TypeScript.", "turn_seed");
-      f.write("This project uses ESLint and strict TypeScript.");
+      const candidateId = f.write("This project uses ESLint and strict TypeScript.");
       const provider = model(JSON.stringify({ decisions: [{ index: 0, action: "merge", memoryId: oldId,
         content: "This project uses strict TypeScript and ESLint." }] }));
       f.enqueue();
       assert.equal(await f.maintenance.processNext(f.state.threadId, f.state, provider), true);
       assert.equal(provider.calls, 1);
       assert.deepEqual(observedLimits, [2]);
+      assert.equal(observedOptions[0]?.ranking, "consolidation");
+      assert.deepEqual(observedOptions[0]?.filter, {
+        scope: "project",
+        category: "convention",
+        status: "active",
+        excludeMemoryId: candidateId,
+      });
       assert.equal(f.manager.get(projectMemoryIdFromRoot(f.root), oldId)?.status, "superseded");
       const active = f.manager.list(projectMemoryIdFromRoot(f.root));
       assert.equal(active.length, 1);

@@ -230,7 +230,11 @@ export class WebInteraction implements AppInteractionPort {
   success(text: string): void { this.append("success", text); }
   warning(text: string): void { this.append("warning", text); }
   error(text: string): void { this.append("error", text); }
-  status(text: string): void { this.append("info", text); }
+  status(_text: string): void {
+    // The browser has dedicated activity, tool, task, subagent and decision
+    // surfaces. Runtime progress text is transient implementation detail and
+    // must not become hidden history or later leak into a command panel.
+  }
   toolCompleted(toolName: string, ok: boolean, summary?: string, error?: string,
     details?: WebEntry["toolDetails"]): void {
     const text = `${ok ? "✓" : "✗"} ${toolName}${summary ? ` — ${summary}` : ""}${error ? `\n${error}` : ""}`;

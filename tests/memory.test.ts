@@ -147,6 +147,62 @@ describe("model-managed long-term memory", () => {
     }
   });
 
+  it("filters consolidation candidates before the final result limit", async () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const seedManager = new MemoryManager(storage);
+      const seeded = seedManager.applyModelMutations({
+        ...mutationContext(),
+        mutations: [
+          { action: "remember", category: "convention",
+            content: "Strict TypeScript compilation is required for production.", reason: "Existing convention" },
+          { action: "remember", category: "environment",
+            content: "Strict TypeScript compilation is available in production.", reason: "Environment fact" },
+          { action: "remember", category: "convention",
+            content: "Production requires strict TypeScript compilation and linting.", reason: "New candidate" },
+          { action: "remember", category: "convention",
+            content: "Strict TypeScript compilation was previously required.", reason: "Inactive history" },
+        ],
+      });
+      const [expectedId, wrongCategoryId, excludedId, inactiveId] = seeded.memoryIds;
+      storage.db.prepare("UPDATE memories SET status = 'superseded' WHERE id = ?").run(inactiveId!);
+      let vectorOptions: import("../src/memory/vector-index.js").MemoryVectorSearchOptions | undefined;
+      const manager = new MemoryManager(storage, {
+        vectorIndex: {
+          async search(_workspaceId, _query, options) {
+            vectorOptions = options;
+            return [
+              { id: wrongCategoryId!, score: 1 },
+              { id: excludedId!, score: 0.99 },
+              { id: inactiveId!, score: 0.98 },
+              { id: expectedId!, score: 0.8 },
+            ];
+          },
+        },
+      });
+      const found = await manager.searchHybrid("workspace_a", "strict TypeScript production", {
+        limit: 1,
+        ranking: "consolidation",
+        filter: {
+          scope: "project",
+          category: "convention",
+          status: "active",
+          excludeMemoryId: excludedId,
+        },
+      });
+      assert.equal(vectorOptions?.limit, 20);
+      assert.equal(vectorOptions?.scope, "project");
+      assert.equal(vectorOptions?.category, "convention");
+      assert.equal(vectorOptions?.status, "active");
+      assert.equal(vectorOptions?.excludeMemoryId, excludedId);
+      assert.deepEqual(found.map((memory) => memory.id), [expectedId]);
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("stores new memory embeddings in the mutation transaction", async () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);

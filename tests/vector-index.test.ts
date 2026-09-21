@@ -46,17 +46,21 @@ function insertMemory(
     readonly content: string;
     readonly status?: string;
     readonly workspaceId?: string;
+    readonly scope?: "project" | "global";
+    readonly category?: "preference" | "convention" | "architecture" | "decision" | "environment";
   },
 ): void {
   const now = new Date().toISOString();
   storage.db.prepare(
     `INSERT INTO memories(
-       id, workspace_id, category, content, normalized_content,
+       id, workspace_id, scope, category, content, normalized_content,
        status, evidence, source_thread_id, source_turn_id, created_at, updated_at
-     ) VALUES (?, ?, 'decision', ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
   ).run(
     input.id,
     input.workspaceId ?? WORKSPACE_ID,
+    input.scope ?? "project",
+    input.category ?? "decision",
     input.content,
     input.content.toLocaleLowerCase(),
     input.status ?? "active",
@@ -114,6 +118,7 @@ describe("memory vector index", () => {
       insertMemory(storage, {
         id: "memory_ocean",
         content: "Ocean memory",
+        category: "environment",
       });
 
       const provider = new FakeEmbeddingProvider("revision-one", commonVectors);
@@ -177,6 +182,30 @@ describe("memory vector index", () => {
       // includeVectors:false behavior. The wrapper must keep vectors intact.
       const repeated = await vectors.search(WORKSPACE_ID, "ocean query", { limit: 3 });
       assert.equal(repeated[0]?.id, "memory_ocean");
+
+      const matchingMetadata = await vectors.search(WORKSPACE_ID, "ocean query", {
+        limit: 3,
+        minimumSimilarity: 0.5,
+        scope: "project",
+        category: "environment",
+        status: "active",
+      });
+      assert.equal(matchingMetadata[0]?.id, "memory_ocean");
+      assert.deepEqual(await vectors.search(WORKSPACE_ID, "ocean query", {
+        limit: 3,
+        minimumSimilarity: 0.5,
+        scope: "project",
+        category: "decision",
+        status: "active",
+      }), []);
+      assert.deepEqual(await vectors.search(WORKSPACE_ID, "ocean query", {
+        limit: 3,
+        minimumSimilarity: 0.5,
+        scope: "project",
+        category: "environment",
+        status: "active",
+        excludeMemoryId: "memory_ocean",
+      }), []);
 
       storage.db.prepare("DELETE FROM memories WHERE id = ?").run("memory_ocean");
       assert.equal(

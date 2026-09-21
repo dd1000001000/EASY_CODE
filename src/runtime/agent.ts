@@ -146,12 +146,6 @@ function renderRuntimePrompt(
   return loadPromptBundleCatalog().render(path, values).trimEnd();
 }
 
-function contextUtilizationPercent(utilization: number): string {
-  // Never round a lower pressure band up to the next threshold in status text.
-  // For example, 89.99% must remain visibly below the 90% force boundary.
-  return (Math.floor(Math.max(0, utilization) * 1_000) / 10).toFixed(1);
-}
-
 function contextCapacityFailure(error: unknown, state: Readonly<SessionState>): AgentRunResult["failure"] {
   if (error instanceof CommandEnvironmentQuarantined) return { code: error.code, tool: "runtime", attempts: 0, recoverable: true };
   if (error instanceof TaskBudgetExceeded) return { code: "task_budget_exhausted", tool: "runtime", attempts: 0, recoverable: true };
@@ -1167,7 +1161,6 @@ export class AgentRuntime {
     }
     let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
     let autoReason = "";
-    let contextLayerFailureReported = false;
     if (state.mode === "auto" && options.modeOverride) {
       autoReason = options.modeOverride === "plan"
         ? "The user requested a revision of the pending plan."
@@ -1179,9 +1172,6 @@ export class AgentRuntime {
         phase: "completed",
         payload: { mode: options.modeOverride, reason: autoReason },
       });
-      this.dependencies.onStatus?.(
-        `Auto mode review transition: ${options.modeOverride} — ${autoReason}`,
-      );
     } else if (state.mode === "auto") {
       const routingPressure = this.dependencies.contextManager.inspect(state, options.maxContextChars).utilization;
       if (
@@ -1242,9 +1232,6 @@ export class AgentRuntime {
           phase: "completed",
           payload: fixedSelection,
         });
-        this.dependencies.onStatus?.(
-          `Auto mode selected ${fixedSelection.mode} — ${fixedSelection.reason}`,
-        );
       } else {
         let routeResolved = false;
         while (!routeResolved) {
@@ -1304,14 +1291,9 @@ export class AgentRuntime {
                   memoryContext.approvedPlanReview,
                   derived,
                 );
-              } catch (error) {
-                if (!contextLayerFailureReported) {
-                  contextLayerFailureReported = true;
-                  const detail = error instanceof Error ? error.message : String(error);
-                  this.dependencies.onStatus?.(
-                    `Layered context index is unavailable (${detail}); continuing with the current context.`,
-                  );
-                }
+              } catch {
+                // Layered retrieval is an internal optimization; the current
+                // durable context remains authoritative when it is unavailable.
               }
             }
             // Direct answers must inherit the same base security contract and
@@ -1372,14 +1354,9 @@ export class AgentRuntime {
                   derived,
                 );
                 controllerPolicy = await buildControllerPolicy(routeLayeredContext);
-              } catch (error) {
-                if (!contextLayerFailureReported) {
-                  contextLayerFailureReported = true;
-                  const detail = error instanceof Error ? error.message : String(error);
-                  this.dependencies.onStatus?.(
-                    `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
-                  );
-                }
+              } catch {
+                // Fall back to the pinned checkpoint without surfacing an
+                // implementation detail in the conversation.
               }
             }
             routed = await this.runProviderAttempt(
@@ -1454,8 +1431,9 @@ export class AgentRuntime {
                 this.dependencies.onThreadTitleClaimed?.(decision.threadTitle);
               }
             }
-            catch (error) {
-              this.dependencies.onStatus?.(`Thread naming was skipped: ${error instanceof Error ? error.message : String(error)}`);
+            catch {
+              // Automatic naming is best-effort and must not add noise to the
+              // user's response when the title store is unavailable.
             }
           }
           if (await this.takeAndApplySteering(
@@ -1486,9 +1464,6 @@ export class AgentRuntime {
               phase: "completed",
               payload: { attempts: decision.attempts.length },
             });
-            this.dependencies.onStatus?.(
-              "Auto mode answered directly without starting a second model request.",
-            );
             const directAssistant: Extract<ChatMessage, { role: "assistant" }> = {
               role: "assistant",
               content: decision.content,
@@ -1539,9 +1514,6 @@ export class AgentRuntime {
             phase: "completed",
             payload: { mode: decision.mode, reason: decision.reason },
           });
-          this.dependencies.onStatus?.(
-            `Auto mode selected ${decision.mode} — ${decision.reason}`,
-          );
           routeResolved = true;
         }
       }
@@ -1599,7 +1571,6 @@ export class AgentRuntime {
     const toolRecovery = new ToolRecoveryBudget((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).modelContentRetries + 1);
     let invalidOutputAttempts = 0;
     const commandRetries = new CommandRetryTracker((this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).sandboxInitializationRetries);
-    let lastContextPressureLevel: ContextPressureLevel = "normal";
     // Once execution becomes uncertain, this run never re-enables mutations.
     // Recovery is an explicit external repair followed by Resume.
     for (let step = 1; !this.requestLimitReached(); step += 1) {
@@ -1786,14 +1757,9 @@ export class AgentRuntime {
             derived,
           );
           retrievalContextChanged = true;
-        } catch (error) {
-          if (!contextLayerFailureReported) {
-            contextLayerFailureReported = true;
-            const detail = error instanceof Error ? error.message : String(error);
-            this.dependencies.onStatus?.(
-              `Layered context retrieval is unavailable (${detail}); continuing with the Working Checkpoint.`,
-            );
-          }
+        } catch {
+          // Continue with the pinned checkpoint. Retrieval diagnostics belong
+          // in durable internals, not the user-visible activity stream.
         }
       }
 
@@ -1858,27 +1824,6 @@ export class AgentRuntime {
           step -= 1;
           continue;
         }
-      }
-      if (contextPressure !== lastContextPressureLevel) {
-        const percent = contextUtilizationPercent(contextUtilization);
-        if (contextPressure === "normal") {
-          this.dependencies.onStatus?.(
-            `Context utilization returned below 60% (${percent}%).`,
-          );
-        } else if (contextPressure === "suggest") {
-          this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; Runtime will maintain context at complete tool-exchange boundaries.`,
-          );
-        } else if (contextPressure === "require") {
-          this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; Runtime is reclaiming context before more work.`,
-          );
-        } else {
-          this.dependencies.onStatus?.(
-            `Context utilization is ${percent}%; Runtime is checking local recovery capacity.`,
-          );
-        }
-        lastContextPressureLevel = contextPressure;
       }
       // Remove only duplicates backed by the FINAL visible message set. Keep
       // all other messages byte-identical: no re-selection can evict their proof.
@@ -2129,18 +2074,14 @@ export class AgentRuntime {
           const text = `${formatPlanProposal(planReview.proposal)}\n\n` +
             runtimePromptText("runtime/plan-waiting-review.md");
           this.dependencies.onText?.(text);
-          const prefix = state.mode === "auto" && autoReason
-            ? `Auto decision: ${autoReason}\n\n`
-            : "";
           return this.finish(
-            state, turnId, `${prefix}${text}`, "planned", step, memoryContext,
+            state, turnId, text, "planned", step, memoryContext,
             planReview.proposal,
           );
         }
         if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
           const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
           if (collected > 0) {
-            this.dependencies.onStatus?.(`Runtime collected ${collected} terminal child result(s); returning them to the main agent.`);
             continue;
           }
         }
@@ -2172,7 +2113,6 @@ export class AgentRuntime {
             state.messages.push(feedback);
             await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
               type: "message.user.synthetic", phase: "completed", payload: feedback });
-            this.dependencies.onStatus?.(`Completion deferred: ${obligations.length} Runtime obligation(s) remain.`);
             continue;
           }
           return this.finish(state, turnId,
@@ -2211,8 +2151,7 @@ export class AgentRuntime {
         const reason = state.taskGraph?.status === "terminal_blocked"
           ? "blocked"
           : "success";
-        const prefix = state.mode === "auto" && autoReason ? `Auto decision: ${autoReason}\n\n` : "";
-        return this.finish(state, turnId, `${prefix}${text}`, reason, step, memoryContext);
+        return this.finish(state, turnId, text, reason, step, memoryContext);
       }
 
       const compactContextIsExclusive =
@@ -2731,7 +2670,8 @@ export class AgentRuntime {
           try {
             result = { ...result, evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result) };
           } catch {
-            this.dependencies.onStatus?.("Full tool evidence was not archived; the bounded journal result remains available.");
+            // The bounded journal result remains authoritative. Evidence
+            // archival is internal bookkeeping and should fail silently.
           }
         }
         let projectionIntent: string | undefined;
@@ -2961,13 +2901,10 @@ export class AgentRuntime {
           `${formatPlanProposal(proposedPlan)}\n\n` +
           runtimePromptText("runtime/plan-waiting-review.md");
         this.dependencies.onText?.(text);
-        const prefix = state.mode === "auto" && autoReason
-          ? `Auto decision: ${autoReason}\n\n`
-          : "";
         return this.finish(
           state,
           turnId,
-          `${prefix}${text}`,
+          text,
           "planned",
           step,
           memoryContext,
@@ -3085,7 +3022,6 @@ export class AgentRuntime {
         this.observeProviderContext({ state, turnId, purpose: "context_compaction", attempt, messages,
           tools, enforcedPressure: required ? "require" : "suggest",
           enforcedUtilization: inspection.utilization, maxContextChars: options.maxContextChars, actualRequest: inspection });
-        this.dependencies.onStatus?.("Context maintenance: complete response, local summary projection; length overflow needs no model retry.");
         const attempted = await this.runProviderAttempt(options.signal, (signal) => this.withModelRequestActivity(
           "Summarizing older exchanges", () => this.dependencies.provider.complete({ messages,
             tools, signal, thinkingEffort: "none", responseMode: "stream",
@@ -3106,10 +3042,6 @@ export class AgentRuntime {
         await this.takeAndApplySteering(state, turnId, "after_model", images, false, memoryContext);
       },
     });
-    if (result.committed) this.dependencies.onStatus?.(
-      state.workingSummary.includes('"mode":"minimal_rebase"')
-        ? "Context recovery: a complete exchange (including thinking) was archived. Continuing the same task from pinned state and Journal references; budgets and pending operations are unchanged."
-        : "Context maintenance completed: bounded history and tool references retained; raw Journal remains available.");
     return result;
   }
 
@@ -3198,11 +3130,9 @@ export class AgentRuntime {
     };
     try {
       await this.dependencies.onModelUsage(record);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.dependencies.onStatus?.(
-        `Model usage accounting could not be saved: ${message}`,
-      );
+    } catch {
+      // Usage accounting is internal telemetry and must not alter or annotate
+      // the user-visible result.
     }
   }
 
@@ -3336,9 +3266,6 @@ export class AgentRuntime {
           phase: "completed",
           payload: committed,
         }).catch(() => undefined);
-        this.dependencies.onStatus?.(
-          `Committed ${committed.applied} long-term memory change(s).`,
-        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await this.dependencies.appendEvent({
@@ -3348,7 +3275,6 @@ export class AgentRuntime {
           phase: "failed",
           payload: { message },
         }).catch(() => undefined);
-        this.dependencies.onStatus?.(`Long-term memory maintenance was not saved: ${message}`);
       }
     } else if (memoryContext.mutations.length > 0) {
       await this.dependencies.appendEvent({
@@ -3363,11 +3289,9 @@ export class AgentRuntime {
     if (this.dependencies.checkpointContext) {
       try {
         await this.dependencies.checkpointContext(state);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.dependencies.onStatus?.(
-          `Incremental context checkpoint was not updated (${message}); the Thread journal remains authoritative.`,
-        );
+      } catch {
+        // The durable Thread journal remains authoritative. A best-effort
+        // projection failure is not a user-facing task failure.
       }
     }
     return result;

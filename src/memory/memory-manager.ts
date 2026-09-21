@@ -29,6 +29,15 @@ export interface MemorySearchOptions {
   readonly limit?: number;
   /** Include inactive audit-history rows. Ordinary retrieval stays active-only. */
   readonly includeInactive?: boolean;
+  /** Ordinary recall favors fresh memories; consolidation ranks by similarity alone. */
+  readonly ranking?: "recall" | "consolidation";
+  /** Apply authoritative memory metadata filters before truncating candidates. */
+  readonly filter?: Readonly<{
+    scope?: LongTermMemoryScope;
+    category?: LongTermMemory["category"];
+    status?: LongTermMemory["status"];
+    excludeMemoryId?: string;
+  }>;
 }
 
 export const GLOBAL_MEMORY_WORKSPACE_ID = "memory_global";
@@ -475,6 +484,7 @@ export class MemoryManager {
     const resolvedOptions = typeof options === "number" ? { limit: options } : options;
     const limit = safeLimit(resolvedOptions.limit, 6, 50);
     const includeInactive = resolvedOptions.includeInactive === true;
+    const ranking = resolvedOptions.ranking ?? "recall";
     const boundedQuery = query.slice(0, MAX_MEMORY_SEARCH_CHARS);
     const candidateLimit = Math.min(50, Math.max(limit * 4, 20));
     const lexical = this.searchLexical(
@@ -483,6 +493,8 @@ export class MemoryManager {
       {
         limit: candidateLimit,
         includeInactive,
+        ranking,
+        filter: resolvedOptions.filter,
       },
     );
 
@@ -499,6 +511,10 @@ export class MemoryManager {
         // The authoritative status filter below excludes expired and
         // superseded memories unless the caller explicitly requests them.
         includeInactive: true,
+        scope: resolvedOptions.filter?.scope,
+        category: resolvedOptions.filter?.category,
+        status: resolvedOptions.filter?.status,
+        excludeMemoryId: resolvedOptions.filter?.excludeMemoryId,
       });
     } catch (error) {
       this.reportVectorError(error);
@@ -520,7 +536,8 @@ export class MemoryManager {
       const memory = this.get(workspaceId, hit.id);
       if (
         !memory ||
-        (!includeInactive && memory.status !== "active" && memory.status !== "needs_verification")
+        (!includeInactive && memory.status !== "active" && memory.status !== "needs_verification") ||
+        !this.matchesSearchFilter(memory, resolvedOptions.filter)
       ) {
         continue;
       }
@@ -542,11 +559,19 @@ export class MemoryManager {
         const score =
           (candidate.semanticScore ?? 0) * 0.76 +
           lexicalScore * 0.24;
-        return { ...candidate, score: score * this.freshness(candidate.memory) };
+        return {
+          ...candidate,
+          score: ranking === "consolidation"
+            ? score
+            : score * this.freshness(candidate.memory),
+        };
       })
       .sort((left, right) =>
         right.score - left.score ||
-        right.memory.updatedAt.localeCompare(left.memory.updatedAt),
+        (ranking === "consolidation"
+          ? left.memory.createdAt.localeCompare(right.memory.createdAt) ||
+            left.memory.id.localeCompare(right.memory.id)
+          : right.memory.updatedAt.localeCompare(left.memory.updatedAt)),
       )
       .map((candidate) => candidate.memory);
     const selected = this.currentCandidates(ranked, limit);
@@ -575,20 +600,45 @@ export class MemoryManager {
     const resolvedOptions = typeof options === "number" ? { limit: options } : options;
     const limit = safeLimit(resolvedOptions.limit, 6, 50);
     const includeInactive = resolvedOptions.includeInactive === true;
+    const ranking = resolvedOptions.ranking ?? "recall";
     const boundedQuery = query.slice(0, MAX_MEMORY_SEARCH_CHARS);
     const candidateRows = new Map<string, MemoryRow>();
     const expression = ftsExpression(boundedQuery);
+    const filter = resolvedOptions.filter;
+    const sqlFilter = (alias: string): { clause: string; values: unknown[] } => {
+      const clauses: string[] = [];
+      const values: unknown[] = [];
+      if (filter?.scope) {
+        clauses.push(`AND ${alias}scope = ?`);
+        values.push(filter.scope);
+      }
+      if (filter?.category) {
+        clauses.push(`AND ${alias}category = ?`);
+        values.push(filter.category);
+      }
+      if (filter?.status) {
+        clauses.push(`AND ${alias}status = ?`);
+        values.push(filter.status);
+      }
+      if (filter?.excludeMemoryId) {
+        clauses.push(`AND ${alias}id <> ?`);
+        values.push(filter.excludeMemoryId);
+      }
+      return { clause: clauses.join("\n                "), values };
+    };
 
     if (expression) {
       try {
+        const ftsFilter = sqlFilter("m.");
         const rows = this.storage.db
-          .prepare<[string, string, number, number], MemoryRow>(
+          .prepare<unknown[], MemoryRow>(
             `SELECT m.*
                FROM memories_fts
                JOIN memories AS m ON m.rowid = memories_fts.rowid
               WHERE memories_fts MATCH ?
                 AND m.workspace_id = ?
                 AND (? = 1 OR m.status IN ('active', 'needs_verification'))
+                ${ftsFilter.clause}
               ORDER BY bm25(memories_fts)
               LIMIT ?`,
           )
@@ -596,6 +646,7 @@ export class MemoryManager {
             expression,
             workspaceId,
             includeInactive ? 1 : 0,
+            ...ftsFilter.values,
             Math.max(limit * 4, 20),
           );
         for (const row of rows) candidateRows.set(row.id, row);
@@ -605,15 +656,17 @@ export class MemoryManager {
       }
     }
 
+    const fallbackFilter = sqlFilter("");
     const fallbackRows = this.storage.db
-      .prepare<[string, number], MemoryRow>(
+      .prepare<unknown[], MemoryRow>(
         `SELECT * FROM memories
           WHERE workspace_id = ?
             AND (? = 1 OR status IN ('active', 'needs_verification'))
+            ${fallbackFilter.clause}
           ORDER BY updated_at DESC
           LIMIT 200`,
       )
-      .all(workspaceId, includeInactive ? 1 : 0);
+      .all(workspaceId, includeInactive ? 1 : 0, ...fallbackFilter.values);
     for (const row of fallbackRows) candidateRows.set(row.id, row);
 
     const normalizedQuery = normalizeContent(boundedQuery);
@@ -626,15 +679,31 @@ export class MemoryManager {
         for (const token of queryTokens) {
           if (content.includes(token)) relevance += 1;
         }
-        const weight = memoryFreshnessWeight(row.last_accessed_at, row.created_at,
-          memoryExpiryDays(row.scope, this.limits));
-        return { row, score: relevance * weight, relevance };
+        const score = ranking === "consolidation"
+          ? relevance
+          : relevance * memoryFreshnessWeight(row.last_accessed_at, row.created_at,
+            memoryExpiryDays(row.scope, this.limits));
+        return { row, score, relevance };
       })
       .filter((candidate) => normalizedQuery.length === 0 || candidate.relevance > 0)
-      .sort((left, right) => right.score - left.score || right.row.updated_at.localeCompare(left.row.updated_at))
+      .sort((left, right) => right.score - left.score ||
+        (ranking === "consolidation"
+          ? left.row.created_at.localeCompare(right.row.created_at) || left.row.id.localeCompare(right.row.id)
+          : right.row.updated_at.localeCompare(left.row.updated_at)))
       .slice(0, limit);
 
     return Object.freeze(scored.map((item) => toMemory(item.row)));
+  }
+
+  private matchesSearchFilter(
+    memory: Readonly<LongTermMemory>,
+    filter: MemorySearchOptions["filter"],
+  ): boolean {
+    return !filter ||
+      ((!filter.scope || memory.scope === filter.scope) &&
+       (!filter.category || memory.category === filter.category) &&
+       (!filter.status || memory.status === filter.status) &&
+       (!filter.excludeMemoryId || memory.id !== filter.excludeMemoryId));
   }
 
   /** Call only after the record is actually delivered to a model request or read_memory. */

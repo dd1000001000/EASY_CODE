@@ -90,7 +90,7 @@ describe("plan review terminal UI", () => {
 
     assert.deepEqual(decision, { action: "approve" });
     assert.match(terminal.transcript, /Plan: Add authentication/u);
-    assert.match(terminal.transcript, /Plan ID: .*revision 2/u);
+    assert.doesNotMatch(terminal.transcript, /Plan ID:|revision 2|Verification:|Verify login/u);
     assert.match(terminal.transcript, /1\. Yes, use Auto mode/u);
     assert.match(terminal.transcript, /2\. No, reject plan/u);
     assert.match(terminal.transcript, /type feedback to adjust/u);

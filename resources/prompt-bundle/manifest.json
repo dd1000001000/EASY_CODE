@@ -211,12 +211,12 @@
       "bytes": 163
     },
     "runtime/plan-proposal-header.md": {
-      "sha256": "sha256:bc7dc2fdfbb6f6f4f8828cf3909940f82ddf5b267169f439d11d82e1aa71c676",
-      "bytes": 74
+      "sha256": "sha256:ef95477b24acdb4d57f200301306961563131e5f3a18b9fe3088b4e6640c402b",
+      "bytes": 30
     },
     "runtime/plan-proposal-step.md": {
-      "sha256": "sha256:dc262a8617b6c01ec10ad75c866b803e83161aff4e6c1730afa8419c6dab7c14",
-      "bytes": 74
+      "sha256": "sha256:fc93ba6d604fc3ae74cabe56b5c4009e653f176cdbe799294df812d5955ea0e0",
+      "bytes": 40
     },
     "runtime/plan-rejected.md": {
       "sha256": "sha256:181b661ea849baebed552cf39471a269ff18508c0dcbe7e287e7d1f2b2bb046a",
@@ -634,5 +634,5 @@
       "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
     }
   },
-  "bundleHash": "sha256:916fdd91fb92ed22b2ac4ed22f441cb3cb5117f519ffef4c1e44cd05abddbe6e"
+  "bundleHash": "sha256:85287205618ea8e6b21f686a50e33cc312246d72189ea68b86ffbb8733a7d9fd"
 }

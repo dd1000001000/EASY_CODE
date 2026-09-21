@@ -131,10 +131,17 @@ export class MemoryMaintenance {
       const matches = await Promise.all(candidates.map(async (candidate) => {
         const owner = candidate.scope === "global" ? GLOBAL_MEMORY_WORKSPACE_ID : this.projectId;
         const found = await this.manager.searchHybrid(owner, candidate.content,
-          { limit: this.manager.limits.memoryConsolidationMatchLimit });
-        return found.filter((item) => item.scope === candidate.scope && item.category === candidate.category &&
-          item.status === "active" && item.id !== candidate.id)
-          .map((item) => ({ id: item.id, category: item.category, content: item.content }));
+          {
+            limit: this.manager.limits.memoryConsolidationMatchLimit,
+            ranking: "consolidation",
+            filter: {
+              scope: candidate.scope,
+              category: candidate.category,
+              status: "active",
+              excludeMemoryId: candidate.id,
+            },
+          });
+        return found.map((item) => ({ id: item.id, category: item.category, content: item.content }));
       }));
       if (matches.every((items) => items.length === 0)) {
         this.complete(job.turn_id);
