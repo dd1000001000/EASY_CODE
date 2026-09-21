@@ -14,6 +14,7 @@ const SERIALIZED_WORKSPACE_TOOL_NAMES: ReadonlySet<ToolName> = new Set([
 
 interface LockWaiter {
   readonly signal: AbortSignal | undefined;
+  readonly owner: string | undefined;
   readonly resolve: (release: () => void) => void;
   readonly reject: (error: Error) => void;
   onAbort?: () => void;
@@ -29,20 +30,26 @@ export class WorkspaceMutationLockAbortError extends Error {
 }
 
 /**
- * A small Node 20-compatible FIFO mutex for operations that may modify one
- * shared workspace. Cancellation affects only callers that have not started;
- * once an operation owns the lock, its own ToolContext signal controls it and
- * the lock remains held until the operation settles.
+ * A small Node 20-compatible mutex for operations that may modify one shared
+ * workspace. Ordinary operations are FIFO. A declared service reserves the
+ * workspace for its owning agent without holding the short-operation mutex:
+ * that agent may continue to work while other agents remain excluded. A
+ * background job still holds the mutex until it settles. Cancellation affects
+ * only queued callers.
  */
 export class WorkspaceMutationLock {
   private locked = false;
+  private currentOwner: string | undefined;
+  private serviceOwner: string | undefined;
+  private serviceLeases = 0;
   private readonly waiters: LockWaiter[] = [];
 
   async runExclusive<Result>(
     operation: () => Promise<Result> | Result,
     signal?: AbortSignal,
+    owner?: string,
   ): Promise<Result> {
-    const release = await this.acquire(signal);
+    const release = await this.acquire(signal, owner);
     try {
       if (signal?.aborted) throw new WorkspaceMutationLockAbortError();
       return await operation();
@@ -52,7 +59,7 @@ export class WorkspaceMutationLock {
   }
 
   /** Acquire a lease that the caller may retain across an asynchronous operation. */
-  acquire(signal?: AbortSignal): Promise<() => void> {
+  acquire(signal?: AbortSignal, owner?: string): Promise<() => void> {
     if (signal?.aborted) {
       return Promise.reject(new WorkspaceMutationLockAbortError());
     }
@@ -60,6 +67,7 @@ export class WorkspaceMutationLock {
     return new Promise((resolve, reject) => {
       const waiter: LockWaiter = {
         signal,
+        owner,
         resolve,
         reject,
         canceled: false,
@@ -86,11 +94,36 @@ export class WorkspaceMutationLock {
     });
   }
 
+  /** Convert an acquired service start into an owner reservation. The caller
+   * must still release its short-operation lock after registering the lease. */
+  retainService(owner: string): () => void {
+    if (!this.locked || this.currentOwner !== owner ||
+      (this.serviceOwner !== undefined && this.serviceOwner !== owner)) {
+      throw new Error("Service lease requires the owning agent's acquired workspace lock");
+    }
+    this.serviceOwner = owner;
+    this.serviceLeases += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.serviceLeases -= 1;
+      if (this.serviceLeases === 0) {
+        this.serviceOwner = undefined;
+        this.dispatch();
+      }
+    };
+  }
+
   private dispatch(): void {
     if (this.locked) return;
 
     while (this.waiters.length > 0) {
-      const waiter = this.waiters.shift();
+      const index = this.serviceOwner === undefined
+        ? 0
+        : this.waiters.findIndex((candidate) => candidate.owner === this.serviceOwner);
+      if (index < 0) return;
+      const [waiter] = this.waiters.splice(index, 1);
       if (!waiter || waiter.canceled) continue;
       if (waiter.signal?.aborted) {
         waiter.canceled = true;
@@ -100,12 +133,14 @@ export class WorkspaceMutationLock {
       }
 
       this.locked = true;
+      this.currentOwner = waiter.owner;
       this.removeAbortListener(waiter);
       let released = false;
       waiter.resolve(() => {
         if (released) return;
         released = true;
         this.locked = false;
+        this.currentOwner = undefined;
         this.dispatch();
       });
       return;
@@ -122,6 +157,15 @@ export class WorkspaceMutationLock {
     waiter.signal?.removeEventListener("abort", waiter.onAbort);
     waiter.onAbort = undefined;
   }
+}
+
+function mutationOwner(context: Parameters<AgentTool["execute"]>[1]): string | undefined {
+  if (context.agentRole === "subagent" && !context.agentId) return undefined;
+  return JSON.stringify([
+    context.threadId,
+    context.agentRole ?? "main_agent",
+    context.agentId ?? "",
+  ]);
 }
 
 /**
@@ -159,6 +203,7 @@ export function wrapAgentToolsWithWorkspaceMutationLock(
         return lock.runExclusive(
           () => tool.execute(input, context),
           context.signal,
+          mutationOwner(context),
         );
       },
     };
@@ -180,9 +225,16 @@ async function runCommandStartWithLease(
   context: Parameters<AgentTool["execute"]>[1],
   lock: WorkspaceMutationLock,
 ): Promise<ToolExecutionResult> {
-  const release = await lock.acquire(context.signal);
+  const owner = mutationOwner(context);
+  const serviceRequested = input !== null && typeof input === "object" &&
+    (input as { backgroundKind?: unknown }).backgroundKind === "service";
+  if (serviceRequested && !owner) {
+    throw new Error("Service mode requires a Runtime-issued agent identity");
+  }
+  const release = await lock.acquire(context.signal, owner);
   let releaseOnCompletion = false;
   try {
+    if (context.signal?.aborted) throw new WorkspaceMutationLockAbortError();
     const result = await tool.execute(input, context);
     const data = result.data && typeof result.data === "object"
       ? result.data as { commandId?: unknown; status?: unknown }
@@ -199,8 +251,13 @@ async function runCommandStartWithLease(
       if (!settlement) {
         throw new Error("start_command returned an unknown Runtime command handle");
       }
-      releaseOnCompletion = true;
-      void settlement.then(release, release);
+      if (serviceRequested) {
+        const releaseService = lock.retainService(owner!);
+        void settlement.then(releaseService, releaseService);
+      } else {
+        releaseOnCompletion = true;
+        void settlement.then(release, release);
+      }
     }
     return result;
   } finally {

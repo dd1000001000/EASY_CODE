@@ -1161,6 +1161,79 @@ describe("thread leases", () => {
     }
   });
 
+  it("resumes older Prompt Bundle threads and binds new threads to the current bundle", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const initial = (fixture.app as unknown as { state: SessionState }).state;
+    const currentBundle = initial.promptBundle;
+    const olderBundle = {
+      ...currentBundle,
+      bundleVersion: "0.0.0",
+      bundleHash: `sha256:${"1".repeat(64)}`,
+      manifestHash: `sha256:${"2".repeat(64)}`,
+      toolCatalogHash: `sha256:${"3".repeat(64)}`,
+    };
+    const storage = createStorage(fixture.dataDir);
+    let resumed: EasyCodeApp | undefined;
+    try {
+      const threads = new ThreadStore(storage);
+      const older = threads.create({
+        threadId: "thread_older_prompt_bundle",
+        workspaceRoot: initial.workspaceRoot,
+        mode: initial.mode,
+        provider: initial.provider,
+        model: initial.model,
+        thinkingEffort: initial.thinkingEffort,
+        promptBundle: olderBundle,
+        modelRegistryHash: initial.modelRegistryHash,
+      });
+      threads.recordMessage(older.threadId, {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_retired_tool",
+          type: "function",
+          function: { name: "retired_tool", arguments: "{}" },
+        }],
+      });
+      threads.recordMessage(older.threadId, {
+        role: "tool",
+        name: "retired_tool",
+        tool_call_id: "call_retired_tool",
+        content: "Previously completed result",
+      });
+      threads.recordMessage(older.threadId, { role: "user", content: "Continue this conversation" });
+
+      await fixture.app.handleSlashCommand(`/resume ${older.threadId}`);
+      const switched = (fixture.app as unknown as { state: SessionState }).state;
+      assert.equal(switched.threadId, older.threadId);
+      assert.deepEqual(switched.promptBundle, olderBundle);
+      assert.equal(switched.messages[0]?.role, "assistant");
+      assert.equal(switched.messages[1]?.role, "tool");
+      assert.equal(switched.messages.at(-1)?.content, "Continue this conversation");
+
+      await fixture.app.handleSlashCommand("/new");
+      const fresh = (fixture.app as unknown as { state: SessionState }).state;
+      assert.notEqual(fresh.threadId, older.threadId);
+      assert.deepEqual(fresh.promptBundle, currentBundle);
+
+      fixture.app.close();
+      resumed = await EasyCodeApp.create({
+        workspaceRoot: fixture.workspace,
+        resumeThreadId: older.threadId,
+        terminal: new Terminal(new PassThrough(), new PassThrough()),
+        credentialStore: false,
+      });
+      const restored = (resumed as unknown as { state: SessionState }).state;
+      assert.equal(restored.threadId, older.threadId);
+      assert.equal(restored.messages.length, 3);
+      assert.equal(restored.messages.at(-1)?.content, "Continue this conversation");
+    } finally {
+      resumed?.close();
+      storage.close();
+      fixture.close();
+    }
+  });
+
   it("acquires before interrupted-turn repair and releases after create failure", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" });
     const setupStorage = createStorage(fixture.dataDir);

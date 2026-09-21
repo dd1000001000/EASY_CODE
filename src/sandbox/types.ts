@@ -50,6 +50,8 @@ export interface PreparedCommand {
 
 export interface SandboxExecutionRequest {
   timeoutMs?: number;
+  /** Trusted start_command service intent; never copied from a run_command argument. */
+  backgroundKind?: "job" | "service";
   commandId: string;
   command: ResolvedCommand;
   policyDecision: CommandPolicyDecision;

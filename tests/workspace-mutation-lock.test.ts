@@ -30,11 +30,11 @@ function deferred<Value>(): Deferred<Value> {
   return { promise, resolve, reject };
 }
 
-function context(signal?: AbortSignal): ToolContext {
+function context(signal?: AbortSignal, threadId = "thread_workspace_lock"): ToolContext {
   return {
     workspaceRoot: process.cwd(),
     mode: "code",
-    threadId: "thread_workspace_lock",
+    threadId,
     turnId: "turn_workspace_lock",
     approvalPolicy: "never",
     requestApproval: async () => false,
@@ -173,6 +173,118 @@ describe("WorkspaceMutationLock", () => {
     settlement.resolve();
     await mutation;
     assert.deepEqual(calls, ["start", "poll", "cancel", "create"]);
+  });
+
+  it("lets a service owner run dependent tools while other agents wait", async () => {
+    const settlement = deferred<void>();
+    const otherStarted = deferred<void>();
+    const calls: string[] = [];
+    const start = {
+      ...fakeTool("start_command", async () => ({
+        ok: true, summary: "running",
+        data: { commandId: "command_00000000-0000-4000-8000-000000000001", status: "running" },
+      })),
+      whenCommandSettled: () => settlement.promise,
+    };
+    const run = fakeTool("run_command", async () => {
+      calls.push("owner:test");
+      return result("tested");
+    });
+    const edit = fakeTool("update_file", async () => {
+      calls.push("owner:edit");
+      return result("edited");
+    });
+    const other = fakeTool("create_file", async () => {
+      calls.push("other:create");
+      otherStarted.resolve();
+      return result("created");
+    });
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock(
+      [start, run, edit, other], new WorkspaceMutationLock(),
+    );
+    await wrapped[0]!.execute({ backgroundKind: "service" }, context());
+    const blocked = wrapped[3]!.execute({}, {
+      ...context(), agentRole: "subagent", agentId: "child_one",
+    });
+    let otherRan = false;
+    void otherStarted.promise.then(() => { otherRan = true; });
+    assert.equal((await wrapped[1]!.execute({}, context())).summary, "tested");
+    assert.equal((await wrapped[2]!.execute({}, context())).summary, "edited");
+    assert.equal(otherRan, false);
+    settlement.resolve();
+    await blocked;
+    assert.deepEqual(calls, ["owner:test", "owner:edit", "other:create"]);
+  });
+
+  it("holds a service reservation until every service settles", async () => {
+    const firstSettlement = deferred<void>();
+    const secondSettlement = deferred<void>();
+    const otherStarted = deferred<void>();
+    let next = 0;
+    const start = {
+      ...fakeTool("start_command", async () => ({
+        ok: true, summary: "running",
+        data: { commandId: `command_00000000-0000-4000-8000-00000000000${++next}`, status: "running" },
+      })),
+      whenCommandSettled: (commandId: string) => commandId.endsWith("1") ? firstSettlement.promise : secondSettlement.promise,
+    };
+    const other = fakeTool("run_command", async () => {
+      otherStarted.resolve();
+      return result("other");
+    });
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock([start, other], new WorkspaceMutationLock());
+    await wrapped[0]!.execute({ backgroundKind: "service" }, context());
+    await wrapped[0]!.execute({ backgroundKind: "service" }, context());
+    const blocked = wrapped[1]!.execute({}, context(undefined, "another_thread"));
+    let otherRan = false;
+    void otherStarted.promise.then(() => { otherRan = true; });
+    firstSettlement.resolve();
+    await firstSettlement.promise;
+    await Promise.resolve();
+    assert.equal(otherRan, false);
+    secondSettlement.resolve();
+    await blocked;
+    assert.equal(otherRan, true);
+  });
+
+  it("keeps a background job exclusive even for its own agent", async () => {
+    const settlement = deferred<void>();
+    const testStarted = deferred<void>();
+    const start = {
+      ...fakeTool("start_command", async () => ({
+        ok: true, summary: "running",
+        data: { commandId: "command_00000000-0000-4000-8000-000000000002", status: "running" },
+      })),
+      whenCommandSettled: () => settlement.promise,
+    };
+    const run = fakeTool("run_command", async () => {
+      testStarted.resolve();
+      return result("tested");
+    });
+    const wrapped = wrapAgentToolsWithWorkspaceMutationLock([start, run], new WorkspaceMutationLock());
+    await wrapped[0]!.execute({ backgroundKind: "job" }, context());
+    const blocked = wrapped[1]!.execute({}, context());
+    let ran = false;
+    void testStarted.promise.then(() => { ran = true; });
+    await Promise.resolve();
+    assert.equal(ran, false);
+    settlement.resolve();
+    await blocked;
+    assert.equal(ran, true);
+  });
+
+  it("rejects service mode without a subagent identity before starting a command", async () => {
+    let started = false;
+    const start = fakeTool("start_command", async () => {
+      started = true;
+      return result("started");
+    });
+    const [wrapped] = wrapAgentToolsWithWorkspaceMutationLock([start], new WorkspaceMutationLock());
+    await assert.rejects(
+      wrapped!.execute({ backgroundKind: "service" }, { ...context(), agentRole: "subagent" }),
+      /Runtime-issued agent identity/u,
+    );
+    assert.equal(started, false);
   });
 
   it("leaves other tools unwrapped and preserves wrapped tool metadata and receiver", async () => {

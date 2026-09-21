@@ -24,7 +24,7 @@ import { documentToolSchema } from "./metadata.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { EXECUTION_CAPABILITIES } from "../sandbox/capabilities.js";
 
-const commandInvocationSchema = z
+const commandInvocationObjectSchema = z
   .object({
     program: z.string().min(1).max(4_096),
     args: z.array(z.string().max(16_384)).max(256).optional(),
@@ -36,13 +36,17 @@ const commandInvocationSchema = z
     executionScope: z.enum(["workspace", "host"]).optional(),
     requiredCapabilities: z.array(z.enum(EXECUTION_CAPABILITIES)).max(EXECUTION_CAPABILITIES.length).optional(),
   })
-  .strict()
-  .transform(normalizeCommandRequest);
+  .strict();
 
 const commandHandleSchema = z.string().regex(/^command_[0-9a-f-]{36}$/u);
 
-export const runCommandInputSchema = commandInvocationSchema;
-export const startCommandInputSchema = commandInvocationSchema;
+export const runCommandInputSchema = commandInvocationObjectSchema.transform(normalizeCommandRequest);
+export const startCommandInputSchema = commandInvocationObjectSchema.extend({
+  backgroundKind: z.enum(["job", "service"]).optional().default("job"),
+}).transform(({ backgroundKind, ...request }) => ({
+  ...normalizeCommandRequest(request),
+  backgroundKind,
+}));
 export const pollCommandInputSchema = z.object({
   commandId: commandHandleSchema,
   waitMs: z.number().int().min(0).max(30_000).optional(),
@@ -51,7 +55,7 @@ export const cancelCommandInputSchema = z.object({
   commandId: commandHandleSchema,
 }).strict();
 
-function commandInvocationDefinition(): Record<string, unknown> {
+function commandInvocationDefinition(includeBackgroundKind = false): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
@@ -69,6 +73,7 @@ function commandInvocationDefinition(): Record<string, unknown> {
       reason: { type: "string", maxLength: 2_000 },
       executionScope: { type: "string", enum: ["workspace", "host"], description: "Default workspace sandbox. Request host only when this exact command needs permissions outside the workspace; approval includes this escalation. Benchmark always stays container-confined." },
       requiredCapabilities: { type: "array", items: { type: "string", enum: [...EXECUTION_CAPABILITIES] }, maxItems: EXECUTION_CAPABILITIES.length, description: "Compatibility requirements, NOT permissions. Test/verify defaults to requiring loopback TCP for runtime IPC. Set [] only for checks known not to need IPC; otherwise request host scope with normal approval if the sandbox reports missing capabilities. Never rewrite libraries to bypass isolation." },
+      ...(includeBackgroundKind ? { backgroundKind: { type: "string", enum: ["job", "service"], description: "Default job retains the workspace mutation lock until completion. Service reserves the workspace for its agent while allowing that same agent to run dependent tools concurrently with the service; other agents remain blocked." } } : {}),
     },
     required: ["program", "intent"],
   };
@@ -275,7 +280,7 @@ export class StartCommandTool implements AgentTool {
     function: {
       name: this.name,
       strict: true,
-      ...documentToolSchema(this.name, commandInvocationDefinition()),
+      ...documentToolSchema(this.name, commandInvocationDefinition(true)),
     },
   };
 
@@ -297,7 +302,8 @@ export class StartCommandTool implements AgentTool {
     const workspaceFailure = await validateWorkspace(this.workspace, context);
     if (workspaceFailure) return workspaceFailure;
     try {
-      return commandResult(await this.runtime.start(parsed.data, context), "start", context);
+      const { backgroundKind, ...request } = parsed.data;
+      return commandResult(await this.runtime.start(request, context, backgroundKind), "start", context);
     } catch (error) {
       return commandToolFailure(error, "Unable to start command", "runtime", "runtime_error");
     }

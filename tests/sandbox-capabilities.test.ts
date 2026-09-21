@@ -8,7 +8,7 @@ import { CommandRuntime } from "../src/command/runtime.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { encodeSandboxControl } from "../src/sandbox/control.js";
-import { runCommandInputSchema } from "../src/tools/run-command.js";
+import { runCommandInputSchema, startCommandInputSchema } from "../src/tools/run-command.js";
 import { NativeSandboxBackend } from "../src/sandbox/native-backend.js";
 import type { CommandExecutionBackend, SandboxBackendName } from "../src/sandbox/types.js";
 import type { ToolContext, ApprovalRequest } from "../src/core/types.js";
@@ -55,6 +55,10 @@ describe("unified sandbox compatibility", () => {
     assert.doesNotMatch(source, /sitecustomize|windowsPythonIpc|targetEnvironment\.PYTHONPATH/);
     assert.deepEqual(runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: [] }).requiredCapabilities, []);
     assert.throws(() => runCommandInputSchema.parse({ program: "node", intent: "test", requiredCapabilities: ["full_network"] }));
+    assert.equal(startCommandInputSchema.parse({ program: "node", intent: "run" }).backgroundKind, "job");
+    assert.equal(startCommandInputSchema.parse({ program: "node", intent: "run", backgroundKind: "service" }).backgroundKind, "service");
+    assert.throws(() => startCommandInputSchema.parse({ program: "node", intent: "run", backgroundKind: "other" }));
+    assert.throws(() => runCommandInputSchema.parse({ program: "node", intent: "run", backgroundKind: "service" }));
   });
   it("proposes host permissions before one approval and never executes the failed sandbox attempt", async () => fixture(async (_, workspace, context) => {
     const prepared: string[] = [], approvals: ApprovalRequest[] = [];
