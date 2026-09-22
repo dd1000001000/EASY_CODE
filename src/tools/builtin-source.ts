@@ -110,9 +110,9 @@ export class BuiltinToolSource implements ToolSource {
       new PollCommandTool(workspace, commandRuntime),
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
-      ...(this.options.threadResourceStore
-        ? [new WebSearchTool(workspace), new FetchWebpageTool(workspace, this.options.threadResourceStore)]
-        : []),
+      ...(this.options.threadResourceStore ? [new WebSearchTool(workspace)] : []),
+      ...(this.options.threadDocumentService
+        ? [new FetchWebpageTool(workspace, this.options.threadDocumentService)] : []),
       new ManageTasksTool(),
       ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),
       ...(this.options.mcpConfigStore

@@ -6,7 +6,6 @@ import type { ThreadResourceAttachment } from "./types.js";
 
 const MEDIA_TYPES = new Map<string, string>([
   [".csv", "text/csv"],
-  [".doc", "application/msword"],
   [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
   [".html", "text/html"],
   [".htm", "text/html"],
@@ -14,7 +13,6 @@ const MEDIA_TYPES = new Map<string, string>([
   [".md", "text/markdown"],
   [".markdown", "text/markdown"],
   [".pdf", "application/pdf"],
-  [".ppt", "application/vnd.ms-powerpoint"],
   [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
   [".txt", "text/plain"],
   [".xls", "application/vnd.ms-excel"],
@@ -25,9 +23,11 @@ const MEDIA_TYPES = new Map<string, string>([
 ]);
 
 export function documentMediaType(filename: string, supplied?: string): string {
+  const known = MEDIA_TYPES.get(path.extname(filename).toLowerCase());
+  if (known) return known;
   const normalized = supplied?.trim().toLowerCase();
   if (normalized && normalized !== "application/octet-stream") return normalized.slice(0, 160);
-  return MEDIA_TYPES.get(path.extname(filename).toLowerCase()) ?? "application/octet-stream";
+  return "application/octet-stream";
 }
 
 export function isSupportedDocument(filename: string): boolean {
@@ -77,6 +77,34 @@ export class ThreadDocumentService {
       byteSize: input.data.byteLength,
       sourceSha256,
       original: input.data,
+    });
+  }
+
+  async importWebpage(input: {
+    threadId: string;
+    data: Buffer;
+    url: string;
+    mediaType: string;
+    signal?: AbortSignal;
+  }): Promise<ThreadResourceAttachment> {
+    if (input.data.byteLength > this.maxBytes) {
+      throw new Error(`Web page exceeds the configured ${this.maxBytes}-byte limit.`);
+    }
+    if (!["text/html", "application/xhtml+xml", "text/plain", "text/markdown"].includes(input.mediaType)) {
+      throw new Error(`Unsupported Web content type: ${input.mediaType}.`);
+    }
+    const html = input.mediaType === "text/html" || input.mediaType === "application/xhtml+xml";
+    const extension = html ? ".html" : input.mediaType === "text/markdown" ? ".md" : ".txt";
+    const converted = await this.converter.convertWithMetadata(
+      input.data, `webpage${extension}`, input.mediaType, input.signal, html ? input.url : undefined,
+    );
+    input.signal?.throwIfAborted();
+    const title = (converted.title || new URL(input.url).hostname).replace(/\s+/gu, " ").trim();
+    const filename = `${title.replace(/[\\/:*?"<>|]/gu, " ").slice(0, 120) || "webpage"}.md`;
+    const markdown = `# ${title}\n\nSource: ${input.url}\n\n${converted.markdown.trim()}\n`;
+    return this.resources.create({
+      threadId: input.threadId, filename, kind: "webpage", mediaType: "text/markdown",
+      markdown, byteSize: input.data.byteLength, sourceUrl: input.url,
     });
   }
 }

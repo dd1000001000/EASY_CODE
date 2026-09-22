@@ -3,8 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
-import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
-import { htmlToMarkdown, parseSearchHtml } from "../src/resources/web-content.js";
+import { DocumentConverter, ThreadDocumentService, ThreadResourceStore, documentMediaType, isSupportedDocument } from "../src/resources/index.js";
+import { parseSearchHtml } from "../src/resources/web-content.js";
 import { ReadDocumentTool, ReadFileTool, SearchFilesTool, UpdateFileTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
@@ -70,17 +70,45 @@ describe("Thread resources", () => {
     }
   });
 
-  it("extracts readable Markdown and bounded search previews", () => {
-    const page = htmlToMarkdown("<html><head><title>Example &amp; Docs</title></head><body><nav>menu</nav><h1>Guide</h1><p>Hello <a href='/next'>world</a>.</p><script>secret()</script></body></html>", "https://example.com/docs");
-    assert.equal(page.title, "Example & Docs");
-    assert.match(page.markdown, /# Guide/u);
-    assert.match(page.markdown, /\[world\]\(https:\/\/example\.com\/next\)/u);
-    assert.doesNotMatch(page.markdown, /secret/u);
-
+  it("extracts bounded search previews", () => {
     const search = parseSearchHtml(`<div class="result results_links"><h2 class="result__title"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=1">First &amp; Docs</a></h2><a class="result__snippet">A &amp; B</a></div>
       <div class="result results_links"><h2 class="result__title"><a href="https://example.com/b" class="result__a">Second</a></h2><a class="result__snippet">C</a></div>`, 1);
     assert.deepEqual(search, [{ title: "First & Docs", url: "https://example.com/a", snippet: "A & B" }]);
     assert.deepEqual(parseSearchHtml('<a class="result__a" href="javascript:alert(1)">Bad</a>', 5), []);
+  });
+
+  it("imports Web pages through the shared converter as readable, Thread-owned resources", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "easy-code-webpage-resource-"));
+    try {
+      const store = new ThreadResourceStore(data);
+      class TestConverter extends DocumentConverter {
+        override async convertWithMetadata(
+          _data: Buffer, filename: string, mediaType: string, _signal?: AbortSignal, sourceUrl?: string,
+        ) {
+          assert.equal(filename, "webpage.html");
+          assert.equal(mediaType, "text/html");
+          assert.equal(sourceUrl, "https://example.com/docs/page");
+          return { title: "Example Docs", markdown: "## Guide\n\n[Next](https://example.com/next)" };
+        }
+      }
+      const service = new ThreadDocumentService(new TestConverter(data), store);
+      const resource = await service.importWebpage({
+        threadId: "thread_resource_test", data: Buffer.from("<html><body>Guide</body></html>"),
+        url: "https://example.com/docs/page", mediaType: "text/html",
+      });
+      assert.equal(resource.filename, "Example Docs.md");
+      const content = (await store.readLines("thread_resource_test", resource.uri, 1, 10)).lines.join("\n");
+      assert.match(content, /Source: https:\/\/example\.com\/docs\/page/u);
+      assert.match(content, /\[Next\]\(https:\/\/example\.com\/next\)/u);
+      await assert.rejects(store.readLines("thread_other", resource.uri, 1, 2), /unavailable/u);
+    } finally { await rm(data, { recursive: true, force: true }); }
+  });
+
+  it("advertises only document formats handled by the installed converter", () => {
+    assert.equal(isSupportedDocument("old.doc"), false);
+    assert.equal(isSupportedDocument("old.ppt"), false);
+    assert.equal(isSupportedDocument("book.xls"), true);
+    assert.equal(documentMediaType("page.html", "text/plain"), "text/html");
   });
 
   it("uses the shared converter for workspace documents and reuses an unchanged Thread snapshot", async () => {
