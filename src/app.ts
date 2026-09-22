@@ -4862,6 +4862,7 @@ export class EasyCodeApp {
         threadTitleStore: this.threadTitles,
         threadResourceStore: this.threadResourceStore,
         threadDocumentService: this.threadDocumentService,
+        includePublicWebTools: this.trustedOuterSandbox !== "harbor",
         ...(this.trustedOuterSandbox ? {} : {
           mcpConfigStore: this.mcpConfigStore,
           onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),

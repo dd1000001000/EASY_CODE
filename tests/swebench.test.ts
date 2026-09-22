@@ -422,6 +422,7 @@ describe("SWE-bench Verified integration", () => {
     );
     const appPath = fileURLToPath(new URL("../../src/app.ts", import.meta.url));
     const appSource = readFileSync(appPath, "utf8");
+    assert.match(appSource, /includePublicWebTools: this\.trustedOuterSandbox !== "harbor"/u);
     assert.match(
       appSource,
       /new LocalEmbeddingModel\(\{\s*cacheDirectory:\s*config\.cacheDir,?\s*\}\)/u,

@@ -67,6 +67,7 @@ export interface BuiltinToolSourceOptions {
   readonly skillStore?: SkillStore;
   readonly threadResourceStore?: ThreadResourceStore;
   readonly threadDocumentService?: ThreadDocumentService;
+  readonly includePublicWebTools?: boolean;
 }
 
 /** Trusted in-process tools exposed through the same source contract as future adapters. */
@@ -110,8 +111,9 @@ export class BuiltinToolSource implements ToolSource {
       new PollCommandTool(workspace, commandRuntime),
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
-      ...(this.options.threadResourceStore ? [new WebSearchTool(workspace)] : []),
-      ...(this.options.threadDocumentService
+      ...(this.options.includePublicWebTools !== false && this.options.threadResourceStore
+        ? [new WebSearchTool(workspace)] : []),
+      ...(this.options.includePublicWebTools !== false && this.options.threadDocumentService
         ? [new FetchWebpageTool(workspace, this.options.threadDocumentService)] : []),
       new ManageTasksTool(),
       ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),
