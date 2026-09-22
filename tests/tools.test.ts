@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
+import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
 import {
   CreateFileTool,
   CompactContextTool,
@@ -161,6 +162,38 @@ describe("workspace file tools", () => {
       assert.equal(first, second);
       assert.equal(first.filter((tool) => tool.name === "submit_task_result").length, 1);
       assert.equal(first.some((tool) => tool.name === "manage_subagents"), false);
+    });
+  });
+
+  it("omits public Web tools from an offline benchmark catalog without hiding Thread resources", async () => {
+    await withWorkspace(async (root, manager) => {
+      const dataDir = path.join(root, "data");
+      const resources = new ThreadResourceStore(dataDir);
+      const documents = new ThreadDocumentService(new DocumentConverter(dataDir), resources);
+      const online = new ToolCatalog();
+      online.registerSource(new BuiltinToolSource({
+        workspace: manager,
+        threadResourceStore: resources,
+        threadDocumentService: documents,
+      }));
+      const onlineNames = (await online.snapshot()).tools.map((tool) => tool.name);
+      assert.equal(onlineNames.includes("web_search"), true);
+      assert.equal(onlineNames.includes("fetch_webpage"), true);
+      await online.close();
+
+      const offline = new ToolCatalog();
+      offline.registerSource(new BuiltinToolSource({
+        workspace: manager,
+        threadResourceStore: resources,
+        threadDocumentService: documents,
+        includePublicWebTools: false,
+      }));
+      const offlineNames = (await offline.snapshot()).tools.map((tool) => tool.name);
+      assert.equal(offlineNames.includes("web_search"), false);
+      assert.equal(offlineNames.includes("fetch_webpage"), false);
+      assert.equal(offlineNames.includes("read_document"), true);
+      assert.equal(offlineNames.includes("read_file"), true);
+      await offline.close();
     });
   });
 

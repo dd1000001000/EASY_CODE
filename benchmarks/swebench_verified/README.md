@@ -185,6 +185,8 @@ GitHub, package registries, and other public hosts is blocked for the evaluated
 agent. Model commands run in a separate offline Docker worker, including denial
 of access to the provider host. The controller retains the provider-only namespace;
 the worker has no route, credential, Docker socket or controller bridge.
+The evaluated model's tool catalog omits `web_search` and `fetch_webpage`;
+local Thread resource reads remain available.
 Do not grant privileged Docker or host networking.
 After a returned agent process, the adapter restores the verifier baseline only
 when no command lease or cleanup quarantine remains. Timeout or unknown cleanup
