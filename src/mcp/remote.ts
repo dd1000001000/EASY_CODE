@@ -1,6 +1,6 @@
 import { SSEClientTransport, StreamableHTTPClientTransport,
   type AuthProvider, type OAuthClientProvider, type JSONRPCMessage, type Transport } from "@modelcontextprotocol/client";
-import type { RemoteMcpServerConfig } from "./config.js";
+import { resolveMcpSetting, type RemoteMcpServerConfig } from "./config.js";
 
 /** Transport lifecycle is uniform with the sandboxed stdio adapter. */
 export class RemoteMcpTransport implements Transport {
@@ -16,6 +16,11 @@ export class RemoteMcpTransport implements Transport {
 
   constructor(config: RemoteMcpServerConfig, authProvider?: AuthProvider | OAuthClientProvider) {
     const url = new URL(config.url);
+    for (const [name, value] of Object.entries(config.query)) {
+      url.searchParams.set(name, resolveMcpSetting(value, `query parameter ${name}`));
+    }
+    const configuredHeaders = Object.fromEntries(Object.entries(config.headers).map(([name, value]) =>
+      [name, resolveMcpSetting(value, `header ${name}`)]));
     const provider = authProvider ?? (config.auth === "bearer" ? {
       async token() {
         const value = process.env[config.bearerTokenEnvVar!];
@@ -23,9 +28,12 @@ export class RemoteMcpTransport implements Transport {
         return value;
       },
     } satisfies AuthProvider : undefined);
-    const options = { authProvider: provider, requestInit: { redirect: "error" as const },
-      eventSourceInit: { fetch: (target: string | URL, init?: RequestInit) =>
-        fetch(target, { ...init, redirect: "error" }) } };
+    const options = { authProvider: provider, requestInit: { redirect: "error" as const, headers: configuredHeaders },
+      eventSourceInit: { fetch: (target: string | URL, init?: RequestInit) => {
+        const headers: Record<string, string> = { ...configuredHeaders };
+        new Headers(init?.headers).forEach((value, name) => { headers[name] = value; });
+        return fetch(target, { ...init, headers, redirect: "error" });
+      } } };
     this.inner = config.transport === "sse"
       ? new SSEClientTransport(url, options)
       : new StreamableHTTPClientTransport(url, options);

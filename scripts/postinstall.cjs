@@ -30,6 +30,7 @@ const { pathToFileURL } = require("node:url");
 
 const { prepareEmbeddingModel } = require("./embedding-model.cjs");
 const { installBundledVsCodeExtension } = require("./install-vscode-extension.cjs");
+const { prepareMarkitdown } = require("./prepare-markitdown.cjs");
 
 function ensureUserModelRegistry(options = {}) {
   const home = options.home || require("node:os").homedir();
@@ -383,6 +384,7 @@ async function runPostinstall(options = {}) {
   const prepareModel = options.prepareModel || prepareEmbeddingModel;
   const validateStack = options.validateStack || validateEmbeddingStack;
   const installExtension = options.installExtension || installBundledVsCodeExtension;
+  const prepareDocumentConverter = options.prepareDocumentConverter || prepareMarkitdown;
   const installPromptBundle = options.installPromptBundle || installBundledPromptResources;
   const installModelRegistry = options.installModelRegistry || ensureUserModelRegistry;
 
@@ -475,6 +477,23 @@ async function runPostinstall(options = {}) {
     };
   }
 
+  let documentConverterResult;
+  try {
+    documentConverterResult = await prepareDocumentConverter(options.documentConverterOptions || {});
+    stdout.write("EASY CODE: Microsoft MarkItDown document converter is ready.\n");
+  } catch (error) {
+    stderr.write(`EASY CODE: document converter installation failed: ${errorMessage(error)}\n`);
+    return {
+      promptBundleReady: true,
+      sqliteReady: true,
+      modelReady: true,
+      vectorStackReady: true,
+      documentConverterReady: false,
+      modelResult,
+      extensionResult: undefined,
+    };
+  }
+
   try {
     const result = await installExtension();
     for (const program of result.installed) {
@@ -504,7 +523,9 @@ async function runPostinstall(options = {}) {
       sqliteReady: true,
       modelReady: true,
       vectorStackReady: true,
+      documentConverterReady: true,
       modelResult,
+      documentConverterResult,
       extensionResult: result,
     };
   } catch (error) {
@@ -516,7 +537,9 @@ async function runPostinstall(options = {}) {
       sqliteReady: true,
       modelReady: true,
       vectorStackReady: true,
+      documentConverterReady: true,
       modelResult,
+      documentConverterResult,
       extensionResult: undefined,
     };
   }
@@ -541,7 +564,8 @@ if (require.main === module) {
         !result.promptBundleReady ||
         !result.sqliteReady ||
         !result.modelReady ||
-        !result.vectorStackReady
+        !result.vectorStackReady ||
+        !result.documentConverterReady
       ) {
         process.exitCode = 1;
         return;

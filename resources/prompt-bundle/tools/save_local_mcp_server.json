@@ -7,9 +7,10 @@
     "command": "Executable program, stored as an argv program rather than a shell command.",
     "args": "Exact argument vector; do not concatenate a shell command.",
     "cwd": "Working directory for the server; defaults to the current workspace.",
-    "env": "Environment variable references, never raw secret values.",
+    "env": "Environment variables passed to the server as literal values or environment references.",
     "env[].name": "Environment variable name made available to the server.",
-    "env[].source": "Reference in env:NAME form, not a secret value."
+    "env[].value": "Literal non-secret value. Use exactly one of value or fromEnv.",
+    "env[].fromEnv": "Name of a host environment variable. Use exactly one of value or fromEnv."
   },
-  "guidance": "Only save MCP configuration when the user explicitly asks. Do not put raw secrets in arguments or configuration. The user must separately enable and approve execution in /mcp."
+  "guidance": "Only save MCP configuration when the user explicitly asks. Prefer fromEnv for secrets. The user must separately enable and approve execution in /mcp."
 }

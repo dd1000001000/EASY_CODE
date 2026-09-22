@@ -27,7 +27,7 @@ export function toolApprovalIdentity(
     workspaceRoot,
     toolId: binding.toolId,
     sourceId: binding.sourceId,
-    sourceVersion: binding.sourceVersion ?? null,
+    sourceVersion: target?.contractHash ?? binding.sourceVersion ?? null,
     schemaHash: binding.schemaHash,
     metadataHash: binding.metadataHash,
     operation: target?.name ?? tool.name,

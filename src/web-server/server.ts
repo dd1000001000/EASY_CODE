@@ -22,6 +22,7 @@ import { pickLocalFolder } from "./folder-picker.js";
 import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
 import type { WebPatch } from "../web-contracts.js";
 import type { ProjectWorkspace } from "../projects/types.js";
+import { MAX_THREAD_RESOURCE_UPLOAD_BYTES, type ThreadResourceAttachment } from "../resources/index.js";
 
 const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
   "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear", "workspace",
@@ -34,6 +35,7 @@ interface HostedThread {
   port: WebInteraction;
   running?: Promise<void>;
   staged: Map<string, ImageAttachment>;
+  stagedResources: Map<string, ThreadResourceAttachment>;
   unsubscribe: () => void;
 }
 const MIME: Record<string, string> = {
@@ -188,7 +190,7 @@ export class EasyCodeWebServer {
 
   private attachHost(app: EasyCodeApp, port: WebInteraction): HostedThread {
     const threadId = app.sessionInfo().threadId;
-    const host: HostedThread = { app, port, staged: new Map(), unsubscribe: () => undefined };
+    const host: HostedThread = { app, port, staged: new Map(), stagedResources: new Map(), unsubscribe: () => undefined };
     host.unsubscribe = port.subscribe(change => {
       const patch: WebPatch | undefined = change.patch?.kind === "entries.reset"
         ? { kind: "entries.reset", entries: port.historyPage().entries, history: port.historyState() }
@@ -355,7 +357,7 @@ export class EasyCodeWebServer {
     else await this.leaveCurrentSession();
   }
 
-  private takeImages(host: HostedThread, ids: unknown): ImageAttachment[] {
+  private takeImages(host: HostedThread, ids: unknown, consume = true): ImageAttachment[] {
     if (ids === undefined) return [];
     if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("Invalid image IDs.");
     const unique = new Set(ids as string[]);
@@ -366,8 +368,22 @@ export class EasyCodeWebServer {
       return image;
     });
     validateImageAttachmentCollection(images);
-    for (const image of images) host.staged.delete(image.id);
+    if (consume) for (const image of images) host.staged.delete(image.id);
     return images;
+  }
+
+  private takeResources(host: HostedThread, ids: unknown, consume = true): ThreadResourceAttachment[] {
+    if (ids === undefined) return [];
+    if (!Array.isArray(ids) || ids.some(id => typeof id !== "string")) throw new Error("Invalid resource IDs.");
+    const unique = new Set(ids as string[]);
+    if (unique.size !== ids.length) throw new Error("Duplicate resource IDs.");
+    const resources = [...unique].map(id => {
+      const resource = host.stagedResources.get(id);
+      if (!resource) throw new Error(`Resource ${id} is not staged for this Thread.`);
+      return resource;
+    });
+    if (consume) for (const resource of resources) host.stagedResources.delete(resource.id);
+    return resources;
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -449,6 +465,19 @@ export class EasyCodeWebServer {
       host.staged.set(image.id, image);
       json(response, 200, { image: { id: image.id, label: image.label, mediaType: image.mediaType } }); return;
     }
+    if (pathname === "/api/resource") {
+      const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
+      if (host.stagedResources.size >= 20) throw new Error("Too many staged documents.");
+      const mediaType = request.headers["content-type"]?.split(";")[0]?.toLowerCase() || "application/octet-stream";
+      const encodedName = request.headers["x-easy-code-filename"];
+      if (typeof encodedName !== "string") throw new Error("Document filename is required.");
+      let filename: string;
+      try { filename = decodeURIComponent(encodedName); } catch { throw new Error("Invalid document filename."); }
+      const data = await body(request, MAX_THREAD_RESOURCE_UPLOAD_BYTES);
+      const resource = await host.app.importHostedDocument(data, filename, mediaType);
+      host.stagedResources.set(resource.id, resource);
+      json(response, 200, { resource }); return;
+    }
     const input = await jsonBody(request);
     if (pathname === "/api/command" || pathname === "/api/message" &&
       typeof input.text === "string" && parseSlashCommand(input.text)?.name === "language") {
@@ -478,6 +507,16 @@ export class EasyCodeWebServer {
       }
       json(response, 200, { discarded: Boolean(image) }); return;
     }
+    if (pathname === "/api/resource/discard") {
+      const host = this.hostFor(input.threadId);
+      if (typeof input.id !== "string") throw new Error("Invalid resource ID.");
+      const resource = host.stagedResources.get(input.id);
+      if (resource) {
+        await host.app.discardHostedResource(resource);
+        host.stagedResources.delete(input.id);
+      }
+      json(response, 200, { discarded: Boolean(resource) }); return;
+    }
     if (pathname === "/api/ui/command/cancel") {
       const host = this.hostFor(input.threadId);
       json(response, 200, { canceled: host.port.cancelExternalOperation() }); return;
@@ -494,11 +533,15 @@ export class EasyCodeWebServer {
       const host = this.hostFor(input.threadId);
       if (host.running || host.app.isRequestActive()) throw new Error("A request is already running; use the adjustment composer.");
       if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid message text.");
-      if (parseSlashCommand(input.text) && Array.isArray(input.imageIds) && input.imageIds.length) {
-        throw new Error("Send slash commands without attached images; images remain available in the composer.");
+      if (parseSlashCommand(input.text) && ((Array.isArray(input.imageIds) && input.imageIds.length) ||
+          (Array.isArray(input.resourceIds) && input.resourceIds.length))) {
+        throw new Error("Send slash commands without attachments; attachments remain available in the composer.");
       }
-      const images = this.takeImages(host, input.imageIds);
-      if (!input.text.trim() && !images.length) throw new Error("A message needs text or an image.");
+      const images = this.takeImages(host, input.imageIds, false);
+      const resources = this.takeResources(host, input.resourceIds, false);
+      for (const image of images) host.staged.delete(image.id);
+      for (const resource of resources) host.stagedResources.delete(resource.id);
+      if (!input.text.trim() && !images.length && !resources.length) throw new Error("A message needs text or an attachment.");
       if (parseSlashCommand(input.text) && !images.length) {
         const command = parseSlashCommand(input.text);
         if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
@@ -508,9 +551,9 @@ export class EasyCodeWebServer {
           if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
         });
       } else {
-        host.port.presentUser(input.text, images);
+        host.port.presentUser(input.text, images, resources);
         this.run(host, async () => {
-          await host.app.submitUserMessage(input.text as string || "Analyze the attached image(s).", images);
+          await host.app.submitUserMessage(input.text as string || "Analyze the attached resource(s).", images, resources);
         });
       }
       json(response, 202, { accepted: true }); return;
@@ -521,11 +564,16 @@ export class EasyCodeWebServer {
       const command = parseSlashCommand(input.text);
       if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
         throw new Error(`/${command.name} is not available as a Web command.`);
-      const images = this.takeImages(host, input.imageIds);
+      const images = this.takeImages(host, input.imageIds, false);
+      const resources = this.takeResources(host, input.resourceIds, false);
+      for (const image of images) host.staged.delete(image.id);
+      for (const resource of resources) host.stagedResources.delete(resource.id);
       let sequence: number;
-      try { sequence = await host.app.submitAdjustment(input.text, images); }
+      const resourceNotice = resources.length ? `\n\nAttached read-only Thread resources:\n${resources.map(resource => `- ${resource.filename}: ${resource.uri}`).join("\n")}\nUse read_file with these exact paths.` : "";
+      try { sequence = await host.app.submitAdjustment(`${input.text}${resourceNotice}`, images); }
       catch (error) {
         for (const image of images) host.staged.set(image.id, image);
+        for (const resource of resources) host.stagedResources.set(resource.id, resource);
         throw error;
       }
       json(response, 200, { sequence }); return;
@@ -663,6 +711,10 @@ export class EasyCodeWebServer {
     let failure: unknown;
     for (const image of host.staged.values()) {
       try { await host.app.discardHostedImage(image); host.staged.delete(image.id); }
+      catch (error) { failure ??= error; }
+    }
+    for (const resource of host.stagedResources.values()) {
+      try { await host.app.discardHostedResource(resource); host.stagedResources.delete(resource.id); }
       catch (error) { failure ??= error; }
     }
     if (failure) throw failure;

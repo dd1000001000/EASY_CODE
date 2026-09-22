@@ -79,4 +79,20 @@ export async function discardImage(id: string, threadId: string): Promise<void> 
   await request("/api/image/discard", { id, threadId });
 }
 
+export interface UploadedResource { id: string; filename: string; kind: "document" | "webpage"; mediaType: string; uri: string; byteSize: number }
+export async function uploadResource(file: File, threadId: string): Promise<UploadedResource> {
+  const response = await fetch("/api/resource", {
+    method: "POST", body: file, credentials: "same-origin",
+    headers: { "Content-Type": file.type || "application/octet-stream", "X-Easy-Code-Thread-Id": threadId,
+      "X-Easy-Code-Filename": encodeURIComponent(file.name) },
+  });
+  const result = await response.json() as { resource?: UploadedResource; error?: string };
+  if (!response.ok || !result.resource) throw new Error(result.error ?? `Document upload failed (${response.status})`);
+  return result.resource;
+}
+
+export async function discardResource(id: string, threadId: string): Promise<void> {
+  await request("/api/resource/discard", { id, threadId });
+}
+
 export type { WebPatch };

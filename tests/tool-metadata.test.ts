@@ -51,6 +51,9 @@ import { SkillStore } from "../src/skills/store.js";
 import { ThreadTitleStore } from "../src/threads/thread-title.js";
 import type { EasyCodeStorage } from "../src/storage/database.js";
 import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
+import { WebSearchTool } from "../src/tools/web-search.js";
+import { FetchWebpageTool } from "../src/tools/fetch-webpage.js";
+import { ThreadResourceStore } from "../src/resources/index.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
@@ -68,6 +71,7 @@ function actualDefinitions() {
     new DeleteFileTool(workspace).definition,
     new DeleteSkillTool(workspace, skills).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
+    new FetchWebpageTool(workspace, new ThreadResourceStore(process.cwd())).definition,
     new ReadMemoryTool(workspace, memorySession).definition,
     new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
@@ -93,6 +97,7 @@ function actualDefinitions() {
     new CancelCommandTool(workspace, {} as CommandRuntime).definition,
     new SubmitTaskResultTool(task).definition,
     new UpdateFileTool(workspace).definition,
+    new WebSearchTool(workspace).definition,
     ...autoRouteToolDefinitions(),
   ];
 }
@@ -110,6 +115,7 @@ describe("Prompt Bundle tool metadata", () => {
       "delete_skill",
       "disable_mcp_server",
       "fetch_artifact",
+      "fetch_webpage",
       "list_mcp_servers",
       "list_skills",
       "manage_subagents",
@@ -134,6 +140,7 @@ describe("Prompt Bundle tool metadata", () => {
       "start_command",
       "submit_task_result",
       "update_file",
+      "web_search",
       "write_memory",
     ]);
     assert.deepEqual(loadPromptBundleCatalog().listTools(), names);

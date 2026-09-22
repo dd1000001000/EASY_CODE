@@ -115,6 +115,56 @@ const degradationOptions = {
     maxSteps: 4, maxContextChars: 100_000, maxContextTokens: 34_000,
     maxOutputChars: 8000, commandTimeoutMs: 1000, approvalPolicy: "never",
 };
+describe("one-time Thread naming exposure", () => {
+    it("executes one naming call and removes the tool from the next model request", async () => {
+        let unclaimed = true;
+        let executions = 0;
+        const requestTools = [];
+        let requests = 0;
+        const namingTool = {
+            name: "name_thread",
+            mutating: false,
+            definition: { type: "function", function: {
+                    name: "name_thread", description: "Name the current Thread once.",
+                    parameters: { type: "object", additionalProperties: false,
+                        properties: { title: { type: "string" } }, required: ["title"] },
+                } },
+            execute: async () => {
+                executions += 1;
+                unclaimed = false;
+                return { ok: true, summary: "Named the current Thread.", data: { title: "Inspect uploads" } };
+            },
+        };
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async (request) => {
+                    requestTools.push((request.tools ?? []).map(tool => tool.function.name));
+                    requests += 1;
+                    if (requests === 1) return { message: { role: "assistant", content: null, tool_calls: [
+                                { id: "title_1", type: "function", function: { name: "name_thread", arguments: JSON.stringify({ title: "Inspect uploads" }) } },
+                                { id: "title_duplicate", type: "function", function: { name: "name_thread", arguments: JSON.stringify({ title: "Duplicate title" }) } },
+                            ] } };
+                    return { message: { role: "assistant", content: "Done." } };
+                } },
+            toolCatalog: snapshotToolSet([namingTool]),
+            threadTitle: { isUnclaimed: () => unclaimed, claim: () => false },
+            contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system",
+            getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [],
+            appendEvent: async () => undefined,
+            requestApproval: async () => false,
+        });
+        const current = state();
+        const result = await runtime.run(current, "Inspect this upload issue", degradationOptions);
+        assert.equal(result.reason, "success");
+        assert.equal(executions, 1);
+        assert.deepEqual(requestTools[0], ["name_thread"]);
+        assert.deepEqual(requestTools[1], []);
+        const namingMessage = current.messages.find(message => message.role === "assistant" && message.tool_calls?.length);
+        assert.equal(namingMessage?.role, "assistant");
+        assert.deepEqual(namingMessage?.tool_calls?.map(call => call.id), ["title_1"]);
+    });
+});
 function investigationState(reasoningChars = 60_000) {
     const current = state();
     current.messages = [

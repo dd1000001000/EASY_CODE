@@ -355,6 +355,7 @@ describe("loopback Web service", () => {
     const host = new WebInteraction();
     const imageId = "image_12345678-1234-4123-8123-123456789abc";
     let discarded = 0;
+    let discardedResource = 0;
     let modelSelections = 0;
     let approvalSelections = 0;
     let orchestrationSelections = 0;
@@ -374,6 +375,12 @@ describe("loopback Web service", () => {
         storageKey: `attachments/${"a".repeat(32)}/${imageId}.png`, sha256: "0".repeat(64),
         byteSize: 4, width: 1, height: 1 }),
       discardHostedImage: async () => { discarded += 1; },
+      importHostedDocument: async (data: Buffer, filename: string, mediaType: string) => ({
+        id: "resource_12345678-1234-4123-8123-123456789abc", filename, kind: "document" as const,
+        mediaType, uri: "thread-resource://resource_12345678-1234-4123-8123-123456789abc/content.md",
+        byteSize: data.byteLength, createdAt: new Date(0).toISOString(),
+      }),
+      discardHostedResource: async () => { discardedResource += 1; },
       selectHostedModel: async () => { modelSelections += 1; },
       selectHostedApproval: async () => { approvalSelections += 1; },
       selectHostedOrchestration: async () => { orchestrationSelections += 1; },
@@ -460,6 +467,16 @@ describe("loopback Web service", () => {
       assert.equal(discardedResponse.status, 200);
       assert.deepEqual(await discardedResponse.json(), { discarded: true });
       assert.equal(discarded, 1);
+      const uploadedResource = await fetch(`${origin}/api/resource`, { method: "POST", headers: {
+        Cookie: cookie!, Origin: origin, "Content-Type": "text/plain", "X-Easy-Code-Thread-Id": "thread_test",
+        "X-Easy-Code-Filename": encodeURIComponent("notes.txt"),
+      }, body: Buffer.from("resource text") });
+      assert.equal(uploadedResource.status, 200);
+      const resourceId = (await uploadedResource.json() as { resource: { id: string; uri: string } }).resource.id;
+      const discardedResourceResponse = await post("/api/resource/discard", { threadId: "thread_test", id: resourceId });
+      assert.equal(discardedResourceResponse.status, 200);
+      assert.deepEqual(await discardedResourceResponse.json(), { discarded: true });
+      assert.equal(discardedResource, 1);
       const added = await fetch(`${origin}/api/project/add`, { method: "POST", headers: {
         Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
       }, body: JSON.stringify({ name: "Test project" }) });

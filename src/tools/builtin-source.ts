@@ -8,6 +8,7 @@ import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { McpConfigStore } from "../mcp/config.js";
 import { SkillStore } from "../skills/store.js";
 import type { ThreadTitleStore } from "../threads/thread-title.js";
+import type { ThreadResourceStore } from "../resources/index.js";
 import {
   WorkspaceMutationLock,
   wrapAgentToolsWithWorkspaceMutationLock,
@@ -45,6 +46,8 @@ import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, Read
 import { SubmitTaskResultTool } from "./submit-task-result.js";
 import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
+import { WebSearchTool } from "./web-search.js";
+import { FetchWebpageTool } from "./fetch-webpage.js";
 
 type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks"> & Pick<Partial<TaskNode>, "title">;
 
@@ -61,6 +64,7 @@ export interface BuiltinToolSourceOptions {
   readonly boundTask?: BoundTask;
   readonly threadTitleStore?: ThreadTitleStore;
   readonly skillStore?: SkillStore;
+  readonly threadResourceStore?: ThreadResourceStore;
 }
 
 /** Trusted in-process tools exposed through the same source contract as future adapters. */
@@ -85,8 +89,8 @@ export class BuiltinToolSource implements ToolSource {
       limits: this.options.limits,
     });
     const tools: AgentTool[] = [
-      new ReadFileTool(workspace),
-      new SearchFilesTool(workspace),
+      new ReadFileTool(workspace, this.options.threadResourceStore),
+      new SearchFilesTool(workspace, this.options.threadResourceStore),
       new ListSkillsTool(workspace, skillStore),
       new ReadSkillTool(workspace, skillStore),
       new CreateSkillTool(workspace, skillStore),
@@ -101,6 +105,9 @@ export class BuiltinToolSource implements ToolSource {
       new PollCommandTool(workspace, commandRuntime),
       new CancelCommandTool(workspace, commandRuntime),
       ...(this.options.downloadBroker ? [new FetchArtifactTool(this.options.downloadBroker)] : []),
+      ...(this.options.threadResourceStore
+        ? [new WebSearchTool(workspace), new FetchWebpageTool(workspace, this.options.threadResourceStore)]
+        : []),
       new ManageTasksTool(),
       ...(this.options.threadTitleStore ? [new NameThreadTool(this.options.threadTitleStore)] : []),
       ...(this.options.mcpConfigStore

@@ -397,7 +397,7 @@ async function returnToLatest(): Promise<void> {
   transcript.value?.scrollTo({ top: transcript.value.scrollHeight, behavior: "instant" });
   updateVisibleMessages();
 }
-async function send(text: string, imageIds: string[]): Promise<void> {
+async function send(text: string, imageIds: string[], resourceIds: string[]): Promise<void> {
   if (!activeThread.value) return;
   if (archiveEntries.value) await returnToLatest();
   const threadId = activeThread.value;
@@ -410,7 +410,7 @@ async function send(text: string, imageIds: string[]): Promise<void> {
   if (command) beginCommandOutput(`/${command}`); else resetCommandOutput();
   try {
     const route = view.value.busy ? "/api/adjustment" : "/api/message";
-    await request(route, { threadId, text, imageIds });
+    await request(route, { threadId, text, imageIds, resourceIds });
     composer.value?.sent(threadId);
     error.value = "";
   } catch (reason) {

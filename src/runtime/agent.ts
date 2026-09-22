@@ -652,6 +652,20 @@ type AssistantToolCall = NonNullable<
   Extract<ChatMessage, { role: "assistant" }>["tool_calls"]
 >[number];
 
+/** Keep a provider from repeating one-shot conversation metadata work in one response. */
+function deduplicateThreadTitleCalls(
+  calls: readonly AssistantToolCall[] | undefined,
+): AssistantToolCall[] | undefined {
+  if (!calls) return undefined;
+  let found = false;
+  return calls.filter((call) => {
+    if (call.function.name !== "name_thread") return true;
+    if (found) return false;
+    found = true;
+    return true;
+  });
+}
+
 /**
  * Preserve the full candidate for correction and journal replay, including
  * rejected calls. Accepted compaction retires these messages from the active
@@ -1663,7 +1677,8 @@ export class AgentRuntime {
       const memorySearchDurationMs = Date.now() - memorySearchStarted;
       const workspaceSummary = await this.dependencies.getWorkspaceSummary();
       const ordinaryEnabledTools = [...toolGateway.catalog.tools].filter((tool) =>
-        tool.name !== "compact_context");
+        tool.name !== "compact_context" &&
+        (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)));
       const currentProgressScope = progressScopeKey(state, turnId);
       const progressInstruction = agentIdentity.role === "main_agent"
         ? progressRuntimeInstruction(state, currentProgressScope) : "";
@@ -1991,7 +2006,7 @@ export class AgentRuntime {
         continue;
       }
 
-      const executionToolCalls = response.message.tool_calls;
+      const executionToolCalls = deduplicateThreadTitleCalls(response.message.tool_calls);
       const assistantMessage: ChatMessage = {
         role: "assistant",
         content: response.message.content,
@@ -2245,7 +2260,13 @@ export class AgentRuntime {
           break;
         }
         const toolName = call.function.name as ToolName;
-        const tool = toolGateway.get(toolName);
+        // The gateway is a run-level snapshot, while this one-shot tool can be
+        // withdrawn between requests. Other Runtime-owned tools (notably
+        // isolated compaction) intentionally have their own exposure path.
+        const tool = toolName === "name_thread" &&
+          !threadTitleUnclaimed(this.dependencies, state.threadId)
+          ? undefined
+          : toolGateway.get(toolName);
         let displayName = toolName;
         // Verification relies on recorded changes and actual command results;
         // no whole-repository test baseline is captured or replayed.
@@ -2374,6 +2395,13 @@ export class AgentRuntime {
               unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
               requestApproval: this.dependencies.requestApproval,
               signal: options.signal,
+              reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
+                const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
+                const amount = typeof update.progress === "number"
+                  ? `${update.progress}${typeof update.total === "number" ? `/${update.total}` : ""}`
+                  : undefined;
+                this.dependencies.onStatus?.([`Tool: ${displayName}`, amount, detail].filter(Boolean).join(" · "));
+              },
               commandTimeoutMs: options.commandTimeoutMs,
               maxOutputChars: options.maxOutputChars,
               agentRole: agentIdentity.role,
@@ -2688,8 +2716,10 @@ export class AgentRuntime {
           typeof readData.path === "string" && typeof readData.content === "string" &&
           typeof readData.contentHash === "string" && /^[a-f0-9]{64}$/u.test(readData.contentHash) &&
           Number.isSafeInteger(readData.startLine) && Number.isSafeInteger(readData.endLine);
+        const isMcpResult = tool?.metadata?.identity.sourceId === "mcp";
         const resultChars = versionedRead ? projectionLimits.maxReadResultTokens * 8 + 4096
           : toolName === "search_files" ? projectionLimits.searchMaxResultTokens * 8 + 4096
+          : isMcpResult ? options.maxOutputChars
           : this.dependencies.limits?.maxToolResultChars ?? options.maxOutputChars;
         const toolMessage: ChatMessage = {
           role: "tool",

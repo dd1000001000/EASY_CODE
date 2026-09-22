@@ -4,7 +4,7 @@ import type { McpServerConfig } from "../src/mcp/config.js";
 import { describe, it } from "./harness.js";
 
 const oauth: McpServerConfig = { transport: "http", url: "https://mcp.example.com/mcp",
-  auth: "oauth", enabled: false };
+  auth: "oauth", headers: {}, query: {}, enabled: false };
 const base: McpMenuState = { connected: false, authenticated: false,
   authStoreReady: true, bearerReady: true, benchmark: false };
 const ids = (server: McpServerConfig, state: McpMenuState) =>
@@ -30,7 +30,7 @@ describe("MCP action menu", () => {
 
   it("does not offer unavailable bearer or credential-store actions", () => {
     const bearer: McpServerConfig = { transport: "http", url: "https://mcp.example.com/mcp",
-      auth: "bearer", bearerTokenEnvVar: "MCP_TOKEN", enabled: false };
+      auth: "bearer", bearerTokenEnvVar: "MCP_TOKEN", headers: {}, query: {}, enabled: false };
     assert.deepEqual(ids(bearer, { ...base, bearerReady: false }), ["details", "remove", "back"]);
     assert.deepEqual(ids(oauth, { ...base, authStoreReady: false }), ["details", "remove", "back"]);
     assert.deepEqual(ids(oauth, { ...base, benchmark: true }), ["details", "remove", "back"]);

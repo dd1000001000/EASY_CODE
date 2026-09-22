@@ -76,4 +76,18 @@ describe("current installation manifest", () => {
     assert.ok(plan.actions.some((action) => path.resolve(action.target) === path.resolve(data)));
     assert.equal(plan.actions.some((action) => path.resolve(action.target) === path.resolve(cache)), false);
   }));
+
+  it("treats a ready receipt for an absent path as already removed", async () => fixture(async (home) => {
+    const missing = path.join(home, "never-created-config");
+    beginOwnedResource({ kind: "config", path: missing }, home);
+    completeOwnedResource({ kind: "config", path: missing }, home);
+
+    const receipt = readOwnedResources(home).find((item) => item.path === missing);
+    assert.equal(receipt?.state, "ready");
+    assert.equal(receipt?.identity, undefined);
+
+    const plan = await buildFilePlan({ home });
+    assert.deepEqual(plan.blockers, []);
+    assert.equal(plan.actions.some((action) => path.resolve(action.target) === path.resolve(missing)), false);
+  }));
 });

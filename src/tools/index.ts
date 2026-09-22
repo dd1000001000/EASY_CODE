@@ -26,3 +26,5 @@ export * from "./run-command.js";
 export * from "./submit-task-result.js";
 export * from "./update-file.js";
 export * from "./write-memory.js";
+export * from "./web-search.js";
+export * from "./fetch-webpage.js";
