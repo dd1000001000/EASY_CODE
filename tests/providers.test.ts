@@ -89,6 +89,7 @@ worktree_base_mode = "current-snapshot"
 [limits]
 max_context_chars = 420000
 max_managed_worktrees = 17
+thread_resource_max_bytes = 73400320
 [limits.steps]
 none = 18
 
@@ -132,6 +133,7 @@ timeout_ms = 41000
       assert.equal(config.worktreeBaseMode, "fresh");
       assert.equal(config.worktreeRoot, path.join(temporary, "environment-worktrees"));
       assert.equal(config.limits.maxManagedWorktrees, 23);
+      assert.equal(config.limits.threadResourceMaxBytes, 73_400_320);
       assert.equal(config.providers.qwen!.apiKey, undefined);
       assert.equal(config.providers.qwen!.model, "workspace-qwen");
       assert.equal(config.providers.qwen!.baseUrl, "https://user-qwen.example/v1");

@@ -29,6 +29,7 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "select_mode",
   "propose_plan",
   "read_file",
+  "read_document",
   "read_image",
   "create_file",
   "update_file",

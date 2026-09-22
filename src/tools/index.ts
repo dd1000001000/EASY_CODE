@@ -19,6 +19,7 @@ export * from "./mcp-config-tools.js";
 export * from "./metadata.js";
 export * from "./propose-plan.js";
 export * from "./read-file.js";
+export * from "./read-document.js";
 export * from "./search-files.js";
 export * from "./skill-tools.js";
 export * from "./read-image.js";

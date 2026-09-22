@@ -20,7 +20,7 @@ export function reconciliationGate(state: Readonly<SessionState>, tool: string, 
   const args = input as Record<string, unknown> | undefined;
   if (tool === "poll_command" && state.pressureRecovery!.reconciliation!.commands.includes(String(args?.commandId)) ||
       tool === "manage_subagents" && ["status", "wait"].includes(String(args?.action)) ||
-      ["read_file", "search_files", "read_image", "recall_context", "search_context"].includes(tool)) return;
+      ["read_file", "read_document", "search_files", "read_image", "recall_context", "search_context"].includes(tool)) return;
   const instruction = "Observe the original pending command IDs and child assignments before starting new side effects. " +
     "Durable workspace and DAG state do not need mechanical reinspection. Nothing was executed. Remaining checks: " +
     JSON.stringify(state.pressureRecovery!.reconciliation);

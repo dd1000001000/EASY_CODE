@@ -22,7 +22,7 @@ import { pickLocalFolder } from "./folder-picker.js";
 import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
 import type { WebPatch } from "../web-contracts.js";
 import type { ProjectWorkspace } from "../projects/types.js";
-import { MAX_THREAD_RESOURCE_UPLOAD_BYTES, type ThreadResourceAttachment } from "../resources/index.js";
+import type { ThreadResourceAttachment } from "../resources/index.js";
 
 const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
   "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear", "workspace",
@@ -58,7 +58,7 @@ async function body(request: IncomingMessage, limit: number): Promise<Buffer> {
   for await (const chunk of request) {
     const part = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
     total += part.byteLength;
-    if (total > limit) throw new Error("Request body exceeds the allowed size.");
+    if (total > limit) throw new Error(`Request body exceeds the configured ${limit}-byte limit.`);
     chunks.push(part);
   }
   return Buffer.concat(chunks);
@@ -473,7 +473,7 @@ export class EasyCodeWebServer {
       if (typeof encodedName !== "string") throw new Error("Document filename is required.");
       let filename: string;
       try { filename = decodeURIComponent(encodedName); } catch { throw new Error("Invalid document filename."); }
-      const data = await body(request, MAX_THREAD_RESOURCE_UPLOAD_BYTES);
+      const data = await body(request, host.app.hostedDocumentMaxBytes());
       const resource = await host.app.importHostedDocument(data, filename, mediaType);
       host.stagedResources.set(resource.id, resource);
       json(response, 200, { resource }); return;

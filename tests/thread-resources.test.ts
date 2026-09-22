@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
-import { ThreadResourceStore } from "../src/resources/index.js";
+import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
 import { htmlToMarkdown, parseSearchRss } from "../src/resources/web-content.js";
-import { ReadFileTool, SearchFilesTool, UpdateFileTool } from "../src/tools/index.js";
+import { ReadDocumentTool, ReadFileTool, SearchFilesTool, UpdateFileTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 
@@ -79,5 +79,54 @@ describe("Thread resources", () => {
 
     const rss = parseSearchRss("<rss><channel><item><title>First</title><link>https://example.com/a</link><description>A &amp; B</description></item><item><title>Second</title><link>https://example.com/b</link><description>C</description></item></channel></rss>", 1);
     assert.deepEqual(rss, [{ title: "First", url: "https://example.com/a", snippet: "A & B" }]);
+  });
+
+  it("uses the shared converter for workspace documents and reuses an unchanged Thread snapshot", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-code-document-workspace-"));
+    const data = await mkdtemp(path.join(os.tmpdir(), "easy-code-document-data-"));
+    try {
+      await writeFile(path.join(root, "requirements.md"), "# Requirements\n\nShared conversion path.\n", "utf8");
+      const workspace = await WorkspaceManager.create(root);
+      const store = new ThreadResourceStore(data);
+      const documents = new ThreadDocumentService(new DocumentConverter(data), store);
+      const tool = new ReadDocumentTool(workspace, documents);
+
+      const first = await tool.execute({ path: "requirements.md" }, context(root));
+      const second = await tool.execute({ path: "requirements.md" }, context(root));
+      assert.equal(first.ok, true);
+      assert.equal(second.ok, true);
+      const firstData = first.data as { uri: string; id: string; readOnly: boolean };
+      const secondData = second.data as { uri: string; id: string };
+      assert.equal(firstData.readOnly, true);
+      assert.equal(secondData.id, firstData.id);
+      assert.equal((await store.list("thread_resource_test")).length, 1);
+
+      const read = await new ReadFileTool(workspace, store).execute(
+        { path: firstData.uri }, context(root),
+      );
+      assert.equal(read.ok, true);
+      assert.match((read.data as { content: string }).content, /Shared conversion path/u);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(data, { recursive: true, force: true });
+    }
+  });
+
+  it("enforces one configurable byte limit across conversion and resource storage", async () => {
+    const data = await mkdtemp(path.join(os.tmpdir(), "easy-code-document-limit-"));
+    try {
+      const store = new ThreadResourceStore(data, 8);
+      const documents = new ThreadDocumentService(new DocumentConverter(data), store);
+      assert.equal(documents.maxBytes, 8);
+      await assert.rejects(
+        documents.import({ threadId: "thread_resource_test", filename: "large.txt", data: Buffer.from("123456789") }),
+        /configured 8-byte limit/u,
+      );
+      await assert.rejects(
+        store.create({ threadId: "thread_resource_test", filename: "large.md", kind: "document",
+          mediaType: "text/markdown", markdown: "small", byteSize: 9 }),
+        /configured 8-byte limit/u,
+      );
+    } finally { await rm(data, { recursive: true, force: true }); }
   });
 });

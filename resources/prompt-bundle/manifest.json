@@ -402,6 +402,10 @@
       "sha256": "sha256:870f99a7cfe07745f8e091a417249fa5e2c44dfef5f7882dd258d9d069088093",
       "bytes": 1543
     },
+    "tools/read_document.json": {
+      "sha256": "sha256:4963bf48569f1c969fee7cc02a8e398053bee6c156b84bd3b6650addfacb7709",
+      "bytes": 715
+    },
     "tools/read_file.json": {
       "sha256": "sha256:75231e686b4d0d2df383b0e4562d4743f43a3a5665f3a335a30a4db4fc57582a",
       "bytes": 1100
@@ -561,6 +565,11 @@
       "contractVersion": "1.0.0",
       "contentHash": "sha256:870f99a7cfe07745f8e091a417249fa5e2c44dfef5f7882dd258d9d069088093"
     },
+    "read_document": {
+      "path": "tools/read_document.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:4963bf48569f1c969fee7cc02a8e398053bee6c156b84bd3b6650addfacb7709"
+    },
     "read_file": {
       "path": "tools/read_file.json",
       "contractVersion": "1.1.0",
@@ -652,5 +661,5 @@
       "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
     }
   },
-  "bundleHash": "sha256:47601c6080c95dd4b814da9b8278dc85603449f9f7b209be81ff93785a98ca19"
+  "bundleHash": "sha256:ada5f74cb246cddf2e694aa81604fe0dfa648028e7b5a9cc27a7204a0b4e569b"
 }

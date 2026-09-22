@@ -8,7 +8,7 @@ import type { RuntimeLimits } from "../config/runtime-limits.js";
 import type { McpConfigStore } from "../mcp/config.js";
 import { SkillStore } from "../skills/store.js";
 import type { ThreadTitleStore } from "../threads/thread-title.js";
-import type { ThreadResourceStore } from "../resources/index.js";
+import type { ThreadDocumentService, ThreadResourceStore } from "../resources/index.js";
 import {
   WorkspaceMutationLock,
   wrapAgentToolsWithWorkspaceMutationLock,
@@ -34,6 +34,7 @@ import {
 } from "./mcp-config-tools.js";
 import { ProposePlanTool } from "./propose-plan.js";
 import { ReadFileTool } from "./read-file.js";
+import { ReadDocumentTool } from "./read-document.js";
 import { ReadImageTool } from "./read-image.js";
 import {
   CancelCommandTool,
@@ -65,6 +66,7 @@ export interface BuiltinToolSourceOptions {
   readonly threadTitleStore?: ThreadTitleStore;
   readonly skillStore?: SkillStore;
   readonly threadResourceStore?: ThreadResourceStore;
+  readonly threadDocumentService?: ThreadDocumentService;
 }
 
 /** Trusted in-process tools exposed through the same source contract as future adapters. */
@@ -90,6 +92,9 @@ export class BuiltinToolSource implements ToolSource {
     });
     const tools: AgentTool[] = [
       new ReadFileTool(workspace, this.options.threadResourceStore),
+      ...(this.options.threadDocumentService
+        ? [new ReadDocumentTool(workspace, this.options.threadDocumentService)]
+        : []),
       new SearchFilesTool(workspace, this.options.threadResourceStore),
       new ListSkillsTool(workspace, skillStore),
       new ReadSkillTool(workspace, skillStore),

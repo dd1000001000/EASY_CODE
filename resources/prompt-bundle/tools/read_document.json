@@ -1,0 +1,9 @@
+{
+  "id": "read_document",
+  "contractVersion": "1.0.0",
+  "description": "Convert a supported document in the workspace to an immutable Markdown resource owned by the current Thread.",
+  "propertyDescriptions": {
+    "path": "Workspace-relative document path. Supported types include PDF, Word, PowerPoint, Excel, CSV, text, Markdown, HTML, JSON, XML, and YAML."
+  },
+  "guidance": "Use read_document for supported workspace documents that read_file cannot decode as UTF-8. It converts a document once and returns a thread-resource:// URI; use read_file on that URI for bounded line ranges. Repeated conversion of unchanged source bytes reuses the existing Thread resource. Use read_image for workspace images."
+}

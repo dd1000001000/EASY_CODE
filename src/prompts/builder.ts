@@ -52,6 +52,7 @@ const TOOL_RULE_ORDER: readonly ToolName[] = [
   "select_mode",
   "propose_plan",
   "read_file",
+  "read_document",
   "search_files",
   "list_skills",
   "name_thread",

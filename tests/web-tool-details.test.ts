@@ -10,7 +10,7 @@ const show = (name: string, input: unknown, output: ToolExecutionResult = result
 
 describe("Web tool detail targets", () => {
   it("shows the requested file path for file and image operations", () => {
-    for (const name of ["read_file", "create_file", "update_file", "delete_file", "read_image"]) {
+    for (const name of ["read_file", "read_document", "create_file", "update_file", "delete_file", "read_image"]) {
       assert.deepEqual(show(name, { path: "src/components/Editor.vue", content: "private content" }), [
         { label: "File", value: "src/components/Editor.vue" },
       ]);

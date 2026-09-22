@@ -83,14 +83,14 @@ function state(): SessionState {
 
 describe("extensible tool capabilities", () => {
   it("preserves the existing builtin mode and role boundaries declaratively", () => {
-    const names = ["read_file", "read_image", "propose_plan", "manage_tasks", "submit_task_result"];
+    const names = ["read_file", "read_document", "read_image", "propose_plan", "manage_tasks", "submit_task_result"];
     const tools = names.map((name) => builtin(name));
     assert.deepEqual(availableAgentTools(tools, {
       mode: "plan", role: "main_agent", orchestrationAvailable: true, visionAvailable: true,
-    }).map((tool) => tool.name), ["read_file", "read_image", "propose_plan"]);
+    }).map((tool) => tool.name), ["read_file", "read_document", "read_image", "propose_plan"]);
     assert.deepEqual(availableAgentTools(tools, {
       mode: "code", role: "main_agent", orchestrationAvailable: true, visionAvailable: false,
-    }).map((tool) => tool.name), ["read_file", "manage_tasks"]);
+    }).map((tool) => tool.name), ["read_file", "read_document", "manage_tasks"]);
     assert.deepEqual(availableAgentTools(tools, {
       mode: "code", role: "subagent", orchestrationAvailable: false, visionAvailable: true,
     }).map((tool) => tool.name), ["read_file", "submit_task_result"]);

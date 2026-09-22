@@ -32,6 +32,8 @@ const BUILTIN_POLICIES = {
   propose_plan: { effects: [], modes: ["plan"], roles: MAIN, controlPlane: true },
   read_file: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH,
     idempotent: true, resultClass: "file_read" },
+  read_document: { effects: ["workspace_read"], modes: ALL_MODES, roles: MAIN,
+    idempotent: true, resultClass: "file_read" },
   search_files: { effects: ["workspace_read"], modes: ALL_MODES, roles: BOTH,
     idempotent: true, resultClass: "search" },
   read_image: { effects: ["workspace_read"], modes: ALL_MODES, roles: MAIN,

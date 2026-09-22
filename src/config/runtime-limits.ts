@@ -11,6 +11,7 @@ export const runtimeLimitsSchema = z.object({
   maxContextTokens: z.union([z.literal(0), integer(4096, 2000000)]),
   maxOutputChars: integer(1024, 1000000),
   maxToolResultChars: integer(1024, 1000000),
+  threadResourceMaxBytes: integer(1024 * 1024, 1024 * 1024 * 1024),
   mcpStdioMaxMessageBytes: integer(1024 * 1024, 1024 * 1024 * 1024),
   mcpIdleTimeoutMs: integer(1000, 24 * 60 * 60 * 1000),
   mcpStartupTimeoutMs: integer(1000, 10 * 60 * 1000),

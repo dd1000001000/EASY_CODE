@@ -181,7 +181,7 @@ import {
 } from "./workspace/execution-environment.js";
 import type { ProjectWorkspace } from "./projects/types.js";
 import { ProjectIndex } from "./web-server/projects.js";
-import { DocumentConverter, ThreadResourceStore, type ThreadResourceAttachment } from "./resources/index.js";
+import { DocumentConverter, ThreadDocumentService, ThreadResourceStore, type ThreadResourceAttachment } from "./resources/index.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
@@ -571,6 +571,7 @@ export class EasyCodeApp {
   private readonly imageStore: ImageStore;
   private readonly threadResourceStore: ThreadResourceStore;
   private readonly documentConverter: DocumentConverter;
+  private readonly threadDocumentService: ThreadDocumentService;
   private readonly workspaceMutationLock: WorkspaceMutationLock;
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
@@ -671,8 +672,9 @@ export class EasyCodeApp {
       maxManagedWorktrees: config.limits.maxManagedWorktrees,
     });
     this.imageStore = new ImageStore(config.dataDir);
-    this.threadResourceStore = new ThreadResourceStore(config.dataDir);
+    this.threadResourceStore = new ThreadResourceStore(config.dataDir, config.limits.threadResourceMaxBytes);
     this.documentConverter = new DocumentConverter(config.dataDir);
+    this.threadDocumentService = new ThreadDocumentService(this.documentConverter, this.threadResourceStore);
     this.pendingResumeRecovery = resumeRecovery;
     this.contextManager.configureTokenBudget(
       effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens),
@@ -1138,17 +1140,15 @@ export class EasyCodeApp {
   }
 
   async importHostedDocument(data: Buffer, filename: string, mediaType: string): Promise<ThreadResourceAttachment> {
-    const markdown = await this.documentConverter.convert(data, filename, mediaType);
-    return this.threadResourceStore.create({
+    return this.threadDocumentService.import({
       threadId: this.state.threadId,
       filename,
-      kind: "document",
       mediaType,
-      markdown,
-      byteSize: data.byteLength,
-      original: data,
+      data,
     });
   }
+
+  hostedDocumentMaxBytes(): number { return this.threadDocumentService.maxBytes; }
 
   discardHostedResource(resource: ThreadResourceAttachment): Promise<void> {
     return this.threadResourceStore.remove(this.state.threadId, resource.id);
@@ -4861,6 +4861,7 @@ export class EasyCodeApp {
         mutationLock: this.workspaceMutationLock,
         threadTitleStore: this.threadTitles,
         threadResourceStore: this.threadResourceStore,
+        threadDocumentService: this.threadDocumentService,
         ...(this.trustedOuterSandbox ? {} : {
           mcpConfigStore: this.mcpConfigStore,
           onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),
