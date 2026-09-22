@@ -31,7 +31,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent .
 ```
 
-The global installation prepares retrieval and integration resources; allow the package's installation scripts to run. The native sandbox uses the runtime version pinned by the project, not an automatically selected latest release. Windows sandbox setup may require administrator confirmation. Normal CLI/Web use does not require a VM or container engine.
+The global installation prepares retrieval and integration resources; allow the package's installation scripts to run. The native sandbox uses the runtime version pinned by the project, not an automatically selected latest release. Windows may request administrator confirmation once during installation (or when you explicitly run `easy-code sandbox setup`) to authorize the fixed local proxy-port pool. Normal agent, CLI, and Web operation never initiates UAC setup and does not require a VM or container engine.
 
 ## Quick start
 

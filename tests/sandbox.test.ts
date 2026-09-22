@@ -465,76 +465,67 @@ describe("sandbox first-interactive startup guide", () => {
     assert.equal(terminal.stopCount, 1);
   });
 
-  it("automatically runs setup before any menu, uses verified readiness, and clears activity", async () => {
+  it("never requests setup from normal startup when Windows authorization is missing", async () => {
     const before = readiness("setup_required", {
       platform: "win32",
       canSetup: true,
       details: ["Filesystem identity: not initialized"],
     });
-    const after = readiness("ready", { platform: "win32" });
-    let setupInput: SandboxReadiness | undefined;
-    const service: SandboxStartupService = {
-      inspect: async () => before,
-      setup: async (input) => {
-        setupInput = input;
-        return {
-          status: "completed",
-          message: "Setup and verification completed.",
-          readiness: after,
-        };
-      },
-    };
-    const terminal = new ScriptedSandboxTerminal();
-
-    assert.equal(await runSandboxStartupGuide(service, terminal), true);
-    assert.equal(setupInput, before);
-    assert.deepEqual(terminal.choices, []);
-    assert.deepEqual(terminal.activities, [
-      "Checking the command sandbox",
-      "Setting up the command sandbox",
-    ]);
-    assert.equal(terminal.stopCount, 2);
-    assert.deepEqual(terminal.successMessages, ["Setup and verification completed."]);
-  });
-
-  it("attempts missing-dependency setup only once automatically, with explicit recovery after failure", async () => {
-    const before = readiness("dependencies_missing", { canSetup: true });
     let setupCalls = 0;
     const service: SandboxStartupService = {
       inspect: async () => before,
-      setup: async () => {
-        setupCalls++;
-        return { status: "failed", message: "System authorization or restart required", readiness: before };
-      },
+      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
     };
-    const terminal = new ScriptedSandboxTerminal(["recheck", "continue"]);
+    const terminal = new ScriptedSandboxTerminal(["continue"]);
+
     assert.equal(await runSandboxStartupGuide(service, terminal), true);
-    assert.equal(setupCalls, 1);
-    assert.equal(terminal.choices.length, 2);
-    assert.deepEqual(terminal.errorMessages, ["System authorization or restart required"]);
+    assert.equal(setupCalls, 0);
+    assert.equal(terminal.choices.length, 1);
+    assert.ok(terminal.choices[0]?.ids.every(id => id !== "setup"));
+    assert.match(terminal.warningMessages.join("\n"), /easy-code sandbox setup/u);
+    assert.deepEqual(terminal.activities, ["Checking the command sandbox"]);
+    assert.equal(terminal.stopCount, 1);
+  });
+
+  it("rechecks readiness without invoking setup and continues after an external repair", async () => {
+    const before = readiness("dependencies_missing", { canSetup: true });
+    const after = readiness("ready");
+    let inspectCalls = 0;
+    let setupCalls = 0;
+    const service: SandboxStartupService = {
+      inspect: async () => ++inspectCalls === 1 ? before : after,
+      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
+    };
+    const terminal = new ScriptedSandboxTerminal(["recheck"]);
+    assert.equal(await runSandboxStartupGuide(service, terminal), true);
+    assert.equal(inspectCalls, 2);
+    assert.equal(setupCalls, 0);
+    assert.deepEqual(terminal.successMessages, ["Command sandbox verification passed."]);
     assert.equal(terminal.activities.length, terminal.stopCount);
   });
 
-  it("allows an explicit retry after auto setup throws, without treating an unready result as success", async () => {
+  it("reports a failed recheck without falling through to elevated setup", async () => {
     const before = readiness("setup_required", { canSetup: true });
+    let inspectCalls = 0;
     let setupCalls = 0;
-    const terminal = new ScriptedSandboxTerminal(["setup", "exit"]);
+    const terminal = new ScriptedSandboxTerminal(["recheck", "exit"]);
     const service: SandboxStartupService = {
-      inspect: async () => before,
-      setup: async () => {
-        setupCalls++;
-        if (setupCalls === 1) throw new Error("download failed");
-        return { status: "completed", message: "incorrect success", readiness: before };
+      inspect: async () => {
+        inspectCalls++;
+        if (inspectCalls === 2) throw new Error("probe failed");
+        return before;
       },
+      setup: async () => { setupCalls++; throw new Error("normal startup must never elevate"); },
     };
     assert.equal(await runSandboxStartupGuide(service, terminal), false);
-    assert.equal(setupCalls, 2);
+    assert.equal(setupCalls, 0);
     assert.deepEqual(terminal.successMessages, []);
+    assert.match(terminal.errorMessages.at(-1) ?? "", /readiness check failed.*probe failed/iu);
     assert.equal(terminal.activities.length, terminal.stopCount);
   });
 
-  it("never automatically installs for unsupported or failed-probe environments", async () => {
-    for (const status of ["probe_failed", "unsupported"] as const) {
+  it("never automatically installs for any unready environment", async () => {
+    for (const status of ["setup_required", "dependencies_missing", "probe_failed", "unsupported"] as const) {
       let setupCalls = 0;
       const service: SandboxStartupService = {
         inspect: async () => readiness(status, { canSetup: true }),

@@ -52,7 +52,8 @@ export class WindowsNativeStartup implements NativeStartupPlatform {
       const proxy = await this.proxyState();
       const authorized = await proxy.lease.authorizedPorts();
       if (authorized.includes(proxy.lease.port)) return unlocked();
-      // Serialize first-time WFP reconciliation with elevated setup.
+      // Serialize inspection while an explicit setup transaction may be
+      // reconciling the fixed WFP proxy-port pool in another process.
       return withWindowsProxyProvisioningLock(this.options.dataDir, unlocked,
         this.options.limits.nativeSandboxSetupTimeoutMs + this.startupTimeoutMs);
     } catch (error) {
@@ -63,7 +64,7 @@ export class WindowsNativeStartup implements NativeStartupPlatform {
   async setup(readiness: SandboxReadiness, unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult): Promise<SandboxSetupResult> {
     const home = nativeSandboxHome(this.options.dataDir);
     await mkdir(home, { recursive: true, mode: 0o700 });
-    this.options.report("Requesting one administrator-approved Windows sandbox setup for this EASY CODE process port.");
+    this.options.report("Requesting one administrator-approved Windows sandbox setup for the fixed EASY CODE proxy-port pool.");
     return withWindowsProxyProvisioningLock(this.options.dataDir, async () => {
       const current = await unlocked();
       if (current.status === "ready") return { status: "already_ready" as const,
