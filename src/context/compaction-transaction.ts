@@ -60,7 +60,7 @@ export function investigationExchangeStart(messages: readonly ChatMessage[], end
   while (start >= 0 && messages[start]?.role === "tool") start -= 1;
   const assistant = messages[start];
   if (!assistant || assistant.role !== "assistant" || !assistant.tool_calls?.length ||
-      !assistant.tool_calls.every((call) => ["read_file", "search_files", "read_image"].includes(call.function.name)) ||
+      !assistant.tool_calls.every((call) => ["read_file", "read_document", "search_files", "read_image"].includes(call.function.name)) ||
       !completeExchange(messages, end)) return undefined;
   return start;
 }

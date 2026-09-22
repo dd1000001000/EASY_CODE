@@ -60,7 +60,7 @@ export function toolDisplayDetails(tool: AgentTool | undefined, toolName: string
     ];
   }
 
-  if (["read_file", "create_file", "update_file", "delete_file", "read_image"].includes(toolName)) {
+  if (["read_file", "read_document", "create_file", "update_file", "delete_file", "read_image"].includes(toolName)) {
     return detail("File", string(input?.path));
   }
 

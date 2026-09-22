@@ -23,6 +23,9 @@ max_context_tokens = 1000000
 # Captured raw tool evidence and model-facing results are separate budgets.
 max_output_chars = 256000
 max_tool_result_chars = 64000
+# Maximum source size for one conversation document/resource (default 50 MiB,
+# configurable from 1 MiB through 1 GiB). Restart EASY CODE after changing it.
+thread_resource_max_bytes = 52428800
 # Foreground run_command budget. Background start_command uses a separate lifetime.
 command_timeout_ms = 120000
 # Maximum lifetime for a background process (default 1 hour); an explicit

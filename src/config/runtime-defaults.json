@@ -7,6 +7,7 @@
   "maxContextTokens": 1000000,
   "maxOutputChars": 256000,
   "maxToolResultChars": 64000,
+  "threadResourceMaxBytes": 52428800,
   "mcpStdioMaxMessageBytes": 268435456,
   "mcpIdleTimeoutMs": 120000,
   "mcpStartupTimeoutMs": 60000,

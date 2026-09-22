@@ -19,6 +19,7 @@ export type BuiltinToolName =
   | "select_mode"
   | "propose_plan"
   | "read_file"
+  | "read_document"
   | "search_files"
   | "read_image"
   | "create_file"

@@ -25,6 +25,7 @@ import {
   ProposePlanTool,
   PollCommandTool,
   ReadFileTool,
+  ReadDocumentTool,
   ReadImageTool,
   ReadMemoryTool,
   RecallContextTool,
@@ -53,10 +54,11 @@ import type { EasyCodeStorage } from "../src/storage/database.js";
 import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "../src/tools/skill-tools.js";
 import { WebSearchTool } from "../src/tools/web-search.js";
 import { FetchWebpageTool } from "../src/tools/fetch-webpage.js";
-import { ThreadResourceStore } from "../src/resources/index.js";
+import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
+  const resourceStore = new ThreadResourceStore(process.cwd());
   const skills = new SkillStore(process.cwd());
   const memorySession = new MemoryToolSession();
   const task = {
@@ -71,7 +73,7 @@ function actualDefinitions() {
     new DeleteFileTool(workspace).definition,
     new DeleteSkillTool(workspace, skills).definition,
     new FetchArtifactTool({} as DownloadBroker).definition,
-    new FetchWebpageTool(workspace, new ThreadResourceStore(process.cwd())).definition,
+    new FetchWebpageTool(workspace, resourceStore).definition,
     new ReadMemoryTool(workspace, memorySession).definition,
     new WriteMemoryTool({ limits: DEFAULT_RUNTIME_LIMITS } as MemoryManager, workspace, memorySession).definition,
     new ManageSubagentsTool({} as SubagentControl).definition,
@@ -86,6 +88,8 @@ function actualDefinitions() {
     new NameThreadTool(new ThreadTitleStore({} as EasyCodeStorage)).definition,
     new ProposePlanTool().definition,
     new ReadFileTool(workspace).definition,
+    new ReadDocumentTool(workspace,
+      new ThreadDocumentService(new DocumentConverter(process.cwd()), resourceStore)).definition,
     new ReadSkillTool(workspace, skills).definition,
     new ReadImageTool(workspace).definition,
     new RecallContextTool().definition,
@@ -124,6 +128,7 @@ describe("Prompt Bundle tool metadata", () => {
       "name_thread",
       "poll_command",
       "propose_plan",
+      "read_document",
       "read_file",
       "read_image",
       "read_memory",

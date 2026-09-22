@@ -375,6 +375,7 @@ describe("loopback Web service", () => {
         storageKey: `attachments/${"a".repeat(32)}/${imageId}.png`, sha256: "0".repeat(64),
         byteSize: 4, width: 1, height: 1 }),
       discardHostedImage: async () => { discarded += 1; },
+      hostedDocumentMaxBytes: () => 50 * 1024 * 1024,
       importHostedDocument: async (data: Buffer, filename: string, mediaType: string) => ({
         id: "resource_12345678-1234-4123-8123-123456789abc", filename, kind: "document" as const,
         mediaType, uri: "thread-resource://resource_12345678-1234-4123-8123-123456789abc/content.md",

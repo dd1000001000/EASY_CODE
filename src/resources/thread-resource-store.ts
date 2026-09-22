@@ -7,7 +7,7 @@ import { sha256 } from "../utils/hash.js";
 import type { ThreadResourceAttachment, ThreadResourceKind, ThreadResourceRecord } from "./types.js";
 
 export const THREAD_RESOURCE_SCHEME = "thread-resource://";
-export const MAX_THREAD_RESOURCE_UPLOAD_BYTES = 50 * 1024 * 1024;
+export const DEFAULT_THREAD_RESOURCE_MAX_BYTES = 50 * 1024 * 1024;
 const THREAD_ID = /^[A-Za-z0-9._-]+$/u;
 const RESOURCE_ID = /^resource_[0-9a-f-]{36}$/u;
 const METADATA = "resource.json";
@@ -39,7 +39,10 @@ export function parseThreadResourceUri(value: string): { id: string } | undefine
 export class ThreadResourceStore {
   private readonly threadsRoot: string;
 
-  constructor(dataDir: string) { this.threadsRoot = path.resolve(dataDir, "threads"); }
+  constructor(dataDir: string, readonly maxBytes = DEFAULT_THREAD_RESOURCE_MAX_BYTES) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error("Thread resource byte limit must be a positive integer.");
+    this.threadsRoot = path.resolve(dataDir, "threads");
+  }
 
   private resourcesRoot(threadId: string): string {
     assertThreadId(threadId);
@@ -89,6 +92,7 @@ export class ThreadResourceStore {
         typeof raw.filename !== "string" || (raw.kind !== "document" && raw.kind !== "webpage") ||
         typeof raw.mediaType !== "string" || typeof raw.byteSize !== "number" ||
         typeof raw.contentSha256 !== "string" || typeof raw.totalLines !== "number" ||
+        (raw.sourceSha256 !== undefined && (typeof raw.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(raw.sourceSha256))) ||
         typeof raw.createdAt !== "string") throw new Error("Thread resource metadata is invalid.");
     return raw as ThreadResourceRecord;
   }
@@ -101,11 +105,15 @@ export class ThreadResourceStore {
     markdown: string;
     byteSize: number;
     sourceUrl?: string;
+    sourceSha256?: string;
     original?: Buffer;
   }): Promise<ThreadResourceAttachment> {
     assertThreadId(input.threadId);
-    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > MAX_THREAD_RESOURCE_UPLOAD_BYTES) {
-      throw new Error(`Resource exceeds the ${MAX_THREAD_RESOURCE_UPLOAD_BYTES}-byte limit.`);
+    if (!Number.isSafeInteger(input.byteSize) || input.byteSize < 0 || input.byteSize > this.maxBytes) {
+      throw new Error(`Resource exceeds the configured ${this.maxBytes}-byte limit.`);
+    }
+    if (input.sourceSha256 !== undefined && !/^[a-f0-9]{64}$/u.test(input.sourceSha256)) {
+      throw new Error("Invalid document source hash.");
     }
     const id = `resource_${randomUUID()}`;
     const finalRoot = this.resourceRoot(input.threadId, id);
@@ -127,6 +135,7 @@ export class ThreadResourceStore {
         byteSize: input.byteSize,
         createdAt: new Date().toISOString(),
         contentSha256: sha256(normalized),
+        ...(input.sourceSha256 ? { sourceSha256: input.sourceSha256 } : {}),
         totalLines,
         ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
       };
@@ -163,6 +172,13 @@ export class ThreadResourceStore {
       try { records.push(await this.readRecord(threadId, entry.name)); } catch { /* Ignore incomplete private entries. */ }
     }
     return records.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async findDocumentBySourceHash(threadId: string, sourceSha256: string): Promise<ThreadResourceAttachment | undefined> {
+    if (!/^[a-f0-9]{64}$/u.test(sourceSha256)) throw new Error("Invalid document source hash.");
+    const found = (await this.list(threadId)).find(record =>
+      record.kind === "document" && record.sourceSha256 === sourceSha256);
+    return found ? this.toAttachment(found) : undefined;
   }
 
   async contentPath(threadId: string, uri: string): Promise<{ record: ThreadResourceRecord; path: string }> {

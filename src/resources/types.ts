@@ -16,5 +16,7 @@ export interface ThreadResourceRecord extends ThreadResourceAttachment {
   readonly version: 1;
   readonly threadId: string;
   readonly contentSha256: string;
+  /** Hash of the immutable source bytes, used to reuse one conversion per Thread. */
+  readonly sourceSha256?: string;
   readonly totalLines: number;
 }
