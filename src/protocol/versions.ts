@@ -4,7 +4,7 @@
  */
 export const CURRENT_PROTOCOL = Object.freeze({
   journalEvent: 2,
-  sessionState: 2,
+  sessionState: 3,
   checkpointDelta: 2,
   semanticSummary: 3,
   compactionMetadata: 2,

@@ -1,4 +1,5 @@
 import type { FileChangeRecord, FileVersion } from "../core/types.js";
+import type { ProjectWorkspace } from "../projects/types.js";
 import {
   captureGitCommandBaseline,
   captureGitWorkspaceSnapshot,
@@ -7,7 +8,7 @@ import {
   type GitCommandChangeBaseline,
   type GitWorkspaceDescriptor,
 } from "./git-change-tracker.js";
-import { WorkspacePathGuard } from "./path-guard.js";
+import { MultiRootPathGuard, WorkspacePathGuard, type WorkspaceBoundary } from "./path-guard.js";
 import {
   captureWorkspaceSnapshot,
   diffWorkspaceSnapshots,
@@ -19,6 +20,9 @@ import {
 
 export interface ManifestSummary {
   workspaceRoot: string;
+  projectId?: string;
+  workspaceRevision?: number;
+  folders?: Array<{ key: string; path: string }>;
   capturedAt: string;
   fileCount: number;
   totalBytes: number;
@@ -58,30 +62,61 @@ export interface VerifiedWorkspaceFileState {
 
 /** Owns the workspace manifest, read versions and current ChangeSet. */
 export class WorkspaceManager {
-  readonly pathGuard: WorkspacePathGuard;
+  readonly pathGuard: WorkspaceBoundary;
+  readonly projectId?: string;
+  readonly revision: number;
+  readonly folders: readonly { id?: string; key: string; path: string }[];
   private readonly options: WorkspaceManagerOptions;
+  private readonly rootGuards: readonly { key: string; guard: WorkspacePathGuard }[];
   private readonly readVersions = new Map<string, FileVersion>();
   private readonly changes: FileChangeRecord[] = [];
   private gitWorkspace?: GitWorkspaceDescriptor;
   private manifest?: WorkspaceSnapshot;
 
-  constructor(workspaceRoot: string, options: WorkspaceManagerOptions = {}) {
-    this.pathGuard = new WorkspacePathGuard(workspaceRoot);
+  constructor(workspace: string | ProjectWorkspace, options: WorkspaceManagerOptions = {}) {
+    if (typeof workspace === "string") {
+      const guard = new WorkspacePathGuard(workspace);
+      this.pathGuard = guard;
+      this.rootGuards = [{ key: "workspace", guard }];
+      this.folders = [{ key: "workspace", path: guard.root }];
+      this.revision = 1;
+    } else {
+      const active = workspace.folders.filter(folder => folder.active);
+      const primary = active.find(folder => folder.id === workspace.primaryFolderId);
+      if (!primary) throw new Error("The project's primary workspace folder is unavailable");
+      const guards = active.map(folder => ({ key: folder.key, guard: new WorkspacePathGuard(folder.path), id: folder.id }));
+      this.pathGuard = new MultiRootPathGuard(
+        guards.map(item => ({ key: item.key, path: item.guard.root })),
+        primary.key,
+      );
+      this.rootGuards = guards.map(({ key, guard }) => ({ key, guard }));
+      this.folders = guards.map(({ id, key, guard }) => ({ id, key, path: guard.root }));
+      this.projectId = workspace.projectId;
+      this.revision = workspace.revision;
+    }
     this.options = options;
   }
 
   static async create(
-    workspaceRoot: string,
+    workspaceRoot: string | ProjectWorkspace,
     options: WorkspaceManagerOptions = {},
   ): Promise<WorkspaceManager> {
     const manager = new WorkspaceManager(workspaceRoot, options);
-    manager.gitWorkspace = await discoverGitWorkspace(manager.pathGuard);
+    manager.gitWorkspace = manager.rootGuards.length === 1
+      ? await discoverGitWorkspace(manager.rootGuards[0]!.guard)
+      : undefined;
     await manager.refreshManifest();
     return manager;
   }
 
   get root(): string {
     return this.pathGuard.root;
+  }
+
+  get writableRoots(): readonly string[] { return this.folders.map(folder => folder.path); }
+
+  rootForPath(candidate: string): string {
+    return this.pathGuard.rootForPath?.(candidate) ?? this.root;
   }
 
   recordRead(filename: string, hash: string): FileVersion {
@@ -190,7 +225,7 @@ export class WorkspaceManager {
       try {
         return await captureGitWorkspaceSnapshot(
           this.gitWorkspace,
-          this.pathGuard,
+          this.rootGuards[0]!.guard,
           this.options,
           signal,
           this.manifest?.files.keys(),
@@ -216,7 +251,7 @@ export class WorkspaceManager {
       try {
         return await captureGitCommandBaseline(
           this.gitWorkspace,
-          this.pathGuard,
+          this.rootGuards[0]!.guard,
           this.manifest?.files ?? new Map(),
           this.options,
           signal,
@@ -245,7 +280,7 @@ export class WorkspaceManager {
       try {
         const comparison = await compareGitCommandBaseline(
           this.gitWorkspace,
-          this.pathGuard,
+          this.rootGuards[0]!.guard,
           baseline,
           this.options,
           signal,
@@ -340,6 +375,8 @@ export class WorkspaceManager {
     );
     return {
       workspaceRoot: this.root,
+      ...(this.projectId ? { projectId: this.projectId, workspaceRevision: this.revision } : {}),
+      folders: this.folders.map(({ key, path }) => ({ key, path })),
       capturedAt: snapshot.capturedAt,
       fileCount: entries.length,
       totalBytes: entries.reduce((total, entry) => total + entry.size, 0),
@@ -364,10 +401,31 @@ export class WorkspaceManager {
   }
 
   private async captureFilesystemSnapshot(signal?: AbortSignal): Promise<WorkspaceSnapshot> {
-    return captureWorkspaceSnapshot(this.pathGuard, {
-      ...this.options,
-      ...(signal ? { signal } : {}),
-    });
+    if (this.rootGuards.length === 1) {
+      return captureWorkspaceSnapshot(this.rootGuards[0]!.guard, {
+        ...this.options,
+        ...(signal ? { signal } : {}),
+      });
+    }
+    const snapshots = await Promise.all(this.rootGuards.map(async ({ key, guard }) => ({
+      key,
+      snapshot: await captureWorkspaceSnapshot(guard, {
+        ...this.options,
+        ...(signal ? { signal } : {}),
+      }),
+    })));
+    const files = new Map<string, WorkspaceSnapshotEntry>();
+    for (const { key, snapshot } of snapshots) {
+      for (const entry of snapshot.files.values()) {
+        const namespaced = `${key}/${entry.path}`;
+        files.set(namespaced, { ...entry, path: namespaced });
+      }
+    }
+    return {
+      capturedAt: new Date().toISOString(),
+      files,
+      truncated: snapshots.some(item => item.snapshot.truncated),
+    };
   }
 
   private recordDelta(

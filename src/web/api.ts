@@ -14,7 +14,14 @@ export interface ThreadItem {
   model: string;
   updatedAt: string;
 }
-export interface ProjectItem { id: string; root: string; name: string }
+export interface ProjectFolderItem {
+  id: string; projectId: string; key: string; path: string; active: boolean;
+  addedRevision: number; removedRevision?: number; sortOrder: number;
+}
+export interface ProjectItem {
+  id: string; root: string; name: string; ready?: boolean; workspaceRevision?: number;
+  primaryFolderId?: string; folders?: ProjectFolderItem[];
+}
 export interface WebSnapshot {
   language: Language;
   sequence: number;

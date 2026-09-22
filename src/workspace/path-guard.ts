@@ -18,6 +18,21 @@ export interface ResolveExistingOptions {
   allowFinalSymlink?: boolean;
 }
 
+/** The path operations consumed by file tools and command resolution. */
+export interface WorkspaceBoundary {
+  readonly root: string;
+  protectedPaths(): readonly string[];
+  normalizeRelative(input: string): string;
+  resolveLexical(input: string): string;
+  resolveExisting(input: string, options?: ResolveExistingOptions): Promise<string>;
+  resolveForCreate(input: string, createParents?: boolean): Promise<string>;
+  toRelative(absolutePath: string): string;
+  isAccessible(input: string): Promise<boolean>;
+  assertInside(candidate: string): void;
+  protect(root: string): void;
+  rootForPath?(candidate: string): string;
+}
+
 function looksLikeAbsoluteOnAnotherPlatform(value: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(value) || /^(?:\\\\|\/\/)/.test(value);
 }
@@ -198,6 +213,11 @@ export class WorkspacePathGuard {
     this.protectedRoots.push(path.resolve(root));
   }
 
+  rootForPath(candidate: string): string {
+    this.assertInside(candidate);
+    return this.root;
+  }
+
   private async assertNoRedirectedAncestors(target: string): Promise<void> {
     let current = this.root;
     for (const segment of path.relative(this.root, target).split(path.sep)) {
@@ -238,5 +258,137 @@ export class WorkspacePathGuard {
       current = parent;
       this.assertInside(current);
     }
+  }
+}
+
+export interface NamedWorkspaceRoot { readonly key: string; readonly path: string }
+
+/**
+ * Routes a namespaced logical path to one of several independent host roots.
+ * With more than one root, paths must start with the stable folder key. No
+ * symlinked aggregate directory is created, so OS and application boundaries
+ * continue to protect the real folders directly.
+ */
+export class MultiRootPathGuard implements WorkspaceBoundary {
+  readonly root: string;
+  readonly roots: readonly NamedWorkspaceRoot[];
+  private readonly guards: ReadonlyMap<string, WorkspacePathGuard>;
+  private readonly primaryKey: string;
+
+  constructor(roots: readonly NamedWorkspaceRoot[], primaryKey: string) {
+    if (!roots.length) throw new Error("At least one workspace folder is required");
+    const entries = roots.map(entry => {
+      if (!/^[a-z0-9](?:[a-z0-9-]{0,62})$/u.test(entry.key)) throw new Error(`Invalid workspace folder key: ${entry.key}`);
+      return [entry.key, new WorkspacePathGuard(entry.path)] as const;
+    });
+    if (new Set(entries.map(([key]) => key)).size !== entries.length) throw new Error("Workspace folder keys must be unique");
+    const primary = entries.find(([key]) => key === primaryKey);
+    if (!primary) throw new Error("The primary workspace folder is missing");
+    this.primaryKey = primaryKey;
+    this.guards = new Map(entries);
+    this.roots = entries.map(([key, guard]) => ({ key, path: guard.root }));
+    this.root = primary[1].root;
+  }
+
+  protectedPaths(): readonly string[] {
+    return [...this.guards.values()].flatMap(guard => guard.protectedPaths());
+  }
+
+  private route(input: string, requireChild = false): { key: string; guard: WorkspacePathGuard; inner: string } {
+    if (typeof input !== "string" || !input.length || input.includes("\0") || input.includes("\r") || input.includes("\n"))
+      throw new Error("Path must be a non-empty workspace-relative string");
+    if (path.isAbsolute(input) || looksLikeAbsoluteOnAnotherPlatform(input))
+      throw new Error("Absolute paths are not allowed; use a workspace-relative path");
+    if (this.guards.size === 1) {
+      const [key, guard] = [...this.guards][0]!;
+      const segments = input.split(/[\\/]+/u).filter(segment => segment && segment !== ".");
+      // Accept the previously persisted namespaced form when a multi-root
+      // project is reduced to one folder, then normalize back to legacy paths.
+      const innerInput = segments[0] === key && segments.length > 1
+        ? segments.slice(1).join("/")
+        : input;
+      return { key, guard, inner: guard.normalizeRelative(innerInput) };
+    }
+    const segments = input.split(/[\\/]+/u).filter(segment => segment && segment !== ".");
+    let key = segments[0];
+    let guard = key ? this.guards.get(key) : undefined;
+    // Paths recorded while a project had one folder remain valid after a
+    // second folder is attached: an unqualified path still means primary.
+    // New paths are normalized to the explicit key before persistence.
+    if (!guard) {
+      key = this.primaryKey;
+      guard = this.guards.get(key)!;
+    } else {
+      segments.shift();
+    }
+    if (!key) throw new Error(`Path must identify a project folder (${[...this.guards.keys()].join(", ")})`);
+    if (!segments.length) {
+      if (requireChild) throw new Error("A file or subdirectory path is required after the folder key");
+      return { key, guard, inner: "" };
+    }
+    const inner = guard.normalizeRelative(segments.join("/"));
+    return { key, guard, inner };
+  }
+
+  normalizeRelative(input: string): string {
+    const routed = this.route(input);
+    return this.guards.size === 1 ? routed.inner : routed.inner ? `${routed.key}/${routed.inner}` : routed.key;
+  }
+
+  resolveLexical(input: string): string {
+    const routed = this.route(input, true);
+    return routed.guard.resolveLexical(routed.inner);
+  }
+
+  async resolveExisting(input: string, options: ResolveExistingOptions = {}): Promise<string> {
+    const routed = this.route(input);
+    if (!routed.inner) {
+      if (options.kind === "file") throw new Error("Path does not refer to a regular file");
+      return routed.guard.root;
+    }
+    return routed.guard.resolveExisting(routed.inner, options);
+  }
+
+  async resolveForCreate(input: string, createParents = true): Promise<string> {
+    const routed = this.route(input, true);
+    return routed.guard.resolveForCreate(routed.inner, createParents);
+  }
+
+  toRelative(absolutePath: string): string {
+    const normalized = path.resolve(absolutePath);
+    for (const [key, guard] of this.guards) {
+      try {
+        guard.assertInside(normalized);
+        const inner = path.relative(guard.root, normalized).split(path.sep).join("/");
+        return this.guards.size === 1 ? inner || "." : inner ? `${key}/${inner}` : key;
+      } catch {
+        // Try the next root.
+      }
+    }
+    throw new Error("Resolved path escapes every project folder boundary");
+  }
+
+  async isAccessible(input: string): Promise<boolean> {
+    try {
+      const target = await this.resolveExisting(input);
+      await access(target, constants.R_OK);
+      return true;
+    } catch { return false; }
+  }
+
+  assertInside(candidate: string): void {
+    for (const guard of this.guards.values()) {
+      try { guard.assertInside(candidate); return; } catch { /* continue */ }
+    }
+    throw new Error("Resolved path escapes every project folder boundary");
+  }
+
+  protect(root: string): void { for (const guard of this.guards.values()) guard.protect(root); }
+
+  rootForPath(candidate: string): string {
+    for (const guard of this.guards.values()) {
+      try { guard.assertInside(candidate); return guard.root; } catch { /* continue */ }
+    }
+    throw new Error("Resolved path escapes every project folder boundary");
   }
 }

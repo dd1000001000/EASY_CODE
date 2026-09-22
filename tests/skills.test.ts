@@ -44,29 +44,29 @@ describe("EASY CODE Skill resources", () => {
   it("shares project Skills across Threads and nested workspaces without a Thread ID", async () => {
     await fixture(async ({ project, nested, home, trash, store }) => {
       await store.create("project", "check-api", "Review API diffs.", "Inspect the diff.");
-      await store.create("user", "check-api", "Review across projects.", "Inspect the API.");
+      await store.create("global", "check-api", "Review across projects.", "Inspect the API.");
       const anotherThread = new SkillStore(nested, home, trash);
       assert.equal(await anotherThread.projectRoot(), await realpath(project));
       const listing = await anotherThread.list();
       assert.equal(listing.projectDirectory, path.join(await realpath(project), ".easy_code_skills"));
-      assert.equal(listing.userDirectory, path.join(await realpath(home), ".easy_code_skills"));
+      assert.equal(listing.globalDirectory, path.join(await realpath(home), ".easy_code_skills"));
       assert.equal(listing.project[0]?.description, "Review API diffs.");
-      assert.equal(listing.user[0]?.description, "Review across projects.");
-      assert.notEqual(listing.project[0]?.directory, listing.user[0]?.directory);
+      assert.equal(listing.global[0]?.description, "Review across projects.");
+      assert.notEqual(listing.project[0]?.directory, listing.global[0]?.directory);
       assert.equal((await anotherThread.read("project", "check-api")).name, "check-api");
     });
   });
 
-  it("shares user Skills across projects, but keeps project Skills local", async () => {
+  it("shares global Skills across projects, but keeps project Skills local", async () => {
     await fixture(async ({ project, home, trash, store }) => {
       const secondProject = path.join(path.dirname(project), "other-project");
       await mkdir(secondProject);
-      await store.create("user", "common-check", "Check any project.", "Review the code.");
+      await store.create("global", "common-check", "Check any project.", "Review the code.");
       await store.create("project", "local-check", "Check only this project.", "Review the code.");
       const otherStore = new SkillStore(secondProject, home, trash);
       assert.equal(await otherStore.projectRoot(), await realpath(secondProject));
       const listing = await otherStore.list();
-      assert.deepEqual(listing.user.map(skill => skill.name), ["common-check"]);
+      assert.deepEqual(listing.global.map(skill => skill.name), ["common-check"]);
       assert.deepEqual(listing.project, []);
     });
   });
@@ -150,8 +150,8 @@ describe("EASY CODE Skill resources", () => {
       const create = new CreateSkillTool(workspace, store);
       const modify = new ModifySkillTool(workspace, store);
       const remove = new DeleteSkillTool(workspace, store);
-      assert.equal(create.approvalTarget({ scope: "user", name: "helper" }).name,
-        "create_skill:user:helper");
+      assert.equal(create.approvalTarget({ scope: "global", name: "helper" }).name,
+        "create_skill:global:helper");
       assert.equal(remove.approvalTarget({ scope: "project", name: "helper" }).name,
         "delete_skill:project:helper");
       assert.equal((await create.execute({ scope: "project", name: "helper",

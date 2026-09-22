@@ -1,17 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
 import { CommandRuntime } from "../dist/command/runtime.js";
+import { resolveEasyCodePaths } from "../dist/config/defaults.js";
+import { NativeSandboxBackend } from "../dist/sandbox/native-backend.js";
 import { WorkspaceMutationLock, wrapAgentToolsWithWorkspaceMutationLock } from "../dist/subagents/workspace-mutation-lock.js";
 import { WorkspaceManager } from "../dist/workspace/manager.js";
 
 const checkout = process.cwd();
 const root = await mkdtemp(path.join(checkout, ".easy-code-service-smoke-"));
-const workspace = await WorkspaceManager.create(root);
-const runtime = new CommandRuntime(workspace);
+const secondary = await mkdtemp(path.join(checkout, ".easy-code-service-secondary-"));
+const sandboxData = await mkdtemp(path.join(os.tmpdir(), "easy-code-service-sandbox-"));
+const nativeDataDir = process.platform === "win32" ? resolveEasyCodePaths().dataDir : sandboxData;
+const projectId = "project_12345678-1234-4123-8123-123456789abc";
+const workspace = await WorkspaceManager.create({ projectId, revision: 1, primaryFolderId: "folder_primary",
+  folders: [
+    { id: "folder_primary", projectId, key: "primary", path: root, active: true, addedRevision: 1, sortOrder: 0 },
+    { id: "folder_secondary", projectId, key: "secondary", path: secondary, active: true, addedRevision: 1, sortOrder: 1 },
+  ] });
+const runtime = new CommandRuntime(workspace, undefined,
+  new NativeSandboxBackend(workspace, { dataDir: nativeDataDir }), undefined, {
+    lifecycleDirectory: path.join(sandboxData, "command-leases"),
+    quarantinePath: path.join(sandboxData, "command-quarantine.json"),
+    boundaryStatePath: path.join(sandboxData, "command-boundary.json"),
+  });
 const context = {
   workspaceRoot: root,
   mode: "code",
@@ -47,7 +63,7 @@ try {
   const client = `require('node:http').get('http://127.0.0.1:${port}',r=>{let body='';r.on('data',x=>body+=x);r.on('end',()=>{console.log(r.statusCode,body);process.exit(r.statusCode===200&&body==='service-ok'?0:2)})}).on('error',e=>{console.error(e.code);process.exit(3)})`;
   const started = await startTool.execute({ program: process.execPath, args: ["-e", server], intent: "run",
     backgroundKind: "service", timeoutMs: 20_000 }, context);
-  assert.equal(started.data?.status, "running", "service did not start");
+  assert.equal(started.data?.status, "running", `service did not start: ${JSON.stringify(started)}`);
   const handle = started.data.commandId;
   let ready = false;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -58,11 +74,18 @@ try {
       break;
     }
     const state = await runtime.status(handle, context);
-    assert.equal(state.status, "running", "service exited before readiness");
+    assert.equal(state.status, "running", `service exited before readiness: ${JSON.stringify(state)}`);
     await new Promise((resolve) => setTimeout(resolve, 150));
   }
   assert.equal(ready, true, "separate native sandbox command could not reach the service");
   console.log("same-agent HTTP probe: ok");
+
+  const secondRoot = await runTool.execute({ program: process.execPath,
+    args: ["-e", "require('node:fs').writeFileSync('service-client.txt','MULTI_ROOT_SERVICE_OK')"],
+    cwd: "secondary", intent: "run", timeoutMs: 3_000 }, context);
+  assert.equal(secondRoot.data?.exitCode, 0, JSON.stringify(secondRoot));
+  assert.equal(await readFile(path.join(secondary, "service-client.txt"), "utf8"), "MULTI_ROOT_SERVICE_OK");
+  console.log("service sandbox second project folder: ok");
 
   if (process.platform === "linux") {
     const external = await runTool.execute({ program: process.execPath, args: ["-e",
@@ -107,4 +130,6 @@ try {
     throw new Error("Service smoke cleanup path escaped the checkout");
   }
   await rm(root, { recursive: true, force: true });
+  await rm(secondary, { recursive: true, force: true });
+  await rm(sandboxData, { recursive: true, force: true });
 }

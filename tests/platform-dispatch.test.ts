@@ -40,7 +40,7 @@ describe("platform service selection", () => {
       new MacNativeBackend(backendOptions),
       new LinuxNativeBackend(backendOptions),
     ];
-    assert.deepEqual(implementations.map(value => value.sandboxManagedTimeout), [true, false, false]);
+    assert.deepEqual(implementations.map(value => value.sandboxManagedTimeout), [true, false, true]);
     assert.deepEqual(implementations.map(value => value.cooperativeTermination), [false, true, true]);
   });
 });

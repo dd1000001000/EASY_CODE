@@ -1,9 +1,9 @@
 {
   "id": "delete_skill",
   "contractVersion": "1.0.0",
-  "description": "Remove exactly one user-level or project-level EASY CODE Skill after checking its version. Its directory is archived for recovery.",
+  "description": "Remove exactly one global or project-level EASY CODE Skill after checking its version. Its directory is archived for recovery.",
   "propertyDescriptions": {
-    "scope": "Exact user or project scope of the Skill to delete.",
+    "scope": "Exact global or project scope of the Skill to delete.",
     "name": "Exact Skill name within the selected scope; wildcards are not accepted.",
     "expectedVersion": "64-character version hash returned by read_skill before deletion."
   },

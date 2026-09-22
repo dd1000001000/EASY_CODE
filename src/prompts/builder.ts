@@ -26,6 +26,7 @@ export interface BuildSystemPromptOptions {
   config: EasyCodeConfig;
   mode: AgentMode;
   workspaceSummary?: string;
+  workspaceFolders?: readonly { key: string; path: string }[];
   memories?: string | readonly string[] | readonly LongTermMemory[];
   /** Runtime-owned deterministic resume state; never supplied by the model. */
   workingCheckpoint?: string;
@@ -44,6 +45,7 @@ export interface BuildSystemPromptOptions {
   /** Tools exposed for this model request. Omit to use the complete current catalog. */
   availableTools?: readonly ToolName[];
   commandExecutionMode?: CommandExecutionMode;
+  skillStore?: SkillStore;
 }
 
 const TOOL_RULE_ORDER: readonly ToolName[] = [
@@ -162,10 +164,21 @@ export async function buildSystemPrompt(
   if (instructions.length) {
     sections.push(formatInstructions(catalog, instructions));
   }
-  const skillListing = await new SkillStore(workspaceRoot).list();
+  if (options.workspaceFolders && options.workspaceFolders.length > 1) {
+    const entries = options.workspaceFolders.map(folder => `${folder.key}: ${folder.path}`).join("\n");
+    sections.push(
+      "PROJECT WORKSPACE: This logical project has multiple independent folder roots. " +
+      "For every file tool, begin the path with the folder key shown below (for example `api/src/main.ts`). " +
+      "For command tools, use the folder key or `folder-key/subdirectory` as cwd; `.` means the primary folder. " +
+      "Never use `..` to cross roots. Prefer one folder-key cwd per command; if one command genuinely must reference " +
+      "multiple attached roots, it may use only the exact attached absolute paths listed below.\n" +
+      untrustedBlock(catalog, "PROJECT_FOLDERS", entries),
+    );
+  }
+  const skillListing = await (options.skillStore ?? new SkillStore(workspaceRoot)).list();
   const skillLines = [
     ...skillListing.project.map(skill => `project/${skill.name} (${skill.directory}): ${skill.description}`),
-    ...skillListing.user.map(skill => `user/${skill.name} (${skill.directory}): ${skill.description}`),
+    ...skillListing.global.map(skill => `global/${skill.name} (${skill.directory}): ${skill.description}`),
   ];
   if (skillLines.length) {
     sections.push(renderPrompt(catalog, "runtime/skill-catalog.md", {

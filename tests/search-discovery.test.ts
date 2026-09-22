@@ -26,6 +26,35 @@ async function fixture(run: (root: string, search: SearchFilesTool, context: Too
 }
 
 describe("project discovery regression", () => {
+  it("searches every attached project folder and returns stable namespaced paths", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easy-discovery-multi-"));
+    const frontend = path.join(root, "frontend");
+    const backend = path.join(root, "backend");
+    try {
+      await mkdir(frontend); await mkdir(backend);
+      await writeFile(path.join(frontend, "app.ts"), "frontend needle");
+      await writeFile(path.join(backend, "api.ts"), "backend needle");
+      const workspace = await WorkspaceManager.create({
+        projectId: "project_test", revision: 2, primaryFolderId: "folder_frontend",
+        folders: [
+          { id: "folder_frontend", projectId: "project_test", key: "frontend", path: frontend,
+            active: true, addedRevision: 1, sortOrder: 0 },
+          { id: "folder_backend", projectId: "project_test", key: "backend", path: backend,
+            active: true, addedRevision: 2, sortOrder: 1 },
+        ],
+      });
+      const context: ToolContext = { workspaceRoot: frontend, mode: "code", threadId: "multi", turnId: "turn",
+        limits: defaultRuntimeLimits(), approvalPolicy: "never", maxOutputChars: 64_000, commandTimeoutMs: 1_000,
+        requestApproval: async () => false };
+      const tool = new SearchFilesTool(workspace);
+      const listed = data(await tool.execute({ mode: "list" }, context)).matches;
+      assert.deepEqual(listed.map((entry: any) => entry.path).sort(), ["backend/api.ts", "frontend/app.ts"]);
+      const searched = data(await tool.execute({ query: "needle" }, context)).matches;
+      assert.deepEqual(searched.map((entry: any) => entry.path).sort(), ["backend/api.ts", "frontend/app.ts"]);
+      assert.equal(workspace.pathGuard.normalizeRelative("app.ts"), "frontend/app.ts",
+        "unqualified paths remain bound to the primary folder after a second folder is attached");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it("lists one directory level without scanning environments or asking for command approval", async () => fixture(async (root, tool, ctx) => {
     await mkdir(path.join(root, "python", "Lib", "site-packages"), { recursive: true });
     await writeFile(path.join(root, "python", "Lib", "site-packages", "README.md"), "dependency");

@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync, statSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,6 @@ import { assertDataDirectoryOutsideWorkspace } from "../images/path-policy.js";
 import { parseSlashCommand, SLASH_COMMAND_NAMES } from "../cli/slash-command.js";
 import { WEB_COMMAND_DESCRIPTIONS } from "../web-command-catalog.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
-import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
 import { projectWebHistory } from "./history.js";
 import { WebInteraction } from "./interaction.js";
 import { ProjectIndex } from "./projects.js";
@@ -21,9 +21,10 @@ import { deleteThreadTree } from "../threads/delete-thread.js";
 import { pickLocalFolder } from "./folder-picker.js";
 import { executeLanguageCommand, readLanguage, type Language } from "../i18n/language.js";
 import type { WebPatch } from "../web-contracts.js";
+import type { ProjectWorkspace } from "../projects/types.js";
 
 const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
-  "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear",
+  "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear", "workspace",
 ]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES;
@@ -105,7 +106,8 @@ export class EasyCodeWebServer {
   private readonly dataDir: string;
 
   constructor(private app: EasyCodeApp | undefined, private port: WebInteraction, dataDir: string, assetsRoot?: string,
-    private readonly createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction) => Promise<EasyCodeApp>) {
+    private readonly createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction,
+      projectWorkspace?: ProjectWorkspace) => Promise<EasyCodeApp>) {
     this.staticRoot = assetsRoot ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
     this.dataDir = dataDir;
     this.projectStorage = createStorage(this.dataDir);
@@ -122,8 +124,51 @@ export class EasyCodeWebServer {
   }
 
   private busyThreadIds(): string[] {
-    return [...this.hosts].filter(([, host]) => host.running || host.app.isRequestActive() || host.port.snapshot().view.busy ||
+    return [...this.hosts].filter(([, host]) => host.running || host.app.isProjectWorkspaceBusy?.() || host.port.snapshot().view.busy ||
+      host.port.snapshot().view.decision !== null || host.port.snapshot().view.review !== null ||
       host.port.snapshot().view.subagents.some(agent => agent.status === "running" || agent.status === "stopping")).map(([id]) => id);
+  }
+
+  private assertProjectIdle(projectId: string): void {
+    const projectThreads = new Set(this.allThreads().filter(thread => thread.workspaceId === projectId).map(thread => thread.threadId));
+    if (this.busyThreadIds().some(threadId => projectThreads.has(threadId))) {
+      throw new Error("Wait for every conversation in this project to finish before changing its folders.");
+    }
+  }
+
+  private async closeProjectHosts(projectId: string): Promise<void> {
+    const threadIds = new Set(this.allThreads().filter(thread => thread.workspaceId === projectId).map(thread => thread.threadId));
+    for (const threadId of threadIds) {
+      const host = this.hosts.get(threadId);
+      if (!host) continue;
+      await this.clearStaged(host);
+      host.unsubscribe();
+      this.hosts.delete(threadId);
+      await host.app.closeAsync();
+      host.port.close();
+    }
+    if (this.app && threadIds.has(this.app.sessionInfo().threadId)) await this.leaveCurrentSession();
+  }
+
+  private async mutateProjectFolders<Result>(projectId: string, operation: () => Promise<Result> | Result): Promise<Result> {
+    if (this.transitioning) throw new Error("Another project or conversation change is still in progress.");
+    this.transitioning = true;
+    try {
+      this.assertProjectIdle(projectId);
+      await this.closeProjectHosts(projectId);
+      return await operation();
+    } finally { this.transitioning = false; }
+  }
+
+  private async deleteProjectResources(projectId: string): Promise<void> {
+    if (!/^project_[0-9a-f-]{36}$/u.test(projectId)) throw new Error("Invalid project resource identity.");
+    const targets = [
+      path.join(this.dataDir, "projects", projectId),
+      path.join(this.dataDir, "command-leases", projectId),
+      path.join(this.dataDir, "command-quarantine", `${projectId}.json`),
+      path.join(this.dataDir, "command-boundary", `${projectId}.json`),
+    ];
+    for (const target of targets) await rm(target, { recursive: true, force: true, maxRetries: 3 });
   }
 
   private broadcastStatus(): void {
@@ -250,7 +295,7 @@ export class EasyCodeWebServer {
       .finally(() => { if (host.running === work) host.running = undefined; this.broadcastStatus(); });
   }
 
-  private async switchSession(root: string, threadId?: string): Promise<void> {
+  private async switchSession(projectId: string, threadId?: string): Promise<void> {
     if (this.transitioning) throw new Error("A conversation is already opening.");
     if (!this.createApp) throw new Error("Project switching is unavailable in this host.");
     this.transitioning = true;
@@ -263,7 +308,9 @@ export class EasyCodeWebServer {
       }
       const nextPort = new WebInteraction();
       let next: EasyCodeApp;
-      try { next = await this.createApp(root, threadId, nextPort); }
+      const projectWorkspace = this.projects.workspace(projectId);
+      const root = projectWorkspace.folders.find(folder => folder.id === projectWorkspace.primaryFolderId)!.path;
+      try { next = await this.createApp(root, threadId, nextPort, projectWorkspace); }
       catch (error) { nextPort.close(); throw error; }
       if (path.resolve(next.dataDirectory()) !== path.resolve(this.dataDir)) {
         await next.closeAsync();
@@ -304,7 +351,7 @@ export class EasyCodeWebServer {
     this.port = new WebInteraction();
     const replacement = this.allThreads().filter(item => item.threadId !== targetThreadId &&
       item.workspaceId !== deletedProjectId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-    if (replacement) await this.switchSession(replacement.workspaceRoot, replacement.threadId);
+    if (replacement) await this.switchSession(replacement.workspaceId, replacement.threadId);
     else await this.leaveCurrentSession();
   }
 
@@ -506,26 +553,67 @@ export class EasyCodeWebServer {
       if (input.action === "new") {
         const project = typeof input.projectId === "string"
           ? this.projects.get(input.projectId)
-          : this.app ? this.projects.add(this.app.sessionInfo().workspaceRoot) : undefined;
+          : this.app?.sessionInfo().projectId
+            ? this.projects.get(this.app.sessionInfo().projectId!)
+            : undefined;
         if (!project) throw new Error("Choose a project folder first.");
-        await this.switchSession(project.root);
+        if (!project.ready) throw new Error("Attach at least one folder before creating a conversation.");
+        await this.switchSession(project.id);
       } else if (input.action === "resume" && typeof input.threadId === "string") {
         const thread = threads.find(item => item.threadId === input.threadId);
         if (!thread) throw new Error("Conversation not found.");
-        await this.switchSession(thread.workspaceRoot, thread.threadId);
+        await this.switchSession(thread.workspaceId, thread.threadId);
       } else throw new Error("Invalid Thread action.");
       json(response, 200, { accepted: true }); return;
     }
     if (pathname === "/api/project/add") {
-      if (typeof input.path !== "string") throw new Error("Choose a local folder.");
+      if (input.name !== undefined && typeof input.name !== "string") throw new Error("Invalid project name.");
       if (this.transitioning) throw new Error("A project is already opening.");
       this.transitioning = true;
       try {
-        await assertDataDirectoryOutsideWorkspace(this.dataDir, input.path);
-        const project = this.projects.add(input.path);
+        const project = this.projects.create(typeof input.name === "string" ? input.name : "Untitled project");
         await this.leaveCurrentSession();
         json(response, 200, { project }); return;
       } finally { this.transitioning = false; }
+    }
+    if (pathname === "/api/project/folder/add") {
+      if (typeof input.projectId !== "string" || typeof input.path !== "string") throw new Error("Choose a project and local folder.");
+      await assertDataDirectoryOutsideWorkspace(this.dataDir, input.path);
+      const folder = await this.mutateProjectFolders(input.projectId,
+        () => this.projects.addFolder(input.projectId as string, input.path as string));
+      json(response, 200, { folder, project: this.projects.get(input.projectId) }); return;
+    }
+    if (pathname === "/api/project/folder/remove") {
+      if (typeof input.projectId !== "string" || typeof input.folderId !== "string") throw new Error("Invalid project folder.");
+      await this.mutateProjectFolders(input.projectId,
+        () => this.projects.removeFolder(input.projectId as string, input.folderId as string));
+      json(response, 200, { project: this.projects.get(input.projectId) }); return;
+    }
+    if (pathname === "/api/project/folder/primary") {
+      if (typeof input.projectId !== "string" || typeof input.folderId !== "string") throw new Error("Invalid project folder.");
+      await this.mutateProjectFolders(input.projectId,
+        () => this.projects.setPrimaryFolder(input.projectId as string, input.folderId as string));
+      json(response, 200, { project: this.projects.get(input.projectId) }); return;
+    }
+    if (pathname === "/api/project/edit") {
+      if (typeof input.projectId !== "string" || typeof input.name !== "string" ||
+        !Array.isArray(input.retainedFolderIds) || !input.retainedFolderIds.every(value => typeof value === "string") ||
+        !Array.isArray(input.addedFolderPaths) || !input.addedFolderPaths.every(value => typeof value === "string") ||
+        input.primaryFolderId !== undefined && typeof input.primaryFolderId !== "string" ||
+        input.primaryFolderPath !== undefined && typeof input.primaryFolderPath !== "string") {
+        throw new Error("Invalid project edit.");
+      }
+      for (const folderPath of input.addedFolderPaths as string[]) {
+        await assertDataDirectoryOutsideWorkspace(this.dataDir, folderPath);
+      }
+      const project = await this.mutateProjectFolders(input.projectId, () => this.projects.editProject(input.projectId as string, {
+        name: input.name as string,
+        retainedFolderIds: input.retainedFolderIds as string[],
+        addedFolderPaths: input.addedFolderPaths as string[],
+        ...(typeof input.primaryFolderId === "string" ? { primaryFolderId: input.primaryFolderId } : {}),
+        ...(typeof input.primaryFolderPath === "string" ? { primaryFolderPath: input.primaryFolderPath } : {}),
+      }));
+      json(response, 200, { project }); return;
     }
     if (pathname === "/api/project/rename") {
       if (typeof input.projectId !== "string" || typeof input.name !== "string") throw new Error("Invalid project rename.");
@@ -550,7 +638,7 @@ export class EasyCodeWebServer {
     if (pathname === "/api/project/delete") {
       if (typeof input.projectId !== "string") throw new Error("Invalid project ID.");
       const project = this.projects.get(input.projectId);
-      if (input.confirmRoot !== project.root) throw new Error("Confirm the exact project folder path to remove.");
+      if (input.confirmProjectId !== project.id) throw new Error("Confirm the exact project ID to remove.");
       const threads = this.allThreads().filter(item => item.workspaceId === project.id);
       const busy = new Set(this.busyThreadIds());
       if (threads.some(thread => busy.has(thread.threadId)))
@@ -560,13 +648,11 @@ export class EasyCodeWebServer {
         await this.prepareDelete(thread.threadId, project.id);
         this.deleteConversation(thread.threadId);
       }
-      const memoryId = (() => { try { return projectMemoryIdFromRoot(project.root); } catch { return project.id; } })();
-      const sharedMemory = this.projects.list(this.allThreads()).projects.some(item =>
-        item.id !== project.id && (() => { try { return projectMemoryIdFromRoot(item.root); } catch { return item.id; } })() === memoryId);
-      if (!sharedMemory) this.projectStorage.db.prepare<[string]>(
+      this.projectStorage.db.prepare<[string]>(
         "DELETE FROM memories WHERE workspace_id = ? AND scope = 'project'",
-      ).run(memoryId);
+      ).run(project.id);
       this.projects.forgetProject(project.id);
+      await this.deleteProjectResources(project.id);
       json(response, 200, { removed: project.id, deletedThreads: threads.length }); return;
     }
     if (pathname === "/api/external-cancel") { json(response, 200, { canceled: this.hostFor(input.threadId).port.cancelExternalOperation() }); return; }
@@ -593,7 +679,8 @@ export class EasyCodeWebServer {
 }
 
 export async function serveWeb(dataDir: string, port: WebInteraction,
-  createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction) => Promise<EasyCodeApp>, signal?: AbortSignal): Promise<void> {
+  createApp?: (workspaceRoot: string, threadId: string | undefined, port: WebInteraction,
+    projectWorkspace?: ProjectWorkspace) => Promise<EasyCodeApp>, signal?: AbortSignal): Promise<void> {
   const server = new EasyCodeWebServer(undefined, port, dataDir, undefined, createApp);
   const stop = () => { void server.stop(); };
   signal?.addEventListener("abort", stop, { once: true });

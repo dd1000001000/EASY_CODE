@@ -418,9 +418,9 @@ describe("loopback Web service", () => {
       assert.equal(commandResponse.status, 200);
       const commandEntries = (await commandResponse.json() as { commands: { name: string; description: string }[] }).commands;
       const commandNames = commandEntries.map(command => command.name);
-      assert.equal(commandEntries.length, 11);
+      assert.equal(commandEntries.length, 10);
       for (const command of commandEntries) assert.ok(command.description.length > 10, `/${command.name} needs an English description`);
-      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "sessions", "new", "resume", "exit",
+      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "workspace", "sessions", "new", "resume", "exit",
         "tasks", "agents", "commands", "thinking", "adjustment"])
         assert.ok(!commandNames.includes(name), `/${name} should not be offered in Web`);
       assert.ok(commandNames.includes("mode"));
@@ -437,7 +437,7 @@ describe("loopback Web service", () => {
       assert.equal((await post("/api/command", { text: "/language fr_fr" })).status, 400);
       assert.equal((await post("/api/command", { text: "/mode code" })).status, 400);
       assert.equal((await post("/api/message", { threadId: "thread_test", text: "/language en_us" })).status, 200);
-      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "sessions"])
+      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "workspace", "sessions"])
         assert.equal((await post("/api/message", { threadId: "thread_test", text: `/${name}` })).status, 400);
       assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/model" })).status, 400);
       assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/orchestration off" })).status, 400);
@@ -462,13 +462,16 @@ describe("loopback Web service", () => {
       assert.equal(discarded, 1);
       const added = await fetch(`${origin}/api/project/add`, { method: "POST", headers: {
         Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
-      }, body: JSON.stringify({ path: projectRoot }) });
+      }, body: JSON.stringify({ name: "Test project" }) });
       assert.equal(added.status, 200, await added.clone().text());
       const project = (await added.json() as { project: { id: string } }).project;
-      const renamed = await fetch(`${origin}/api/project/rename`, { method: "POST", headers: {
-        Cookie: cookie!, Origin: origin, "Content-Type": "application/json",
-      }, body: JSON.stringify({ projectId: project.id, name: "Renamed workspace" }) });
-      assert.equal(renamed.status, 200);
+      const attached = await post("/api/project/folder/add", { projectId: project.id, path: projectRoot });
+      assert.equal(attached.status, 200, await attached.clone().text());
+      const attachedProject = (await attached.json() as { project: { primaryFolderId: string } }).project;
+      const edited = await post("/api/project/edit", { projectId: project.id, name: "Renamed workspace",
+        retainedFolderIds: [attachedProject.primaryFolderId], addedFolderPaths: [],
+        primaryFolderId: attachedProject.primaryFolderId });
+      assert.equal(edited.status, 200, await edited.clone().text());
       const stateAfterRename = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
       assert.equal((await stateAfterRename.json() as { projects: { name: string }[] }).projects[0]?.name, "Renamed workspace");
       assert.equal((await fetch(`${origin}/api/state`, { headers: { Cookie: "easy_code_web=wrong" } })).status, 401);
@@ -515,7 +518,7 @@ describe("loopback Web service", () => {
       assert.equal((await post("/api/message", { text: "hello" })).status, 409);
       assert.equal((await post("/api/adjustment", { text: "hello" })).status, 409);
       assert.equal((await post("/api/image", {}, "image/png")).status, 409);
-      const projectResponse = await post("/api/project/add", { path: projectRoot });
+      const projectResponse = await post("/api/project/add", { name: "Empty project" });
       assert.equal(projectResponse.status, 200);
       const project = (await projectResponse.json() as { project: { id: string } }).project;
       assert.equal(created, 0);
@@ -524,6 +527,8 @@ describe("loopback Web service", () => {
       assert.equal(added.view.session, null);
       assert.equal(added.projects.length, 1);
       assert.equal((await post("/api/message", { text: "still blocked" })).status, 409);
+      assert.equal((await post("/api/thread", { action: "new", projectId: project.id })).status, 400);
+      assert.equal((await post("/api/project/folder/add", { projectId: project.id, path: projectRoot })).status, 200);
       assert.equal((await post("/api/thread", { action: "new", projectId: project.id })).status, 200);
       assert.equal(created, 1);
       const opened = await fetch(`${origin}/api/state`, { headers: { Cookie: cookie } });
@@ -536,8 +541,7 @@ describe("loopback Web service", () => {
 
   it("keeps a running conversation alive while opening and sending in another", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "easy-code-parallel-web-"));
-    const projectRoot = path.join(directory, "project");
-    await mkdir(projectRoot);
+    const projectRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-parallel-project-"));
     await writeFile(path.join(directory, "index.html"), "<!doctype html><title>test</title>");
     let created = 0;
     let releaseFirst: (() => void) | undefined;
@@ -565,8 +569,9 @@ describe("loopback Web service", () => {
         method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const added = await post("/api/project/add", { path: projectRoot });
+      const added = await post("/api/project/add", { name: "Parallel project" });
       const projectId = (await added.json() as { project: { id: string } }).project.id;
+      assert.equal((await post("/api/project/folder/add", { projectId, path: projectRoot })).status, 200);
       assert.equal((await post("/api/thread", { action: "new", projectId })).status, 200);
       assert.equal((await post("/api/message", { threadId: "thread_parallel_1", text: "First task" })).status, 202);
       assert.equal((await post("/api/thread", { action: "new", projectId })).status, 200);
@@ -580,6 +585,7 @@ describe("loopback Web service", () => {
       releaseFirst?.();
       await service.stop();
       await rm(directory, { recursive: true, force: true });
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 });

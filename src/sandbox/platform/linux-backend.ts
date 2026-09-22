@@ -5,7 +5,10 @@ import type { NativeBackendPlatform, NativeBackendPlatformOptions } from "./back
 export class LinuxNativeBackend implements NativeBackendPlatform {
   readonly startupTimeoutMs: number;
   readonly cooperativeTermination = true;
-  readonly sandboxManagedTimeout = false;
+  // command/exec owns the target process and enforces timeoutMs. Give it the
+  // cleanup window to report the terminal state instead of killing the local
+  // bridge at the same millisecond and losing cleanup certainty.
+  readonly sandboxManagedTimeout = true;
   constructor(options: NativeBackendPlatformOptions) { this.startupTimeoutMs = options.limits.sandboxStartupPosixMs; }
   createNetworkGate(options: CommandNetworkGateOptions) { return createCommandNetworkGate(options); }
   async authorizedProxyPorts(existing?: readonly number[]) { return existing; }

@@ -6,7 +6,7 @@ import type { WorkspaceManager } from "../workspace/manager.js";
 import { assertMatchingWorkspace, assertWritableMode, toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 
-const scopeSchema = z.enum(["user", "project"]);
+const scopeSchema = z.enum(["global", "project"]);
 const nameSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u);
 const versionSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const relativeFileSchema = z.string().min(1);
@@ -35,7 +35,7 @@ export const deleteSkillInputSchema = z.object({
   scope: scopeSchema, name: nameSchema, expectedVersion: versionSchema,
 }).strict();
 
-const scopeProperty = { type: "string", enum: ["user", "project"] };
+const scopeProperty = { type: "string", enum: ["global", "project"] };
 const nameProperty = { type: "string", pattern: "^[a-z][a-z0-9_-]{0,63}$" };
 const versionProperty = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const fileProperty = {
@@ -82,7 +82,7 @@ export class ListSkillsTool extends SkillTool implements AgentTool {
     try {
       await this.assertAccess(context, false);
       this.inputSchema.parse(input);
-      return toolSuccess("Listed user and project Skills", await this.store.list());
+      return toolSuccess("Listed global and project Skills", await this.store.list());
     } catch (error) { return toolFailure(error, "Unable to list Skills"); }
   }
 }

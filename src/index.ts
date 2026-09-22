@@ -12,7 +12,10 @@ import { prepareDataDirectoryOutsideWorkspace, resolveDataDirectoryOutsideWorksp
 import { WebInteraction } from "./web-server/interaction.js";
 import { serveWeb } from "./web-server/server.js";
 import { WorkspaceMutationLock } from "./subagents/workspace-mutation-lock.js";
-import { workspaceIdFromRoot } from "./storage/database.js";
+import { createStorage } from "./storage/database.js";
+import { ThreadStore } from "./threads/thread-store.js";
+import { ProjectIndex } from "./web-server/projects.js";
+import type { ProjectWorkspace } from "./projects/types.js";
 import { registerConfigCommands } from "./config/config-command.js";
 import { registerSandboxCommands } from "./sandbox/cli.js";
 import {
@@ -92,9 +95,11 @@ function appOptions(
   options: CliOptions,
   startupInteraction: EasyCodeAppOptions["startupInteraction"] = "none",
   terminal?: EasyCodeAppOptions["terminal"],
+  projectWorkspace?: ProjectWorkspace,
 ): EasyCodeAppOptions {
   return {
     workspaceRoot: options.workspace,
+    ...(projectWorkspace ? { projectWorkspace } : {}),
     provider: options.provider,
     model: options.model,
     mode: options.mode,
@@ -129,7 +134,24 @@ async function withApp(
     }));
     for (const resource of resources) beginOwnedResource(resource);
     recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
-    app = await EasyCodeApp.create(appOptions(options, startupInteraction, terminal));
+    const dataDir = await prepareDataDirectoryOutsideWorkspace(config.dataDir, config.workspaceRoot);
+    const storage = createStorage(dataDir);
+    let projectWorkspace: ProjectWorkspace;
+    try {
+      const projects = new ProjectIndex(storage);
+      if (options.resume) {
+        const thread = new ThreadStore(storage).list({ limit: 100_000 })
+          .find(item => item.threadId === options.resume);
+        if (!thread) throw new Error(`Thread not found: ${options.resume}`);
+        projectWorkspace = projects.workspace(thread.workspaceId);
+      } else {
+        projectWorkspace = projects.workspace(projects.add(config.workspaceRoot).id);
+      }
+    } finally { storage.close(); }
+    app = await EasyCodeApp.create({
+      ...appOptions(options, startupInteraction, terminal, projectWorkspace),
+      workspaceRoot: projectWorkspace.folders.find(folder => folder.id === projectWorkspace.primaryFolderId)!.path,
+    });
     for (const resource of resources) completeOwnedResource(resource);
     if (stopRequested) { app.requestUninstallShutdown(); return; }
     await action(app);
@@ -148,19 +170,20 @@ async function withWeb(options: CliOptions): Promise<void> {
   for (const resource of resources) beginOwnedResource(resource);
   recordOwnedResource({ kind: "config", path: path.join(os.homedir(), ".easy_code") });
   const port = new WebInteraction();
-  const workspaceLocks = new Map<string, WorkspaceMutationLock>();
+  // A physical folder may intentionally be attached to more than one logical
+  // project. One host-wide lock prevents two Web Threads from racing writes to
+  // that shared folder (and remains safe for disjoint projects).
+  const workspaceMutationLock = new WorkspaceMutationLock();
   const shutdown = new AbortController();
   const release = registerRuntimeSession(() => shutdown.abort());
   try {
     await prepareDataDirectoryOutsideWorkspace(dataDir, config.workspaceRoot);
     for (const resource of resources) completeOwnedResource(resource);
-    await serveWeb(dataDir, port, (workspaceRoot, resumeThreadId, threadPort) => {
-      const id = workspaceIdFromRoot(workspaceRoot);
-      let lock = workspaceLocks.get(id);
-      if (!lock) { lock = new WorkspaceMutationLock(); workspaceLocks.set(id, lock); }
-      return EasyCodeApp.create({ ...appOptions(options, "none", threadPort), workspaceRoot, resumeThreadId,
+    await serveWeb(dataDir, port, (workspaceRoot, resumeThreadId, threadPort, projectWorkspace) => {
+      if (!projectWorkspace) throw new Error("Logical project workspace is unavailable.");
+      return EasyCodeApp.create({ ...appOptions(options, "none", threadPort, projectWorkspace), workspaceRoot, resumeThreadId,
         provider: undefined, model: undefined, thinkingEffort: undefined, keepInteractionOpen: true,
-        workspaceMutationLock: lock });
+        workspaceMutationLock });
     }, shutdown.signal);
   } finally { port.close(); release(); }
 }

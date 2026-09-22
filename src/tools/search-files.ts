@@ -109,9 +109,17 @@ export class SearchFilesTool implements AgentTool {
         }
       };
       const rootInput = request.path ?? ".";
-      const root: FileToolTarget = rootInput === "." ? { absolutePath: this.workspace.root, displayPath: ".",
-        versionKey: this.workspace.root, workspaceRelative: "." }
-        : await resolveExistingFileToolTarget(this.workspace, context, rootInput, { allowFinalSymlink: false });
+      // A logical project's `.` is the set of attached roots, not merely its
+      // primary folder. Individual roots stay explicitly namespaced so a hit
+      // can always be passed back to read/update tools without ambiguity.
+      const roots: FileToolTarget[] = rootInput === "."
+        ? this.workspace.folders.map((folder) => ({
+          absolutePath: folder.path,
+          displayPath: this.workspace.folders.length === 1 ? "." : folder.key,
+          versionKey: folder.path,
+          workspaceRelative: this.workspace.folders.length === 1 ? "." : folder.key,
+        }))
+        : [await resolveExistingFileToolTarget(this.workspace, context, rootInput, { allowFinalSymlink: false })];
       const push = (hit: object) => {
         const encoded = JSON.stringify(hit);
         const cost = estimatedTokens(encoded) + 4;
@@ -121,7 +129,7 @@ export class SearchFilesTool implements AgentTool {
         if (matches.length >= limits.searchMaxMatches) { stopped = "match_limit"; return false; }
         matches.push(hit); used += cost; usedChars += encoded.length + 2; return true;
       };
-      const scan = async (target: FileToolTarget) => {
+      const scan = async (root: FileToolTarget, target: FileToolTarget) => {
         check();
         const relative = path.relative(root.absolutePath, target.absolutePath).split(path.sep).join("/") || path.basename(target.absolutePath);
         if (matchers && !matchers.some((matcher) => matcher.test(request.glob!.includes("/") ? relative : path.basename(relative)))) return;
@@ -159,8 +167,8 @@ export class SearchFilesTool implements AgentTool {
           }
         } finally { await handle.close(); }
       };
-      const queue: Array<{ target: FileToolTarget; depth: number }> = [];
-      const walk = async (directory: FileToolTarget, depth: number): Promise<void> => {
+      const queue: Array<{ root: FileToolTarget; target: FileToolTarget; depth: number }> = [];
+      const walk = async (root: FileToolTarget, directory: FileToolTarget, depth: number): Promise<void> => {
         const stream = await opendir(directory.absolutePath);
         for await (const entry of stream) {
           check();
@@ -184,10 +192,10 @@ export class SearchFilesTool implements AgentTool {
               if (mode === "list" && (!matchers || matchers.some((matcher) => matcher.test(request.glob!.includes("/") ? relative : entry.name)))) {
                 push({ path: target.displayPath, kind: "directory", ...(excluded ? { excludedFromSearch: true } : {}) });
               }
-              if (!excluded && depth < maxDepth) queue.push({ target, depth: depth + 1 });
+              if (!excluded && depth < maxDepth) queue.push({ root, target, depth: depth + 1 });
               else if (mode === "search") omissions.depthLimited += 1;
             }
-            else if (entry.isFile()) await scan(target);
+            else if (entry.isFile()) await scan(root, target);
           } catch (error) {
             check();
             omissions.unreadable += 1;
@@ -195,17 +203,18 @@ export class SearchFilesTool implements AgentTool {
         }
       };
       check();
-      if ((await stat(root.absolutePath)).isDirectory()) {
-        queue.push({ target: root, depth: 1 });
-        // Breadth first: inspect root files before dependency trees consume the budget.
-        for (let index = 0; index < queue.length && !stopped; index += 1) {
-          const directory = queue[index]!;
-          await walk(directory.target, directory.depth);
-        }
+      // Breadth first across every root: one dependency tree cannot consume
+      // the whole bounded search before the other attached folders are seen.
+      for (const root of roots) {
+        if ((await stat(root.absolutePath)).isDirectory()) queue.push({ root, target: root, depth: 1 });
+        else await scan(root, root);
       }
-      else await scan(root);
+      for (let index = 0; index < queue.length && !stopped; index += 1) {
+        const directory = queue[index]!;
+        await walk(directory.root, directory.target, directory.depth);
+      }
       const truncated = Boolean(stopped) || omissions.oversized > 0 || omissions.unreadable > 0 || omissions.depthLimited > 0;
-      const searchIdentity = sha256(JSON.stringify({ path: root.displayPath, glob: request.glob ?? null,
+      const searchIdentity = sha256(JSON.stringify({ path: roots.map(root => root.displayPath), glob: request.glob ?? null,
         query: request.query ?? null, caseSensitive: request.caseSensitive ?? false, mode, maxDepth }));
       const outcomeIdentity = sha256(JSON.stringify({ matches, omissions, truncated, stopReason: stopped ?? null }));
       const guidance = truncated

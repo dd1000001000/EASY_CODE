@@ -100,6 +100,12 @@ export function verifyArtifact(bytes: Buffer, expected: string): void {
   }
 }
 
+function logicalWorkspacePath(workspace: WorkspaceManager, root: string, relative: string): string {
+  const folder = workspace.folders.find(candidate => pathKey(candidate.path) === pathKey(root));
+  if (!folder) throw new Error("Artifact is not assigned to an active project folder");
+  return workspace.folders.length === 1 ? relative : path.posix.join(folder.key, relative);
+}
+
 async function ordinaryDirectory(root: string): Promise<string> {
   await mkdir(root, {recursive: true, mode: 0o700});
   const canonical = await realpath(root);
@@ -128,10 +134,12 @@ export class DownloadBroker {
     configDirectory = await realpath(configDirectory);
     cacheDirectory = await realpath(cacheDirectory);
     // A model-writable workspace cannot contain the authority catalogue/cache.
-    for (const root of [configDirectory, cacheDirectory]) {
-      const relative = path.relative(workspace.root, path.resolve(root));
-      if (relative === "" || !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
-        throw new Error("Trusted download configuration/cache must be outside the model workspace");
+    for (const trustedRoot of [configDirectory, cacheDirectory]) {
+      for (const workspaceRoot of workspace.writableRoots) {
+        const relative = path.relative(workspaceRoot, path.resolve(trustedRoot));
+        if (relative === "" || !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) {
+          throw new Error("Trusted download configuration/cache must be outside every project folder");
+        }
       }
     }
     const broker = new DownloadBroker(workspace, path.join(cacheDirectory, "approved-artifacts"));
@@ -141,12 +149,14 @@ export class DownloadBroker {
       if (!info.isFile() || info.isSymbolicLink() || info.size > 2097152) throw new Error("Invalid trusted artifact catalogue");
       const catalogue = catalogueSchema.parse(JSON.parse(await readFile(catalogPath, "utf8")));
       for (const entry of catalogue.artifacts) {
-        if (pathKey(entry.workspaceRoot) !== pathKey(workspace.root)) continue;
+        if (!workspace.writableRoots.some(root => pathKey(entry.workspaceRoot) === pathKey(root))) continue;
         broker.register(entry);
       }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     const snapshotRoot = await ordinaryDirectory(path.join(cacheDirectory,"download-authorizations"));
-    const snapshotPath = scope ? path.join(snapshotRoot,sha256(JSON.stringify([workspace.root,scope]))) : undefined;
+    const snapshotPath = scope ? path.join(snapshotRoot,sha256(JSON.stringify([
+      workspace.projectId ?? workspace.writableRoots, workspace.revision, scope,
+    ]))) : undefined;
     broker.budgetPath = snapshotPath ? `${snapshotPath}.budget` : undefined;
     if (broker.budgetPath) try {
       const info = await lstat(broker.budgetPath);
@@ -160,15 +170,17 @@ export class DownloadBroker {
     if(snapshotPath) try {
       const info=await lstat(snapshotPath);
       if(!info.isFile()||info.isSymbolicLink()||info.size>2097152) throw new Error("Invalid download authorization snapshot");
-      const saved=z.object({version:z.literal(1),manifests:z.array(z.tuple([z.enum(["package.json","package-lock.json"]),z.string().regex(/^[a-f0-9]{64}$/u)])).max(2),artifacts:z.array(artifactSchema).max(2048)}).strict().parse(JSON.parse(await readFile(snapshotPath,"utf8")));
+      const saved=z.object({version:z.literal(2),manifests:z.array(z.tuple([
+        z.string().min(1).max(4096), z.string().regex(/^[a-f0-9]{64}$/u),
+      ])).max(Math.max(2, workspace.folders.length * 2)),artifacts:z.array(artifactSchema).max(2048)}).strict().parse(JSON.parse(await readFile(snapshotPath,"utf8")));
       saved.manifests.forEach(([name,hash])=>broker.manifests.set(name,hash));
       saved.artifacts.forEach(entry=>{if(!broker.artifacts.has(entry.id))broker.register(entry);});
       restored=true;
     } catch(error){if((error as NodeJS.ErrnoException).code!=="ENOENT")throw error;}
     if(!restored){
       const before=new Set(broker.artifacts.keys());
-      await broker.captureNpmLock();
-      if(snapshotPath){const file=await open(snapshotPath,"wx",0o600);try{await file.writeFile(JSON.stringify({version:1,manifests:[...broker.manifests],artifacts:[...broker.artifacts.values()].filter(entry=>!before.has(entry.id))}));await file.sync();}finally{await file.close();}}
+      for (const folder of workspace.folders) await broker.captureNpmLock(folder.path);
+      if(snapshotPath){const file=await open(snapshotPath,"wx",0o600);try{await file.writeFile(JSON.stringify({version:2,manifests:[...broker.manifests],artifacts:[...broker.artifacts.values()].filter(entry=>!before.has(entry.id))}));await file.sync();}finally{await file.close();}}
     }
     return broker;
   }
@@ -182,24 +194,26 @@ export class DownloadBroker {
     this.artifacts.set(entry.id, Object.freeze(entry));
   }
 
-  private async captureNpmLock(): Promise<void> {
+  private async captureNpmLock(root: string): Promise<void> {
     try {
-      const lockPath = await this.workspace.pathGuard.resolveExisting("package-lock.json", {kind:"file",allowFinalSymlink:false});
-      const packagePath = await this.workspace.pathGuard.resolveExisting("package.json", {kind:"file",allowFinalSymlink:false});
+      const logicalLock = logicalWorkspacePath(this.workspace, root, "package-lock.json");
+      const logicalPackage = logicalWorkspacePath(this.workspace, root, "package.json");
+      const lockPath = await this.workspace.pathGuard.resolveExisting(logicalLock, {kind:"file",allowFinalSymlink:false});
+      const packagePath = await this.workspace.pathGuard.resolveExisting(logicalPackage, {kind:"file",allowFinalSymlink:false});
       if ((await lstat(lockPath)).size > 10485760 || (await lstat(packagePath)).size > 1048576) return;
       const raw = await readFile(lockPath), manifest = await readFile(packagePath);
       const lock = JSON.parse(raw.toString("utf8")) as {lockfileVersion?: number; packages?: Record<string, { resolved?: string; integrity?: string }>};
       if (!lock || typeof lock !== "object" || ![2,3].includes(lock.lockfileVersion ?? 0) || !lock.packages || typeof lock.packages !== "object") return;
-      this.manifests.set("package-lock.json", sha256(raw)); this.manifests.set("package.json",sha256(manifest));
+      this.manifests.set(logicalLock, sha256(raw)); this.manifests.set(logicalPackage,sha256(manifest));
       for (const entry of Object.values(lock.packages).slice(0,2048)) {
         if (!entry || typeof entry.resolved !== "string" || !entry.integrity || !integrity.safeParse(entry.integrity).success) continue;
         let url: URL;
         try { url = assertArtifactURL(entry.resolved); } catch { continue; }
         if (url.hostname !== "registry.npmjs.org" || url.search || !url.pathname.includes("/-/")) continue;
-        const id = `npm_${sha256(JSON.stringify([entry.resolved,entry.integrity])).slice(0,32)}`;
+        const id = `npm_${sha256(JSON.stringify([root,entry.resolved,entry.integrity])).slice(0,32)}`;
         if (this.artifacts.has(id)) continue;
         const artifact = artifactSchema.safeParse({id,kind:"npm",url:url.href,integrity:entry.integrity,
-          filename:path.posix.basename(url.pathname),maxBytes:67108864,workspaceRoot:this.workspace.root});
+          filename:path.posix.basename(url.pathname),maxBytes:67108864,workspaceRoot:root});
         if (artifact.success) this.register(artifact.data);
       }
     } catch (error) {
@@ -269,7 +283,7 @@ export class DownloadBroker {
       try { const handle=await open(objectPath,"wx",0o400); try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();} }
       catch(error) { if((error as NodeJS.ErrnoException).code!=="EEXIST") throw error; verifyArtifact(await readFile(objectPath),entry.integrity); }
     }
-    const relative=`vendor/downloads/${id}/${entry.filename}`;
+    const relative=logicalWorkspacePath(this.workspace, entry.workspaceRoot, `vendor/downloads/${id}/${entry.filename}`);
     const destination=await this.workspace.pathGuard.resolveForCreate(relative,true);
     signal?.throwIfAborted();
     let created=false;

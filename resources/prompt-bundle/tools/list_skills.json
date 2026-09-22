@@ -1,7 +1,7 @@
 {
   "id": "list_skills",
   "contractVersion": "1.0.0",
-  "description": "List reusable EASY CODE Skills in separate user and project scopes. Return names, routing descriptions, paths and content hashes without loading full instructions.",
+  "description": "List reusable EASY CODE Skills in separate global and project scopes. Return names, routing descriptions, paths and content hashes without loading full instructions.",
   "propertyDescriptions": {},
-  "guidance": "Use list_skills when the user asks which Skills exist or before selecting an ambiguous Skill. Project and user Skills remain separate resources."
+  "guidance": "Use list_skills when the user asks which Skills exist or before selecting an ambiguous Skill. Project and global Skills remain separate resources."
 }

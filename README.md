@@ -8,13 +8,13 @@ EASY CODE is a local coding agent for your projects, available in the terminal a
 
 ## Features
 
-- **Terminal and Web interfaces:** saved conversations, project folders, image input, stopping tasks and in-flight adjustments.
+- **Terminal and Web interfaces:** saved conversations, multi-folder projects, image input, stopping tasks and in-flight adjustments.
 - **Flexible models:** switch providers, models and thinking effort within a conversation; new conversations reuse your last selection unless explicitly overridden.
 - **Auto, Plan and Code modes:** answer questions, investigate an approach or implement changes.
 - **Controlled execution:** command approvals, native OS sandboxing, file-change checks and supervised long-running commands.
 - **Optional collaboration:** dependency-based tasks (DAGs), parallel child agents and independent review when repeated verification failures need investigation.
 - **Persistent context:** conversation recovery, context compaction, historical recall and global/project memory.
-- **Extensible capabilities:** user/project Skills, local or remote MCP servers and VS Code terminal integration.
+- **Extensible capabilities:** global/project Skills, local or remote MCP servers and VS Code terminal integration.
 - **English and Simplified Chinese:** a shared, saved interface-language preference.
 
 “Local” describes where the application, tools and stored history run. Selected model providers still receive the request context needed to perform tasks.
@@ -51,13 +51,13 @@ Other bundled credential names are `deepseek.api-key`, `kimi.api-key`, `glm.api-
 # Browser interface
 easy-code --web
 
-# Interactive terminal in a project
+# Interactive terminal; this creates a project with the folder attached
 easy-code --workspace "/path/to/project"
 ```
 
 Replace the example path with your local folder, and quote paths containing spaces. The Web service listens on local loopback only; keep its launching terminal open and stop the service there when finished.
 
-A fresh Web installation has no default project. Add a local folder from the **Projects** heading, then use the **＋** beside that project to create a conversation. Existing conversations, including CLI conversations in the same data store, are grouped by their working folder.
+A fresh Web installation has no default project. Create an empty project from the **Projects** heading, expand it, and attach one or more local folders. The project becomes usable after its first folder is attached; then use the **＋** beside it to create a conversation. A folder cannot be attached twice or overlap an ancestor/descendant folder already in the same project. CLI startup creates a new project and attaches the selected working directory as its first folder.
 
 ### Select a model and start a task
 
@@ -80,7 +80,7 @@ Interactive CLI and Web tasks do not have a fixed model-request count limit. For
 
 | Area | How to use it |
 | --- | --- |
-| Projects | Click a project to expand/collapse it. Hover over or select it to reveal its new-conversation action. Collapse the sidebar with its top button; click the logo to expand it. |
+| Projects | Create an empty project, then use its edit action to rename it, add or remove folders, or choose the primary folder. The sidebar shows only projects and their conversations. Folder membership cannot change while that project's work is active. Hover over or select a ready project to reveal its new-conversation action. Collapse the sidebar with its top button; click the logo to expand it. |
 | Input | **Enter** sends; **Shift+Enter** inserts a newline. Sending requires an open conversation. The shortcuts apply on Windows, macOS and Linux; IME composition is not submitted as a message. |
 | Attachments | Paste or upload images for removable previews. Long pasted text appears as a preview card while retaining the full submitted text. Images require a vision-capable model. |
 | Running tasks | An empty draft shows the stop action. Entering text changes it to send an adjustment for a later safe execution boundary. Other projects and conversations remain accessible and can run in parallel. |
@@ -90,11 +90,11 @@ Interactive CLI and Web tasks do not have a fixed model-request count limit. For
 | Status | The header shows conversation and runtime information. An upper-right card shows active DAG, child-agent and reviewer activity. Notices close after 15 seconds or can be dismissed manually. |
 | Language | Use the upper-right language selector. It shares the CLI preference; existing messages and model responses are not translated. |
 
-Each conversation can receive a custom title **once**, from either the user or the main agent. After that, it cannot be renamed again. Project display names can be changed without renaming the actual directory.
+Each conversation belongs to exactly one project and can receive a custom title **once**, from either the user or the main agent. After that, it cannot be renamed again. Project display names can be changed without renaming any attached directory. Every turn captures the active folder-membership revision, and folders cannot be changed during a running turn.
 
-Deleting a conversation removes its saved history, associated child conversations and memory contributions; shared memories may be restored to an earlier revision. Removing a project also removes its conversations and applicable project memory. **Neither action deletes your project files.** Stop active work before deletion and read the confirmation carefully.
+Deleting a conversation removes its saved history, associated child conversations and memory contributions; shared memories may be restored to an earlier revision. Removing a project also removes its conversations, project memory, project Skills and project-owned runtime metadata. **Neither deleting a project nor detaching a folder deletes source files.** Stop active work before deletion and read the confirmation carefully.
 
-Parallel conversations in one project still share its files. Avoid assigning conflicting edits to the same files; parallel execution does not imply a separate checkout for every conversation.
+Parallel conversations in one project share all of its attached folders and sandbox boundary. Avoid assigning conflicting edits to the same files; parallel execution does not imply a separate checkout for every conversation. In multi-folder projects, file paths begin with a stable folder key such as `api/src/main.ts`; `.` in a command means the primary folder.
 
 ## Modes, approvals and models
 
@@ -107,7 +107,7 @@ Parallel conversations in one project still share its files. Avoid assigning con
 | Approval agent | Independently evaluates commands; rejected or undecidable requests may still require your approval. |
 | Full access | Removes normal host command sandboxing and individual command approvals. Commands run with your account privileges. |
 
-Use Full access only for trusted tasks and environments. Normal sandboxed commands can write within their workspace; outside writes and direct external networking are restricted. Approved HTTP(S) activity uses a separate network approval path. Sandbox failure never silently enables Full access.
+Use Full access only for trusted tasks and environments. Normal sandboxed commands can write within every folder attached to the project; outside writes and direct external networking are restricted. A thread-level service session keeps later commands in the same supervised Linux sandbox so local frontend/backend probes can share localhost. Approved HTTP(S) activity uses a separate network approval path. Sandbox failure never silently enables Full access.
 
 DAG/child-agent orchestration is off by default and requires an approval mode other than Manual. Enabling it from Manual asks before changing approval mode. Disabling orchestration does not disable the independent reviewer. Children can receive a thinking effort no higher than the main agent's.
 
@@ -123,9 +123,9 @@ These typed commands are available in both CLI and Web. Web also offers panels f
 | --- | --- |
 | `/mode plan\|auto\|code` | Change working mode. |
 | `/status` | Inspect conversation and runtime state. |
-| `/workspace [refresh]` | Inspect or refresh the workspace inventory. |
+| `/workspace list\|refresh\|add <path>\|remove <folder-id>\|primary <folder-id>` | Inspect, refresh or change the current project's folders. Folder changes require the thread to be idle. |
 | `/tools` | Browse currently available tools. |
-| `/skills` | List user and project Skills. |
+| `/skills` | List global and project Skills. |
 | `/mcp [server-id action]` | Manage MCP connections and authorization; the menu lists available actions. |
 | `/permissions [revoke <index>]` | Inspect permissions/sandbox status or revoke a saved grant. |
 | `/context`, `/usage` | Inspect context capacity or provider-reported token usage. |
@@ -145,6 +145,7 @@ The following typed commands are **CLI-only**; Web uses the UI alternatives list
 | `/orchestration [on\|off]` | DAG/agent control beside the Web approval control. |
 | `/image <path\|clipboard\|clear>` | Web upload/paste and removable attachment previews. |
 | `/sessions`, `/resume [id]`, `/new` | Web project/conversation sidebar and the project's **＋** action. |
+| `/workspace list\|refresh\|add <path>\|remove <folder-id>\|primary <folder-id>` | CLI-only project-folder management; use the Web project's edit dialog instead. |
 | `/clear` | Clears terminal display only; no Web equivalent. Does not delete history. |
 | `/exit` | Saves and exits CLI; stop the Web server from its launching terminal. |
 
@@ -152,7 +153,7 @@ There are no command aliases. Unknown slash-prefixed text is ordinary input, not
 
 ## Skills, MCP and memory
 
-**Skills** hold reusable instructions and resources. Place them at `~/.easy_code_skills/<name>/SKILL.md` for user-wide use or `<project root>/.easy_code_skills/<name>/SKILL.md` for a project. Each file needs YAML `name` and `description` fields followed by instructions. Supporting references, assets and scripts can live alongside it. Use `/skills` to inspect them, or ask the agent to create or update a Skill. Agent-managed changes require approval; deletion archives the Skill.
+**Skills** hold reusable instructions and resources. EASY CODE stores global Skills under its application data and project Skills under the logical project's owned data, rather than inside an attached source folder. Each `SKILL.md` needs YAML `name` and `description` fields followed by instructions; supporting references, assets and scripts can live alongside it. Use `/skills` to inspect them, or ask the agent to create or update a Skill. Agent-managed changes require approval; deletion archives the Skill. Deleting a project deletes its project Skills, while global Skills remain available to other projects.
 
 **MCP** connects additional tools. Ask the agent to add or edit a server in `~/.easy_code/mcp.toml`, then use `/mcp` to authorize and connect it. Editing configuration alone does not connect a server. Local stdio servers run in the workspace sandbox; remote servers support HTTP/SSE connections and configured bearer authentication or OAuth. Remote URLs require HTTPS except for loopback HTTP. MCP calls require approval; server descriptions do not grant permissions.
 
@@ -160,7 +161,7 @@ There are no command aliases. Unknown slash-prefixed text is ordinary input, not
 
 ## Configuration and troubleshooting
 
-Put project conventions and validation instructions in `EASYCODE.md`. Project configuration uses `.easycode/config.toml`; see the [configuration example](./docs/config.example.toml). `easy-code config defaults` displays defaults. Keep API keys out of project files.
+Put project conventions and validation instructions in `EASYCODE.md` in the primary folder. Project configuration uses the primary folder's `.easycode/config.toml`; see the [configuration example](./docs/config.example.toml). `easy-code config defaults` displays defaults. Keep API keys out of project files.
 
 ```bash
 easy-code install doctor

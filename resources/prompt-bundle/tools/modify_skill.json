@@ -3,7 +3,7 @@
   "contractVersion": "1.0.0",
   "description": "Modify one existing EASY CODE Skill using the exact version returned by read_skill; conflicting concurrent changes are rejected.",
   "propertyDescriptions": {
-    "scope": "Exact user or project scope of the Skill to modify.",
+    "scope": "Exact global or project scope of the Skill to modify.",
     "name": "Exact Skill name within the selected scope.",
     "expectedVersion": "64-character version hash returned by read_skill before editing.",
     "skillMarkdown": "Optional complete replacement SKILL.md with valid name and description frontmatter.",

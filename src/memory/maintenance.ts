@@ -47,8 +47,9 @@ export class MemoryMaintenance {
     private readonly storage: EasyCodeStorage,
     private readonly manager: MemoryManager,
     workspaceRoot: string,
+    projectId?: string,
   ) {
-    this.projectId = projectMemoryIdFromRoot(workspaceRoot);
+    this.projectId = projectId ?? projectMemoryIdFromRoot(workspaceRoot);
   }
 
   recover(threadId: string): void {
@@ -171,7 +172,7 @@ export class MemoryMaintenance {
           reason: "Merged into an existing compatible memory" });
       }
       if (signal?.aborted) throw new Error("Memory maintenance interrupted");
-      this.manager.applyModelMutations({ workspaceRoot: state.workspaceRoot,
+      this.manager.applyModelMutations({ workspaceId: this.projectId, workspaceRoot: state.workspaceRoot,
         threadId, turnId: job.turn_id, outcome: job.result_reason,
         mutations }, () => this.complete(job.turn_id));
       return true;

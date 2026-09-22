@@ -4,23 +4,24 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 5;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-project-library";
+const CURRENT_SCHEMA_VERSION = 6;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-multi-root-projects";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 5),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 6),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (5, 'easy-code-0.1.0-project-library');
+      VALUES (6, 'easy-code-0.1.0-multi-root-projects');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
         workspace_root TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
+        workspace_revision INTEGER NOT NULL DEFAULT 1 CHECK(workspace_revision >= 1),
         mode TEXT NOT NULL,
         provider TEXT NOT NULL,
         model TEXT NOT NULL,
@@ -39,10 +40,30 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
 
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,
-        workspace_root TEXT NOT NULL,
         name TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        workspace_revision INTEGER NOT NULL DEFAULT 1 CHECK(workspace_revision >= 1),
+        primary_folder_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE project_folders (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        folder_key TEXT NOT NULL,
+        canonical_path TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+        added_revision INTEGER NOT NULL CHECK(added_revision >= 1),
+        removed_revision INTEGER CHECK(removed_revision IS NULL OR removed_revision >= added_revision),
+        sort_order INTEGER NOT NULL CHECK(sort_order >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, folder_key),
+        UNIQUE(project_id, canonical_path)
+      );
+
+      CREATE INDEX project_folders_project_active_idx
+        ON project_folders(project_id, active, sort_order);
 
       CREATE TABLE preferences (
         key TEXT PRIMARY KEY,
@@ -56,6 +77,7 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
         user_message_json TEXT,
         assistant_message_json TEXT,
         result_reason TEXT,
+        workspace_revision INTEGER NOT NULL DEFAULT 1 CHECK(workspace_revision >= 1),
         started_at TEXT NOT NULL,
         completed_at TEXT
       );

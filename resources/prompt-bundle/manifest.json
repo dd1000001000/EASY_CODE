@@ -271,8 +271,8 @@
       "bytes": 651
     },
     "runtime/skill-catalog.md": {
-      "sha256": "sha256:13d67b8be3f38ce0dd08be38fa4660f05ad705cee7feef426c7b53e0e3c69cdd",
-      "bytes": 538
+      "sha256": "sha256:c71a2a2aec24c860c3984d87ad4bd0e38134b41c3c1f14c057f0586cca5da755",
+      "bytes": 540
     },
     "runtime/steering-entry.md": {
       "sha256": "sha256:2e43fb8376ae82b758ca8fd86877ecd5537aaa71d490d76d6edef583b267eda3",
@@ -347,16 +347,16 @@
       "bytes": 544
     },
     "tools/create_skill.json": {
-      "sha256": "sha256:e4d11c9405d3f1e94be5a6d6c721546f9719d13742451e32af1632f574b17ac1",
-      "bytes": 1085
+      "sha256": "sha256:516092a1a6fdddbb4debfb3f6827f51007557a69863b183631befc1f098649f1",
+      "bytes": 1083
     },
     "tools/delete_file.json": {
       "sha256": "sha256:7c1f4ec3297518daf45d3c722b00e6c4cc2caefaa7c6f550ad8b7f1b89cf2cce",
       "bytes": 638
     },
     "tools/delete_skill.json": {
-      "sha256": "sha256:e358c145d3aff35155cd851d031845fc5906fbeda9b88fe6cf6d06f5347eaf29",
-      "bytes": 644
+      "sha256": "sha256:afaec4b942aed9a7faa0ff45cbb0b090e742195b20a597ed2b029ce579ea06ac",
+      "bytes": 642
     },
     "tools/disable_mcp_server.json": {
       "sha256": "sha256:65e01e2aa58819fbaa1dce20a9302e72edea21c74303a54d1f67401c25ed4a1d",
@@ -371,8 +371,8 @@
       "bytes": 409
     },
     "tools/list_skills.json": {
-      "sha256": "sha256:a945cc804812cae5aefd7278c81a33b1de8aacf8308b71eef1b1595f6d4d926e",
-      "bytes": 432
+      "sha256": "sha256:79e9b0ba67b2350a93b8b6b59ddc753ea3f383c1c4e1b9a5d215074108ea5a00",
+      "bytes": 436
     },
     "tools/manage_subagents.json": {
       "sha256": "sha256:262a87ef8ad2dda16b2d77600f24969a706c542916a56d3137923c3af1873c59",
@@ -383,8 +383,8 @@
       "bytes": 3225
     },
     "tools/modify_skill.json": {
-      "sha256": "sha256:36b8afbc30efdedfa003183e5335caef71f579c7fa815bbcbc79e3c137839ef9",
-      "bytes": 1087
+      "sha256": "sha256:16ecccfea9643307b68274d87a8d1dd3ab76adb6fb9c05fb2e2bb1b35eb4686a",
+      "bytes": 1089
     },
     "tools/name_thread.json": {
       "sha256": "sha256:3b9b42ed0393d0bfa3803ac8abd2481278bf207d5d45a81ff06433a19951707f",
@@ -411,8 +411,8 @@
       "bytes": 1103
     },
     "tools/read_skill.json": {
-      "sha256": "sha256:78de3cbf02698a0f34fd9cad8cd0ce52adb070c6b489c22325989df60adc0c28",
-      "bytes": 812
+      "sha256": "sha256:14c298c66dcd2ff13294c61e430642a2a68095db6196f50f0b558c2f06a10b32",
+      "bytes": 814
     },
     "tools/recall_context.json": {
       "sha256": "sha256:fb8e51a1e9f339600fe4687bc3832c97c60128c9aeb32ada6135092a5906eaf5",
@@ -486,7 +486,7 @@
     "create_skill": {
       "path": "tools/create_skill.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:e4d11c9405d3f1e94be5a6d6c721546f9719d13742451e32af1632f574b17ac1"
+      "contentHash": "sha256:516092a1a6fdddbb4debfb3f6827f51007557a69863b183631befc1f098649f1"
     },
     "delete_file": {
       "path": "tools/delete_file.json",
@@ -496,7 +496,7 @@
     "delete_skill": {
       "path": "tools/delete_skill.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:e358c145d3aff35155cd851d031845fc5906fbeda9b88fe6cf6d06f5347eaf29"
+      "contentHash": "sha256:afaec4b942aed9a7faa0ff45cbb0b090e742195b20a597ed2b029ce579ea06ac"
     },
     "disable_mcp_server": {
       "path": "tools/disable_mcp_server.json",
@@ -516,7 +516,7 @@
     "list_skills": {
       "path": "tools/list_skills.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:a945cc804812cae5aefd7278c81a33b1de8aacf8308b71eef1b1595f6d4d926e"
+      "contentHash": "sha256:79e9b0ba67b2350a93b8b6b59ddc753ea3f383c1c4e1b9a5d215074108ea5a00"
     },
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
@@ -531,7 +531,7 @@
     "modify_skill": {
       "path": "tools/modify_skill.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:36b8afbc30efdedfa003183e5335caef71f579c7fa815bbcbc79e3c137839ef9"
+      "contentHash": "sha256:16ecccfea9643307b68274d87a8d1dd3ab76adb6fb9c05fb2e2bb1b35eb4686a"
     },
     "name_thread": {
       "path": "tools/name_thread.json",
@@ -566,7 +566,7 @@
     "read_skill": {
       "path": "tools/read_skill.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:78de3cbf02698a0f34fd9cad8cd0ce52adb070c6b489c22325989df60adc0c28"
+      "contentHash": "sha256:14c298c66dcd2ff13294c61e430642a2a68095db6196f50f0b558c2f06a10b32"
     },
     "recall_context": {
       "path": "tools/recall_context.json",
@@ -634,5 +634,5 @@
       "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
     }
   },
-  "bundleHash": "sha256:85287205618ea8e6b21f686a50e33cc312246d72189ea68b86ffbb8733a7d9fd"
+  "bundleHash": "sha256:9414d98d6ddd6fd970b4057cad36603d216c86bc8a28b40d58a29a252a60b7d8"
 }

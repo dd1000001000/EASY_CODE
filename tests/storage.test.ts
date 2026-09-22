@@ -141,6 +141,7 @@ describe("storage", () => {
         "memory_recall_events",
         "memory_maintenance_jobs",
         "projects",
+        "project_folders",
         "preferences",
       ]) {
         assert.ok(tables.includes(required), `missing table ${required}`);
@@ -157,10 +158,10 @@ describe("storage", () => {
           )
           .get();
         assert.deepEqual(identity, {
-          schema_version: 5,
-          schema_id: "easy-code-0.1.0-project-library",
+          schema_version: 6,
+          schema_id: "easy-code-0.1.0-multi-root-projects",
         });
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 5);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 6);
       } finally {
         reopened.close();
       }

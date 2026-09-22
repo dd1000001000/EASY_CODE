@@ -3,7 +3,7 @@ import { constants, type Stats } from "node:fs";
 import { lstat, open, readdir, readlink, realpath } from "node:fs/promises";
 import path from "node:path";
 import { sha256 } from "../utils/hash.js";
-import { WorkspacePathGuard } from "./path-guard.js";
+import type { WorkspaceBoundary } from "./path-guard.js";
 
 export interface WorkspaceSnapshotEntry {
   path: string;
@@ -135,7 +135,7 @@ async function hashStableRegularFile(
  * turning an unreadable file into a deletion.
  */
 export async function captureWorkspaceSnapshotEntry(
-  guard: WorkspacePathGuard,
+  guard: WorkspaceBoundary,
   filename: string,
   signal?: AbortSignal,
 ): Promise<WorkspaceSnapshotEntry | undefined> {
@@ -175,7 +175,7 @@ export async function captureWorkspaceSnapshotEntry(
 }
 
 export async function captureWorkspaceSnapshot(
-  guard: WorkspacePathGuard,
+  guard: WorkspaceBoundary,
   options: SnapshotOptions = {},
   testHooks: WorkspaceSnapshotTestHooks = {},
 ): Promise<WorkspaceSnapshot> {

@@ -33,6 +33,10 @@ export interface SerializedSessionState {
   readonly provider: SessionState["provider"];
   readonly model: string;
   readonly thinkingEffort: ThinkingEffort;
+  readonly projectId: string;
+  readonly workspaceRevision: number;
+  readonly workspaceFolders: Array<{ id: string; key: string; path: string }>;
+  readonly primaryWorkspaceFolderId: string;
   readonly workspaceRoot: string;
   readonly promptBundle: PromptBundleBinding;
   readonly modelRegistryHash: string;
@@ -822,6 +826,12 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     provider: state.provider,
     model: state.model,
     thinkingEffort: state.thinkingEffort,
+    projectId: state.projectId ?? `project_${sha256(state.workspaceRoot).slice(0, 24)}`,
+    workspaceRevision: state.workspaceRevision ?? 1,
+    workspaceFolders: state.workspaceFolders?.map(folder => ({ ...folder })) ?? [{
+      id: "folder_primary", key: "workspace", path: state.workspaceRoot,
+    }],
+    primaryWorkspaceFolderId: state.primaryWorkspaceFolderId ?? state.workspaceFolders?.[0]?.id ?? "folder_primary",
     workspaceRoot: state.workspaceRoot,
     promptBundle: { ...state.promptBundle },
     modelRegistryHash: state.modelRegistryHash,
@@ -868,7 +878,8 @@ export function deserializeSessionState(value: unknown): SessionState {
   requireCurrentProtocol("sessionState", value.formatVersion);
   if (
     !hasOnlyKeys(value, ["formatVersion", "orchestrationEnabled", "threadId", "activeTurnId", "mode", "provider", "model",
-      "thinkingEffort", "workspaceRoot", "promptBundle", "modelRegistryHash", "goal", "constraints", "userMessageIndices", "messages",
+      "thinkingEffort", "projectId", "workspaceRevision", "workspaceFolders", "primaryWorkspaceFolderId", "workspaceRoot",
+      "promptBundle", "modelRegistryHash", "goal", "constraints", "userMessageIndices", "messages",
       "filesRead", "changes", "commands", "commandApprovalPrefixes", "toolApprovalGrants", "taskGraph", "planReview", "pendingSteering",
       "steeringSequence", "steeringWatermark", "steeringSealedTurnId", "workingSummary", "compactedMessageCount",
       "contextIntentLedger", "contextCompactionMetadata", "createdAt", "updatedAt"]) ||
@@ -878,6 +889,13 @@ export function deserializeSessionState(value: unknown): SessionState {
     !isProviderIdentifier(value.provider) ||
     typeof value.model !== "string" ||
     !THINKING_EFFORTS.includes(value.thinkingEffort as ThinkingEffort) ||
+    typeof value.projectId !== "string" ||
+    !Number.isSafeInteger(value.workspaceRevision) || Number(value.workspaceRevision) < 1 ||
+    !Array.isArray(value.workspaceFolders) || value.workspaceFolders.length < 1 ||
+    !value.workspaceFolders.every(folder => isRecord(folder) && hasOnlyKeys(folder, ["id", "key", "path"]) &&
+      typeof folder.id === "string" && typeof folder.key === "string" && typeof folder.path === "string") ||
+    typeof value.primaryWorkspaceFolderId !== "string" ||
+    !value.workspaceFolders.some(folder => isRecord(folder) && folder.id === value.primaryWorkspaceFolderId) ||
     typeof value.workspaceRoot !== "string" ||
     !isPromptBundleBinding(value.promptBundle) ||
     typeof value.modelRegistryHash !== "string" ||
@@ -1001,6 +1019,10 @@ export function deserializeSessionState(value: unknown): SessionState {
     provider: value.provider as SessionState["provider"],
     model: value.model,
     thinkingEffort: value.thinkingEffort as ThinkingEffort,
+    projectId: value.projectId,
+    workspaceRevision: value.workspaceRevision as number,
+    workspaceFolders: (value.workspaceFolders as Array<{ id: string; key: string; path: string }>).map(folder => ({ ...folder })),
+    primaryWorkspaceFolderId: value.primaryWorkspaceFolderId,
     workspaceRoot: value.workspaceRoot,
     promptBundle: { ...value.promptBundle },
     modelRegistryHash: value.modelRegistryHash,

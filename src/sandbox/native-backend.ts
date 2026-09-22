@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -17,24 +17,7 @@ import { WindowsNativeBackend } from "./platform/windows-backend.js";
 import { MacNativeBackend } from "./platform/macos-backend.js";
 import { LinuxNativeBackend } from "./platform/linux-backend.js";
 import { SandboxFailure } from "./failure.js";
-
-const SERVICE_PROFILE = `default_permissions = "easy-code-local-service"
-[features]
-network_proxy = true
-[permissions.easy-code-local-service]
-extends = ":workspace"
-[permissions.easy-code-local-service.network]
-enabled = true
-allow_local_binding = true
-[permissions.easy-code-local-service.network.domains]
-"127.0.0.1" = "allow"
-"localhost" = "allow"
-`;
-
-function inside(root: string, value: string): boolean {
-  const relative = path.relative(path.resolve(root), path.resolve(value));
-  return relative === "" || relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-}
+import { ensureNativeProjectPermissionHome } from "./permission-home.js";
 
 export interface NativeSandboxBackendOptions {
   limits?: Readonly<RuntimeLimits>; dataDir?: string; readOnly?: boolean;
@@ -65,8 +48,8 @@ export class NativeSandboxBackend implements CommandExecutionBackend {
   }
 
   workspaceRelativeCwd(command: import("../command/types.js").ResolvedCommand): string | undefined {
-    if (!inside(this.workspace.root, command.cwdAbsolute)) return undefined;
-    return path.relative(this.workspace.root, command.cwdAbsolute) || ".";
+    try { return this.workspace.pathGuard.toRelative(command.cwdAbsolute); }
+    catch { return undefined; }
   }
 
   resolveCommand(input: import("../command/types.js").RunCommandInput, context: import("../core/types.js").ToolContext) {
@@ -75,18 +58,6 @@ export class NativeSandboxBackend implements CommandExecutionBackend {
   }
 
   createNetworkGate(options: CommandNetworkGateOptions) { return this.platform.createNetworkGate(options); }
-
-  private async ensureServiceHome(): Promise<string> {
-    const home = path.join(this.home, "service-home-v1");
-    await mkdir(home, { recursive: true, mode: 0o700 });
-    const configPath = path.join(home, "config.toml");
-    try { await writeFile(configPath, SERVICE_PROFILE, { flag: "wx", mode: 0o600 }); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || await readFile(configPath, "utf8") !== SERVICE_PROFILE)
-        throw new SandboxFailure("state_persistence", "Linux service sandbox profile could not be safely initialized");
-    }
-    return home;
-  }
 
   async prepare(request: SandboxExecutionRequest): Promise<PreparedCommand> {
     if (request.policyDecision.effect !== "allow" || request.context.signal?.aborted)
@@ -104,9 +75,9 @@ export class NativeSandboxBackend implements CommandExecutionBackend {
     let session: { socketPath: string; socketDir: string; secret: string } | undefined;
     let home = this.home;
     try {
+      home = await ensureNativeProjectPermissionHome(this.home, this.workspace.writableRoots);
       await mkdir(tempRoot, { mode: 0o700 });
       if (service) {
-        home = await this.ensureServiceHome();
         const socketDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-service-"));
         session = { socketDir, socketPath: path.join(socketDir, "control.sock"), secret: randomBytes(32).toString("hex") };
       }

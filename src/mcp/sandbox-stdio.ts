@@ -10,8 +10,9 @@ import { resolveEasyCodePaths } from "../config/defaults.js";
 import { CommandResolver } from "../command/resolver.js";
 import { ensureSharedCommandNetworkGateServer } from "../command/network-gate.js";
 import { NativeAppServerClient } from "../sandbox/app-server-client.js";
-import { nativePermissionProfile } from "../sandbox/native-policy.js";
+import { nativeProjectPermissionProfile } from "../sandbox/native-policy.js";
 import { nativeSandboxEntrypoint, nativeSandboxHome } from "../sandbox/native-runtime.js";
+import { ensureNativeProjectPermissionHome } from "../sandbox/permission-home.js";
 import { acquireWindowsProxyPortLease } from "../sandbox/windows-proxy-registry.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -77,8 +78,9 @@ export class SandboxedMcpStdioTransport implements Transport {
       proxyPorts = await lease.authorizedPorts();
       if (!proxyPorts.includes(lease.port)) throw new Error("Windows sandbox setup is incomplete; run easy-code sandbox setup");
     }
-    const home = nativeSandboxHome(this.dataDir);
-    await mkdir(home, { recursive: true, mode: 0o700 });
+    const baseHome = nativeSandboxHome(this.dataDir);
+    await mkdir(baseHome, { recursive: true, mode: 0o700 });
+    const home = await ensureNativeProjectPermissionHome(baseHome, this.workspace.writableRoots);
     const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home, undefined, undefined, proxyPorts);
     this.service = service;
     try {
@@ -119,7 +121,7 @@ export class SandboxedMcpStdioTransport implements Transport {
         streamStdoutStderr: true,
         disableOutputCap: true,
         disableTimeout: true,
-        ...nativePermissionProfile(),
+        ...nativeProjectPermissionProfile(),
       }, 24 * 60 * 60 * 1000).then<ExecutionEnd, ExecutionEnd>(
         result => Number.isSafeInteger(result?.exitCode)
           ? { confirmed: true, exitCode: result.exitCode }
@@ -216,6 +218,7 @@ export class SandboxedMcpStdioTransport implements Transport {
   }
 
   private quarantinePath(): string {
-    return path.join(this.dataDir, "command-quarantine", `${workspaceIdFromRoot(this.workspace.root)}.json`);
+    return path.join(this.dataDir, "command-quarantine",
+      `${this.workspace.projectId ?? workspaceIdFromRoot(this.workspace.root)}.json`);
   }
 }

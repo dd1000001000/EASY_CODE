@@ -833,9 +833,9 @@ export class MemoryManager {
       return this.commitModelMutations(input);
     }
 
-    const workspaceId = input.workspaceRoot
+    const workspaceId = input.workspaceId ?? (input.workspaceRoot
       ? projectMemoryIdFromRoot(input.workspaceRoot)
-      : input.workspaceId ?? "";
+      : "");
     const contents = [...new Set(input.mutations.flatMap((mutation) => {
       if (mutation.action === "forget" || mutation.action === "move") return [];
       const content = memoryContent(mutation.content, this.limits.memoryContentMaxChars);
@@ -869,19 +869,14 @@ export class MemoryManager {
     preparedByContent?: ReadonlyMap<string, PreparedMemoryEmbedding>,
     onCommitted?: () => void,
   ): ApplyModelMemoryMutationsResult {
-    const rootWorkspaceId = input.workspaceRoot
-      ? workspaceIdFromRoot(input.workspaceRoot)
-      : undefined;
-    if (
-      input.workspaceId &&
-      rootWorkspaceId &&
-      assertWorkspaceId(input.workspaceId) !== rootWorkspaceId
-    ) {
-      throw new Error("workspaceId does not match workspaceRoot");
-    }
+    // Logical projects own memory independently from any one attached folder.
+    // Legacy/root-only callers still derive an identity from workspaceRoot,
+    // while project-aware callers provide the durable project ID explicitly.
+    const rootWorkspaceId = input.workspaceRoot ? workspaceIdFromRoot(input.workspaceRoot) : undefined;
     const evidenceWorkspaceId = assertWorkspaceId(input.workspaceId ?? rootWorkspaceId ?? "");
-    const projectId = assertWorkspaceId(input.workspaceRoot
-      ? projectMemoryIdFromRoot(input.workspaceRoot) : evidenceWorkspaceId);
+    const projectId = assertWorkspaceId(input.workspaceId ?? (input.workspaceRoot
+      ? projectMemoryIdFromRoot(input.workspaceRoot)
+      : evidenceWorkspaceId));
     const ownerId = (scope: LongTermMemoryScope): string => scope === "global"
       ? GLOBAL_MEMORY_WORKSPACE_ID : projectId;
     const threadId = assertContextId(input.threadId, "threadId");

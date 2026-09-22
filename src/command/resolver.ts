@@ -95,6 +95,7 @@ export class CommandResolver {
       options.unrestrictedHostAccess && /[\\/]/u.test(input.program) ? path.resolve(cwdAbsolute, input.program) : input.program,
       cwdAbsolute,
       environment,
+      options.unrestrictedHostAccess,
     );
 
     let args = options.unrestrictedCommands ? [...(input.args ?? [])] : normalizeExplicitShellArgs(
@@ -195,14 +196,56 @@ export class CommandResolver {
     const cwdKey = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
     try {
       if (/^(?:\\\\|\/\/)/u.test(requested)) throw new Error("Network working directories are not accepted");
-      const lexical = path.resolve(this.workspace.root, requested);
+      if (!path.isAbsolute(requested)) {
+        if (process.platform !== "win32" && /^[a-z]:[\\/]/iu.test(requested)) {
+          throw new Error("Foreign absolute working directories are not accepted");
+        }
+
+        // A command cwd is different from a file-tool path: harmless lexical
+        // normalization such as `tests/..` is useful and must remain valid.
+        // Select an explicit project-folder namespace when present, otherwise
+        // resolve from the primary folder, then enforce the boundary against
+        // both the lexical and canonical paths. This permits normalization
+        // inside one root without allowing `..` to cross into another root.
+        let base = this.workspace.root;
+        let inner = requested;
+        if (this.workspace.folders.length > 1) {
+          const segments = requested.split(/[\\/]+/u);
+          const selected = this.workspace.folders.find(folder => folder.key === segments[0]);
+          if (selected) {
+            base = selected.path;
+            inner = segments.slice(1).join(path.sep) || ".";
+          }
+        }
+        const lexical = path.resolve(base, inner);
+        this.workspace.pathGuard.assertInside(lexical);
+        if (cwdKey(this.workspace.rootForPath(lexical)) !== cwdKey(base)) {
+          throw new Error("Working-directory traversal cannot cross project folder boundaries");
+        }
+        const relative = path.relative(base, lexical);
+        const segments = relative.split(path.sep).filter(Boolean);
+        if (segments.some(segment => segment.toLowerCase() === ".git")) {
+          throw new Error("Git control paths are reserved for the EASY CODE Runtime");
+        }
+        if (segments[0]?.toLowerCase() === ".easy-code-runtime") {
+          throw new Error("Sandbox scratch paths are reserved for the EASY CODE Runtime");
+        }
+        if (segments[0]?.toLowerCase() === ".easycode" && segments[1]?.toLowerCase() === "config.toml") {
+          throw new Error("Workspace trust configuration cannot be used as a command working directory");
+        }
+        const canonical = await resolveLocalCommandPath(lexical, base);
+        this.workspace.pathGuard.assertInside(canonical);
+        if (cwdKey(this.workspace.rootForPath(canonical)) !== cwdKey(base)) {
+          throw new Error("Working-directory links cannot cross project folder boundaries");
+        }
+        if (!(await lstat(canonical)).isDirectory()) throw new Error("cwd must be a directory");
+        return canonical;
+      }
       // Absolute paths can use Windows short aliases; their canonical boundary is checked below.
-      if (!path.isAbsolute(requested)) this.workspace.pathGuard.assertInside(lexical);
       const canonical = await resolveLocalCommandPath(requested, this.workspace.root);
       this.workspace.pathGuard.assertInside(canonical);
       if (cwdKey(canonical) === cwdKey(this.workspace.root)) return this.workspace.root;
-      const relative = this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(canonical));
-      return await this.workspace.pathGuard.resolveExisting(relative, { kind: "directory" });
+      return canonical;
     } catch (error) {
       throw new CommandPolicyBoundaryError(
         error instanceof Error ? error.message : String(error),
@@ -215,6 +258,7 @@ export class CommandResolver {
     requested: string,
     cwd: string,
     environment: NodeJS.ProcessEnv,
+    unrestrictedHostAccess = false,
   ): Promise<string> {
     if (path.isAbsolute(requested)) {
       for (const extension of executableExtensions(requested, environment)) {
@@ -227,11 +271,10 @@ export class CommandResolver {
     }
     if (requested.includes("/") || requested.includes("\\")) {
       for (const extension of executableExtensions(requested, environment)) {
-        let relative: string;
         try {
           const lexical = path.resolve(cwd, `${requested}${extension}`);
           this.workspace.pathGuard.assertInside(lexical);
-          relative = this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(lexical));
+          this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(lexical));
         } catch (error) {
           throw new CommandPolicyBoundaryError(
             error instanceof Error ? error.message : String(error),
@@ -239,7 +282,7 @@ export class CommandResolver {
           );
         }
         try {
-          const target = await resolveLocalCommandPath(relative, this.workspace.root);
+          const target = await resolveLocalCommandPath(`${requested}${extension}`, cwd);
           if (isInsideWorkspace(this.workspace, target)) {
             this.workspace.pathGuard.normalizeRelative(this.workspace.pathGuard.toRelative(target));
           } else if (!trustedExecutableLocation(target, this.workspace.root)) {
@@ -261,22 +304,33 @@ export class CommandResolver {
 
     const extensions = executableExtensions(requested, environment);
 
-    // Prefer a package-local binary, but never search above the workspace.
-    let directory = cwd;
-    while (true) {
-      for (const extension of extensions) {
-        const candidate = path.join(directory, "node_modules", ".bin", `${requested}${extension}`);
-        if (await isExecutable(candidate)) {
-          const canonical = path.normalize(await realpath(candidate));
-          this.workspace.pathGuard.assertInside(canonical);
-          return canonical;
+    // Prefer a package-local binary only when cwd belongs to a project root.
+    // Full-access commands may intentionally use a host cwd; in that case the
+    // controlled PATH remains available but project boundary checks do not
+    // accidentally turn valid host execution into a resolution failure.
+    let workspaceRoot: string | undefined;
+    try {
+      workspaceRoot = this.workspace.rootForPath(cwd);
+    } catch (error) {
+      if (!unrestrictedHostAccess) throw error;
+    }
+    if (workspaceRoot) {
+      let directory = cwd;
+      while (true) {
+        for (const extension of extensions) {
+          const candidate = path.join(directory, "node_modules", ".bin", `${requested}${extension}`);
+          if (await isExecutable(candidate)) {
+            const canonical = path.normalize(await realpath(candidate));
+            this.workspace.pathGuard.assertInside(canonical);
+            return canonical;
+          }
         }
+        if (directory === workspaceRoot) break;
+        const parent = path.dirname(directory);
+        if (parent === directory) break;
+        if (!isInsideWorkspace(this.workspace, parent)) break;
+        directory = parent;
       }
-      if (directory === this.workspace.root) break;
-      const parent = path.dirname(directory);
-      if (parent === directory) break;
-      if (!isInsideWorkspace(this.workspace, parent)) break;
-      directory = parent;
     }
 
     const pathValue = getEnvironmentValue(environment, "PATH") ?? "";
@@ -339,8 +393,9 @@ export class CommandResolver {
   ): Promise<string | undefined> {
     const packagePath = await this.findNearestPackageJson(cwd);
     const npmrcContents: Array<{ path: string; content: string }> = [];
-    let directory = this.workspace.root;
-    const relativeCwd = path.relative(this.workspace.root, cwd);
+    const workspaceRoot = this.workspace.rootForPath(cwd);
+    let directory = workspaceRoot;
+    const relativeCwd = path.relative(workspaceRoot, cwd);
     const directories = [directory];
     if (relativeCwd) {
       for (const segment of relativeCwd.split(path.sep)) {
@@ -375,6 +430,7 @@ export class CommandResolver {
 
   private async findNearestPackageJson(start: string): Promise<string | undefined> {
     let directory = start;
+    const workspaceRoot = this.workspace.rootForPath(start);
     while (true) {
       const candidate = path.join(directory, "package.json");
       try {
@@ -383,7 +439,7 @@ export class CommandResolver {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      if (directory === this.workspace.root) return undefined;
+      if (directory === workspaceRoot) return undefined;
       const parent = path.dirname(directory);
       if (!isInsideWorkspace(this.workspace, parent)) return undefined;
       directory = parent;

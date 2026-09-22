@@ -23,6 +23,20 @@ function fixture() {
 }
 
 describe("global and project long-term memory", () => {
+  it("binds memory to an explicit logical project instead of one attached folder", async () => {
+    const f = fixture();
+    try {
+      const projectId = "project_12345678-1234-4123-8123-123456789abc";
+      const created = f.manager.applyModelMutations({ workspaceId: projectId, workspaceRoot: f.a,
+        threadId: "thread_project", turnId: "turn_project", outcome: "success",
+        mutations: [{ action: "remember", category: "architecture",
+          content: "The logical project spans the API and Web folders.", reason: "Project architecture." }] });
+      assert.equal(f.manager.list(projectId).length, 1);
+      assert.equal(f.manager.list(projectMemoryIdFromRoot(f.a)).length, 0);
+      assert.equal(f.manager.get(projectId, created.memoryIds[0]!)?.scope, "project");
+    } finally { f.dispose(); }
+  });
+
   it("shares a project across nested workspaces while isolating different project directories", async () => {
     const f = fixture();
     try {
