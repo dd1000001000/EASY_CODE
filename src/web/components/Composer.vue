@@ -238,7 +238,7 @@ defineExpose({ sent, failed });
       <div class="composer-bottom">
         <div class="composer-tools">
           <ElButton :icon="Plus" circle :title="t('ui.attachFiles')" :aria-label="t('ui.attachFiles')" :disabled="!threadId || uploading" @click="fileInput?.click()" />
-          <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md,.html,.xml,.json" multiple hidden :disabled="!threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
+          <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.xml,.json,.yaml,.yml" multiple hidden :disabled="!threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
           <ElButton class="composer-setting composer-approval" text :disabled="settingsDisabled" @click="emit('selectApproval')"><span class="composer-setting-label">{{ approvalLabel }}</span><CaretBottom /></ElButton>
           <ElButton class="composer-setting composer-orchestration" text :disabled="settingsDisabled" @click="emit('selectOrchestration')"><span class="composer-setting-label">{{ orchestrationLabel }}</span><CaretBottom /></ElButton>
         </div>

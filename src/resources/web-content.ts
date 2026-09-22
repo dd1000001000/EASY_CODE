@@ -17,31 +17,6 @@ function decodeEntities(value: string): string {
 
 function stripTags(value: string): string { return decodeEntities(value.replace(/<[^>]*>/gu, "")); }
 
-export function htmlToMarkdown(html: string, sourceUrl: string): { title: string; markdown: string } {
-  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/iu.exec(html);
-  const title = stripTags(titleMatch?.[1] ?? new URL(sourceUrl).hostname).replace(/\s+/gu, " ").trim();
-  let body = /<body\b[^>]*>([\s\S]*?)<\/body>/iu.exec(html)?.[1] ?? html;
-  body = body
-    .replace(/<(script|style|noscript|svg|canvas|template|nav|footer)\b[^>]*>[\s\S]*?<\/\1>/giu, "")
-    .replace(/<!--([\s\S]*?)-->/gu, "")
-    .replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/giu, (_all, value: string) => `\n\n\`\`\`\n${stripTags(value).trim()}\n\`\`\`\n\n`)
-    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/giu, (_all, level: string, value: string) => `\n\n${"#".repeat(Number(level))} ${stripTags(value).trim()}\n\n`)
-    .replace(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/giu, (_all, href: string, value: string) => {
-      const label = stripTags(value).replace(/\s+/gu, " ").trim();
-      try { return label ? `[${label}](${new URL(decodeEntities(href), sourceUrl).href})` : ""; } catch { return label; }
-    })
-    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/giu, (_all, value: string) => `\n- ${stripTags(value).replace(/\s+/gu, " ").trim()}`)
-    .replace(/<(?:p|div|section|article|main|header|aside|blockquote|table|tr)\b[^>]*>/giu, "\n\n")
-    .replace(/<br\s*\/?>/giu, "\n")
-    .replace(/<\/[^>]+>/gu, "\n");
-  const text = decodeEntities(body.replace(/<[^>]*>/gu, ""))
-    .replace(/[\t\f\v ]+/gu, " ")
-    .replace(/ *\n */gu, "\n")
-    .replace(/\n{3,}/gu, "\n\n")
-    .trim();
-  return { title: title || new URL(sourceUrl).hostname, markdown: `# ${title || new URL(sourceUrl).hostname}\n\nSource: ${sourceUrl}\n\n${text}\n` };
-}
-
 function privateAddress(address: string): boolean {
   if (address === "::1" || address === "0:0:0:0:0:0:0:1" || address.startsWith("fc") || address.startsWith("fd") || address.startsWith("fe80:")) return true;
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/iu.exec(address)?.[1];

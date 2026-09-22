@@ -403,8 +403,8 @@
       "bytes": 1543
     },
     "tools/read_document.json": {
-      "sha256": "sha256:4963bf48569f1c969fee7cc02a8e398053bee6c156b84bd3b6650addfacb7709",
-      "bytes": 715
+      "sha256": "sha256:3d87f77b97ed6249f352f5853425954e2a5901fe83477d5879322ecab3b517c8",
+      "bytes": 756
     },
     "tools/read_file.json": {
       "sha256": "sha256:75231e686b4d0d2df383b0e4562d4743f43a3a5665f3a335a30a4db4fc57582a",
@@ -568,7 +568,7 @@
     "read_document": {
       "path": "tools/read_document.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:4963bf48569f1c969fee7cc02a8e398053bee6c156b84bd3b6650addfacb7709"
+      "contentHash": "sha256:3d87f77b97ed6249f352f5853425954e2a5901fe83477d5879322ecab3b517c8"
     },
     "read_file": {
       "path": "tools/read_file.json",
@@ -661,5 +661,5 @@
       "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
     }
   },
-  "bundleHash": "sha256:d07949c14e4601b5ad30516aad51b78876aadafbbb38ea7461d5f7a9b1cfc763"
+  "bundleHash": "sha256:b3edfe426eb39350826297f2b755997b72065b313b6f41af53d50dde3620c0cb"
 }
