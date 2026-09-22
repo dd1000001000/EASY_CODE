@@ -26,9 +26,9 @@ export interface WindowsProxyPortLease {
   readonly port: number;
   /** Ports already proven to be present in the durable Windows WFP policy. */
   authorizedPorts(): Promise<readonly number[]>;
-  /** Authorized ports plus this process's newly allocated port for setup. */
+  /** The complete fixed port pool installed by one administrator-approved setup. */
   setupPorts(): Promise<readonly number[]>;
-  /** Persist only after the native sandbox enforcement probe succeeds. */
+  /** Persist the complete fixed pool only after the enforcement probe succeeds. */
   markAuthorized(): Promise<void>;
 }
 
@@ -182,18 +182,21 @@ async function acquire(options: AcquireWindowsProxyPortOptions): Promise<Windows
       const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
       return registry.provisionedPorts;
     },
-    setupPorts: async () => {
-      const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
-      return registry.provisionedPorts.includes(port) ? registry.provisionedPorts
-        : [...registry.provisionedPorts, port].sort((a, b) => a - b);
-    },
+    setupPorts: async () => Array.from(
+      { length: options.portSlots },
+      (_, index) => options.portStart + index,
+    ),
     markAuthorized: async () => {
       const unlock = await acquireRegistryLock(lockFile);
       try {
         const registry = await readRegistry(registryFile, options.portStart, options.portSlots);
-        if (!registry.provisionedPorts.includes(port)) {
-          registry.provisionedPorts.push(port);
-          registry.provisionedPorts.sort((a, b) => a - b);
+        const completePool = Array.from(
+          { length: options.portSlots },
+          (_, index) => options.portStart + index,
+        );
+        if (registry.provisionedPorts.length !== completePool.length ||
+          completePool.some((candidate, index) => registry.provisionedPorts[index] !== candidate)) {
+          registry.provisionedPorts = completePool;
           await writeRegistry(registryFile, registry);
         }
       } finally { await unlock(); }
@@ -201,8 +204,7 @@ async function acquire(options: AcquireWindowsProxyPortOptions): Promise<Windows
   };
 }
 
-/** Acquire one process-wide port. Previously provisioned inactive slots are
- * reused, so the durable WFP allowlist grows only to peak concurrent CLI use. */
+/** Acquire one process-wide port from the fixed pool authorized during setup. */
 export function acquireWindowsProxyPortLease(options: AcquireWindowsProxyPortOptions): Promise<WindowsProxyPortLease> {
   const key = path.resolve(options.dataDir).toLowerCase();
   const existing = processLeases.get(key);

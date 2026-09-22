@@ -34,10 +34,6 @@ export interface SandboxStartupService {
   setup(readiness?: SandboxReadiness): Promise<SandboxSetupResult>;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function safeDetail(value: string, maximum = 2_000): string {
   const normalized = value
     .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/gu, " ")
@@ -55,7 +51,7 @@ export function formatSandboxReadiness(readiness: SandboxReadiness): string[] {
   if (readiness.status === "ready") {
     lines.push("Filesystem and network sandbox checks passed.");
   } else if (readiness.status === "setup_required") {
-    lines.push("One-time operating-system sandbox setup is required.");
+    lines.push("One-time operating-system sandbox setup is required. Run `easy-code sandbox setup` explicitly; normal agent startup never requests administrator approval.");
   } else if (readiness.status === "dependencies_missing") {
     lines.push("Required operating-system sandbox dependencies are missing.");
   } else if (readiness.status === "unsupported") {
@@ -85,7 +81,9 @@ export interface SandboxStartupTerminal {
   stopActivity(): void;
 }
 
-/** Prepare missing prerequisites once, then offer recovery in the retained terminal. */
+/** Inspect the retained command sandbox without mutating operating-system state.
+ * Installation and the explicit `easy-code sandbox setup` command are the only
+ * paths allowed to request administrator approval. */
 export async function runSandboxStartupGuide(
   service: SandboxStartupService,
   terminal: SandboxStartupTerminal,
@@ -101,42 +99,9 @@ export async function runSandboxStartupGuide(
     return true;
   }
 
-  const setup = async (): Promise<boolean> => {
-    const result = await service.setup(readiness);
-    readiness = result.readiness;
-    if ((result.status === "completed" || result.status === "already_ready") && sandboxIsReady(readiness)) {
-      terminal.success(safeDetail(result.message));
-      return true;
-    }
-    if (result.status === "cancelled" || result.status === "unavailable") terminal.warning(safeDetail(result.message));
-    else terminal.error(safeDetail(result.message));
-    return false;
-  };
-
-  // One automatic attempt per startup. A probe/cleanup failure is not a missing
-  // installation; never rebuild it blindly or loop after denied OS approval.
-  if (readiness.canSetup && ["dependencies_missing", "setup_required"].includes(readiness.status)) {
-    terminal.info("Preparing the native command sandbox. Windows may request one administrator-approved setup; macOS and Linux use the packaged native runtime without a virtual machine.");
-    terminal.startActivity("Setting up the command sandbox");
-    try {
-      if (await setup()) return true;
-    } catch (error) {
-      terminal.error(`Sandbox startup operation failed: ${safeDetail(errorMessage(error))}`);
-    } finally {
-      terminal.stopActivity();
-    }
-  }
-
   while (true) {
     for (const line of formatSandboxReadiness(readiness)) terminal.warning(line);
     const choices = [
-      ...(readiness.canSetup
-        ? [{
-            id: "setup",
-            label: "Set up sandbox now (Recommended)",
-            detail: "Prepare the operating-system sandbox; Windows may request administrator approval",
-          }]
-        : []),
       { id: "recheck", label: "Recheck sandbox", detail: "Run the readiness probe again" },
       {
         id: "continue",
@@ -148,7 +113,7 @@ export async function runSandboxStartupGuide(
     const selected = await terminal.selectChoice(
       "Command sandbox is not ready",
       choices,
-      readiness.canSetup ? "setup" : "recheck",
+      "recheck",
     );
     if (!selected || selected === "exit") return false;
     if (selected === "continue") {
@@ -159,22 +124,15 @@ export async function runSandboxStartupGuide(
       return true;
     }
 
-    terminal.startActivity(
-      selected === "setup" ? "Setting up the command sandbox" : "Checking the command sandbox",
-    );
+    terminal.startActivity("Checking the command sandbox");
     try {
-      if (selected === "setup") {
-        if (await setup()) return true;
-      } else {
-        readiness = await service.inspect();
-        if (sandboxIsReady(readiness)) {
-          terminal.success("Command sandbox verification passed.");
-          return true;
-        }
+      readiness = await service.inspect();
+      if (sandboxIsReady(readiness)) {
+        terminal.success("Command sandbox verification passed.");
+        return true;
       }
     } catch (error) {
-      terminal.error(`Sandbox startup operation failed: ${safeDetail(errorMessage(error))}`);
-      readiness = await service.inspect();
+      terminal.error(`Sandbox readiness check failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`);
     } finally {
       terminal.stopActivity();
     }

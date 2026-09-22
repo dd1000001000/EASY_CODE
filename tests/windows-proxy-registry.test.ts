@@ -59,7 +59,7 @@ async function stop(child: ChildProcessWithoutNullStreams | undefined): Promise<
 }
 
 describe("Windows sandbox process proxy registry", () => {
-  it("leases distinct ports to concurrent CLI processes and persists their authorized union", async () => {
+  it("leases distinct ports to concurrent CLI processes after persisting the complete fixed authorized pool", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "easy-proxy-registry-"));
     const start = await freePort();
     let first: ChildProcessWithoutNullStreams | undefined;
@@ -71,7 +71,7 @@ describe("Windows sandbox process proxy registry", () => {
       const registry = JSON.parse(await readFile(path.join(dataDir, "native-sandbox", "proxy-ports.json"), "utf8")) as {
         provisionedPorts: number[]; leases: Array<{ port: number }>;
       };
-      assert.deepEqual(registry.provisionedPorts, [one.port, two.port].sort((a, b) => a - b));
+      assert.deepEqual(registry.provisionedPorts, Array.from({ length: 16 }, (_, index) => start + index));
       assert.deepEqual(new Set(registry.leases.map(lease => lease.port)), new Set([one.port, two.port]));
     } finally {
       await Promise.all([stop(first), stop(second)]);
