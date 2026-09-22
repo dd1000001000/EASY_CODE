@@ -80,7 +80,7 @@ Interactive CLI and Web tasks do not have a fixed model-request count limit. For
 
 | Area | How to use it |
 | --- | --- |
-| Projects | Create an empty project, then use its edit action to rename it, add or remove folders, or choose the primary folder. The sidebar shows only projects and their conversations. Folder membership cannot change while that project's work is active. Hover over or select a ready project to reveal its new-conversation action. Collapse the sidebar with its top button; click the logo to expand it. |
+| Projects | Create an empty project, then use edit to add folders or change project settings. The project's **＋** creates a conversation and stays disabled until a folder is attached; delete removes the whole project. The sidebar shows only projects and their conversations. Folder membership cannot change while that project's work is active. Collapse the sidebar with its top button; click the logo to expand it. |
 | Input | **Enter** sends; **Shift+Enter** inserts a newline. Sending requires an open conversation. The shortcuts apply on Windows, macOS and Linux; IME composition is not submitted as a message. |
 | Attachments | Paste or upload images for removable previews. Long pasted text appears as a preview card while retaining the full submitted text. Images require a vision-capable model. |
 | Running tasks | An empty draft shows the stop action. Entering text changes it to send an adjustment for a later safe execution boundary. Other projects and conversations remain accessible and can run in parallel. |

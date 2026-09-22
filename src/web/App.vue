@@ -646,6 +646,7 @@ function noticePreview(text: string): string {
             </ElButton>
             <ElButton class="project-action project-action--add" text :icon="Plus" :title="project.ready === false ? t('ui.attachFolderFirst') : t('ui.newConversation')" :aria-label="t('ui.newConversation')" :disabled="switching || project.ready === false" @click="switchThread('new', undefined, project.id)" />
             <ElButton class="project-action" text :icon="Edit" :title="t('ui.editProject')" :aria-label="t('ui.editProject')" :disabled="switching" @click="openProjectEditor(project)" />
+            <ElButton class="project-action danger" text :icon="Delete" :title="t('ui.removeProject')" :aria-label="t('ui.removeProject')" :disabled="switching || projectRunning(project.id)" @click="deleteProject(project)" />
           </div>
           <div v-if="expandedProjects.has(project.id)" class="project-threads">
             <div v-for="thread in projectThreads(project.id)" :key="thread.threadId" class="thread-item" :class="{ active: activeThread === thread.threadId }">
