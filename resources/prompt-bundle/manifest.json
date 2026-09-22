@@ -107,16 +107,16 @@
       "bytes": 161
     },
     "controllers/auto-router.md": {
-      "sha256": "sha256:d3a5cbfec70997a127c4342a3e68e61b66513e0cc2fb7e9822f8a2215b134fac",
-      "bytes": 1153
+      "sha256": "sha256:946a1b698944f430ec307f11a9d69eafcecff211bc6d2dd8b64f627c7ba1df4a",
+      "bytes": 1422
     },
     "controllers/current-request.md": {
       "sha256": "sha256:4ed870e2e3961fc87ce3898d98d7694773623cc3a43c7365ced966c11d1cc34a",
       "bytes": 64
     },
-    "controllers/live-mcp-status.md": {
-      "sha256": "sha256:c343df94d26b492ab9e34bebad8042649a79e1c0b3e51b0063bed1e0f4d15354",
-      "bytes": 612
+    "controllers/live-capability-status.md": {
+      "sha256": "sha256:df556536cf8155f21e8025ad2ce0d67ebedbb868147e6d3fd77022c77d98a4bb",
+      "bytes": 1129
     },
     "controllers/prior-assistant.md": {
       "sha256": "sha256:1f5ade2dd9a042289f382068f182a5c80de2bf4b8e1914837861e35d07736d16",
@@ -661,5 +661,5 @@
       "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
     }
   },
-  "bundleHash": "sha256:ada5f74cb246cddf2e694aa81604fe0dfa648028e7b5a9cc27a7204a0b4e569b"
+  "bundleHash": "sha256:d07949c14e4601b5ad30516aad51b78876aadafbbb38ea7461d5f7a9b1cfc763"
 }

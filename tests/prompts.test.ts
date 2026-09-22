@@ -245,6 +245,9 @@ describe("system prompt builder", () => {
           "start_command",
           "poll_command",
           "cancel_command",
+          "fetch_artifact",
+          "web_search",
+          "fetch_webpage",
           "compact_context",
           "write_memory",
         ],
@@ -264,6 +267,9 @@ describe("system prompt builder", () => {
       assert.match(prompt, /Use backgroundKind=service for a dev\/API server/u);
       assert.match(prompt, /Use the original commandId and omit waitMs/u);
       assert.match(prompt, /Use cancel_command only when a background command/u);
+      assert.match(prompt, /Use search results to select relevant sources/u);
+      assert.match(prompt, /result contains a thread-resource URI/u);
+      assert.match(prompt, /Files are integrity-checked and staged under vendor\/downloads/u);
       assert.match(prompt, /Supply currentWork and nextStep/u);
       assert.match(prompt, /write_memory is the only path/u);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/u);

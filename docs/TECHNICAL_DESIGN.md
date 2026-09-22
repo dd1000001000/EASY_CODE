@@ -136,6 +136,8 @@ Work modes describe the intended approach:
 | Plan | Focus on investigation, proposals and decisions needing confirmation | “Investigate the login flow and propose a fix; do not implement it yet.” |
 | Code | Implement and verify directly | “Apply the agreed fix and run the relevant tests.” |
 
+Auto remains a model choice, but the router receives an authoritative category-level summary of the capabilities currently available in Plan and Code. It sees whether project investigation, public Web reading, image understanding, implementation, external services and agent orchestration are available, without receiving ordinary tool schemas. Requests needing live information or tools go to Code; requests that need a reviewable proposal before implementation go to Plan; only conversation-grounded answers may finish directly. Ambiguous requests default to Code.
+
 Use `/mode plan`, `/mode code` or `/mode auto` in CLI. **Plan is not enforced read-only.** If modifications are out of scope, say so explicitly and keep appropriate command approval controls.
 
 A plan-then-implement workflow:

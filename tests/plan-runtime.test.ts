@@ -110,6 +110,23 @@ function createFileTool() {
         },
     };
 }
+function webSearchTool() {
+    return {
+        name: "web_search",
+        mutating: false,
+        definition: {
+            type: "function",
+            function: {
+                name: "web_search",
+                description: "Search public Web pages",
+                parameters: { type: "object" },
+            },
+        },
+        async execute() {
+            return { ok: true, summary: "searched" };
+        },
+    };
+}
 function review(status = "awaiting_review") {
     return {
         status,
@@ -168,9 +185,10 @@ describe("model-controlled plan flow", () => {
                 requests += 1;
                 if (requests === 1) {
                     const policy = request.messages[0]?.content ?? "";
-                    assert.match(policy, /robinhood: connected, 81 tool\(s\)/u);
-                    assert.match(policy, new RegExp(tools[0].name, "u"));
-                    assert.match(policy, /select Code mode/u);
+                    assert.match(policy, /Connected MCP servers: 1/u);
+                    assert.match(policy, /Use tools exposed by currently connected external services/u);
+                    assert.match(policy, /current capability inspection/u);
+                    assert.doesNotMatch(policy, new RegExp(tools[0].name, "u"));
                     return selectMode("code");
                 }
                 assert.deepEqual(request.tools?.map(tool => tool.function.name), tools.map(tool => tool.name));
@@ -190,6 +208,31 @@ describe("model-controlled plan flow", () => {
         assert.equal(result.reason, "success", result.text);
         assert.equal(requests, 3);
         assert.match(result.text, /tool_80/u);
+    });
+    it("advertises built-in Web access without MCP and routes live search to Code", async () => {
+        let requests = 0;
+        const provider = {
+            name: "deepseek", model: "mock-model",
+            async complete(request) {
+                requests += 1;
+                if (requests === 1) {
+                    const policy = request.messages[0]?.content ?? "";
+                    assert.match(policy, /Public Web search\/page reading: Plan and Code/u);
+                    assert.match(policy, /Search the public Web and read selected public pages/u);
+                    assert.match(policy, /Connected MCP servers: 0/u);
+                    assert.doesNotMatch(policy, /web_search|fetch_webpage/u);
+                    return selectMode("code");
+                }
+                assert.deepEqual(request.tools?.map(tool => tool.function.name), ["web_search"]);
+                return { message: { role: "assistant", content: "The current Web search capability is available." } };
+            },
+        };
+        const current = state("auto");
+        const result = await runtime(provider, [webSearchTool()], [], [], [], [], DEFAULT_RUNTIME_LIMITS, [])
+            .run(current, "Search the Web for current information", options());
+        assert.equal(result.reason, "success", result.text);
+        assert.equal(requests, 2);
+        assert.match(result.text, /available/u);
     });
     it("answers a bounded Auto request in one call and records router usage", async () => {
         let requests = 0;
