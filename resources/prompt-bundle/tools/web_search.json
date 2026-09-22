@@ -1,0 +1,10 @@
+{
+  "id": "web_search",
+  "contractVersion": "1.0.0",
+  "description": "Search the public Web for relevant pages and return bounded titles, URLs, and snippets. This does not fetch or save full page contents.",
+  "propertyDescriptions": {
+    "query": "Keywords or a concise search question.",
+    "limit": "Maximum number of results to return, from 1 through 10. Defaults to 5."
+  },
+  "guidance": "Use search results to select relevant sources. Call fetch_webpage for a selected URL when full readable content is needed. Treat snippets as previews, not complete source text."
+}

@@ -71,6 +71,7 @@ interface PostinstallModule {
       reused: string[];
     }>;
     validateStack?: (model: unknown) => Promise<unknown>;
+    prepareDocumentConverter?: () => Promise<{ runtime: string; python: string }>;
     installExtension?: () => InstallResult;
     stdout?: { write(message: string): unknown };
     stderr?: { write(message: string): unknown };
@@ -375,6 +376,10 @@ describe("VS Code extension installer", () => {
       validateStack: async () => {
         order.push("runtime");
       },
+      prepareDocumentConverter: async () => {
+        order.push("documents");
+        return { runtime: path.join(tmpdir(), "markitdown-fixture"), python: "python" };
+      },
       installExtension: () => {
         order.push("extension");
         return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
@@ -387,7 +392,7 @@ describe("VS Code extension installer", () => {
       stderr: { write: () => undefined },
     });
 
-    assert.deepEqual(order, ["model", "runtime", "extension"]);
+    assert.deepEqual(order, ["model", "runtime", "documents", "extension"]);
     assert.equal(result.sqliteReady, true);
     assert.equal(result.promptBundleReady, true);
     assert.equal(result.modelReady, true);

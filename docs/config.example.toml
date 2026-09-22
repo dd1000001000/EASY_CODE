@@ -31,6 +31,12 @@ command_background_lifetime_max_ms = 3600000
 sandbox_startup_windows_ms = 75000
 sandbox_startup_posix_ms = 30000
 sandbox_cleanup_timeout_ms = 45000
+# MCP transport framing is bounded by bytes, while useful result content is
+# projected separately against the active model/context budget.
+mcp_stdio_max_message_bytes = 268435456
+# MCP requests use a resettable idle deadline; progress notifications extend it.
+mcp_idle_timeout_ms = 120000
+mcp_startup_timeout_ms = 60000
 # Per-process Windows broker ports are leased from this bounded range.
 native_sandbox_proxy_port_start = 43179
 native_sandbox_proxy_port_slots = 32

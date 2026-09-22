@@ -47,7 +47,9 @@ export type BuiltinToolName =
   | "write_memory"
   | "search_context"
   | "recall_context"
-  | "fetch_artifact";
+  | "fetch_artifact"
+  | "web_search"
+  | "fetch_webpage";
 /** Model-facing tool names are extensible and therefore cannot be a closed union. */
 export type ToolName = string;
 // Artifact transfer has its own capability; normal command networking stays off.
@@ -507,6 +509,8 @@ export interface ToolContext {
   unrestrictedHostAccessEpoch?: () => number;
   requestApproval: ApprovalHandler;
   signal?: AbortSignal;
+  /** Best-effort progress from a long-running external tool. */
+  reportProgress?: (update: { message?: string; progress?: number; total?: number }) => void;
   commandTimeoutMs: number;
   maxOutputChars: number;
   /** Runtime-issued identity. Missing values are never accepted by subagent controls. */
@@ -543,7 +547,8 @@ export interface AgentTool {
   readonly definition: ToolDefinition;
   readonly mutating: boolean;
   /** Runtime adapter's actual operation when one model-facing tool dispatches multiple operations. */
-  readonly approvalTarget?: (input: unknown) => { name: string; label: string; description?: string; input?: unknown };
+  readonly approvalTarget?: (input: unknown) => { name: string; label: string; description?: string;
+    input?: unknown; contractHash?: string };
   /** Built-ins receive Runtime-owned metadata; every external tool must provide it. */
   readonly metadata?: Readonly<ToolRuntimeMetadata>;
   /** Optional when validation is performed by a built-in or adapter-owned boundary. */

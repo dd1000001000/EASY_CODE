@@ -44,7 +44,8 @@ function menuApp(server: McpServerConfig, answers: string[]) {
 
 describe("MCP app menu navigation", () => {
   const remote: RemoteMcpServerConfig = {
-    transport: "http", url: "https://mcp.example.com/mcp", auth: "none", enabled: false,
+    transport: "http", url: "https://mcp.example.com/mcp", auth: "none",
+    headers: {}, query: {}, enabled: false,
   };
 
   it("returns to the main request after showing server details", async () => {

@@ -9,6 +9,7 @@ EASY CODE is a local AI coding assistant for the terminal and browser. Give it a
 ## What you can do
 
 - **Work in CLI or Web:** saved conversations, image attachments, live progress and adjustments while a task runs.
+- **Read documents and the Web on demand:** Web document attachments become private, read-only conversation resources; the agent can search public pages and save selected pages for bounded reading.
 - **Organize real projects:** attach one or several local folders to a project and keep separate conversations for different tasks.
 - **Choose your models:** bundled provider entries for Qwen, DeepSeek, Kimi, GLM and GLM Coding Plan; configurable models, endpoints and capabilities.
 - **Control execution:** Auto, Plan and Code workflows; manual approval, an independent approval agent or explicit Full access; native command sandboxing.
@@ -20,7 +21,7 @@ The application and its history run locally. Relevant task context is still sent
 
 ## Install
 
-Requirements: **Node.js 20.11+**, npm, Git for the source installation below, and a supported provider account. Native sandbox availability depends on your operating system and architecture.
+Requirements: **Node.js 20.11+**, **Python 3.10+**, npm, Git for the source installation below, and a supported provider account. Python creates the private Microsoft MarkItDown document-conversion runtime. Native sandbox availability depends on your operating system and architecture.
 
 ```sh
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -50,7 +51,7 @@ Enter the key when prompted; input is hidden and the key is stored in the OS cre
 easy-code --web
 ```
 
-In Web, create a project, attach a local folder, then use the project's **＋** to start a conversation. Choose your model below the input. Keep the launching terminal open; the Web service is local to this computer.
+In Web, create a project, attach a local folder, then use the project's **＋** to start a conversation. Choose your model below the input. The attachment button accepts images and common PDF, Word, PowerPoint, spreadsheet and text formats. Documents stay with that conversation as read-only resources; only their names and resource paths enter the prompt until the agent reads a relevant range. Keep the launching terminal open; the Web service is local to this computer.
 
 Or start the interactive terminal in a project folder:
 

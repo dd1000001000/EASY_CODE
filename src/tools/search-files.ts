@@ -1,4 +1,4 @@
-import { lstat, open, opendir, stat } from "node:fs/promises";
+import { lstat, open, opendir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { AgentTool, ToolContext, ToolDefinition } from "../core/types.js";
@@ -9,6 +9,7 @@ import { sha256 } from "../utils/hash.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { resolveExistingFileToolTarget, type FileToolTarget } from "./file-access.js";
 import { documentToolSchema } from "./metadata.js";
+import type { ThreadResourceStore } from "../resources/index.js";
 
 export const searchFilesInputSchema = z.object({
   path: z.string().min(1).max(4096).optional(),
@@ -16,6 +17,7 @@ export const searchFilesInputSchema = z.object({
   query: z.string().min(1).max(512).optional(),
   caseSensitive: z.boolean().optional(),
   mode: z.enum(["search", "list"]).optional(),
+  scope: z.enum(["workspace", "thread_resources", "all"]).optional(),
   maxDepth: z.number().int().min(1).max(256).optional(),
 }).strict();
 const ignored = new Set([".git", ".easycode", ".easy-code-runtime", "node_modules", "dist", "dist-test",
@@ -84,9 +86,9 @@ export class SearchFilesTool implements AgentTool {
   readonly definition: ToolDefinition = { type: "function", function: { name: this.name, strict: true,
     ...documentToolSchema(this.name, { type: "object", additionalProperties: false, properties: {
       path: { type: "string" }, glob: { type: "string" }, query: { type: "string" }, caseSensitive: { type: "boolean" },
-      mode: { type: "string", enum: ["search", "list"] }, maxDepth: { type: "integer", minimum: 1, maximum: 256 },
+      mode: { type: "string", enum: ["search", "list"] }, scope: { type: "string", enum: ["workspace", "thread_resources", "all"] }, maxDepth: { type: "integer", minimum: 1, maximum: 256 },
     }, required: [] }) } };
-  constructor(private readonly workspace: WorkspaceManager) {}
+  constructor(private readonly workspace: WorkspaceManager, private readonly resources?: ThreadResourceStore) {}
 
   async execute(input: unknown, context: ToolContext) {
     try {
@@ -96,6 +98,7 @@ export class SearchFilesTool implements AgentTool {
       const tokens = Math.min(limits.searchMaxResultTokens, context.resultTokenBudget ?? limits.searchMaxResultTokens);
       const matchers = request.glob ? patterns(request.glob).map(filePattern) : undefined;
       const mode = request.mode ?? "search";
+      const scope = request.scope ?? "workspace";
       if (mode === "list" && request.query) throw new Error("mode list returns directory entries; omit query or use mode search for file contents");
       const maxDepth = Math.min(request.maxDepth ?? (mode === "list" ? 1 : limits.searchMaxDepth), limits.searchMaxDepth);
       const matches: object[] = [];
@@ -129,6 +132,43 @@ export class SearchFilesTool implements AgentTool {
         if (matches.length >= limits.searchMaxMatches) { stopped = "match_limit"; return false; }
         matches.push(hit); used += cost; usedChars += encoded.length + 2; return true;
       };
+      if (scope !== "workspace") {
+        if (!this.resources) throw new Error("Thread resources are not available to this agent.");
+        const records = await this.resources.list(context.threadId);
+        for (const record of records) {
+          check();
+          if (stopped) break;
+          entries += 1; files += 1;
+          if (matchers && !matchers.some(matcher => matcher.test(record.filename))) continue;
+          if (mode === "list" || !request.query) {
+            push({ path: record.uri, kind: "thread_resource", name: record.filename, resourceKind: record.kind, readOnly: true });
+            continue;
+          }
+          const target = await this.resources.contentPath(context.threadId, record.uri);
+          const info = await stat(target.path);
+          if (info.size > limits.searchMaxFileBytes) { omissions.oversized += 1; continue; }
+          if (bytes + info.size > limits.searchMaxBytes) { stopped = "scan_byte_budget"; break; }
+          const content = await readFile(target.path, "utf8");
+          bytes += Buffer.byteLength(content);
+          const lines = content.split(/\r\n|\n|\r/u);
+          const needle = request.caseSensitive ? request.query : request.query.toLowerCase();
+          for (let index = 0; index < lines.length && !stopped; index += 1) {
+            const comparable = request.caseSensitive ? lines[index]! : lines[index]!.toLowerCase();
+            if (!comparable.includes(needle)) continue;
+            const start = Math.max(0, index - limits.searchContextLines);
+            const end = Math.min(lines.length, index + limits.searchContextLines + 1);
+            push({ path: record.uri, name: record.filename, line: index + 1, startLine: start + 1,
+              endLine: end, content: lines.slice(start, end).join("\n"), readOnly: true });
+          }
+        }
+        if (scope === "thread_resources" || stopped) {
+          const truncated = Boolean(stopped) || omissions.oversized > 0;
+          return toolSuccess(`${mode === "list" ? "Listed" : "Found"} ${matches.length} Thread resource entries${truncated ? `; partial (${stopped ?? "omissions"})` : ""}.`, {
+            matches, scannedFiles: files, scannedEntries: entries, scannedBytes: bytes, omissions,
+            truncated, stopReason: stopped ?? null, mode, scope,
+          });
+        }
+      }
       const scan = async (root: FileToolTarget, target: FileToolTarget) => {
         check();
         const relative = path.relative(root.absolutePath, target.absolutePath).split(path.sep).join("/") || path.basename(target.absolutePath);

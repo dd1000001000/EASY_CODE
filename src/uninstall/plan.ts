@@ -179,9 +179,15 @@ export async function buildFilePlan(options: PlanOptions = {}): Promise<Uninstal
       try {
         const receipt = plan.resources.find(resource => resource.kind === kind &&
           resource.path && identity(resource.path) === identity(root));
-        if (!options.paths && receipt?.state === "ready" &&
-            (!receipt.identity || receipt.identity !== filesystemIdentity(root))) {
-          throw new Error(`Installation resource identity does not match: ${root}`);
+        if (!options.paths && receipt?.state === "ready") {
+          const currentIdentity = filesystemIdentity(root);
+          // A previously owned path may already be absent after a partial or
+          // interrupted installation/uninstall. There is nothing destructive
+          // to authorize in that case. If an object exists, however, its
+          // durable identity must still match the receipt exactly.
+          if (currentIdentity !== undefined && receipt.identity !== currentIdentity) {
+            throw new Error(`Installation resource identity does not match: ${root}`);
+          }
         }
         candidates.push({ root, kind });
       } catch (error) {

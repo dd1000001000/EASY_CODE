@@ -75,17 +75,23 @@
 .language-switcher{width:110px}.language-switcher .el-select__wrapper{min-height:31px;border:0;border-radius:8px;background:transparent;box-shadow:none!important;transition:background-color .16s ease}.language-switcher .el-select__wrapper:hover,.language-switcher .el-select__wrapper.is-focused,.language-switcher .el-select__wrapper:focus-within{background:#eef3fc;box-shadow:none!important}
 @media(max-width:700px){.app-shell.sidebar-collapsed{display:grid;grid-template-columns:60px minmax(0,1fr)}.sidebar-collapsed .sidebar{height:auto;border-bottom:0}.sidebar-collapsed .main-column{height:100%}}
 @media(prefers-reduced-motion:reduce){.app-shell,.sidebar,.sidebar-brand-enter-active,.sidebar-brand-leave-active,.sidebar-content-enter-active,.sidebar-content-leave-active{transition:none!important}}
-.composer-attachments{display:flex;flex-wrap:wrap;gap:9px;margin:1px 0 12px}
+.composer-attachment-tray{display:grid;grid-template-rows:1fr;overflow:hidden;opacity:1;transition:grid-template-rows .2s cubic-bezier(.2,.75,.25,1),opacity .14s ease}
+.composer-attachment-tray-enter-from,.composer-attachment-tray-leave-to{grid-template-rows:0fr;opacity:0}
+.composer-attachment-tray-enter-active,.composer-attachment-tray-leave-active{will-change:grid-template-rows,opacity}
+.composer-attachments{display:flex;min-height:0;flex-wrap:wrap;gap:9px;margin:1px 0 12px;overflow:hidden}
+.composer-attachment-enter-active,.composer-attachment-leave-active{transition:opacity .16s ease,transform .2s cubic-bezier(.2,.75,.25,1);will-change:transform,opacity}.composer-attachment-enter-from,.composer-attachment-leave-to{opacity:0;transform:translateY(6px) scale(.985)}.composer-attachment-move{transition:transform .2s cubic-bezier(.2,.75,.25,1)}
 .composer-image-card,.composer-text-card{position:relative;border:1px solid #dce4f1;border-radius:10px;background:#f7f9fc;overflow:hidden}
 .composer-image-card{width:148px;height:112px;flex:none}.composer-image-card .el-image{display:block;width:100%;height:100%}
 .composer-image-card .el-image__inner{padding:5px}.attachment-remove.el-button{position:absolute;top:5px;right:5px;width:22px;height:22px;min-height:0;padding:0;background:#fff;color:#59677e;border-color:#dce4f1;box-shadow:0 1px 5px #1c2b4326}
 .composer-text-card{display:flex;align-items:flex-start;gap:8px;width:min(100%,300px);height:112px;padding:12px 32px 10px 11px;color:#5d6d83;font-size:11px}
+.composer-text-card--uploading{background:#f9fbff;border-color:#cfdbef;color:#75839a}
 .composer-text-card>div{min-width:0}.composer-text-card strong{display:block;color:#3e567b;margin-bottom:6px}.composer-text-card span{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;line-height:1.45}
-.composer-text-icon{width:16px;height:16px;flex:none;color:#6b8ad0}.composer-setting.el-button{margin:0;padding:5px 6px;height:29px;color:#63718a;font-size:11px}
+.composer-text-icon{width:16px;height:16px;flex:none;color:#6b8ad0}.composer-upload-spinner{animation:spin .9s linear infinite}.composer-setting.el-button{margin:0;padding:5px 6px;height:29px;color:#63718a;font-size:11px}
 .composer-setting.el-button>span{display:flex;align-items:center;gap:4px;min-width:0}.composer-setting-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.composer-setting svg{width:12px;height:12px;flex:none}
 .composer-model.el-button{max-width:min(42vw,330px)}.composer-approval.el-button{max-width:160px}.composer-orchestration.el-button{max-width:130px}.composer-submit.el-button{width:34px;height:34px;flex:none;margin:0}
 .composer--unbound .composer-tools>.el-button:disabled,.composer--unbound .composer-setting.el-button:disabled{opacity:1}
 @media(max-width:700px){.composer-model.el-button{max-width:38vw}.composer-decision-panel--orchestration.el-card{left:0}}
+@media(prefers-reduced-motion:reduce){.composer-attachment-tray,.composer-attachment-enter-active,.composer-attachment-leave-active,.composer-attachment-move{transition:none!important}.composer-upload-spinner{animation:none!important}}
 @media(max-width:700px){.task-monitor-card.el-card{top:8px;right:8px;width:min(300px,calc(100% - 40px));max-height:35vh}.task-monitor-card .el-card__body{max-height:35vh}.command-output-overlay.el-card{width:calc(100% - 22px)}}
 .project-editor-dialog.el-dialog{padding:0;border:1px solid #dce4f0;border-radius:16px;box-shadow:0 24px 70px #24344e2b;overflow:hidden;background:#fff}
 .project-editor-dialog .el-dialog__header{margin:0;padding:20px 22px 14px;border-bottom:1px solid #eef1f6}.project-editor-dialog .el-dialog__title{color:#26364f;font-size:18px;font-weight:700}.project-editor-dialog .el-dialog__headerbtn{top:10px;right:10px}.project-editor-dialog .el-dialog__body{padding:18px 22px}.project-editor-dialog .el-dialog__footer{padding:0 22px 20px}

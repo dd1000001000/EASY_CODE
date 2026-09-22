@@ -75,6 +75,9 @@ export class ToolExecutionGateway {
     }
     const execute = () => invocation.tool.execute(invocation.input, context);
     const result = activity ? await activity(identity.label, execute) : await execute();
-    return normalizeToolContentResult(result, context.maxOutputChars);
+    const maximumChars = invocation.binding?.sourceId === "mcp"
+      ? context.resultCharBudget ?? context.maxOutputChars
+      : context.maxOutputChars;
+    return normalizeToolContentResult(result, maximumChars);
   }
 }

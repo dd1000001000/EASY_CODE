@@ -3,6 +3,7 @@ import type { UISessionInfo, UIActivityKind, UIReviewPhase } from "./ui/contract
 import type { TaskGraphView } from "./tasks/task-graph.js";
 import type { SubagentView } from "./subagents/types.js";
 import type { InteractionChoice } from "./ui/interaction-port.js";
+import type { ThreadResourceAttachment } from "./resources/types.js";
 
 export type WebEntryKind = "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "plan";
 export type WebAnswerState = "streaming" | "finalizing" | "confirmed";
@@ -21,6 +22,7 @@ export interface WebEntry {
   toolName?: string;
   toolStatus?: "running" | "completed" | "failed";
   images?: readonly Pick<ImageAttachment, "id" | "label" | "mediaType">[];
+  resources?: readonly Pick<ThreadResourceAttachment, "id" | "filename" | "kind" | "mediaType" | "uri">[];
   toolDetails?: readonly ToolDisplayDetail[];
   timestamp: number;
 }

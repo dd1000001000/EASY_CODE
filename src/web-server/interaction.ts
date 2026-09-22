@@ -20,6 +20,7 @@ import type { Language } from "../i18n/language.js";
 import { translate } from "../i18n/catalog.js";
 import { toolRunContinuesAcross, turnContinuesAcross } from "../web-tool-run.js";
 import type { WebChange, WebDecision, WebEntry, WebEntryKind, WebHistoryMarker, WebHistoryPage, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
+import type { ThreadResourceAttachment } from "../resources/types.js";
 
 export const WEB_HISTORY_PAGE_SIZE = 80;
 function userMarker(entry: WebEntry): WebHistoryMarker {
@@ -132,10 +133,16 @@ export class WebInteraction implements AppInteractionPort {
     this.currentTurnStartedAt = undefined;
     this.emit({ kind: "entries.reset", entries: this.entries });
   }
-  presentUser(text: string, images: readonly ImageAttachment[] = []): void {
+  presentUser(text: string, images: readonly ImageAttachment[] = [], resources: readonly ThreadResourceAttachment[] = []): void {
     this.currentTurnId = randomUUID();
     this.currentTurnStartedAt = Date.now();
-    this.append("user", text, images);
+    const id = this.append("user", text, images);
+    const entry = this.entryById.get(id);
+    if (entry && resources.length) {
+      entry.resources = resources.map(({ id: resourceId, filename, kind, mediaType, uri }) =>
+        ({ id: resourceId, filename, kind, mediaType, uri }));
+      this.emit({ kind: "entry.replace", entry });
+    }
   }
   resolveDecision(id: string, value: string | undefined): boolean {
     const index = this.decisions.findIndex(item => item.request.id === id);

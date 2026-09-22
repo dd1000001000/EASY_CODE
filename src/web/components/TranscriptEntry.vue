@@ -14,6 +14,9 @@ function characterCount(text: string): number { return Array.from(text).length; 
       <div v-if="entry.images?.length" class="entry-images">
         <span v-for="image in entry.images" :key="image.id" class="image-tag">▣ {{ image.label }}</span>
       </div>
+      <div v-if="entry.resources?.length" class="entry-images">
+        <span v-for="resource in entry.resources" :key="resource.id" class="image-tag">▤ {{ resource.filename }}</span>
+      </div>
     </div>
     <details v-else-if="entry.kind === 'thinking'" class="disclosure">
       <summary><span class="disclosure-label">{{ t('ui.thinking') }} · {{ characterCount(entry.text) }} {{ t('ui.chars') }}</span><span class="disclosure-preview">{{ preview(entry.text) }}</span></summary>

@@ -91,6 +91,10 @@ const BUILTIN_POLICIES = {
     idempotent: true, resultClass: "memory" },
   fetch_artifact: { effects: ["network_read", "workspace_write"], modes: WORK_MODES, roles: MAIN,
     validationSensitive: true, resultClass: "artifact" },
+  web_search: { effects: ["network_read"], modes: ALL_MODES, roles: MAIN,
+    idempotent: true, resultClass: "search" },
+  fetch_webpage: { effects: ["network_read", "external_read"], modes: ALL_MODES, roles: MAIN,
+    idempotent: true, resultClass: "file_read" },
 } as const satisfies Record<BuiltinToolName, BuiltinPolicy>;
 
 const BUILTIN_NAMES = new Set<string>(Object.keys(BUILTIN_POLICIES));
@@ -225,6 +229,7 @@ export function toolRequiresApproval(tool: Readonly<AgentTool>): boolean {
   if (metadata.identity.sourceKind === "builtin") {
     return !metadata.controlPlane && ![
       "run_command", "start_command", "poll_command", "cancel_command", "fetch_artifact",
+      "web_search", "fetch_webpage",
     ].includes(tool.name);
   }
   return metadata.identity.sourceKind === "external" && metadata.effects.some((effect) =>

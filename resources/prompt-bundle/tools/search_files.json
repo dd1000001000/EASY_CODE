@@ -8,6 +8,7 @@
     "query": "Optional literal text to locate. Omit to list matching filenames.",
     "caseSensitive": "Match text case-sensitively; default false.",
     "mode": "list returns files and directories, default one level deep; search (default) recursively locates files or literal text. Omit query with list.",
+    "scope": "Search workspace files, private read-only thread_resources, or all. Defaults to workspace.",
     "maxDepth": "Maximum levels to visit: 1 means the selected directory only. Defaults to 1 for list, configured searchMaxDepth for search; capped by the configured limit."
   },
   "guidance": "For project purpose/structure questions, call mode=list at the root, then read the root README/manifest or one relevant child directory. Do not recursively explore installed dependencies, caches or unrelated files to explain the project. Default scans skip dependency/build/cache/control directories and symlinks; explicit paths can inspect ordinary excluded directories. Partial results are not absence: narrow path/depth instead of repeating a broad scan. Stop discovery once enough evidence supports a concise answer; state uncertainty when no project description exists."

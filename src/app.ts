@@ -181,6 +181,7 @@ import {
 } from "./workspace/execution-environment.js";
 import type { ProjectWorkspace } from "./projects/types.js";
 import { ProjectIndex } from "./web-server/projects.js";
+import { DocumentConverter, ThreadResourceStore, type ThreadResourceAttachment } from "./resources/index.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
@@ -568,12 +569,15 @@ export class EasyCodeApp {
   private readonly threadTitles: ThreadTitleStore;
   private threadLease: ThreadLease | undefined;
   private readonly imageStore: ImageStore;
+  private readonly threadResourceStore: ThreadResourceStore;
+  private readonly documentConverter: DocumentConverter;
   private readonly workspaceMutationLock: WorkspaceMutationLock;
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
   private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
   private readonly mcpConfigStore = new McpConfigStore();
   private mcpConnections?: McpConnections;
+  private mcpAutoConnectPromise?: Promise<void>;
   private executionEnvironments: ExecutionEnvironmentManager;
   private readonly subagentCoordinator: SubagentCoordinator;
   private pendingImages: ImageAttachment[] = [];
@@ -667,6 +671,8 @@ export class EasyCodeApp {
       maxManagedWorktrees: config.limits.maxManagedWorktrees,
     });
     this.imageStore = new ImageStore(config.dataDir);
+    this.threadResourceStore = new ThreadResourceStore(config.dataDir);
+    this.documentConverter = new DocumentConverter(config.dataDir);
     this.pendingResumeRecovery = resumeRecovery;
     this.contextManager.configureTokenBudget(
       effectiveContextWindow(this.state.provider, this.state.model, config.limits.maxContextTokens),
@@ -1131,6 +1137,23 @@ export class EasyCodeApp {
     return this.imageStore.remove(this.state.threadId, image);
   }
 
+  async importHostedDocument(data: Buffer, filename: string, mediaType: string): Promise<ThreadResourceAttachment> {
+    const markdown = await this.documentConverter.convert(data, filename, mediaType);
+    return this.threadResourceStore.create({
+      threadId: this.state.threadId,
+      filename,
+      kind: "document",
+      mediaType,
+      markdown,
+      byteSize: data.byteLength,
+      original: data,
+    });
+  }
+
+  discardHostedResource(resource: ThreadResourceAttachment): Promise<void> {
+    return this.threadResourceStore.remove(this.state.threadId, resource.id);
+  }
+
   /** A browser supplies the decision, while the existing Journal transition remains authoritative. */
   async reviewHostedPlan(decision: PlanReviewDecision): Promise<void> {
     if (this.isRequestActive()) throw new Error("Wait for the active request before reviewing its plan.");
@@ -1287,14 +1310,25 @@ export class EasyCodeApp {
   async submitUserMessage(
     text: string,
     images: readonly ImageAttachment[] = [],
+    resources: readonly ThreadResourceAttachment[] = [],
   ): Promise<AgentRunResult> {
     if (this.state.planReview) {
       throw new Error("Review the pending plan before starting another request.");
     }
-    if (!text.trim() && images.length === 0) {
-      throw new Error("A non-empty prompt or at least one image is required");
+    if (!text.trim() && images.length === 0 && resources.length === 0) {
+      throw new Error("A non-empty prompt or at least one attachment is required");
     }
-    return this.executePrompt(text, images, true);
+    for (const resource of resources) {
+      const stored = await this.threadResourceStore.get(this.state.threadId, resource.uri);
+      if (stored.id !== resource.id || stored.filename !== resource.filename) {
+        throw new Error("A Thread resource no longer matches its stored metadata.");
+      }
+    }
+    const resourceNotice = resources.length
+      ? `\n\nAttached read-only Thread resources:\n${resources.map(resource =>
+        `- ${resource.filename}: ${resource.uri}`).join("\n")}\nUse read_file with these exact paths to inspect their contents.`
+      : "";
+    return this.executePrompt(`${text.trim()}${resourceNotice}`.trim(), images, true);
   }
 
   /** Cancel only the currently active turn; presentation hosts choose their own cancel gesture. */
@@ -4553,9 +4587,15 @@ export class EasyCodeApp {
       if (action === "details") {
         this.terminal.write(`${json(server.transport === "stdio"
           ? { id: selected, transport: server.transport, command: server.command, args: server.args,
-            cwd: server.cwd, env: Object.keys(server.env), enabled: server.enabled }
+            cwd: server.cwd, env: Object.fromEntries(Object.entries(server.env).map(([name, value]) =>
+              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])),
+            executableApproved: Boolean(server.executableHash), enabled: server.enabled }
           : { id: selected, transport: server.transport, url: server.url, auth: server.auth,
-            bearerTokenEnvVar: server.bearerTokenEnvVar, enabled: server.enabled })}\n`);
+            bearerTokenEnvVar: server.bearerTokenEnvVar,
+            headers: Object.fromEntries(Object.entries(server.headers).map(([name, value]) =>
+              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])),
+            query: Object.fromEntries(Object.entries(server.query).map(([name, value]) =>
+              [name, "value" in value ? "literal" : `env:${value.fromEnv}`])), enabled: server.enabled })}\n`);
         return;
       } else if (action === "authenticate" && server.transport !== "stdio" && server.auth === "oauth") {
         this.terminal.info("Waiting for MCP authorization (up to 6 minutes). Press Ctrl+C to cancel.");
@@ -4593,6 +4633,7 @@ export class EasyCodeApp {
           return;
         }
         let toolCount: number;
+        let approvedExecutableHash: string | undefined;
         if (server.transport === "stdio") {
           this.createCommandRuntime(this.workspace).assertEnvironmentSafe();
           const resolved = await new CommandResolver(this.workspace).resolve({
@@ -4607,7 +4648,8 @@ export class EasyCodeApp {
               detail: `${resolved.executablePath} ${resolved.args.join(" ")} · cwd=${resolved.cwdAbsolute} · sha256=${resolved.executableHash?.slice(0, 12)}`.slice(0, 400) },
           ], "cancel");
           if (approved !== "run") return;
-          toolCount = await this.mcp().connect(selected, server, resolved.executableHash);
+          approvedExecutableHash = resolved.executableHash;
+          toolCount = await this.mcp().connect(selected, server, approvedExecutableHash);
         } else {
           if (server.auth === "oauth" && !await new McpOauthCredentials(selected, server.url, this.config.dataDir).hasTokens()) {
             this.terminal.warning("Authenticate this MCP server before connecting.");
@@ -4621,7 +4663,7 @@ export class EasyCodeApp {
           toolCount = await this.mcp().connect(selected, server, undefined,
             server.auth === "oauth" ? storedMcpOauthProvider(selected, server.url, this.config.dataDir) : undefined);
         }
-        await this.mcpConfigStore.setEnabled(selected, true);
+        await this.mcpConfigStore.setEnabled(selected, true, approvedExecutableHash);
         this.terminal.success(`MCP server ${selected} connected with ${toolCount} tool(s).`);
         return;
       } else if (action === "disconnect") {
@@ -4660,8 +4702,31 @@ export class EasyCodeApp {
   }
 
   private mcp(): McpConnections {
-    this.mcpConnections ??= new McpConnections(this.workspace, this.config.dataDir);
+    this.mcpConnections ??= new McpConnections(this.workspace, this.config.dataDir, this.config.limits, {
+      onCatalogChanged: () => undefined,
+      onReconnectError: (serverId, error) => this.terminal.warning(
+        `MCP server ${serverId} reconnect failed: ${error instanceof Error ? error.message : String(error)}`),
+    });
     return this.mcpConnections;
+  }
+
+  private async connectEnabledMcpServers(): Promise<void> {
+    const config = await this.mcpConfigStore.read();
+    await Promise.all(Object.entries(config.servers).filter(([, server]) => server.enabled).map(async ([id, server]) => {
+      if (this.mcp().status(id).connected) return;
+      try {
+        if (server.transport === "stdio") {
+          if (!server.executableHash) throw new Error("the approved executable identity is missing");
+          await this.mcp().connect(id, server, server.executableHash);
+        } else {
+          const authProvider = server.auth === "oauth"
+            ? storedMcpOauthProvider(id, server.url, this.config.dataDir) : undefined;
+          await this.mcp().connect(id, server, undefined, authProvider);
+        }
+      } catch (error) {
+        this.terminal.warning(`Enabled MCP server ${id} could not connect: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }));
   }
 
   private async authorizeCatalogToolCall(request: Readonly<ToolExecutionAuthorizationRequest>): Promise<boolean> {
@@ -4762,6 +4827,10 @@ export class EasyCodeApp {
   }
 
   private async mainToolCatalogSnapshot(): Promise<Readonly<ToolCatalogSnapshot>> {
+    if (!this.trustedOuterSandbox) {
+      this.mcpAutoConnectPromise ??= this.connectEnabledMcpServers();
+      await this.mcpAutoConnectPromise;
+    }
     const threadId = this.state.threadId;
     let catalog = this.mainToolCatalogs.get(threadId);
     if (!catalog) {
@@ -4791,6 +4860,7 @@ export class EasyCodeApp {
         limits: this.config.limits,
         mutationLock: this.workspaceMutationLock,
         threadTitleStore: this.threadTitles,
+        threadResourceStore: this.threadResourceStore,
         ...(this.trustedOuterSandbox ? {} : {
           mcpConfigStore: this.mcpConfigStore,
           onMcpConfigChanged: (id: string) => this.mcp().disconnect(id),

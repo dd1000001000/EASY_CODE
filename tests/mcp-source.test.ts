@@ -6,6 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createMcpCatalogTools, createMcpTool, McpConnections } from "../src/mcp/source.js";
 import { WorkspaceManager } from "../src/workspace/manager.js";
 import { toolRequiresApproval } from "../src/tools/capabilities.js";
+import { toolApprovalIdentity } from "../src/tools/approval.js";
 import { toolResultForModel } from "../src/tools/errors.js";
 import { StaticToolSource, ToolCatalog } from "../src/tools/catalog.js";
 import { describe, it } from "./harness.js";
@@ -55,9 +56,42 @@ describe("MCP tool adapter", () => {
     assert.deepEqual(result.content, [{ type: "text", text: "found" }]);
   });
 
-  it("rejects oversized schemas rather than exposing them to providers", () => {
+  it("uses cancellation and a progress-resetting idle timeout for MCP calls", async () => {
+    let options: Record<string, unknown> | undefined;
+    const client = { async callTool(_input: unknown, received: Record<string, unknown>) {
+      options = received;
+      return { content: [{ type: "text", text: "done" }] };
+    } } as unknown as Pick<Client, "callTool">;
+    const controller = new AbortController();
+    const tool = createMcpTool("slow", { name: "work", inputSchema: { type: "object" } } as Tool, client);
+    await tool.execute({}, { signal: controller.signal, limits: { mcpIdleTimeoutMs: 345_000 } } as never);
+    assert.equal(options?.timeout, 345_000);
+    assert.equal(options?.resetTimeoutOnProgress, true);
+    assert.equal(options?.signal, controller.signal);
+    assert.equal("maxTotalTimeout" in (options ?? {}), false);
+  });
+
+  it("binds reusable approval to the selected MCP tool rather than the whole catalog", async () => {
+    const client = { async callTool() { return { content: [] }; } } as unknown as Pick<Client, "callTool">;
+    const listed = (descriptionA: string, descriptionB: string) => [
+      { name: "a", description: descriptionA, inputSchema: { type: "object" } },
+      { name: "b", description: descriptionB, inputSchema: { type: "object" } },
+    ] as Tool[];
+    const identity = async (tools: Tool[]) => {
+      const catalog = new ToolCatalog();
+      catalog.registerSource(new StaticToolSource("mcp", createMcpCatalogTools("server", tools, client, "server-v1"), "external"));
+      const snapshot = await catalog.snapshot();
+      const call = snapshot.tools.find(tool => tool.definition.function.description.startsWith("Call an inspected"))!;
+      return toolApprovalIdentity(call, { name: "a", argumentsJson: "{}" }, snapshot.bindings.get(call.name), process.cwd()).key;
+    };
+    const original = await identity(listed("first", "second"));
+    assert.equal(await identity(listed("first", "second changed")), original);
+    assert.notEqual(await identity(listed("first changed", "second")), original);
+  });
+
+  it("accepts large schemas without an arbitrary character cutoff", () => {
     const huge = { name: "huge", inputSchema: { type: "object", description: "x".repeat(32_001) } } as Tool;
-    assert.throws(() => createMcpTool("reader", huge, {} as Client), /unsupported input schema/u);
+    assert.equal(createMcpTool("reader", huge, {} as Client).definition.function.parameters, huge.inputSchema);
   });
 
   it("searches large catalogs and pages oversized schemas without losing callable tools", async () => {
@@ -73,10 +107,10 @@ describe("MCP tool adapter", () => {
     assert.equal(catalog.length, 3);
     const search = await catalog[0]!.execute({ query: "tool_139" }, {} as never);
     assert.equal((search.data as { tools: { name: string }[] }).tools[0]?.name, "tool_139");
-    const first = await catalog[1]!.execute({ name: "tool_139" }, {} as never);
+    const first = await catalog[1]!.execute({ name: "tool_139" }, { maxOutputChars: 12_000 } as never);
     const next = (first.data as { nextOffset: number | null }).nextOffset;
     assert.ok(next !== null);
-    const second = await catalog[1]!.execute({ name: "tool_139", offset: next }, {} as never);
+    const second = await catalog[1]!.execute({ name: "tool_139", offset: next }, { maxOutputChars: 12_000 } as never);
     assert.ok(String((second.data as { content: string }).content).length > 0);
     const called = await catalog[2]!.execute({ name: "tool_139", argumentsJson: '{"x":1}' }, {} as never);
     assert.equal(called.ok, true);
@@ -91,7 +125,9 @@ describe("MCP tool adapter", () => {
     ] }; } } as unknown as Pick<Client, "callTool">;
     const tool = createMcpTool("large", { name: "read", inputSchema: { type: "object" } } as Tool, client);
     const result = await tool.execute({}, {} as never);
-    assert.ok(result.content?.some(item => item.type === "text" && item.text.includes("recall_context")));
+    assert.ok(result.content?.some(item => item.type === "text" && item.text === long));
+    assert.ok(result.content?.some(item => item.type === "structured" &&
+      (item.value as { storedInEvidence?: boolean }).storedInEvidence === true));
     assert.equal(((result.data as { mcpContent: { text: string }[] }).mcpContent[0]!).text, long);
     assert.equal((result.data as { mcpContent: { type: string }[] }).mcpContent[1]?.type, "image");
     const projected = JSON.parse(toolResultForModel({ ...result, evidenceId: "evidence_test" }, 64_000)) as {
@@ -123,7 +159,7 @@ describe("MCP tool adapter", () => {
     const connections = new McpConnections(new WorkspaceManager(process.cwd()));
     try {
       assert.equal(await connections.connect("large", { transport: "http",
-        url: `http://127.0.0.1:${address.port}/mcp`, auth: "none", enabled: false }), 130);
+        url: `http://127.0.0.1:${address.port}/mcp`, auth: "none", headers: {}, query: {}, enabled: false }), 130);
       assert.equal(connections.listTools().length, 3);
       assert.equal(connections.status("large").toolCount, 130);
       assert.deepEqual(connections.connectedServers(), [{ id: "large", toolCount: 130 }]);
@@ -135,13 +171,14 @@ describe("MCP tool adapter", () => {
   });
 
   it("connects to a remote Streamable HTTP tool with an environment bearer token", async () => {
-    const observed: string[] = [];
+    const observed: Array<{ authorization: string; tenant: string; url: string }> = [];
     const server = createServer(async (request, response) => {
       if (request.method === "DELETE") { response.writeHead(202).end(); return; }
       if (request.method === "GET") { response.writeHead(405).end(); return; }
       let body = "";
       for await (const chunk of request) body += chunk.toString();
-      observed.push(request.headers.authorization ?? "");
+      observed.push({ authorization: request.headers.authorization ?? "",
+        tenant: String(request.headers["x-tenant"] ?? ""), url: request.url ?? "" });
       const message = JSON.parse(body) as { id?: number; method: string; params?: { arguments?: { text?: string } } };
       if (message.id === undefined) { response.writeHead(202).end(); return; }
       const result = message.method === "initialize"
@@ -161,11 +198,14 @@ describe("MCP tool adapter", () => {
     try {
       const count = await connections.connect("remote", { transport: "http",
         url: `http://127.0.0.1:${address.port}/mcp`, auth: "bearer",
-        bearerTokenEnvVar: "EASY_CODE_MCP_TEST_TOKEN", enabled: false });
+        bearerTokenEnvVar: "EASY_CODE_MCP_TEST_TOKEN",
+        headers: { "X-Tenant": { value: "alpha" } }, query: { region: { value: "east" } }, enabled: false });
       assert.equal(count, 1);
       const result = await connections.listTools()[0]!.execute({ text: "REMOTE_OK" }, {} as never);
       assert.deepEqual(result.content, [{ type: "text", text: "REMOTE_OK" }]);
-      assert.ok(observed.every(value => value === "Bearer test-bearer"));
+      assert.ok(observed.every(value => value.authorization === "Bearer test-bearer"));
+      assert.ok(observed.every(value => value.tenant === "alpha"));
+      assert.ok(observed.every(value => value.url.includes("region=east")));
     } finally {
       await connections.close();
       if (previous === undefined) delete process.env.EASY_CODE_MCP_TEST_TOKEN;
@@ -205,7 +245,7 @@ describe("MCP tool adapter", () => {
     const connections = new McpConnections(new WorkspaceManager(process.cwd()));
     try {
       assert.equal(await connections.connect("legacy", { transport: "sse", url: `${origin}/sse`,
-        auth: "none", enabled: false }), 1);
+        auth: "none", headers: {}, query: {}, enabled: false }), 1);
       const result = await connections.listTools()[0]!.execute({ text: "SSE_OK" }, {} as never);
       assert.deepEqual(result.content, [{ type: "text", text: "SSE_OK" }]);
     } finally {

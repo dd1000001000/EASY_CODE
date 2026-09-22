@@ -3,7 +3,6 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { projectText } from "../utils/bounded-text.js";
 import { jsonForModel } from "../utils/json.js";
 
-const MAX_CONTENT_ITEMS = 64;
 const SAFE_REFERENCE = /^[A-Za-z0-9._:-]{1,256}$/u;
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -67,7 +66,6 @@ export function normalizeToolContentResult(
 ): ToolExecutionResult {
   if (result.content === undefined) return result;
   if (!Array.isArray(result.content)) throw new Error("Tool result content must be an array");
-  if (result.content.length > MAX_CONTENT_ITEMS) throw new Error(`Tool result content exceeds ${MAX_CONTENT_ITEMS} items`);
   const content: ToolContent[] = [];
   // Reserve brackets and charge separators so the serialized union itself,
   // not merely the sum of its items, remains inside the Runtime budget.

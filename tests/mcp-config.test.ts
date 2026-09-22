@@ -29,15 +29,15 @@ describe("user MCP configuration", () => {
     await withStore(async (store) => {
       await store.upsert("reader", {
         command: "node", args: ["server.js"], cwd: ".",
-        env: { TOKEN: "env:MCP_READER_TOKEN" },
+        env: { TOKEN: { fromEnv: "MCP_READER_TOKEN" } },
       });
       const saved = await store.read();
-      assert.equal(saved.version, 2);
+      assert.equal(saved.version, 3);
       assert.equal(saved.servers.reader?.transport, "stdio");
       assert.equal(saved.servers.reader?.enabled, false);
-      assert.deepEqual(saved.servers.reader?.env, { TOKEN: "env:MCP_READER_TOKEN" });
+      assert.deepEqual(saved.servers.reader?.env, { TOKEN: { fromEnv: "MCP_READER_TOKEN" } });
       const file = await readFile(store.filePath, "utf8");
-      assert.match(file, /TOKEN = "env:MCP_READER_TOKEN"/u);
+      assert.match(file, /TOKEN = \{ fromEnv = "MCP_READER_TOKEN" \}/u);
       assert.doesNotMatch(file, /secret-value/u);
       await store.setEnabled("reader", true);
       assert.equal((await store.read()).servers.reader?.enabled, true);
@@ -53,7 +53,7 @@ describe("user MCP configuration", () => {
       await store.upsert("reader", { command: "node", args: [], cwd: ".", env: {} });
       const before = await readFile(store.filePath, "utf8");
       await assert.rejects(store.upsert("reader", {
-        command: "node", args: [], cwd: ".", env: { TOKEN: "raw-secret" },
+        command: "node", args: [], cwd: ".", env: { TOKEN: { value: "x", fromEnv: "TOKEN" } } as never,
       }));
       assert.equal(await readFile(store.filePath, "utf8"), before);
     });
@@ -69,7 +69,7 @@ describe("user MCP configuration", () => {
       const removeTool = new RemoveMcpServerTool(workspace, store);
       const context = { workspaceRoot: root, mode: "code", agentRole: "main_agent" } as ToolContext;
       const saved = await saveTool.execute({ id: "reader", command: "node",
-        args: ["server.js"], env: [{ name: "TOKEN", source: "env:MCP_READER_TOKEN" }] }, context);
+        args: ["server.js"], env: [{ name: "TOKEN", fromEnv: "MCP_READER_TOKEN" }] }, context);
       assert.equal(saved.ok, true);
       assert.equal((await store.read()).servers.reader?.enabled, false);
       const list = await listTool.execute({}, context);
@@ -104,11 +104,11 @@ describe("user MCP configuration", () => {
       });
       const context = { workspaceRoot: root, mode: "code", agentRole: "main_agent" } as ToolContext;
       assert.equal((await saveLocal.execute({ id: "reader", command: "node",
-        env: [{ name: "TOKEN", source: "env:MCP_TOKEN" },
-          { name: "TOKEN", source: "env:OTHER_TOKEN" }] }, context)).ok, false);
+        env: [{ name: "TOKEN", fromEnv: "MCP_TOKEN" },
+          { name: "TOKEN", fromEnv: "OTHER_TOKEN" }] }, context)).ok, false);
       assert.deepEqual(disconnected, []);
       assert.equal((await saveRemote.execute({ id: "remote", transport: "http",
-        url: "https://mcp.example.com/mcp?token=secret" }, context)).ok, false);
+        url: "https://mcp.example.com/mcp", headers: [{ name: "Host", value: "bad" }] }, context)).ok, false);
       assert.deepEqual(disconnected, []);
       assert.equal((await saveRemote.execute({ id: "remote", transport: "http",
         url: "https://mcp.example.com/mcp", auth: "oauth" }, context)).ok, true);
@@ -127,21 +127,20 @@ describe("user MCP configuration", () => {
       assert.equal(saved?.enabled, false);
       const source = await readFile(store.filePath, "utf8");
       assert.match(source, /bearerTokenEnvVar = "MCP_TOKEN"/u);
-      await assert.rejects(store.upsert("bad", { transport: "http",
-        url: "https://mcp.example.com/mcp?token=secret", auth: "none" }));
+      await store.upsert("query", { transport: "http",
+        url: "https://mcp.example.com/mcp?version=1", auth: "none",
+        headers: { "X-Tenant": { fromEnv: "MCP_TENANT" } }, query: { region: { value: "us" } } });
       await assert.rejects(store.upsert("bad", { transport: "http",
         url: "http://mcp.example.com/mcp", auth: "none" }));
-      assert.deepEqual(Object.keys((await store.read()).servers), ["remote"]);
+      assert.deepEqual(Object.keys((await store.read()).servers), ["query", "remote"]);
     });
   });
 
-  it("reads version-one stdio configuration and rewrites it as version two", async () => {
+  it("rejects obsolete configuration versions instead of migrating them", async () => {
     await withStore(async store => {
       await mkdir(path.dirname(store.filePath), { recursive: true });
       await writeFile(store.filePath, 'version = 1\n[servers.old]\ncommand = "node"\nargs = []\ncwd = "."\nenabled = false\n');
-      assert.equal((await store.read()).servers.old?.transport, "stdio");
-      await store.setEnabled("old", true);
-      assert.match(await readFile(store.filePath, "utf8"), /version = 2/u);
+      await assert.rejects(store.read());
     });
   });
 
@@ -149,7 +148,7 @@ describe("user MCP configuration", () => {
     await withStore(async store => {
       const args = Array.from({ length: 129 }, (_, index) => `argument-${index}`);
       const env = Object.fromEntries(Array.from({ length: 33 }, (_, index) =>
-        [`MCP_SETTING_${index}`, `env:EXTERNAL_SETTING_${index}`]));
+        [`MCP_SETTING_${index}`, { fromEnv: `EXTERNAL_SETTING_${index}` }]));
       await store.upsert("wide", { command: "node", args, cwd: ".", env });
       assert.equal((await store.read()).servers.wide?.transport, "stdio");
       const longUrl = `https://mcp.example.com/${"path".repeat(1100)}`;

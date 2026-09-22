@@ -5,9 +5,17 @@
   "propertyDescriptions": {
     "id": "Stable user-facing server identifier.",
     "transport": "http for Streamable HTTP or sse for a legacy SSE endpoint.",
-    "url": "Remote MCP endpoint. HTTPS required except loopback HTTP; no credentials, query string, or fragment.",
+    "url": "Remote MCP endpoint. HTTPS required except loopback HTTP; embedded credentials and fragments are forbidden.",
     "auth": "Remote authentication: none, bearer from an environment variable, or OAuth through the user's /mcp flow.",
-    "bearerTokenEnvVar": "Name of the environment variable containing a bearer token; never provide the token value."
+    "bearerTokenEnvVar": "Name of the environment variable containing a bearer token; never provide the token value.",
+    "headers": "Custom request headers represented as literal values or environment references.",
+    "headers[].name": "HTTP header name. Transport-owned headers cannot be overridden.",
+    "headers[].value": "Literal non-secret header value. Use exactly one of value or fromEnv.",
+    "headers[].fromEnv": "Environment variable holding the header value. Use exactly one of value or fromEnv.",
+    "query": "Query parameters represented as literal values or environment references.",
+    "query[].name": "Query parameter name.",
+    "query[].value": "Literal non-secret query value. Use exactly one of value or fromEnv.",
+    "query[].fromEnv": "Environment variable holding the query value. Use exactly one of value or fromEnv."
   },
   "guidance": "Only save MCP configuration when the user explicitly asks. Never put secret values in the URL or configuration. The user must separately authenticate, enable, and approve the connection in /mcp."
 }

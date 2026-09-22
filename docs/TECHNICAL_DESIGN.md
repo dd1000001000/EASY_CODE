@@ -35,9 +35,9 @@ CLI and Web share task, permission and storage rules, but not every input method
 
 ### 2.1 Prepare the installation
 
-Follow the [README installation steps](../README.md#install) with Node.js 20.11+, npm and Git for a source installation. Child-agent worktree isolation also requires Git.
+Follow the [README installation steps](../README.md#install) with Node.js 20.11+, Python 3.10+, npm and Git for a source installation. Child-agent worktree isolation also requires Git.
 
-Installation prepares the Prompt Bundle, local retrieval resources, SQLite runtime resources, available VS Code integration and a matching native sandbox runtime. Initial downloads can include a substantial embedding model. Windows sandbox initialization may request administrator confirmation. Installation cannot automatically resolve every OS dependency, permission restriction or organizational policy.
+Installation prepares the Prompt Bundle, local retrieval resources, SQLite runtime resources, a private Microsoft MarkItDown environment, available VS Code integration and a matching native sandbox runtime. The converter is refreshed to the latest stable MarkItDown package on install or reinstall. Initial downloads can include a substantial embedding model. Windows sandbox initialization may request administrator confirmation. Installation cannot automatically resolve every OS dependency, permission restriction or organizational policy.
 
 Check the result:
 
@@ -252,6 +252,8 @@ Use `/usage` for provider-reported usage and `/context` for local capacity estim
 | Retrieval indexes | Help locate the above material | Not a complete source of truth |
 
 JSONL journals append task events. SQLite manages structured project, conversation, memory and retrieval records. Checkpoints snapshot recoverable execution state. They are different views of related work: no single file represents all history, and deleting one independently can break recovery.
+
+Web document attachments and fetched pages are immutable resources owned by one conversation. Documents are converted locally to Markdown; the model receives a stable `thread-resource://…/content.md` path and reads only useful line ranges. File tools cannot edit resources, another conversation cannot open them, and child agents do not receive them implicitly. Deleting the conversation, its project or the full EASY CODE installation removes them. Web search returns bounded previews; fetching a selected page saves its readable content as the same kind of resource. The CLI keeps its existing text and image paste behavior and does not add document paste.
 
 Retrieval combines keyword search with local semantic vectors, falling back to text search when vector retrieval is unavailable. Older large tool results can become descriptive references; the agent can recall their retained evidence in bounded pages. A reference is not the original content, and a historical file read may no longer match the current file.
 

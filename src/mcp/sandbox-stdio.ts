@@ -16,11 +16,9 @@ import { ensureNativeProjectPermissionHome } from "../sandbox/permission-home.js
 import { acquireWindowsProxyPortLease } from "../sandbox/windows-proxy-registry.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import type { LocalMcpServerConfig } from "./config.js";
+import { resolveMcpSetting, type LocalMcpServerConfig } from "./config.js";
 
-const STARTUP_MS = 30_000;
 const WRITE_MS = 10_000;
-const MAX_MESSAGE_BYTES = 10 * 1024 * 1024;
 type ExecutionEnd = { confirmed: true; exitCode: number } | { confirmed: false; error: string };
 
 /** MCP stdio over the existing OS-enforced command/exec stream, never host spawn. */
@@ -31,7 +29,7 @@ export class SandboxedMcpStdioTransport implements Transport {
   onDisconnected?: () => void;
 
   private readonly processId = `mcp-${randomUUID()}`;
-  private readonly buffer = new ReadBuffer({ maxBufferSize: MAX_MESSAGE_BYTES });
+  private readonly buffer: ReadBuffer;
   private service?: NativeAppServerClient;
   private stopNotifications?: () => void;
   private execution?: Promise<ExecutionEnd>;
@@ -46,7 +44,9 @@ export class SandboxedMcpStdioTransport implements Transport {
     private readonly dataDir = resolveEasyCodePaths().dataDir,
     private readonly limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
     private readonly approvedExecutableHash?: string,
-  ) {}
+  ) {
+    this.buffer = new ReadBuffer({ maxBufferSize: limits.mcpStdioMaxMessageBytes });
+  }
 
   async start(): Promise<void> {
     if (this.service || this.closed) throw new Error("MCP transport cannot be restarted");
@@ -60,12 +60,8 @@ export class SandboxedMcpStdioTransport implements Transport {
       throw new Error("MCP executable changed after approval; reconnect and approve the current binary");
     }
     const env = { ...resolved.environment };
-    for (const [name, reference] of Object.entries(this.config.env)) {
-      if (!reference.startsWith("env:")) throw new Error(`Unsupported MCP secret reference for ${name}`);
-      const source = reference.slice(4);
-      const value = process.env[source];
-      if (value === undefined) throw new Error(`MCP environment reference ${source} is not set`);
-      env[name] = value;
+    for (const [name, value] of Object.entries(this.config.env)) {
+      env[name] = resolveMcpSetting(value, `environment variable ${name}`);
     }
     let proxyPorts: readonly number[] = [];
     if (process.platform === "win32") {
@@ -84,12 +80,12 @@ export class SandboxedMcpStdioTransport implements Transport {
     const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home, undefined, undefined, proxyPorts);
     this.service = service;
     try {
-      await service.initialize(this.limits.sandboxStartupWindowsMs || STARTUP_MS);
+      await service.initialize(this.limits.mcpStartupTimeoutMs);
       this.stopNotifications = service.onNotification(notification => {
         if (notification?.method !== "command/exec/outputDelta" ||
             notification.params?.processId !== this.processId) return;
         const encoded = notification.params?.deltaBase64;
-        if (typeof encoded !== "string" || encoded.length > MAX_MESSAGE_BYTES * 2) {
+        if (typeof encoded !== "string" || encoded.length > this.limits.mcpStdioMaxMessageBytes * 2) {
           this.onerror?.(new Error("MCP server emitted an oversized output delta"));
           void this.close();
           return;
@@ -109,9 +105,9 @@ export class SandboxedMcpStdioTransport implements Transport {
         }
       });
       const target = resolved.launch ?? { executablePath: resolved.executablePath, args: resolved.args };
-      if (resolved.launch?.usesCommandPayload) {
-        throw new Error("Windows script launch adapters are not supported for persistent MCP stdio; use a real executable");
-      }
+      // CommandResolver already produced an argv-safe, hash-bound launch plan.
+      // Reuse it unchanged so Windows .cmd/.bat, npx and PowerShell-backed MCP
+      // launchers work without a second shell reconstruction here.
       this.execution = service.request("command/exec", {
         command: [target.executablePath, ...target.args],
         cwd: resolved.cwdAbsolute,
@@ -137,7 +133,7 @@ export class SandboxedMcpStdioTransport implements Transport {
       });
       // The exec response is deliberately deferred until exit. Probe the
       // connection-scoped process handle before handing transport to the SDK.
-      const deadline = Date.now() + STARTUP_MS;
+      const deadline = Date.now() + this.limits.mcpStartupTimeoutMs;
       for (;;) {
         if (this.closed) throw new Error("MCP server exited during startup");
         try {
@@ -159,7 +155,9 @@ export class SandboxedMcpStdioTransport implements Transport {
   async send(message: JSONRPCMessage): Promise<void> {
     if (!this.active || !this.service || this.closed) throw new Error("MCP server is not connected");
     const line = serializeMessage(message);
-    if (Buffer.byteLength(line) > MAX_MESSAGE_BYTES) throw new Error("MCP request exceeds the stdio limit");
+    if (Buffer.byteLength(line) > this.limits.mcpStdioMaxMessageBytes) {
+      throw new Error(`MCP request exceeds the configured ${this.limits.mcpStdioMaxMessageBytes}-byte transport safety limit`);
+    }
     await this.service.request("command/exec/write", {
       processId: this.processId,
       deltaBase64: Buffer.from(line).toString("base64"),

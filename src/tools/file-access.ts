@@ -24,6 +24,9 @@ function comparable(filename: string): string {
 export async function resolveExistingFileToolTarget(
   manager: WorkspaceManager, _context: ToolContext, input: string, options: ResolveExistingOptions = {},
 ): Promise<FileToolTarget> {
+  if (input.startsWith("thread-resource://")) {
+    throw new Error("Thread resources are immutable; only read_file may access an authorized resource URI.");
+  }
   const relative = manager.pathGuard.normalizeRelative(input);
   const absolutePath = await manager.pathGuard.resolveExisting(relative, options);
   return { absolutePath, displayPath: relative, versionKey: comparable(absolutePath), workspaceRelative: relative };
@@ -32,6 +35,9 @@ export async function resolveExistingFileToolTarget(
 export async function resolveCreateFileToolTarget(
   manager: WorkspaceManager, _context: ToolContext, input: string,
 ): Promise<FileToolTarget> {
+  if (input.startsWith("thread-resource://")) {
+    throw new Error("Thread resources are immutable and cannot be created, updated, or deleted.");
+  }
   const relative = manager.pathGuard.normalizeRelative(input);
   const absolutePath = await manager.pathGuard.resolveForCreate(relative, true);
   return { absolutePath, displayPath: relative, versionKey: comparable(absolutePath), workspaceRelative: relative };

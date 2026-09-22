@@ -1,0 +1,9 @@
+{
+  "id": "fetch_webpage",
+  "contractVersion": "1.0.0",
+  "description": "Fetch one public HTTP(S) page, convert it to Markdown, and save it as an immutable resource owned by the current Thread.",
+  "propertyDescriptions": {
+    "url": "Public HTTP(S) page URL selected by the user or from web_search results."
+  },
+  "guidance": "The result contains a thread-resource URI rather than the page body. Read that URI with read_file in useful line ranges. Local and private-network destinations are blocked."
+}
