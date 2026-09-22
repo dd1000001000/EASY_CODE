@@ -1179,6 +1179,10 @@ describe("thread leases", () => {
       const older = threads.create({
         threadId: "thread_older_prompt_bundle",
         workspaceRoot: initial.workspaceRoot,
+        projectId: initial.projectId,
+        workspaceRevision: initial.workspaceRevision,
+        workspaceFolders: initial.workspaceFolders,
+        primaryWorkspaceFolderId: initial.primaryWorkspaceFolderId,
         mode: initial.mode,
         provider: initial.provider,
         model: initial.model,
@@ -1248,6 +1252,10 @@ describe("thread leases", () => {
       const target = threads.create({
         threadId: "thread_app_lease_target",
         workspaceRoot: canonicalWorkspace,
+        projectId: currentBinding.projectId,
+        workspaceRevision: currentBinding.workspaceRevision,
+        workspaceFolders: currentBinding.workspaceFolders,
+        primaryWorkspaceFolderId: currentBinding.primaryWorkspaceFolderId,
         mode: "auto",
         provider: "qwen",
         model: "qwen3.7-plus",

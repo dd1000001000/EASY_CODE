@@ -54,13 +54,15 @@ Conversation content, command output and transient notices are separate presenta
 
 ## 4. Projects, conversations and ownership
 
-A project represents a local working directory. Its display name is metadata, not the folder's filesystem name. A conversation belongs to a workspace and carries its own history, selected model, work state and title.
+A project is a logical owner that can exist before any local folder is attached. It may contain several independent folder roots and designates one as primary. A project becomes executable only after at least one folder is present. The display name and stable folder keys are metadata; they never rename source directories. Ancestor/descendant roots are rejected inside one project so a physical file has only one project-relative identity.
+
+Every conversation belongs to exactly one project and carries its own history, selected model, work state and title. A turn captures the project's folder-membership revision. Folder membership can change between idle turns, but never while a turn, command, plan decision or delegated task can still observe the old revision. CLI startup creates a project with the launch directory attached; Web can create an empty project and attach folders later.
 
 A user or the main agent can claim an unnamed conversation's title once. Both use the same rule, so a later agent action cannot replace a user-assigned title. The naming capability does not edit project files and is available to the main agent across work modes.
 
-Multiple conversations can run at once, but conversations targeting the same directory still share files. Application coordination reduces conflicting writes; it does not turn those conversations into independent filesystem environments. Child-agent worktree isolation is a separate capability, with controlled result integration.
+Multiple conversations in one project share all attached folders and their sandbox boundary. Application coordination reduces conflicting writes; it does not turn those conversations into independent filesystem environments. Multi-folder projects use namespaced paths so tools can address roots unambiguously. Child-agent worktree isolation remains available for a single-root project; multi-root projects use shared isolation because a worktree cannot faithfully represent an arbitrary set of independent repositories.
 
-Deletion respects ownership. Removing a conversation also removes its child conversation tree and associated memory contributions; shared memory can be restored to an earlier state where appropriate. Project removal additionally handles its conversations and project memory. Neither action authorizes deletion of the user's source directory.
+Deletion respects ownership. Removing a conversation also removes its child conversation tree and associated memory contributions; shared memory can be restored to an earlier state where appropriate. Project removal additionally deletes its conversations, project memory, project Skills and project-owned runtime metadata. Detaching a folder or deleting a project never authorizes deletion of source directories.
 
 ## 5. Request lifecycle
 
@@ -93,9 +95,9 @@ Image and tool capabilities are also checked against the selected model. Streame
 
 All tools cross a shared capability boundary. The application determines which tools a role and mode may use, validates inputs and enforces authorization before execution. External descriptions or model-generated text cannot grant new privileges.
 
-File tools check workspace scope and the version previously observed before applying changes. Concurrent edits must be reported rather than silently overwritten. Command tools have supervised lifecycles, including long-running work, cancellation and cleanup.
+File tools check all roots attached to the logical project and the version previously observed before applying changes. Namespaced paths prevent an operation from crossing between roots through `..`; canonical path checks also reject link escapes. Concurrent edits must be reported rather than silently overwritten. Command tools have supervised lifecycles, including long-running work, cancellation and cleanup.
 
-Skills are reusable instructions and supporting resources, not executable permission grants or conversation memory. The agent discovers their descriptions, reads relevant instructions and may maintain them through approved operations. Deletion archives managed Skills for recovery.
+Skills are reusable instructions and supporting resources, not executable permission grants or conversation memory. Global and project Skills live in application-owned storage rather than an attached source folder. The agent discovers their descriptions, reads relevant instructions and may maintain them through approved operations. Normal deletion archives a managed Skill; deleting its owning project removes that project's Skill storage.
 
 MCP adds tools from local or remote servers through the same catalogue. Server configuration, connection approval, authentication and individual tool execution are distinct steps. Editing a server configuration does not start it. Local servers use sandboxed execution; remote servers require an approved connection. Server-provided annotations do not override local policy.
 
@@ -105,7 +107,7 @@ Approval answers **whether an action is authorized**. Sandboxing answers **where
 
 Manual mode asks the user when no applicable grant exists. The independent approval agent evaluates command requests and falls back to user decisions when required. Full access is an explicit choice to run normal host commands without their sandbox or individual approval prompts.
 
-Normal execution uses platform-native isolation, with workspace-scoped writing and separately controlled network access. Failure to initialize the sandbox does not permit automatic host fallback. Git worktrees isolate changes, not operating-system privileges.
+Normal execution uses platform-native isolation. Its project permission profile grants the exact active folder set, denies writes outside it and controls network access separately. A supervised thread-level service session keeps a long-lived server and dependent commands in the same Linux sandbox so localhost works without granting external network access. Failure to initialize the sandbox does not permit automatic host fallback. Git worktrees isolate changes, not operating-system privileges.
 
 The command supervisor distinguishes output, termination and cleanup. When an operation's outcome is uncertain, absence of a running process is not proof that the operation never happened. Recovery must reconcile the available evidence before continuing, rather than replaying a potentially destructive command.
 
@@ -123,7 +125,7 @@ These stores serve different purposes:
 
 Context pressure is handled progressively: reduce optional material, replace large historical results with recall references, summarize eligible history, and use bounded recovery if necessary. This changes what the next model sees, not the user's files or the existence of stored history.
 
-Global and project memory have separate scopes. Writes are validated, source-backed records can become stale, and memories can expire. Background consolidation operates on saved memories rather than automatically turning every message into a fact; it can consume additional model tokens. Local semantic retrieval can fall back to text search when unavailable.
+Global and project memory have separate scopes. Project memory follows the logical project identity rather than any attached path, so every conversation and folder in that project shares the same knowledge while another project remains isolated. Writes are validated, source-backed records can become stale, and memories can expire. Background consolidation operates on saved memories rather than automatically turning every message into a fact; it can consume additional model tokens. Local semantic retrieval can fall back to text search when unavailable.
 
 The main agent, children and reviewer have separate private histories. Shared long-term memory does not give a child unrestricted access to the parent's conversation. Assignments and results define what crosses those boundaries. Summaries, memories and older evidence require revalidation when current workspace facts matter.
 
@@ -139,7 +141,7 @@ Reviewer findings are attributed advice with evidence and uncertainty, not a cor
 
 ## 11. Persistence and recovery
 
-Conversation events, structured records and retained artifacts are stored locally with clear ownership. Project names, conversation titles and UI preferences reuse the application's existing storage rather than introducing a separate frontend data store.
+Conversation events, structured records and retained artifacts are stored locally with clear ownership. Projects, revisioned folder membership, project names, conversation titles and UI preferences reuse the application's existing storage rather than introducing a separate frontend data store. Project-owned memory and Skill resources can therefore be deleted deterministically without inspecting or modifying source folders.
 
 Checkpoints and indexes accelerate recovery but must remain consistent with authoritative records. Application ownership prevents competing writers from independently controlling the same conversation. Unsupported development data is rejected explicitly rather than guessed into a newer format.
 

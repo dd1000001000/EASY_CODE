@@ -162,10 +162,16 @@ EASY CODE 指令
                               选择手动批准、审批智能体或完全访问
   /orchestration [on|off]    控制 DAG 和子智能体；审查智能体保持开启
   /status                    查看当前状态
-  /workspace [refresh]       查看或刷新工作区清单
+  /workspace                 查看项目工作文件夹
+  /workspace refresh         刷新所有工作文件夹清单
+  /workspace add <绝对路径>  向当前项目添加工作文件夹
+  /workspace remove <folder-id>
+                              从当前项目移除工作文件夹
+  /workspace primary <folder-id>
+                              设置主要工作文件夹
   /image <path|clipboard|clear>  添加图片或清空待发送图片
   /tools                     查看可用工具
-  /skills                    查看用户级和项目级技能
+  /skills                    查看全局和项目级技能
   /mcp [server-id action]    管理 MCP 服务器
   /permissions               查看权限与沙箱状态
   /context                   查看上下文预算
@@ -197,13 +203,19 @@ EASY CODE commands
                               Select user approval, independent approval agent, or full host access
   /orchestration [on|off]    Select DAG/subagent creation; reviewer stays enabled
   /status                    Show current status
-  /workspace                 Show workspace summary
-  /workspace refresh         Refresh the workspace inventory
+  /workspace                 Show the project's workspace folders
+  /workspace refresh         Refresh every attached folder inventory
+  /workspace add <absolute-path>
+                              Attach a workspace folder to this project
+  /workspace remove <folder-id>
+                              Detach a workspace folder from this project
+  /workspace primary <folder-id>
+                              Select the primary workspace folder
   /image <path>              Queue an image file for the next task
   /image clipboard           Queue the current clipboard image
   /image clear               Remove all queued, unsent images
   /tools                     Show available tools
-  /skills                    Show user and project Skills
+  /skills                    Show global and project Skills
   /mcp                       Manage user MCP servers
   /mcp <server-id> <action>  Run an available MCP server action
   /permissions               Show command permissions and sandbox status

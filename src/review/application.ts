@@ -151,15 +151,16 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
   if (!copies) { await emit({ type: "unavailable", id, reason: "Reviewer snapshot is unavailable" });
     await emit({ type: "applied", id, fresh: false });
     return { decision: "unavailable", requests: 0, reused: false, reason: session.reason }; }
-  const root = copies.root, workspaceId = workspaceIdFromRoot(deps.workspace.root);
-  const projectMemoryId = projectMemoryIdFromRoot(deps.workspace.root);
+  const root = copies.root, workspaceId = deps.workspace.projectId ?? workspaceIdFromRoot(deps.workspace.root);
+  const projectMemoryId = deps.workspace.projectId ?? projectMemoryIdFromRoot(deps.workspace.root);
   const workspace = await WorkspaceManager.create(root, { ignoredDirectoryNames: new Set([
     ".git", ".easycode", ".easy_code", "node_modules", ".venv", "venv", "dist", "build",
   ]) });
-  for (const target of [...deps.sensitivePaths, deps.workspace.root]) workspace.pathGuard.protect(target);
+  for (const target of [...deps.sensitivePaths, ...deps.workspace.writableRoots]) workspace.pathGuard.protect(target);
   const threadId = session.reviewerThreadId;
   let reviewer = deps.store.get(threadId);
-  if (!reviewer) reviewer = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root, mode: "code", provider: state.provider,
+  if (!reviewer) reviewer = durableReviewWrite(() => deps.store.create({ threadId, workspaceRoot: root,
+    projectId: deps.workspace.projectId, mode: "code", provider: state.provider,
     model: state.model, thinkingEffort: state.thinkingEffort, promptBundle: activePromptBundleBinding(),
     modelRegistryHash: state.modelRegistryHash, goal: `Independent review ${id}`,
     constraints: ["Private review history. Project memory is read-only."] }));

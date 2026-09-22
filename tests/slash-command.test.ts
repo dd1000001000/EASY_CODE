@@ -40,7 +40,7 @@ describe("parseSlashCommand", () => {
     assert.equal(parseSlashCommand("/mcp")?.name, "mcp");
     assert.match(helpText(), /\/mcp\s+Manage user MCP servers/u);
     assert.equal(parseSlashCommand("/skills")?.name, "skills");
-    assert.match(helpText(), /\/skills\s+Show user and project Skills/u);
+    assert.match(helpText(), /\/skills\s+Show global and project Skills/u);
   });
 
   it("recognizes the language command and documents both locales", () => {

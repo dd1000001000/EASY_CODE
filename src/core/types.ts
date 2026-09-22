@@ -896,6 +896,13 @@ export interface SessionState {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
+  /** Stable logical project identity; paths are mutable project membership. */
+  projectId?: string;
+  /** Project folder membership revision bound when this Thread was opened. */
+  workspaceRevision?: number;
+  /** Active folder snapshot used to reconstruct this Thread's logical workspace. */
+  workspaceFolders?: Array<{ id: string; key: string; path: string }>;
+  primaryWorkspaceFolderId?: string;
   workspaceRoot: string;
   /** Exact trusted prompt/tool resource identity used for this session. */
   promptBundle: PromptBundleBinding;

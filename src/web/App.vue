@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { ElButton, ElCard, ElMessageBox, ElNotification, ElOption, ElSelect } from "element-plus";
-import { Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
+import { ElButton, ElCard, ElDialog, ElInput, ElMessageBox, ElNotification, ElOption, ElSelect } from "element-plus";
+import { Close, Delete, Edit, Fold, Folder, FolderOpened, Loading, Plus } from "@element-plus/icons-vue";
 import type { WebEntry, WebHistoryState, WebPatch, WebView } from "../web-contracts.js";
 import type { WebCommandEntry } from "../web-command-catalog.js";
 import type { PlanProposal } from "../core/types.js";
@@ -37,6 +37,20 @@ let activeNotification: ReturnType<typeof ElNotification> | undefined;
 const runningThreadIds = ref<Set<string>>(new Set());
 const expandedProjects = ref<Set<string>>(new Set());
 const selectedProjectId = ref<string>();
+interface ProjectEditorFolder {
+  clientId: string;
+  folderId?: string;
+  key: string;
+  path: string;
+}
+interface ProjectEditorDraft {
+  projectId: string;
+  name: string;
+  folders: ProjectEditorFolder[];
+  primaryClientId?: string;
+}
+const projectEditor = ref<ProjectEditorDraft | null>(null);
+const projectEditorOpen = ref(false);
 const plan = ref<PlanProposal | null>(null);
 const error = ref("");
 const connected = ref(false);
@@ -74,6 +88,7 @@ const sortedThreads = computed(() => [...threads.value].sort((a, b) => b.updated
 const activeProject = computed(() => displayProject(
   activeThread.value, session.value?.workspaceRoot, threads.value, projects.value, selectedProjectId.value,
 ));
+const editingProject = computed(() => projects.value.find(project => project.id === projectEditor.value?.projectId));
 const headerTitle = computed(() => displayTitle(activeThread.value, activeProject.value, threads.value));
 const reviewLabel = computed(() => view.value.review?.phase === "main_brief"
   ? t("ui.reviewBrief") : t("ui.reviewInspect"));
@@ -154,7 +169,8 @@ function applySnapshot(snapshot: WebSnapshot): void {
   projects.value = snapshot.projects;
   runningThreadIds.value = new Set(snapshot.runningThreadIds);
   if (snapshot.view.session) {
-    selectedProjectId.value = snapshot.projects.find(project => project.root === snapshot.view.session?.workspaceRoot)?.id;
+    selectedProjectId.value = snapshot.view.session.projectId ??
+      snapshot.projects.find(project => project.root === snapshot.view.session?.workspaceRoot)?.id;
   } else if (!snapshot.projects.some(project => project.id === selectedProjectId.value)) {
     selectedProjectId.value = undefined;
   }
@@ -461,11 +477,13 @@ function toggleProject(id: string): void {
 function projectThreads(id: string): ThreadItem[] { return sortedThreads.value.filter(thread => thread.workspaceId === id); }
 async function addProject(): Promise<void> {
   if (switching.value) return;
+  let name: string;
+  try { ({ value: name } = await ElMessageBox.prompt(t("ui.newProjectPrompt"), t("ui.newProjectTitle"), {
+    inputValue: t("ui.untitledProject"), inputPattern: /\S/u, inputErrorMessage: t("ui.enterName"),
+  })); } catch { return; }
   switching.value = true;
   try {
-    const folder = (await request<{ path: string | null }>("/api/folder/pick", {})).path;
-    if (!folder) return;
-    const result = await request<{ project: ProjectItem }>("/api/project/add", { path: folder });
+    const result = await request<{ project: ProjectItem }>("/api/project/add", { name: name.trim() });
     selectedProjectId.value = result.project.id;
     expandedProjects.value = new Set([...expandedProjects.value, result.project.id]);
     error.value = "";
@@ -473,14 +491,65 @@ async function addProject(): Promise<void> {
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
   finally { switching.value = false; }
 }
-async function renameProject(project: ProjectItem): Promise<void> {
-  let name: string;
-  try { ({ value: name } = await ElMessageBox.prompt(t("ui.projectRenamePrompt"), t("ui.renameProjectTitle"), { inputValue: project.name, inputPattern: /\S/u, inputErrorMessage: t("ui.enterName") })); }
-  catch { return; }
-  name = name.trim();
-  if (!name || name === project.name) return;
-  try { await request("/api/project/rename", { projectId: project.id, name }); await refresh(); notify(t("ui.projectRenamed"), "success"); }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+function openProjectEditor(project: ProjectItem): void {
+  const folders = (project.folders ?? []).filter(item => item.active).map(item => ({
+    clientId: item.id, folderId: item.id, key: item.key, path: item.path,
+  }));
+  projectEditor.value = {
+    projectId: project.id,
+    name: project.name,
+    folders,
+    primaryClientId: folders.find(item => item.folderId === project.primaryFolderId)?.clientId ?? folders[0]?.clientId,
+  };
+  projectEditorOpen.value = true;
+}
+function folderName(folder: ProjectEditorFolder): string {
+  const value = folder.path.replace(/[\\/]+$/gu, "");
+  return value.split(/[\\/]/gu).pop() || folder.key;
+}
+async function addProjectFolder(): Promise<void> {
+  const editor = projectEditor.value;
+  if (!editor || switching.value) return;
+  switching.value = true;
+  try {
+    const folder = (await request<{ path: string | null }>("/api/folder/pick", {})).path;
+    if (!folder) return;
+    const normalized = folder.replace(/[\\/]+$/gu, "").toLocaleLowerCase();
+    if (editor.folders.some(item => item.path.replace(/[\\/]+$/gu, "").toLocaleLowerCase() === normalized)) {
+      notify(t("ui.folderAlreadyAdded"), "warning"); return;
+    }
+    const added = { clientId: `draft-folder-${Date.now()}-${Math.random()}`, key: folderName({ clientId: "", key: "", path: folder }), path: folder };
+    editor.folders.push(added);
+    editor.primaryClientId ??= added.clientId;
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+  finally { switching.value = false; }
+}
+function removeProjectFolder(clientId: string): void {
+  const editor = projectEditor.value;
+  if (!editor) return;
+  editor.folders = editor.folders.filter(folder => folder.clientId !== clientId);
+  if (editor.primaryClientId === clientId) editor.primaryClientId = editor.folders[0]?.clientId;
+}
+function setPrimaryProjectFolder(clientId: string): void {
+  if (projectEditor.value?.folders.some(folder => folder.clientId === clientId)) projectEditor.value.primaryClientId = clientId;
+}
+async function saveProjectEditor(): Promise<void> {
+  const editor = projectEditor.value;
+  if (!editor || switching.value || !editor.name.trim()) return;
+  const primary = editor.folders.find(folder => folder.clientId === editor.primaryClientId);
+  switching.value = true;
+  try {
+    await request("/api/project/edit", {
+      projectId: editor.projectId,
+      name: editor.name.trim(),
+      retainedFolderIds: editor.folders.flatMap(folder => folder.folderId ? [folder.folderId] : []),
+      addedFolderPaths: editor.folders.flatMap(folder => folder.folderId ? [] : [folder.path]),
+      ...(primary?.folderId ? { primaryFolderId: primary.folderId } : primary ? { primaryFolderPath: primary.path } : {}),
+    });
+    projectEditorOpen.value = false;
+    await refresh(); notify(t("ui.projectSaved"), "success");
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+  finally { switching.value = false; }
 }
 async function renameThread(thread: ThreadItem): Promise<void> {
   let name: string;
@@ -508,10 +577,10 @@ async function deleteThread(thread: ThreadItem): Promise<void> {
     await refresh(); notify(t("ui.conversationDeleted"), "success");
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
-async function deleteProject(project: ProjectItem): Promise<void> {
+async function deleteProject(project: ProjectItem): Promise<boolean> {
   const message = h("div", { class: "easy-code-confirm__body" }, [
     h("p", t("ui.removeProjectBody")),
-    h("div", { class: "easy-code-confirm__target" }, [h("strong", project.name), h("small", project.root)]),
+    h("div", { class: "easy-code-confirm__target" }, h("strong", project.name)),
     h("small", t("ui.folderUnchanged")),
   ]);
   try { await ElMessageBox.confirm(message, t("ui.removeProjectQuestion"), {
@@ -519,11 +588,12 @@ async function deleteProject(project: ProjectItem): Promise<void> {
     cancelButtonText: t("ui.keepProject"), confirmButtonText: t("ui.removeProjectTitle"),
     confirmButtonClass: "easy-code-confirm__danger",
   }); }
-  catch { return; }
+  catch { return false; }
   try {
-    await request("/api/project/delete", { projectId: project.id, confirmRoot: project.root });
-    await refresh(); notify(t("ui.projectRemoved"), "success");
-  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
+    await request("/api/project/delete", { projectId: project.id, confirmProjectId: project.id });
+    projectEditorOpen.value = false;
+    await refresh(); notify(t("ui.projectRemoved"), "success"); return true;
+  } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); return false; }
 }
 async function decide(id: string, value: string | undefined): Promise<void> {
   try {
@@ -571,12 +641,11 @@ function noticePreview(text: string): string {
           <nav class="thread-list" :aria-label="t('ui.projectNavigation')">
         <section v-for="project in projects" :key="project.id" class="project-group">
           <div class="project-row" :class="{ current: activeProject?.id === project.id }">
-            <ElButton class="project-toggle" text :title="project.root" :aria-expanded="expandedProjects.has(project.id)" @click="toggleProject(project.id)">
+            <ElButton class="project-toggle" text :title="project.name" :aria-expanded="expandedProjects.has(project.id)" @click="toggleProject(project.id)">
               <FolderOpened v-if="expandedProjects.has(project.id)" class="project-folder" /><Folder v-else class="project-folder" /><span class="project-name">{{ project.name }}</span><Loading v-if="projectRunning(project.id)" class="project-loading" :aria-label="t('ui.projectActive')" />
             </ElButton>
-            <ElButton class="project-action project-action--add" text :icon="Plus" :title="t('ui.newConversation')" :aria-label="t('ui.newConversation')" :disabled="switching" @click="switchThread('new', undefined, project.id)" />
-            <ElButton class="project-action" text :icon="Edit" :title="t('ui.renameProject')" :aria-label="t('ui.renameProject')" :disabled="switching" @click="renameProject(project)" />
-            <ElButton class="project-action danger" text :icon="Delete" :title="t('ui.removeProject')" :aria-label="t('ui.removeProject')" :disabled="switching" @click="deleteProject(project)" />
+            <ElButton class="project-action project-action--add" text :icon="Plus" :title="project.ready === false ? t('ui.attachFolderFirst') : t('ui.newConversation')" :aria-label="t('ui.newConversation')" :disabled="switching || project.ready === false" @click="switchThread('new', undefined, project.id)" />
+            <ElButton class="project-action" text :icon="Edit" :title="t('ui.editProject')" :aria-label="t('ui.editProject')" :disabled="switching" @click="openProjectEditor(project)" />
           </div>
           <div v-if="expandedProjects.has(project.id)" class="project-threads">
             <div v-for="thread in projectThreads(project.id)" :key="thread.threadId" class="thread-item" :class="{ active: activeThread === thread.threadId }">
@@ -596,7 +665,7 @@ function noticePreview(text: string): string {
 
     <main class="main-column">
       <header class="topbar">
-        <div><h1>{{ headerTitle }}</h1><p>{{ session ? `${t('ui.mode')}: ${modeLabel} · ${t('ui.environment')}: ${environmentLabel} · ${t('ui.tasks')}: ${taskCount} · ${t('ui.agents')}: ${liveAgents.length} · ctx ${session.contextTokens ?? 0}` : activeProject?.root || t('ui.chooseFolder') }}</p></div>
+        <div><h1>{{ headerTitle }}</h1><p>{{ session ? `${t('ui.mode')}: ${modeLabel} · ${t('ui.environment')}: ${environmentLabel} · ${t('ui.tasks')}: ${taskCount} · ${t('ui.agents')}: ${liveAgents.length} · ctx ${session.contextTokens ?? 0}` : activeProject ? (activeProject.ready === false ? t('ui.attachFolderHint') : t('ui.emptyProjectHint')) : t('ui.emptyNoProjectHint') }}</p></div>
         <div class="top-actions"><ElSelect class="language-switcher" :model-value="language" :aria-label="t('ui.selectLanguage')" @change="changeLanguage"><ElOption label="English" value="en_us" /><ElOption label="简体中文" value="zh_cn" /></ElSelect></div>
       </header>
 
@@ -631,4 +700,33 @@ function noticePreview(text: string): string {
       </Composer>
     </main>
   </div>
+  <ElDialog v-model="projectEditorOpen" class="project-editor-dialog" width="min(520px, calc(100vw - 28px))" :title="t('ui.editProjectTitle')" destroy-on-close @closed="projectEditor = null">
+    <div v-if="projectEditor" class="project-editor-body">
+      <label class="project-editor-field">
+        <span>{{ t('ui.projectName') }}</span>
+        <ElInput v-model="projectEditor.name" maxlength="120" :placeholder="t('ui.enterName')" />
+      </label>
+      <section class="project-editor-folders">
+        <strong>{{ t('ui.sourceFolders') }}</strong>
+        <div class="project-editor-folder-list">
+          <div v-for="folder in projectEditor.folders" :key="folder.clientId" class="project-editor-folder" :title="folder.path">
+            <Folder class="project-editor-folder-icon" />
+            <span class="project-editor-folder-name">{{ folderName(folder) }}</span>
+            <span v-if="folder.clientId === projectEditor.primaryClientId" class="project-editor-primary">{{ t('ui.primaryFolder') }}</span>
+            <ElButton v-else class="project-editor-make-primary" text @click="setPrimaryProjectFolder(folder.clientId)">{{ t('ui.makePrimary') }}</ElButton>
+            <ElButton class="project-editor-remove-folder" text :icon="Close" :title="t('ui.removeProjectFolder')" :aria-label="t('ui.removeProjectFolder')" @click="removeProjectFolder(folder.clientId)" />
+          </div>
+          <ElButton class="project-editor-add-folder" text :icon="Plus" :loading="switching" @click="addProjectFolder">{{ t('ui.addFolder') }}</ElButton>
+        </div>
+      </section>
+    </div>
+    <template #footer>
+      <div class="project-editor-footer">
+        <ElButton v-if="editingProject" class="project-editor-delete" type="danger" plain :disabled="switching || projectRunning(editingProject.id)" @click="deleteProject(editingProject)">{{ t('ui.removeProjectTitle') }}</ElButton>
+        <span class="project-editor-footer-spacer"></span>
+        <ElButton :disabled="switching" @click="projectEditorOpen = false">{{ t('ui.cancel') }}</ElButton>
+        <ElButton type="primary" :loading="switching" :disabled="!projectEditor?.name.trim() || !!(editingProject && projectRunning(editingProject.id))" @click="saveProjectEditor">{{ t('ui.save') }}</ElButton>
+      </div>
+    </template>
+  </ElDialog>
 </template>

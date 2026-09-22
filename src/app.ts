@@ -85,6 +85,7 @@ import {
   SystemClipboardImageReader,
   assertThreadImageNumberAvailable,
   nextThreadImageNumber,
+  assertDataDirectoryOutsideWorkspace,
   prepareDataDirectoryOutsideWorkspace,
   validateImageAttachmentCollection,
   type ClipboardImageReader,
@@ -178,9 +179,13 @@ import {
   type ActiveExecutionEnvironment,
   type HandoffDestination,
 } from "./workspace/execution-environment.js";
+import type { ProjectWorkspace } from "./projects/types.js";
+import { ProjectIndex } from "./web-server/projects.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
+  /** Host-owned logical project identity and active folder membership. */
+  projectWorkspace?: ProjectWorkspace;
   provider?: ProviderName;
   model?: string;
   mode?: AgentMode;
@@ -313,6 +318,26 @@ function messagePreview(message: ChatMessage): string {
 
 function json(value: unknown): string {
   return JSON.stringify(value, null, 2);
+}
+
+function parseQuotedArguments(value: string): string[] {
+  const args: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (char === "\\" && quote === '"' && value[index + 1] === '"') current += value[++index]!;
+      else current += char;
+    } else if (char === '"' || char === "'") quote = char;
+    else if (/\s/u.test(char)) {
+      if (current) { args.push(current); current = ""; }
+    } else current += char;
+  }
+  if (quote) throw new Error("Unclosed quote in command arguments");
+  if (current) args.push(current);
+  return args;
 }
 
 function stripPasteFailureMarkers(value: string): string {
@@ -549,7 +574,7 @@ export class EasyCodeApp {
   private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
   private readonly mcpConfigStore = new McpConfigStore();
   private mcpConnections?: McpConnections;
-  private readonly executionEnvironments: ExecutionEnvironmentManager;
+  private executionEnvironments: ExecutionEnvironmentManager;
   private readonly subagentCoordinator: SubagentCoordinator;
   private pendingImages: ImageAttachment[] = [];
   private pendingResumeRecovery?: ResumeRecoverySummary;
@@ -636,7 +661,7 @@ export class EasyCodeApp {
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: workspace.root,
       dataDir: config.dataDir,
-      defaultIsolation: config.subagentIsolation,
+      defaultIsolation: workspace.folders.length > 1 ? "shared" : config.subagentIsolation,
       baseMode: config.worktreeBaseMode,
       worktreeRoot: config.worktreeRoot,
       maxManagedWorktrees: config.limits.maxManagedWorktrees,
@@ -650,8 +675,8 @@ export class EasyCodeApp {
     );
     this.subagentCoordinator = new SubagentCoordinator({
       run: (request) => this.runSubagent(request),
-      defaultIsolation: config.subagentIsolation,
-      forceSharedIsolation: this.trustedOuterSandbox === "harbor",
+      defaultIsolation: workspace.folders.length > 1 ? "shared" : config.subagentIsolation,
+      forceSharedIsolation: this.trustedOuterSandbox === "harbor" || workspace.folders.length > 1,
       onWaitStart: (text) => this.terminal.startActivity(text, "waiting"),
       onWaitEnd: (activityToken) => {
         if (typeof activityToken === "string") {
@@ -723,7 +748,7 @@ export class EasyCodeApp {
         config = discoveredConfig;
         if (options.approvalPolicy) config.approvalPolicy = options.approvalPolicy;
       }
-      const workspace = await WorkspaceManager.create(config.workspaceRoot);
+      let workspace = await WorkspaceManager.create(options.projectWorkspace ?? config.workspaceRoot);
       config.dataDir = await prepareDataDirectoryOutsideWorkspace(
         config.dataDir,
         workspace.root,
@@ -741,6 +766,24 @@ export class EasyCodeApp {
         }
       }
       threadStore = new ThreadStore(storage);
+      // Library callers can bypass both the CLI and Web project controllers.
+      // Keep the core invariant here as well: every ordinary Thread belongs to
+      // a durable UUID project, and resume resolves the latest membership by
+      // project identity rather than trusting a historical root snapshot.
+      if (!options.projectWorkspace) {
+        const projects = new ProjectIndex(storage);
+        if (options.resumeThreadId) {
+          const summary = threadStore.list({ limit: 100_000 })
+            .find(item => item.threadId === options.resumeThreadId);
+          if (!summary) throw new Error(`Thread not found: ${options.resumeThreadId}`);
+          workspace = await WorkspaceManager.create(projects.workspace(summary.workspaceId));
+        } else {
+          workspace = await WorkspaceManager.create(projects.workspace(projects.add(workspace.root).id));
+        }
+      }
+      for (const folder of workspace.folders) {
+        await assertDataDirectoryOutsideWorkspace(config.dataDir, folder.path);
+      }
       let state: SessionState;
       let shouldCheckpoint = false;
       let resumeRecovery: ResumeRecoverySummary | undefined;
@@ -753,11 +796,18 @@ export class EasyCodeApp {
         }
         threadLease = threadStore.acquireThreadLease(options.resumeThreadId);
         state = threadStore.recover(options.resumeThreadId);
-        if (!samePath(state.workspaceRoot, workspace.root)) {
+        if (options.projectWorkspace && state.projectId !== options.projectWorkspace.projectId) {
           throw new Error(
-            `Thread ${state.threadId} belongs to ${state.workspaceRoot}; launch EASY CODE with that --workspace first.`,
+            `Thread ${state.threadId} belongs to another project.`,
           );
         }
+        state.projectId = workspace.projectId ?? state.projectId;
+        state.workspaceRevision = workspace.revision;
+        state.workspaceFolders = workspace.folders.map((folder, index) => ({
+          id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+        }));
+        state.primaryWorkspaceFolderId = state.workspaceFolders.find(folder => samePath(folder.path, workspace.root))?.id;
+        state.workspaceRoot = workspace.root;
         if (!config.providers[state.provider] || !resolveCatalogModel(state.provider, state.model)) {
           terminal.warning(`The saved model ${state.provider}/${state.model} is no longer available. Using the current default; choose another with /model.`);
           state.provider = config.provider;
@@ -830,6 +880,12 @@ export class EasyCodeApp {
           : config.providers[selectedProvider]!.model;
         state = threadStore.create({
           workspaceRoot: workspace.root,
+          projectId: workspace.projectId,
+          workspaceRevision: workspace.revision,
+          workspaceFolders: workspace.folders.map((folder, index) => ({
+            id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+          })),
+          primaryWorkspaceFolderId: workspace.folders.find(folder => samePath(folder.path, workspace.root))?.id,
           mode: selectedMode,
           provider: selectedProvider,
           model: selectedModel,
@@ -966,9 +1022,10 @@ export class EasyCodeApp {
     const work = (async () => {
       try {
         const maintenance = new MemoryMaintenance(this.storage,
-          this.memoryManager, this.workspace.root);
+          this.memoryManager, this.workspace.root,
+          this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root));
         maintenance.recover(this.state.threadId);
-        this.memoryManager.expireDueMemories(projectMemoryIdFromRoot(this.workspace.root));
+        this.memoryManager.expireDueMemories(this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root));
         this.memoryManager.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
         maintenance.enqueueCompleted(this.state.threadId);
         if (!maintenance.hasPending(this.state.threadId)) return;
@@ -1017,6 +1074,15 @@ export class EasyCodeApp {
       .filter(session => !this.threadStore.isBoundSubagentThread(session.threadId));
   }
   isRequestActive(): boolean { return this.activeTurnController !== undefined; }
+
+  /** Project membership is immutable while any Thread-owned execution can
+   * still observe or mutate its bound workspace revision. */
+  isProjectWorkspaceBusy(): boolean {
+    return this.isRequestActive() || this.hasRunningCommands() ||
+      this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
+      this.subagentCoordinator.hasOutstanding(this.state.threadId) ||
+      Boolean(this.pendingPlan());
+  }
   threadEvents(): readonly EventRecord[] { return this.threadStore.journal(this.state.threadId).read(); }
   workspaceThreads(): readonly ThreadSummary[] { return this.resumableThreads(); }
   deleteHostedThread(threadId: string): readonly string[] {
@@ -1369,12 +1435,7 @@ export class EasyCodeApp {
         this.printStatus();
         return false;
       case "workspace": {
-        const action = command.args[0];
-        if (action && action !== "refresh") throw new Error("Usage: /workspace [refresh]");
-        const summary = action === "refresh"
-          ? await this.workspace.refreshManifest()
-          : this.workspace.getManifestSummary();
-        this.terminal.write(`${json(summary)}\n`);
+        await this.updateWorkspaceCommand(command.rawArgs);
         return false;
       }
       case "image": {
@@ -1909,8 +1970,8 @@ export class EasyCodeApp {
       this.state.model,
       { loadImage: (attachment) => this.imageStore.load(this.state.threadId, attachment) },
     );
-    const workspaceId = workspaceIdFromRoot(this.workspace.root);
-    const projectMemoryId = projectMemoryIdFromRoot(this.workspace.root);
+    const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
+    const projectMemoryId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
     const commandRuntime = this.createCommandRuntime(this.workspace);
     const commandOwner = {
       threadId: this.state.threadId,
@@ -1947,6 +2008,9 @@ export class EasyCodeApp {
       }) =>
         buildSystemPrompt({
           config: effectiveConfig,
+          workspaceFolders: this.workspace.folders,
+          skillStore: SkillStore.forProject(this.workspace.root, this.config.dataDir,
+            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
           now: promptStartedAt,
           mode,
           workspaceSummary,
@@ -1995,6 +2059,7 @@ export class EasyCodeApp {
       getEnvironmentFault: () => commandRuntime.environmentFault(),
       commitMemoryMutations: async (input) =>
         this.memoryManager.applyModelMutationsWithEmbeddings({
+          workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
           workspaceRoot: input.workspaceRoot,
           threadId: input.threadId,
           turnId: input.turnId,
@@ -2325,6 +2390,10 @@ export class EasyCodeApp {
         });
       }
       childWorkspace = activeEnvironment.workspace;
+      if (activeEnvironment.descriptor.kind === "shared" && this.workspace.folders.length > 1) {
+        childWorkspace = await WorkspaceManager.create(this.currentProjectWorkspace()!);
+        activeEnvironment = { ...activeEnvironment, workspace: childWorkspace };
+      }
       request.reportEnvironment(activeEnvironment.descriptor);
 
       if (existingChild) {
@@ -2344,6 +2413,10 @@ export class EasyCodeApp {
         childState = this.threadStore.create({
           threadId: request.record.childThreadId,
           workspaceRoot: childWorkspace.root,
+          projectId: this.state.projectId,
+          workspaceRevision: this.state.workspaceRevision,
+          workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
+          primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
           mode: "code",
           provider: request.record.provider,
           model: request.record.model,
@@ -2433,6 +2506,8 @@ export class EasyCodeApp {
       childToolCatalog = new ToolCatalog();
       childToolCatalog.registerSource(new BuiltinToolSource({
         workspace: childWorkspace,
+        skillStore: SkillStore.forProject(childWorkspace.root, this.config.dataDir,
+          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
         commandRuntime: childCommandRuntime,
         limits: this.config.limits,
         mutationLock,
@@ -2448,8 +2523,8 @@ export class EasyCodeApp {
         }));
       }
       const toolCatalog = await childToolCatalog.snapshot();
-      const workspaceId = workspaceIdFromRoot(this.workspace.root);
-      const projectMemoryId = projectMemoryIdFromRoot(this.workspace.root);
+      const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
+      const projectMemoryId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
       const assignment = json({
         agentId: request.record.id,
         childThreadId: request.record.childThreadId,
@@ -2509,6 +2584,9 @@ export class EasyCodeApp {
         }) => {
           const base = await buildSystemPrompt({
             config: childConfig,
+            workspaceFolders: childWorkspace!.folders,
+            skillStore: SkillStore.forProject(childWorkspace!.root, this.config.dataDir,
+              this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
             now: childPromptStartedAt,
             mode,
             workspaceSummary,
@@ -3853,14 +3931,110 @@ export class EasyCodeApp {
     }
   }
 
+  private currentProjectWorkspace(): ProjectWorkspace | undefined {
+    if (!this.state.projectId || !this.state.primaryWorkspaceFolderId || !this.state.workspaceFolders?.length) return undefined;
+    return {
+      projectId: this.state.projectId,
+      revision: this.state.workspaceRevision ?? 1,
+      primaryFolderId: this.state.primaryWorkspaceFolderId,
+      folders: this.state.workspaceFolders.map((folder, index) => ({
+        ...folder,
+        projectId: this.state.projectId!,
+        active: true,
+        addedRevision: 1,
+        sortOrder: index,
+      })),
+    };
+  }
+
+  private async replaceProjectWorkspace(descriptor: ProjectWorkspace): Promise<void> {
+    this.assertNoRunningCommands("change project folders");
+    this.assertNoRunningSubagents("change project folders");
+    if (this.activeTurnController) throw new Error("Wait for the current request to finish before changing project folders.");
+    if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
+    for (const catalog of this.mainToolCatalogs.values()) await catalog.close();
+    this.mainToolCatalogs.clear();
+    const previous = this.workspace;
+    const next = await WorkspaceManager.create(descriptor);
+    const restored = next.restorePersistedState(this.state.filesRead, this.state.changes);
+    void restored;
+    this.workspace = next;
+    this.commandRuntimes.delete(previous);
+    this.state.projectId = descriptor.projectId;
+    this.state.workspaceRevision = descriptor.revision;
+    this.state.workspaceFolders = descriptor.folders.map(folder => ({
+      id: folder.id, key: folder.key, path: folder.path,
+    }));
+    this.state.primaryWorkspaceFolderId = descriptor.primaryFolderId;
+    this.state.workspaceRoot = next.root;
+    this.config.workspaceRoot = next.root;
+    this.executionEnvironments = new ExecutionEnvironmentManager({
+      logicalWorkspaceRoot: next.root,
+      dataDir: this.config.dataDir,
+      defaultIsolation: next.folders.length > 1 ? "shared" : this.config.subagentIsolation,
+      baseMode: this.config.worktreeBaseMode,
+      worktreeRoot: this.config.worktreeRoot,
+      maxManagedWorktrees: this.config.limits.maxManagedWorktrees,
+    });
+    this.dirty = true;
+    this.save();
+    this.syncTerminalView(true);
+  }
+
+  private async updateWorkspaceCommand(rawArgs: string): Promise<void> {
+    const args = parseQuotedArguments(rawArgs);
+    const action = args[0] ?? "list";
+    const projectId = this.state.projectId;
+    if (!projectId) throw new Error("This thread is not attached to a logical project.");
+    const projects = new ProjectIndex(this.storage);
+    if (action === "list") {
+      if (args.length !== 1) throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
+      this.terminal.write(`${json(projects.get(projectId))}\n`);
+      return;
+    }
+    if (action === "refresh") {
+      if (args.length !== 1) throw new Error("Usage: /workspace refresh");
+      this.terminal.write(`${json(await this.workspace.refreshManifest())}\n`);
+      return;
+    }
+    // Validate the live project before persisting a new membership revision;
+    // otherwise a rejected hot swap could leave storage ahead of this Thread.
+    this.assertNoRunningCommands("change project folders");
+    this.assertNoRunningSubagents("change project folders");
+    if (this.activeTurnController) throw new Error("Wait for the current request to finish before changing project folders.");
+    if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
+    if (action === "add") {
+      if (args.length !== 2) throw new Error("Usage: /workspace add \"<absolute-folder-path>\"");
+      await assertDataDirectoryOutsideWorkspace(this.config.dataDir, args[1]!);
+      projects.addFolder(projectId, args[1]!);
+    } else if (action === "remove") {
+      if (args.length !== 2) throw new Error("Usage: /workspace remove <folder-id>");
+      const project = projects.get(projectId);
+      if (project.folders.filter(folder => folder.active).length <= 1)
+        throw new Error("The CLI cannot detach the final folder while this conversation is open. Use the Web project manager.");
+      projects.removeFolder(projectId, args[1]!);
+    } else if (action === "primary") {
+      if (args.length !== 2) throw new Error("Usage: /workspace primary <folder-id>");
+      projects.setPrimaryFolder(projectId, args[1]!);
+    } else {
+      throw new Error("Usage: /workspace list|refresh|add <path>|remove <folder-id>|primary <folder-id>");
+    }
+    await this.replaceProjectWorkspace(projects.workspace(projectId));
+    this.terminal.success("Project folders updated.");
+  }
+
   private async newThread(): Promise<void> {
     this.save();
     const previousThreadId = this.state.threadId;
     const previousWorkspace = this.workspace;
     const previousLease = this.requireThreadLease();
-    const nextWorkspace = await WorkspaceManager.create(this.config.workspaceRoot);
+    const nextWorkspace = await WorkspaceManager.create(this.currentProjectWorkspace() ?? this.config.workspaceRoot);
     const nextState = this.threadStore.create({
       workspaceRoot: nextWorkspace.root,
+      projectId: this.state.projectId,
+      workspaceRevision: this.state.workspaceRevision,
+      workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
+      primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
       mode: this.state.mode,
       provider: this.state.provider,
       model: this.state.model,
@@ -3956,9 +4130,10 @@ export class EasyCodeApp {
         recovered.model = this.config.providers[this.config.provider]!.model;
         resumedModelChanged = true;
       }
-      if (!samePath(recovered.workspaceRoot, this.workspace.root)) {
+      if ((recovered.projectId ?? workspaceIdFromRoot(recovered.workspaceRoot)) !==
+          (this.state.projectId ?? workspaceIdFromRoot(this.workspace.root))) {
         throw new Error(
-          `Thread ${threadId} belongs to ${recovered.workspaceRoot}; restart with --workspace for that directory.`,
+          `Thread ${threadId} belongs to another project.`,
         );
       }
       if (
@@ -3969,7 +4144,15 @@ export class EasyCodeApp {
           "Cannot resume outstanding child assignments in Plan mode. Resume them in Code/Auto mode and collect them first.",
         );
       }
-      nextWorkspace = await WorkspaceManager.create(recovered.workspaceRoot);
+      const currentProject = this.currentProjectWorkspace();
+      nextWorkspace = await WorkspaceManager.create(currentProject ?? recovered.workspaceRoot);
+      recovered.projectId = nextWorkspace.projectId ?? recovered.projectId;
+      recovered.workspaceRevision = nextWorkspace.revision;
+      recovered.workspaceFolders = nextWorkspace.folders.map((folder, index) => ({
+        id: folder.id ?? `folder_${index + 1}`, key: folder.key, path: folder.path,
+      }));
+      recovered.primaryWorkspaceFolderId = recovered.workspaceFolders.find(folder => samePath(folder.path, nextWorkspace.root))?.id;
+      recovered.workspaceRoot = nextWorkspace.root;
       const savedChanges = JSON.stringify(recovered.changes);
       restoredWorkspace = nextWorkspace.restorePersistedState(
         recovered.filesRead,
@@ -4137,6 +4320,9 @@ export class EasyCodeApp {
       agentConcurrencyLimit: this.config.limits.maxConcurrentSubagents[this.state.thinkingEffort],
       threadId: this.state.threadId,
       workspaceRoot: this.workspace.root,
+      projectId: this.state.projectId,
+      workspaceRevision: this.state.workspaceRevision,
+      workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
       mode: this.state.mode,
       provider: this.state.provider,
       model: this.state.model,
@@ -4161,7 +4347,7 @@ export class EasyCodeApp {
 
   private resumableThreads(): ThreadSummary[] {
     return this.threadStore.list({
-      workspaceId: workspaceIdFromRoot(this.workspace.root),
+      workspaceId: this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
       limit: 50,
     }).filter((session) => !this.threadStore.isBoundSubagentThread(session.threadId));
   }
@@ -4292,10 +4478,14 @@ export class EasyCodeApp {
   }
 
   private async showSkills(): Promise<void> {
-    const listing = await new SkillStore(this.workspace.root).list();
+    const listing = await SkillStore.forProject(
+      this.workspace.root,
+      this.config.dataDir,
+      this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
+    ).list();
     const safeLine = (value: string): string => sanitizeTerminalText(value, { allowSgr: false }).replace(/\s+/gu, " ");
     for (const [title, directory, skills] of [
-      ["User Skills", listing.userDirectory, listing.user],
+      ["Global Skills", listing.globalDirectory, listing.global],
       ["Project Skills", listing.projectDirectory, listing.project],
     ] as const) {
       this.terminal.write(`${title} (${safeLine(directory)})\n`);
@@ -4592,6 +4782,8 @@ export class EasyCodeApp {
       catalog = new ToolCatalog();
       catalog.registerSource(new BuiltinToolSource({
         workspace: this.workspace,
+        skillStore: SkillStore.forProject(this.workspace.root, this.config.dataDir,
+          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
         memoryManager: this.memoryManager,
         subagentControl: this.subagentCoordinator,
         commandRuntime: this.createCommandRuntime(this.workspace),
@@ -4649,11 +4841,11 @@ export class EasyCodeApp {
       {
         networkProfile: this.trustedOuterSandbox === "harbor" ? "benchmark" : "development",
         limits: this.config.limits,
-        quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspaceIdFromRoot(workspace.root)}.json`),
-        lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspaceIdFromRoot(workspace.root)),
-        boundaryStatePath: path.join(this.config.dataDir, "command-boundary", `${workspaceIdFromRoot(workspace.root)}.json`),
+        quarantinePath: path.join(this.config.dataDir, "command-quarantine", `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`),
+        lifecycleDirectory: path.join(this.config.dataDir, "command-leases", workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)),
+        boundaryStatePath: path.join(this.config.dataDir, "command-boundary", `${workspace.projectId ?? this.state.projectId ?? workspaceIdFromRoot(workspace.root)}.json`),
         createOutputArchive: (commandId, context) => this.memoryManager.evidenceStore.createCommandArchive(
-          workspaceIdFromRoot(this.workspace.root), context.threadId, commandId),
+          this.state.projectId ?? workspaceIdFromRoot(this.workspace.root), context.threadId, commandId),
         recordLifecycle: (context, commandId, type, payload) => {
           this.threadStore.appendEvent(context.threadId, { type, turnId: context.turnId,
             phase: "completed", payload: { commandId, detail: payload } });
@@ -4757,7 +4949,7 @@ export class EasyCodeApp {
     }
 
     if (kind === "long" && args.length <= 3) {
-      const projectId = projectMemoryIdFromRoot(this.workspace.root);
+      const projectId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
       const scope = args[1] === "global" || args[1] === "project" || args[1] === "all"
         ? args[1] : "all";
       const id = scope === "all" && args[1] !== "all" ? args[1] : args[2];

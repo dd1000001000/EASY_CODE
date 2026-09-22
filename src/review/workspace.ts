@@ -98,16 +98,19 @@ export async function createReviewCopies(workspace: WorkspaceManager, id: string
   // resolution prevents writes through these links to the original workspace;
   // they exist only so independent tests can use the already installed toolchain.
   const dependencyLinks: Record<string, string> = {};
-  if (!options.offline) for (const name of REVIEW_DEPENDENCY_DIRECTORIES) {
-    const source = path.join(workspace.root, name);
+  if (!options.offline) for (const folder of workspace.folders) for (const name of REVIEW_DEPENDENCY_DIRECTORIES) {
+    const source = path.join(folder.path, name);
     let target: string;
     try {
       if (!(await lstat(source)).isDirectory()) continue;
       target = await realpath(source);
     } catch { continue; }
-    if (!isInside(workspace.root, target)) throw new Error(`Review dependency leaves the workspace: ${name}`);
-    await symlink(target, path.join(root, name), process.platform === "win32" ? "junction" : "dir");
-    dependencyLinks[name] = target;
+    if (!isInside(folder.path, target)) throw new Error(`Review dependency leaves project folder ${folder.key}: ${name}`);
+    const relative = workspace.folders.length === 1 ? name : path.posix.join(folder.key, name);
+    const link = path.join(root, ...relative.split("/"));
+    await mkdir(path.dirname(link), { recursive: true });
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+    dependencyLinks[relative] = target;
   }
   if (reviewFingerprint(await workspace.captureSnapshot()) !== expected) throw new Error("Workspace changed during review copy");
   await writeFile(path.join(directory, "binding.json"), JSON.stringify({ id, snapshotId: expected, root, baseline,
@@ -125,9 +128,12 @@ export async function restoreReviewCopies(directory: string, id: string, snapsho
   if (!binding.baseline ||
     !Array.isArray(binding.materializedSymlinks)) throw new Error("Missing review snapshot manifest");
   const dependencyLinks = (binding.dependencyLinks ?? {}) as Record<string, string>;
-  for (const [name, expected] of Object.entries(dependencyLinks)) {
-    if (!REVIEW_DEPENDENCY_DIRECTORIES.includes(name as typeof REVIEW_DEPENDENCY_DIRECTORIES[number]) ||
-      !path.isAbsolute(expected) || await realpath(path.join(root, name)) !== expected)
+  for (const [relative, expected] of Object.entries(dependencyLinks)) {
+    const segments = relative.split("/");
+    const name = segments.at(-1);
+    if (!name || segments.some(segment => !segment || segment === "." || segment === "..") ||
+      !REVIEW_DEPENDENCY_DIRECTORIES.includes(name as typeof REVIEW_DEPENDENCY_DIRECTORIES[number]) ||
+      !path.isAbsolute(expected) || await realpath(path.join(root, ...segments)) !== expected)
       throw new Error("Review dependency binding mismatch");
   }
   return { directory, root, baseline: binding.baseline as Record<string, string>,

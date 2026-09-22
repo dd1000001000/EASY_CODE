@@ -8,7 +8,7 @@ import { NativeAppServerClient } from "./app-server-client.js";
 import { sandboxBoundaryResultFromError, targetSpawnFailureFromError } from "./native-command-error.js";
 import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
 import { encodeSandboxControl } from "./control.js";
-import { nativePermissionProfile } from "./native-policy.js";
+import { nativeProjectPermissionProfile } from "./native-policy.js";
 import type { ResolvedCommand } from "../command/types.js";
 import type { SandboxWorkerControl } from "./types.js";
 
@@ -41,7 +41,7 @@ const physicalTarget = payload.target.launch ?? {
   args: payload.target.args,
 };
 if (payload.target.launch?.usesCommandPayload) environment.EASY_CODE_LAUNCH_SPEC = process.argv[2]!;
-const permission = nativePermissionProfile(payload.readOnly);
+const permission = nativeProjectPermissionProfile(payload.readOnly);
 
 let service: NativeAppServerClient | undefined;
 let requestSent = false;

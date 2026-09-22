@@ -6,21 +6,28 @@ import { createServer } from "node:net";
 
 import { CommandPolicy, CommandRuntime } from "../dist/command/index.js";
 import { ensureSharedCommandNetworkGateServer } from "../dist/command/network-gate.js";
+import { resolveEasyCodePaths } from "../dist/config/defaults.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../dist/config/runtime-limits.js";
 import { NativeAppServerClient } from "../dist/sandbox/app-server-client.js";
 import { NativeSandboxBackend } from "../dist/sandbox/native-backend.js";
-import { nativePermissionProfile } from "../dist/sandbox/native-policy.js";
+import { nativeProjectPermissionProfile } from "../dist/sandbox/native-policy.js";
+import { ensureNativeProjectPermissionHome } from "../dist/sandbox/permission-home.js";
 import { nativeSandboxEntrypoint, nativeSandboxEnvironment, nativeSandboxHome } from "../dist/sandbox/native-runtime.js";
 import { NativeSandboxStartupService } from "../dist/sandbox/native-startup.js";
 import { acquireWindowsProxyPortLease } from "../dist/sandbox/windows-proxy-registry.js";
 import { WorkspaceManager } from "../dist/workspace/manager.js";
 
 const workspace = await mkdtemp(path.join(process.cwd(), ".easy-code-native-smoke-"));
+const secondaryWorkspace = await mkdtemp(path.join(process.cwd(), ".easy-code-native-secondary-"));
 const outside = await mkdtemp(path.join(os.homedir(), ".easy-code-native-outside-"));
-const dataDir = path.join(workspace, ".easy-code-data");
+const runtimeDataDir = await mkdtemp(path.join(os.tmpdir(), "easy-code-native-runtime-"));
+// Windows setup authorizes ports in the installed EASY CODE data directory.
+// Keep test lifecycle data temporary, while exercising that real provisioned
+// registry instead of inventing an unprovisioned registry in a temp folder.
+const nativeDataDir = process.platform === "win32" ? resolveEasyCodePaths().dataDir : runtimeDataDir;
 const outsideSentinel = path.join(outside, "sentinel.txt");
-const sandboxHome = nativeSandboxHome();
-const sandboxDataDir = path.resolve(sandboxHome, "..", "..");
+const sandboxHome = await ensureNativeProjectPermissionHome(
+  nativeSandboxHome(nativeDataDir), [workspace, secondaryWorkspace]);
 let sandboxProxyURL;
 let sandboxProxyPorts = [];
 await writeFile(outsideSentinel, "must remain private", "utf8");
@@ -31,9 +38,11 @@ async function execute(client, command, timeoutMs = 10_000) {
     cwd: workspace,
     ...(sandboxProxyURL ? { env: nativeSandboxEnvironment(sandboxHome, process.env,
       sandboxProxyURL, sandboxProxyPorts) } : {}),
-    ...nativePermissionProfile(),
+    ...nativeProjectPermissionProfile(),
     timeoutMs,
-  }, timeoutMs + 5_000);
+  // A fresh Windows elevated profile may spend several seconds applying its
+  // ACL boundary before the target starts. That setup is not target runtime.
+  }, timeoutMs + (process.platform === "win32" ? 30_000 : 5_000));
 }
 
 async function denied(client, command, timeoutMs = 10_000) {
@@ -50,7 +59,7 @@ try {
   console.log("readiness: ok");
 
   if (process.platform === "win32") {
-    const lease = await acquireWindowsProxyPortLease({ dataDir: sandboxDataDir,
+    const lease = await acquireWindowsProxyPortLease({ dataDir: nativeDataDir,
       portStart: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortStart,
       portSlots: DEFAULT_RUNTIME_LIMITS.nativeSandboxProxyPortSlots,
       bind: ensureSharedCommandNetworkGateServer });
@@ -67,6 +76,10 @@ try {
       "require('node:fs').writeFileSync('inside.txt','sandboxed')"]);
     assert.equal(inside.exitCode, 0, inside.stderr);
     assert.equal(await readFile(path.join(workspace, "inside.txt"), "utf8"), "sandboxed");
+    const secondary = await execute(client, [process.execPath, "-e",
+      "require('node:fs').writeFileSync(process.argv[1],'second-root')", path.join(secondaryWorkspace, "inside.txt")]);
+    assert.equal(secondary.exitCode, 0, secondary.stderr);
+    assert.equal(await readFile(path.join(secondaryWorkspace, "inside.txt"), "utf8"), "second-root");
     const bufferedOutput = await execute(client, [process.execPath, "-e",
       "process.stdout.write('BUFFERED_OUTPUT_OK')"]);
     assert.equal(bufferedOutput.exitCode, 0, bufferedOutput.stderr);
@@ -101,18 +114,33 @@ try {
         "const n=require('node:net').connect({host:'127.0.0.1',port:Number(process.argv[1])},()=>{});" +
         "n.on('data',d=>process.stdout.write(d));n.on('end',()=>process.exit(0));n.on('error',e=>{console.error(e);process.exit(9)})",
         String(address.port)]);
-      assert.equal(loopback.exitCode, 0, loopback.stderr);
-      assert.match(loopback.stdout, /LOOPBACK_OK/u);
+      if (process.platform === "linux") {
+        assert.notEqual(loopback.exitCode, 0, "ordinary native command reached host loopback without a service session");
+      } else {
+        assert.equal(loopback.exitCode, 0, loopback.stderr);
+        assert.match(loopback.stdout, /LOOPBACK_OK/u);
+      }
     } finally { await new Promise(resolve => server.close(resolve)); }
-    console.log("native boundary: loopback allowed");
+    console.log(process.platform === "linux"
+      ? "native boundary: ordinary-command loopback denied"
+      : "native boundary: platform loopback allowed");
   } finally {
     await client.close();
   }
 
-  const manager = await WorkspaceManager.create(workspace);
-  const backend = new NativeSandboxBackend(manager);
+  const manager = await WorkspaceManager.create({
+    projectId: "project_12345678-1234-4123-8123-123456789abc", revision: 1,
+    primaryFolderId: "folder_primary",
+    folders: [
+      { id: "folder_primary", projectId: "project_12345678-1234-4123-8123-123456789abc",
+        key: "primary", path: workspace, active: true, addedRevision: 1, sortOrder: 0 },
+      { id: "folder_secondary", projectId: "project_12345678-1234-4123-8123-123456789abc",
+        key: "secondary", path: secondaryWorkspace, active: true, addedRevision: 1, sortOrder: 1 },
+    ],
+  });
+  const backend = new NativeSandboxBackend(manager, { dataDir: nativeDataDir });
   const runtime = new CommandRuntime(manager, new CommandPolicy(), backend, undefined, {
-    lifecycleDirectory: path.join(dataDir, "command-leases"),
+    lifecycleDirectory: path.join(runtimeDataDir, "command-leases"),
   });
   const context = {
     workspaceRoot: workspace,
@@ -130,8 +158,7 @@ try {
   assert.equal(timedOut.status, "timed_out", JSON.stringify({ failure: timedOut.failure,
     lifecycle: timedOut.lifecycle, stderr: timedOut.stderr.text, exitCode: timedOut.exitCode,
     durationMs: timedOut.durationMs }));
-  assert.equal(timedOut.lifecycle?.cleanup, "confirmed", JSON.stringify({ lifecycle: timedOut.lifecycle,
-    stderr: timedOut.stderr.text, durationMs: timedOut.durationMs }));
+  assert.equal(timedOut.lifecycle?.cleanup, "confirmed", JSON.stringify(timedOut));
   console.log("runtime: timeout cleanup confirmed");
 
   const followUp = await runtime.run({ program: process.execPath,
@@ -143,6 +170,12 @@ try {
   assert.match(followUp.stdout.text, /FOLLOW_UP_OK/u);
   assert.ok(followUp.durationMs < 15_000, `follow-up command took ${followUp.durationMs}ms`);
   console.log(`runtime: follow-up completed in ${followUp.durationMs}ms (${JSON.stringify(followUp.lifecycle?.timings)})`);
+  const secondaryFollowUp = await runtime.run({ program: process.execPath,
+    args: ["-e", "require('node:fs').writeFileSync('runtime.txt','MULTI_ROOT_OK')"], cwd: "secondary",
+    intent: "run", timeoutMs: 10_000 }, context);
+  assert.equal(secondaryFollowUp.exitCode, 0, JSON.stringify(secondaryFollowUp));
+  assert.equal(await readFile(path.join(secondaryWorkspace, "runtime.txt"), "utf8"), "MULTI_ROOT_OK");
+  console.log("runtime: second project folder writable");
   if (process.platform === "win32") {
     const packageShim = await runtime.run({ program: "npm", args: ["--version"], intent: "inspect", timeoutMs: 10_000 }, context);
     assert.equal(packageShim.status, "exited", JSON.stringify({ failure: packageShim.failure,
@@ -155,5 +188,7 @@ try {
   console.log(`Native sandbox smoke test passed on ${process.platform}.`);
 } finally {
   await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
+  await rm(secondaryWorkspace, { recursive: true, force: true }).catch(() => undefined);
   await rm(outside, { recursive: true, force: true }).catch(() => undefined);
+  await rm(runtimeDataDir, { recursive: true, force: true }).catch(() => undefined);
 }

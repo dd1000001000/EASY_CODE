@@ -25,7 +25,7 @@ const emit = defineEmits<{
 }>();
 const search = ref("");
 const toolPage = ref(0);
-const skillsTab = ref("user");
+const skillsTab = ref("global");
 const memoryTab = ref("short");
 const memoryLimit = ref<number | undefined>(8);
 const validMemoryLimit = computed(() => Number.isSafeInteger(memoryLimit.value) &&
@@ -48,11 +48,11 @@ const tools = computed(() => Array.isArray(parsed.value)
 const visibleTools = computed(() => tools.value.slice(toolPage.value * 40, (toolPage.value + 1) * 40));
 const skills = computed(() => {
   const sections: Record<string, { directory: string; items: { name: string; description: string }[] }> = {
-    user: { directory: "", items: [] }, project: { directory: "", items: [] },
+    global: { directory: "", items: [] }, project: { directory: "", items: [] },
   };
-  let scope = "user";
+  let scope = "global";
   for (const entry of props.entries) for (const line of entry.text.split("\n")) {
-    const heading = /^(User|Project) Skills \((.*)\)$/u.exec(line.trim());
+    const heading = /^(Global|Project) Skills \((.*)\)$/u.exec(line.trim());
     if (heading) { scope = heading[1]!.toLowerCase(); sections[scope]!.directory = heading[2]!; continue; }
     const item = /^\s{2}(.+?) — (.*)$/u.exec(line);
     if (item) sections[scope]!.items.push({ name: item[1]!, description: item[2]! });
@@ -154,10 +154,7 @@ useOutsideDismiss(panelRoot, close);
           <div class="web-command-choice-list"><div v-for="item in commands" :key="item.name" class="web-command-help-row"><strong>/{{ item.name }}</strong><span>{{ commandDescription(item.name) }}</span></div></div>
           <p class="web-command-note">{{ t('ui.commandHelpHint') }}</p>
         </template>
-        <template v-else-if="command.name === 'workspace'">
-          <div class="web-command-actions"><ElButton :icon="Refresh" :disabled="running" @click="execute('/workspace refresh')">{{ t('ui.refreshInventory') }}</ElButton></div>
-        </template>
-        <template v-else-if="command.name === 'skills'"><ElTabs v-model="skillsTab"><ElTabPane :label="t('ui.userSkills')" name="user" /><ElTabPane :label="t('ui.projectSkills')" name="project" /></ElTabs><p class="web-command-note">{{ skills[skillsTab]?.directory }}</p><div class="web-command-records"><div v-for="skill in skills[skillsTab]?.items ?? []" :key="skill.name" class="web-command-record"><strong>{{ skill.name }}</strong><p>{{ skill.description }}</p></div></div><p v-if="!skills[skillsTab]?.items.length" class="web-command-note">{{ t('ui.noSkills') }}</p></template>
+        <template v-else-if="command.name === 'skills'"><ElTabs v-model="skillsTab"><ElTabPane :label="t('ui.globalSkills')" name="global" /><ElTabPane :label="t('ui.projectSkills')" name="project" /></ElTabs><p class="web-command-note">{{ skills[skillsTab]?.directory }}</p><div class="web-command-records"><div v-for="skill in skills[skillsTab]?.items ?? []" :key="skill.name" class="web-command-record"><strong>{{ skill.name }}</strong><p>{{ skill.description }}</p></div></div><p v-if="!skills[skillsTab]?.items.length" class="web-command-note">{{ t('ui.noSkills') }}</p></template>
         <template v-if="!['mcp','tools','skills','help'].includes(command.name)">
           <ElDescriptions v-if="plainFields.length" :column="1" border size="small"><ElDescriptionsItem v-for="[key,value] in plainFields" :key="key" :label="key">{{ formatValue(value) }}</ElDescriptionsItem></ElDescriptions>
           <div v-for="[key,value] in nestedFields" :key="key" class="web-command-nested"><strong>{{ key }}</strong><pre>{{ formatValue(value) }}</pre></div>

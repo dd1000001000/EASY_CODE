@@ -9,6 +9,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NativeAppServerClient } from "./app-server-client.js";
 import { encodeSandboxControl } from "./control.js";
 import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
+import { NATIVE_SERVICE_PERMISSION_PROFILE } from "./native-policy.js";
 import type { ResolvedCommand } from "../command/types.js";
 import type { SandboxWorkerControl } from "./types.js";
 
@@ -144,7 +145,7 @@ try {
   emit({ type: "execution_request_sent" });
   const result = await service.request("command/exec", {
     command: [process.execPath, fileURLToPath(new URL("service-broker.js", import.meta.url)), brokerPayloadPath],
-    cwd: payload.target.cwdAbsolute, env: environment, permissionProfile: "easy-code-local-service",
+    cwd: payload.target.cwdAbsolute, env: environment, permissionProfile: NATIVE_SERVICE_PERMISSION_PROFILE,
     processId: payload.commandId, streamStdoutStderr: true, tty: true, timeoutMs: payload.timeoutMs,
   }, payload.timeoutMs + payload.cleanupMs);
   if (!initialExited) {

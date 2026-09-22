@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { sha256 } from "../utils/hash.js";
 import { assertSkillName, createSkillMarkdown, parseSkillMarkdown, SKILL_DIRECTORY_NAME } from "./format.js";
 
-export type SkillScope = "user" | "project";
+export type SkillScope = "global" | "project";
 
 export interface SkillSummary {
   readonly scope: SkillScope;
@@ -20,10 +20,10 @@ export interface SkillSummary {
 }
 
 export interface SkillListing {
-  readonly user: readonly SkillSummary[];
+  readonly global: readonly SkillSummary[];
   readonly project: readonly SkillSummary[];
   readonly warnings: readonly string[];
-  readonly userDirectory: string;
+  readonly globalDirectory: string;
   readonly projectDirectory: string;
 }
 
@@ -153,7 +153,17 @@ export class SkillStore {
     private readonly workspaceRoot: string,
     private readonly userHome: string = os.homedir(),
     private readonly trashDirectory: string = path.join(os.homedir(), ".easy_code", "skill-trash"),
+    private readonly projectStorage?: { dataDir: string; projectId: string },
   ) {}
+
+  static forProject(workspaceRoot: string, dataDir: string, projectId: string): SkillStore {
+    return new SkillStore(
+      workspaceRoot,
+      os.homedir(),
+      path.join(dataDir, "skill-trash"),
+      { dataDir: path.resolve(dataDir), projectId },
+    );
+  }
 
   async projectRoot(): Promise<string> {
     if (!this.projectRootPromise) this.projectRootPromise = this.findProjectRoot();
@@ -177,6 +187,11 @@ export class SkillStore {
   }
 
   async directory(scope: SkillScope): Promise<string> {
+    if (this.projectStorage) {
+      return scope === "project"
+        ? path.join(this.projectStorage.dataDir, "projects", this.projectStorage.projectId, "skills")
+        : path.join(this.projectStorage.dataDir, "skills", "global");
+    }
     const parent = scope === "project"
       ? await this.projectRoot()
       : path.normalize(await realpath(path.resolve(this.userHome)));
@@ -192,8 +207,8 @@ export class SkillStore {
   }
 
   async list(): Promise<SkillListing> {
-    const [userDirectory, projectDirectory] = await Promise.all([
-      this.directory("user"), this.directory("project"),
+    const [globalDirectory, projectDirectory] = await Promise.all([
+      this.directory("global"), this.directory("project"),
     ]);
     const warnings: string[] = [];
     const listScope = async (scope: SkillScope, root: string): Promise<SkillSummary[]> => {
@@ -231,10 +246,10 @@ export class SkillStore {
       }
       return summaries.sort((a, b) => a.name.localeCompare(b.name));
     };
-    const [user, project] = await Promise.all([
-      listScope("user", userDirectory), listScope("project", projectDirectory),
+    const [global, project] = await Promise.all([
+      listScope("global", globalDirectory), listScope("project", projectDirectory),
     ]);
-    return { user, project, warnings, userDirectory, projectDirectory };
+    return { global, project, warnings, globalDirectory, projectDirectory };
   }
 
   async read(scope: SkillScope, name: string, requestedPath = "SKILL.md"): Promise<SkillRead> {

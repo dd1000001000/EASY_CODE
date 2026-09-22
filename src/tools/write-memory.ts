@@ -118,8 +118,8 @@ export class WriteMemoryTool implements AgentTool {
       }
       const parsed = this.inputSchema.parse(input);
       this.session.beginTurn(context.turnId);
-      const projectId = projectMemoryIdFromRoot(this.workspace.root);
-      const workspaceId = workspaceIdFromRoot(this.workspace.root);
+      const projectId = this.workspace.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
+      const workspaceId = this.workspace.projectId ?? workspaceIdFromRoot(this.workspace.root);
 
       if (parsed.operation === "remember" || parsed.operation === "revise") {
         const content = this.requireField(parsed.content, "content", parsed.operation);

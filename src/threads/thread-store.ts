@@ -88,6 +88,10 @@ import { validateToolApprovalGrants } from "../tools/approval.js";
 export interface ThreadCreateInput {
   readonly threadId?: string;
   readonly workspaceRoot: string;
+  readonly projectId?: string;
+  readonly workspaceRevision?: number;
+  readonly workspaceFolders?: Array<{ id: string; key: string; path: string }>;
+  readonly primaryWorkspaceFolderId?: string;
   readonly mode: AgentMode;
   readonly provider: ProviderName;
   readonly model: string;
@@ -1014,6 +1018,12 @@ export class ThreadStore {
       model: input.model,
       orchestrationEnabled: input.orchestrationEnabled ?? false,
       thinkingEffort: input.thinkingEffort ?? DEFAULT_THINKING_EFFORT,
+      projectId: input.projectId ?? workspaceIdFromRoot(input.workspaceRoot),
+      workspaceRevision: input.workspaceRevision ?? 1,
+      workspaceFolders: input.workspaceFolders?.map(folder => ({ ...folder })) ?? [{
+        id: "folder_primary", key: "workspace", path: input.workspaceRoot,
+      }],
+      primaryWorkspaceFolderId: input.primaryWorkspaceFolderId ?? input.workspaceFolders?.[0]?.id ?? "folder_primary",
       workspaceRoot: input.workspaceRoot,
       promptBundle: { ...(input.promptBundle ?? activePromptBundleBinding()) },
       modelRegistryHash: input.modelRegistryHash ?? ACTIVE_MODEL_REGISTRY_HASH,
@@ -2733,13 +2743,13 @@ export class ThreadStore {
     this.storage.db
       .prepare(
         `INSERT INTO turns(
-           id, thread_id, status, user_message_json, started_at
-         ) VALUES (?, ?, 'active', ?, ?)
+           id, thread_id, status, user_message_json, workspace_revision, started_at
+         ) VALUES (?, ?, 'active', ?, COALESCE((SELECT workspace_revision FROM threads WHERE id = ?), 1), ?)
          ON CONFLICT(id) DO UPDATE SET
            user_message_json = COALESCE(turns.user_message_json, excluded.user_message_json),
            started_at = MIN(turns.started_at, excluded.started_at)`,
       )
-      .run(turnId, threadId, serializeChatMessage(message), startedAt);
+      .run(turnId, threadId, serializeChatMessage(message), threadId, startedAt);
   }
 
   private projectTurnCompleted(
@@ -2811,13 +2821,14 @@ export class ThreadStore {
     this.storage.db
       .prepare(
         `INSERT INTO threads(
-           id, workspace_root, workspace_id, mode, provider, model, goal,
+           id, workspace_root, workspace_id, workspace_revision, mode, provider, model, goal,
            constraints_json, working_summary, active_turn_id, status,
            created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            workspace_root = excluded.workspace_root,
            workspace_id = excluded.workspace_id,
+           workspace_revision = excluded.workspace_revision,
            mode = excluded.mode,
            provider = excluded.provider,
            model = excluded.model,
@@ -2831,7 +2842,8 @@ export class ThreadStore {
       .run(
         state.threadId,
         state.workspaceRoot,
-        workspaceIdFromRoot(state.workspaceRoot),
+        state.projectId ?? workspaceIdFromRoot(state.workspaceRoot),
+        state.workspaceRevision ?? 1,
         state.mode,
         state.provider,
         state.model,

@@ -18,6 +18,9 @@ export interface UISessionInfo {
   readonly orchestrationEnabled?: boolean;
   readonly agentConcurrencyLimit?: number;
   readonly threadId: string;
+  readonly projectId?: string;
+  readonly workspaceRevision?: number;
+  readonly workspaceFolders?: readonly { id: string; key: string; path: string }[];
   readonly workspaceRoot: string;
   readonly mode: AgentMode;
   readonly provider: ProviderName;
