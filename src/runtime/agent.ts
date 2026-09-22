@@ -112,6 +112,7 @@ import {
   type AutoRouteContext,
   type AutoRouteAttempt,
 } from "./auto-router.js";
+import { autoRouteCapabilitySummary } from "./auto-route-capabilities.js";
 import { createProviderAttemptSignal } from "./provider-attempt-signal.js";
 import type { TurnSteeringAttemptNotifier } from "./turn-steering-notifier.js";
 import { toolFailure } from "../tools/base.js";
@@ -1314,6 +1315,27 @@ export class AgentRuntime {
             // layered EASYCODE.md guidance as a normal agent request. Empty
             // workspace/memory inputs prevent this controller from answering
             // questions that require repository or retrieval facts.
+            const planRouteTools = availableTools(
+              this.dependencies.toolCatalog.tools,
+              "plan",
+              agentIdentity.role,
+              state.thinkingEffort,
+              this.orchestrationToolsAvailable(state, options),
+              this.dependencies.visionAvailable ?? true,
+            );
+            const codeRouteTools = availableTools(
+              this.dependencies.toolCatalog.tools,
+              "code",
+              agentIdentity.role,
+              state.thinkingEffort,
+              this.orchestrationToolsAvailable(state, options),
+              this.dependencies.visionAvailable ?? true,
+            );
+            const routeCapabilities = autoRouteCapabilitySummary({
+              planTools: planRouteTools,
+              codeTools: codeRouteTools,
+              connectedMcpServers: this.dependencies.connectedMcpServers?.length ?? 0,
+            });
             const buildControllerPolicy = async (
               context: typeof routeLayeredContext,
             ): Promise<string> => {
@@ -1336,22 +1358,10 @@ export class AgentRuntime {
                   : {}),
                 toolNames: [],
               });
-              if (!this.dependencies.connectedMcpServers) return basePolicy;
-              const mcpTools = this.dependencies.toolCatalog.tools
-                .filter(tool => tool.metadata?.identity.sourceId === "mcp")
-                .map(tool => tool.name);
-              const servers = this.dependencies.connectedMcpServers;
-              const visibleServers = servers.slice(0, 32)
-                .map(server => `${server.id}: connected, ${server.toolCount} tool(s)`).join("; ");
-              const serverStatus = servers.length
-                ? `${visibleServers}${servers.length > 32 ? `; ${servers.length - 32} more connected server(s)` : ""}`
-                : "No MCP servers connected";
-              const visibleNames = mcpTools.slice(0, 32).join(", ") || "none";
-              const toolNames = mcpTools.length > 32
-                ? `${visibleNames} (${mcpTools.length - 32} more model-facing MCP tools)`
-                : visibleNames;
-              return `${basePolicy}\n\n${renderRuntimePrompt("controllers/live-mcp-status.md", {
-                serverStatus, toolNames,
+              return `${basePolicy}\n\n${renderRuntimePrompt("controllers/live-capability-status.md", {
+                planCapabilities: routeCapabilities.planCapabilities,
+                codeCapabilities: routeCapabilities.codeCapabilities,
+                currentConditions: routeCapabilities.currentConditions,
               })}`;
             };
             let controllerPolicy = await buildControllerPolicy(routeLayeredContext);
