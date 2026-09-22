@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { AgentTool, ToolContext, ToolDefinition, ToolExecutionResult } from "../core/types.js";
-import { fetchPublic, parseSearchRss } from "../resources/web-content.js";
+import { fetchPublic, parseSearchHtml } from "../resources/web-content.js";
 import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -21,9 +21,11 @@ export class WebSearchTool implements AgentTool {
       await assertMatchingWorkspace(this.workspace, context);
       const parsed = schema.parse(input);
       const limit = parsed.limit ?? 5;
-      const endpoint = `https://www.bing.com/search?format=rss&q=${encodeURIComponent(parsed.query)}`;
-      const response = await fetchPublic(endpoint, { signal: context.signal, accept: "application/rss+xml, application/xml, text/xml", maxBytes: 2 * 1024 * 1024 });
-      const results = parseSearchRss(response.data.toString("utf8"), limit);
+      const endpoint = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(parsed.query)}`;
+      const response = await fetchPublic(endpoint, { signal: context.signal, accept: "text/html", maxBytes: 2 * 1024 * 1024 });
+      if (response.mediaType !== "text/html") throw new Error(`Unexpected search response type: ${response.mediaType}.`);
+      const results = parseSearchHtml(response.data.toString("utf8"), limit);
+      if (!results.length) throw new Error("The search provider returned no usable results for this query.");
       return toolSuccess(`Found ${results.length} Web result${results.length === 1 ? "" : "s"} for ${parsed.query}.`, { query: parsed.query, results });
     } catch (error) { return toolFailure(error, "Unable to search the Web"); }
   }

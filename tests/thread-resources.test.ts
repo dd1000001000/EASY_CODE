@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
 import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
-import { htmlToMarkdown, parseSearchRss } from "../src/resources/web-content.js";
+import { htmlToMarkdown, parseSearchHtml } from "../src/resources/web-content.js";
 import { ReadDocumentTool, ReadFileTool, SearchFilesTool, UpdateFileTool } from "../src/tools/index.js";
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
@@ -77,8 +77,10 @@ describe("Thread resources", () => {
     assert.match(page.markdown, /\[world\]\(https:\/\/example\.com\/next\)/u);
     assert.doesNotMatch(page.markdown, /secret/u);
 
-    const rss = parseSearchRss("<rss><channel><item><title>First</title><link>https://example.com/a</link><description>A &amp; B</description></item><item><title>Second</title><link>https://example.com/b</link><description>C</description></item></channel></rss>", 1);
-    assert.deepEqual(rss, [{ title: "First", url: "https://example.com/a", snippet: "A & B" }]);
+    const search = parseSearchHtml(`<div class="result results_links"><h2 class="result__title"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&amp;rut=1">First &amp; Docs</a></h2><a class="result__snippet">A &amp; B</a></div>
+      <div class="result results_links"><h2 class="result__title"><a href="https://example.com/b" class="result__a">Second</a></h2><a class="result__snippet">C</a></div>`, 1);
+    assert.deepEqual(search, [{ title: "First & Docs", url: "https://example.com/a", snippet: "A & B" }]);
+    assert.deepEqual(parseSearchHtml('<a class="result__a" href="javascript:alert(1)">Bad</a>', 5), []);
   });
 
   it("uses the shared converter for workspace documents and reuses an unchanged Thread snapshot", async () => {

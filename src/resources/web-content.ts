@@ -94,14 +94,42 @@ export async function fetchPublic(urlValue: string, options: { signal?: AbortSig
   throw new Error("Web page redirected too many times.");
 }
 
-export function parseSearchRss(xml: string, limit: number): Array<{ title: string; url: string; snippet: string }> {
+function htmlAttribute(tag: string, name: "class" | "href"): string | undefined {
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "iu").exec(tag);
+  return match?.[1] ?? match?.[2];
+}
+
+function searchResultUrl(href: string): string | undefined {
+  try {
+    const link = new URL(decodeEntities(href), "https://duckduckgo.com");
+    if (link.hostname === "duckduckgo.com" || link.hostname === "www.duckduckgo.com") {
+      if (link.pathname !== "/l/") return undefined;
+      const target = link.searchParams.get("uddg");
+      if (!target) return undefined;
+      const destination = new URL(target);
+      return ["http:", "https:"].includes(destination.protocol) ? destination.href : undefined;
+    }
+    return ["http:", "https:"].includes(link.protocol) ? link.href : undefined;
+  } catch { return undefined; }
+}
+
+export function parseSearchHtml(html: string, limit: number): Array<{ title: string; url: string; snippet: string }> {
   const results: Array<{ title: string; url: string; snippet: string }> = [];
-  for (const item of xml.matchAll(/<item>([\s\S]*?)<\/item>/giu)) {
-    const value = item[1]!;
-    const title = stripTags(/<title>([\s\S]*?)<\/title>/iu.exec(value)?.[1] ?? "").trim();
-    const url = decodeEntities(/<link>([\s\S]*?)<\/link>/iu.exec(value)?.[1] ?? "").trim();
-    const snippet = stripTags(/<description>([\s\S]*?)<\/description>/iu.exec(value)?.[1] ?? "").replace(/\s+/gu, " ").trim();
-    if (title && /^https?:\/\//iu.test(url)) results.push({ title, url, snippet });
+  const anchors = [...html.matchAll(/<a\b[^>]*>[\s\S]*?<\/a>/giu)].filter((match) => {
+    const tag = match[0].slice(0, match[0].indexOf(">") + 1);
+    return htmlAttribute(tag, "class")?.split(/\s+/u).includes("result__a");
+  });
+  const seen = new Set<string>();
+  for (const [index, anchor] of anchors.entries()) {
+    const tag = anchor[0].slice(0, anchor[0].indexOf(">") + 1);
+    const url = searchResultUrl(htmlAttribute(tag, "href") ?? "");
+    const title = stripTags(anchor[0].slice(tag.length, -4)).replace(/\s+/gu, " ").trim();
+    if (!url || !title || seen.has(url)) continue;
+    const following = html.slice((anchor.index ?? 0) + anchor[0].length, anchors[index + 1]?.index ?? html.length);
+    const snippetMatch = /<(?:a|div)\b[^>]*\bclass\s*=\s*["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/(?:a|div)>/iu.exec(following);
+    const snippet = stripTags(snippetMatch?.[1] ?? "").replace(/\s+/gu, " ").trim();
+    results.push({ title, url, snippet });
+    seen.add(url);
     if (results.length >= limit) break;
   }
   return results;
