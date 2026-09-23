@@ -247,6 +247,26 @@ describe("/mode", () => {
 });
 
 describe("hosted setting pickers", () => {
+  it("offers the current mode and applies a Web selection through the shared mode handler", async () => {
+    const fixture = await createAppFixture({ qwen: "configured-for-test" });
+    const displayed: string[] = [];
+    const original = fixture.terminal.setSessionInfo.bind(fixture.terminal);
+    fixture.terminal.setSessionInfo = (session, announce) => {
+      displayed.push(session.mode);
+      original(session, announce);
+    };
+    fixture.terminal.selectChoice = async (_title, choices, initialId) => {
+      assert.deepEqual(choices.map(choice => choice.id), ["plan", "auto", "code"]);
+      assert.equal(initialId, fixture.app.sessionInfo().mode);
+      return "code";
+    };
+    try {
+      await fixture.app.selectHostedMode();
+      assert.equal(fixture.app.sessionInfo().mode, "code");
+      assert.equal(displayed.at(-1), "code");
+    } finally { fixture.close(); }
+  });
+
   it("publishes the selected model and effort to the live session", async () => {
     const fixture = await createAppFixture(
       { qwen: "qwen-test-key", glmCodingPlan: "coding-plan-test-key" },
@@ -266,10 +286,11 @@ describe("hosted setting pickers", () => {
     } finally { fixture.close(); }
   });
 
-  it("keeps canceled model, approval and orchestration selections out of Web notices", async () => {
+  it("keeps canceled mode, model, approval and orchestration selections out of Web notices", async () => {
     const fixture = await createAppFixture({ qwen: "configured-for-test" }, {});
     fixture.terminal.selectChoice = async () => undefined;
     try {
+      await fixture.app.selectHostedMode();
       await fixture.app.selectHostedModel();
       await fixture.app.selectHostedApproval();
       await fixture.app.selectHostedOrchestration();

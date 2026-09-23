@@ -4,7 +4,6 @@ import { ElButton, ElCard, ElDescriptions, ElDescriptionsItem, ElInput, ElInputN
 import { Refresh } from "@element-plus/icons-vue";
 import type { WebEntry, WebDecision } from "../../web-contracts.js";
 import type { WebCommandEntry } from "../../web-command-catalog.js";
-import type { UISessionInfo } from "../../ui/contracts.js";
 import { useOutsideDismiss } from "../use-outside-dismiss.js";
 import { t } from "../i18n.js";
 import type { MessageKey } from "../../i18n/catalog.js";
@@ -14,7 +13,6 @@ const props = defineProps<{
   commands: readonly WebCommandEntry[];
   entries: readonly WebEntry[];
   decision: WebDecision | null;
-  session: UISessionInfo | null;
   running: boolean;
 }>();
 const emit = defineEmits<{
@@ -113,13 +111,7 @@ useOutsideDismiss(panelRoot, close);
     <div class="web-command-heading"><div><strong>/{{ command.name }}</strong><small>{{ commandDescription(command.name) }}</small></div></div>
     <ElScrollbar max-height="min(48vh, 430px)">
       <div class="web-command-content">
-        <template v-if="command.name === 'mode'">
-          <p class="web-command-note">{{ t('ui.modeHint') }}</p>
-          <div class="web-command-choice-grid">
-            <ElButton v-for="mode in ['plan', 'auto', 'code']" :key="mode" :type="session?.mode === mode ? 'primary' : 'default'" plain :disabled="running" @click="execute(`/mode ${mode}`)">{{ t(`ui.mode${mode[0]?.toUpperCase()}${mode.slice(1)}` as MessageKey) }}<span v-if="session?.mode === mode"> · {{ t('ui.current') }}</span></ElButton>
-          </div>
-        </template>
-        <template v-else-if="command.name === 'mcp'">
+        <template v-if="command.name === 'mcp'">
           <p v-if="!decision" class="web-command-note">{{ running ? t('ui.mcpWorking') : t('ui.mcpHint') }}</p>
           <template v-if="isMcpDecision && decision">
             <strong class="web-command-section-title">{{ decision.title }}</strong>
@@ -160,7 +152,7 @@ useOutsideDismiss(panelRoot, close);
           <div v-for="[key,value] in nestedFields" :key="key" class="web-command-nested"><strong>{{ key }}</strong><pre>{{ formatValue(value) }}</pre></div>
           <pre v-if="!parsed && entries.length" v-for="entry in entries" :key="entry.id" class="web-command-text">{{ entry.text }}</pre>
         </template>
-        <p v-if="!entries.length && !decision && command.name !== 'mode' && command.name !== 'help'" class="web-command-note">{{ running ? t('ui.loading') : t('ui.noData') }}</p>
+        <p v-if="!entries.length && !decision && command.name !== 'help'" class="web-command-note">{{ running ? t('ui.loading') : t('ui.noData') }}</p>
       </div>
     </ElScrollbar>
   </ElCard>

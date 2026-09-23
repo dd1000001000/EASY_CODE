@@ -19,13 +19,15 @@ const isApprovalModePicker = computed(() => props.decision.kind === "choice" &&
   ["manual", "auto_approve", "unrestricted"].every(id => choiceIds.value.has(id)));
 const isOrchestrationPicker = computed(() => props.decision.kind === "choice" &&
   choiceIds.value.has("off") && choiceIds.value.has("on") && props.decision.choices?.length === 2);
+const isModePicker = computed(() => props.decision.kind === "choice" &&
+  ["plan", "auto", "code"].every(id => choiceIds.value.has(id)) && props.decision.choices?.length === 3);
 const isSettingsPicker = computed(() => props.decision.kind === "choice" && (
   props.decision.title === "Select provider" || props.decision.title === "选择供应商" ||
   props.decision.title.startsWith("Select ") && props.decision.title.endsWith(" model") ||
   props.decision.title.startsWith("选择 ") && props.decision.title.endsWith(" 的模型") ||
   props.decision.title.startsWith("Thinking effort for ") ||
   props.decision.title.endsWith(" 的思考强度") ||
-  isApprovalModePicker.value || isOrchestrationPicker.value
+  isApprovalModePicker.value || isOrchestrationPicker.value || isModePicker.value
 ));
 function submit(value: string | undefined): void {
   if (submitted) return;
@@ -51,7 +53,7 @@ function choose(value: string): void {
 </script>
 
 <template>
-  <ElCard ref="panelRoot" class="composer-decision-panel" :class="{ 'composer-decision-panel--left': isApprovalModePicker, 'composer-decision-panel--orchestration': isOrchestrationPicker }" shadow="always"
+  <ElCard ref="panelRoot" class="composer-decision-panel" :class="{ 'composer-decision-panel--left': isApprovalModePicker, 'composer-decision-panel--orchestration': isOrchestrationPicker, 'composer-decision-panel--mode': isModePicker }" shadow="always"
     role="dialog" :aria-label="decision.title" @keydown.esc.stop.prevent="cancel">
     <template v-if="!isSettingsPicker" #header><div class="decision-header"><strong>{{ decision.title }}</strong></div></template>
     <ElScrollbar max-height="min(50vh, 360px)">
