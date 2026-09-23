@@ -7,6 +7,7 @@ export const completionObligationKinds = [
   "background_commands",
   "subagent_submission",
   "collect_subagents",
+  "planning_dag",
 ] as const;
 export type CompletionObligationKind = typeof completionObligationKinds[number];
 
@@ -91,6 +92,7 @@ export function foldCompletionControl(
 export interface CompletionGateInput {
   state: Readonly<SessionState>;
   role: "main_agent" | "subagent";
+  planning?: boolean;
   reconciliationPending: boolean;
   openCommandHandles: boolean;
   outstandingSubagents: readonly {
@@ -102,6 +104,13 @@ export interface CompletionGateInput {
 
 export function evaluateCompletionGate(input: CompletionGateInput): CompletionObligation[] {
   const obligations: CompletionObligation[] = [];
+  if (input.planning && input.role === "main_agent" && input.state.taskGraph &&
+      input.state.taskGraph.status !== "completed") obligations.push({
+    id: `planning-dag:${input.state.taskGraph.id}:${input.state.taskGraph.status}`,
+    kind: "planning_dag",
+    description: "The planning task DAG is unfinished.",
+    requiredAction: "Complete or resolve every planning task before proposing the plan.",
+  });
   if (input.reconciliationPending) obligations.push({
     id: "context:reconciliation",
     kind: "context_reconciliation",

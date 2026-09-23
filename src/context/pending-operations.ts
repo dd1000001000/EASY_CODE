@@ -11,6 +11,7 @@ const commandSchema = z.object({ commandId: z.string().min(1),
 const assignmentBase = z.object({ agentId: z.string(), childThreadId: z.string(), environmentId: z.string(),
   taskId: z.string(), taskTitle: z.string(), taskDescription: z.string(), completionChecks: z.array(z.string()),
   provider: z.string(), model: z.string(), thinkingEffort: z.enum(["none", "low", "medium", "high"]),
+  mode: z.enum(["plan", "code"]),
   requestedIsolation: z.enum(["auto", "shared", "worktree"]), createdAt: z.string(),
 });
 const assignmentSchema = z.discriminatedUnion("kind", [

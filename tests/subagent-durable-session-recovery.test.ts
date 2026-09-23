@@ -40,6 +40,7 @@ function standaloneAssignment(
     provider: "deepseek",
     model: "deepseek-v4-flash",
     thinkingEffort: "high",
+    mode: "code",
     requestedIsolation: "worktree",
     createdAt: CREATED_AT,
     ...overrides,
@@ -49,6 +50,7 @@ function standaloneAssignment(
 function dagAssignment(overrides: Partial<DagAssignment> = {}): DagAssignment {
   return {
     kind: "dag",
+    mode: "code",
     taskGraphId: "task_graph_00000000-0000-4000-8000-000000000302",
     agentId: "subagent_00000000-0000-4000-8000-000000000302",
     childThreadId: "thread_00000000-0000-4000-8000-000000000302",
@@ -353,8 +355,8 @@ describe("durable child session recovery", () => {
     }
   });
 
-  it("resumes a non-terminal V2 binding with the same child session, environment, and task", async () => {
-    const assignment = standaloneAssignment();
+  it("resumes a non-terminal Plan child with the same mode, session, environment, and task", async () => {
+    const assignment = standaloneAssignment({ mode: "plan" });
     let received: SubagentExecutionRequest | undefined;
     let childRuns = 0;
     const coordinator = new SubagentCoordinator({
@@ -385,7 +387,7 @@ describe("durable child session recovery", () => {
     } as SessionState;
     const waited = await coordinator.wait(
       { action: "wait", agentIds: [assignment.agentId], timeoutMs: 1_000 },
-      context(state, "turn_observe_durable_resume"),
+      { ...context(state, "turn_observe_durable_resume"), mode: "plan", selectedMode: "plan" },
     );
 
     assert.equal(childRuns, 1);
@@ -393,6 +395,7 @@ describe("durable child session recovery", () => {
     assert.equal(received?.record.childThreadId, assignment.childThreadId);
     assert.equal(received?.record.environmentId, assignment.environmentId);
     assert.equal(received?.record.requestedIsolation, "worktree");
+    assert.equal(received?.record.mode, "plan");
     assert.deepEqual(
       {
         id: received?.task.id,

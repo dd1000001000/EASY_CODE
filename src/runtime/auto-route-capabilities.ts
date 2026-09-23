@@ -78,6 +78,7 @@ export function autoRouteCapabilitySummary(input: {
   }
   if (plan.visualRead) planEntries.push("Inspect workspace images with the active vision-capable model.");
   if (plan.processExecution) planEntries.push("Run bounded investigation and diagnostic commands under the active approval policy.");
+  if (plan.orchestration) planEntries.push("Create planning task graphs and delegate bounded investigation to read-only child agents.");
   if (plan.memory) planEntries.push("Retrieve relevant conversation, project, and long-term memory.");
   if (plan.planSubmission) planEntries.push("Finish with a reviewable implementation plan for the user; do not implement the requested change.");
 
@@ -99,7 +100,7 @@ export function autoRouteCapabilitySummary(input: {
   const conditions = [
     `Public Web search/page reading: ${modeNames(plan.publicWebSearch || plan.publicWebPageRead, code.publicWebSearch || code.publicWebPageRead)}.`,
     `Image understanding: ${modeNames(plan.visualRead, code.visualRead)}.`,
-    `Task graphs and child agents: ${code.orchestration ? "available in Code" : "unavailable"}.`,
+    `Task graphs and child agents: ${modeNames(plan.orchestration, code.orchestration)} after selection.`,
     `Connected MCP servers: ${input.connectedMcpServers}; model-facing external-service tools are ${code.externalServiceTools ? "available in Code" : "not currently exposed"}.`,
     `Reviewable plan submission: ${plan.planSubmission ? "available in Plan" : "unavailable"}.`,
   ];

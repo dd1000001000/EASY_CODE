@@ -143,7 +143,7 @@ export interface SubagentRecord {
   taskId: string;
   /** Stable display name copied from the authoritative assignment at spawn time. */
   taskTitle: string;
-  mode: "code";
+  mode: "plan" | "code";
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
@@ -184,7 +184,7 @@ export interface SubagentView {
   taskGraphId?: string;
   taskId: string;
   taskTitle: string;
-  mode: "code";
+  mode: "plan" | "code";
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;

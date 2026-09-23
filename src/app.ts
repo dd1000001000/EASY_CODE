@@ -833,20 +833,20 @@ export class EasyCodeApp {
         const previousThinkingEffort = state.thinkingEffort;
         const resumedMode = options.mode ?? state.mode;
         if (
-          resumedMode === "plan" &&
+          resumedMode !== state.mode &&
           state.taskGraph &&
           state.taskGraph.status !== "completed"
         ) {
           throw new Error(
-            "Cannot resume an active or blocked task DAG in Plan mode. Use Code/Auto mode until it is completed.",
+            "Finish or resolve the active task DAG before changing modes on resume.",
           );
         }
         if (
-          resumedMode === "plan" &&
+          resumedMode !== state.mode &&
           threadStore.unobservedSubagentAssignments(state.threadId).length > 0
         ) {
           throw new Error(
-            "Cannot resume outstanding child assignments in Plan mode. Use Code/Auto mode and collect them first.",
+            "Collect outstanding child assignments before changing modes on resume.",
           );
         }
         state.mode = resumedMode;
@@ -1086,7 +1086,7 @@ export class EasyCodeApp {
     const language = readLanguage(this.storage);
     const selected = await this.terminal.selectChoice(translate(language, "ui.mode"), [
       { id: "plan", label: translate(language, "ui.modePlan"),
-        disabled: Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") },
+        disabled: Boolean(this.state.mode !== "plan" && this.state.taskGraph && this.state.taskGraph.status !== "completed") },
       { id: "auto", label: translate(language, "ui.modeAuto") },
       { id: "code", label: translate(language, "ui.modeCode") },
     ], this.state.mode);
@@ -1420,13 +1420,16 @@ export class EasyCodeApp {
         if (!mode || !["plan", "auto", "code"].includes(mode)) {
           throw new Error("Usage: /mode plan|auto|code");
         }
+        if (mode !== this.state.mode && this.pendingPlan()) {
+          throw new Error("Resolve the pending plan review before switching modes.");
+        }
         if (
-          mode === "plan" &&
+          mode !== this.state.mode &&
           this.state.taskGraph &&
           this.state.taskGraph.status !== "completed"
         ) {
           throw new Error(
-            "Cannot switch to Plan mode while a task DAG is active or blocked. Complete or resolve it in Code/Auto mode first.",
+            "Finish or resolve the active task DAG before switching modes.",
           );
         }
         this.state.mode = mode;
@@ -1726,7 +1729,6 @@ export class EasyCodeApp {
           [],
           true,
           {
-            modeOverride: "code",
             approvedPlan: {
               id: proposal.id,
               revision: proposal.revision,
@@ -1764,12 +1766,12 @@ export class EasyCodeApp {
           status: "approved_pending_execution",
           approvedAt: event.timestamp,
         };
-        this.state.mode = "auto";
-        this.config.mode = "auto";
+        this.state.mode = "code";
+        this.config.mode = "code";
         this.state.updatedAt = event.timestamp;
         this.dirty = true;
         this.save();
-        this.terminal.success(translate(readLanguage(this.storage), "cli.planApprovedAuto"));
+        this.terminal.success(translate(readLanguage(this.storage), "cli.planApprovedCode"));
         shouldShowPlan = false;
         continue;
       }
@@ -2265,6 +2267,10 @@ export class EasyCodeApp {
         }
       }, input.signal),
       onStatus: (status) => this.terminal.status(status),
+      onModeSelected: (mode) => {
+        this.config.mode = mode;
+        this.syncTerminalView();
+      },
       onModelRequestStart: (text) => this.terminal.startActivity(text, "model"),
       onModelRequestEnd: (activityToken) => {
         if (typeof activityToken === "string") {
@@ -2469,7 +2475,7 @@ export class EasyCodeApp {
           workspaceRevision: this.state.workspaceRevision,
           workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
           primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
-          mode: "code",
+          mode: request.record.mode,
           provider: request.record.provider,
           model: request.record.model,
           thinkingEffort: request.record.thinkingEffort,
@@ -2483,7 +2489,7 @@ export class EasyCodeApp {
         });
         childLease = this.threadStore.acquireThreadLease(childState.threadId);
       }
-      childState.mode = "code";
+      childState.mode = request.record.mode;
       childState.provider = request.record.provider;
       childState.model = request.record.model;
       childState.thinkingEffort = request.record.thinkingEffort;
@@ -2493,6 +2499,7 @@ export class EasyCodeApp {
         parentThreadId: request.record.parentThreadId,
         childThreadId: request.record.childThreadId,
         taskId: request.task.id,
+        mode: request.record.mode,
         environment: activeEnvironment.descriptor,
       };
       const childEvents = this.threadStore.journal(request.record.childThreadId).read();
@@ -2511,6 +2518,7 @@ export class EasyCodeApp {
           payload.parentThreadId !== request.record.parentThreadId ||
           payload.childThreadId !== request.record.childThreadId ||
           payload.taskId !== request.task.id ||
+          payload.mode !== request.record.mode ||
           environment?.id !== request.record.environmentId
         ) {
           throw new Error(
@@ -2542,7 +2550,7 @@ export class EasyCodeApp {
       const childConfig = this.effectiveConfig();
       const childPromptStartedAt = new Date();
       childConfig.workspaceRoot = childWorkspace.root;
-      childConfig.mode = "code";
+      childConfig.mode = request.record.mode;
       childConfig.provider = request.record.provider;
       childConfig.thinkingEffort = request.record.thinkingEffort;
       childConfig.providers[request.record.provider]!.model = request.record.model;
@@ -2598,6 +2606,7 @@ export class EasyCodeApp {
         childThreadId: request.record.childThreadId,
         environmentId: request.record.environmentId,
         isolation: activeEnvironment.descriptor.kind,
+        mode: request.record.mode,
         assignmentKind: request.record.assignmentKind,
         ...(request.record.taskGraphId
           ? { taskGraphId: request.record.taskGraphId }
@@ -4103,7 +4112,7 @@ export class EasyCodeApp {
       workspaceRevision: this.state.workspaceRevision,
       workspaceFolders: this.state.workspaceFolders?.map(folder => ({ ...folder })),
       primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
-      mode: this.state.mode,
+      mode: "auto",
       provider: this.state.provider,
       model: this.state.model,
       thinkingEffort: this.state.thinkingEffort,
@@ -4145,6 +4154,7 @@ export class EasyCodeApp {
     }
     this.workspace = nextWorkspace;
     this.state = nextState;
+    this.config.mode = "auto";
     this.threadLease = nextLease;
     this.dirty = false;
     this.subagentCoordinator.discardPausedJobs(previousThreadId);
@@ -4202,14 +4212,6 @@ export class EasyCodeApp {
           (this.state.projectId ?? workspaceIdFromRoot(this.workspace.root))) {
         throw new Error(
           `Thread ${threadId} belongs to another project.`,
-        );
-      }
-      if (
-        recovered.mode === "plan" &&
-        this.threadStore.unobservedSubagentAssignments(recovered.threadId).length > 0
-      ) {
-        throw new Error(
-          "Cannot resume outstanding child assignments in Plan mode. Resume them in Code/Auto mode and collect them first.",
         );
       }
       const currentProject = this.currentProjectWorkspace();

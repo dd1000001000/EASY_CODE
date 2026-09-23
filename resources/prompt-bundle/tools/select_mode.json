@@ -1,9 +1,9 @@
 {
   "id": "select_mode",
   "contractVersion": "1.0.0",
-  "description": "Choose how EASY CODE should handle the current request. Select plan when a reviewable implementation plan should be proposed before changes. Select code when the request should be answered or implemented directly. Base the decision on the current request and supplied thread context, then briefly explain the choice.",
+  "description": "Choose the Thread's mode now and for subsequent requests until the user manually switches back to Auto. The chosen mode's tools are available immediately in this request. Select plan when a reviewable implementation plan should be proposed before changes. Select code when the request should be answered or implemented directly. Base the decision on the current request and supplied thread context, then briefly explain the choice.",
   "propertyDescriptions": {
-    "mode": "The handling mode selected for the current request.",
+    "mode": "The Plan or Code mode selected for this Thread, effective immediately.",
     "reason": "A concise explanation grounded in the request and supplied thread context.",
     "threadTitle": "A concise title for an unnamed Thread; otherwise an empty string."
   },

@@ -54,6 +54,7 @@ function standaloneAssignment(
     provider: "deepseek",
     model: "deepseek-v4-flash",
     thinkingEffort: "medium",
+    mode: "code",
     requestedIsolation: "shared",
     createdAt: "2026-08-27T13:00:00.000Z",
     ...overrides,
@@ -572,6 +573,7 @@ describe("subagent task journal recovery", () => {
         { kind: "dag" }
       > = {
         kind: "dag",
+        mode: "code",
         agentId,
         childThreadId: `thread_${agentId}`,
         environmentId: `environment_${agentId}`,
@@ -1144,6 +1146,7 @@ describe("subagent task journal recovery", () => {
       });
       const assignment: Extract<SubagentAssignmentSnapshot, { kind: "dag" }> = {
         kind: "dag",
+        mode: "code",
         taskGraphId: graph.id,
         agentId,
         childThreadId: `thread_${agentId}`,

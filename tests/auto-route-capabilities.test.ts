@@ -20,7 +20,7 @@ describe("Auto route capability summary", () => {
   it("describes capability categories and current conditions without exposing tool names", () => {
     const planTools = snapshotToolSet([
       tool("read_file"), tool("read_image"), tool("web_search"), tool("fetch_webpage"),
-      tool("run_command"), tool("read_memory"), tool("propose_plan"),
+      tool("run_command"), tool("read_memory"), tool("manage_tasks"), tool("manage_subagents"), tool("propose_plan"),
     ]).tools;
     const codeTools = snapshotToolSet([
       tool("read_file"), tool("read_image"), tool("web_search"), tool("fetch_webpage"),
@@ -30,9 +30,11 @@ describe("Auto route capability summary", () => {
     const summary = autoRouteCapabilitySummary({ planTools, codeTools, connectedMcpServers: 2 });
     const rendered = JSON.stringify(summary);
     assert.match(summary.planCapabilities, /Search the public Web/u);
+    assert.match(summary.planCapabilities, /planning task graphs/u);
     assert.match(summary.codeCapabilities, /Create, change, and remove/u);
     assert.match(summary.codeCapabilities, /task graphs/u);
     assert.match(summary.currentConditions, /Public Web search\/page reading: Plan and Code/u);
+    assert.match(summary.currentConditions, /Task graphs and child agents: Plan and Code after selection/u);
     assert.match(summary.currentConditions, /Connected MCP servers: 2/u);
     assert.doesNotMatch(rendered, /read_file|read_image|web_search|fetch_webpage|manage_subagents/u);
   });

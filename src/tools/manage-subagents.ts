@@ -251,8 +251,8 @@ export class ManageSubagentsTool implements AgentTool {
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {
       const parsed = this.inputSchema.parse(input) as ManageSubagentsInput;
-      if (context.mode === "plan") {
-        throw new Error("manage_subagents is unavailable in Plan mode");
+      if (context.selectedMode === "auto" && parsed.action === "spawn") {
+        throw new Error("Subagent dispatch requires an explicitly selected Plan or Code mode");
       }
       await this.control.assertAuthorized(context);
       switch (parsed.action) {

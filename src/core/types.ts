@@ -499,6 +499,8 @@ export interface ToolContext {
   resultCharBudget?: number;
   workspaceRoot: string;
   mode: AgentMode;
+  /** User-selected mode, before Auto routing; authorization must not use routing to gain authority. */
+  selectedMode?: AgentMode;
   threadId: string;
   turnId: string;
   approvalPolicy: ApprovalPolicyName;
@@ -786,6 +788,8 @@ interface SubagentAssignmentSnapshotBase {
   provider: ProviderName;
   model: string;
   thinkingEffort: ThinkingEffort;
+  /** Frozen at assignment time; child mode never follows later parent changes. */
+  mode: "plan" | "code";
   requestedIsolation: SubagentIsolationMode;
   createdAt: string;
 }

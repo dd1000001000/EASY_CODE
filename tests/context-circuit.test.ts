@@ -113,7 +113,7 @@ describe("requirements-only circuit breaker", () => {
       children: { child: { assignment: { agentId: "child", childThreadId: "thread_child",
         environmentId: "environment_child", requestedIsolation: "shared", kind: "standalone",
         taskId: "task", taskTitle: "task", taskDescription: "task", completionChecks: [],
-        provider: "deepseek", model: "test", thinkingEffort: "medium",
+        provider: "deepseek", model: "test", thinkingEffort: "medium", mode: "code",
         createdAt: new Date().toISOString() }, followUps: [] } } };
     await resetServerContext(s, "one", async () => {});
     assert.equal(reconciliationGate(s, "run_command", {})?.failure?.execution, "not_started");

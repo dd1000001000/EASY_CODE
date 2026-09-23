@@ -61,6 +61,17 @@ function toolContext(graph?: TaskGraph): ToolContext {
 }
 
 describe("single-agent task DAG", () => {
+  it("creates a planning DAG but rejects creation after Auto routes to Code", async () => {
+    const tool = new ManageTasksTool();
+    const input = { action: "create", goal: "Investigate two planning questions", tasks: [task("research")] };
+    const plan = await tool.execute(input, { ...toolContext(), mode: "plan", selectedMode: "plan" });
+    assert.equal(plan.ok, true);
+    assert.equal(plan.taskGraphUpdate?.status, "active");
+    const auto = await tool.execute(input, { ...toolContext(), mode: "code", selectedMode: "auto" });
+    assert.equal(auto.ok, false);
+    assert.match(auto.error ?? "", /explicitly selected Plan or Code/u);
+  });
+
   it("enforces dependencies, one active node, minimal completion evidence, blocking, and resume", async () => {
     const tool = new ManageTasksTool();
     let graph: TaskGraph | undefined;

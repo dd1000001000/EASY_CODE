@@ -5,6 +5,7 @@ import { ContextManager } from "../src/context/manager.js";
 import { AgentRuntime } from "../src/runtime/agent.js";
 import { CompactContextTool } from "../src/tools/compact-context.js";
 import { ProposePlanTool } from "../src/tools/propose-plan.js";
+import { applyTaskGraphOperation } from "../src/tasks/task-graph.js";
 import { createMcpCatalogTools } from "../src/mcp/source.js";
 import { describe, it } from "./harness.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
@@ -174,6 +175,48 @@ function runtime(provider, tools, events = [], modes = [], usageRecords = [], re
     });
 }
 describe("model-controlled plan flow", () => {
+    it("commits an Auto route before exposing tools and routes again only after manual reset", async () => {
+        let routerRequests = 0;
+        let workRequests = 0;
+        let taskCalls = 0;
+        const provider = {
+            name: "deepseek", model: "mock-model",
+            async complete(request) {
+                if (request.tools?.some(tool => tool.function.name === "select_mode")) {
+                    routerRequests += 1;
+                    return selectMode("code");
+                }
+                workRequests += 1;
+                assert.equal(request.tools?.some(tool => tool.function.name === "manage_tasks"), true);
+                if (workRequests === 1) return { message: { role: "assistant", content: null, tool_calls: [{
+                    id: "call_task", type: "function", function: {
+                        name: "manage_tasks", arguments: '{"action":"list"}',
+                    },
+                }] } };
+                return { message: { role: "assistant", content: "Done in Code mode." } };
+            },
+        };
+        const taskTool = {
+            name: "manage_tasks", mutating: true,
+            definition: { type: "function", function: { name: "manage_tasks", description: "Manage tasks",
+                parameters: { type: "object" } } },
+            async execute() { taskCalls += 1; return { ok: true, summary: "Task status checked" }; },
+        };
+        const current = state("auto");
+        const events = [];
+        const agent = runtime(provider, [taskTool], events);
+        assert.equal((await agent.run(current, "Start the work", options())).reason, "success");
+        assert.equal(current.mode, "code");
+        assert.equal(taskCalls, 1);
+        assert.equal(routerRequests, 1);
+        assert.equal(events.filter(event => event.type === "mode.auto_route").length, 1);
+        assert.equal((await agent.run(current, "Continue", options())).reason, "success");
+        assert.equal(routerRequests, 1);
+        current.mode = "auto"; // The CLI/Web mode picker performs this explicit reset.
+        assert.equal((await agent.run(current, "Handle another request", options())).reason, "success");
+        assert.equal(routerRequests, 2);
+        assert.equal(current.mode, "code");
+    });
     it("routes a live MCP availability question to Code and exposes the catalog", async () => {
         const tools = createMcpCatalogTools("robinhood", Array.from({ length: 81 }, (_, index) => ({
             name: `tool_${index}`, inputSchema: { type: "object" },
@@ -269,6 +312,7 @@ describe("model-controlled plan flow", () => {
         assert.equal(result.reason, "success");
         assert.equal(result.steps, 0);
         assert.equal(result.text, "The current task is to add usage accounting.");
+        assert.equal(current.mode, "auto");
         assert.deepEqual(modes, ["auto"]);
         const finalMessage = current.messages.at(-1);
         assert.equal(finalMessage?.role, "assistant");
@@ -440,7 +484,7 @@ describe("model-controlled plan flow", () => {
         assert.equal(requests, 2);
         assert.deepEqual(mainTools, ["propose_plan", "create_file"]);
         assert.deepEqual(modes, ["auto", "plan"]);
-        assert.equal(current.mode, "auto");
+        assert.equal(current.mode, "plan");
         assert.equal(result.reason, "planned");
         assert.equal(result.planProposal?.id, current.planReview?.proposal.id);
         assert.equal(current.planReview?.status, "awaiting_review");
@@ -504,6 +548,26 @@ describe("model-controlled plan flow", () => {
         assert.equal(result.reason, "planned");
         assert.ok(result.planProposal);
         assert.equal(result.planProposal?.steps[0]?.description, "A plain text plan");
+    });
+    it("does not propose a plan while its planning DAG remains unfinished", async () => {
+        const current = state("plan");
+        current.taskGraph = applyTaskGraphOperation(undefined, {
+            action: "create", goal: "Research before proposing", tasks: [{
+                id: "research", title: "Research", description: "Inspect the repository",
+                dependencies: [], inputs: ["Project files"], expectedArtifacts: ["Findings"],
+                completionChecks: ["Findings are recorded"], failureHandling: "Report a blocker",
+            }],
+        }, { turnId: "turn_plan_dag" });
+        const provider = { name: "deepseek", model: "mock-model", async complete() {
+            return { message: { role: "assistant", content: "Plan too early", tool_calls: [] } };
+        } };
+        const result = await runtime(provider, [new ProposePlanTool()]).run(current, "Plan the work", {
+            ...options(), maxSteps: 1,
+        });
+        assert.equal(result.planProposal, undefined);
+        assert.equal(current.planReview, undefined);
+        assert.equal(current.messages.some(message => message.role === "user" &&
+            message.content.includes("planning task DAG is unfinished")), true);
     });
     it("consumes an exact approved proposal only after the execution message is durable", async () => {
         let requests = 0;
