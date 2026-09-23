@@ -2,7 +2,7 @@ import { ZodError } from "zod";
 import type { AgentTool, ToolExecutionResult, ToolFailureInfo } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { jsonForModel } from "../utils/json.js";
-import { projectText } from "../utils/bounded-text.js";
+import { projectHeadTailText, projectText } from "../utils/bounded-text.js";
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 
 /** Projection only, after raw evidence has been archived. Never reuse this
@@ -17,15 +17,9 @@ function projectResultData(data: unknown, budget: number): unknown {
   }
   const result: Record<string, any> = { ...source, truncated: true };
   const prefix = (text: string, room: number) => projectText(text, Math.max(0, room)).text;
-  const headTail = (text: string, room: number) => {
-    if (text.length <= room) return text;
-    const marker = "\n[omitted; recall captured evidence]\n";
-    const half = Math.max(0, Math.floor((room - marker.length) / 2));
-    let tail = text.slice(-half);
-    if (half === 0) tail = "";
-    if (/^[\uDC00-\uDFFF]/u.test(tail)) tail = tail.slice(1);
-    return prefix(text, half) + marker + tail;
-  };
+  const headTail = (text: string, room: number) =>
+    projectHeadTailText(text, Math.max(0, room), undefined,
+      "\n[omitted; recall captured evidence]\n").text;
   if (source.stdout && source.stderr && typeof source.stdout.text === "string" && typeof source.stderr.text === "string") {
     const room = Math.floor(budget / 2);
     result.stdout = { ...source.stdout, text: headTail(source.stdout.text, room), truncated: true };

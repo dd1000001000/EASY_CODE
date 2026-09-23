@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import os from "node:os";
 import path from "node:path";
 import type { ToolContext } from "../src/core/types.js";
+import { defaultRuntimeLimits } from "../src/config/runtime-limits.js";
+import type { SubagentControl } from "../src/subagents/types.js";
 import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
 import {
   CreateFileTool,
@@ -162,6 +164,33 @@ describe("workspace file tools", () => {
       assert.equal(first, second);
       assert.equal(first.filter((tool) => tool.name === "submit_task_result").length, 1);
       assert.equal(first.some((tool) => tool.name === "manage_subagents"), false);
+    });
+  });
+
+  it("keeps parent follow-ups and child-to-parent message limits independent", async () => {
+    await withWorkspace(async (_root, manager) => {
+      const source = new BuiltinToolSource({
+        workspace: manager,
+        limits: { ...defaultRuntimeLimits(), subagentFollowUpMaxChars: 1024,
+          subagentParentMessageMaxChars: 2048 },
+        subagentControl: {} as SubagentControl,
+        parentMessage: {
+          binding: { agentId: "subagent_00000000-0000-4000-8000-000000000001",
+            childThreadId: "thread_child", parentThreadId: "thread_parent",
+            taskId: "task_1", taskTitle: "Task" },
+          post: () => { throw new Error("unused"); },
+        },
+      });
+      const tools = await source.listTools();
+      const manage = tools.find((tool) => tool.name === "manage_subagents");
+      const send = tools.find((tool) => tool.name === "send_parent_message");
+      assert.ok(manage?.inputSchema);
+      assert.ok(send?.inputSchema);
+      const followUp = manage.inputSchema.parse({ action: "follow_up",
+        agentId: "subagent_00000000-0000-4000-8000-000000000001", message: "f".repeat(3000) }) as { message: string };
+      const parentMessage = send.inputSchema.parse({ message: "p".repeat(3000) }) as { message: string };
+      assert.equal(followUp.message.length, 1024);
+      assert.equal(parentMessage.message.length, 2048);
     });
   });
 

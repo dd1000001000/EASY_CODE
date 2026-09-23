@@ -42,6 +42,7 @@ export type BuiltinToolName =
   | "disable_mcp_server"
   | "remove_mcp_server"
   | "manage_subagents"
+  | "send_parent_message"
   | "submit_task_result"
   | "compact_context"
   | "read_memory"
@@ -342,6 +343,8 @@ export interface ToolExecutionResult {
   subagentLifecycle?: SubagentLifecycleUpdate;
   /** Child-only terminal result. It is never copied verbatim into a child tool message. */
   subagentTaskReport?: SubagentTaskReport;
+  /** Parent wait consumed this durable child report with its tool result. */
+  subagentMessageId?: string;
   /** Structured Plan-mode proposal. Runtime assigns its durable identity and review revision. */
   planProposal?: PlanDraft;
   /**

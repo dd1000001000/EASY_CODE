@@ -17,7 +17,7 @@ import { describe, it } from "./harness.js";
 
 describe("native sandbox runtime identity", () => {
   it("uses one installed runtime for setup and execution", () => {
-    assert.equal(nativeSandboxRuntimeVersion(), "0.153.4");
+    assert.equal(nativeSandboxRuntimeVersion(), "0.156.1");
     assert.match(nativeSandboxHome("C:\\data"), /runtime-home-v2$/u);
   });
 

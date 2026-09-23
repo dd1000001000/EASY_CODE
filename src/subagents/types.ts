@@ -11,11 +11,13 @@ import type {
 } from "../core/types.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
+import { projectHeadTailText } from "../utils/bounded-text.js";
 
 export type { SubagentTaskReport } from "../core/types.js";
 
 export const MAX_SUBAGENT_INSTRUCTIONS_CHARS = DEFAULT_RUNTIME_LIMITS.subagentInstructionsMaxChars;
 export const MAX_SUBAGENT_FOLLOW_UP_CHARS = DEFAULT_RUNTIME_LIMITS.subagentFollowUpMaxChars;
+export const MAX_SUBAGENT_PARENT_MESSAGE_CHARS = DEFAULT_RUNTIME_LIMITS.subagentParentMessageMaxChars;
 export const MAX_SUBAGENT_STOP_REASON_CHARS = 1_000;
 export const MAX_SUBAGENT_SUMMARY_CHARS = DEFAULT_RUNTIME_LIMITS.subagentSummaryMaxChars;
 export const MAX_SUBAGENT_EVIDENCE_CHARS = 1_000;
@@ -40,6 +42,12 @@ export function sanitizeSubagentText(value: string): string {
       .replace(/\n{3,}/gu, "\n\n")
       .trim(),
   );
+}
+
+/** Sanitize first, then retain both ends within the configured message length. */
+export function truncateSubagentMessage(value: string, maximum: number): string {
+  const sanitized = sanitizeSubagentText(value);
+  return projectHeadTailText(sanitized, maximum).text;
 }
 
 export type SubagentStatus =
@@ -79,6 +87,16 @@ export type SpawnSubagentRequest =
 export interface SubagentStatusRequest {
   action: "status";
   agentIds?: string[];
+}
+
+/** A bounded child report addressed to its Runtime-bound parent, not a new task instruction. */
+export interface SubagentParentMessage {
+  id: string;
+  agentId: string;
+  taskId: string;
+  taskTitle: string;
+  text: string;
+  createdAt: string;
 }
 
 export interface WaitForSubagentsRequest {

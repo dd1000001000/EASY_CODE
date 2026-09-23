@@ -52,6 +52,10 @@ describe("central runtime limits", () => {
       assert.deepEqual(JSON.parse(JSON.stringify(example.limits)), documentedLimits);
       assert.equal(example.limits?.memoryVectorMinSimilarity, 0.1);
       assert.equal(example.limits?.memoryConsolidationMatchLimit, 6);
+      assert.equal("maxSubagentFollowUps" in defaultRuntimeLimits(), false);
+      const retired = normalizeCurrentTomlConfig({ limits: { max_subagent_follow_ups: 1 } },
+        PROVIDER_CATALOG.map(({ provider }) => provider), defaultRuntimeLimits());
+      assert.deepEqual(retired.limits, {});
     const budget = new ToolRecoveryBudget(3, { compact_context: 1 });
     assert.equal(budget.fail("compact_context").remaining, 0);
     assert.equal(budget.fail("propose_plan").remaining, 2);
@@ -61,7 +65,7 @@ describe("central runtime limits", () => {
     try {
       await mkdir(path.join(root, ".easycode"));
       await writeFile(path.join(root, ".easycode", "config.toml"),
-        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\nmemory_vector_min_similarity = 0.35\nmemory_consolidation_match_limit = 9\n[limits.steps]\nhigh = 60\n[limits.max_response_tokens]\nmedium = 70000\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
+        "orchestration_enabled = true\n[limits]\nmax_task_tokens = 90000\nmemory_vector_min_similarity = 0.35\nmemory_consolidation_match_limit = 9\nsubagent_follow_up_max_chars = 4096\nsubagent_parent_message_max_chars = 6144\n[limits.steps]\nhigh = 60\n[limits.max_response_tokens]\nmedium = 70000\n[limits.provider_buffered_timeout_ms]\nhigh = 10000\n[limits.provider_stream_idle_timeout_ms]\nhigh = 20000\n[limits.max_concurrent_subagents]\nmedium = 3\n");
       const config = await loadEasyCodeConfig({ workspaceRoot: root, configDir: path.join(root, "config"),
         dataDir: path.join(root, "data"), cacheDir: path.join(root, "cache"), env: {}, credentialStore: false });
       assert.deepEqual(defaultRuntimeLimits().steps, { none: 40, low: 40, medium: 40, high: 80 });
@@ -77,6 +81,10 @@ describe("central runtime limits", () => {
       assert.equal(config.limits.maxTaskTokens, 90000);
       assert.equal(config.limits.memoryVectorMinSimilarity, 0.35);
       assert.equal(config.limits.memoryConsolidationMatchLimit, 9);
+      assert.equal(config.limits.subagentFollowUpMaxChars, 4096);
+      assert.equal(config.limits.subagentParentMessageMaxChars, 6144);
+      assert.equal(defaultRuntimeLimits().subagentFollowUpMaxChars, 8000);
+      assert.equal(defaultRuntimeLimits().subagentParentMessageMaxChars, 8000);
       assert.equal(config.orchestrationEnabled, true);
     } finally { await rm(root, { recursive: true, force: true }); }
   });

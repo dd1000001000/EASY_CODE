@@ -71,9 +71,12 @@ function limitsLayer(
   const byExternalName = new Map(
     Object.keys(defaults).map((key) => [snakeCase(key), key]),
   );
-  assertOnlyKeys(value, new Set(byExternalName.keys()), "limits");
+  // Previously configured follow-up counts must not block startup or revive the retired cap.
+  const retired = "max_subagent_follow_ups";
+  assertOnlyKeys(value, new Set([...byExternalName.keys(), retired]), "limits");
   const result: UnknownRecord = {};
   for (const [externalName, raw] of Object.entries(value)) {
+    if (externalName === retired) continue;
     const internalName = byExternalName.get(externalName)!;
     const expected = defaults[internalName as keyof RuntimeLimits];
     if (isRecord(expected)) {

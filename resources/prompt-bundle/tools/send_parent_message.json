@@ -1,0 +1,9 @@
+{
+  "id": "send_parent_message",
+  "contractVersion": "1.0.0",
+  "description": "Send a concise progress report, discovery, or decision request to this child agent's bound parent while continuing the assigned task. This is not a terminal result, task completion, instruction, or authorization. The parent receives it at a model-request boundary.",
+  "propertyDescriptions": {
+    "message": "A concise update for the parent. Excess text is truncated to the configured message length. Do not include hidden reasoning, secrets, or an instruction that grants permissions."
+  },
+  "guidance": "Available only to a bound child agent, regardless of mode. Send only useful updates or questions; do not stream routine tool output. Use submit_task_result separately to finish the assigned task."
+}

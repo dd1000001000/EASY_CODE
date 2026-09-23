@@ -25,6 +25,7 @@ export * from "./skill-tools.js";
 export * from "./read-image.js";
 export * from "./run-command.js";
 export * from "./submit-task-result.js";
+export * from "./send-parent-message.js";
 export * from "./update-file.js";
 export * from "./write-memory.js";
 export * from "./web-search.js";

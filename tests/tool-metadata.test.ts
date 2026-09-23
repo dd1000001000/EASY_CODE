@@ -38,6 +38,7 @@ import {
   runCommandInputSchema,
   startCommandInputSchema,
   SubmitTaskResultTool,
+  SendParentMessageTool,
   UpdateFileTool,
   WriteMemoryTool,
   assertDocumentedToolSchema,
@@ -101,6 +102,10 @@ function actualDefinitions() {
     new PollCommandTool(workspace, {} as CommandRuntime).definition,
     new CancelCommandTool(workspace, {} as CommandRuntime).definition,
     new SubmitTaskResultTool(task).definition,
+    new SendParentMessageTool({ agentId: "child", childThreadId: "child_thread", parentThreadId: "parent_thread",
+      taskId: "bound_task", taskTitle: "Bound task" }, () => {
+      throw new Error("unused");
+    }).definition,
     new UpdateFileTool(workspace).definition,
     new WebSearchTool(workspace).definition,
     ...autoRouteToolDefinitions(),
@@ -143,6 +148,7 @@ describe("Prompt Bundle tool metadata", () => {
       "search_context",
       "search_files",
       "select_mode",
+      "send_parent_message",
       "start_command",
       "submit_task_result",
       "update_file",

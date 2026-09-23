@@ -2115,6 +2115,9 @@ export class ThreadStore {
         event.payload.role === "user"
       ) {
         appendMessageIfNew(state, event.payload);
+      } else if (event.type === "subagent.message.delivered" &&
+                 payload && isChatMessage(payload.message) && payload.message.role === "user") {
+        appendMessageIfNew(state, payload.message);
       } else if (
         (event.type === "message.assistant" || event.type === "message.assistant.synthetic") &&
         isChatMessage(event.payload)

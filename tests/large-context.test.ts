@@ -57,7 +57,11 @@ describe("configurable 1M context", () => {
     const schema = new CompactContextTool(limits).definition.function.parameters as any;
     assert.equal(schema.properties.currentWork.maxLength, 6000);
     assert.equal(createManageSubagentsInputSchema(limits).parse({ action: "spawn", taskId: "task_a", instructions: "a".repeat(15000) }).action, "spawn");
-    assert.throws(() => createManageSubagentsInputSchema(limits).parse({ action: "spawn", taskId: "task_a", instructions: "a".repeat(16001) }));
+    const oversizedSpawn = createManageSubagentsInputSchema(limits).parse({
+      action: "spawn", taskId: "task_a", instructions: "a".repeat(16001),
+    });
+    assert.equal(oversizedSpawn.action, "spawn");
+    if (oversizedSpawn.action === "spawn") assert.equal(oversizedSpawn.instructions.length, 16000);
     assert.equal(createSubmitTaskResultInputSchema(limits).parse({ outcome: "completed", summary: "s".repeat(17000), evidence: ["verified"] }).summary.length, 17000);
     assert.equal(createRecallContextSchema(limits).parse({ evidenceId: "ref", limit: 39000 }).limit, 39000);
   });

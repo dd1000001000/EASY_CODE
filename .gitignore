@@ -19,3 +19,4 @@ __pycache__/
 *.db-wal
 test-api-key.txt
 /PLAN.md
+demos/

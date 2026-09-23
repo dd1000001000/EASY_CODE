@@ -12,7 +12,7 @@ import type {
 import { MemoryManager } from "../src/memory/index.js";
 import { MEMORY_ID_PATTERN } from "../src/memory/memory-manager.js";
 import { createStorage, workspaceIdFromRoot } from "../src/storage/index.js";
-import { RecallContextTool } from "../src/tools/context-read.js";
+import { estimatedTokens } from "../src/context/token-budget.js";
 import { describeToolFailure, prepareToolInput } from "../src/tools/errors.js";
 import { MemoryToolSession } from "../src/tools/memory-tool-session.js";
 import {
@@ -127,7 +127,7 @@ describe("split long-term memory tools", () => {
     assert.equal(writeMemoryInputSchema.safeParse(valid).success, true);
   });
 
-  it("archives an oversized write and retrieves it only through recall_context", async () => {
+  it("stages oversized memory with both ends retained within character and token limits", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easy-memory-preview-"));
     const storage = createStorage(root);
     try {
@@ -143,7 +143,7 @@ describe("split long-term memory tools", () => {
       const manager = new MemoryManager(storage);
       const workspace = await WorkspaceManager.create(root);
       const { write } = memoryTools(manager, workspace);
-      const content = "The project uses local storage. ".repeat(500);
+      const content = `The project uses local storage. ${"Detailed implementation notes. ".repeat(500)}It remains persistent after restart.`;
       const result = await write.execute(
         {
           operation: "remember",
@@ -154,37 +154,42 @@ describe("split long-term memory tools", () => {
         toolContext,
       );
       assert.equal(result.ok, true, result.error);
-      assert.equal(result.memoryMutation, undefined);
+      assert.ok(result.memoryMutation);
       const data = result.data as {
         staged: boolean;
         truncated: boolean;
-        content: string;
-        sourceRef: string;
       };
-      assert.equal(data.staged, false);
+      assert.equal(data.staged, true);
       assert.equal(data.truncated, true);
-      assert.ok(content.startsWith(data.content));
-
-      const recall = new RecallContextTool();
-      const recalled = await recall.execute(
-        { evidenceId: data.sourceRef, limit: 16_000 },
-        {
-          ...toolContext,
-          recallContext: async (input): Promise<ToolExecutionResult> => ({
-            ok: true,
-            summary: "Historical captured evidence",
-            data: manager.evidenceStore.read(
-              workspaceIdFromRoot(workspace.root),
-              toolContext.threadId,
-              input.evidenceId,
-              input.offset,
-              input.limit,
-            ),
-          }),
-        },
-      );
-      assert.equal(recalled.ok, true, recalled.error);
-      assert.match(JSON.stringify(recalled.data), /The project uses local storage/u);
+      const mutation = result.memoryMutation as MemoryMutationRequest;
+      assert.equal(mutation.action, "remember");
+      if (mutation.action !== "remember") throw new Error("Expected a memory proposal");
+      const retained = mutation.content;
+      assert.match(retained, /^The project uses local storage/u);
+      assert.match(retained, /It remains persistent after restart\.$/u);
+      assert.match(retained, /\[truncated\]/u);
+      assert.ok(retained.length <= manager.limits.memoryContentMaxChars);
+      assert.ok(estimatedTokens(retained) <= manager.limits.maxDurableMemoryTokens);
+      const tokenOnly = await write.execute({ operation: "remember", category: "convention",
+        content: `开头${"项目约束".repeat(160)}结尾`, reason: "Observed source" }, toolContext);
+      assert.equal(tokenOnly.ok, true, tokenOnly.error);
+      const tokenMutation = tokenOnly.memoryMutation as MemoryMutationRequest;
+      assert.equal(tokenMutation.action, "remember");
+      if (tokenMutation.action !== "remember") throw new Error("Expected a memory proposal");
+      assert.match(tokenMutation.content, /^开头/u);
+      assert.match(tokenMutation.content, /结尾$/u);
+      assert.match(tokenMutation.content, /\[truncated\]/u);
+      assert.ok(estimatedTokens(tokenMutation.content) <= manager.limits.maxDurableMemoryTokens);
+      const unsafe = await write.execute({ operation: "remember", category: "convention",
+        content: `START ${"x".repeat(1500)} api_key=super-secret-value ${"x".repeat(1500)} END`,
+        reason: "Observed source" }, toolContext);
+      assert.equal(unsafe.ok, false);
+      const committed = manager.applyModelMutations({ workspaceId: workspaceIdFromRoot(workspace.root),
+        threadId: toolContext.threadId, turnId: toolContext.turnId, outcome: "success",
+        mutations: [result.memoryMutation as MemoryMutationRequest] });
+      assert.equal(committed.applied, 1);
+      assert.equal(manager.get(workspaceIdFromRoot(workspace.root), committed.memoryIds[0]!)?.content,
+        retained.replace(/\s+/gu, " ").trim());
     } finally {
       storage.close();
       await rm(root, { recursive: true, force: true });

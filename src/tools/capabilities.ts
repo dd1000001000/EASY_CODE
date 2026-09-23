@@ -79,6 +79,8 @@ const BUILTIN_POLICIES = {
   manage_subagents: { effects: ["agent_control", "workspace_write"], modes: WORK_MODES, roles: MAIN,
     requiresOrchestration: true, validationSensitive: true, controlPlane: true,
     resultClass: "subagent_control" },
+  send_parent_message: { effects: ["agent_control"], modes: ALL_MODES, roles: CHILD,
+    controlPlane: true, resultClass: "subagent_control" },
   submit_task_result: { effects: ["agent_control"], modes: ["code"], roles: CHILD,
     controlPlane: true, resultClass: "task_control" },
   compact_context: { effects: ["context_control"], modes: ALL_MODES, roles: BOTH,

@@ -31,8 +31,8 @@ describe("native sandbox runtime", () => {
       packages?: Record<string, { dependencies?: Record<string, string> }>;
     };
 
-    assert.equal(packageManifest.dependencies?.["@openai/codex"], "0.153.4");
-    assert.equal(developmentLock.packages?.[""]?.dependencies?.["@openai/codex"], "0.153.4");
+    assert.equal(packageManifest.dependencies?.["@openai/codex"], "0.156.1");
+    assert.equal(developmentLock.packages?.[""]?.dependencies?.["@openai/codex"], "0.156.1");
     await assert.rejects(
       access(path.join(process.cwd(), "npm-shrinkwrap.json")),
       (error: NodeJS.ErrnoException) => error.code === "ENOENT",

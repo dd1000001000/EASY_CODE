@@ -140,6 +140,7 @@ import {
   type SubagentExecutionOutcome,
   type SubagentExecutionRequest,
 } from "./subagents/coordinator.js";
+import { SubagentMessageMailbox } from "./subagents/messages.js";
 import {
   WorkspaceMutationLock,
 } from "./subagents/workspace-mutation-lock.js";
@@ -566,6 +567,7 @@ export class EasyCodeApp {
   private readonly contextArtifactIndex: ContextArtifactIndex;
   private readonly memoryManager: MemoryManager;
   private readonly threadStore: ThreadStore;
+  private readonly subagentMessages: SubagentMessageMailbox;
   private readonly threadTitles: ThreadTitleStore;
   private threadLease: ThreadLease | undefined;
   private readonly imageStore: ImageStore;
@@ -663,6 +665,7 @@ export class EasyCodeApp {
       { backgroundVectors: true, limits: config.limits },
     );
     this.threadStore = new ThreadStore(storage);
+    this.subagentMessages = new SubagentMessageMailbox(this.threadStore);
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: workspace.root,
       dataDir: config.dataDir,
@@ -694,6 +697,8 @@ export class EasyCodeApp {
       onViewChange: (parentThreadId) => {
         if (this.state.threadId === parentThreadId) this.printSubagents();
       },
+      pendingMessages: (parentThreadId, agentIds) =>
+        this.subagentMessages.pending(parentThreadId, agentIds),
       handoff: (artifact, destination) =>
         this.handoffSubagentResult(artifact, destination),
     });
@@ -2029,6 +2034,8 @@ export class EasyCodeApp {
       visionAvailable: visionCapable,
       authorizeToolExecution: request => this.authorizeCatalogToolCall(request),
       agentIdentity: { role: "main_agent" },
+      takeSubagentMessages: async (threadId, turnId) =>
+        this.subagentMessages.deliverToModel(threadId, turnId),
       contextManager: this.contextManager,
       buildSystemPrompt: async ({
         mode,
@@ -2546,6 +2553,22 @@ export class EasyCodeApp {
         limits: this.config.limits,
         mutationLock,
         boundTask: request.task,
+        parentMessage: {
+          binding: {
+            agentId: request.record.id,
+            childThreadId: request.record.childThreadId,
+            parentThreadId: request.record.parentThreadId,
+            taskId: request.task.id,
+            taskTitle: request.task.title,
+          },
+          post: (message, childThreadId, toolCallId) => {
+            if (request.signal.aborted) throw new Error("The child is no longer running");
+            const posted = this.subagentMessages.post(request.record.parentThreadId,
+              message, childThreadId, toolCallId);
+            this.subagentCoordinator.notifyMessage(request.record.parentThreadId);
+            return posted;
+          },
+        },
       }));
       for (const factory of this.toolSourceFactories ?? []) {
         childToolCatalog.registerSource(await factory({

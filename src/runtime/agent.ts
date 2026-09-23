@@ -556,6 +556,8 @@ export interface AgentRuntimeDependencies {
   onModelStream?: (event: Readonly<ProviderStreamEvent>) => void;
   /** Child-only FIFO parent guidance, drained at a model-step boundary. */
   takeAdditionalInstructions?: () => readonly string[];
+  /** Main-agent journal-backed child reports, committed before they enter model context. */
+  takeSubagentMessages?: (threadId: string, turnId: string) => Promise<readonly ChatMessage[]>;
   /**
    * Main-agent durable inbox drain. The implementation must commit the FIFO
    * application event before returning the batch.
@@ -1610,6 +1612,11 @@ export class AgentRuntime {
         );
       }
 
+      if (agentIdentity.role === "main_agent") {
+        for (const report of await this.dependencies.takeSubagentMessages?.(state.threadId, turnId) ?? []) {
+          state.messages.push(report);
+        }
+      }
       for (const instruction of this.dependencies.takeAdditionalInstructions?.() ?? []) {
         const followUp: Extract<ChatMessage, { role: "user" }> = {
           role: "user",
@@ -2826,6 +2833,9 @@ export class AgentRuntime {
                 : {}),
               ...(result.ok && result.subagentAssignment
                 ? { subagentAssignment: result.subagentAssignment }
+                : {}),
+              ...(result.ok && result.subagentMessageId
+                ? { subagentMessageId: result.subagentMessageId }
                 : {}),
               ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
             }

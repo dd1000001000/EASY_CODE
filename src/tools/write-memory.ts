@@ -20,11 +20,9 @@ import {
   redactSensitiveInformation,
 } from "../memory/sensitive.js";
 import { projectMemoryIdFromRoot } from "../memory/memory-manager.js";
-import { workspaceIdFromRoot } from "../storage/database.js";
-import { displayTextSchema, projectText } from "../utils/bounded-text.js";
-import { sha256 } from "../utils/hash.js";
+import { displayTextSchema, projectHeadTailText } from "../utils/bounded-text.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
-import { assertMatchingWorkspace, toolFailure, toolSuccess } from "./base.js";
+import { assertMatchingWorkspace, toolFailure } from "./base.js";
 import { documentToolSchema } from "./metadata.js";
 import type { MemoryToolSession } from "./memory-tool-session.js";
 
@@ -80,7 +78,6 @@ export class WriteMemoryTool implements AgentTool {
             content: {
               type: "string",
               minLength: MIN_MEMORY_CONTENT_CHARS,
-              maxLength: this.manager.limits.memoryContentMaxChars,
             },
             category: {
               type: "string",
@@ -119,51 +116,24 @@ export class WriteMemoryTool implements AgentTool {
       const parsed = this.inputSchema.parse(input);
       this.session.beginTurn(context.turnId);
       const projectId = this.workspace.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
-      const workspaceId = this.workspace.projectId ?? workspaceIdFromRoot(this.workspace.root);
-
+      let writeContent: string | undefined;
+      let contentTruncated = false;
       if (parsed.operation === "remember" || parsed.operation === "revise") {
         const content = this.requireField(parsed.content, "content", parsed.operation);
+        this.assertSafeWrite(content, parsed.reason);
         const limits = context.limits ?? DEFAULT_RUNTIME_LIMITS;
-        if (
-          content.length > limits.memoryContentMaxChars ||
-          estimatedTokens(content) > limits.maxDurableMemoryTokens
-        ) {
-          this.assertSafeWrite(content, parsed.reason);
-          const sourceRef = this.manager.evidenceStore.capture(
-            workspaceId,
-            context.threadId,
-            `memory-preview:${context.turnId}:${sha256(content)}`,
-            "write_memory",
-            {
-              ok: false,
-              summary: "Uncommitted memory proposal; not a verified fact",
-              data: { content },
-            },
-          );
-          const preview = projectText(
-            projectText(content, limits.memoryContentMaxChars).text,
-            limits.maxDurableMemoryTokens,
-            estimatedTokens,
-          );
-          return toolSuccess(
-            "Length-only overflow archived as a lossy preview; no long-term fact or revision was committed. No retry is required.",
-            {
-              staged: false,
-              committed: false,
-              historical: true,
-              truncated: true,
-              sourceRef,
-              content: preview.text,
-              originalChars: content.length,
-              retainedChars: preview.text.length,
-            },
-          );
-        }
-        assertDurableMemory(content, limits);
+        const maxChars = Math.min(limits.memoryContentMaxChars, this.manager.limits.memoryContentMaxChars);
+        const maxTokens = Math.min(limits.maxDurableMemoryTokens, this.manager.limits.maxDurableMemoryTokens);
+        const byChars = projectHeadTailText(content, maxChars);
+        const byTokens = projectHeadTailText(byChars.text, maxTokens, estimatedTokens);
+        writeContent = byTokens.text;
+        contentTruncated = byChars.truncated || byTokens.truncated;
+        assertDurableMemory(writeContent, limits);
+        assertDurableMemory(writeContent, this.manager.limits);
       }
 
       if (parsed.operation === "remember") {
-        const content = this.requireField(parsed.content, "content", parsed.operation);
+        const content = writeContent!;
         const category = this.requireField(parsed.category, "category", parsed.operation);
         const scope = parsed.scope ?? "project";
         this.assertSafeWrite(content, parsed.reason);
@@ -171,7 +141,7 @@ export class WriteMemoryTool implements AgentTool {
           ok: true,
           summary:
             "The long-term memory proposal was staged and will be committed only if this turn completes successfully.",
-          data: { staged: true, operation: parsed.operation, scope },
+          data: { staged: true, operation: parsed.operation, scope, truncated: contentTruncated },
           memoryMutation: {
             action: "remember",
             scope,
@@ -206,14 +176,14 @@ export class WriteMemoryTool implements AgentTool {
       }
 
       if (parsed.operation === "revise") {
-        const content = this.requireField(parsed.content, "content", parsed.operation);
+        const content = writeContent!;
         const category = parsed.category ?? existing.category;
         this.assertSafeWrite(content, parsed.reason);
         return {
           ok: true,
           summary:
             `Revision of long-term memory ${memoryId} was staged and will commit only if this turn succeeds.`,
-          data: { staged: true, operation: parsed.operation, memoryId },
+          data: { staged: true, operation: parsed.operation, memoryId, truncated: contentTruncated },
           memoryMutation: {
             action: "revise",
             scope: existing.scope,
