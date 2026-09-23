@@ -7,7 +7,6 @@ export interface WebCommandEntry {
 
 /** Browser command descriptions; availability is still derived from the CLI parser. */
 export const WEB_COMMAND_DESCRIPTIONS: Partial<Record<SlashCommandName, string>> = {
-  mode: "Switch between Plan, Auto, and Code modes.",
   status: "Inspect the current conversation and runtime state.",
   tools: "Browse the tools available to the agent.",
   skills: "Browse user and project skills.",

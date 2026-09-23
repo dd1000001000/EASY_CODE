@@ -429,7 +429,6 @@ async function executePanelCommand(text: string): Promise<void> {
 function openCommand(name: string): void {
   if (!commands.value.some(command => command.name === name) || !activeThread.value || view.value.busy) return;
   commandPanelName.value = name;
-  if (name === "mode") { resetCommandOutput(); return; }
   void executePanelCommand(name === "memory" ? "/memory short 8" : `/${name}`);
 }
 function closeCommand(): void { commandPanelName.value = null; resetCommandOutput(); }
@@ -441,7 +440,7 @@ async function stop(): Promise<void> {
   try { await request("/api/cancel", { threadId: activeThread.value }); }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); }
 }
-async function chooseSetting(setting: "model" | "approval" | "orchestration"): Promise<void> {
+async function chooseSetting(setting: "model" | "approval" | "orchestration" | "mode"): Promise<void> {
   if (!activeThread.value) return;
   resetCommandOutput();
   try { await request(`/api/ui/${setting}`, { threadId: activeThread.value }); }
@@ -696,8 +695,8 @@ function noticePreview(text: string): string {
           <div class="command-output-body"><pre v-for="entry in commandOutput" :key="entry.id">{{ entry.text }}</pre></div>
         </ElCard>
       </div>
-      <Composer ref="composer" :busy="view.busy" :thread-id="activeThread" :model-label="modelLabel" :approval-label="approvalLabel" :orchestration-label="orchestrationLabel" :settings-disabled="!activeThread || view.busy || switching || !!view.decision" :decision="selectedCommand?.name === 'mcp' ? null : view.decision" :commands="commands" @send="send" @stop="stop" @select-model="chooseSetting('model')" @select-approval="chooseSetting('approval')" @select-orchestration="chooseSetting('orchestration')" @open-command="openCommand" @submit-decision="decide" @error="error = $event">
-        <template #command-panel><CommandPanel v-if="selectedCommand" :command="selectedCommand" :commands="commands" :entries="commandOutput" :decision="view.decision" :session="session" :running="!!activeThread && runningThreadIds.has(activeThread)" @execute="executePanelCommand" @close="closeCommand" @decide="decide" @cancel-external="cancelExternalCommand" /></template>
+      <Composer ref="composer" :busy="view.busy" :thread-id="activeThread" :model-label="modelLabel" :approval-label="approvalLabel" :orchestration-label="orchestrationLabel" :mode-label="modeLabel" :settings-disabled="!activeThread || view.busy || switching || !!view.decision" :decision="selectedCommand?.name === 'mcp' ? null : view.decision" :commands="commands" @send="send" @stop="stop" @select-model="chooseSetting('model')" @select-approval="chooseSetting('approval')" @select-orchestration="chooseSetting('orchestration')" @select-mode="chooseSetting('mode')" @open-command="openCommand" @submit-decision="decide" @error="error = $event">
+        <template #command-panel><CommandPanel v-if="selectedCommand" :command="selectedCommand" :commands="commands" :entries="commandOutput" :decision="view.decision" :running="!!activeThread && runningThreadIds.has(activeThread)" @execute="executePanelCommand" @close="closeCommand" @decide="decide" @cancel-external="cancelExternalCommand" /></template>
       </Composer>
     </main>
   </div>

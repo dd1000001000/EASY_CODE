@@ -1081,6 +1081,17 @@ export class EasyCodeApp {
   async selectHostedOrchestration(): Promise<void> {
     await this.updateOrchestration([], false);
   }
+  async selectHostedMode(): Promise<void> {
+    this.assertNoRunningSubagents("switch modes");
+    const language = readLanguage(this.storage);
+    const selected = await this.terminal.selectChoice(translate(language, "ui.mode"), [
+      { id: "plan", label: translate(language, "ui.modePlan"),
+        disabled: Boolean(this.state.taskGraph && this.state.taskGraph.status !== "completed") },
+      { id: "auto", label: translate(language, "ui.modeAuto") },
+      { id: "code", label: translate(language, "ui.modeCode") },
+    ], this.state.mode);
+    if (selected && selected !== this.state.mode) await this.handleSlashCommand(`/mode ${selected}`);
+  }
   dataDirectory(): string { return this.config.dataDir; }
   allThreads(): readonly ThreadSummary[] {
     return this.threadStore.list({ limit: 100_000 })

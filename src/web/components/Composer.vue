@@ -14,10 +14,10 @@ interface DraftImage { id: string; label: string; mediaType: string; previewUrl:
 type DraftResource = (UploadedResource & { key: string; status: "ready" }) | {
   key: string; status: "uploading"; filename: string; mediaType: string; byteSize: number;
 };
-const props = defineProps<{ busy: boolean; threadId?: string; modelLabel: string; approvalLabel: string; orchestrationLabel: string; settingsDisabled: boolean; decision: WebDecision | null; commands: readonly WebCommandEntry[] }>();
+const props = defineProps<{ busy: boolean; threadId?: string; modelLabel: string; approvalLabel: string; orchestrationLabel: string; modeLabel: string; settingsDisabled: boolean; decision: WebDecision | null; commands: readonly WebCommandEntry[] }>();
 const emit = defineEmits<{
   send: [text: string, imageIds: string[], resourceIds: string[]]; stop: []; error: [message: string];
-  selectModel: []; selectApproval: []; selectOrchestration: []; openCommand: [name: string]; submitDecision: [id: string, value: string | undefined];
+  selectModel: []; selectApproval: []; selectOrchestration: []; selectMode: []; openCommand: [name: string]; submitDecision: [id: string, value: string | undefined];
 }>();
 const draft = ref("");
 const images = ref<DraftImage[]>([]);
@@ -241,6 +241,7 @@ defineExpose({ sent, failed });
           <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.xml,.json,.yaml,.yml" multiple hidden :disabled="!threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
           <ElButton class="composer-setting composer-approval" text :disabled="settingsDisabled" @click="emit('selectApproval')"><span class="composer-setting-label">{{ approvalLabel }}</span><CaretBottom /></ElButton>
           <ElButton class="composer-setting composer-orchestration" text :disabled="settingsDisabled" @click="emit('selectOrchestration')"><span class="composer-setting-label">{{ orchestrationLabel }}</span><CaretBottom /></ElButton>
+          <ElButton class="composer-setting composer-mode" text :disabled="settingsDisabled" @click="emit('selectMode')"><span class="composer-setting-label">{{ modeLabel }}</span><CaretBottom /></ElButton>
         </div>
         <div class="composer-actions">
           <ElButton class="composer-setting composer-model" text :disabled="settingsDisabled" @click="emit('selectModel')"><span class="composer-setting-label">{{ modelLabel }}</span><CaretBottom /></ElButton>

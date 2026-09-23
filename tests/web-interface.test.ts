@@ -359,6 +359,7 @@ describe("loopback Web service", () => {
     let modelSelections = 0;
     let approvalSelections = 0;
     let orchestrationSelections = 0;
+    let modeSelections = 0;
     const app = {
       dataDirectory: () => directory,
       sessionInfo: () => ({ workspaceRoot: directory, threadId: "thread_test" }),
@@ -385,6 +386,7 @@ describe("loopback Web service", () => {
       selectHostedModel: async () => { modelSelections += 1; },
       selectHostedApproval: async () => { approvalSelections += 1; },
       selectHostedOrchestration: async () => { orchestrationSelections += 1; },
+      selectHostedMode: async () => { modeSelections += 1; },
     } as unknown as EasyCodeApp;
     const service = new EasyCodeWebServer(app, host, directory, directory);
     try {
@@ -426,12 +428,11 @@ describe("loopback Web service", () => {
       assert.equal(commandResponse.status, 200);
       const commandEntries = (await commandResponse.json() as { commands: { name: string; description: string }[] }).commands;
       const commandNames = commandEntries.map(command => command.name);
-      assert.equal(commandEntries.length, 10);
+      assert.equal(commandEntries.length, 9);
       for (const command of commandEntries) assert.ok(command.description.length > 10, `/${command.name} needs an English description`);
-      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "workspace", "sessions", "new", "resume", "exit",
+      for (const name of ["model", "provider", "approval", "orchestration", "mode", "image", "clear", "workspace", "sessions", "new", "resume", "exit",
         "tasks", "agents", "commands", "thinking", "adjustment"])
         assert.ok(!commandNames.includes(name), `/${name} should not be offered in Web`);
-      assert.ok(commandNames.includes("mode"));
       assert.ok(!commandNames.includes("changes"));
       const post = (route: string, payload: unknown) => fetch(`${origin}${route}`, {
         method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
@@ -445,19 +446,24 @@ describe("loopback Web service", () => {
       assert.equal((await post("/api/command", { text: "/language fr_fr" })).status, 400);
       assert.equal((await post("/api/command", { text: "/mode code" })).status, 400);
       assert.equal((await post("/api/message", { threadId: "thread_test", text: "/language en_us" })).status, 200);
-      for (const name of ["model", "provider", "approval", "orchestration", "image", "clear", "workspace", "sessions"])
+      for (const name of ["model", "provider", "approval", "orchestration", "mode", "image", "clear", "workspace", "sessions"])
         assert.equal((await post("/api/message", { threadId: "thread_test", text: `/${name}` })).status, 400);
+      assert.equal((await post("/api/message", { threadId: "thread_test", text: "/mode code" })).status, 400);
       assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/model" })).status, 400);
       assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/orchestration off" })).status, 400);
+      assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/mode code" })).status, 400);
       assert.equal((await post("/api/ui/model", { threadId: "thread_test" })).status, 202);
       await new Promise(resolve => setImmediate(resolve));
       assert.equal((await post("/api/ui/approval", { threadId: "thread_test" })).status, 202);
       await new Promise(resolve => setImmediate(resolve));
       assert.equal((await post("/api/ui/orchestration", { threadId: "thread_test" })).status, 202);
       await new Promise(resolve => setImmediate(resolve));
+      assert.equal((await post("/api/ui/mode", { threadId: "thread_test" })).status, 202);
+      await new Promise(resolve => setImmediate(resolve));
       assert.equal(modelSelections, 1);
       assert.equal(approvalSelections, 1);
       assert.equal(orchestrationSelections, 1);
+      assert.equal(modeSelections, 1);
       const uploaded = await fetch(`${origin}/api/image`, { method: "POST", headers: {
         Cookie: cookie!, Origin: origin, "Content-Type": "image/png", "X-Easy-Code-Thread-Id": "thread_test",
       }, body: Buffer.from([1, 2, 3, 4]) });

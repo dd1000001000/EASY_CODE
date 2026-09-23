@@ -25,7 +25,7 @@ import type { ProjectWorkspace } from "../projects/types.js";
 import type { ThreadResourceAttachment } from "../resources/index.js";
 
 const WEB_UNAVAILABLE_SLASH_COMMANDS = new Set<string>([
-  "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "image", "clear", "workspace",
+  "new", "resume", "sessions", "exit", "model", "provider", "approval", "orchestration", "mode", "image", "clear", "workspace",
 ]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES;
@@ -521,12 +521,13 @@ export class EasyCodeWebServer {
       const host = this.hostFor(input.threadId);
       json(response, 200, { canceled: host.port.cancelExternalOperation() }); return;
     }
-    if (pathname === "/api/ui/model" || pathname === "/api/ui/approval" || pathname === "/api/ui/orchestration") {
+    if (pathname === "/api/ui/model" || pathname === "/api/ui/approval" || pathname === "/api/ui/orchestration" || pathname === "/api/ui/mode") {
       const host = this.hostFor(input.threadId);
       if (host.running || host.app.isRequestActive()) throw new Error("Wait for the current request to finish.");
       this.run(host, () => pathname === "/api/ui/model"
         ? host.app.selectHostedModel() : pathname === "/api/ui/approval"
-          ? host.app.selectHostedApproval() : host.app.selectHostedOrchestration());
+          ? host.app.selectHostedApproval() : pathname === "/api/ui/orchestration"
+            ? host.app.selectHostedOrchestration() : host.app.selectHostedMode());
       json(response, 202, { accepted: true }); return;
     }
     if (pathname === "/api/message") {
