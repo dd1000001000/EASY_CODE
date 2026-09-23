@@ -6,7 +6,7 @@
     "operation": "remember creates one durable fact; revise supersedes a memory returned by read_memory in this turn; forget expires it; move explicitly changes its scope.",
     "scope": "For remember, project (default) or global. For move, the required target scope. Choose global only for information genuinely useful across projects; choose project for facts tied to this checkout.",
     "memoryId": "Required for revise, forget, and move. Use an ID returned by read_memory in this turn.",
-    "content": "Required for remember and revise. One short, self-contained durable fact, not a paragraph or task diary.",
+    "content": "Required for remember and revise. One short, self-contained durable fact, not a paragraph or task diary. If oversized, the stored content keeps the beginning and end with a truncation marker in the middle.",
     "category": "Required for remember and optional for revise: preference, convention, architecture, decision, or environment.",
     "reason": "A brief current-turn reason for the change, without secrets."
   },

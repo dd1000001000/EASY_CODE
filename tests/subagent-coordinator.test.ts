@@ -821,6 +821,36 @@ describe("SubagentCoordinator", () => {
     ).length, 2);
   });
 
+  it("delivers more than 32 parent follow-ups without rejecting or dropping later messages", async () => {
+    const taskGraph = graph(["backend"]);
+    const child = deferred<SubagentExecutionOutcome>();
+    let request: SubagentExecutionRequest | undefined;
+    const coordinator = new SubagentCoordinator({
+      createAgentId: idFactory([AGENT_ONE]),
+      run: (value) => { request = value; return child.promise; },
+    });
+    const spawned = await coordinator.spawn({ action: "spawn", taskId: "backend",
+      instructions: "Implement the backend branch." }, context(taskGraph));
+    coordinator.commitLifecycle(lifecycle(spawned, "activate"));
+    const assignedGraph = spawned.taskGraphUpdate as TaskGraph;
+    for (let index = 0; index < 40; index += 1) {
+      const result = await coordinator.followUp({ action: "follow_up", agentId: AGENT_ONE,
+        message: `Guidance ${index}` }, context(assignedGraph));
+      assert.equal(result.ok, true);
+      coordinator.commitLifecycle(lifecycle(result, "deliver_follow_up"));
+    }
+    const pending = request?.drainFollowUps() ?? [];
+    assert.equal(pending.length, 40);
+    assert.equal(pending[0], "Guidance 0");
+    assert.equal(pending[39], "Guidance 39");
+    const snapshot = await coordinator.status({ action: "status" }, context(assignedGraph));
+    assert.equal((snapshot.data as { agents: Array<{ followUpCount: number }> }).agents[0]?.followUpCount, 40);
+    child.resolve(completedOutcome("backend"));
+    const observed = await coordinator.wait({ action: "wait", agentIds: [AGENT_ONE], timeoutMs: 100 },
+      context(assignedGraph));
+    assert.equal(observed.subagentTaskOperation?.action, "complete");
+  });
+
   it("releases a failed child task only when its terminal result is observed", async () => {
     const initialGraph = graph(["verify"]);
     const coordinator = new SubagentCoordinator({

@@ -90,6 +90,8 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "subagent.handoff_completed",
   "subagent.handoff_failed",
   "subagent.handoff_requested",
+  "subagent.message",
+  "subagent.message.delivered",
   "subagent.progress",
   "subagent.reconciled",
   "subagent.result",

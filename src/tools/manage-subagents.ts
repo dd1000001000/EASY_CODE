@@ -16,6 +16,7 @@ import {
   MAX_SUBAGENT_STOP_REASON_CHARS,
   MAX_SUBAGENT_WAIT_MS,
   sanitizeSubagentText,
+  truncateSubagentMessage,
   type ManageSubagentsInput,
   type SubagentControl,
 } from "../subagents/types.js";
@@ -52,6 +53,11 @@ function boundedAgentText(maximum: number): z.ZodPipeline<
     .pipe(z.string().min(1).max(maximum));
 }
 
+function truncatedAgentMessage(maximum: number) {
+  return z.string().transform((value) => truncateSubagentMessage(value, maximum))
+    .pipe(z.string().min(1).max(maximum));
+}
+
 const agentIdsSchema = z
   .array(subagentIdSchema)
   .min(1)
@@ -76,7 +82,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
     .object({
       action: z.literal("spawn"),
       taskId: taskIdSchema,
-      instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
+      instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
       thinkingEffort: thinkingEffortSchema.optional(),
     })
@@ -85,7 +91,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
     .object({
       action: z.literal("spawn"),
       task: standaloneTaskSchema,
-      instructions: boundedAgentText(limits.subagentInstructionsMaxChars),
+      instructions: truncatedAgentMessage(limits.subagentInstructionsMaxChars),
       isolation: isolationSchema.optional(),
       thinkingEffort: thinkingEffortSchema.optional(),
     })
@@ -112,7 +118,7 @@ export function createManageSubagentsInputSchema(limits = DEFAULT_RUNTIME_LIMITS
     .object({
       action: z.literal("follow_up"),
       agentId: subagentIdSchema,
-      message: boundedAgentText(limits.subagentFollowUpMaxChars),
+      message: truncatedAgentMessage(limits.subagentFollowUpMaxChars),
     })
     .strict(),
   z
@@ -192,7 +198,6 @@ export class ManageSubagentsTool implements AgentTool {
           instructions: {
             type: "string",
             minLength: 1,
-            maxLength: this.limits.subagentInstructionsMaxChars,
           },
           isolation: {
             type: "string",
@@ -221,7 +226,6 @@ export class ManageSubagentsTool implements AgentTool {
           message: {
             type: "string",
             minLength: 1,
-            maxLength: this.limits.subagentFollowUpMaxChars,
           },
           reason: {
             type: "string",

@@ -57,7 +57,6 @@ command_execute_timeout_max_ms = 900000
 command_install_timeout_max_ms = 1200000
 max_managed_worktrees = 15
 max_subagents_per_turn = 8
-max_subagent_follow_ups = 8
 max_dag_nodes = 16
 # 0 = disabled. Nonzero uses conservative reservations, settled by reported usage.
 max_task_tokens = 0
@@ -151,7 +150,10 @@ artifact_index_batch_chars = 96000
 artifact_chunk_chars = 1400
 artifact_chunk_overlap_chars = 160
 subagent_instructions_max_chars = 12000
+# Parent -> child follow-up guidance.
 subagent_follow_up_max_chars = 8000
+# Child -> parent progress messages; independent of follow-up guidance.
+subagent_parent_message_max_chars = 8000
 subagent_summary_max_chars = 12000
 context_force_ratio = 0.95
 context_memory_resume_ratio = 0.6

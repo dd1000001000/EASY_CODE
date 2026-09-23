@@ -14,6 +14,7 @@ import type {
   SubagentStatusRequest,
   WaitForSubagentsRequest,
 } from "../src/subagents/types.js";
+import { DEFAULT_RUNTIME_LIMITS } from "../src/config/runtime-limits.js";
 import { ManageSubagentsTool } from "../src/tools/manage-subagents.js";
 import { SubmitTaskResultTool } from "../src/tools/submit-task-result.js";
 import { describe, it } from "./harness.js";
@@ -102,6 +103,44 @@ function boundTask(
 }
 
 describe("subagent control tools", () => {
+  it("truncates oversized spawn instructions and follow-ups after sanitizing", async () => {
+    const control = new RecordingControl();
+    const tool = new ManageSubagentsTool(control, {
+      ...DEFAULT_RUNTIME_LIMITS,
+      subagentInstructionsMaxChars: 64,
+      subagentFollowUpMaxChars: 64,
+    });
+    assert.equal((await tool.execute({
+      action: "spawn", taskId: "implementation", instructions: `START😀${"x".repeat(200)}END`,
+    }, context())).ok, true);
+    assert.equal((await tool.execute({
+      action: "spawn", task: { title: "Standalone", description: "Work", completionChecks: ["Done"] },
+      instructions: `SECOND${"x".repeat(200)}END`,
+    }, context())).ok, true);
+    assert.equal((await tool.execute({
+      action: "follow_up", agentId: AGENT_ONE, message: `FOLLOW${"x".repeat(200)}END`,
+    }, context())).ok, true);
+    assert.equal(control.calls[0]?.action, "spawn");
+    if (control.calls[0]?.action === "spawn") {
+      assert.match(control.calls[0].instructions, /^START😀.*\[truncated\].*END$/su);
+      assert.ok(control.calls[0].instructions.length <= 64);
+    }
+    assert.equal(control.calls[1]?.action, "spawn");
+    if (control.calls[1]?.action === "spawn") {
+      assert.match(control.calls[1].instructions, /^SECOND.*\[truncated\].*END$/su);
+      assert.ok(control.calls[1].instructions.length <= 64);
+    }
+    assert.equal(control.calls[2]?.action, "follow_up");
+    if (control.calls[2]?.action === "follow_up") {
+      assert.match(control.calls[2].message, /^FOLLOW.*\[truncated\].*END$/su);
+      assert.ok(control.calls[2].message.length <= 64);
+    }
+    assert.equal((await tool.execute({
+      action: "follow_up", agentId: AGENT_ONE, message: "  \u001b[31m  ",
+    }, context())).ok, false);
+    assert.equal(control.calls.length, 3);
+  });
+
   it("strictly dispatches every main-agent action and defaults wait timeout", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);

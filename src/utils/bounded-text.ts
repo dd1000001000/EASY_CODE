@@ -23,6 +23,42 @@ export function projectText(value: string, maximum: number,
   return { text, truncated: true, originalSize, retainedSize: measure(text) };
 }
 
+/** Lossy display/text projection that retains both ends, with the omission marker inside the budget. */
+export function projectHeadTailText(
+  value: string,
+  maximum: number,
+  measure: (text: string) => number = text => text.length,
+  marker = "\n... [truncated] ...\n",
+  headShare = 0.5,
+): TextProjection {
+  if (!Number.isSafeInteger(maximum) || maximum < 0 ||
+      !Number.isFinite(headShare) || headShare < 0 || headShare > 1) {
+    throw new Error("Invalid text budget");
+  }
+  const originalSize = measure(value);
+  if (originalSize <= maximum) return { text: value, truncated: false, originalSize, retainedSize: originalSize };
+  if (measure(marker) > maximum) return projectText(value, maximum, measure);
+
+  const candidate = (retainedChars: number): string => {
+    const headChars = Math.ceil(retainedChars * headShare);
+    const tailChars = retainedChars - headChars;
+    const head = value.slice(0, headChars).replace(/[\uD800-\uDBFF]$/u, "");
+    const tail = tailChars > 0
+      ? value.slice(-tailChars).replace(/^[\uDC00-\uDFFF]/u, "")
+      : "";
+    return head + marker + tail;
+  };
+  let low = 0;
+  let high = value.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (measure(candidate(middle)) <= maximum) low = middle;
+    else high = middle - 1;
+  }
+  const text = candidate(low);
+  return { text, truncated: true, originalSize, retainedSize: measure(text) };
+}
+
 /** An explicit lossy preview; the marker is included in the budget. */
 export function boundedText(value: string, maximum: number): string {
   if (value.length <= maximum) return value;

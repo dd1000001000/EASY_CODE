@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "./harness.js";
-import { projectText, displayTextSchema } from "../src/utils/bounded-text.js";
+import { projectHeadTailText, projectText, displayTextSchema } from "../src/utils/bounded-text.js";
 import { estimatedTokens } from "../src/context/token-budget.js";
 import { semanticSummarySchema, clipSemanticFields, parseSemanticRequestPatch } from "../src/context/semantic-compaction.js";
 import { reviewReportSchema } from "../src/review/session.js";
@@ -23,6 +23,17 @@ describe("storage-only output retention", () => {
     }
     assert.throws(() => displayTextSchema(20).parse(17));
     assert.match(displayTextSchema(20).parse("x".repeat(100)), /truncated/u);
+  });
+
+  it("shares Unicode-safe head/tail projection across character and token budgets", () => {
+    const text = `START😀${"中abc".repeat(500)}😀END`;
+    for (const measure of [(value: string) => value.length, estimatedTokens]) {
+      const projected = projectHeadTailText(text, 100, measure);
+      assert.equal(projected.truncated, true);
+      assert.match(projected.text, /^START😀.*\[truncated\].*😀END$/su);
+      assert.ok(measure(projected.text) <= 100);
+      assert.doesNotMatch(projected.text, /[\uD800-\uDBFF](?:\n\.\.\. \[truncated\]|$)/u);
+    }
   });
 
   it("clips semantic lists only after validating every item, keeping evidence IDs strict", () => {

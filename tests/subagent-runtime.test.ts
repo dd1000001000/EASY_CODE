@@ -40,6 +40,7 @@ const ALL_TOOL_NAMES: ToolName[] = [
   "cancel_command",
   "manage_tasks",
   "manage_subagents",
+  "send_parent_message",
   "submit_task_result",
   "compact_context",
   "read_memory",
@@ -55,6 +56,7 @@ const CHILD_TOOL_NAMES: ToolName[] = [
   "poll_command",
   "read_memory",
   "cancel_command",
+  "send_parent_message",
   "submit_task_result",
   "update_file",
 ];
@@ -117,6 +119,7 @@ function fakeTool(
       name === "cancel_command" ||
       name === "manage_tasks" ||
       name === "manage_subagents" ||
+      name === "send_parent_message" ||
       name === "submit_task_result" ||
       name === "write_memory",
     definition: {
@@ -155,6 +158,7 @@ function runtime(input: {
   onSubagentLifecycleRollback?: AgentRuntimeDependencies["onSubagentLifecycleRollback"];
   getOutstandingSubagents?: AgentRuntimeDependencies["getOutstandingSubagents"];
   hasOpenCommandHandles?: AgentRuntimeDependencies["hasOpenCommandHandles"];
+  takeSubagentMessages?: AgentRuntimeDependencies["takeSubagentMessages"];
 }): AgentRuntime {
   return new AgentRuntime({
     provider: input.provider,
@@ -175,6 +179,9 @@ function runtime(input: {
       : {}),
     ...(input.hasOpenCommandHandles
       ? { hasOpenCommandHandles: input.hasOpenCommandHandles }
+      : {}),
+    ...(input.takeSubagentMessages
+      ? { takeSubagentMessages: input.takeSubagentMessages }
       : {}),
   });
 }
@@ -249,6 +256,29 @@ function completionReport(
 }
 
 describe("AgentRuntime subagent boundaries", () => {
+  it("delivers a durable child report to the parent before its next model request", async () => {
+    const currentState = state("medium", "parent_child_report");
+    let seen = false;
+    let taken = 0;
+    const model = provider(async (request) => {
+      seen = request.messages.some((message) => message.role === "user" &&
+        message.content.includes("Child found a failing edge case"));
+      return { message: { role: "assistant", content: "I will investigate the reported edge case.", tool_calls: [] } };
+    });
+    const result = await runtime({
+      provider: model,
+      tools: [fakeTool("read_file")],
+      agentIdentity: { role: "main_agent" },
+      takeSubagentMessages: async () => {
+        taken += 1;
+        return [{ role: "user", content: "Subagent report: Child found a failing edge case" }];
+      },
+    }).run(currentState, "Coordinate the child", options(1));
+    assert.equal(result.reason, "success");
+    assert.equal(seen, true);
+    assert.equal(taken, 1);
+  });
+
   it("exposes manage_subagents to a main agent at every thinking effort", async () => {
     const visibleByEffort = new Map<ThinkingEffort, ToolName[]>();
 

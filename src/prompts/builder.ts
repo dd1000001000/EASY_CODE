@@ -1,6 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { SkillStore } from "../skills/store.js";
+import { projectHeadTailText } from "../utils/bounded-text.js";
 
 import type {
   AgentMode,
@@ -401,11 +402,8 @@ function boundedHeadTail(
   value: string,
   limit: number,
 ): string {
-  if (value.length <= limit) return value;
   const marker = `\n${promptText(catalog, "runtime/truncation-marker.md")}\n`;
-  const available = Math.max(0, limit - marker.length);
-  const head = Math.ceil(available * 0.6);
-  return `${value.slice(0, head)}${marker}${value.slice(-(available - head))}`;
+  return projectHeadTailText(value, limit, undefined, marker, 0.6).text;
 }
 
 function promptText(catalog: PromptBundleCatalog, relativePath: string): string {

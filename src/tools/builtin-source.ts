@@ -45,6 +45,8 @@ import {
 import { SearchFilesTool } from "./search-files.js";
 import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, ReadSkillTool } from "./skill-tools.js";
 import { SubmitTaskResultTool } from "./submit-task-result.js";
+import { SendParentMessageTool, type ParentMessageBinding } from "./send-parent-message.js";
+import type { SubagentParentMessage } from "../subagents/types.js";
 import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
 import { WebSearchTool } from "./web-search.js";
@@ -63,6 +65,11 @@ export interface BuiltinToolSourceOptions {
   readonly mcpConfigStore?: McpConfigStore;
   readonly onMcpConfigChanged?: (id: string) => Promise<void>;
   readonly boundTask?: BoundTask;
+  readonly parentMessage?: {
+    binding: ParentMessageBinding;
+    post: (message: Omit<SubagentParentMessage, "id" | "createdAt">,
+      childThreadId: string, toolCallId: string) => SubagentParentMessage;
+  };
   readonly threadTitleStore?: ThreadTitleStore;
   readonly skillStore?: SkillStore;
   readonly threadResourceStore?: ThreadResourceStore;
@@ -138,6 +145,10 @@ export class BuiltinToolSource implements ToolSource {
         ? [new WriteMemoryTool(this.options.memoryManager, workspace, memorySession)]
         : []),
       ...(this.options.boundTask ? [new SubmitTaskResultTool(this.options.boundTask, this.options.limits)] : []),
+      ...(this.options.parentMessage ? [new SendParentMessageTool(
+        this.options.parentMessage.binding, this.options.parentMessage.post,
+        this.options.limits?.subagentParentMessageMaxChars,
+      )] : []),
     ].map((tool) => {
       bindBuiltinToolMetadata(tool);
       if (tool.mutating) {

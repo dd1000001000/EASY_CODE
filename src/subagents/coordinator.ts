@@ -33,6 +33,7 @@ import type {
   StopSubagentRequest,
   SubagentControl,
   SubagentRecord,
+  SubagentParentMessage,
   SubagentStatus,
   SubagentStatusRequest,
   SubagentView,
@@ -40,7 +41,6 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_MAX_CONCURRENT_SUBAGENTS = DEFAULT_RUNTIME_LIMITS.maxConcurrentSubagents.none;
-const MAX_FOLLOW_UPS_PER_SUBAGENT = 32;
 
 function agentPromptText(path: string): string {
   return loadPromptBundleCatalog().readText(path).trimEnd();
@@ -138,6 +138,8 @@ export interface SubagentCoordinatorOptions {
   readonly onWaitStart?: (text: string) => unknown;
   readonly onWaitEnd?: (activityToken: unknown) => void;
   readonly onViewChange?: (parentThreadId: string) => void;
+  /** Journal-backed unread child reports; the coordinator never owns their persistence. */
+  readonly pendingMessages?: (parentThreadId: string, agentIds?: readonly string[]) => readonly SubagentParentMessage[];
   readonly handoff?: (
     artifact: Readonly<ResultArtifact>,
     destination: { type: "local" } | { type: "branch"; branchName?: string },
@@ -188,6 +190,8 @@ export class SubagentCoordinator implements SubagentControl {
   private readonly handoffResult: SubagentCoordinatorOptions["handoff"];
   private readonly onViewChange: SubagentCoordinatorOptions["onViewChange"];
   private readonly liveActivity = new Map<string, NonNullable<SubagentView["activity"]>>();
+  private readonly pendingMessages: NonNullable<SubagentCoordinatorOptions["pendingMessages"]>;
+  private readonly messageWaiters = new Map<string, Set<() => void>>();
 
   constructor(options: SubagentCoordinatorOptions) {
     this.runChild = options.run;
@@ -208,6 +212,13 @@ export class SubagentCoordinator implements SubagentControl {
     this.onWaitEnd = options.onWaitEnd;
     this.handoffResult = options.handoff;
     this.onViewChange = options.onViewChange;
+    this.pendingMessages = options.pendingMessages ?? (() => []);
+  }
+
+  /** Wake a parent wait after the child's report is durably recorded. */
+  notifyMessage(parentThreadId: string): void {
+    for (const wake of this.messageWaiters.get(parentThreadId) ?? []) wake();
+    this.onViewChange?.(parentThreadId);
   }
 
   assertAuthorized(context: ToolContext): void {
@@ -355,6 +366,7 @@ export class SubagentCoordinator implements SubagentControl {
       data: {
         agents: records.map(publicRecord),
         concurrency: { active, limit: this.concurrencyLimit(context) },
+        unreadMessageCount: this.pendingMessages(context.threadId, request.agentIds).length,
       },
     };
   }
@@ -365,7 +377,8 @@ export class SubagentCoordinator implements SubagentControl {
   ): Promise<ToolExecutionResult> {
     const jobs = this.selectJobs(request.agentIds, context.threadId);
     let mergeable = jobs.find((job) => isTerminal(job.record.status) && !job.graphObserved);
-    if (!mergeable && request.timeoutMs > 0) {
+    let message = this.pendingMessages(context.threadId, request.agentIds)[0];
+    if (!mergeable && !message && request.timeoutMs > 0) {
       const unsettled = jobs.filter((job) => !isTerminal(job.record.status));
       if (unsettled.length) {
         let activityToken: unknown;
@@ -381,7 +394,16 @@ export class SubagentCoordinator implements SubagentControl {
           } catch {
             // Presentation is advisory and cannot change child lifecycle state.
           }
-          await waitForFirstSettlement(unsettled, request.timeoutMs, context.signal);
+          await waitForFirstSettlement(unsettled, request.timeoutMs, context.signal, (wake) => {
+            const waiters = this.messageWaiters.get(context.threadId) ?? new Set<() => void>();
+            waiters.add(wake);
+            this.messageWaiters.set(context.threadId, waiters);
+            if (this.pendingMessages(context.threadId, request.agentIds).length) wake();
+            return () => {
+              waiters.delete(wake);
+              if (!waiters.size) this.messageWaiters.delete(context.threadId);
+            };
+          });
         } finally {
           try {
             if (activityStarted) this.onWaitEnd?.(activityToken);
@@ -391,6 +413,7 @@ export class SubagentCoordinator implements SubagentControl {
         }
       }
       mergeable = jobs.find((job) => isTerminal(job.record.status) && !job.graphObserved);
+      message = this.pendingMessages(context.threadId, request.agentIds)[0];
     }
     const records = jobs.map((job) => publicRecord(job.record));
     const concurrency = {
@@ -399,6 +422,14 @@ export class SubagentCoordinator implements SubagentControl {
       ).length,
       limit: this.concurrencyLimit(context),
     };
+    if (message) {
+      return {
+        ok: true,
+        summary: `Received an update from ${message.agentId} for task ${message.taskId}.`,
+        data: { timedOut: false, message, agents: records, concurrency },
+        subagentMessageId: message.id,
+      };
+    }
     if (!mergeable) {
       return {
         ok: true,
@@ -459,9 +490,6 @@ export class SubagentCoordinator implements SubagentControl {
     const job = this.requireOwnedJob(request.agentId, context.threadId);
     if (isTerminal(job.record.status) || job.record.status === "stopping") {
       throw new Error(`Subagent ${request.agentId} is no longer accepting follow-up guidance`);
-    }
-    if (job.record.followUpCount >= (context.limits?.maxSubagentFollowUps ?? MAX_FOLLOW_UPS_PER_SUBAGENT)) {
-      throw new Error(`Subagent ${request.agentId} reached its follow-up limit`);
     }
     const message = sanitizeSubagentText(request.message);
     return {
@@ -589,7 +617,6 @@ export class SubagentCoordinator implements SubagentControl {
     }
     if (update.action === "deliver_follow_up") {
       if (isTerminal(job.record.status) || job.record.status === "stopping") return undefined;
-      if (job.record.followUpCount >= MAX_FOLLOW_UPS_PER_SUBAGENT) return undefined;
       job.followUps.push(sanitizeSubagentText(update.message));
       job.record.followUpCount += 1;
       touch(job.record, this.now);
@@ -1351,10 +1378,15 @@ async function waitForFirstSettlement(
   jobs: readonly SubagentJob[],
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  subscribeMessage?: (wake: () => void) => () => void,
 ): Promise<void> {
   if (signal?.aborted) throw new Error("Waiting for subagents was canceled");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
+  let unsubscribeMessage: (() => void) | undefined;
+  const message = new Promise<void>((resolve) => {
+    unsubscribeMessage = subscribeMessage?.(resolve);
+  });
   const timeout = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, timeoutMs);
   });
@@ -1364,8 +1396,9 @@ async function waitForFirstSettlement(
     signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    await Promise.race([...jobs.map((job) => job.settled), timeout, aborted]);
+    await Promise.race([...jobs.map((job) => job.settled), timeout, aborted, message]);
   } finally {
+    unsubscribeMessage?.();
     if (timer) clearTimeout(timer);
     if (onAbort) signal?.removeEventListener("abort", onAbort);
   }

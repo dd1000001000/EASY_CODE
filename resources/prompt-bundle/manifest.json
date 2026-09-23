@@ -15,8 +15,8 @@
       "bytes": 258
     },
     "agents/child-contract.md": {
-      "sha256": "sha256:696df9b8b0bf542e3c322c20e398e91c393a8d4413649dbab57f95fed995b738",
-      "bytes": 899
+      "sha256": "sha256:885ef3cc5ea5fd8819bd786f34903c320f57bf8f3bb8ca86f01938c8475cb837",
+      "bytes": 974
     },
     "agents/child-environment-sandboxed.md": {
       "sha256": "sha256:7c2b8eb0d5fcba8225e9392ca38995582a296474a8a91c66039251eeb2e8f0f9",
@@ -331,8 +331,8 @@
       "bytes": 1418
     },
     "system/security.md": {
-      "sha256": "sha256:237b4e60f84228c9d73fee53a65442fc4c03dad0ae131db12eac92bb8293566e",
-      "bytes": 1177
+      "sha256": "sha256:5388c9cadf4d63ab7ac2ed939e26ee6470a047d7abaf88559ea351a7077f4a4e",
+      "bytes": 1282
     },
     "tools/cancel_command.json": {
       "sha256": "sha256:a3a64f0897baeaa00ebaed2ed83e3e31aadc7558309c66de17f4acfe9d79d863",
@@ -379,8 +379,8 @@
       "bytes": 436
     },
     "tools/manage_subagents.json": {
-      "sha256": "sha256:262a87ef8ad2dda16b2d77600f24969a706c542916a56d3137923c3af1873c59",
-      "bytes": 3517
+      "sha256": "sha256:69de8ab9b449cec3e3c61cee81977327ed0289e9df0845b87bc4d20e36429da7",
+      "bytes": 3777
     },
     "tools/manage_tasks.json": {
       "sha256": "sha256:802225edefa80dc4be6f41a52015a49cfb7357f3c8e6874efa44e9edee38bc66",
@@ -458,6 +458,10 @@
       "sha256": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b",
       "bytes": 851
     },
+    "tools/send_parent_message.json": {
+      "sha256": "sha256:ff60c83f3f6d655726c0129415cd5e42e8ba8830b66d83a3fc2f84879ff0d423",
+      "bytes": 789
+    },
     "tools/start_command.json": {
       "sha256": "sha256:3968adb2672f3c2690b08ff2acf51f1e4ddcabf3b97043c3efb841f28483c246",
       "bytes": 3297
@@ -475,8 +479,8 @@
       "bytes": 579
     },
     "tools/write_memory.json": {
-      "sha256": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be",
-      "bytes": 2175
+      "sha256": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049",
+      "bytes": 2276
     }
   },
   "tools": {
@@ -538,7 +542,7 @@
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:262a87ef8ad2dda16b2d77600f24969a706c542916a56d3137923c3af1873c59"
+      "contentHash": "sha256:69de8ab9b449cec3e3c61cee81977327ed0289e9df0845b87bc4d20e36429da7"
     },
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
@@ -635,6 +639,11 @@
       "contractVersion": "1.0.0",
       "contentHash": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b"
     },
+    "send_parent_message": {
+      "path": "tools/send_parent_message.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:ff60c83f3f6d655726c0129415cd5e42e8ba8830b66d83a3fc2f84879ff0d423"
+    },
     "start_command": {
       "path": "tools/start_command.json",
       "contractVersion": "1.2.0",
@@ -658,8 +667,8 @@
     "write_memory": {
       "path": "tools/write_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:2d833782d72b180f27c691fe08df4fd52b7c7541c178e0fbd597da7f80cd22be"
+      "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:b3edfe426eb39350826297f2b755997b72065b313b6f41af53d50dde3620c0cb"
+  "bundleHash": "sha256:a8abc18503dc43b8b6490640aedf71f83674af60d7e6617d12b10c3e71fc79ed"
 }
