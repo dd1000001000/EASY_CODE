@@ -65,7 +65,7 @@ Replace the path with your own folder and quote paths containing spaces. Enter `
 
 > Find why login fails, fix the problem and run the relevant tests. Summarize what changed and what remains unverified.
 
-Start with Plan if you want a proposal first; choose Code to implement, or Auto to let EASY CODE route the request. **Plan is a workflow preference, not an enforced read-only sandbox.**
+Start with Plan if you want a proposal first; choose Code to implement, or Auto to let EASY CODE select a mode for this conversation. Once Auto selects Plan or Code, that mode takes effect immediately and remains selected until you switch back to Auto. A tool-free direct answer leaves Auto selected. New conversations start in Auto. **Plan is a workflow preference, not an enforced read-only sandbox.**
 
 ## Everyday controls
 

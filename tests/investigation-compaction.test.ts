@@ -181,7 +181,7 @@ describe("unfinished investigation compaction", () => {
             const assignment = { agentId: "child", childThreadId: "child_thread", kind: "standalone", taskId: "parser",
                 environmentId: "environment_child", requestedIsolation: "shared",
                 taskTitle: "Inspect parser", taskDescription: "Locate the failing input", completionChecks: ["Provide a counterexample"],
-                provider: "deepseek", model: "test", thinkingEffort: "high", createdAt: f.state.createdAt };
+                mode: "code", provider: "deepseek", model: "test", thinkingEffort: "high", createdAt: f.state.createdAt };
             for (const [id, lifecycle] of [["start_child", { action: "activate", agentId: "child" }],
                 ["follow", { action: "deliver_follow_up", agentId: "child", message: "Also check empty strings" }]]) {
                 f.message({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "manage_subagents", arguments: "{}" } }] });

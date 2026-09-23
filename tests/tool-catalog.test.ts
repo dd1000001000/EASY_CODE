@@ -87,12 +87,15 @@ describe("extensible tool capabilities", () => {
     const tools = names.map((name) => builtin(name));
     assert.deepEqual(availableAgentTools(tools, {
       mode: "plan", role: "main_agent", orchestrationAvailable: true, visionAvailable: true,
-    }).map((tool) => tool.name), ["read_file", "read_document", "read_image", "propose_plan"]);
+    }).map((tool) => tool.name), ["read_file", "read_document", "read_image", "propose_plan", "manage_tasks"]);
     assert.deepEqual(availableAgentTools(tools, {
       mode: "code", role: "main_agent", orchestrationAvailable: true, visionAvailable: false,
     }).map((tool) => tool.name), ["read_file", "read_document", "manage_tasks"]);
     assert.deepEqual(availableAgentTools(tools, {
       mode: "code", role: "subagent", orchestrationAvailable: false, visionAvailable: true,
+    }).map((tool) => tool.name), ["read_file", "submit_task_result"]);
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "plan", role: "subagent", orchestrationAvailable: false, visionAvailable: true,
     }).map((tool) => tool.name), ["read_file", "submit_task_result"]);
     assert.equal(builtinToolMetadata("run_command").validationSensitive, true);
   });
@@ -112,6 +115,14 @@ describe("extensible tool capabilities", () => {
     }).map(tool => tool.name), []);
     assert.deepEqual(builtinToolMetadata("list_mcp_servers").effects, ["external_read"]);
     assert.deepEqual(builtinToolMetadata("remove_mcp_server").effects, ["external_write", "destructive"]);
+  });
+
+  it("does not expose even read-declared external tools to a Plan child", () => {
+    const tools = [builtin("read_file"), builtin("run_command"), builtin("create_file"),
+      builtin("send_parent_message"), builtin("submit_task_result"), external("remote_read")];
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "plan", role: "subagent", orchestrationAvailable: true,
+    }).map(tool => tool.name), ["read_file", "send_parent_message", "submit_task_result"]);
   });
 
   it("requires host-owned metadata for every non-builtin tool", async () => {

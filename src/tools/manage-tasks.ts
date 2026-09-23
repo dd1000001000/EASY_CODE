@@ -157,6 +157,13 @@ export class ManageTasksTool implements AgentTool {
   async execute(input: unknown, context: ToolContext): Promise<ToolExecutionResult> {
     try {
       const parsed = this.inputSchema.parse(input);
+      if (context.selectedMode === "auto") {
+        throw new Error("Task DAG operations require an explicitly selected Plan or Code mode");
+      }
+      if (context.taskGraph && context.taskGraph.status !== "completed" &&
+          context.selectedMode && context.selectedMode !== context.mode) {
+        throw new Error("Finish the current task DAG before switching modes");
+      }
       if (parsed.action === "create") {
         if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("DAG creation requires orchestration and at least independent approval. Enable with /orchestration.");
         if (context.limits && parsed.tasks.length > context.limits.maxDagNodes) {

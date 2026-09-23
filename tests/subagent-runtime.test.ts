@@ -191,6 +191,7 @@ function standaloneAssignment(
 ): SubagentAssignmentSnapshot {
   return {
     kind: "standalone",
+    mode: "code",
     agentId: CHILD_AGENT_ID,
     childThreadId: `thread_${CHILD_AGENT_ID}`,
     environmentId: `environment_${CHILD_AGENT_ID}`,
@@ -591,6 +592,29 @@ describe("AgentRuntime subagent boundaries", () => {
     assert.equal(visibleTools.includes("write_memory"), false);
     assert.equal(visibleTools.includes("read_memory"), true);
     assert.equal(visibleTools.includes("read_image"), false);
+  });
+
+  it("gives a Plan child only read-only investigation and reporting tools", async () => {
+    const taskId = "planning_research";
+    const currentState = state("high", "plan_child_tools");
+    currentState.mode = "plan";
+    let visibleTools: ToolName[] = [];
+    const tools = ALL_TOOL_NAMES.map(name => name === "submit_task_result"
+      ? new SubmitTaskResultTool(boundTask(taskId)) : fakeTool(name));
+    const model = provider(async request => {
+      visibleTools = (request.tools ?? []).map(tool => tool.function.name);
+      return submitCall("submit_plan_research", "Repository findings are documented.");
+    });
+    const result = await runtime({ provider: model, tools,
+      agentIdentity: { role: "subagent", agentId: CHILD_AGENT_ID, assignedTaskId: taskId },
+    }).run(currentState, "Research the assigned plan task", options(1));
+    assert.equal(result.reason, "success");
+    assert.equal(result.subagentTaskReport?.outcome, "completed");
+    assert.deepEqual([...visibleTools].sort(), [
+      "read_file", "read_memory", "send_parent_message", "submit_task_result",
+    ].sort());
+    for (const name of ["create_file", "update_file", "delete_file", "run_command", "manage_tasks", "manage_subagents"])
+      assert.equal(visibleTools.includes(name as ToolName), false);
   });
 
   it("corrects a plain child final before accepting its structured result", async () => {

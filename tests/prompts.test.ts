@@ -150,8 +150,8 @@ describe("system prompt builder", () => {
       assert.match(prompt, /delete_file deletes a previously read regular file/);
       assert.match(prompt, /write_memory is the only path that creates long-term memory/);
       assert.match(prompt, /best-effort housekeeping.*never as a delivery gate/);
-      assert.match(prompt, /manage_tasks is available only in Code mode or Auto mode/u);
-      assert.match(prompt, /Skip it for explanations, plans, one-file fixes, and short linear work/u);
+      assert.match(prompt, /manage_tasks is available only when Plan or Code is explicitly selected/u);
+      assert.match(prompt, /Skip it for short linear work/u);
       assert.match(
         prompt,
         /submit (?:the )?(?:proposed plan|proposal) (?:with|through) propose_plan/u,

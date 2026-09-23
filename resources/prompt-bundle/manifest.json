@@ -15,8 +15,8 @@
       "bytes": 258
     },
     "agents/child-contract.md": {
-      "sha256": "sha256:885ef3cc5ea5fd8819bd786f34903c320f57bf8f3bb8ca86f01938c8475cb837",
-      "bytes": 974
+      "sha256": "sha256:5d04f4ff4e1b8d84ce8adf04a15a97641b8b02b2a7d074a7bbab91e7f1c191e3",
+      "bytes": 1115
     },
     "agents/child-environment-sandboxed.md": {
       "sha256": "sha256:7c2b8eb0d5fcba8225e9392ca38995582a296474a8a91c66039251eeb2e8f0f9",
@@ -107,8 +107,8 @@
       "bytes": 161
     },
     "controllers/auto-router.md": {
-      "sha256": "sha256:946a1b698944f430ec307f11a9d69eafcecff211bc6d2dd8b64f627c7ba1df4a",
-      "bytes": 1422
+      "sha256": "sha256:aa67ae2647ffeb75e437bc99bde9c518bfbe22bfb0ebff1f672c454852bc4801",
+      "bytes": 1604
     },
     "controllers/current-request.md": {
       "sha256": "sha256:4ed870e2e3961fc87ce3898d98d7694773623cc3a43c7365ced966c11d1cc34a",
@@ -147,20 +147,20 @@
       "bytes": 91
     },
     "modes/auto.md": {
-      "sha256": "sha256:7a780c7bc236868df1358639fe0941a6a86e4af6ecc50f631c7f10a9cb04a00b",
-      "bytes": 299
+      "sha256": "sha256:fe05287a7fd29547d2f64e65d3f388a28b86dd8d73423d130b4fe60d98b1fbdb",
+      "bytes": 546
     },
     "modes/code.md": {
       "sha256": "sha256:0eb08a559d15d41d0d1f9134f6f33878a727bc8dac9aecf356c77b20caf4e0ab",
       "bytes": 314
     },
     "modes/plan-readonly-with-proposal.md": {
-      "sha256": "sha256:d7d05f9a447629fab1063b3a99875b2ef4b4d6aaad629aa4c5084cd6f61b1b22",
-      "bytes": 443
+      "sha256": "sha256:fb56bec48c569c6d9c02451a1bf0580a62671e7fe5f16e1d72919d205103f29c",
+      "bytes": 588
     },
     "modes/plan-readonly.md": {
-      "sha256": "sha256:d78802f6482fe0a32abc9be3fdc61592b59c2ab1224522a1d8333df52fa8f273",
-      "bytes": 330
+      "sha256": "sha256:4b77e83c9e4e435a7d122e9a4c66012f828e58f90526d33d3dfc8f3478e3e8e1",
+      "bytes": 522
     },
     "modes/plan.md": {
       "sha256": "sha256:1f91ed34546135ed38d50b303df89037d990bf0875553827554cf1b50e73a1c1",
@@ -203,8 +203,8 @@
       "bytes": 260
     },
     "runtime/plan-approved.md": {
-      "sha256": "sha256:dccda978bef9fb758d173d0cd49cb29e6dd3e01cd6cb25b47d20a1e1690db3ef",
-      "bytes": 188
+      "sha256": "sha256:30e4fd17f6be5ec4ebad913e3266c00cda450e86974ded39d09da4cc1f0570d3",
+      "bytes": 200
     },
     "runtime/plan-execution-return.md": {
       "sha256": "sha256:9bd3f8d2eeb1719c31cc3fa09cc763cb0eda0a21d39721cd07abdf0b7d74ee3f",
@@ -379,12 +379,12 @@
       "bytes": 436
     },
     "tools/manage_subagents.json": {
-      "sha256": "sha256:69de8ab9b449cec3e3c61cee81977327ed0289e9df0845b87bc4d20e36429da7",
-      "bytes": 3777
+      "sha256": "sha256:195cb8678208596b2b512db9fd2d72d845171e1e3f344b1ec6a4875f97668f44",
+      "bytes": 3570
     },
     "tools/manage_tasks.json": {
-      "sha256": "sha256:802225edefa80dc4be6f41a52015a49cfb7357f3c8e6874efa44e9edee38bc66",
-      "bytes": 3225
+      "sha256": "sha256:53616adbec439ffc1e107066ea93874a8a8ebcc83ddb51543b05845df9a6cc35",
+      "bytes": 3095
     },
     "tools/modify_skill.json": {
       "sha256": "sha256:16ecccfea9643307b68274d87a8d1dd3ab76adb6fb9c05fb2e2bb1b35eb4686a",
@@ -455,8 +455,8 @@
       "bytes": 1983
     },
     "tools/select_mode.json": {
-      "sha256": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b",
-      "bytes": 851
+      "sha256": "sha256:28c4c9ad8a4e3a46ffde30273e447b3893f8691e1da9effcdb629709251f95c9",
+      "bytes": 985
     },
     "tools/send_parent_message.json": {
       "sha256": "sha256:ff60c83f3f6d655726c0129415cd5e42e8ba8830b66d83a3fc2f84879ff0d423",
@@ -542,12 +542,12 @@
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:69de8ab9b449cec3e3c61cee81977327ed0289e9df0845b87bc4d20e36429da7"
+      "contentHash": "sha256:195cb8678208596b2b512db9fd2d72d845171e1e3f344b1ec6a4875f97668f44"
     },
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:802225edefa80dc4be6f41a52015a49cfb7357f3c8e6874efa44e9edee38bc66"
+      "contentHash": "sha256:53616adbec439ffc1e107066ea93874a8a8ebcc83ddb51543b05845df9a6cc35"
     },
     "modify_skill": {
       "path": "tools/modify_skill.json",
@@ -637,7 +637,7 @@
     "select_mode": {
       "path": "tools/select_mode.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:0cc75acab2d30414624aefa26e275611992b5c2f8491e1336b7352b47ea5c71b"
+      "contentHash": "sha256:28c4c9ad8a4e3a46ffde30273e447b3893f8691e1da9effcdb629709251f95c9"
     },
     "send_parent_message": {
       "path": "tools/send_parent_message.json",
@@ -670,5 +670,5 @@
       "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
     }
   },
-  "bundleHash": "sha256:a8abc18503dc43b8b6490640aedf71f83674af60d7e6617d12b10c3e71fc79ed"
+  "bundleHash": "sha256:c18912b5ce25a69bdde23b048202ff0f64134bb287a180d35568fd616f15413e"
 }

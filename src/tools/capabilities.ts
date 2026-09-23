@@ -10,6 +10,7 @@ import type {
 
 const ALL_MODES = ["plan", "auto", "code"] as const;
 const WORK_MODES = ["auto", "code"] as const;
+const ORCHESTRATION_MODES = ["plan", "code"] as const;
 const MAIN = ["main_agent"] as const;
 const CHILD = ["subagent"] as const;
 const BOTH = ["main_agent", "subagent"] as const;
@@ -52,7 +53,7 @@ const BUILTIN_POLICIES = {
     idempotent: true, resultClass: "command" },
   cancel_command: { effects: ["process_control", "destructive"], modes: ALL_MODES, roles: BOTH,
     resultClass: "command" },
-  manage_tasks: { effects: ["agent_control"], modes: WORK_MODES, roles: MAIN,
+  manage_tasks: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: MAIN,
     requiresOrchestration: true, controlPlane: true, resultClass: "task_control" },
   list_mcp_servers: { effects: ["external_read"], modes: ALL_MODES, roles: MAIN,
     idempotent: true },
@@ -76,12 +77,12 @@ const BUILTIN_POLICIES = {
     validationSensitive: true },
   remove_mcp_server: { effects: ["external_write", "destructive"], modes: WORK_MODES, roles: MAIN,
     validationSensitive: true },
-  manage_subagents: { effects: ["agent_control", "workspace_write"], modes: WORK_MODES, roles: MAIN,
+  manage_subagents: { effects: ["agent_control", "workspace_write"], modes: ORCHESTRATION_MODES, roles: MAIN,
     requiresOrchestration: true, validationSensitive: true, controlPlane: true,
     resultClass: "subagent_control" },
   send_parent_message: { effects: ["agent_control"], modes: ALL_MODES, roles: CHILD,
     controlPlane: true, resultClass: "subagent_control" },
-  submit_task_result: { effects: ["agent_control"], modes: ["code"], roles: CHILD,
+  submit_task_result: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: CHILD,
     controlPlane: true, resultClass: "task_control" },
   compact_context: { effects: ["context_control"], modes: ALL_MODES, roles: BOTH,
     idempotent: true, controlPlane: true, resultClass: "context_control" },
@@ -102,6 +103,12 @@ const BUILTIN_POLICIES = {
 } as const satisfies Record<BuiltinToolName, BuiltinPolicy>;
 
 const BUILTIN_NAMES = new Set<string>(Object.keys(BUILTIN_POLICIES));
+/** A Plan child can investigate and report, but cannot mutate or execute commands. */
+const PLAN_CHILD_TOOLS = new Set<string>([
+  "read_file", "search_files", "list_skills", "read_skill", "read_memory",
+  "search_context", "recall_context", "compact_context", "send_parent_message",
+  "submit_task_result",
+]);
 const TOOL_EFFECTS = new Set<ToolEffect>([
   "workspace_read", "workspace_write", "process_execute", "process_control",
   "network_read", "network_write", "external_read", "external_write", "destructive",
@@ -246,6 +253,10 @@ export function evaluateToolPolicy(
   context: Readonly<ToolAvailabilityContext>,
 ): ToolPolicyDecision {
   const metadata = toolMetadata(tool);
+  if (context.mode === "plan" && context.role === "subagent" &&
+      (metadata.identity.sourceKind !== "builtin" || !PLAN_CHILD_TOOLS.has(tool.name))) {
+    return { available: false, requiresApproval: false, denialReason: "mode" };
+  }
   if (!metadata.allowedModes.includes(context.mode)) return { available: false, requiresApproval: false, denialReason: "mode" };
   if (!metadata.allowedRoles.includes(context.role)) return { available: false, requiresApproval: false, denialReason: "role" };
   if (metadata.requiresOrchestration && !context.orchestrationAvailable) {

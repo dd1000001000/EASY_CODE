@@ -68,6 +68,33 @@ async function waitForOutput(
 }
 
 describe("storage", () => {
+  it("commits an Auto route as the durable Thread mode before a checkpoint", () => {
+    const dataDir = temporaryDataDir();
+    const storage = createStorage(dataDir);
+    try {
+      const threads = new ThreadStore(storage);
+      const thread = threads.create({
+        threadId: "thread_auto_route_durable",
+        workspaceRoot: path.join(dataDir, "workspace"),
+        mode: "auto", provider: "deepseek", model: "deepseek-v4-flash",
+      });
+      const turn = threads.startTurn(thread.threadId, "Investigate the request");
+      threads.appendEvent(thread.threadId, {
+        type: "mode.auto_route", turnId: turn.turnId, phase: "completed",
+        payload: { mode: "plan", reason: "A reviewable plan is needed." },
+      });
+      assert.equal(threads.recover(thread.threadId).mode, "plan");
+      assert.equal(threads.list().find(item => item.threadId === thread.threadId)?.mode, "plan");
+      assert.throws(() => threads.appendEvent(thread.threadId, {
+        type: "mode.auto_route", turnId: turn.turnId, phase: "completed",
+        payload: { mode: "code", reason: "A second route is not permitted." },
+      }), /Invalid Auto mode selection/u);
+      assert.equal(threads.recover(thread.threadId).mode, "plan");
+    } finally {
+      storage.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
   it("persists the interface language in the existing preferences table", () => {
     const dataDir = temporaryDataDir();
     const storage = createStorage(dataDir);

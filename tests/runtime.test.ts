@@ -841,25 +841,8 @@ describe("AgentRuntime", () => {
         assert.equal(imageCommittedBeforeRouting, true);
         assert.equal(result.reason, "success");
     });
-    it("reroutes a new Auto request even when an older DAG is unfinished", async () => {
+    it("selects Code for an Auto request and exposes DAG control immediately", async () => {
         const currentState = state("auto");
-        currentState.taskGraph = applyTaskGraphOperation(undefined, {
-            action: "create",
-            goal: "Continue the existing implementation DAG",
-            tasks: [{
-                    id: "continue",
-                    title: "Continue",
-                    description: "Continue the existing implementation work",
-                    dependencies: [],
-                    inputs: ["Existing task state"],
-                    expectedArtifacts: ["Resolved continuation"],
-                    completionChecks: ["Continuation is resolved"],
-                    failureHandling: "Block if an external decision is still missing",
-                }],
-        }, {
-            turnId: "turn_previous",
-            graphId: () => "task_graph_00000000-0000-4000-8000-000000000006",
-        });
         let requests = 0;
         const promptModes = [];
         const runtime = new AgentRuntime({
@@ -873,46 +856,10 @@ describe("AgentRuntime", () => {
                             function: { name: "select_mode", arguments: '{"mode":"code","reason":"Continue the requested work."}' } }] } };
                     }
                     assert.equal(request.tools?.some((tool) => tool.function.name === "manage_tasks"), true);
-                    if (requests === 2) {
-                        return {
-                            message: {
-                                role: "assistant",
-                                content: null,
-                                tool_calls: [{
-                                        id: "continue_start",
-                                        type: "function",
-                                        function: {
-                                            name: "manage_tasks",
-                                            arguments: '{"action":"start","taskId":"continue"}',
-                                        },
-                                    }],
-                            },
-                        };
-                    }
-                    if (requests === 3) {
-                        return {
-                            message: {
-                                role: "assistant",
-                                content: null,
-                                tool_calls: [{
-                                        id: "continue_block",
-                                        type: "function",
-                                        function: {
-                                            name: "manage_tasks",
-                                            arguments: JSON.stringify({
-                                                action: "block",
-                                                taskId: "continue",
-                                                reason: "The external API contract is still missing",
-                                            }),
-                                        },
-                                    }],
-                            },
-                        };
-                    }
                     return {
                         message: {
                             role: "assistant",
-                            content: "The existing DAG remains blocked on the API contract.",
+                            content: "The answer is ready.",
                             tool_calls: [],
                         },
                     };
@@ -936,10 +883,11 @@ describe("AgentRuntime", () => {
             commandTimeoutMs: 1_000,
             approvalPolicy: "never",
         });
-        assert.equal(requests, 4);
-        assert.deepEqual(promptModes, ["auto", "code", "code", "code"]);
+        assert.equal(requests, 2);
+        assert.deepEqual(promptModes, ["auto", "code"]);
         assert.equal(result.reason, "success");
-        assert.equal(currentState.taskGraph.status, "waiting_input");
+        assert.equal(currentState.mode, "code");
+        assert.equal(currentState.taskGraph, undefined);
     });
     it("executes a tool call and returns the final response", async () => {
         const uiOnlyMarker = "UI_ONLY_DIFF_CONTENT";
@@ -1023,7 +971,7 @@ describe("AgentRuntime", () => {
         assert.equal(completedPresentation?.type, "file_diff");
         assert.doesNotMatch(secondRequestToolContent, new RegExp(uiOnlyMarker, "u"));
     });
-    it("exposes planning/file/command tools without DAG creation in Plan mode", async () => {
+    it("exposes planning/file/command tools and optional DAG control in Plan mode", async () => {
         let seenToolNames = [];
         const provider = {
             name: "qwen",
@@ -1105,6 +1053,7 @@ describe("AgentRuntime", () => {
             "read_image",
             "create_file", "update_file", "delete_file",
             "run_command", "start_command", "poll_command", "cancel_command",
+            "manage_tasks",
             "propose_plan",
             "write_memory",
         ]);

@@ -119,9 +119,6 @@ export class SubmitTaskResultTool implements AgentTool {
     context: ToolContext,
   ): Promise<ToolExecutionResult> {
     try {
-      if (context.mode === "plan") {
-        throw new Error("submit_task_result is unavailable in Plan mode");
-      }
       if (this.task.status !== "in_progress") {
         throw new Error(`Bound task ${this.task.id} is not in progress`);
       }

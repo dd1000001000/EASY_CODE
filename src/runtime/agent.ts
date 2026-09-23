@@ -540,6 +540,8 @@ export interface AgentRuntimeDependencies {
   hasOpenCommandHandles?: () => boolean;
   onText?: (text: string) => void;
   onStatus?: (text: string) => void;
+  /** Presentation hook after an Auto route has durably become the Thread mode. */
+  onModeSelected?: (mode: "plan" | "code") => void;
   /** Transient presentation lifecycle around each provider API request. */
   onModelRequestStart?: (text: string) => unknown;
   onModelRequestEnd?: (activityToken: unknown) => void;
@@ -1097,8 +1099,8 @@ export class AgentRuntime {
     const turnImages = [...inputImages];
     this.dependencies.steeringNotifier?.consume(state.steeringWatermark);
     const agentIdentity = this.dependencies.agentIdentity ?? { role: "main_agent" as const };
-    if (agentIdentity.role === "subagent" && state.mode !== "code") {
-      throw new Error("An isolated child runtime must remain in Code mode");
+    if (agentIdentity.role === "subagent" && state.mode !== "code" && state.mode !== "plan") {
+      throw new Error("An isolated child runtime must remain in Plan or Code mode");
     }
     const memoryContext = {
       userInput,
@@ -1167,17 +1169,25 @@ export class AgentRuntime {
     const outstandingSubagentsAtRoute = agentIdentity.role === "main_agent"
       ? (this.dependencies.getOutstandingSubagents?.() ?? [])
       : [];
-    if (
-      outstandingSubagentsAtRoute.length > 0 &&
-      (options.modeOverride === "plan" ||
-        (options.modeOverride === undefined && state.mode === "plan"))
-    ) {
-      throw new Error(
-        "Outstanding child assignments must be collected in Code mode before entering Plan mode",
-      );
-    }
+    if (outstandingSubagentsAtRoute.length > 0 && options.modeOverride === "plan")
+      throw new Error("Outstanding child assignments must be collected before entering a Plan review override");
     let effectiveMode: AgentMode = options.modeOverride ?? state.mode;
     let autoReason = "";
+    const commitAutoRoute = async (mode: "plan" | "code", reason: string): Promise<void> => {
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        type: "mode.auto_route",
+        phase: "completed",
+        payload: { mode, reason },
+      });
+      state.mode = mode;
+      state.updatedAt = new Date().toISOString();
+      effectiveMode = mode;
+      autoReason = reason;
+      try { this.dependencies.onModeSelected?.(mode); }
+      catch { /* Presentation cannot undo a durable mode transition. */ }
+    };
     if (state.mode === "auto" && options.modeOverride) {
       autoReason = options.modeOverride === "plan"
         ? "The user requested a revision of the pending plan."
@@ -1240,15 +1250,7 @@ export class AgentRuntime {
             }
           : undefined;
       if (fixedSelection) {
-        effectiveMode = fixedSelection.mode;
-        autoReason = fixedSelection.reason;
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          type: "mode.auto_route",
-          phase: "completed",
-          payload: fixedSelection,
-        });
+        await commitAutoRoute(fixedSelection.mode, fixedSelection.reason);
       } else {
         let routeResolved = false;
         while (!routeResolved) {
@@ -1532,15 +1534,7 @@ export class AgentRuntime {
               memoryContext,
             );
           }
-          effectiveMode = decision.mode;
-          autoReason = decision.reason;
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "mode.auto_route",
-            phase: "completed",
-            payload: { mode: decision.mode, reason: decision.reason },
-          });
+          await commitAutoRoute(decision.mode, decision.reason);
           routeResolved = true;
         }
       }
@@ -1559,7 +1553,9 @@ export class AgentRuntime {
       state.thinkingEffort,
       this.orchestrationToolsAvailable(state, options),
       this.dependencies.visionAvailable ?? true,
-    ).filter(tool => tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId));
+    ).filter(tool => (tool.name !== "name_thread" || threadTitleUnclaimed(this.dependencies, state.threadId)) &&
+      (state.mode !== "auto" || (tool.name !== "manage_tasks" &&
+        (tool.name !== "manage_subagents" || outstandingSubagentsAtRoute.length > 0))));
     const exposedToolCatalog = snapshotToolSet(
       exposedTools,
       this.dependencies.toolCatalog.revision,
@@ -2087,32 +2083,6 @@ export class AgentRuntime {
       invalidOutputAttempts = 0;
       const calls = executionToolCalls ?? [];
       if (calls.length === 0) {
-        if (effectiveMode === "plan" && assistantMessage.content?.trim()) {
-          if (await this.takeAndApplySteering(
-            state, turnId, "before_final", turnImages, true, memoryContext,
-          )) continue;
-          const planReview = createPlanReviewState(
-            planDraftFromText(assistantMessage.content),
-            turnId,
-            state.planReview,
-          );
-          await this.dependencies.appendEvent({
-            threadId: state.threadId,
-            turnId,
-            type: "plan.proposed",
-            phase: "completed",
-            payload: { planReview },
-          });
-          state.planReview = planReview;
-          state.updatedAt = new Date().toISOString();
-          const text = `${formatPlanProposal(planReview.proposal)}\n\n` +
-            runtimePromptText("runtime/plan-waiting-review.md");
-          this.dependencies.onText?.(text);
-          return this.finish(
-            state, turnId, text, "planned", step, memoryContext,
-            planReview.proposal,
-          );
-        }
         if (agentIdentity.role === "main_agent" && this.dependencies.collectReadySubagents) {
           const collected = await this.dependencies.collectReadySubagents(state, turnId, options.signal);
           if (collected > 0) {
@@ -2125,6 +2095,7 @@ export class AgentRuntime {
         const obligations = evaluateCompletionGate({
           state,
           role: agentIdentity.role,
+          planning: effectiveMode === "plan",
           reconciliationPending: reconciliationPending(state),
           openCommandHandles: this.dependencies.hasOpenCommandHandles?.() ?? false,
           outstandingSubagents,
@@ -2164,6 +2135,22 @@ export class AgentRuntime {
           await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
             type: "completion.resolved", phase: "completed", payload });
           foldCompletionControl(state, "completion.resolved", payload);
+        }
+        if (effectiveMode === "plan" && agentIdentity.role === "main_agent" && assistantMessage.content?.trim()) {
+          if (await this.takeAndApplySteering(
+            state, turnId, "before_final", turnImages, true, memoryContext,
+          )) continue;
+          const planReview = createPlanReviewState(
+            planDraftFromText(assistantMessage.content), turnId, state.planReview,
+          );
+          await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+            type: "plan.proposed", phase: "completed", payload: { planReview } });
+          state.planReview = planReview;
+          state.updatedAt = new Date().toISOString();
+          const text = `${formatPlanProposal(planReview.proposal)}\n\n` +
+            runtimePromptText("runtime/plan-waiting-review.md");
+          this.dependencies.onText?.(text);
+          return this.finish(state, turnId, text, "planned", step, memoryContext, planReview.proposal);
         }
         let text =
           assistantMessage.content?.trim() ||
@@ -2404,6 +2391,7 @@ export class AgentRuntime {
               ...(toolName === "run_command" || toolName === "start_command"
                 ? { validationPriorChanges: state.changes.map(change => ({ ...change })) } : {}),
               mode: effectiveMode,
+              selectedMode: state.mode,
               threadId: state.threadId,
               turnId,
               approvalPolicy: options.approvalPolicy,
@@ -2655,6 +2643,8 @@ export class AgentRuntime {
                 "Outstanding child assignments must be collected before proposing a plan",
               );
             }
+            if (state.taskGraph && state.taskGraph.status !== "completed")
+              throw new Error("Finish the planning task DAG before proposing a plan");
             planReviewUpdate = createPlanReviewState(
               result.planProposal,
               turnId,

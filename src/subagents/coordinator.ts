@@ -225,8 +225,8 @@ export class SubagentCoordinator implements SubagentControl {
     if (context.agentRole !== "main_agent") {
       throw new Error("Only the main agent may manage child agents");
     }
-    if (context.mode !== "code") {
-      throw new Error("Subagents may be managed only in effective Code mode");
+    if (context.mode !== "plan" && context.mode !== "code") {
+      throw new Error("Subagents may be managed only in Plan or Code mode");
     }
     if (!context.provider || !context.model || !context.thinkingEffort) {
       throw new Error("The parent provider, model, or thinking-effort identity is unavailable");
@@ -237,7 +237,9 @@ export class SubagentCoordinator implements SubagentControl {
     request: SpawnSubagentRequest,
     context: ToolContext,
   ): Promise<ToolExecutionResult> {
+    if (context.mode !== "plan" && context.mode !== "code") throw new Error("Subagent dispatch requires Plan or Code mode");
     const thinkingEffort = childThinkingEffort(request.thinkingEffort, context.thinkingEffort);
+    if (context.selectedMode === "auto") throw new Error("Auto mode cannot dispatch subagents");
     if (context.commandExecutionMode === "manual" || (context.isOrchestrationEnabled?.() ?? context.orchestrationEnabled) === false) throw new Error("Subagent creation requires orchestration and at least independent approval. Enable with /orchestration.");
     if (context.limits && this.recordsForThread(context.threadId).filter((record) => record.createdByTurnId === context.turnId).length >= context.limits.maxSubagentsPerTurn) {
       throw new Error(`The ${context.limits.maxSubagentsPerTurn}-subagent turn budget is exhausted`);
@@ -306,7 +308,7 @@ export class SubagentCoordinator implements SubagentControl {
       ...(taskGraphId ? { taskGraphId } : {}),
       taskId: task.id,
       taskTitle: task.title,
-      mode: "code",
+      mode: context.mode,
       provider: context.provider as NonNullable<ToolContext["provider"]>,
       model: context.model as string,
       thinkingEffort,
@@ -791,7 +793,7 @@ export class SubagentCoordinator implements SubagentControl {
       ...(assignment.kind === "dag" ? { taskGraphId: assignment.taskGraphId } : {}),
       taskId: assignment.taskId,
       taskTitle: assignment.taskTitle,
-      mode: "code",
+      mode: assignment.mode,
       provider: assignment.provider,
       model: assignment.model,
       thinkingEffort: assignment.thinkingEffort,
@@ -1231,6 +1233,7 @@ function assignmentSnapshot(
     provider: record.provider,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
+    mode: record.mode,
     requestedIsolation: record.requestedIsolation,
     createdAt: record.createdAt,
   };

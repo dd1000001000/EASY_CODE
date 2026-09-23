@@ -103,6 +103,21 @@ function boundTask(
 }
 
 describe("subagent control tools", () => {
+  it("allows an explicitly selected Plan parent to dispatch a planning child", async () => {
+    const control = new RecordingControl();
+    const tool = new ManageSubagentsTool(control);
+    const parameters = tool.definition.function.parameters as { properties: Record<string, unknown> };
+    assert.equal("mode" in parameters.properties, false);
+    const result = await tool.execute({
+      action: "spawn", taskId: "research", instructions: "Inspect without modifying files",
+    }, { ...context("plan"), selectedMode: "plan" });
+    assert.equal(result.ok, true);
+    assert.equal(control.calls[0]?.action, "spawn");
+    assert.equal((await tool.execute({
+      action: "spawn", taskId: "research", instructions: "Inspect", mode: "code",
+    }, { ...context("plan"), selectedMode: "plan" })).ok, false);
+    assert.equal(control.calls.length, 1);
+  });
   it("truncates oversized spawn instructions and follow-ups after sanitizing", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control, {
@@ -253,7 +268,7 @@ describe("subagent control tools", () => {
     assert.equal(control.calls.length, 1);
   });
 
-  it("rejects malformed, cross-action, duplicate-target, Plan-mode, and unauthorized calls", async () => {
+  it("rejects malformed, cross-action, duplicate-target, Auto dispatch, and unauthorized calls", async () => {
     const control = new RecordingControl();
     const tool = new ManageSubagentsTool(control);
 
@@ -287,7 +302,7 @@ describe("subagent control tools", () => {
       action: "spawn",
       taskId: "implementation",
       instructions: "Do the task",
-    }, context("plan"))).ok, false);
+    }, { ...context("code"), selectedMode: "auto" })).ok, false);
     assert.equal(control.calls.length, 0);
     assert.equal(control.authorizationChecks, 0);
 
@@ -349,7 +364,7 @@ describe("subagent control tools", () => {
     assert.equal(spoofed.ok, false);
   });
 
-  it("accepts concise evidence and rejects inactive bindings, Plan mode, and cross-outcome fields", async () => {
+  it("accepts concise evidence in Code and Plan but rejects inactive bindings and cross-outcome fields", async () => {
     const active = new SubmitTaskResultTool(boundTask());
     const concise = await active.execute({
       outcome: "completed",
@@ -376,7 +391,7 @@ describe("subagent control tools", () => {
       outcome: "blocked",
       summary: "Blocked",
       blocker: "External input is missing",
-    }, context("plan"))).ok, false);
+    }, context("plan"))).ok, true);
     assert.equal((await active.execute({
       outcome: "completed",
       summary: "Done",

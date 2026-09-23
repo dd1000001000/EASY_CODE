@@ -725,9 +725,34 @@ describe("/model", () => {
       }, { turnId: "turn_mode_guard" });
       await assert.rejects(
         fixture.app.handleSlashCommand("/mode plan"),
-        /Cannot switch to Plan mode while a task DAG is active or blocked/u,
+        /Finish or resolve the active task DAG before switching modes/u,
       );
       assert.notEqual(internal.state.mode, "plan");
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("requires resolving a pending plan before manually returning to Auto", async () => {
+    const fixture = await createAppFixture({ qwen: "qwen-test-key" });
+    try {
+      const internal = fixture.app as unknown as { state: SessionState };
+      internal.state.mode = "plan";
+      internal.state.planReview = {
+        status: "awaiting_review",
+        proposal: {
+          id: "plan_11111111-1111-4111-8111-111111111111",
+          revision: 1,
+          proposedByTurnId: "turn_review",
+          proposedAt: new Date().toISOString(),
+          title: "Review this plan",
+          overview: "Inspect before implementation.",
+          steps: [{ title: "Inspect", description: "Read the relevant files.", verification: "Summarize observations." }],
+        },
+      };
+      await assert.rejects(fixture.app.handleSlashCommand("/mode auto"),
+        /Resolve the pending plan review before switching modes/u);
+      assert.equal(internal.state.mode, "plan");
     } finally {
       fixture.close();
     }
@@ -791,7 +816,7 @@ describe("/model", () => {
           terminal: resumeTerminal,
           credentialStore: false,
         }),
-        /Cannot resume an active or blocked task DAG in Plan mode/u,
+        /Finish or resolve the active task DAG before changing modes on resume/u,
       );
     } finally {
       resumeTerminal.close();
@@ -1022,6 +1047,7 @@ describe("thread leases", () => {
       { kind: "standalone" }
     > = {
       kind: "standalone",
+      mode: "code",
       agentId: "subagent_00000000-0000-4000-8000-000000000401",
       childThreadId: "thread_00000000-0000-4000-8000-000000000401",
       environmentId: "environment_00000000-0000-4000-8000-000000000401",
@@ -1134,9 +1160,12 @@ describe("thread leases", () => {
     };
     try {
       const firstThreadId = activeThread();
+      await fixture.app.handleSlashCommand("/mode code");
+      assert.equal(fixture.app.sessionInfo().mode, "code");
       await fixture.app.handleSlashCommand("/new");
       const secondThreadId = activeThread();
       assert.notEqual(secondThreadId, firstThreadId);
+      assert.equal(fixture.app.sessionInfo().mode, "auto");
       assert.deepEqual(resetThreadIds, [secondThreadId]);
 
       const probeStorage = createStorage(fixture.dataDir);
@@ -1154,6 +1183,7 @@ describe("thread leases", () => {
 
       await fixture.app.handleSlashCommand(`/resume ${firstThreadId}`);
       assert.equal(activeThread(), firstThreadId);
+      assert.equal(fixture.app.sessionInfo().mode, "code");
       assert.deepEqual(resetThreadIds, [secondThreadId]);
       const transferredStorage = createStorage(fixture.dataDir);
       try {

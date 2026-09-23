@@ -306,6 +306,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
       input.thinkingEffort !== "low" &&
       input.thinkingEffort !== "medium" &&
       input.thinkingEffort !== "high") ||
+    (input.mode !== "plan" && input.mode !== "code") ||
     typeof input.createdAt !== "string" ||
     !input.createdAt ||
     (input.requestedIsolation !== "auto" &&
@@ -327,6 +328,7 @@ function subagentAssignment(value: unknown): SubagentAssignmentSnapshot | undefi
     provider: input.provider as ProviderName,
     model: input.model,
     thinkingEffort: input.thinkingEffort as ThinkingEffort,
+    mode: input.mode as "plan" | "code",
     requestedIsolation: input.requestedIsolation as "auto" | "shared" | "worktree",
     createdAt: input.createdAt,
   };
@@ -365,6 +367,7 @@ function sameSubagentAssignmentIdentity(
     activated.provider !== observed.provider ||
     activated.model !== observed.model ||
     activated.thinkingEffort !== observed.thinkingEffort ||
+    activated.mode !== observed.mode ||
     activated.requestedIsolation !== observed.requestedIsolation ||
     activated.createdAt !== observed.createdAt
   ) {
@@ -934,6 +937,21 @@ function applyThreadCheckpointDelta(
   }
 }
 
+function foldAutoRouteSelection(
+  state: SessionState,
+  event: Pick<EventRecord, "phase" | "turnId" | "timestamp">,
+  payload: Record<string, unknown> | undefined,
+): void {
+  if (event.phase !== "completed" || !event.turnId ||
+      state.activeTurnId !== event.turnId || state.mode !== "auto" ||
+      (payload?.mode !== "plan" && payload?.mode !== "code") ||
+      typeof payload.reason !== "string" || !payload.reason.trim()) {
+    throw new Error("Invalid Auto mode selection event");
+  }
+  state.mode = payload.mode;
+  state.updatedAt = event.timestamp;
+}
+
 function threadCheckpointDeltaHasChanges(
   delta: Readonly<SerializedThreadCheckpointDelta>,
 ): boolean {
@@ -1347,6 +1365,14 @@ export class ThreadStore {
             timestamp: input.timestamp ?? new Date().toISOString() }]);
         }
         const payload = asPayloadRecord(input.payload);
+        if (input.type === "mode.auto_route") {
+          const priorState = this.recoverFromEvents(threadId, priorEvents);
+          foldAutoRouteSelection(priorState, {
+            phase: input.phase,
+            turnId: input.turnId,
+            timestamp: input.timestamp ?? new Date().toISOString(),
+          }, payload);
+        }
         if (
           input.type === "model.usage" &&
           (input.phase !== "completed" || !parseModelUsageRecord(input.payload))
@@ -1487,6 +1513,10 @@ export class ThreadStore {
         event = journal.append(input);
         this.projectEvent(event, journal.filePath);
         this.projectAuxiliaryEvent(threadId, event);
+        if (input.type === "mode.auto_route") {
+          this.storage.db.prepare("UPDATE threads SET mode = ? WHERE id = ?")
+            .run(payload!.mode, threadId);
+        }
         this.touchThread(threadId, event.timestamp);
       })();
     } catch (error) {
@@ -2046,7 +2076,9 @@ export class ThreadStore {
       }
       if (!state) throw new Error(`Thread ${threadId} has no creation event`);
 
-      if (event.type === "context.server_reset") {
+      if (event.type === "mode.auto_route") {
+        foldAutoRouteSelection(state, event, payload);
+      } else if (event.type === "context.server_reset") {
         foldServerContextReset(state, payload);
       } else if (event.type === "context.reconciled") {
         foldReconciliation(state, String(payload?.tool), payload?.observation);

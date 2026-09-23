@@ -182,6 +182,7 @@ async function withWeb(options: CliOptions): Promise<void> {
     await serveWeb(dataDir, port, (workspaceRoot, resumeThreadId, threadPort, projectWorkspace) => {
       if (!projectWorkspace) throw new Error("Logical project workspace is unavailable.");
       return EasyCodeApp.create({ ...appOptions(options, "none", threadPort, projectWorkspace), workspaceRoot, resumeThreadId,
+        mode: resumeThreadId ? undefined : "auto",
         provider: undefined, model: undefined, thinkingEffort: undefined, keepInteractionOpen: true,
         workspaceMutationLock });
     }, shutdown.signal);

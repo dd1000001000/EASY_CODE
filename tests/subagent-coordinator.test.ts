@@ -296,7 +296,7 @@ describe("SubagentCoordinator", () => {
     assert.equal(coordinator.snapshot("thread_subagent_coordinator").length, 3);
   });
 
-  it("authorizes every parent thinking effort in effective Code mode", () => {
+  it("authorizes every parent thinking effort in Plan or Code mode", () => {
     const taskGraph = graph(["inspect"]);
     const coordinator = new SubagentCoordinator({
       run: async () => completedOutcome("inspect"),
@@ -311,9 +311,10 @@ describe("SubagentCoordinator", () => {
       () => coordinator.assertAuthorized(context(taskGraph, { agentRole: "subagent" })),
       /Only the main agent/u,
     );
+    assert.doesNotThrow(() => coordinator.assertAuthorized(context(taskGraph, { mode: "plan" })));
     assert.throws(
-      () => coordinator.assertAuthorized(context(taskGraph, { mode: "plan" })),
-      /only in effective Code mode/u,
+      () => coordinator.assertAuthorized(context(taskGraph, { mode: "auto" })),
+      /only in Plan or Code mode/u,
     );
   });
 
