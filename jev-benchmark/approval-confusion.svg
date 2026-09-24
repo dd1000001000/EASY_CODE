@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="275" viewBox="0 0 800 275" role="img" aria-labelledby="title desc">
+<title id="title">Command approval: AUTO_ALLOW positive: TP, FP, TN, FN</title>
+<desc id="desc">Five models or workflows compared on 68 cases. Stacked bars and exact TP, FP, TN, FN counts.</desc>
+<style>text{fill:#242930;font-family:system-ui,sans-serif;font-size:14px}.heading{font-size:18px;font-weight:600}.sub{fill:#57606a}.track{fill:#edf0f3}@media(prefers-color-scheme:dark){text{fill:#edf1f5}.sub{fill:#b2bac4}.track{fill:#333943}}</style>
+<text class="heading" x="20" y="29">Command approval: AUTO_ALLOW positive</text>
+<text class="sub" x="20" y="54">68 cases per row · Stacked TP/FP/TN/FN; exact counts at right</text>
+<rect x="205" y="65" width="13" height="13" fill="#279c74"/>
+<text x="224" y="77">TP</text>
+<rect x="285" y="65" width="13" height="13" fill="#d35c62"/>
+<text x="304" y="77">FP</text>
+<rect x="365" y="65" width="13" height="13" fill="#547fb8"/>
+<text x="384" y="77">TN</text>
+<rect x="445" y="65" width="13" height="13" fill="#d5a132"/>
+<text x="464" y="77">FN</text>
+<text class="sub" x="20" y="99">Model</text>
+<text class="sub" x="611" y="99" text-anchor="middle">TP</text>
+<text class="sub" x="658" y="99" text-anchor="middle">FP</text>
+<text class="sub" x="705" y="99" text-anchor="middle">TN</text>
+<text class="sub" x="752" y="99" text-anchor="middle">FN</text>
+<text x="20" y="128">GLM</text>
+<rect class="track" x="205" y="114" width="350" height="18"/>
+<rect x="205.00" y="114" width="175.00" height="18" fill="#279c74"/>
+<rect x="380.00" y="114" width="175.00" height="18" fill="#547fb8"/>
+<text x="611" y="128" text-anchor="middle">34</text>
+<text x="658" y="128" text-anchor="middle">0</text>
+<text x="705" y="128" text-anchor="middle">34</text>
+<text x="752" y="128" text-anchor="middle">0</text>
+<text x="20" y="156">Laya fine-tuned</text>
+<rect class="track" x="205" y="142" width="350" height="18"/>
+<rect x="205.00" y="142" width="92.65" height="18" fill="#279c74"/>
+<rect x="297.65" y="142" width="46.32" height="18" fill="#d35c62"/>
+<rect x="343.97" y="142" width="128.68" height="18" fill="#547fb8"/>
+<rect x="472.65" y="142" width="82.35" height="18" fill="#d5a132"/>
+<text x="611" y="156" text-anchor="middle">18</text>
+<text x="658" y="156" text-anchor="middle">9</text>
+<text x="705" y="156" text-anchor="middle">25</text>
+<text x="752" y="156" text-anchor="middle">16</text>
+<text x="20" y="184">Laya base</text>
+<rect class="track" x="205" y="170" width="350" height="18"/>
+<rect x="205.00" y="170" width="169.85" height="18" fill="#279c74"/>
+<rect x="374.85" y="170" width="169.85" height="18" fill="#d35c62"/>
+<rect x="544.71" y="170" width="5.15" height="18" fill="#547fb8"/>
+<rect x="549.85" y="170" width="5.15" height="18" fill="#d5a132"/>
+<text x="611" y="184" text-anchor="middle">33</text>
+<text x="658" y="184" text-anchor="middle">33</text>
+<text x="705" y="184" text-anchor="middle">1</text>
+<text x="752" y="184" text-anchor="middle">1</text>
+<text x="20" y="212">Hybrid fine-tuned</text>
+<rect class="track" x="205" y="198" width="350" height="18"/>
+<rect x="205.00" y="198" width="175.00" height="18" fill="#279c74"/>
+<rect x="380.00" y="198" width="175.00" height="18" fill="#547fb8"/>
+<text x="611" y="212" text-anchor="middle">34</text>
+<text x="658" y="212" text-anchor="middle">0</text>
+<text x="705" y="212" text-anchor="middle">34</text>
+<text x="752" y="212" text-anchor="middle">0</text>
+<text x="20" y="240">Hybrid base</text>
+<rect class="track" x="205" y="226" width="350" height="18"/>
+<rect x="205.00" y="226" width="175.00" height="18" fill="#279c74"/>
+<rect x="380.00" y="226" width="15.44" height="18" fill="#d35c62"/>
+<rect x="395.44" y="226" width="159.56" height="18" fill="#547fb8"/>
+<text x="611" y="240" text-anchor="middle">34</text>
+<text x="658" y="240" text-anchor="middle">3</text>
+<text x="705" y="240" text-anchor="middle">31</text>
+<text x="752" y="240" text-anchor="middle">0</text>
+</svg>
