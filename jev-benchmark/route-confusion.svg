@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="895" viewBox="0 0 800 895" role="img" aria-labelledby="title desc">
+<title id="title">Route 3×3 confusion matrices: GLM, Laya fine-tuned, Laya base, and hybrid</title>
+<desc id="desc">Each matrix has 34 cases. Rows are true classes and columns are predicted classes. Both hybrid arms use GLM for route and therefore have the same matrix.</desc>
+<style>text{fill:#242930;font-family:system-ui,sans-serif;font-size:14px}.heading{font-size:19px;font-weight:600}.model{font-size:17px;font-weight:600}.sub{fill:#57606a}.hit{fill:#d7efe2}.miss{fill:#f7d9dd}.empty{fill:#eef1f4}.sep{stroke:#d9dee3;stroke-width:1}@media(prefers-color-scheme:dark){text{fill:#edf1f5}.sub{fill:#b2bac4}.hit{fill:#1f5140}.miss{fill:#63363e}.empty{fill:#333943}.sep{stroke:#505862}}</style>
+<text class="heading" x="24" y="30">Route: 3×3 confusion matrices</text>
+<text class="sub" x="24" y="55">Rows: actual · Columns: predicted · Green: correct · Red: error</text>
+<text class="model" x="26" y="104">GLM</text>
+<text class="sub" x="26" y="130">Correct 34/34</text>
+<text class="sub" x="380" y="94">Predicted</text>
+<text class="sub" x="178" y="130">Actual</text>
+<text class="sub" x="312" y="123" text-anchor="middle">DIRECT</text>
+<text class="sub" x="422" y="123" text-anchor="middle">PLAN</text>
+<text class="sub" x="532" y="123" text-anchor="middle">CODE</text>
+<text class="sub" x="244" y="161" text-anchor="end">DIRECT</text>
+<rect class="hit" x="260" y="137" width="104" height="35" rx="4"/>
+<text x="312" y="161" text-anchor="middle">11</text>
+<rect class="empty" x="370" y="137" width="104" height="35" rx="4"/>
+<text x="422" y="161" text-anchor="middle">0</text>
+<rect class="empty" x="480" y="137" width="104" height="35" rx="4"/>
+<text x="532" y="161" text-anchor="middle">0</text>
+<text class="sub" x="244" y="200" text-anchor="end">PLAN</text>
+<rect class="empty" x="260" y="176" width="104" height="35" rx="4"/>
+<text x="312" y="200" text-anchor="middle">0</text>
+<rect class="hit" x="370" y="176" width="104" height="35" rx="4"/>
+<text x="422" y="200" text-anchor="middle">11</text>
+<rect class="empty" x="480" y="176" width="104" height="35" rx="4"/>
+<text x="532" y="200" text-anchor="middle">0</text>
+<text class="sub" x="244" y="239" text-anchor="end">CODE</text>
+<rect class="empty" x="260" y="215" width="104" height="35" rx="4"/>
+<text x="312" y="239" text-anchor="middle">0</text>
+<rect class="empty" x="370" y="215" width="104" height="35" rx="4"/>
+<text x="422" y="239" text-anchor="middle">0</text>
+<rect class="hit" x="480" y="215" width="104" height="35" rx="4"/>
+<text x="532" y="239" text-anchor="middle">12</text>
+<line class="sep" x1="24" y1="267" x2="776" y2="267"/>
+<text class="model" x="26" y="307">Laya fine-tuned</text>
+<text class="sub" x="26" y="333">Correct 27/34</text>
+<text class="sub" x="380" y="297">Predicted</text>
+<text class="sub" x="178" y="333">Actual</text>
+<text class="sub" x="312" y="326" text-anchor="middle">DIRECT</text>
+<text class="sub" x="422" y="326" text-anchor="middle">PLAN</text>
+<text class="sub" x="532" y="326" text-anchor="middle">CODE</text>
+<text class="sub" x="244" y="364" text-anchor="end">DIRECT</text>
+<rect class="hit" x="260" y="340" width="104" height="35" rx="4"/>
+<text x="312" y="364" text-anchor="middle">7</text>
+<rect class="empty" x="370" y="340" width="104" height="35" rx="4"/>
+<text x="422" y="364" text-anchor="middle">0</text>
+<rect class="miss" x="480" y="340" width="104" height="35" rx="4"/>
+<text x="532" y="364" text-anchor="middle">4</text>
+<text class="sub" x="244" y="403" text-anchor="end">PLAN</text>
+<rect class="miss" x="260" y="379" width="104" height="35" rx="4"/>
+<text x="312" y="403" text-anchor="middle">1</text>
+<rect class="hit" x="370" y="379" width="104" height="35" rx="4"/>
+<text x="422" y="403" text-anchor="middle">9</text>
+<rect class="miss" x="480" y="379" width="104" height="35" rx="4"/>
+<text x="532" y="403" text-anchor="middle">1</text>
+<text class="sub" x="244" y="442" text-anchor="end">CODE</text>
+<rect class="miss" x="260" y="418" width="104" height="35" rx="4"/>
+<text x="312" y="442" text-anchor="middle">1</text>
+<rect class="empty" x="370" y="418" width="104" height="35" rx="4"/>
+<text x="422" y="442" text-anchor="middle">0</text>
+<rect class="hit" x="480" y="418" width="104" height="35" rx="4"/>
+<text x="532" y="442" text-anchor="middle">11</text>
+<line class="sep" x1="24" y1="470" x2="776" y2="470"/>
+<text class="model" x="26" y="510">Laya base</text>
+<text class="sub" x="26" y="536">Correct 17/34</text>
+<text class="sub" x="380" y="500">Predicted</text>
+<text class="sub" x="178" y="536">Actual</text>
+<text class="sub" x="312" y="529" text-anchor="middle">DIRECT</text>
+<text class="sub" x="422" y="529" text-anchor="middle">PLAN</text>
+<text class="sub" x="532" y="529" text-anchor="middle">CODE</text>
+<text class="sub" x="244" y="567" text-anchor="end">DIRECT</text>
+<rect class="hit" x="260" y="543" width="104" height="35" rx="4"/>
+<text x="312" y="567" text-anchor="middle">7</text>
+<rect class="empty" x="370" y="543" width="104" height="35" rx="4"/>
+<text x="422" y="567" text-anchor="middle">0</text>
+<rect class="miss" x="480" y="543" width="104" height="35" rx="4"/>
+<text x="532" y="567" text-anchor="middle">4</text>
+<text class="sub" x="244" y="606" text-anchor="end">PLAN</text>
+<rect class="miss" x="260" y="582" width="104" height="35" rx="4"/>
+<text x="312" y="606" text-anchor="middle">3</text>
+<rect class="empty" x="370" y="582" width="104" height="35" rx="4"/>
+<text x="422" y="606" text-anchor="middle">0</text>
+<rect class="miss" x="480" y="582" width="104" height="35" rx="4"/>
+<text x="532" y="606" text-anchor="middle">8</text>
+<text class="sub" x="244" y="645" text-anchor="end">CODE</text>
+<rect class="miss" x="260" y="621" width="104" height="35" rx="4"/>
+<text x="312" y="645" text-anchor="middle">2</text>
+<rect class="empty" x="370" y="621" width="104" height="35" rx="4"/>
+<text x="422" y="645" text-anchor="middle">0</text>
+<rect class="hit" x="480" y="621" width="104" height="35" rx="4"/>
+<text x="532" y="645" text-anchor="middle">10</text>
+<line class="sep" x1="24" y1="673" x2="776" y2="673"/>
+<text class="model" x="26" y="713">Hybrid (both)</text>
+<text class="sub" x="26" y="739">Correct 34/34</text>
+<text class="sub" x="380" y="703">Predicted</text>
+<text class="sub" x="178" y="739">Actual</text>
+<text class="sub" x="312" y="732" text-anchor="middle">DIRECT</text>
+<text class="sub" x="422" y="732" text-anchor="middle">PLAN</text>
+<text class="sub" x="532" y="732" text-anchor="middle">CODE</text>
+<text class="sub" x="244" y="770" text-anchor="end">DIRECT</text>
+<rect class="hit" x="260" y="746" width="104" height="35" rx="4"/>
+<text x="312" y="770" text-anchor="middle">11</text>
+<rect class="empty" x="370" y="746" width="104" height="35" rx="4"/>
+<text x="422" y="770" text-anchor="middle">0</text>
+<rect class="empty" x="480" y="746" width="104" height="35" rx="4"/>
+<text x="532" y="770" text-anchor="middle">0</text>
+<text class="sub" x="244" y="809" text-anchor="end">PLAN</text>
+<rect class="empty" x="260" y="785" width="104" height="35" rx="4"/>
+<text x="312" y="809" text-anchor="middle">0</text>
+<rect class="hit" x="370" y="785" width="104" height="35" rx="4"/>
+<text x="422" y="809" text-anchor="middle">11</text>
+<rect class="empty" x="480" y="785" width="104" height="35" rx="4"/>
+<text x="532" y="809" text-anchor="middle">0</text>
+<text class="sub" x="244" y="848" text-anchor="end">CODE</text>
+<rect class="empty" x="260" y="824" width="104" height="35" rx="4"/>
+<text x="312" y="848" text-anchor="middle">0</text>
+<rect class="empty" x="370" y="824" width="104" height="35" rx="4"/>
+<text x="422" y="848" text-anchor="middle">0</text>
+<rect class="hit" x="480" y="824" width="104" height="35" rx="4"/>
+<text x="532" y="848" text-anchor="middle">12</text>
+</svg>
