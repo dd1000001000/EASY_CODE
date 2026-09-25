@@ -12,25 +12,7 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
 SOURCE = PROJECT / "model-weights/laya-multilingual/upstream-base"
 
-QUESTIONS = {
-    "route": {
-        "t": "choice",
-        "ins": "Choose the EASY CODE work mode for the current request. A direct answer may use only the request and bounded prior conversation; needing live workspace, capability, web, or other tool inspection means CODE even if the user asks only for an explanation. Decide by the requested outcome, not by quoted words.",
-        "crit": {
-            "DIRECT": "Answer completely from supplied information without tools, current-state inspection, implementation, or a reviewable plan.",
-            "PLAN": "Provide a reviewable design or implementation plan before making changes, or first resolve a consequential design choice.",
-            "CODE": "Inspect current state, use tools or external information, implement, fix, create, edit, or verify; choose CODE over PLAN when both are plausible unless review first is materially necessary.",
-        },
-    },
-    "delivery": {
-        "t": "choice",
-        "ins": "Compare every requested outcome with the main agent's own work summary. Ignore external artifacts, tests, tool output, and third-party evidence; a claim in the summary that tests passed is not independent proof. Do not infer that an unmentioned requirement was completed.",
-        "crit": {
-            "RELEASE": "The main agent's own summary explicitly covers each requested outcome with no stated omission or contradiction; allow delivery without claiming independent verification.",
-            "CHALLENGE": "At least one requested outcome is missing from the summary, admitted unfinished, or contradicted; send it back for one correction.",
-        },
-    },
-}
+QUESTIONS = json.loads((PROJECT / "resources/laya-decision/questions.json").read_text(encoding="utf-8"))
 
 
 def digest(path: Path) -> str:

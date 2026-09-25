@@ -194,6 +194,91 @@ function contextRuntime(provider, tools, events = [], purposes = []) {
     });
 }
 describe("AgentRuntime", () => {
+    it("routes Auto mode with Laya before making a cloud controller request", async () => {
+        const current = state("auto");
+        const tasks = [];
+        let modelRequests = 0;
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async () => {
+                modelRequests++;
+                return { message: { role: "assistant", content: "Implemented the requested change." } };
+            } },
+            toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+            localDecision: async (task, input) => {
+                tasks.push(task);
+                const route = task === "route";
+                return { task, input, inputTokens: 24, truncated: false,
+                    optionOrder: route ? ["DIRECT", "PLAN", "CODE"] : ["RELEASE", "CHALLENGE"],
+                    scores: route ? { DIRECT: 0.01, PLAN: 0.01, CODE: 0.98 } :
+                        { RELEASE: 0.98, CHALLENGE: 0.02 },
+                    decision: route ? "CODE" : "RELEASE", modelSha256: "test", device: "cpu" };
+            },
+        });
+        const result = await runtime.run(current, "Implement the feature", degradationOptions);
+        assert.equal(result.reason, "success");
+        assert.equal(modelRequests, 1);
+        assert.deepEqual(tasks, ["route", "delivery"]);
+    });
+    it("lets a local delivery challenge request exactly one main-agent correction", async () => {
+        const current = state("code");
+        const events = [], traces = [];
+        let requests = 0, localCalls = 0;
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async () => {
+                requests++;
+                return { message: { role: "assistant", content: requests === 1
+                    ? "Changed the login code." : "Changed the login code and verified the requested case." } };
+            } },
+            toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [], appendEvent: async event => { events.push(event); },
+            requestApproval: async () => false,
+            localDecision: async (task, input) => {
+                assert.equal(task, "delivery");
+                assert.match(input, /Original user request:/);
+                localCalls++;
+                return { task, input, inputTokens: 60, truncated: false,
+                    optionOrder: ["RELEASE", "CHALLENGE"], scores: { RELEASE: 0.1, CHALLENGE: 0.9 },
+                    decision: "CHALLENGE", modelSha256: "test", device: "cpu" };
+            },
+            recordLocalDecision: async trace => { traces.push(trace); },
+            deliveryChallengeAlreadyUsed: () => events.some(event =>
+                event.type === "decision.delivery.challenge_requested"),
+        });
+        const result = await runtime.run(current, "Repair login and verify it", degradationOptions);
+        assert.equal(result.reason, "success");
+        assert.equal(requests, 2);
+        assert.equal(localCalls, 1);
+        assert.equal(traces[0]?.challenged, true);
+        assert.equal(events.filter(event => event.type === "decision.delivery.challenge_requested").length, 1);
+    });
+    it("challenges a low-confidence RELEASE using the configured delivery threshold", async () => {
+        const events = [], traces = [];
+        let requests = 0;
+        const runtime = new AgentRuntime({
+            provider: { name: "qwen", model: "mock", complete: async () => {
+                requests++;
+                return { message: { role: "assistant", content: "Login was repaired and tested." } };
+            } }, toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+            buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
+            searchMemories: async () => [], appendEvent: async event => { events.push(event); },
+            requestApproval: async () => false,
+            localDecision: async (task, input) => ({ task, input, inputTokens: 50, truncated: false,
+                optionOrder: ["RELEASE", "CHALLENGE"], scores: { RELEASE: 0.89, CHALLENGE: 0.11 },
+                decision: "RELEASE", modelSha256: "test", device: "cpu" }),
+            recordLocalDecision: async trace => { traces.push(trace); },
+            deliveryChallengeAlreadyUsed: () => events.some(event =>
+                event.type === "decision.delivery.challenge_requested"),
+        });
+        const result = await runtime.run(state("code"), "Repair login", degradationOptions);
+        assert.equal(result.reason, "success");
+        assert.equal(requests, 2);
+        assert.equal(traces[0]?.decision.decision, "RELEASE");
+        assert.equal(traces[0]?.appliedDecision, "CHALLENGE");
+        assert.equal(events.filter(event => event.type === "decision.delivery.challenge_requested").length, 1);
+    });
     it("records a selected long-term memory only after a successful model request", async () => {
         const remembered = {
             id: "memory_12345678-1234-4234-8234-123456789abc", workspaceId: "memory_global",

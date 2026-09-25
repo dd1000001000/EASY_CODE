@@ -86,6 +86,7 @@ describe("native full uninstall", () => {
 
   it("removes native Runtime state without inspecting or removing VM/container software", async () => fixture(async f => {
     put(path.join(f.data, "native-sandbox", "runtime-home", "state.json"));
+    put(path.join(f.data, "runtimes", "laya-decision", "pyvenv.cfg"));
     put(path.join(f.data, "threads", "one", "events.jsonl"));
     put(path.join(f.config, "config.toml"), "[limits]\nmaxContextTokens=1000000\n");
     put(path.join(f.cache, "models", "paraphrase-multilingual-MiniLM-L12-v2", "model.onnx"));

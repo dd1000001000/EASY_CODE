@@ -69,6 +69,7 @@ import {
   nextThreadImageNumber,
 } from "../images/labels.js";
 import { redactSensitiveInformation } from "../memory/sensitive.js";
+import type { LocalDecisionResult, LocalDecisionTask } from "../local-decision/client.js";
 import { validateProviderImageAttachments, effectiveContextWindow } from "../models/catalog.js";
 import {
   clonePlanReviewState,
@@ -509,6 +510,14 @@ export interface AgentRuntimeDependencies {
   ) => Promise<void>;
   runReviewSession?: (input: import("../review/application.js").WorkspaceReviewRequest) =>
     Promise<import("../review/application.js").WorkspaceReviewResult>;
+  /** Local choice model; errors fall back to the existing controller or delivery path. */
+  localDecision?: (task: LocalDecisionTask, input: string, signal?: AbortSignal) => Promise<LocalDecisionResult>;
+  recordLocalDecision?: (input: { id: string; threadId: string; turnId: string;
+    decision: LocalDecisionResult; appliedDecision: string;
+    challenged?: boolean; challengeAlreadyUsed?: boolean }) => Promise<void>;
+  recordLocalDecisionFallback?: (input: { id: string; threadId: string; turnId: string;
+    task: LocalDecisionTask; input: string; reason: string }) => Promise<void>;
+  deliveryChallengeAlreadyUsed?: (threadId: string) => boolean;
   requestApproval: ApprovalHandler;
   /** Optional conversation metadata service; never controls task execution. */
   threadTitle?: {
@@ -786,6 +795,62 @@ function isSubagentAssignmentSnapshot(
 }
 
 export class AgentRuntime {
+  private async decideLocally(state: Readonly<SessionState>, turnId: string,
+    task: LocalDecisionTask, rawInput: string, signal?: AbortSignal,
+  ): Promise<{ id: string; result: LocalDecisionResult; appliedDecision: string } | undefined> {
+    if (!this.dependencies.localDecision) return undefined;
+    let result: LocalDecisionResult;
+    const input = redactSensitiveInformation(rawInput);
+    try {
+      // The same sanitized text is sent to the worker and retained in its
+      // project-local trace. The worker performs token-aware middle clipping.
+      result = await this.dependencies.localDecision(task, input, signal);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      const id = createId("decision");
+      await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+        type: "decision.local_fallback", phase: "failed",
+        payload: { id, task, reason: reason.slice(0, 500) } });
+      try {
+        await this.dependencies.recordLocalDecisionFallback?.({ id,
+          threadId: state.threadId, turnId, task, input, reason: reason.slice(0, 500) });
+      } catch (traceError) {
+        const detail = traceError instanceof Error ? traceError.message : String(traceError);
+        this.dependencies.onStatus?.(`Local Laya fallback trace was not written: ${detail.slice(0, 160)}`);
+      }
+      this.dependencies.onStatus?.(`Local Laya ${task} decision unavailable; using the existing workflow. ${reason.slice(0, 150)}`);
+      return undefined;
+    }
+    const id = createId("decision");
+    const releaseThreshold = (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).layaDeliveryReleaseThreshold;
+    const releaseConfidence = result.scores.RELEASE;
+    const appliedDecision = task === "delivery" && result.decision === "RELEASE" &&
+      !(typeof releaseConfidence === "number" && Number.isFinite(releaseConfidence) &&
+        releaseConfidence >= releaseThreshold) ? "CHALLENGE" : result.decision;
+    await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+      type: task === "route" ? "decision.local_route" : "decision.local_delivery",
+      phase: "completed", payload: { id, decision: result.decision,
+        appliedDecision, ...(task === "delivery" ? { releaseThreshold } : {}),
+        inputHash: sha256(result.input), inputTokens: result.inputTokens,
+        truncated: result.truncated, scores: result.scores,
+        modelSha256: result.modelSha256 } });
+    if (task === "route") await this.recordLocalDecision(id, state, turnId, result, appliedDecision);
+    return { id, result, appliedDecision };
+  }
+
+  private async recordLocalDecision(id: string, state: Readonly<SessionState>, turnId: string,
+    decision: LocalDecisionResult, appliedDecision: string, challenged?: boolean): Promise<void> {
+    try {
+      await this.dependencies.recordLocalDecision?.({ id, threadId: state.threadId,
+        turnId, decision, appliedDecision, ...(challenged !== undefined ? { challenged,
+          challengeAlreadyUsed: challenged } : {}) });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.dependencies.onStatus?.(`Local Laya decision was made, but its project trace was not written: ${reason.slice(0, 160)}`);
+    }
+  }
+
   private orchestrationToolsAvailable(state: Readonly<SessionState>, options: AgentRunOptions): boolean {
     return options.orchestrationEnabled !== false || Boolean(state.taskGraph && state.taskGraph.status !== "completed") ||
       (this.dependencies.getOutstandingSubagents?.().length ?? 0) > 0;
@@ -1292,6 +1357,23 @@ export class AgentRuntime {
               priorMessages: state.messages.slice(priorMessagesStart, turnHistoryStart),
               threadNeedsTitle: threadTitleUnclaimed(this.dependencies, state.threadId),
             };
+            let localDirect = false;
+            if (agentIdentity.role === "main_agent" && turnImages.length === 0) {
+              const prior = projectAutoRouteContext(autoRouteContext).content;
+              const localInput = prior ? `${prior}\n\nCurrent request:\n${routingInput}` : routingInput;
+              const local = await this.decideLocally(state, turnId, "route", localInput, options.signal);
+              if (local) {
+                if (await this.takeAndApplySteering(state, turnId, "after_model", turnImages,
+                  false, memoryContext)) continue;
+                if (local.result.decision === "PLAN" || local.result.decision === "CODE") {
+                  await commitAutoRoute(local.result.decision.toLowerCase() as "plan" | "code",
+                    `Local Laya selected ${local.result.decision}.`);
+                  routeResolved = true;
+                  continue;
+                }
+                localDirect = local.result.decision === "DIRECT";
+              }
+            }
             const autoRouteBoundary = priorMessagesStart +
               projectAutoRouteContext(autoRouteContext).priorMessageBoundary;
             let routeLayeredContext = pinCurrentState(
@@ -1420,6 +1502,7 @@ export class AgentRuntime {
                     });
                   },
                   this.dependencies.limits,
+                  localDirect,
                 ),
               ),
             );
@@ -2164,6 +2247,37 @@ export class AgentRuntime {
           memoryContext,
         )) {
           continue;
+        }
+        if (effectiveMode === "code" && agentIdentity.role === "main_agent" &&
+            assistantMessage.content?.trim() &&
+            !this.dependencies.deliveryChallengeAlreadyUsed?.(state.threadId)) {
+          const priorRequest = /^\s*(continue|resume|继续|接着做|继续执行)[\s.!。！]*$/iu.test(memoryContext.userInput)
+            ? state.messages.slice(0, turnHistoryStart).reverse().find(message =>
+                message.role === "user" && message.content.trim() &&
+                !message.content.startsWith("RUNTIME_"))?.content
+            : undefined;
+          const requirements = [priorRequest, memoryContext.userInput,
+            ...(state.contextIntentLedger?.activeConstraints.map(item => item.text) ?? []),
+            ...(state.contextIntentLedger?.userCorrections.map(item => item.text) ?? [])]
+            .filter(Boolean).join("\n\n");
+          const input = `Original user request:\n${requirements}\n\nMain agent completion summary:\n${text}`;
+          const local = await this.decideLocally(state, turnId, "delivery", input, options.signal);
+          if (local) {
+            if (local.appliedDecision === "CHALLENGE") {
+              const feedback: ChatMessage = { role: "user", content:
+                "RUNTIME_DELIVERY_CHALLENGE: Your own completion summary may not cover every user requirement. " +
+                "Check the requested outcomes against the actual changes and verification once more. " +
+                "Correct any omission you find, then submit a new final response. " +
+                "This local classifier does not identify a specific bug and will not challenge this task again." };
+              await this.dependencies.appendEvent({ threadId: state.threadId, turnId,
+                type: "decision.delivery.challenge_requested", phase: "completed",
+                payload: { decisionId: local.id, message: feedback } });
+              state.messages.push(feedback);
+            }
+            await this.recordLocalDecision(local.id, state, turnId, local.result,
+              local.appliedDecision, local.appliedDecision === "CHALLENGE");
+            if (local.appliedDecision === "CHALLENGE") continue;
+          }
         }
         // Finalization seals user steering exactly once. Reviewer advice, when
         // present, was already injected before this model request.

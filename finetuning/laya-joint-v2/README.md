@@ -5,7 +5,9 @@ choice model. It predicts an EASY CODE work mode (`DIRECT`, `PLAN`, `CODE`) or
 a pre-delivery decision (`RELEASE`, `CHALLENGE`). The fine-tuned checkpoint is
 provided in [`../../model-weights/laya-multilingual/joint-v2/model/`](../../model-weights/laya-multilingual/joint-v2/model/).
 The **original, pre-fine-tuning weights are not distributed in this repository**.
-This checkpoint is experimental and is not yet connected to EASY CODE Runtime.
+This checkpoint is experimental. EASY CODE Runtime uses it for local Auto
+routing and a one-time pre-delivery reminder, while retaining its existing
+completion checks and independent reviewer.
 
 ## Obtain the original checkpoint (only for retraining)
 

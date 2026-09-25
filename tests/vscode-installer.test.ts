@@ -72,6 +72,9 @@ interface PostinstallModule {
     }>;
     validateStack?: (model: unknown) => Promise<unknown>;
     prepareDocumentConverter?: () => Promise<{ runtime: string; python: string }>;
+    prepareDecisionRuntime?: () => Promise<{ runtime: string; python: string; reused: boolean }>;
+    decisionRuntimeOptions?: { dataDir: string };
+    recordResource?: (resource: unknown) => Promise<void>;
     installExtension?: () => InstallResult;
     stdout?: { write(message: string): unknown };
     stderr?: { write(message: string): unknown };
@@ -361,6 +364,8 @@ describe("VS Code extension installer", () => {
   it("prepares and validates required memory dependencies before installing the extension", async () => {
     const order: string[] = [];
     let stdout = "";
+    const decisionDataDir = mkdtempSync(path.join(tmpdir(), "easy-code-laya-install-test-"));
+    try {
     const result = await postinstall.runPostinstall({
       installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
       installPromptBundle: installPromptBundleFixture,
@@ -380,6 +385,13 @@ describe("VS Code extension installer", () => {
         order.push("documents");
         return { runtime: path.join(tmpdir(), "markitdown-fixture"), python: "python" };
       },
+      decisionRuntimeOptions: { dataDir: decisionDataDir },
+      prepareDecisionRuntime: async () => {
+        order.push("laya");
+        return { runtime: path.join(decisionDataDir, "runtimes", "laya-decision"),
+          python: "python", reused: false };
+      },
+      recordResource: async () => undefined,
       installExtension: () => {
         order.push("extension");
         return { skipped: true, reason: "missing-vscode", installed: [], failed: [] };
@@ -392,13 +404,43 @@ describe("VS Code extension installer", () => {
       stderr: { write: () => undefined },
     });
 
-    assert.deepEqual(order, ["model", "runtime", "documents", "extension"]);
+    assert.deepEqual(order, ["model", "runtime", "documents", "laya", "extension"]);
     assert.equal(result.sqliteReady, true);
     assert.equal(result.promptBundleReady, true);
     assert.equal(result.modelReady, true);
     assert.equal(result.vectorStackReady, true);
     assert.match(stdout, /1 downloaded, 1 reused/u);
     assert.match(stdout, /vector search, tokenizer, and ONNX inference are ready/u);
+    } finally {
+      rmSync(decisionDataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the CLI install incomplete when managed Laya setup fails", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "easy-code-laya-failure-test-"));
+    let extensionCalled = false;
+    let stderr = "";
+    try {
+      const result = await postinstall.runPostinstall({
+        installModelRegistry: () => ({ created: false, path: "model-registry-fixture" }),
+        installPromptBundle: installPromptBundleFixture,
+        prepareModel: async () => ({ modelDirectory: dataDir,
+          manifest: { dimension: 384, maxSequenceLength: 128 }, downloaded: [], reused: [] }),
+        validateStack: async () => undefined,
+        prepareDocumentConverter: async () => ({ runtime: "documents", python: "python" }),
+        decisionRuntimeOptions: { dataDir },
+        prepareDecisionRuntime: async () => { throw new Error("Laya fixture failed"); },
+        recordResource: async () => undefined,
+        installExtension: () => { extensionCalled = true;
+          return { skipped: true, installed: [], failed: [] }; },
+        stdout: { write: () => undefined }, stderr: { write: message => { stderr += message; } },
+      });
+      assert.equal((result as typeof result & { layaReady?: boolean }).layaReady, false);
+      assert.equal(extensionCalled, false);
+      assert.match(stderr, /Laya fixture failed/u);
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("fails required model/runtime checks without leaving a partial extension install", async () => {

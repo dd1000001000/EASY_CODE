@@ -31,6 +31,17 @@ const { pathToFileURL } = require("node:url");
 const { prepareEmbeddingModel } = require("./embedding-model.cjs");
 const { installBundledVsCodeExtension } = require("./install-vscode-extension.cjs");
 const { prepareMarkitdown } = require("./prepare-markitdown.cjs");
+const { prepareLaya } = require("./prepare-laya.cjs");
+
+async function installationDataDir(options = {}) {
+  if (options.dataDir) return path.resolve(options.dataDir);
+  const compiled = path.join(__dirname, "..", "dist", "config", "loader.js");
+  if (!fs.existsSync(compiled)) throw new Error("Built configuration loader is required before installing Laya");
+  const { loadEasyCodeConfig } = await import(pathToFileURL(compiled).href);
+  const config = await loadEasyCodeConfig({ cwd: require("node:os").homedir(), credentialStore: false,
+    workspaceConfigPath: path.join(compiled, "__no_workspace_install_config__.toml") });
+  return config.dataDir;
+}
 
 function ensureUserModelRegistry(options = {}) {
   const home = options.home || require("node:os").homedir();
@@ -385,6 +396,7 @@ async function runPostinstall(options = {}) {
   const validateStack = options.validateStack || validateEmbeddingStack;
   const installExtension = options.installExtension || installBundledVsCodeExtension;
   const prepareDocumentConverter = options.prepareDocumentConverter || prepareMarkitdown;
+  const prepareDecisionRuntime = options.prepareDecisionRuntime || prepareLaya;
   const installPromptBundle = options.installPromptBundle || installBundledPromptResources;
   const installModelRegistry = options.installModelRegistry || ensureUserModelRegistry;
 
@@ -494,6 +506,21 @@ async function runPostinstall(options = {}) {
     };
   }
 
+  let decisionRuntimeResult;
+  try {
+    const dataDir = await installationDataDir(options.decisionRuntimeOptions || {});
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    await recordInstallResource({ kind: "data", path: dataDir }, options);
+    stdout.write("EASY CODE: Preparing the private local Laya decision runtime. Python dependencies may take several minutes to install.\n");
+    decisionRuntimeResult = await prepareDecisionRuntime({ ...(options.decisionRuntimeOptions || {}), dataDir });
+    stdout.write(`EASY CODE: local Laya decision runtime is ready (${decisionRuntimeResult.reused ? "reused" : "installed"}).\n`);
+  } catch (error) {
+    stderr.write(`EASY CODE: local Laya decision runtime installation failed: ${errorMessage(error)}\n`);
+    return { promptBundleReady: true, sqliteReady: true, modelReady: true,
+      vectorStackReady: true, documentConverterReady: true, layaReady: false,
+      modelResult, documentConverterResult, extensionResult: undefined };
+  }
+
   try {
     const result = await installExtension();
     for (const program of result.installed) {
@@ -524,8 +551,10 @@ async function runPostinstall(options = {}) {
       modelReady: true,
       vectorStackReady: true,
       documentConverterReady: true,
+      layaReady: true,
       modelResult,
       documentConverterResult,
+      decisionRuntimeResult,
       extensionResult: result,
     };
   } catch (error) {
@@ -538,8 +567,10 @@ async function runPostinstall(options = {}) {
       modelReady: true,
       vectorStackReady: true,
       documentConverterReady: true,
+      layaReady: true,
       modelResult,
       documentConverterResult,
+      decisionRuntimeResult,
       extensionResult: undefined,
     };
   }
@@ -550,6 +581,7 @@ module.exports = {
   installBundledPromptResources,
   ensureUserModelRegistry,
   runPostinstall,
+  installationDataDir,
   shouldDeferLocalSourcePromptInstall,
   validateEmbeddingStack,
   validateOrama,
@@ -565,7 +597,8 @@ if (require.main === module) {
         !result.sqliteReady ||
         !result.modelReady ||
         !result.vectorStackReady ||
-        !result.documentConverterReady
+        !result.documentConverterReady ||
+        !result.layaReady
       ) {
         process.exitCode = 1;
         return;

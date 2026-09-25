@@ -21,7 +21,7 @@ EASY CODE 是运行在本地的 AI 编程助手，同时提供终端和网页界
 
 ## 安装
 
-需要 **Node.js 20.11+**、**Python 3.10+**、npm，以及可用的模型供应商账号。以下源码安装方式还需要 Git；Python 用于创建 EASY CODE 私有的 Microsoft MarkItDown 文档转换运行环境。原生沙箱是否可用取决于操作系统和架构。
+需要 **Node.js 20.11+**、**Python 3.10–3.14**、npm，以及可用的模型供应商账号。以下源码安装方式还需要 Git；Python 用于创建 EASY CODE 私有的文档转换和 Laya 决策运行环境。原生沙箱是否可用取决于操作系统和架构。
 
 ```sh
 git clone https://github.com/dd1000001000/EASY_CODE.git
@@ -66,6 +66,8 @@ easy-code --workspace "/path/to/project"
 > 找出登录失败的原因，修复问题并运行相关测试。最后说明修改内容，以及还有哪些没有验证。
 
 希望先看方案时选择 Plan；直接实施选择 Code；也可以使用 Auto 自动判断。Auto 一旦选出 Plan 或 Code，当前轮立即按该模式开放工具，之后保持该模式，直到用户手动切回 Auto。无需工具即可直接回答时仍保持 Auto；新对话从 Auto 开始。**Plan 是工作方式，不是强制只读的安全边界。**
+
+Auto 路由和 Code 交付前的一次检查会使用随包提供的本地 Laya 模型。安装时会自动在 EASY CODE 数据目录中创建 Python 环境，卸载时一并删除；同时运行的多个 EASY CODE 进程共用一个当前用户的本地模型服务，空闲后会卸载模型。下载 Python 依赖可能需要几分钟。运行时若本地推理失败，会明确提示并保留云端路由回退。决策输入保存在项目的 `.easycode/decision-traces/` 中，详见[技术文档](./docs/TECHNICAL_DESIGN_ZH.md)。
 
 ## 常用操作
 

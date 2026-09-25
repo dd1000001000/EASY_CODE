@@ -14,6 +14,9 @@ Training data, code, provenance, accuracies, and confusion matrices:
 [`../../../finetuning/laya-joint-v2/README.md`](../../../finetuning/laya-joint-v2/README.md).
 The full per-case evaluation is in `report.json`.
 
-This checkpoint is experimental and is **not yet connected to EASY CODE
-Runtime**. In particular, its delivery errors make it unsuitable as a sole
-automatic approval mechanism.
+EASY CODE uses this checkpoint for local Auto routing and a one-time
+pre-delivery reminder. It does **not** replace the Runtime completion checks
+or the independent reviewer. The delivery classifier is not an independent
+verification of the code: it compares the user request with the main agent's
+own summary. If it cannot run, Auto routing falls back to the existing cloud
+controller and the local delivery reminder is skipped.

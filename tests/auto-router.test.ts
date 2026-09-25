@@ -397,6 +397,21 @@ describe("tool-only Auto Router", () => {
     assert.equal(requests, 3);
   });
 
+  it("keeps a local DIRECT route fixed while the cloud model supplies the answer", async () => {
+    const result = await determineAutoRoute({
+      name: "deepseek", model: "mock-model",
+      async complete(request) {
+        assert.deepEqual(request.tools?.map(tool => tool.function.name), ["respond_directly"]);
+        assert.match(request.messages[0]?.content ?? "", /already selected as DIRECT/);
+        return { message: { role: "assistant", content: null,
+          tool_calls: [respondDirectlyCall("The answer is 42.")] } };
+      },
+    }, "What is the answer?", undefined, [], undefined, undefined, undefined,
+    undefined, undefined, true);
+    assert.equal(result.kind, "direct_response");
+    if (result.kind === "direct_response") assert.equal(result.content, "The answer is 42.");
+  });
+
   it("rejects wrong names, malformed arguments, extra properties, and invalid reasons", async () => {
     const invalidCalls: FunctionToolCall[] = [
       {
