@@ -6,14 +6,14 @@ This guide explains how the system fits together, how to complete common workflo
 
 ## 1. Purpose and overall architecture
 
-EASY CODE combines a local agent runtime, a cloud coding model and an experimental local decision model. The cloud model analyzes tasks and proposes actions; Laya classifies workflow and delivery choices. The runtime assembles context, checks permissions, executes tools, retains evidence and recovers work.
+EASY CODE combines a local agent runtime, a cloud coding model and an experimental local decision model. The cloud model analyzes tasks and proposes actions; fine-tuned Laya classifies workflow and delivery choices. The runtime assembles context, checks permissions, executes tools, retains evidence and recovers work.
 
 ```mermaid
 flowchart TD
     UI[Terminal / Web / editor integration] --> APP[Shared task and project management]
     APP --> AGENT[Agent coordination]
     AGENT <--> MODEL[Model providers]
-    AGENT <--> LOCAL[Shared local Laya decision service]
+    AGENT <--> LOCAL[Shared fine-tuned Laya decision service]
     AGENT --> TOOLS[Tools and approval]
     TOOLS --> ENV[Project files / command sandbox / MCP]
     AGENT <--> MEMORY[History / context / memory and retrieval]
@@ -138,9 +138,9 @@ Work modes describe the intended approach:
 | Plan | Focus on investigation, proposals and decisions needing confirmation | “Investigate the login flow and propose a fix; do not implement it yet.” |
 | Code | Implement and verify directly | “Apply the agreed fix and run the relevant tests.” |
 
-In Auto, local Laya selects `DIRECT`, `PLAN` or `CODE`. A direct answer still comes from the cloud model and leaves Auto selected; Plan or Code takes effect immediately and persists until you switch back. Image requests or local inference failures use the cloud router.
+In Auto, fine-tuned Laya selects `DIRECT`, `PLAN` or `CODE`. A direct answer still comes from the cloud model and leaves Auto selected; Plan or Code takes effect immediately and persists until you switch back. Image requests or local inference failures use the cloud router.
 
-Before Code delivery, Runtime checks pending commands, child agents and DAG state, then asks Laya to compare requirements with the main agent's proposed final answer. A `CHALLENGE`, or a `RELEASE` below the default 0.9 score threshold, requests one recheck. That allowance survives Resume; the next delivery skips Laya but not the original completion checks or reviewer. Local inference failure reports and skips this reminder. See [local decisions and training](#61-experimental-local-decision-model) for the model, input limits, configuration and results.
+Before Code delivery, Runtime checks pending commands, child agents and DAG state, then asks fine-tuned Laya to compare requirements with the main agent's proposed final answer. A `CHALLENGE`, or a `RELEASE` below the default 0.9 score threshold, requests one recheck. That allowance survives Resume; the next delivery skips Laya but not the original completion checks or reviewer. Local inference failure reports and skips this reminder. See [local decisions and training](#61-experimental-local-decision-model) for the model, input limits, configuration and results.
 
 Use `/mode plan`, `/mode code` or `/mode auto` in CLI. **Plan is not enforced read-only.** If modifications are out of scope, say so explicitly and keep appropriate command approval controls.
 
@@ -246,7 +246,7 @@ Use `/usage` for provider-reported usage and `/context` for local capacity estim
 
 ### 6.1 Experimental local decision model
 
-The bundled `joint-v2` model is fine-tuned from **convaiinnovations/laya-multilingual**, an existing decision model built on **mmBERT-base**. It is not a new language model trained from scratch. A shared multilingual encoder and choice head score candidate answers; softmax converts those scores into a distribution, and the highest-scoring option is selected. It does not generate explanations or code.
+The bundled **fine-tuned Laya (joint-v2)** model is trained from **convaiinnovations/laya-multilingual**, an existing decision model built on **mmBERT-base**. It is not a new language model trained from scratch. A shared multilingual encoder and choice head score candidate answers; softmax converts those scores into a distribution, and the highest-scoring option is selected. It does not generate explanations or code.
 
 | Decision | Input | Options | Runtime action |
 | --- | --- | --- | --- |
@@ -311,16 +311,16 @@ The once-per-task delivery challenge survives pause/resume. After a challenge, t
 
 ### 6.4 Measured results
 
-![Joint SFT accuracy and confusion matrices](../finetuning/laya-joint-v2/assets/results.png)
+![Fine-tuned Laya versus the upstream baseline: accuracy and confusion matrices](../finetuning/laya-joint-v2/assets/results.png)
 
-| Held-out evaluation | Original Laya | Joint SFT |
+| Held-out evaluation | Laya before EASY CODE fine-tuning | Fine-tuned Laya (joint SFT) |
 | --- | ---: | ---: |
 | Routing accuracy | 50.2% | **95.1%** |
 | Delivery accuracy | 57.3% | **69.3%** |
 
-These are highest-score predictions **without the runtime 0.9 delivery threshold**: 105 routing cases in all six option orders and 171 delivery cases in both orders. Matrix counts therefore represent 630 and 342 order-specific evaluations, not distinct cases. Routing was correct in every order for 95/105 cases; delivery for 110/171.
+The baseline and fine-tuned Laya results use highest-score predictions **without the runtime 0.9 delivery threshold**: 105 routing cases in all six option orders and 171 delivery cases in both orders. Matrix counts therefore represent 630 and 342 order-specific evaluations, not distinct cases. Fine-tuned Laya was correct in every routing order for 95/105 cases; delivery for 110/171.
 
-A separate [200-case Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. This is an experimental cascade, **not the current product routing/delivery policy**, and its token savings should not be presented as measured production savings.
+A separate [200-case fine-tuned Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when fine-tuned Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. This is an experimental cascade, **not the current product routing/delivery policy**, and its token savings should not be presented as measured production savings.
 
 ## 7. History, context and long-term memory
 
