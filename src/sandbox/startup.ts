@@ -51,7 +51,7 @@ export function formatSandboxReadiness(readiness: SandboxReadiness): string[] {
   if (readiness.status === "ready") {
     lines.push("Filesystem and network sandbox checks passed.");
   } else if (readiness.status === "setup_required") {
-    lines.push("One-time operating-system sandbox setup is required. Run `easy-code sandbox setup` explicitly; normal agent startup never requests administrator approval.");
+    lines.push("One-time operating-system sandbox setup is required. A new project sandbox may request administrator approval before the task starts; `easy-code sandbox setup` prepares the shared sandbox.");
   } else if (readiness.status === "dependencies_missing") {
     lines.push("Required operating-system sandbox dependencies are missing.");
   } else if (readiness.status === "unsupported") {
@@ -81,17 +81,25 @@ export interface SandboxStartupTerminal {
   stopActivity(): void;
 }
 
-/** Inspect the retained command sandbox without mutating operating-system state.
- * Installation and the explicit `easy-code sandbox setup` command are the only
- * paths allowed to request administrator approval. */
+/** Inspect the actual command sandbox before the first model request. Windows
+ * may need one administrator-approved setup for a new project permission home. */
 export async function runSandboxStartupGuide(
   service: SandboxStartupService,
   terminal: SandboxStartupTerminal,
+  prepareProject = false,
+  onUnreadyContinue?: () => void,
 ): Promise<boolean> {
   terminal.startActivity("Checking the command sandbox");
   let readiness: SandboxReadiness;
   try {
     readiness = await service.inspect();
+    if (prepareProject && readiness.platform === "win32" && readiness.status === "setup_required" && readiness.canSetup) {
+      terminal.info("Preparing this project's Windows command sandbox before the task starts.");
+      try { readiness = (await service.setup(readiness)).readiness; }
+      catch (error) {
+        terminal.error(`Project sandbox setup failed: ${safeDetail(error instanceof Error ? error.message : String(error))}`);
+      }
+    }
   } finally {
     terminal.stopActivity();
   }
@@ -117,6 +125,7 @@ export async function runSandboxStartupGuide(
     );
     if (!selected || selected === "exit") return false;
     if (selected === "continue") {
+      onUnreadyContinue?.();
       terminal.warning(
         "Continuing without a ready OS sandbox. Workspace-sandbox commands remain fail-closed. " +
           "Host execution requires an explicit host-scoped approval or confirmation through /approval > Full access; it is never an automatic fallback.",

@@ -599,6 +599,7 @@ export class EasyCodeApp {
   private memoryMaintenanceWork?: Promise<void>;
   private activeTurnController?: AbortController;
   private activeTurnSteering?: ActiveTurnSteering;
+  private sandboxSetupDeferred = false;
 
   private constructor(
     private readonly config: EasyCodeConfig,
@@ -933,7 +934,8 @@ export class EasyCodeApp {
         credentialStore,
         options.startupInteraction ?? "none",
         options.sandboxStartup
-          ? options.sandboxStartupService ?? new NativeSandboxStartupService(config.limits, config.dataDir, message => terminal.info(message))
+          ? options.sandboxStartupService ?? new NativeSandboxStartupService(config.limits, config.dataDir,
+            message => terminal.info(message), workspace.writableRoots)
           : undefined,
         options.clipboardImageReader ?? new SystemClipboardImageReader({
           currentDirectory: workspace.root,
@@ -1187,10 +1189,11 @@ export class EasyCodeApp {
     // Start the retained shell before startup selection so the initial
     // provider/model/effort flow uses the same modal overlays as /model.
     this.terminal.beginShell(this.terminalSessionInfo());
-    if (
-      this.sandboxStartupService &&
-      !(await runSandboxStartupGuide(this.sandboxStartupService, this.terminal))
-    ) return;
+    if (this.sandboxStartupService) {
+      this.sandboxSetupDeferred = false;
+      if (!(await runSandboxStartupGuide(this.sandboxStartupService, this.terminal, true,
+        () => { this.sandboxSetupDeferred = true; }))) return;
+    }
     if (!(await this.prepareInteractiveStartup())) return;
     this.syncTerminalView();
     printBanner(this.terminal, readLanguage(this.storage));
@@ -1868,6 +1871,7 @@ export class EasyCodeApp {
     controller: AbortController,
   ): Promise<AgentRunResult> {
     await this.pauseMemoryMaintenance();
+    await this.prepareProjectSandbox(this.workspace);
     if (this.commandExecutionMode === "manual" && this.hasActiveOrchestration()) {
       throw new Error("This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.");
     }
@@ -2481,6 +2485,7 @@ export class EasyCodeApp {
         childWorkspace = await WorkspaceManager.create(this.currentProjectWorkspace()!);
         activeEnvironment = { ...activeEnvironment, workspace: childWorkspace };
       }
+      await this.prepareProjectSandbox(childWorkspace);
       request.reportEnvironment(activeEnvironment.descriptor);
 
       if (existingChild) {
@@ -4956,6 +4961,25 @@ export class EasyCodeApp {
         );
       }
       throw error;
+    }
+  }
+
+  private async prepareProjectSandbox(workspace: WorkspaceManager): Promise<void> {
+    if (process.platform !== "win32" || this.trustedOuterSandbox ||
+      this.commandExecutionMode === "unrestricted" || !this.sandboxStartupService ||
+      this.sandboxSetupDeferred) return;
+    const service = new NativeSandboxStartupService(
+      this.config.limits,
+      this.config.dataDir,
+      message => this.terminal.info(message),
+      workspace.writableRoots,
+    );
+    const readiness = await service.prepare();
+    if (readiness.status !== "ready") {
+      throw new Error(
+        `Project command sandbox is not ready: ${readiness.details.join("; ")}. ` +
+        "No command was dispatched. Complete Windows sandbox setup before continuing.",
+      );
     }
   }
 

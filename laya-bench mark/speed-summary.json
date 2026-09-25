@@ -1,0 +1,56 @@
+{
+  "cases": 200,
+  "glm_concurrency": 4,
+  "laya_cold_start_ms": 8919.74,
+  "laya_device": "cpu",
+  "tasks": {
+    "route": {
+      "laya": {
+        "count": 100,
+        "mean_ms": 127.69,
+        "median_ms": 127.94,
+        "p95_ms": 137.28
+      },
+      "glm": {
+        "count": 100,
+        "mean_ms": 4563.8,
+        "median_ms": 3699.32,
+        "p95_ms": 11792.32
+      },
+      "glm_retrying_cases": 0,
+      "glm_invalid_or_error": 1
+    },
+    "delivery": {
+      "laya": {
+        "count": 100,
+        "mean_ms": 119.24,
+        "median_ms": 118.87,
+        "p95_ms": 124.64
+      },
+      "glm": {
+        "count": 100,
+        "mean_ms": 3791.78,
+        "median_ms": 2910.18,
+        "p95_ms": 7544.82
+      },
+      "glm_retrying_cases": 0,
+      "glm_invalid_or_error": 0
+    },
+    "overall": {
+      "laya": {
+        "count": 200,
+        "mean_ms": 123.46,
+        "median_ms": 122.37,
+        "p95_ms": 135.64
+      },
+      "glm": {
+        "count": 200,
+        "mean_ms": 4177.79,
+        "median_ms": 3120.57,
+        "p95_ms": 9015.3
+      },
+      "glm_retrying_cases": 0,
+      "glm_invalid_or_error": 1
+    }
+  }
+}

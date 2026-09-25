@@ -26,7 +26,7 @@ export interface NativeStartupPlatform {
   probeSucceeded(proxy: NativeProxyState | undefined): Promise<void>;
   probeFailed(message: string, result: ReadinessResult): SandboxReadiness;
   inspect(unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult): Promise<SandboxReadiness>;
-  setup(readiness: SandboxReadiness, unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult): Promise<SandboxSetupResult>;
+  setup(readiness: SandboxReadiness, unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult, home: string): Promise<SandboxSetupResult>;
 }
 
 export interface NativeStartupOptions {

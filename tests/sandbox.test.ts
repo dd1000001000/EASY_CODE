@@ -21,8 +21,24 @@ import {
 import { WorkspaceManager } from "../src/workspace/index.js";
 import { describe, it } from "./harness.js";
 import { nativeSandboxEnvironment, nativeSandboxRuntimeVersion, nativeSandboxTarget } from "../src/sandbox/native-runtime.js";
+import { assertProjectSandboxReady } from "../src/sandbox/project-readiness.js";
 
 describe("native sandbox runtime", () => {
+  it("refuses Windows commands before project-home setup without dispatching a target", async () => {
+    const methods: string[] = [];
+    const service = { request: async (method: string) => {
+      methods.push(method);
+      return { status: "notConfigured" };
+    } };
+    await assert.rejects(assertProjectSandboxReady(service, 1_000, "win32"), /Project sandbox is not ready/u);
+    assert.deepEqual(methods, ["windowsSandbox/readiness"]);
+  });
+
+  it("does not use Windows setup APIs on Linux", async () => {
+    const service = { request: async () => { throw new Error("Windows API must not run"); } };
+    await assertProjectSandboxReady(service, 1_000, "linux");
+  });
+
   it("pins the single tested runtime without publishing a shrinkwrap", async () => {
     const packageManifest = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
@@ -441,6 +457,42 @@ describe("sandbox command execution boundary", () => {
 });
 
 describe("sandbox first-interactive startup guide", () => {
+  it("prepares the actual Windows project sandbox before the first model request", async () => {
+    const missing = readiness("setup_required", { platform: "win32", canSetup: true });
+    const ready = readiness("ready", { platform: "win32" });
+    let setupCalls = 0;
+    const service: SandboxStartupService = {
+      inspect: async () => missing,
+      setup: async before => {
+        assert.equal(before, missing);
+        setupCalls++;
+        return { status: "completed", message: "ready", readiness: ready };
+      },
+    };
+    const terminal = new ScriptedSandboxTerminal();
+    assert.equal(await runSandboxStartupGuide(service, terminal, true), true);
+    assert.equal(setupCalls, 1);
+    assert.deepEqual(terminal.choices, []);
+    assert.match(terminal.infoMessages.join("\n"), /before the task starts/u);
+  });
+
+  it("records an explicit unready continuation without retrying setup during the task", async () => {
+    const missing = readiness("setup_required", { platform: "win32", canSetup: true });
+    let setupCalls = 0;
+    let continuedUnready = 0;
+    const service: SandboxStartupService = {
+      inspect: async () => missing,
+      setup: async () => {
+        setupCalls++;
+        return { status: "cancelled", message: "declined", readiness: missing };
+      },
+    };
+    assert.equal(await runSandboxStartupGuide(service,
+      new ScriptedSandboxTerminal(["continue"]), true, () => { continuedUnready++; }), true);
+    assert.equal(setupCalls, 1);
+    assert.equal(continuedUnready, 1);
+  });
+
   it("continues immediately without rendering a menu when the sandbox is ready", async () => {
     let inspectCalls = 0;
     let setupCalls = 0;
@@ -465,7 +517,7 @@ describe("sandbox first-interactive startup guide", () => {
     assert.equal(terminal.stopCount, 1);
   });
 
-  it("never requests setup from normal startup when Windows authorization is missing", async () => {
+  it("does not request setup when project preparation is disabled", async () => {
     const before = readiness("setup_required", {
       platform: "win32",
       canSetup: true,

@@ -3,6 +3,7 @@ import { SandboxFailure } from "../failure.js";
 import { NativeAppServerClient } from "../app-server-client.js";
 import { nativePermissionProfile } from "../native-policy.js";
 import { nativeSandboxEntrypoint, nativeSandboxEnvironment } from "../native-runtime.js";
+import { assertProjectSandboxReady } from "../project-readiness.js";
 import { acquireWindowsProxyPortLease, type WindowsProxyPortLease } from "../windows-proxy-registry.js";
 import type { SandboxExecutionRequest } from "../types.js";
 import type { NativeBackendPlatform, NativeBackendPlatformOptions } from "./backend-types.js";
@@ -52,6 +53,7 @@ export class WindowsNativeBackend implements NativeBackendPlatform {
       request.networkProxyURL, proxyPorts);
     try {
       await service.initialize(this.startupTimeoutMs);
+      await assertProjectSandboxReady(service, this.startupTimeoutMs);
       const code = "const fs=require('node:fs');fs.rmSync(process.argv[1],{recursive:true,force:true,maxRetries:3})";
       const result = await service.request("command/exec", {
         command: [process.execPath, "-e", code, root], cwd: this.options.workspaceRoot,

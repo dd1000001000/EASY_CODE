@@ -13,6 +13,7 @@ import { NativeAppServerClient } from "../sandbox/app-server-client.js";
 import { nativeProjectPermissionProfile } from "../sandbox/native-policy.js";
 import { nativeSandboxEntrypoint, nativeSandboxHome } from "../sandbox/native-runtime.js";
 import { ensureNativeProjectPermissionHome } from "../sandbox/permission-home.js";
+import { assertProjectSandboxReady } from "../sandbox/project-readiness.js";
 import { acquireWindowsProxyPortLease } from "../sandbox/windows-proxy-registry.js";
 import { workspaceIdFromRoot } from "../storage/database.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
@@ -81,6 +82,7 @@ export class SandboxedMcpStdioTransport implements Transport {
     this.service = service;
     try {
       await service.initialize(this.limits.mcpStartupTimeoutMs);
+      await assertProjectSandboxReady(service, this.limits.mcpStartupTimeoutMs);
       this.stopNotifications = service.onNotification(notification => {
         if (notification?.method !== "command/exec/outputDelta" ||
             notification.params?.processId !== this.processId) return;

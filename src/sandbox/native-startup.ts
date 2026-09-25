@@ -4,9 +4,10 @@ import path from "node:path";
 import { DEFAULT_RUNTIME_LIMITS, type RuntimeLimits } from "../config/runtime-limits.js";
 import { resolveEasyCodePaths } from "../config/defaults.js";
 import { NativeAppServerClient } from "./app-server-client.js";
-import { nativePermissionProfile } from "./native-policy.js";
+import { nativePermissionProfile, nativeProjectPermissionProfile } from "./native-policy.js";
 import { nativeSandboxEnvironment, nativeSandboxEntrypoint, nativeSandboxHome, nativeSandboxRuntimeVersion } from "./native-runtime.js";
-import type { SandboxReadiness, SandboxSetupResult, SandboxStartupService } from "./startup.js";
+import { ensureNativeProjectPermissionHome } from "./permission-home.js";
+import { sandboxIsReady, type SandboxReadiness, type SandboxSetupResult, type SandboxStartupService } from "./startup.js";
 import type { NativeStartupPlatform, ReadinessResult } from "./platform/startup-types.js";
 import { startupError } from "./platform/startup-types.js";
 import { WindowsNativeStartup } from "./platform/windows-startup.js";
@@ -21,6 +22,7 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     private readonly limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
     private readonly dataDir?: string,
     report: (message: string) => void = () => undefined,
+    private readonly projectRoots?: readonly string[],
   ) {
     const options = { limits, dataDir: dataDir ?? resolveEasyCodePaths().dataDir, report };
     switch (process.platform) {
@@ -37,14 +39,24 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     details, canSetup, warnings: [],
   });
 
+  private async sandboxHome(): Promise<string> {
+    const baseHome = nativeSandboxHome(this.dataDir);
+    return this.projectRoots?.length
+      ? ensureNativeProjectPermissionHome(baseHome, this.projectRoots)
+      : baseHome;
+  }
+
   private async inspectUnlocked(): Promise<SandboxReadiness> {
     const platform = this.platform;
     if (!platform) return this.result("unsupported", [`Unsupported native sandbox platform: ${process.platform}`]);
-    const home = nativeSandboxHome(this.dataDir);
-    let root: string | undefined;
+    const home = await this.sandboxHome();
+    let temporaryRoot: string | undefined;
     try {
       await mkdir(home, { recursive: true, mode: 0o700 });
-      root = await mkdtemp(path.join(os.tmpdir(), "easy-code-native-readiness-"));
+      if (!this.projectRoots?.length) {
+        temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "easy-code-native-readiness-"));
+      }
+      const probeRoot = this.projectRoots?.[0] ?? temporaryRoot!;
       const proxy = await platform.proxyState();
       const service = new NativeAppServerClient(nativeSandboxEntrypoint(), home, process.env, proxy?.proxyURL, proxy?.ports);
       try {
@@ -52,9 +64,9 @@ export class NativeSandboxStartupService implements SandboxStartupService {
         const notReady = await platform.checkReadiness(service, this.result);
         if (notReady) return notReady;
         const probe = await service.request("command/exec", {
-          command: platform.probeCommand, cwd: root,
+          command: platform.probeCommand, cwd: probeRoot,
           ...(proxy ? { env: nativeSandboxEnvironment(home, process.env, proxy.proxyURL, proxy.ports) } : {}),
-          ...nativePermissionProfile(), timeoutMs: 15_000,
+          ...(this.projectRoots?.length ? nativeProjectPermissionProfile() : nativePermissionProfile()), timeoutMs: 15_000,
         }, platform.startupTimeoutMs);
         if (probe?.exitCode !== 0) throw new Error(String(probe?.stderr ?? "readiness command failed"));
         const rejected = platform.checkProbe(probe.stdout, this.result);
@@ -68,7 +80,7 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     } catch (error) {
       return platform.probeFailed(startupError(error), this.result);
     } finally {
-      if (root) await rm(root, { recursive: true, force: true }).catch(() => undefined);
+      if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
 
@@ -81,6 +93,15 @@ export class NativeSandboxStartupService implements SandboxStartupService {
     readiness ??= await this.inspect();
     if (readiness.status === "ready") return { status: "already_ready", message: "Native sandbox is already ready.", readiness };
     if (!this.platform) return { status: "unavailable", message: "This native sandbox platform is unsupported.", readiness };
-    return this.platform.setup(readiness, () => this.inspectUnlocked(), this.result);
+    return this.platform.setup(readiness, () => this.inspectUnlocked(), this.result, await this.sandboxHome());
+  }
+
+  /** Prepare the actual project home before a model or child agent can issue
+   * commands. A failed or declined elevation never falls through to exec. */
+  async prepare(): Promise<SandboxReadiness> {
+    const readiness = await this.inspect();
+    if (sandboxIsReady(readiness) || process.platform !== "win32" ||
+      readiness.status !== "setup_required" || !readiness.canSetup) return readiness;
+    return (await this.setup(readiness)).readiness;
   }
 }
