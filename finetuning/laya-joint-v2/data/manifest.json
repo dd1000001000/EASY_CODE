@@ -1,0 +1,65 @@
+{
+  "protocol": "laya-joint-v2-route-delivery",
+  "seed": 20260925,
+  "input_manifests": {
+    "route": {
+      "path": "finetuning/laya-joint-v2/data/provenance/route-manifest.json",
+      "sha256": "2c9042b3eaffe461a084f3c6fe3aa689389ed4d6e1cad00fc77984c5d66599cd"
+    },
+    "delivery": {
+      "path": "finetuning/laya-joint-v2/data/provenance/delivery-manifest.json",
+      "sha256": "9049e36a36773e5f644ff31d639f5e8bb8f2aa8d92a435bc6b99f9795b945a79"
+    }
+  },
+  "outer_ratio": {
+    "development": 1105,
+    "held_out_test": 276
+  },
+  "splits": {
+    "fit": {
+      "rows": 995,
+      "sha256": "64be6a4daab947c85f7b13514c410c85dd5b248a16e91c52296fe588a9cef08f",
+      "tasks": {
+        "route": 378,
+        "delivery": 617
+      },
+      "labels": {
+        "route:DIRECT": 126,
+        "route:PLAN": 124,
+        "delivery:RELEASE": 308,
+        "delivery:CHALLENGE": 309,
+        "route:CODE": 128
+      }
+    },
+    "validation": {
+      "rows": 110,
+      "sha256": "b9c03b8fcb4dc007c4cd1ca7efe6f075b3b9bb4108662e0fd01c0a3a9a0aabf2",
+      "tasks": {
+        "delivery": 68,
+        "route": 42
+      },
+      "labels": {
+        "delivery:RELEASE": 35,
+        "delivery:CHALLENGE": 33,
+        "route:DIRECT": 14,
+        "route:PLAN": 14,
+        "route:CODE": 14
+      }
+    },
+    "test": {
+      "rows": 276,
+      "sha256": "09aec40980e676da39fdca0e69127eb587d058ed7406e17880a55cd146a50439",
+      "tasks": {
+        "delivery": 171,
+        "route": 105
+      },
+      "labels": {
+        "delivery:RELEASE": 85,
+        "route:PLAN": 35,
+        "delivery:CHALLENGE": 86,
+        "route:CODE": 35,
+        "route:DIRECT": 35
+      }
+    }
+  }
+}

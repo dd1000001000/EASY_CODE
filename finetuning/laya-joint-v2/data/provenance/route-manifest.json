@@ -1,0 +1,69 @@
+{
+  "protocol": "route-v2-grouped-stratified-4-to-1",
+  "seed": 20260925,
+  "rows": 525,
+  "requirement_groups": 524,
+  "outer_ratio": {
+    "development": 420,
+    "held_out_test": 105
+  },
+  "near_duplicate_similarity_threshold": 0.9,
+  "inputs": {
+    "previous_train": {
+      "path": "finetuning\\laya-route-delivery-v1\\data\\train.jsonl",
+      "sha256": "5c57dd5dfdbd62dca2dbf11921c8cfdbe480ca732c6b22a002e90bc303e9778f"
+    },
+    "previous_selection": {
+      "path": "finetuning\\laya-route-delivery-v1\\data\\selection.jsonl",
+      "sha256": "6985062538ed75cbe8226df3813cc60580d1818c88b4fc08a0819485ca13bf3d"
+    },
+    "previous_fixed_test": {
+      "path": "jev-benchmark\\data\\test.jsonl",
+      "sha256": "f6dd01e4fcb29dd22ed9d90d77f9e1a89e9728ba63b736fbfc6259a8eb275884"
+    }
+  },
+  "splits": {
+    "fit": {
+      "rows": 378,
+      "sha256": "3092f3d6323b583b951b0ea716209e228a6fbec42c1058f604fd6b9b2a354caa",
+      "labels": {
+        "PLAN": 124,
+        "CODE": 128,
+        "DIRECT": 126
+      },
+      "sources": {
+        "previous_train": 309,
+        "previous_selection": 41,
+        "previous_fixed_test": 28
+      }
+    },
+    "validation": {
+      "rows": 42,
+      "sha256": "be0f7ff5725e43c129863d4057f3648277ae079c654b07a3b1b2d317fb2ec202",
+      "labels": {
+        "DIRECT": 14,
+        "PLAN": 14,
+        "CODE": 14
+      },
+      "sources": {
+        "previous_train": 37,
+        "previous_selection": 2,
+        "previous_fixed_test": 3
+      }
+    },
+    "test": {
+      "rows": 105,
+      "sha256": "ea6e07400c205175e06a53524e0fecdce3ad553ceab60f9bf51d3eba0637a1e4",
+      "labels": {
+        "DIRECT": 35,
+        "CODE": 35,
+        "PLAN": 35
+      },
+      "sources": {
+        "previous_train": 94,
+        "previous_selection": 8,
+        "previous_fixed_test": 3
+      }
+    }
+  }
+}

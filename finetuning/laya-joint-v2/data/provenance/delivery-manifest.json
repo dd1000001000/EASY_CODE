@@ -1,0 +1,72 @@
+{
+  "protocol": "delivery-v2-grouped-4-to-1",
+  "seed": 20260925,
+  "test_shuffle_attempt": 0,
+  "groups": 568,
+  "raw_rows": 856,
+  "outer_ratio": {
+    "development": 685,
+    "held_out_test": 171
+  },
+  "inputs": {
+    "previous_train": {
+      "path": "finetuning\\laya-route-delivery-v1\\data\\train.jsonl",
+      "sha256": "5c57dd5dfdbd62dca2dbf11921c8cfdbe480ca732c6b22a002e90bc303e9778f"
+    },
+    "previous_selection": {
+      "path": "finetuning\\laya-route-delivery-v1\\data\\selection.jsonl",
+      "sha256": "6985062538ed75cbe8226df3813cc60580d1818c88b4fc08a0819485ca13bf3d"
+    },
+    "previous_fixed_test": {
+      "path": "jev-benchmark\\data\\test.jsonl",
+      "sha256": "f6dd01e4fcb29dd22ed9d90d77f9e1a89e9728ba63b736fbfc6259a8eb275884"
+    }
+  },
+  "contrast_sha256": "36f5a7b27483af3e6cedc52e56af37ed872c7d7af78f95a98e427f49c2b705ed",
+  "splits": {
+    "fit": {
+      "rows": 617,
+      "sha256": "27f714c8dc9a6d6eccf32b9a7391a9d8dda4f14d89f60020517ac7abd0c0d3da",
+      "labels": {
+        "RELEASE": 308,
+        "CHALLENGE": 309
+      },
+      "sources": {
+        "contrast_train": 132,
+        "previous_train": 361,
+        "contrast_probe": 66,
+        "previous_fixed_test": 22,
+        "previous_selection": 36
+      }
+    },
+    "validation": {
+      "rows": 68,
+      "sha256": "cd42ccfd8531d9a8b11beee3714ef2f7580063e3a27303a37570c911810901ed",
+      "labels": {
+        "RELEASE": 35,
+        "CHALLENGE": 33
+      },
+      "sources": {
+        "contrast_probe": 6,
+        "previous_train": 42,
+        "contrast_train": 12,
+        "previous_selection": 8
+      }
+    },
+    "test": {
+      "rows": 171,
+      "sha256": "749f20ff0f32c6cfa657324a37d1d3f1d55de006b85db7c7227c0a5d8d0a88a3",
+      "labels": {
+        "CHALLENGE": 86,
+        "RELEASE": 85
+      },
+      "sources": {
+        "previous_train": 77,
+        "contrast_train": 56,
+        "contrast_probe": 28,
+        "previous_selection": 8,
+        "previous_fixed_test": 2
+      }
+    }
+  }
+}

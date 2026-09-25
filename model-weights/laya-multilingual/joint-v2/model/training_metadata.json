@@ -1,0 +1,9 @@
+{
+  "training": "joint-route-delivery-v2",
+  "epochs": 5,
+  "seed": 20260925,
+  "rows": 1105,
+  "task_balance": "equal_total_weight",
+  "dataset_manifest_sha256": "c31ee207413276bd72d1a60d478caa115a73476e1a220dcf1029fdad804fc32e",
+  "original_dataset_manifest_sha256": "93e32d7072b677cd095dfeedcb4f419c513709479e35f49298abba53ea44ea36"
+}
