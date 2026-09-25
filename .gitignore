@@ -20,4 +20,3 @@ __pycache__/
 test-api-key.txt
 /PLAN.md
 /smoke-tests/
-/model-weights/laya-multilingual/upstream-base/

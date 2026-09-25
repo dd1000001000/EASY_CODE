@@ -124,6 +124,8 @@ import { buildSystemPrompt } from "./prompts/builder.js";
 import { createProvider } from "./providers/factory.js";
 import { TokenCalibration } from "./context/token-calibration.js";
 import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
+import { LocalLayaClient } from "./local-decision/client.js";
+import { appendLocalDecisionFallbackTrace, appendLocalDecisionTrace } from "./local-decision/trace.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
 import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
@@ -576,6 +578,7 @@ export class EasyCodeApp {
   private readonly threadDocumentService: ThreadDocumentService;
   private readonly workspaceMutationLock: WorkspaceMutationLock;
   private readonly commandRuntimes = new Map<WorkspaceManager, CommandRuntime>();
+  private localLayaClient?: LocalLayaClient;
   private readonly downloadBrokers = new Map<string, Promise<DownloadBroker>>();
   private readonly mainToolCatalogs = new Map<string, ToolCatalog>();
   private readonly mcpConfigStore = new McpConfigStore();
@@ -1632,6 +1635,8 @@ export class EasyCodeApp {
     if (this.closed) return;
     this.closed = true;
     const cleanupErrors: unknown[] = [];
+    this.localLayaClient?.close();
+    this.localLayaClient = undefined;
     try {
       this.save();
     } catch (error) {
@@ -2033,6 +2038,30 @@ export class EasyCodeApp {
 
     return new AgentRuntime({
       provider,
+      localDecision: (task, input, signal) => {
+        this.localLayaClient ??= new LocalLayaClient({
+          startupMs: this.config.limits.layaStartupTimeoutMs,
+          decisionMs: this.config.limits.layaDecisionTimeoutMs,
+          idleMs: this.config.limits.layaIdleTimeoutMs,
+        }, { dataDir: this.config.dataDir,
+          python: process.env.EASY_CODE_LAYA_PYTHON || path.join(this.config.dataDir,
+            "runtimes", "laya-decision", process.platform === "win32" ? "Scripts/python.exe" : "bin/python") });
+        return this.localLayaClient.decide(task, input, signal);
+      },
+      recordLocalDecision: trace => appendLocalDecisionTrace(this.workspace.root, trace),
+      recordLocalDecisionFallback: trace => appendLocalDecisionFallbackTrace(this.workspace.root, trace),
+      deliveryChallengeAlreadyUsed: threadId => {
+        const events = this.threadStore.journal(threadId).read();
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index];
+          if (event?.type === "decision.delivery.challenge_requested") return true;
+          const completedReason = event?.payload && typeof event.payload === "object" &&
+            "reason" in event.payload ? event.payload.reason : undefined;
+          if (event?.type === "turn.completed" &&
+              (completedReason === "success" || completedReason === "planned")) return false;
+        }
+        return false;
+      },
       limits: this.config.limits,
       taskBudget: budget,
       tokenCalibration: new TokenCalibration(JSON.stringify([provider.name, provider.model,

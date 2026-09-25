@@ -15,8 +15,8 @@
       "bytes": 258
     },
     "agents/child-contract.md": {
-      "sha256": "sha256:5d04f4ff4e1b8d84ce8adf04a15a97641b8b02b2a7d074a7bbab91e7f1c191e3",
-      "bytes": 1115
+      "sha256": "sha256:c5e9c51f389597c1f58bdfabe91338b202a4d8511936149340a47a34aae7e186",
+      "bytes": 1126
     },
     "agents/child-environment-sandboxed.md": {
       "sha256": "sha256:7c2b8eb0d5fcba8225e9392ca38995582a296474a8a91c66039251eeb2e8f0f9",
@@ -107,8 +107,8 @@
       "bytes": 161
     },
     "controllers/auto-router.md": {
-      "sha256": "sha256:aa67ae2647ffeb75e437bc99bde9c518bfbe22bfb0ebff1f672c454852bc4801",
-      "bytes": 1604
+      "sha256": "sha256:a234c38d39cf56baa6e0c81ab52571e55a85a11258cc8f16e683d4f4d6aaeab0",
+      "bytes": 1605
     },
     "controllers/current-request.md": {
       "sha256": "sha256:4ed870e2e3961fc87ce3898d98d7694773623cc3a43c7365ced966c11d1cc34a",
@@ -147,20 +147,20 @@
       "bytes": 91
     },
     "modes/auto.md": {
-      "sha256": "sha256:fe05287a7fd29547d2f64e65d3f388a28b86dd8d73423d130b4fe60d98b1fbdb",
-      "bytes": 546
+      "sha256": "sha256:77cc42670c16572cf73bbe527091977c1544587c7a4e25728743463962cfb256",
+      "bytes": 548
     },
     "modes/code.md": {
       "sha256": "sha256:0eb08a559d15d41d0d1f9134f6f33878a727bc8dac9aecf356c77b20caf4e0ab",
       "bytes": 314
     },
     "modes/plan-readonly-with-proposal.md": {
-      "sha256": "sha256:fb56bec48c569c6d9c02451a1bf0580a62671e7fe5f16e1d72919d205103f29c",
-      "bytes": 588
+      "sha256": "sha256:b3bdb7d9eed9a2997ba2d9004f5f1f027b0b1ad0d6fa7cacc55f026df5929bf6",
+      "bytes": 590
     },
     "modes/plan-readonly.md": {
-      "sha256": "sha256:4b77e83c9e4e435a7d122e9a4c66012f828e58f90526d33d3dfc8f3478e3e8e1",
-      "bytes": 522
+      "sha256": "sha256:092018ab518e3d5f0c6cc3792b4dc31b01627b6c6f517a34781fb084f99b8c00",
+      "bytes": 524
     },
     "modes/plan.md": {
       "sha256": "sha256:1f91ed34546135ed38d50b303df89037d990bf0875553827554cf1b50e73a1c1",
@@ -203,8 +203,8 @@
       "bytes": 260
     },
     "runtime/plan-approved.md": {
-      "sha256": "sha256:30e4fd17f6be5ec4ebad913e3266c00cda450e86974ded39d09da4cc1f0570d3",
-      "bytes": 200
+      "sha256": "sha256:5ea54af8707449b02a69a6ce997a4262d1415c5acbb421ccf73ace9213c014bd",
+      "bytes": 206
     },
     "runtime/plan-execution-return.md": {
       "sha256": "sha256:9bd3f8d2eeb1719c31cc3fa09cc763cb0eda0a21d39721cd07abdf0b7d74ee3f",
@@ -331,8 +331,8 @@
       "bytes": 1418
     },
     "system/security.md": {
-      "sha256": "sha256:5388c9cadf4d63ab7ac2ed939e26ee6470a047d7abaf88559ea351a7077f4a4e",
-      "bytes": 1282
+      "sha256": "sha256:2e9ccfef616b288f662cf14679aa2d2b3130974de98846973d3cc83741b66651",
+      "bytes": 1288
     },
     "tools/cancel_command.json": {
       "sha256": "sha256:a3a64f0897baeaa00ebaed2ed83e3e31aadc7558309c66de17f4acfe9d79d863",
@@ -379,12 +379,12 @@
       "bytes": 436
     },
     "tools/manage_subagents.json": {
-      "sha256": "sha256:195cb8678208596b2b512db9fd2d72d845171e1e3f344b1ec6a4875f97668f44",
-      "bytes": 3570
+      "sha256": "sha256:a4e185012e8b902ad629f1729f86474daafc7820f5aefd0f9f1642ec2faba965",
+      "bytes": 3594
     },
     "tools/manage_tasks.json": {
-      "sha256": "sha256:53616adbec439ffc1e107066ea93874a8a8ebcc83ddb51543b05845df9a6cc35",
-      "bytes": 3095
+      "sha256": "sha256:8f391dbd114a86b439c6e0c63b80497ed9df00da3418ca8edc4fbf32e8fa7ac3",
+      "bytes": 3120
     },
     "tools/modify_skill.json": {
       "sha256": "sha256:16ecccfea9643307b68274d87a8d1dd3ab76adb6fb9c05fb2e2bb1b35eb4686a",
@@ -455,12 +455,12 @@
       "bytes": 1983
     },
     "tools/select_mode.json": {
-      "sha256": "sha256:28c4c9ad8a4e3a46ffde30273e447b3893f8691e1da9effcdb629709251f95c9",
-      "bytes": 985
+      "sha256": "sha256:c4f8b9af644e4f8128acf678e166dc04fb81353c3faa2d6f19885d0e6549778c",
+      "bytes": 996
     },
     "tools/send_parent_message.json": {
-      "sha256": "sha256:ff60c83f3f6d655726c0129415cd5e42e8ba8830b66d83a3fc2f84879ff0d423",
-      "bytes": 789
+      "sha256": "sha256:571ab6f0d7740c477dc8da3ce9242cabd7926e6116b72abde0292291633a50e4",
+      "bytes": 798
     },
     "tools/start_command.json": {
       "sha256": "sha256:3968adb2672f3c2690b08ff2acf51f1e4ddcabf3b97043c3efb841f28483c246",
@@ -479,8 +479,8 @@
       "bytes": 579
     },
     "tools/write_memory.json": {
-      "sha256": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049",
-      "bytes": 2276
+      "sha256": "sha256:f09419179c58817c0dbe763a1bcb79c12731240b0db75d873fedb03e8b40f11a",
+      "bytes": 2290
     }
   },
   "tools": {
@@ -542,12 +542,12 @@
     "manage_subagents": {
       "path": "tools/manage_subagents.json",
       "contractVersion": "1.1.0",
-      "contentHash": "sha256:195cb8678208596b2b512db9fd2d72d845171e1e3f344b1ec6a4875f97668f44"
+      "contentHash": "sha256:a4e185012e8b902ad629f1729f86474daafc7820f5aefd0f9f1642ec2faba965"
     },
     "manage_tasks": {
       "path": "tools/manage_tasks.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:53616adbec439ffc1e107066ea93874a8a8ebcc83ddb51543b05845df9a6cc35"
+      "contentHash": "sha256:8f391dbd114a86b439c6e0c63b80497ed9df00da3418ca8edc4fbf32e8fa7ac3"
     },
     "modify_skill": {
       "path": "tools/modify_skill.json",
@@ -637,12 +637,12 @@
     "select_mode": {
       "path": "tools/select_mode.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:28c4c9ad8a4e3a46ffde30273e447b3893f8691e1da9effcdb629709251f95c9"
+      "contentHash": "sha256:c4f8b9af644e4f8128acf678e166dc04fb81353c3faa2d6f19885d0e6549778c"
     },
     "send_parent_message": {
       "path": "tools/send_parent_message.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:ff60c83f3f6d655726c0129415cd5e42e8ba8830b66d83a3fc2f84879ff0d423"
+      "contentHash": "sha256:571ab6f0d7740c477dc8da3ce9242cabd7926e6116b72abde0292291633a50e4"
     },
     "start_command": {
       "path": "tools/start_command.json",
@@ -667,8 +667,8 @@
     "write_memory": {
       "path": "tools/write_memory.json",
       "contractVersion": "1.0.0",
-      "contentHash": "sha256:c472867a5dba0ae4dcdde988e864df5614024d5c526a9c7951c5be6f28a9b049"
+      "contentHash": "sha256:f09419179c58817c0dbe763a1bcb79c12731240b0db75d873fedb03e8b40f11a"
     }
   },
-  "bundleHash": "sha256:c18912b5ce25a69bdde23b048202ff0f64134bb287a180d35568fd616f15413e"
+  "bundleHash": "sha256:9dad1ee92eb5e37f8dc376690153b2de9d49ba5bb14bad6b8ee6f7adce00d34c"
 }

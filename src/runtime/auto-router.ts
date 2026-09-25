@@ -411,6 +411,7 @@ export async function determineAutoRoute(
   controllerPolicy?: string,
   onRequest?: AutoRouteRequestObserver,
   limits: Readonly<RuntimeLimits> = DEFAULT_RUNTIME_LIMITS,
+  directOnly = false,
 ): Promise<AutoRouteDecision> {
   const attempts: AutoRouteAttempt[] = [];
   for (let attempt = 0; attempt <= limits.modelContentRetries; attempt += 1) {
@@ -423,8 +424,10 @@ export async function determineAutoRoute(
           context,
           attempt > 0,
           controllerPolicy,
-        ),
-        tools: [...autoRouteToolDefinitions()],
+        ).map(message => directOnly && message.role === "system"
+          ? { ...message, content: `${message.content}\n\nThe work mode was already selected as DIRECT. Answer with respond_directly only; do not select a different mode.` }
+          : message),
+        tools: directOnly ? [respondDirectlyTool()] : [...autoRouteToolDefinitions()],
         signal,
         temperature: 0,
         thinkingEffort,
@@ -444,10 +447,11 @@ export async function determineAutoRoute(
     }
     const decision = incompleteModelOutput(response) ? undefined
       : parseAutoRouteDecision(response.message, context?.threadNeedsTitle);
+    const accepted = directOnly && decision?.kind !== "direct_response" ? undefined : decision;
     attempts.push(
-      routeAttempt(attempt + 1, decision?.kind ?? "invalid", response),
+      routeAttempt(attempt + 1, accepted?.kind ?? "invalid", response),
     );
-    if (decision) return { ...decision, attempts: [...attempts] };
+    if (accepted) return { ...accepted, attempts: [...attempts] };
   }
   return { kind: "route", mode: "code", reason: "Auto routing content corrections exhausted; continue with ordinary Code workflow and unchanged command permissions.", attempts };
 }

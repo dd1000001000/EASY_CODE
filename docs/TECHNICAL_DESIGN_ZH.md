@@ -35,7 +35,7 @@ CLI 和 Web 共用任务、权限和存储规则，但不提供完全相同的�
 
 ### 2.1 安装准备
 
-按 [README 安装步骤](../README_zh.md#安装) 准备 Node.js 20.11+、Python 3.10+、npm 和源码安装所需的 Git。用于子 Agent 隔离的 worktree 也依赖 Git。
+按 [README 安装步骤](../README_zh.md#安装) 准备 Node.js 20.11+、Python 3.10–3.14、npm 和源码安装所需的 Git。用于子 Agent 隔离的 worktree 也依赖 Git。
 
 安装会准备 Prompt Bundle、本地检索资源、SQLite 运行资源、EASY CODE 私有的 Microsoft MarkItDown 环境、可用的 VS Code 集成和匹配版本的原生沙箱。每次安装或重装会更新到最新稳定版 MarkItDown。首次安装可能需要下载较大的向量模型；Windows 沙箱初始化可能请求管理员授权。安装并不保证能自动解决所有系统依赖、权限或组织安全策略问题。
 
@@ -136,7 +136,16 @@ Agent 使用带文件夹标识的路径区分来源，例如 `api/...` 和 `web/
 | Plan | 侧重调查、方案和待确认事项 | “先分析登录流程，给出修复方案，暂不实施。” |
 | Code | 直接修改和验证 | “按已确认方案修复，并运行相关测试。” |
 
-Auto 仍由模型选择，但路由模型会收到当前 Plan 与 Code 实际可用能力的权威分类摘要，例如项目调查、公开网页读取、图片理解、实施修改、外部服务和 Agent 编排，而不会收到普通工具 Schema。需要实时信息或工具的请求进入 Code；需要在实施前先审阅方案的请求进入 Plan；只有完全依据现有对话即可回答时才直接结束。无法确定时默认选择 Code。选出 Plan 或 Code 后会立即切换并保留在线程中，只有用户手动切回 Auto 才重新路由；直接回答仍保持 Auto，新线程也从 Auto 开始。
+Auto 先由本地微调 Laya 模型根据当前请求和有限的前文选择 `DIRECT`、`PLAN` 或 `CODE`。`PLAN`、`CODE` 立即切换；`DIRECT` 仍由云端模型撰写回答。包含图片、本地推理不可用或结果异常时，回退到现有云端路由；它会收到当前 Plan 与 Code 的能力摘要。需要实时信息或工具的请求进入 Code，需要先审阅方案的请求进入 Plan。Plan／Code 的选择会保持到用户切回 Auto；直接回答仍保持 Auto。
+
+Code 任务交付前，Runtime 先检查后台命令、子 Agent 和 DAG 等硬性完成条件，再把用户需求与主 Agent 的最终摘要交给 Laya。`CHALLENGE` 最多请求主 Agent 复查并修正一次，这次机会写入 Thread Journal，Resume 后不会重置；下一次交付不再重复本地判断。`RELEASE` **不代表代码得到独立验证**，也不会绕过现有完成条件或 reviewer。Laya 的输入窗口为 1024 Token；超长时保留开头和结尾，省略中间。
+`RELEASE` 的分数还必须达到 `limits.laya_delivery_release_threshold`（默认 `0.9`）；低于阈值时按 `CHALLENGE` 执行。日志同时保留模型原始选择和实际执行的选择。
+
+实际送给 Laya 的脱敏输入、选项分数和选择保存在项目内 `.easycode/decision-traces/<thread-id>.jsonl`。该目录加入本地 Git 排除规则；每个文件到 8 MiB 轮转，最多保留四份旧文件。Journal 只记录决策 ID 和状态变化。日志写入失败会提示，但不阻断任务。安装程序会在 `Data/runtimes/laya-decision` 创建独立 Python 环境，安装固定版本的 `laya==0.3.20` 和 PyTorch 2.8.0（Python 3.14 使用有对应安装包的 2.9.0），并实际运行一次本地决策验证。环境属于 EASY CODE 数据目录，完整卸载时一并删除。安装失败会明确报错；任务运行时推理失败则回退云端路由。
+
+同时运行的 EASY CODE 进程通过 Windows 命名管道或私有 Unix socket 连接当前用户的同一个 Laya 服务，不占用网络端口。第一个进程启动服务，服务只加载一份模型，并依次处理各客户端请求。一个 CLI 退出或取消自己的请求，不会终止其他 CLI 的模型请求。服务在空闲达到 `limits.laya_idle_timeout_ms`（默认两分钟）或最后一个客户端退出后卸载模型。IPC 身份绑定 Python 环境和 worker 代码，不同版本不会误用不兼容的服务；服务意外退出后，下次决策可重新启动。
+
+成功安装后无需手动设置 Python 路径。开发时如需使用自备环境，可通过 `EASY_CODE_LAYA_PYTHON` 覆盖托管环境，例如 Windows PowerShell：`$env:EASY_CODE_LAYA_PYTHON = 'C:\path\to\laya-env\Scripts\python.exe'`。
 
 CLI 使用 `/mode plan`、`/mode code` 或 `/mode auto`。**Plan 不是系统强制只读**；如果确实不能修改，应在需求里明确说明，并对命令保持合适的审批设置。
 

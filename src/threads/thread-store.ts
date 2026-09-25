@@ -1365,6 +1365,11 @@ export class ThreadStore {
             timestamp: input.timestamp ?? new Date().toISOString() }]);
         }
         const payload = asPayloadRecord(input.payload);
+        if (input.type === "decision.delivery.challenge_requested" &&
+            (!payload || !isChatMessage(payload.message) || payload.message.role !== "user" ||
+              typeof payload.decisionId !== "string")) {
+          throw new Error("Delivery challenge requires one durable user feedback message");
+        }
         if (input.type === "mode.auto_route") {
           const priorState = this.recoverFromEvents(threadId, priorEvents);
           foldAutoRouteSelection(priorState, {
@@ -2139,6 +2144,9 @@ export class ThreadStore {
           updateRecoveredLatestRequest(state, messageIndex, payload.content);
           if (payload.content.trim()) state.goal = payload.content;
         }
+      } else if (event.type === "decision.delivery.challenge_requested" &&
+          payload && isChatMessage(payload.message) && payload.message.role === "user") {
+        appendMessageIfNew(state, payload.message);
       } else if (event.type.startsWith("turn.steering.")) {
         this.replaySteeringEvent(state, event, payload);
       } else if (

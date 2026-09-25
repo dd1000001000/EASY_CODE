@@ -126,6 +126,10 @@ context_tool_reference_min_chars = 4096
 # Risk-triggered reviewer remains available under its restricted profile;
 # its opinion is advisory, not a universal delivery gate.
 reviewer_output_tokens = 6144 # local report storage budget
+laya_startup_timeout_ms = 60000
+laya_decision_timeout_ms = 30000
+laya_idle_timeout_ms = 120000 # unload the shared model after inactivity
+laya_delivery_release_threshold = 0.9 # lower-confidence RELEASE receives the one-time challenge
 # Independent command approval agent: uses the shared Provider response deadlines below.
 approval_input_chars = 24000
 approval_output_tokens = 1024 # local report storage budget
