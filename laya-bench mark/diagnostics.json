@@ -1,0 +1,5 @@
+{
+  "probe_calls": 2,
+  "probe_total_tokens": 579,
+  "note": "One unwrapped route request returned an answer instead of a route label (279 tokens); the wrapped route prompt returned DIRECT (300 tokens). Both are excluded from final-method token estimates."
+}

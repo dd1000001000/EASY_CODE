@@ -6,13 +6,14 @@ This guide explains how the system fits together, how to complete common workflo
 
 ## 1. Purpose and overall architecture
 
-EASY CODE is a local agent application. The model analyzes a task and proposes actions; the application assembles context, checks permissions, executes tools, retains evidence and recovers work. It is neither a local language model nor just a chat window forwarding prompts.
+EASY CODE combines a local agent runtime, a cloud coding model and an experimental local decision model. The cloud model analyzes tasks and proposes actions; Laya classifies workflow and delivery choices. The runtime assembles context, checks permissions, executes tools, retains evidence and recovers work.
 
 ```mermaid
 flowchart TD
     UI[Terminal / Web / editor integration] --> APP[Shared task and project management]
     APP --> AGENT[Agent coordination]
     AGENT <--> MODEL[Model providers]
+    AGENT <--> LOCAL[Shared local Laya decision service]
     AGENT --> TOOLS[Tools and approval]
     TOOLS --> ENV[Project files / command sandbox / MCP]
     AGENT <--> MEMORY[History / context / memory and retrieval]
@@ -24,6 +25,7 @@ flowchart TD
 | Local application | Coordinate models, tools, tasks and cancellation | Node.js, TypeScript |
 | Interfaces | Terminal interaction, browser projects, live progress and approvals | CLI; Vue 3, Element Plus; VS Code terminal integration |
 | Model access | Provider selection, capabilities, streaming and usage accounting | Configurable model registry; compatible Chat Completions/Responses protocols |
+| Local decisions | Auto routing and a one-time delivery check | Multilingual encoder and choice head; joint SFT; Python/PyTorch; shared local IPC service |
 | Execution control | Authorization, command lifecycle, cancellation and cleanup | Structured tools, independent approval agent, native OS sandbox |
 | Persistence | Conversations, projects, events, memory and recovery snapshots | SQLite, JSONL event journals, checkpoints, attachment/evidence files |
 | Retrieval | Find relevant history and memory | SQLite FTS5 text search, local vector search, ONNX embedding model, Orama |
@@ -37,7 +39,7 @@ CLI and Web share task, permission and storage rules, but not every input method
 
 Follow the [README installation steps](../README.md#install) with Node.js 20.11+, Python 3.10–3.14, npm and Git for a source installation. Child-agent worktree isolation also requires Git.
 
-Installation prepares the Prompt Bundle, local retrieval resources, SQLite runtime resources, a private Microsoft MarkItDown environment, available VS Code integration and a matching native sandbox runtime. The converter is refreshed to the latest stable MarkItDown package on install or reinstall. Initial downloads can include a substantial embedding model. Windows sandbox initialization may request administrator confirmation. Installation cannot automatically resolve every OS dependency, permission restriction or organizational policy.
+Installation prepares the Prompt Bundle, local retrieval resources, SQLite runtime resources, private MarkItDown and Laya Python environments, available VS Code integration and a matching native sandbox runtime. It verifies a real decision using the bundled fine-tuned weights. The converter is refreshed to the latest stable MarkItDown package on install or reinstall. Initial dependency downloads can be substantial. Windows sandbox initialization may request administrator confirmation. Installation cannot automatically resolve every OS dependency, permission restriction or organizational policy.
 
 Check the result:
 
@@ -136,16 +138,9 @@ Work modes describe the intended approach:
 | Plan | Focus on investigation, proposals and decisions needing confirmation | “Investigate the login flow and propose a fix; do not implement it yet.” |
 | Code | Implement and verify directly | “Apply the agreed fix and run the relevant tests.” |
 
-In Auto, the fine-tuned local Laya classifier first selects `DIRECT`, `PLAN` or `CODE` from the current request and bounded prior conversation. `PLAN` and `CODE` switch immediately; `DIRECT` still uses the cloud model to write the answer. Image requests, unavailable local inference and malformed decisions fall back to the existing cloud router, which receives the available-capability summary. Requests needing live information or tools belong in Code; proposals for review belong in Plan. A Plan or Code selection persists until the user switches back to Auto; a direct answer leaves Auto selected.
+In Auto, local Laya selects `DIRECT`, `PLAN` or `CODE`. A direct answer still comes from the cloud model and leaves Auto selected; Plan or Code takes effect immediately and persists until you switch back. Image requests or local inference failures use the cloud router.
 
-Before a Code task is delivered, Runtime first checks its pending commands, child agents and DAG. It then compares the user's requirements with the main agent's own final summary using Laya. `CHALLENGE` asks the main agent to check and correct the work once; this chance is recorded in the Thread Journal and survives Resume. The next delivery does not repeat the local check. `RELEASE` is **not** independent code verification and does not bypass the existing completion checks or reviewer. The local model's input window is 1,024 tokens: longer inputs retain the beginning and end and omit the middle.
-The `RELEASE` score must also meet `limits.laya_delivery_release_threshold` (default `0.9`); below that value, the effective result is `CHALLENGE`. The trace keeps both the raw model decision and the applied decision.
-
-The exact sanitized text sent to Laya, option scores and choice are recorded locally in `.easycode/decision-traces/<thread-id>.jsonl` inside the project. The trace is excluded from Git locally, rotated at 8 MiB per file and kept for up to four rotations. The Journal records only decision identity and state transitions. If trace writing fails, Runtime reports it but continues the task. Installation creates `Data/runtimes/laya-decision` with pinned `laya==0.3.20` and PyTorch 2.8.0 (2.9.0 on Python 3.14, which has no 2.8 wheel), then verifies a real local decision. This environment is registered under EASY CODE's owned data root and removed by full uninstall. A failed installation is reported explicitly; an inference failure during a task uses the cloud-route fallback.
-
-Concurrent EASY CODE processes connect to one per-user local Laya service over a Windows named pipe or a private Unix socket, not a network port. The first process starts the service; it loads one model copy and serializes requests from all connected clients. Closing one client never stops another client's work. A canceled request does not kill the shared model. The service disconnects idle clients and unloads after `limits.laya_idle_timeout_ms` (default two minutes), or shortly after the last client leaves. The IPC identity includes the Python environment and worker code, so different versions do not silently share an incompatible worker. A crashed service can be started again by the next decision request.
-
-No Python path configuration is needed after a successful install. For development or a custom Python environment, `EASY_CODE_LAYA_PYTHON` can override the managed runtime; for example, Windows PowerShell: `$env:EASY_CODE_LAYA_PYTHON = 'C:\path\to\laya-env\Scripts\python.exe'`.
+Before Code delivery, Runtime checks pending commands, child agents and DAG state, then asks Laya to compare requirements with the main agent's proposed final answer. A `CHALLENGE`, or a `RELEASE` below the default 0.9 score threshold, requests one recheck. That allowance survives Resume; the next delivery skips Laya but not the original completion checks or reviewer. Local inference failure reports and skips this reminder. See [local decisions and training](#61-experimental-local-decision-model) for the model, input limits, configuration and results.
 
 Use `/mode plan`, `/mode code` or `/mode auto` in CLI. **Plan is not enforced read-only.** If modifications are out of scope, say so explicitly and keep appropriate command approval controls.
 
@@ -245,9 +240,87 @@ Current default request deadlines:
 | Streaming | 60 seconds without meaningful progress at every effort | New parsed answer, thinking or tool-argument content renews the timer; heartbeats alone do not |
 | Buffered/non-streaming | none/low: 5 minutes; medium: 7.5 minutes; high: 10 minutes | Total time allowed to receive the response |
 
-All model roles use the same timing policy, although streaming availability still depends on model capability and the particular request. Retryable API failures default to at most 5 retries; model-content errors default to 2 correction attempts. Cancellation, non-retryable errors and command failure are not the same retry category.
+All cloud model roles use the same timing policy, although streaming availability still depends on model capability and the particular request. Retryable API failures default to at most 5 retries; model-content errors default to 2 correction attempts. Cancellation, non-retryable errors and command failure are not the same retry category. The local Laya service has separate startup and inference deadlines, described below.
 
 Use `/usage` for provider-reported usage and `/context` for local capacity estimates. They measure different things. Auxiliary approvals, review, compaction and background memory consolidation can also consume tokens.
+
+### 6.1 Experimental local decision model
+
+The bundled `joint-v2` model is fine-tuned from **convaiinnovations/laya-multilingual**, an existing decision model built on **mmBERT-base**. It is not a new language model trained from scratch. A shared multilingual encoder and choice head score candidate answers; softmax converts those scores into a distribution, and the highest-scoring option is selected. It does not generate explanations or code.
+
+| Decision | Input | Options | Runtime action |
+| --- | --- | --- | --- |
+| Auto routing | Current request and bounded conversation context | `DIRECT`, `PLAN`, `CODE` | Answer through the cloud model, propose a plan, or inspect/implement with tools |
+| Code delivery | User requirements and the main agent's proposed final answer as its completion summary | `RELEASE`, `CHALLENGE` | Deliver, or ask the main agent to recheck once |
+
+Decision criteria are in English; requests may be Chinese or English, and labels are fixed English identifiers. For example, “Explain the supplied error message” can be `DIRECT`; “Inspect this project's failing tests and fix them” requires `CODE`. A completion summary that leaves a requested test unfinished should be `CHALLENGE`.
+
+Runtime currently selects routing by highest score, **without a confidence-based cloud handoff**. Delivery is different: only a highest-scoring `RELEASE` meeting the configured threshold is accepted. Otherwise, Runtime issues one generic recheck request. Local scores are not a guarantee of correctness, and the classifier cannot provide a specific bug diagnosis. Command approval remains the responsibility of the existing approval system.
+
+### 6.2 Teacher data and joint supervised fine-tuning
+
+All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**, not “SFR”: both the encoder and choice head are trained with cross-entropy against the correct option. This retained model uses neither LoRA nor DPO and introduces no deliberate preference toward Code or Release.
+
+| Dataset | Routing | Delivery | Total |
+| --- | ---: | ---: | ---: |
+| Development: fit + validation, then final refit | 420 | 685 | 1,105 |
+| Held-out test | 105 | 171 | 276 |
+| Total | 525 | 856 | 1,381 |
+
+Related requests are grouped in the approximately **4:1 development/test split**. Internal selection uses 995 fit and 110 validation cases; the held-out test is not used for checkpoint selection.
+
+The training process is:
+
+1. Start from the recorded upstream multilingual checkpoint and validate dataset hashes.
+2. Train both tasks together, giving routing and delivery equal aggregate loss weight despite their different example counts.
+3. Shuffle examples **and candidate-answer order every epoch**. The objective is to learn the option's meaning rather than its position.
+4. Select the epoch count using validation performance across answer permutations, prioritizing correct answers in every order. The recorded run selected **5 epochs**.
+5. Restart from the original checkpoint, refit on all 1,105 development cases for those 5 epochs, then evaluate the frozen test set.
+
+| Training parameter | Recorded value |
+| --- | --- |
+| Encoder / choice-head learning rate | `2e-6` / `1e-5` |
+| Optimizer / weight decay | AdamW / `0.01` |
+| Effective / micro batch size | 16 / 4 |
+| Precision and memory management | BF16; gradient checkpointing |
+| Selection limit / early-stopping patience | 8 epochs / 3 |
+| Seed | `20260925` |
+
+Original weights are not distributed with the project. The [training guide](../finetuning/laya-joint-v2/README.md) provides upstream GitHub/Hugging Face links, the pinned download revision and training/evaluation commands. The bundled final model lives in `model-weights/laya-multilingual/joint-v2/model/`; its saved report and training metadata accompany it. End users need only the installed final model, not the training environment or original checkpoint.
+
+### 6.3 Input budget, local service and decision traces
+
+The model's **1,024-token window covers the complete serialized decision**, including criteria and options. Runtime first removes recognized sensitive values, reserves room for those fixed instructions, and truncates oversized input in the **middle**, retaining its beginning and end with an omission marker. It checks the resulting token count again. This is separate from the cloud model's much larger context window.
+
+Installation creates an owned Python environment at `Data/runtimes/laya-decision`, with pinned `laya==0.3.20` and PyTorch 2.8.0 (2.9.0 for Python 3.14). The worker validates the model hash and uses CUDA when available, otherwise CPU. Full uninstall removes the owned runtime. A custom environment can be selected with `EASY_CODE_LAYA_PYTHON`.
+
+Concurrent EASY CODE processes with the same user, runtime and worker version share one service over a Windows named pipe or private Unix socket. One model instance handles requests serially; closing or canceling one client does not kill another client's work. The service unloads after inactivity or when its last client leaves, and can restart on demand.
+
+Configure the following keys under `[limits]` in the runtime TOML configuration:
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `laya_startup_timeout_ms` | `60000` | Time allowed to start and load the service |
+| `laya_decision_timeout_ms` | `30000` | Time allowed for a decision request |
+| `laya_idle_timeout_ms` | `120000` | Idle service lifetime |
+| `laya_delivery_release_threshold` | `0.9` | Minimum score for a delivery `RELEASE`; not a routing threshold |
+
+Decision traces live in the project's `.easycode/decision-traces/<thread-id>.jsonl`. They retain the sanitized/truncated input actually used, option order and scores, raw and applied choices, model identity and fallback/challenge state. Files rotate at 8 MiB with four old rotations and are excluded from Git locally. Trace-write failure is reported without failing the coding task. The task Journal retains decision references and challenge state, not a second copy of the full input.
+
+The once-per-task delivery challenge survives pause/resume. After a challenge, the next delivery skips Laya but still faces the original completion checks. If local inference fails, routing falls back to the cloud router; delivery reports and skips the local reminder rather than asking GLM to replace it.
+
+### 6.4 Measured results
+
+![Joint SFT accuracy and confusion matrices](../finetuning/laya-joint-v2/assets/results.png)
+
+| Held-out evaluation | Original Laya | Joint SFT |
+| --- | ---: | ---: |
+| Routing accuracy | 50.2% | **95.1%** |
+| Delivery accuracy | 57.3% | **69.3%** |
+
+These are highest-score predictions **without the runtime 0.9 delivery threshold**: 105 routing cases in all six option orders and 171 delivery cases in both orders. Matrix counts therefore represent 630 and 342 order-specific evaluations, not distinct cases. Routing was correct in every order for 95/105 cases; delivery for 110/171.
+
+A separate [200-case Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. This is an experimental cascade, **not the current product routing/delivery policy**, and its token savings should not be presented as measured production savings.
 
 ## 7. History, context and long-term memory
 

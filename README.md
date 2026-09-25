@@ -12,12 +12,23 @@ EASY CODE is a local AI coding assistant for the terminal and browser. Give it a
 - **Read documents and the Web on demand:** Web attachments and supported workspace documents use the same local conversion path to become private, read-only conversation resources; the agent can also search public pages and save selected pages for bounded reading.
 - **Organize real projects:** attach one or several local folders to a project and keep separate conversations for different tasks.
 - **Choose your models:** bundled provider entries for Qwen, DeepSeek, Kimi, GLM and GLM Coding Plan; configurable models, endpoints and capabilities.
+- **Try local decisions (experimental):** a fine-tuned multilingual Laya model selects the Auto workflow and gives Code tasks a one-time pre-delivery check.
 - **Control execution:** Auto, Plan and Code workflows; manual approval, an independent approval agent or explicit Full access; native command sandboxing.
 - **Continue longer tasks:** resume conversations, recall earlier evidence and use global/project memory with automatic context management.
 - **Delegate when useful:** optional dependency-based task graphs and child agents, plus independent investigation of repeated verification failures.
 - **Extend your workflow:** reusable Skills, MCP tools, VS Code terminal integration, English and Simplified Chinese interfaces.
 
-The application and its history run locally. Relevant task context is still sent to your selected model provider; “local” does not mean offline inference.
+The application, history and Laya decisions run locally. Your selected cloud model still handles coding and answers; relevant task context is sent to that provider.
+
+## New: experimental local decisions
+
+Enabled after installation, with no separate model setup:
+
+- **Auto routing:** Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
+- **Delivery check:** Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once—not indefinitely.
+- **Shared local service:** multiple EASY CODE sessions share a model instance. Inputs and decisions are saved locally in the project's `.easycode/decision-traces/`.
+
+This feature does not replace command approval or independent review. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Laya + GLM experiment](<./laya-bench mark/README.md>).
 
 ## Install
 
@@ -31,7 +42,7 @@ npm run build
 npm install --global --allow-scripts=easy-code-agent . --foreground-scripts
 ```
 
-Run each step only after the previous one succeeds. Global installation prepares local retrieval resources, editor integration and the native sandbox. Downloads and Windows administrator confirmation may be required. Normal use does not require Docker, Podman or a separately installed Codex application.
+Run each step only after the previous one succeeds. Global installation prepares local retrieval resources, the private Python environments, Laya inference, editor integration and the native sandbox. Downloads and Windows administrator confirmation may be required. Normal use does not require Docker, Podman or a separately installed Codex application.
 
 ## Start in three steps
 
@@ -67,7 +78,7 @@ Replace the path with your own folder and quote paths containing spaces. Enter `
 
 Start with Plan if you want a proposal first; choose Code to implement, or Auto to let EASY CODE select a mode for this conversation. Once Auto selects Plan or Code, that mode takes effect immediately and remains selected until you switch back to Auto. A tool-free direct answer leaves Auto selected. New conversations start in Auto. **Plan is a workflow preference, not an enforced read-only sandbox.**
 
-Auto routing and a one-time Code delivery check use the bundled local Laya model. Installation automatically creates its Python environment under EASY CODE's data directory; uninstall removes it. Concurrent EASY CODE processes share one user-local model service, which unloads after inactivity. Python dependency downloads can take several minutes. If local inference later fails, EASY CODE reports the fallback and retains cloud routing. Decision inputs are logged in your project's `.easycode/decision-traces/`; see the [detailed guide](./docs/TECHNICAL_DESIGN.md).
+If local Laya inference fails, Auto falls back to cloud routing; an unavailable delivery check is reported and skipped. Existing task-completion checks still apply.
 
 ## Everyday controls
 
