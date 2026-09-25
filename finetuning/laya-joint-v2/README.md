@@ -46,9 +46,9 @@ From `finetuning/laya-joint-v2/`:
 # Train into a new output folder
 python train.py --output ../../model-weights/laya-multilingual/new-run
 
-# Evaluate the bundled fine-tuned model; original weights are not needed
+# Evaluate the bundled fine-tuned model
 python evaluate.py
 
-# Regenerate these figures from the saved report; no GPU needed
+# Regenerate these figures from the saved report on CPU
 python render_results.py
 ```

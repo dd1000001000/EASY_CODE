@@ -22,13 +22,13 @@ EASY CODE 是运行在本地的 AI 编程助手，同时提供终端和网页界
 
 ## 新增：实验性本地决策
 
-随包提供的**微调后 Laya（joint-v2）** 在安装完成后直接启用，无需单独配置模型：
+安装程序会自动启用随包提供的**微调后 Laya（joint-v2）**：
 
 - **Auto 路由**：微调后 Laya 选择直接回答、Plan 或 Code，再由云端模型完成具体工作。
-- **交付检查**：微调后 Laya 对比用户需求和 Agent 的完成摘要。放行分数默认至少 **0.90**，可在运行配置中调整；未通过时最多要求 Agent 复查一次，不会无限循环。
+- **交付检查**：微调后 Laya 对比用户需求和 Agent 的完成摘要。放行分数默认至少 **0.90**，可在运行配置中调整；未通过时要求 Agent 复查一次。
 - **共享本地服务**：多个 EASY CODE 会话共用模型实例，输入和选择记录在项目的 `.easycode/decision-traces/`。
 
-该功能不替代命令审批或独立 reviewer。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[微调结果](./finetuning/laya-joint-v2/README.md)和 [微调后 Laya + GLM 实验](<./laya-bench mark/README.md>)。
+命令审批和独立 reviewer 继续生效。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[微调结果](./finetuning/laya-joint-v2/README.md)和 [微调后 Laya + GLM 实验](<./laya-bench mark/README.md>)。
 
 ## 安装
 
@@ -78,7 +78,7 @@ easy-code --workspace "/path/to/project"
 
 希望先看方案时选择 Plan；直接实施选择 Code；也可以使用 Auto 自动判断。Auto 一旦选出 Plan 或 Code，当前轮立即按该模式开放工具，之后保持该模式，直到用户手动切回 Auto。无需工具即可直接回答时仍保持 Auto；新对话从 Auto 开始。**Plan 是工作方式，不是强制只读的安全边界。**
 
-运行时若 Laya 推理失败，Auto 回退云端路由；交付检查则明确提示后跳过。现有任务完成条件仍然生效。
+运行时若 Laya 推理失败，Auto 使用云端路由；Code 交付会提示故障，并继续执行现有任务完成检查。
 
 ## 常用操作
 
