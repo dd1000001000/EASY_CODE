@@ -22,13 +22,13 @@ The application, history and fine-tuned Laya decisions run locally. Your selecte
 
 ## New: experimental local decisions
 
-The bundled **fine-tuned Laya (joint-v2)** is enabled after installation, with no separate model setup:
+Installation enables the bundled **fine-tuned Laya (joint-v2)** automatically:
 
 - **Auto routing:** Fine-tuned Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
-- **Delivery check:** Fine-tuned Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once—not indefinitely.
+- **Delivery check:** Fine-tuned Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once.
 - **Shared local service:** multiple EASY CODE sessions share a model instance. Inputs and decisions are saved locally in the project's `.easycode/decision-traces/`.
 
-This feature does not replace command approval or independent review. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Fine-tuned Laya + GLM experiment](<./laya-bench mark/README.md>).
+Command approval and independent review continue to apply. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Fine-tuned Laya + GLM experiment](<./laya-bench mark/README.md>).
 
 ## Install
 
@@ -78,7 +78,7 @@ Replace the path with your own folder and quote paths containing spaces. Enter `
 
 Start with Plan if you want a proposal first; choose Code to implement, or Auto to let EASY CODE select a mode for this conversation. Once Auto selects Plan or Code, that mode takes effect immediately and remains selected until you switch back to Auto. A tool-free direct answer leaves Auto selected. New conversations start in Auto. **Plan is a workflow preference, not an enforced read-only sandbox.**
 
-If local Laya inference fails, Auto falls back to cloud routing; an unavailable delivery check is reported and skipped. Existing task-completion checks still apply.
+If local Laya inference fails, Auto uses cloud routing; Code delivery reports the issue and continues with the existing task-completion checks.
 
 ## Everyday controls
 

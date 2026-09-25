@@ -140,7 +140,7 @@ Work modes describe the intended approach:
 
 In Auto, fine-tuned Laya selects `DIRECT`, `PLAN` or `CODE`. A direct answer still comes from the cloud model and leaves Auto selected; Plan or Code takes effect immediately and persists until you switch back. Image requests or local inference failures use the cloud router.
 
-Before Code delivery, Runtime checks pending commands, child agents and DAG state, then asks fine-tuned Laya to compare requirements with the main agent's proposed final answer. A `CHALLENGE`, or a `RELEASE` below the default 0.9 score threshold, requests one recheck. That allowance survives Resume; the next delivery skips Laya but not the original completion checks or reviewer. Local inference failure reports and skips this reminder. See [local decisions and training](#61-experimental-local-decision-model) for the model, input limits, configuration and results.
+Before Code delivery, Runtime checks pending commands, child agents and DAG state, then asks fine-tuned Laya to compare requirements with the main agent's proposed final answer. A `CHALLENGE`, or a `RELEASE` below the default 0.9 score threshold, requests one recheck. That allowance is retained across Resume; the next delivery proceeds through the existing completion checks and reviewer. When local inference fails, Runtime reports it and continues through those checks. See [local decisions and training](#61-experimental-local-decision-model) for the model, input limits, configuration and results.
 
 Use `/mode plan`, `/mode code` or `/mode auto` in CLI. **Plan is not enforced read-only.** If modifications are out of scope, say so explicitly and keep appropriate command approval controls.
 
@@ -246,7 +246,7 @@ Use `/usage` for provider-reported usage and `/context` for local capacity estim
 
 ### 6.1 Experimental local decision model
 
-The bundled **fine-tuned Laya (joint-v2)** model is trained from **convaiinnovations/laya-multilingual**, an existing decision model built on **mmBERT-base**. It is not a new language model trained from scratch. A shared multilingual encoder and choice head score candidate answers; softmax converts those scores into a distribution, and the highest-scoring option is selected. It does not generate explanations or code.
+The bundled **fine-tuned Laya (joint-v2)** model is trained from **convaiinnovations/laya-multilingual**, a decision model built on **mmBERT-base**. A shared multilingual encoder and choice head score candidate answers; softmax converts those scores into a distribution, and the highest-scoring option is selected.
 
 | Decision | Input | Options | Runtime action |
 | --- | --- | --- | --- |
@@ -255,11 +255,11 @@ The bundled **fine-tuned Laya (joint-v2)** model is trained from **convaiinnovat
 
 Decision criteria are in English; requests may be Chinese or English, and labels are fixed English identifiers. For example, “Explain the supplied error message” can be `DIRECT`; “Inspect this project's failing tests and fix them” requires `CODE`. A completion summary that leaves a requested test unfinished should be `CHALLENGE`.
 
-Runtime currently selects routing by highest score, **without a confidence-based cloud handoff**. Delivery is different: only a highest-scoring `RELEASE` meeting the configured threshold is accepted. Otherwise, Runtime issues one generic recheck request. Local scores are not a guarantee of correctness, and the classifier cannot provide a specific bug diagnosis. Command approval remains the responsibility of the existing approval system.
+Runtime selects routing by highest score. For delivery, a highest-scoring `RELEASE` must meet the configured threshold; otherwise Runtime issues one generic recheck request. Local scores express the model's preference among options. The existing approval system handles command approval.
 
 ### 6.2 Teacher data and joint supervised fine-tuning
 
-All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**: both the encoder and choice head are trained with cross-entropy against the correct option. This retained model uses neither LoRA nor DPO and introduces no deliberate preference toward Code or Release.
+All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**: both the encoder and choice head are trained with cross-entropy against the correct option. Routing and delivery contribute equal total weight to the training loss.
 
 | Dataset | Routing | Delivery | Total |
 | --- | ---: | ---: | ---: |
@@ -267,13 +267,13 @@ All examples originate from the **GPT-6 Luna teacher model**, then are curated i
 | Held-out test | 105 | 171 | 276 |
 | Total | 525 | 856 | 1,381 |
 
-Related requests are grouped in the approximately **4:1 development/test split**. Internal selection uses 995 fit and 110 validation cases; the held-out test is not used for checkpoint selection.
+Related requests are grouped in the approximately **4:1 development/test split**. Internal checkpoint selection uses 995 fit and 110 validation cases; final evaluation uses the 276 held-out test cases.
 
 The training process is:
 
 1. Start from the recorded upstream multilingual checkpoint and validate dataset hashes.
 2. Train both tasks together, giving routing and delivery equal aggregate loss weight despite their different example counts.
-3. Shuffle examples **and candidate-answer order every epoch**. The objective is to learn the option's meaning rather than its position.
+3. Shuffle examples **and candidate-answer order every epoch** to train across option positions.
 4. Select the epoch count using validation performance across answer permutations, prioritizing correct answers in every order. The recorded run selected **5 epochs**.
 5. Restart from the original checkpoint, refit on all 1,105 development cases for those 5 epochs, then evaluate the frozen test set.
 
@@ -286,7 +286,7 @@ The training process is:
 | Selection limit / early-stopping patience | 8 epochs / 3 |
 | Seed | `20260925` |
 
-Original weights are not distributed with the project. The [training guide](../finetuning/laya-joint-v2/README.md) provides upstream GitHub/Hugging Face links, the pinned download revision and training/evaluation commands. The bundled final model lives in `model-weights/laya-multilingual/joint-v2/model/`; its saved report and training metadata accompany it. End users need only the installed final model, not the training environment or original checkpoint.
+The [training guide](../finetuning/laya-joint-v2/README.md) provides upstream GitHub/Hugging Face links, the pinned download revision and training/evaluation commands. The bundled final model lives in `model-weights/laya-multilingual/joint-v2/model/`; its saved report and training metadata accompany it. Installation provides the final model for everyday decisions.
 
 ### 6.3 Input budget, local service and decision traces
 
@@ -303,11 +303,11 @@ Configure the following keys under `[limits]` in the runtime TOML configuration:
 | `laya_startup_timeout_ms` | `60000` | Time allowed to start and load the service |
 | `laya_decision_timeout_ms` | `30000` | Time allowed for a decision request |
 | `laya_idle_timeout_ms` | `120000` | Idle service lifetime |
-| `laya_delivery_release_threshold` | `0.9` | Minimum score for a delivery `RELEASE`; not a routing threshold |
+| `laya_delivery_release_threshold` | `0.9` | Minimum score for a delivery `RELEASE`; routing uses the highest-scoring option |
 
-Decision traces live in the project's `.easycode/decision-traces/<thread-id>.jsonl`. They retain the sanitized/truncated input actually used, option order and scores, raw and applied choices, model identity and fallback/challenge state. Files rotate at 8 MiB with four old rotations and are excluded from Git locally. Trace-write failure is reported without failing the coding task. The task Journal retains decision references and challenge state, not a second copy of the full input.
+Decision traces live in the project's `.easycode/decision-traces/<thread-id>.jsonl`. They retain the sanitized/truncated input actually used, option order and scores, raw and applied choices, model identity and fallback/challenge state. Files rotate at 8 MiB with four old rotations and are excluded from Git locally. Trace-write failure is reported while the coding task continues. The task Journal retains decision references and challenge state.
 
-The once-per-task delivery challenge survives pause/resume. After a challenge, the next delivery skips Laya but still faces the original completion checks. If local inference fails, routing falls back to the cloud router; delivery reports and skips the local reminder rather than asking GLM to replace it.
+The once-per-task delivery challenge survives pause/resume. After a challenge, the next delivery proceeds through the original completion checks. If local inference fails, routing falls back to the cloud router; delivery reports the failure and continues through the original completion checks.
 
 ### 6.4 Measured results
 
@@ -318,9 +318,9 @@ The once-per-task delivery challenge survives pause/resume. After a challenge, t
 | Routing accuracy | 50.2% | **95.1%** |
 | Delivery accuracy | 57.3% | **69.3%** |
 
-The baseline and fine-tuned Laya results use highest-score predictions **without the runtime 0.9 delivery threshold**: 105 routing cases in all six option orders and 171 delivery cases in both orders. Matrix counts therefore represent 630 and 342 order-specific evaluations, not distinct cases. Fine-tuned Laya was correct in every routing order for 95/105 cases; delivery for 110/171.
+The baseline and fine-tuned Laya results use highest-score predictions: 105 routing cases in all six option orders and 171 delivery cases in both orders. The runtime's 0.9 delivery threshold applies after the model prediction. Matrix counts represent 630 and 342 order-specific evaluations. Fine-tuned Laya was correct in every routing order for 95/105 cases; delivery for 110/171.
 
-A separate [200-case fine-tuned Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when fine-tuned Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. This is an experimental cascade, **not the current product routing/delivery policy**, and its token savings should not be presented as measured production savings.
+A separate [200-case fine-tuned Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when fine-tuned Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. The product currently routes by highest score and applies the 0.9 threshold to delivery `RELEASE` decisions. The token comparison describes this experiment.
 
 ## 7. History, context and long-term memory
 
