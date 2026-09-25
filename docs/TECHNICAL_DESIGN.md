@@ -259,7 +259,7 @@ Runtime currently selects routing by highest score, **without a confidence-based
 
 ### 6.2 Teacher data and joint supervised fine-tuning
 
-All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**, not “SFR”: both the encoder and choice head are trained with cross-entropy against the correct option. This retained model uses neither LoRA nor DPO and introduces no deliberate preference toward Code or Release.
+All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**: both the encoder and choice head are trained with cross-entropy against the correct option. This retained model uses neither LoRA nor DPO and introduces no deliberate preference toward Code or Release.
 
 | Dataset | Routing | Delivery | Total |
 | --- | ---: | ---: | ---: |
