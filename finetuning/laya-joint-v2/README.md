@@ -1,10 +1,10 @@
-# Laya: joint routing and delivery SFT
+# Fine-tuned Laya: joint routing and delivery SFT
 
-One multilingual choice model for `DIRECT / PLAN / CODE` routing and `RELEASE / CHALLENGE` delivery decisions.
+Fine-tuned Laya (joint-v2) is one multilingual choice model for `DIRECT / PLAN / CODE` routing and `RELEASE / CHALLENGE` delivery decisions.
 
-![Fine-tuning results and confusion matrices](assets/results.png)
+![Fine-tuned Laya versus the upstream baseline: accuracy and confusion matrices](assets/results.png)
 
-Routing accuracy improves from **50.2% to 95.1%**; delivery accuracy improves from **57.3% to 69.3%**.
+Compared with Laya before EASY CODE fine-tuning, **fine-tuned Laya** improves routing accuracy from **50.2% to 95.1%** and delivery accuracy from **57.3% to 69.3%**.
 The held-out test covers 105 routing cases in all six answer orders and 171 delivery cases in both orders.
 Chart counts are **answer-order evaluations**.
 
@@ -32,7 +32,7 @@ Use Python 3.11, CUDA-enabled PyTorch (training run: `2.8.0+cu128`), and these d
 pip install laya==0.3.20 safetensors huggingface_hub matplotlib
 ```
 
-The original weights are downloaded separately. [Laya source](https://github.com/NandhaKishorM/laya) · [Multilingual checkpoint](https://huggingface.co/convaiinnovations/laya-multilingual)
+The baseline weights (before EASY CODE fine-tuning) are downloaded separately. [Upstream Laya source](https://github.com/NandhaKishorM/laya) · [Upstream multilingual checkpoint](https://huggingface.co/convaiinnovations/laya-multilingual)
 
 From the repository root, download the revision recorded in [source.json](source.json):
 

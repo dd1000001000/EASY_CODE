@@ -18,17 +18,17 @@ EASY CODE is a local AI coding assistant for the terminal and browser. Give it a
 - **Delegate when useful:** optional dependency-based task graphs and child agents, plus independent investigation of repeated verification failures.
 - **Extend your workflow:** reusable Skills, MCP tools, VS Code terminal integration, English and Simplified Chinese interfaces.
 
-The application, history and Laya decisions run locally. Your selected cloud model still handles coding and answers; relevant task context is sent to that provider.
+The application, history and fine-tuned Laya decisions run locally. Your selected cloud model still handles coding and answers; relevant task context is sent to that provider.
 
 ## New: experimental local decisions
 
-Enabled after installation, with no separate model setup:
+The bundled **fine-tuned Laya (joint-v2)** is enabled after installation, with no separate model setup:
 
-- **Auto routing:** Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
-- **Delivery check:** Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once—not indefinitely.
+- **Auto routing:** Fine-tuned Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
+- **Delivery check:** Fine-tuned Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once—not indefinitely.
 - **Shared local service:** multiple EASY CODE sessions share a model instance. Inputs and decisions are saved locally in the project's `.easycode/decision-traces/`.
 
-This feature does not replace command approval or independent review. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Laya + GLM experiment](<./laya-bench mark/README.md>).
+This feature does not replace command approval or independent review. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Fine-tuned Laya + GLM experiment](<./laya-bench mark/README.md>).
 
 ## Install
 

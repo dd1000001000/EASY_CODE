@@ -46,15 +46,15 @@ def render(results: dict, output: Path) -> None:
                          "xtick.color": MUTED, "ytick.color": MUTED,
                          "svg.fonttype": "none", "savefig.facecolor": "white"}):
         fig = plt.figure(figsize=(14, 10.8), facecolor="white")
-        fig.text(.075, .951, "Fine-tuning Laya", fontsize=31, weight="bold")
+        fig.text(.075, .951, "Fine-tuned Laya vs. upstream baseline", fontsize=27, weight="bold")
         fig.text(.075, .916, "Joint routing + delivery decisions", fontsize=15, color=MUTED)
         fig.text(.075, .883,
                  f"{trained['route']['cases']} routing cases × 6 answer orders   /   "
                  f"{trained['delivery']['cases']} delivery cases × 2 answer orders", fontsize=11, color=MUTED)
 
         fig.text(.075, .824, "Accuracy before and after SFT", fontsize=16, weight="bold")
-        fig.legend(handles=[Patch(facecolor=GRAY, label="Original Laya multilingual"),
-                            Patch(facecolor=BLUE, label="After joint SFT")],
+        fig.legend(handles=[Patch(facecolor=GRAY, label="Laya before EASY CODE fine-tuning"),
+                            Patch(facecolor=BLUE, label="Fine-tuned Laya (joint SFT)")],
                    loc="upper left", bbox_to_anchor=(.068, .809), ncol=2,
                    frameon=False, fontsize=10, handlelength=1.2)
         ax = fig.add_axes([.075, .535, .51, .225])
@@ -82,7 +82,7 @@ def render(results: dict, output: Path) -> None:
                      f"{results['baseline'][task]['correct_orders']} → {trained[task]['correct_orders']} "
                      f"correct / {trained[task]['total_orders']} evaluations", fontsize=10, color=MUTED)
 
-        fig.text(.075, .431, "Where the fine-tuned model gets it right", fontsize=16, weight="bold")
+        fig.text(.075, .431, "Fine-tuned Laya: prediction breakdown", fontsize=16, weight="bold")
         fig.text(.075, .400, "Rows = expected · columns = predicted · each cell shows count and row percentage",
                  fontsize=10, color=MUTED)
         for left, task, name in [(.16, "route", "Routing"), (.65, "delivery", "Delivery")]:
@@ -112,7 +112,7 @@ def render(results: dict, output: Path) -> None:
                     heat.text(j, i + .2, f"{shares[i, j]:.1%}", ha="center", va="center",
                               fontsize=11, color=color)
         fig.text(.075, .035,
-                 "Laya multilingual · Full-parameter SFT · GPT-6 Luna-sourced data · Darker cells = larger share within a row",
+                 "Fine-tuned Laya joint-v2 · Full-parameter SFT · GPT-6 Luna-sourced data · Darker cells = larger share within a row",
                  fontsize=9, color=MUTED)
         fig.savefig(output / "results.png", dpi=180)
         fig.savefig(output / "results.svg")

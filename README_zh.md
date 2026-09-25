@@ -18,17 +18,17 @@ EASY CODE 是运行在本地的 AI 编程助手，同时提供终端和网页界
 - **可选的协作能力**：任务依赖图、子 Agent 分工，以及对重复验证失败的独立审查。
 - **扩展工作流程**：可复用的 Skill、MCP 工具、VS Code 终端集成，支持中英文界面。
 
-应用、历史和 Laya 决策运行在本地；编程与回答仍由你选择的云端模型完成，相关任务上下文会发送给该供应商。
+应用、历史和微调后 Laya 的决策运行在本地；编程与回答仍由你选择的云端模型完成，相关任务上下文会发送给该供应商。
 
 ## 新增：实验性本地决策
 
-安装完成后直接启用，无需单独配置模型：
+随包提供的**微调后 Laya（joint-v2）** 在安装完成后直接启用，无需单独配置模型：
 
-- **Auto 路由**：Laya 选择直接回答、Plan 或 Code，再由云端模型完成具体工作。
-- **交付检查**：Laya 对比用户需求和 Agent 的完成摘要。放行分数默认至少 **0.90**，可在运行配置中调整；未通过时最多要求 Agent 复查一次，不会无限循环。
+- **Auto 路由**：微调后 Laya 选择直接回答、Plan 或 Code，再由云端模型完成具体工作。
+- **交付检查**：微调后 Laya 对比用户需求和 Agent 的完成摘要。放行分数默认至少 **0.90**，可在运行配置中调整；未通过时最多要求 Agent 复查一次，不会无限循环。
 - **共享本地服务**：多个 EASY CODE 会话共用模型实例，输入和选择记录在项目的 `.easycode/decision-traces/`。
 
-该功能不替代命令审批或独立 reviewer。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[微调结果](./finetuning/laya-joint-v2/README.md)和 [Laya + GLM 实验](<./laya-bench mark/README.md>)。
+该功能不替代命令审批或独立 reviewer。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[微调结果](./finetuning/laya-joint-v2/README.md)和 [微调后 Laya + GLM 实验](<./laya-bench mark/README.md>)。
 
 ## 安装
 
