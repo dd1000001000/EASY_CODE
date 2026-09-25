@@ -109,7 +109,7 @@ def main() -> None:
     if args.max_epochs < 1 or args.patience < 1 or output.exists():
         parser.error("Use positive limits and an unused output directory")
     source = common.SOURCE.resolve()
-    expected_hash = json.loads((source / "upstream_source.json").read_text(encoding="utf-8"))[
+    expected_hash = json.loads((HERE / "source.json").read_text(encoding="utf-8"))[
         "model_sha256"]
     if common.digest(source / "model.safetensors") != expected_hash:
         raise ValueError("Source baseline hash mismatch")
