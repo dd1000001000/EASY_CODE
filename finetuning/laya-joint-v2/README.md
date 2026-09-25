@@ -7,12 +7,14 @@ it is **not wired into EASY CODE Runtime**.
 
 ## Data provenance
 
-GPT-6 Luna subagents generated candidate examples for earlier dataset
-iterations. Those examples were filtered and rewritten to resemble Runtime
-inputs; inherited labels were not all independently re-audited. Another 50
-delivery contrast groups, including rephrased probes, were authored and
-labeled later by the main agent. **The final dataset is not entirely Luna
-output.** Original Luna generation transcripts are not preserved here.
+According to the project owner's provenance statement, **all examples in
+this dataset originate from the GPT-6 Luna teacher model**. The teacher
+examples were subsequently filtered and rewritten to resemble Runtime
+inputs; 50 delivery contrast groups and their rephrased probes received
+additional author editing and labeling. Thus, "Luna-sourced" does not mean
+every final input string or label is an unchanged teacher response. The
+original per-example Luna generation transcripts are not preserved, so this
+attribution cannot be independently verified row by row from this snapshot.
 
 The frozen snapshot contains 525 route and 856 delivery inputs. Each task
 was regrouped and split 4:1, with closely related requests kept in the same
@@ -80,5 +82,5 @@ review or silently approve command execution.
 If one *assumes* a GLM reference model is 100% accurate, its hypothetical
 confusion matrices would be diagonal with 630/630 route and 342/342 delivery
 correct. That is a user-specified idealized reference, **not a measured GLM
-result**; these test labels have mixed Luna-derived and author-reviewed
-provenance and were not all independently verified by GLM.
+result**; these Luna-sourced test labels were subsequently edited or
+reviewed and were not all independently verified by GLM.
