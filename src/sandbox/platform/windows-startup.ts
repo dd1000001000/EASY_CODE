@@ -2,7 +2,7 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { ensureSharedCommandNetworkGateServer } from "../../command/network-gate.js";
 import { NativeAppServerClient } from "../app-server-client.js";
-import { nativeSandboxEntrypoint, nativeSandboxHome } from "../native-runtime.js";
+import { nativeSandboxEntrypoint } from "../native-runtime.js";
 import { acquireWindowsProxyPortLease, withWindowsProxyProvisioningLock, type WindowsProxyPortLease } from "../windows-proxy-registry.js";
 import type { SandboxReadiness, SandboxSetupResult } from "../startup.js";
 import type { NativeStartupOptions, NativeStartupPlatform, NativeProxyState, ReadinessResult } from "./startup-types.js";
@@ -61,10 +61,9 @@ export class WindowsNativeStartup implements NativeStartupPlatform {
     }
   }
 
-  async setup(readiness: SandboxReadiness, unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult): Promise<SandboxSetupResult> {
-    const home = nativeSandboxHome(this.options.dataDir);
+  async setup(readiness: SandboxReadiness, unlocked: () => Promise<SandboxReadiness>, result: ReadinessResult, home: string): Promise<SandboxSetupResult> {
     await mkdir(home, { recursive: true, mode: 0o700 });
-    this.options.report("Requesting one administrator-approved Windows sandbox setup for the fixed EASY CODE proxy-port pool.");
+    this.options.report("Requesting administrator-approved Windows sandbox setup for this permission profile and the fixed EASY CODE proxy-port pool.");
     return withWindowsProxyProvisioningLock(this.options.dataDir, async () => {
       const current = await unlocked();
       if (current.status === "ready") return { status: "already_ready" as const,

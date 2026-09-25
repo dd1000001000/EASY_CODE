@@ -2,16 +2,8 @@
 
 100 routing + 100 delivery cases. Fine-tuned Laya (joint-v2) decides first; confidence below **0.90** sends the case to GLM.
 
-![Fine-tuned Laya and GLM benchmark results](benchmark-overview.png)
+![Fine-tuned Laya benchmark: accuracy, speed, and cloud tokens](benchmark-overview.png)
 
-| Method | Routing accuracy | Delivery accuracy | Overall accuracy | Cloud tokens |
-| --- | ---: | ---: | ---: | ---: |
-| Fine-tuned Laya | 94.0% | 75.0% | 84.5% | 0 |
-| GLM | 87.0% | 96.0% | 91.5% | 76,006 |
-| Fine-tuned Laya + GLM | 95.0% | 82.0% | 88.5% | 11,716 |
+Fine-tuned Laya's warm CPU decision median was **0.122s**, versus **3.12s** for a GLM API decision (**25.5×**). The cascade used **11,716** rather than **76,006** cloud tokens (**84.6% fewer**), with **88.5%** overall accuracy versus **91.5%** for GLM-only.
 
-The cascade cuts cloud tokens by **84.6%** and GLM calls from **200 to 32**. Overall accuracy is **3.0 percentage points lower** than GLM-only.
-
-Incorrect approvals among 50 delivery cases requiring correction: **Fine-tuned Laya 14 · GLM 0 · Fine-tuned Laya + GLM 10**.
-
-Fine-tuned Laya joint-v2 and GLM-5.3-Flash, evaluated on the same held-out cases. Cascade results reuse each case's recorded GLM answer and token usage.
+Speed is median wall time on the same 200 inputs, measured separately from accuracy. Local inference used a loaded CPU model (cold load 8.9s); GLM API timings include network latency with 4 concurrent calls. Cascade latency was not directly measured. [Decision results](results.jsonl) · [Per-case timings](speed-results.jsonl) · [Speed summary](speed-summary.json).

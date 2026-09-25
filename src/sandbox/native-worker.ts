@@ -9,6 +9,7 @@ import { sandboxBoundaryResultFromError, targetSpawnFailureFromError } from "./n
 import { nativeSandboxProxyEnvironment } from "./native-runtime.js";
 import { encodeSandboxControl } from "./control.js";
 import { nativeProjectPermissionProfile } from "./native-policy.js";
+import { assertProjectSandboxReady } from "./project-readiness.js";
 import type { ResolvedCommand } from "../command/types.js";
 import type { SandboxWorkerControl } from "./types.js";
 
@@ -56,6 +57,7 @@ try {
   // is infrastructure and must not be attributed as target network traffic.
   service = new NativeAppServerClient(payload.entrypoint, payload.home, environment, undefined, payload.proxyPorts);
   await service.initialize(payload.startupMs);
+  await assertProjectSandboxReady(service, payload.startupMs);
   const stopListening = service.onNotification(message => {
     if (message?.method !== "command/exec/outputDelta") return;
     const encoded = message.params?.deltaBase64;

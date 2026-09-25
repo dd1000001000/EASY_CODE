@@ -110,7 +110,7 @@ function appOptions(
     resumeThreadId: options.resume,
     imagePaths: options.image,
     startupInteraction,
-    sandboxStartup: startupInteraction !== "none",
+    sandboxStartup: true,
     keepInteractionOpen: options.web === true,
     ...(terminal ? { terminal } : {}),
   };
