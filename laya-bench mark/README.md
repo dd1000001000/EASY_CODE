@@ -1,15 +1,23 @@
-# Fine-tuned Laya ONNX + recorded GLM
+# GLM API vs LoRA Laya ONNX
 
-100 routing + 100 delivery cases. Fine-tuned Laya (joint-v2) decides first; confidence below **0.90** sends the case to GLM.
+![Cloud tokens and decision latency](benchmark-overview.png)
 
-![Fine-tuned Laya benchmark: accuracy, speed, and cloud tokens](benchmark-overview.png)
+Upstream / full SFT / LoRA accuracy is in the [training comparison](../finetuning/laya-joint-v2/README.md). This report compares only tokens and speed, not a cascade.
 
-![PyTorch to ONNX comparison](speed-overview.png)
+| Metric | GLM API (historical) | LoRA ONNX (current local rerun) |
+| --- | ---: | ---: |
+| Cloud input tokens, 200 cases | 43,932 | 0 |
+| Cloud output tokens, 200 cases | 32,074 | 0 |
+| Total cloud tokens | 76,006 | 0 |
+| Warm median | 3.121s | 0.077s |
+| P95 | 9.015s | 0.098s |
 
-Local decisions and timings were rerun with the published ONNX model. GLM responses, token usage and API timings are retained historical controls, not fresh API calls. Previous PyTorch timing is also historical; it is not a controlled backend-only speed comparison.
+Local cold startup: 3.683s, excluded from warm median. Local input-text tokens: 7,242, excluding fixed criteria/options. Zero cloud tokens does not mean zero local computation. Different tokenizers and prompt templates make token counts non-interchangeable.
 
-Fine-tuned Laya's warm CPU decision median was **0.095s**, versus **3.12s** for a GLM API decision (**32.9×**). The cascade used **11,716** rather than **76,006** cloud tokens (**84.6% fewer**), with **88.5%** overall accuracy versus **91.5%** for GLM-only.
+The same 100 routing + 100 delivery inputs are used. Local latency includes tokenization and IPC; GLM latency includes network round trips with four concurrent requests. GLM token and timing records came from separate historical runs; no new API requests were made. This is not a same-time controlled comparison. The local model classifies choices, rather than generating answers like GLM.
 
-Speed is median wall time on the same 200 inputs, measured separately from accuracy. Local inference used a loaded CPU model (cold load 3.7s); GLM API timings include network latency with 4 concurrent calls. Cascade latency was not directly measured. [Decision results](results.jsonl) · [Per-case timings](speed-results.jsonl) · [Speed summary](speed-summary.json).
+![Latency by task](speed-overview.png)
 
-Reproduce local reruns: `python benchmark.py --refresh-local --python <onnx-python>`, `python speed.py --refresh-local --python <onnx-python>`, then `python benchmark.py --report`. Plotting requires matplotlib; the model runtime needs only ONNX Runtime and tokenizers.
+[Decisions](results.jsonl) · [Timings](speed-results.jsonl) · [Summary](comparison-summary.json)
+
+Reproduce: `python benchmark.py --refresh-local --python <onnx-python>`, `python speed.py --refresh-local --python <onnx-python>`, then `python benchmark.py --report`. Plotting needs matplotlib; inference needs ONNX Runtime and tokenizers.

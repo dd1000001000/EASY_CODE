@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import path from "node:path";
+import fs from "node:fs";
 import { describe, it } from "./harness.js";
 
 const require = createRequire(import.meta.url);
@@ -19,6 +20,24 @@ const { prepareLaya } = require(path.join(process.cwd(), "scripts", "prepare-lay
 };
 
 describe("local Laya installation", () => {
+  it("ships the merged LoRA ONNX and matching current evaluation without training dependencies", () => {
+    const release = path.join(process.cwd(), "model-weights/laya-multilingual/joint-v2");
+    const manifest = JSON.parse(fs.readFileSync(path.join(release, "model/onnx_manifest.json"), "utf8"));
+    const training = JSON.parse(fs.readFileSync(path.join(release, "report.json"), "utf8"));
+    const evaluation = JSON.parse(fs.readFileSync(path.join(release, "onnx-evaluation.json"), "utf8"));
+    assert.equal(manifest.training.method, "lora");
+    assert.equal(training.method, "lora");
+    assert.equal(manifest.training.lora.rank, training.hyperparameters.lora_rank);
+    assert.equal(manifest.training.lora.alpha, training.hyperparameters.lora_alpha);
+    assert.equal(manifest.training.lora.dropout, training.hyperparameters.lora_dropout);
+    assert.equal(manifest.training.epochs, training.selected_epochs);
+    assert.equal(manifest.files["model.onnx"], evaluation.model_sha256);
+    for (const task of ["route", "delivery"]) {
+      assert.equal(evaluation.by_task[task].correct_orders, training.held_out_test.trained[task].correct_orders);
+    }
+    assert.equal(fs.existsSync(path.join(release, "model/model.safetensors")), false);
+    assert.equal(fs.existsSync(path.join(release, "model/adapter_model.safetensors")), false);
+  });
   it("fails before downloading dependencies when bundled model assets are missing", () => {
     let launched = false;
     assert.throws(() => prepareLaya({

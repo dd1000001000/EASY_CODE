@@ -1,26 +1,46 @@
 {
   "date": "2026-09-28",
-  "model_sha256": "144338b6a0620bfaf0b4848bb85337438de2f9d08d91bb22827505660feb061e",
-  "source_model_sha256": "00d2ec29c124ee87d9158a870c4283544808f511915be24f8a4eb4005ee7139f",
+  "model_sha256": "d9771f8c556acff3597d70f358749b5e02943fda5959abb778bf8383fcfa2fd7",
+  "source_base_sha256": "9d628fd971b700382ac6f65920a86f149777b2e748e0c955fb3b19695aa8f204",
   "dataset_sha256": "09aec40980e676da39fdca0e69127eb587d058ed7406e17880a55cd146a50439",
-  "runtime": {"onnxruntime": "1.24.3", "tokenizers": "0.23.2", "device": "cpu", "precision": "fp32"},
-  "windows_vs_pytorch_cpu": {
-    "evaluations": 972,
-    "changed_decisions": 0,
-    "max_probability_difference": 0.000015566658851884352
+  "training": {
+    "method": "encoder LoRA + choice head",
+    "rank": 8,
+    "alpha": 16,
+    "dropout": 0.05,
+    "selected_epochs": 3,
+    "seed": 20260925
+  },
+  "runtime": {
+    "onnxruntime": "1.24.3",
+    "tokenizers": "0.23.2",
+    "device": "cpu",
+    "precision": "fp32"
   },
   "wsl_linux_vs_windows": {
     "evaluations": 972,
     "changed_decisions": 0,
-    "max_probability_difference": 1.1102230246251565e-16
+    "max_probability_difference": 2.220446049250313e-16
   },
-  "runtime_tests": {"windows": "8/8 passed", "wsl_ubuntu": "8/8 passed"},
-  "export_validation": "Passed both tasks at short and maximum-length input, plus a mixed padded batch; both output heads agree at atol=rtol=1e-4",
-  "installer": "Fresh isolated Windows environment installed through prepare-laya.cjs and completed the real model smoke test",
+  "runtime_tests": {
+    "windows": "8/8 passed",
+    "wsl_ubuntu": "8/8 passed"
+  },
+  "training_tests": "6/6 passed",
+  "benchmark_tests": "4/4 passed",
+  "application_tests": "1453/1453 passed; VS Code extension 27/27 passed",
+  "build": "npm run build passed; existing chunk-size warning",
+  "export_validation": "Merged LoRA PyTorch agrees with ONNX for both heads, short and maximum-length input, and a mixed padded batch at atol=rtol=1e-4",
+  "windows_installed_runtime_smoke": "ready reports current model hash and route decision CODE; existing ONNX-only runtime reused",
+  "backup": {
+    "path": "F:\\models\\easy-code-laya-full-sft-20260928",
+    "verified_files": 10,
+    "model_sha256": "144338b6a0620bfaf0b4848bb85337438de2f9d08d91bb22827505660feb061e"
+  },
   "limitations": [
-    "Full-parameter training code was updated, but the model was exported from the existing trained checkpoint, not retrained.",
     "macOS was not tested.",
-    "The 200-case GLM responses and timings are archived observations, not fresh API calls.",
-    "End-to-end historical PyTorch timing and current ONNX timing are not a controlled backend-only comparison."
+    "GLM responses and timings are historical observations, not fresh API calls.",
+    "Training uses one seed and configuration; routing regresses against full SFT.",
+    "Timing is not a same-time controlled comparison with GLM."
   ]
 }

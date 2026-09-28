@@ -8,7 +8,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parents[1]
-SOURCE = PROJECT / "model-weights/laya-multilingual/upstream-base"
+SOURCE = PROJECT / ".easy-code-runtime/lora-base"
 
 QUESTIONS = json.loads((PROJECT / "resources/laya-decision/questions.json").read_text(encoding="utf-8"))
 

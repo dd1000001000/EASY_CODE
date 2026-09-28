@@ -1,9 +1,11 @@
 {
   "training": "joint-route-delivery-v2",
-  "epochs": 5,
+  "method": "lora",
+  "epochs": 3,
+  "lora": {"rank": 8, "alpha": 16, "dropout": 0.05, "learning_rate": 0.0001, "target_modules": "all-linear", "choice_head_lr": 0.00001},
+  "parameter_counts": {"total": 323598595, "trainable": 16460545, "encoder_trainable": 1689600},
   "seed": 20260925,
   "rows": 1105,
   "task_balance": "equal_total_weight",
-  "dataset_manifest_sha256": "c31ee207413276bd72d1a60d478caa115a73476e1a220dcf1029fdad804fc32e",
-  "original_dataset_manifest_sha256": "93e32d7072b677cd095dfeedcb4f419c513709479e35f49298abba53ea44ea36"
+  "dataset_manifest_sha256": "01dee9f911fc6b7c61d363297dbfefeb4fa2efc8a9730aeff5246bc78bbb707b"
 }

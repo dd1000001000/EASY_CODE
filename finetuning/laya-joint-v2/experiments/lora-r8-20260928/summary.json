@@ -1,0 +1,786 @@
+{
+  "method": "encoder LoRA plus fully trained choice head",
+  "reference": "Published full-SFT ONNX; saved 972-order evaluation",
+  "held_out": {
+    "full_sft": {
+      "route": {
+        "cases": 105,
+        "correct_orders": 600,
+        "total_orders": 630,
+        "accuracy": 0.9523809523809523,
+        "confusion": {
+          "DIRECT": {
+            "DIRECT": 206,
+            "PLAN": 0,
+            "CODE": 4
+          },
+          "PLAN": {
+            "DIRECT": 0,
+            "PLAN": 209,
+            "CODE": 1
+          },
+          "CODE": {
+            "DIRECT": 15,
+            "PLAN": 10,
+            "CODE": 185
+          }
+        },
+        "all_orders_correct": 95,
+        "inconsistent_cases": 8
+      },
+      "delivery": {
+        "cases": 171,
+        "correct_orders": 239,
+        "total_orders": 342,
+        "accuracy": 0.6988304093567251,
+        "confusion": {
+          "RELEASE": {
+            "RELEASE": 117,
+            "CHALLENGE": 53
+          },
+          "CHALLENGE": {
+            "RELEASE": 50,
+            "CHALLENGE": 122
+          }
+        },
+        "all_orders_correct": 112,
+        "inconsistent_cases": 15
+      }
+    },
+    "lora": {
+      "route": {
+        "cases": 105,
+        "correct_orders": 590,
+        "total_orders": 630,
+        "accuracy": 0.9365079365079365,
+        "confusion": {
+          "DIRECT": {
+            "DIRECT": 210,
+            "PLAN": 0,
+            "CODE": 0
+          },
+          "PLAN": {
+            "DIRECT": 0,
+            "PLAN": 210,
+            "CODE": 0
+          },
+          "CODE": {
+            "DIRECT": 28,
+            "PLAN": 12,
+            "CODE": 170
+          }
+        },
+        "all_orders_correct": 97,
+        "inconsistent_cases": 4,
+        "per_class_accuracy": {
+          "DIRECT": 1.0,
+          "PLAN": 1.0,
+          "CODE": 0.8095238095238095
+        }
+      },
+      "delivery": {
+        "cases": 171,
+        "correct_orders": 247,
+        "total_orders": 342,
+        "accuracy": 0.7222222222222222,
+        "confusion": {
+          "RELEASE": {
+            "RELEASE": 124,
+            "CHALLENGE": 46
+          },
+          "CHALLENGE": {
+            "RELEASE": 49,
+            "CHALLENGE": 123
+          }
+        },
+        "all_orders_correct": 116,
+        "inconsistent_cases": 15,
+        "per_class_accuracy": {
+          "RELEASE": 0.7294117647058823,
+          "CHALLENGE": 0.7151162790697675
+        }
+      },
+      "macro_accuracy": 0.8293650793650793,
+      "macro_all_orders_correct_rate": 0.8010860484544695,
+      "loss": 0.4867343172856581
+    }
+  },
+  "parameter_counts": {
+    "total": 323598595,
+    "trainable": 16460545,
+    "encoder_trainable": 1689600
+  },
+  "training_resources": {
+    "selection_seconds": 184.14,
+    "refit_seconds": 100.54,
+    "selection_peak_allocated_mib": 1651.78,
+    "refit_peak_allocated_mib": 1650.51
+  },
+  "selected_epochs": 3,
+  "comparison": {
+    "evaluations": 972,
+    "changed_decisions": 84,
+    "max_probability_difference": 0.9593209701644513,
+    "changed_cases": [
+      {
+        "id": "route-runtime-v2-train-1167",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1167",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1167",
+        "order": [
+          "PLAN",
+          "DIRECT",
+          "CODE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1167",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1167",
+        "order": [
+          "CODE",
+          "DIRECT",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-001",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-001",
+        "order": [
+          "PLAN",
+          "DIRECT",
+          "CODE"
+        ]
+      },
+      {
+        "id": "delivery-batch-03-066",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "en42-probe-fail",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-03-041",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1166",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1166",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1166",
+        "order": [
+          "CODE",
+          "PLAN",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "v3-route-train-022",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "v3-route-train-022",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "v3-route-train-022",
+        "order": [
+          "PLAN",
+          "DIRECT",
+          "CODE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-038",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-038",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "v3-route-train-048",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "delivery-adversarial-v7-014b",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "en31-train-fail1",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-010",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-01-046",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "zh17-probe-pass",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "route-v10-repo_json",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "route-v10-repo_json",
+        "order": [
+          "CODE",
+          "DIRECT",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "route-v10-repo_json",
+        "order": [
+          "CODE",
+          "PLAN",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "en43-probe-fail",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "en39-train-fail1",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh25-probe-fail",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-04-068",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-train-642",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1185",
+        "order": [
+          "CODE",
+          "PLAN",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1233",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1233",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1233",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-1233",
+        "order": [
+          "CODE",
+          "PLAN",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "zh14-train-fail0",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh14-train-fail0",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "v3-route-train-009",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "v3-route-train-009",
+        "order": [
+          "PLAN",
+          "DIRECT",
+          "CODE"
+        ]
+      },
+      {
+        "id": "v3-route-train-009",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "v3-route-train-009",
+        "order": [
+          "CODE",
+          "DIRECT",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "v3-route-train-009",
+        "order": [
+          "CODE",
+          "PLAN",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "delivery-batch-05-052",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-05-052",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "en42-train-fail0",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "zh25-probe-pass",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-04-033",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-04-033",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "zh09-train-pass0",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh09-train-pass0",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-05-009",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-04-066",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh11-probe-fail",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-01-040",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-01-040",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-06-012",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-06-012",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "v3-delivery-train-041",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "v3-delivery-train-041",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-direct2-022",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "route-runtime-v2-train-direct2-022",
+        "order": [
+          "DIRECT",
+          "CODE",
+          "PLAN"
+        ]
+      },
+      {
+        "id": "v3-route-train-003",
+        "order": [
+          "DIRECT",
+          "PLAN",
+          "CODE"
+        ]
+      },
+      {
+        "id": "v3-route-train-003",
+        "order": [
+          "PLAN",
+          "DIRECT",
+          "CODE"
+        ]
+      },
+      {
+        "id": "v3-route-train-003",
+        "order": [
+          "PLAN",
+          "CODE",
+          "DIRECT"
+        ]
+      },
+      {
+        "id": "v3-delivery-train-006",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-06-028",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh21-train-fail0",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-067",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-067",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "en43-probe-pass",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-056",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-02-056",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "zh17-train-fail1",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-adversarial-v7-022b",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "en43-train-fail1",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "en43-train-fail1",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "v3-delivery-train-031",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "v3-delivery-train-039",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "delivery-batch-03-008",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "delivery-batch-03-008",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      },
+      {
+        "id": "zh14-train-pass0",
+        "order": [
+          "RELEASE",
+          "CHALLENGE"
+        ]
+      },
+      {
+        "id": "zh14-train-pass0",
+        "order": [
+          "CHALLENGE",
+          "RELEASE"
+        ]
+      }
+    ]
+  },
+  "worker_benchmark": {
+    "full_sft": {
+      "model_sha256": "144338b6a0620bfaf0b4848bb85337438de2f9d08d91bb22827505660feb061e",
+      "route": {
+        "correct": 94,
+        "total": 100,
+        "accuracy": 0.94
+      },
+      "delivery": {
+        "correct": 75,
+        "total": 100,
+        "accuracy": 0.75
+      }
+    },
+    "lora": {
+      "model_sha256": "d9771f8c556acff3597d70f358749b5e02943fda5959abb778bf8383fcfa2fd7",
+      "route": {
+        "correct": 94,
+        "total": 100,
+        "accuracy": 0.94
+      },
+      "delivery": {
+        "correct": 74,
+        "total": 100,
+        "accuracy": 0.74
+      }
+    }
+  },
+  "worker_cases_sha256": "36ecf7483c08ff1b508da8c0447c71d56555cb881b4a6b8b7c283518351f9d02",
+  "experiment_model": "/mnt/f/coding agent/.easy-code-runtime/lora-r8-20260928/model",
+  "adapter_bytes": 66666404,
+  "onnx_bytes": 1288342999,
+  "limitations": [
+    "Single seed and fixed LoRA configuration; not a hyperparameter sweep.",
+    "Historical full SFT training used a different PyTorch version; training time is not directly comparable.",
+    "Both final models are evaluated in CPU FP32 ONNX; LoRA is not quantization.",
+    "The 200 worker cases are a subset of the held-out set, not an independent dataset.",
+    "No application model replacement and no new cloud API evaluations."
+  ]
+}

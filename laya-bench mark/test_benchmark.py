@@ -9,9 +9,25 @@ from unittest.mock import patch
 
 import benchmark
 import speed
+from presentation import comparison_data
 
 
 class RerunChecks(unittest.TestCase):
+    def test_report_distinguishes_local_input_tokens_from_cloud_usage(self):
+        rows = [{"id": str(i), "task": "route" if i < 100 else "delivery",
+                 "laya": {"weight_sha256": "lora", "input_tokens": 20},
+                 "glm": {"usage_reported": True, "prompt_tokens": 30,
+                         "completion_tokens": 10, "total_tokens": 40}} for i in range(200)]
+        timing = {"cases": 200, "local_model_sha256": "lora", "tasks": {"overall": {}},
+                  "laya_cold_start_ms": 100}
+        report = comparison_data(rows, timing)
+        self.assertEqual(report["glm"]["total_tokens"], 8000)
+        self.assertEqual(report["lora"], {"cloud_tokens": 0, "input_text_tokens": 4000})
+        self.assertNotIn("cascade", report)
+        timing["local_model_sha256"] = "old-full-sft"
+        with self.assertRaisesRegex(ValueError, "different local weights"):
+            comparison_data(rows, timing)
+
     def test_local_refresh_preserves_cloud_and_original_baseline(self):
         row = {"id": "r1", "task": "route", "input": "Explain", "expected": "DIRECT"}
         old = {**row, "laya": {"decision": "DIRECT"}, "glm": {"decision": "CODE", "total_tokens": 42}}
@@ -44,6 +60,7 @@ class RerunChecks(unittest.TestCase):
             for row in rows:
                 benchmark.append_jsonl(timings, {**row, "laya": {"ms": 10}, "glm": {"ms": 100, "attempts": 1}})
             provenance = {"local_backend": "onnx-fp32", "glm_source": "historical recorded API timings",
+                          "local_model_sha256": "lora",
                           "previous_local": {"cold_start_ms": 500}, "laya_cold_start_ms": 100, "laya_device": "cpu"}
             summary.write_text(json.dumps(provenance), encoding="utf-8")
             with patch.object(speed, "TIMINGS", timings), patch.object(speed, "SUMMARY", summary), \

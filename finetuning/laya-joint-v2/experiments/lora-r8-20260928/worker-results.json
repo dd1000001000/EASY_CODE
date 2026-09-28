@@ -1,0 +1,4606 @@
+{
+  "full_sft": [
+    {
+      "id": "delivery-adversarial-v7-011a",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9996179128432651,
+        "CHALLENGE": 0.0003820871567349017
+      },
+      "milliseconds": 81.79538000013054
+    },
+    {
+      "id": "delivery-adversarial-v7-011b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9995723651050734,
+        "CHALLENGE": 0.0004276348949264867
+      },
+      "milliseconds": 79.54218600025342
+    },
+    {
+      "id": "delivery-adversarial-v7-014b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6498795019612909,
+        "CHALLENGE": 0.35012049803870915
+      },
+      "milliseconds": 82.95271299994056
+    },
+    {
+      "id": "delivery-adversarial-v7-022a",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.99964567531001,
+        "CHALLENGE": 0.0003543246899899453
+      },
+      "milliseconds": 81.97065199965436
+    },
+    {
+      "id": "delivery-adversarial-v7-022b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.4571715070017656,
+        "CHALLENGE": 0.5428284929982343
+      },
+      "milliseconds": 77.64262700038671
+    },
+    {
+      "id": "delivery-batch-01-040",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.25571802425039203,
+        "CHALLENGE": 0.744281975749608
+      },
+      "milliseconds": 82.77960900022663
+    },
+    {
+      "id": "delivery-batch-02-001",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9981823007838243,
+        "CHALLENGE": 0.0018176992161757128
+      },
+      "milliseconds": 82.2085380000317
+    },
+    {
+      "id": "delivery-batch-02-010",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.935962610280145,
+        "CHALLENGE": 0.06403738971985491
+      },
+      "milliseconds": 79.85473500002627
+    },
+    {
+      "id": "delivery-batch-02-011",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9441625755367762,
+        "CHALLENGE": 0.05583742446322386
+      },
+      "milliseconds": 81.4776309998706
+    },
+    {
+      "id": "delivery-batch-02-019",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9994515598378207,
+        "CHALLENGE": 0.0005484401621793113
+      },
+      "milliseconds": 81.18238399993061
+    },
+    {
+      "id": "delivery-batch-02-044",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9787617896231722,
+        "CHALLENGE": 0.021238210376827764
+      },
+      "milliseconds": 81.30449700001918
+    },
+    {
+      "id": "delivery-batch-02-056",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.21384448692358576,
+        "CHALLENGE": 0.7861555130764142
+      },
+      "milliseconds": 83.3838650000871
+    },
+    {
+      "id": "delivery-batch-03-013",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.05269349969233806,
+        "CHALLENGE": 0.947306500307662
+      },
+      "milliseconds": 79.04162500017264
+    },
+    {
+      "id": "delivery-batch-03-014",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 6.283204262222561e-05,
+        "CHALLENGE": 0.9999371679573776
+      },
+      "milliseconds": 82.62594699999681
+    },
+    {
+      "id": "delivery-batch-03-026",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.13448683388182076,
+        "CHALLENGE": 0.8655131661181793
+      },
+      "milliseconds": 79.63311999992584
+    },
+    {
+      "id": "delivery-batch-03-033",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.05873744062658233,
+        "CHALLENGE": 0.9412625593734176
+      },
+      "milliseconds": 80.61852199989517
+    },
+    {
+      "id": "delivery-batch-03-044",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.688004891802724,
+        "CHALLENGE": 0.3119951081972761
+      },
+      "milliseconds": 83.29004100005477
+    },
+    {
+      "id": "delivery-batch-03-066",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.22104422808369412,
+        "CHALLENGE": 0.7789557719163058
+      },
+      "milliseconds": 78.25059900005726
+    },
+    {
+      "id": "delivery-batch-04-033",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.1307031077334477,
+        "CHALLENGE": 0.8692968922665523
+      },
+      "milliseconds": 82.66603700030828
+    },
+    {
+      "id": "delivery-batch-04-035",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9999624399063488,
+        "CHALLENGE": 3.7560093651032946e-05
+      },
+      "milliseconds": 80.70202699991569
+    },
+    {
+      "id": "delivery-batch-04-066",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.07341655346389635,
+        "CHALLENGE": 0.9265834465361037
+      },
+      "milliseconds": 82.81539800009341
+    },
+    {
+      "id": "delivery-batch-04-071",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9998491874963825,
+        "CHALLENGE": 0.00015081250361762685
+      },
+      "milliseconds": 82.75409399993805
+    },
+    {
+      "id": "delivery-batch-05-008",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9809854548956167,
+        "CHALLENGE": 0.019014545104383412
+      },
+      "milliseconds": 82.97095800026
+    },
+    {
+      "id": "delivery-batch-05-009",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.63409370552964,
+        "CHALLENGE": 0.3659062944703601
+      },
+      "milliseconds": 80.71437499984313
+    },
+    {
+      "id": "delivery-batch-05-053",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.06701764771906206,
+        "CHALLENGE": 0.932982352280938
+      },
+      "milliseconds": 84.85036799993395
+    },
+    {
+      "id": "delivery-batch-05-061",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0003240323091761156,
+        "CHALLENGE": 0.9996759676908238
+      },
+      "milliseconds": 77.8542899997774
+    },
+    {
+      "id": "delivery-batch-06-012",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.26446250939249666,
+        "CHALLENGE": 0.7355374906075033
+      },
+      "milliseconds": 82.24311599997236
+    },
+    {
+      "id": "delivery-batch-06-021",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.00046502341893522035,
+        "CHALLENGE": 0.9995349765810647
+      },
+      "milliseconds": 83.97642099998848
+    },
+    {
+      "id": "delivery-batch-06-061",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.1338428658507803,
+        "CHALLENGE": 0.8661571341492197
+      },
+      "milliseconds": 81.68591999992714
+    },
+    {
+      "id": "delivery-train-068",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9693909270999825,
+        "CHALLENGE": 0.030609072900017412
+      },
+      "milliseconds": 78.20404199992481
+    },
+    {
+      "id": "delivery-train-613",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.05446297396403886,
+        "CHALLENGE": 0.945537026035961
+      },
+      "milliseconds": 77.34831800007669
+    },
+    {
+      "id": "delivery-train-642",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9030400618499645,
+        "CHALLENGE": 0.0969599381500355
+      },
+      "milliseconds": 78.40861299973767
+    },
+    {
+      "id": "delivery-v10-format_missing",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9487477752017826,
+        "CHALLENGE": 0.051252224798217456
+      },
+      "milliseconds": 79.7660140001426
+    },
+    {
+      "id": "en31-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.028280542100646452,
+        "CHALLENGE": 0.9717194578993537
+      },
+      "milliseconds": 80.36228100036169
+    },
+    {
+      "id": "en31-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6694540764464844,
+        "CHALLENGE": 0.3305459235535157
+      },
+      "milliseconds": 82.10258000008253
+    },
+    {
+      "id": "en31-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 6.755760939221708e-05,
+        "CHALLENGE": 0.9999324423906077
+      },
+      "milliseconds": 83.41992300029233
+    },
+    {
+      "id": "en31-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0037441904097186007,
+        "CHALLENGE": 0.9962558095902815
+      },
+      "milliseconds": 83.53393800007325
+    },
+    {
+      "id": "en34-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9993855893921849,
+        "CHALLENGE": 0.0006144106078151321
+      },
+      "milliseconds": 81.44244799996159
+    },
+    {
+      "id": "en34-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.00035911060895978814,
+        "CHALLENGE": 0.9996408893910401
+      },
+      "milliseconds": 81.45120300014241
+    },
+    {
+      "id": "en34-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9993388495576957,
+        "CHALLENGE": 0.0006611504423042582
+      },
+      "milliseconds": 81.53758400021616
+    },
+    {
+      "id": "en39-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.30483355397812845,
+        "CHALLENGE": 0.6951664460218715
+      },
+      "milliseconds": 82.61144099969897
+    },
+    {
+      "id": "en39-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.2928458433362906,
+        "CHALLENGE": 0.7071541566637094
+      },
+      "milliseconds": 83.86278199986918
+    },
+    {
+      "id": "en39-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9692666303282763,
+        "CHALLENGE": 0.03073336967172364
+      },
+      "milliseconds": 84.20896500001618
+    },
+    {
+      "id": "en42-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.24552560432545822,
+        "CHALLENGE": 0.7544743956745418
+      },
+      "milliseconds": 81.07397899993884
+    },
+    {
+      "id": "en42-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8949087438106311,
+        "CHALLENGE": 0.10509125618936888
+      },
+      "milliseconds": 81.65750000034677
+    },
+    {
+      "id": "en42-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7903540540054846,
+        "CHALLENGE": 0.20964594599451536
+      },
+      "milliseconds": 80.9231279999949
+    },
+    {
+      "id": "en42-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.20123709188640634,
+        "CHALLENGE": 0.7987629081135936
+      },
+      "milliseconds": 80.77849099981904
+    },
+    {
+      "id": "en43-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.05698563903120451,
+        "CHALLENGE": 0.9430143609687954
+      },
+      "milliseconds": 83.865828999933
+    },
+    {
+      "id": "en43-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8039846310234835,
+        "CHALLENGE": 0.19601536897651659
+      },
+      "milliseconds": 86.0369060001176
+    },
+    {
+      "id": "en43-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0016254599461885154,
+        "CHALLENGE": 0.9983745400538115
+      },
+      "milliseconds": 83.24842999991233
+    },
+    {
+      "id": "en43-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9867382490350884,
+        "CHALLENGE": 0.013261750964911567
+      },
+      "milliseconds": 83.02446700008659
+    },
+    {
+      "id": "en43-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0004105048085977522,
+        "CHALLENGE": 0.9995894951914022
+      },
+      "milliseconds": 82.84264100029759
+    },
+    {
+      "id": "en44-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9479045272223287,
+        "CHALLENGE": 0.05209547277767146
+      },
+      "milliseconds": 82.53805100002864
+    },
+    {
+      "id": "en44-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04435623879008281,
+        "CHALLENGE": 0.9556437612099172
+      },
+      "milliseconds": 82.12609099973633
+    },
+    {
+      "id": "en44-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9944835364973261,
+        "CHALLENGE": 0.005516463502673814
+      },
+      "milliseconds": 82.42053599997234
+    },
+    {
+      "id": "en44-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.00010064473413579803,
+        "CHALLENGE": 0.9998993552658642
+      },
+      "milliseconds": 84.56577099968854
+    },
+    {
+      "id": "en44-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7776288064067347,
+        "CHALLENGE": 0.22237119359326538
+      },
+      "milliseconds": 87.07508799989228
+    },
+    {
+      "id": "en50-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 6.41254015223288e-05,
+        "CHALLENGE": 0.9999358745984775
+      },
+      "milliseconds": 84.51573999991524
+    },
+    {
+      "id": "en50-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9989171733110679,
+        "CHALLENGE": 0.0010828266889320018
+      },
+      "milliseconds": 85.77533600009701
+    },
+    {
+      "id": "en50-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9987263808216739,
+        "CHALLENGE": 0.0012736191783261587
+      },
+      "milliseconds": 83.48225800000364
+    },
+    {
+      "id": "v3-delivery-train-006",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.05799341303835445,
+        "CHALLENGE": 0.9420065869616455
+      },
+      "milliseconds": 90.39034800025547
+    },
+    {
+      "id": "v3-delivery-train-007",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0004687422058772972,
+        "CHALLENGE": 0.9995312577941228
+      },
+      "milliseconds": 89.28387299965834
+    },
+    {
+      "id": "v3-delivery-train-008",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9973998227155465,
+        "CHALLENGE": 0.002600177284453655
+      },
+      "milliseconds": 90.9783619999871
+    },
+    {
+      "id": "v3-delivery-train-026",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9989339303913221,
+        "CHALLENGE": 0.0010660696086778622
+      },
+      "milliseconds": 90.71212499975445
+    },
+    {
+      "id": "v3-delivery-train-031",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9958177143420884,
+        "CHALLENGE": 0.004182285657911449
+      },
+      "milliseconds": 85.35450899989883
+    },
+    {
+      "id": "v3-delivery-train-036",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.995147664585805,
+        "CHALLENGE": 0.004852335414195095
+      },
+      "milliseconds": 86.8235499997354
+    },
+    {
+      "id": "v3-delivery-train-039",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6533912126643778,
+        "CHALLENGE": 0.34660878733562206
+      },
+      "milliseconds": 88.99022900004638
+    },
+    {
+      "id": "v3-delivery-train-041",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.5412175756803191,
+        "CHALLENGE": 0.4587824243196809
+      },
+      "milliseconds": 90.78216599982625
+    },
+    {
+      "id": "zh09-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 2.719987643032082e-05,
+        "CHALLENGE": 0.9999728001235696
+      },
+      "milliseconds": 86.89082199998666
+    },
+    {
+      "id": "zh09-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9977111357908597,
+        "CHALLENGE": 0.0022888642091403017
+      },
+      "milliseconds": 89.4523299998582
+    },
+    {
+      "id": "zh09-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.001560044880710852,
+        "CHALLENGE": 0.9984399551192893
+      },
+      "milliseconds": 85.72992600011275
+    },
+    {
+      "id": "zh09-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.030978105809590407,
+        "CHALLENGE": 0.9690218941904097
+      },
+      "milliseconds": 88.03086599982635
+    },
+    {
+      "id": "zh09-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9428862864860189,
+        "CHALLENGE": 0.05711371351398118
+      },
+      "milliseconds": 86.8775219996678
+    },
+    {
+      "id": "zh11-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8579232745280576,
+        "CHALLENGE": 0.1420767254719423
+      },
+      "milliseconds": 83.81348400007482
+    },
+    {
+      "id": "zh11-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.005934810869396344,
+        "CHALLENGE": 0.9940651891306036
+      },
+      "milliseconds": 84.49813200013523
+    },
+    {
+      "id": "zh11-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.002129277374366312,
+        "CHALLENGE": 0.9978707226256336
+      },
+      "milliseconds": 90.38153700021212
+    },
+    {
+      "id": "zh11-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.002182455271011179,
+        "CHALLENGE": 0.9978175447289889
+      },
+      "milliseconds": 86.9321520003723
+    },
+    {
+      "id": "zh11-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9982509437910047,
+        "CHALLENGE": 0.001749056208995336
+      },
+      "milliseconds": 85.68951600000219
+    },
+    {
+      "id": "zh14-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.006867486702712431,
+        "CHALLENGE": 0.9931325132972875
+      },
+      "milliseconds": 82.45160599972223
+    },
+    {
+      "id": "zh14-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9983038549130843,
+        "CHALLENGE": 0.0016961450869157919
+      },
+      "milliseconds": 84.34570700001132
+    },
+    {
+      "id": "zh14-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.4256947288503586,
+        "CHALLENGE": 0.5743052711496415
+      },
+      "milliseconds": 85.2555360002043
+    },
+    {
+      "id": "zh14-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.00033118097205674937,
+        "CHALLENGE": 0.9996688190279432
+      },
+      "milliseconds": 85.45095199997377
+    },
+    {
+      "id": "zh14-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.999891786752217,
+        "CHALLENGE": 0.00010821324778303483
+      },
+      "milliseconds": 87.21973799993066
+    },
+    {
+      "id": "zh17-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0002530517609062042,
+        "CHALLENGE": 0.9997469482390938
+      },
+      "milliseconds": 86.47582300000067
+    },
+    {
+      "id": "zh17-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0001686744650972148,
+        "CHALLENGE": 0.9998313255349027
+      },
+      "milliseconds": 85.64133399977436
+    },
+    {
+      "id": "zh17-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9991845141379697,
+        "CHALLENGE": 0.0008154858620304148
+      },
+      "milliseconds": 83.32403599979443
+    },
+    {
+      "id": "zh17-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9993894651327695,
+        "CHALLENGE": 0.0006105348672305015
+      },
+      "milliseconds": 84.33736599999975
+    },
+    {
+      "id": "zh21-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9996065741746843,
+        "CHALLENGE": 0.00039342582531561894
+      },
+      "milliseconds": 92.42754500019146
+    },
+    {
+      "id": "zh21-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9972589551620396,
+        "CHALLENGE": 0.002741044837960435
+      },
+      "milliseconds": 85.35746500001551
+    },
+    {
+      "id": "zh21-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0005550377550327144,
+        "CHALLENGE": 0.9994449622449674
+      },
+      "milliseconds": 84.19085500008805
+    },
+    {
+      "id": "zh21-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.059974460453178224,
+        "CHALLENGE": 0.9400255395468218
+      },
+      "milliseconds": 88.17403000011836
+    },
+    {
+      "id": "zh21-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9999346500040714,
+        "CHALLENGE": 6.534999592861315e-05
+      },
+      "milliseconds": 85.44139900004666
+    },
+    {
+      "id": "zh23-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04299679019556173,
+        "CHALLENGE": 0.9570032098044383
+      },
+      "milliseconds": 83.07316099990203
+    },
+    {
+      "id": "zh23-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.987970624561662,
+        "CHALLENGE": 0.012029375438338126
+      },
+      "milliseconds": 85.61822399997254
+    },
+    {
+      "id": "zh23-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 6.046040552479441e-05,
+        "CHALLENGE": 0.9999395395944751
+      },
+      "milliseconds": 85.37250900008075
+    },
+    {
+      "id": "zh23-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9358542067040531,
+        "CHALLENGE": 0.06414579329594683
+      },
+      "milliseconds": 89.09095899980457
+    },
+    {
+      "id": "zh25-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8980733409720254,
+        "CHALLENGE": 0.10192665902797472
+      },
+      "milliseconds": 90.3190789999826
+    },
+    {
+      "id": "zh25-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8854638814026605,
+        "CHALLENGE": 0.11453611859733936
+      },
+      "milliseconds": 91.83717199994135
+    },
+    {
+      "id": "zh25-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9999390677217632,
+        "CHALLENGE": 6.093227823694145e-05
+      },
+      "milliseconds": 86.3355279998359
+    },
+    {
+      "id": "zh25-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.941783326278982,
+        "CHALLENGE": 0.05821667372101791
+      },
+      "milliseconds": 83.67017999989912
+    },
+    {
+      "id": "route-curated-train-002",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999966557369959,
+        "PLAN": 9.264075619978965e-07,
+        "CODE": 2.417855442008026e-06
+      },
+      "milliseconds": 99.63558200024636
+    },
+    {
+      "id": "route-curated-train-004",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9953807628279884,
+        "PLAN": 0.00043434499851169507,
+        "CODE": 0.004184892173499908
+      },
+      "milliseconds": 92.30646600008185
+    },
+    {
+      "id": "route-curated-train-006",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999812496213839,
+        "PLAN": 9.11653950144296e-06,
+        "CODE": 9.63383911467409e-06
+      },
+      "milliseconds": 92.08319899971684
+    },
+    {
+      "id": "route-curated-train-007",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9580595292349309,
+        "PLAN": 0.02037471703831635,
+        "CODE": 0.021565753726752748
+      },
+      "milliseconds": 89.8392139997668
+    },
+    {
+      "id": "route-curated-train-014",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 9.263081088442489e-07,
+        "PLAN": 0.9999241083968972,
+        "CODE": 7.496529499421749e-05
+      },
+      "milliseconds": 95.59114500007126
+    },
+    {
+      "id": "route-curated-train-035",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00033678546140063383,
+        "PLAN": 0.00526865879370589,
+        "CODE": 0.9943945557448935
+      },
+      "milliseconds": 91.26682299984168
+    },
+    {
+      "id": "route-heldout-v7-018",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 7.325490126179166e-06,
+        "PLAN": 0.9999876707204342,
+        "CODE": 5.003789439625577e-06
+      },
+      "milliseconds": 88.38013200011119
+    },
+    {
+      "id": "route-heldout-v7-028",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 7.666803222935974e-05,
+        "PLAN": 4.1248613782968836e-05,
+        "CODE": 0.9998820833539878
+      },
+      "milliseconds": 85.37696700022934
+    },
+    {
+      "id": "route-runtime-v2-train-001",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.006964285161707186,
+        "PLAN": 0.0009924621256077806,
+        "CODE": 0.9920432527126851
+      },
+      "milliseconds": 90.98236699992412
+    },
+    {
+      "id": "route-runtime-v2-train-005",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999848163626951,
+        "PLAN": 9.905824046346446e-05,
+        "CODE": 5.277813258564723e-05
+      },
+      "milliseconds": 87.95483499989132
+    },
+    {
+      "id": "route-runtime-v2-train-013",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999995923483,
+        "PLAN": 8.999190415719573e-11,
+        "CODE": 3.1765970470224444e-10
+      },
+      "milliseconds": 85.89914599997428
+    },
+    {
+      "id": "route-runtime-v2-train-024",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999264007912463,
+        "PLAN": 3.521615607964113e-05,
+        "CODE": 3.838305267417573e-05
+      },
+      "milliseconds": 85.51647900003445
+    },
+    {
+      "id": "route-runtime-v2-train-030",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9995015952055966,
+        "PLAN": 0.00017672863736782046,
+        "CODE": 0.00032167615703559683
+      },
+      "milliseconds": 86.90193899974474
+    },
+    {
+      "id": "route-runtime-v2-train-031",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999270090685971,
+        "PLAN": 2.9395019587932884e-06,
+        "CODE": 7.005142944393564e-05
+      },
+      "milliseconds": 86.01616199985074
+    },
+    {
+      "id": "route-runtime-v2-train-039",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999989607715,
+        "PLAN": 2.6089648582425235e-10,
+        "CODE": 7.783320414843209e-10
+      },
+      "milliseconds": 86.92426899960992
+    },
+    {
+      "id": "route-runtime-v2-train-040",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.6506835938904276,
+        "PLAN": 0.16528034480490644,
+        "CODE": 0.184036061304666
+      },
+      "milliseconds": 87.93806299991047
+    },
+    {
+      "id": "route-runtime-v2-train-044",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.997444299317762,
+        "PLAN": 0.0011883726962832284,
+        "CODE": 0.0013673279859545565
+      },
+      "milliseconds": 87.75183699981426
+    },
+    {
+      "id": "route-runtime-v2-train-047",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9566936316302248,
+        "PLAN": 0.0005931900841095105,
+        "CODE": 0.04271317828566574
+      },
+      "milliseconds": 87.29766899978131
+    },
+    {
+      "id": "route-runtime-v2-train-048",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999999999870598,
+        "PLAN": 2.5570587709124848e-11,
+        "CODE": 1.0383145431031647e-10
+      },
+      "milliseconds": 82.75255099988499
+    },
+    {
+      "id": "route-runtime-v2-train-1003",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 0.005082230111935446,
+        "PLAN": 0.8952305929932041,
+        "CODE": 0.09968717689486041
+      },
+      "milliseconds": 90.36633400000937
+    },
+    {
+      "id": "route-runtime-v2-train-1007",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.0086251325511222e-06,
+        "PLAN": 0.9999957368806541,
+        "CODE": 2.2544942132845305e-06
+      },
+      "milliseconds": 92.11866300029214
+    },
+    {
+      "id": "route-runtime-v2-train-1009",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.3619808539369386e-06,
+        "PLAN": 0.9999794149300406,
+        "CODE": 1.8223089105543604e-05
+      },
+      "milliseconds": 90.98736599980839
+    },
+    {
+      "id": "route-runtime-v2-train-1010",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 6.718485487379211e-07,
+        "PLAN": 0.9999986678433236,
+        "CODE": 6.603081277089609e-07
+      },
+      "milliseconds": 91.21905200026958
+    },
+    {
+      "id": "route-runtime-v2-train-1017",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.9049367208752364e-06,
+        "PLAN": 0.9999887812907502,
+        "CODE": 9.313772528963165e-06
+      },
+      "milliseconds": 93.2972460000201
+    },
+    {
+      "id": "route-runtime-v2-train-1022",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 9.786244089072885e-08,
+        "PLAN": 0.999999788220215,
+        "CODE": 1.139173440533848e-07
+      },
+      "milliseconds": 94.45678199972463
+    },
+    {
+      "id": "route-runtime-v2-train-1024",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.274998659000749e-05,
+        "PLAN": 0.999502398330149,
+        "CODE": 0.00048485168326106997
+      },
+      "milliseconds": 92.87178800013862
+    },
+    {
+      "id": "route-runtime-v2-train-1029",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 8.558433131986034e-05,
+        "PLAN": 0.9988728606277688,
+        "CODE": 0.0010415550409113741
+      },
+      "milliseconds": 89.6363570000176
+    },
+    {
+      "id": "route-runtime-v2-train-1034",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.4798252824100854e-07,
+        "PLAN": 0.999999118360443,
+        "CODE": 4.336570286705481e-07
+      },
+      "milliseconds": 90.7372349997786
+    },
+    {
+      "id": "route-runtime-v2-train-1035",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.9545621485515044e-07,
+        "PLAN": 0.9999980274373573,
+        "CODE": 1.7771064277208488e-06
+      },
+      "milliseconds": 90.51744699991104
+    },
+    {
+      "id": "route-runtime-v2-train-1036",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 8.867694747400266e-05,
+        "PLAN": 0.9770185841479053,
+        "CODE": 0.02289273890462069
+      },
+      "milliseconds": 90.85568399996191
+    },
+    {
+      "id": "route-runtime-v2-train-1043",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.591873276334979e-06,
+        "PLAN": 0.9970014605859763,
+        "CODE": 0.002993947540747514
+      },
+      "milliseconds": 94.25504399996498
+    },
+    {
+      "id": "route-runtime-v2-train-1044",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 8.341864459986947e-07,
+        "PLAN": 0.999970539048167,
+        "CODE": 2.8626765386945978e-05
+      },
+      "milliseconds": 91.91352700008792
+    },
+    {
+      "id": "route-runtime-v2-train-1049",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.22206142859081e-07,
+        "PLAN": 0.9999988096081083,
+        "CODE": 1.0681857489106027e-06
+      },
+      "milliseconds": 92.0377509996797
+    },
+    {
+      "id": "route-runtime-v2-train-1056",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 6.270810694702726e-08,
+        "PLAN": 0.9999998707433382,
+        "CODE": 6.654855464755374e-08
+      },
+      "milliseconds": 89.73289799996564
+    },
+    {
+      "id": "route-runtime-v2-train-1059",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.2288839236604907e-06,
+        "PLAN": 0.9999970464126569,
+        "CODE": 1.724703419510377e-06
+      },
+      "milliseconds": 91.25166500007253
+    },
+    {
+      "id": "route-runtime-v2-train-1063",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.6697342794466182e-08,
+        "PLAN": 0.99999996054647,
+        "CODE": 2.27561871554024e-08
+      },
+      "milliseconds": 91.19059899967397
+    },
+    {
+      "id": "route-runtime-v2-train-1079",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.0252178042368543e-05,
+        "PLAN": 0.9999407769378826,
+        "CODE": 3.8970884074977696e-05
+      },
+      "milliseconds": 90.69950399998561
+    },
+    {
+      "id": "route-runtime-v2-train-1089",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 6.891550439486355e-07,
+        "PLAN": 0.9999984594790683,
+        "CODE": 8.513658877713455e-07
+      },
+      "milliseconds": 91.77434000002904
+    },
+    {
+      "id": "route-runtime-v2-train-1091",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 5.2132902650311316e-05,
+        "PLAN": 0.9250059004620926,
+        "CODE": 0.07494196663525707
+      },
+      "milliseconds": 89.87141700026768
+    },
+    {
+      "id": "route-runtime-v2-train-1092",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.663259934829415e-06,
+        "PLAN": 0.9999923340182516,
+        "CODE": 4.002721813473077e-06
+      },
+      "milliseconds": 88.96588200013866
+    },
+    {
+      "id": "route-runtime-v2-train-1106",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.991114117709415e-06,
+        "PLAN": 0.9997470513950346,
+        "CODE": 0.0002499574908476392
+      },
+      "milliseconds": 90.62752999989243
+    },
+    {
+      "id": "route-runtime-v2-train-1111",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.625099000717249e-07,
+        "PLAN": 0.9999994718421182,
+        "CODE": 2.6564798154639145e-07
+      },
+      "milliseconds": 90.67309099964405
+    },
+    {
+      "id": "route-runtime-v2-train-1112",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.1734516150407494e-05,
+        "PLAN": 0.996641118320873,
+        "CODE": 0.0033271471629765796
+      },
+      "milliseconds": 90.65456600001198
+    },
+    {
+      "id": "route-runtime-v2-train-1125",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.005270275793319985,
+        "PLAN": 0.005299369116624301,
+        "CODE": 0.9894303550900556
+      },
+      "milliseconds": 93.0614419999074
+    },
+    {
+      "id": "route-runtime-v2-train-1136",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.003349347766131875,
+        "PLAN": 0.0012521400355722718,
+        "CODE": 0.9953985121982959
+      },
+      "milliseconds": 90.68776200001594
+    },
+    {
+      "id": "route-runtime-v2-train-1141",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0005404783827637114,
+        "PLAN": 0.0005317163094089286,
+        "CODE": 0.9989278053078273
+      },
+      "milliseconds": 89.76955300022382
+    },
+    {
+      "id": "route-runtime-v2-train-1159",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.0699785908344051e-05,
+        "PLAN": 1.0832123503193904e-05,
+        "CODE": 0.9999784680905885
+      },
+      "milliseconds": 91.16436400017847
+    },
+    {
+      "id": "route-runtime-v2-train-1160",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00014309992516257458,
+        "PLAN": 0.00013515546405043027,
+        "CODE": 0.9997217446107871
+      },
+      "milliseconds": 92.3441689997162
+    },
+    {
+      "id": "route-runtime-v2-train-1163",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 6.719268466584594e-05,
+        "PLAN": 3.55784861177862e-05,
+        "CODE": 0.9998972288292165
+      },
+      "milliseconds": 89.02343799991286
+    },
+    {
+      "id": "route-runtime-v2-train-1164",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 8.126418147842188e-05,
+        "PLAN": 7.561879351138047e-05,
+        "CODE": 0.9998431170250103
+      },
+      "milliseconds": 90.31577399991875
+    },
+    {
+      "id": "route-runtime-v2-train-1166",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.004385802997345076,
+        "PLAN": 0.0774499518549231,
+        "CODE": 0.9181642451477319
+      },
+      "milliseconds": 92.06259300026431
+    },
+    {
+      "id": "route-runtime-v2-train-1167",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.048533216981550616,
+        "PLAN": 0.0067600052378358946,
+        "CODE": 0.9447067777806135
+      },
+      "milliseconds": 89.95414699984394
+    },
+    {
+      "id": "route-runtime-v2-train-1169",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.2186556806428537e-05,
+        "PLAN": 2.706439052408432e-05,
+        "CODE": 0.9999607490526694
+      },
+      "milliseconds": 88.4331749998637
+    },
+    {
+      "id": "route-runtime-v2-train-1180",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.10937609080302177,
+        "PLAN": 0.00028362499763541753,
+        "CODE": 0.8903402841993429
+      },
+      "milliseconds": 88.80736200035244
+    },
+    {
+      "id": "route-runtime-v2-train-1185",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.4290601634887926e-05,
+        "PLAN": 1.515337110804709e-05,
+        "CODE": 0.999970556027257
+      },
+      "milliseconds": 88.81217399994057
+    },
+    {
+      "id": "route-runtime-v2-train-1188",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0058912485148616646,
+        "PLAN": 0.007016483343108455,
+        "CODE": 0.98709226814203
+      },
+      "milliseconds": 87.7569979998043
+    },
+    {
+      "id": "route-runtime-v2-train-1198",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 0.00015226183367772576,
+        "PLAN": 0.9992070528025969,
+        "CODE": 0.0006406853637254999
+      },
+      "milliseconds": 89.10148999984813
+    },
+    {
+      "id": "route-runtime-v2-train-1205",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 7.813715709918991e-05,
+        "PLAN": 7.516552239069644e-05,
+        "CODE": 0.9998466973205101
+      },
+      "milliseconds": 88.22778900002959
+    },
+    {
+      "id": "route-runtime-v2-train-1212",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 2.4224908936765646e-06,
+        "PLAN": 2.9445506294119207e-06,
+        "CODE": 0.9999946329584769
+      },
+      "milliseconds": 90.56619200009663
+    },
+    {
+      "id": "route-runtime-v2-train-1213",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.9752342985456348e-06,
+        "PLAN": 2.0516311404882788e-06,
+        "CODE": 0.9999959731345609
+      },
+      "milliseconds": 90.82534499975736
+    },
+    {
+      "id": "route-runtime-v2-train-1218",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00011041616719552387,
+        "PLAN": 0.0004695040495110098,
+        "CODE": 0.9994200797832935
+      },
+      "milliseconds": 90.21497399999134
+    },
+    {
+      "id": "route-runtime-v2-train-1223",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.010621936610170222,
+        "PLAN": 0.01486332135884191,
+        "CODE": 0.9745147420309879
+      },
+      "milliseconds": 90.61357299970041
+    },
+    {
+      "id": "route-runtime-v2-train-1224",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.4264253295731096e-06,
+        "PLAN": 1.3780895085833533e-06,
+        "CODE": 0.999997195485162
+      },
+      "milliseconds": 89.57551599996805
+    },
+    {
+      "id": "route-runtime-v2-train-1227",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 7.155451616104055e-06,
+        "PLAN": 7.4315499699384755e-06,
+        "CODE": 0.9999854129984139
+      },
+      "milliseconds": 90.91506899994783
+    },
+    {
+      "id": "route-runtime-v2-train-1231",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00012881311683668792,
+        "PLAN": 0.0008113799189165414,
+        "CODE": 0.9990598069642468
+      },
+      "milliseconds": 88.6636489999546
+    },
+    {
+      "id": "route-runtime-v2-train-1233",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0016043222056687243,
+        "PLAN": 0.22276326729999937,
+        "CODE": 0.7756324104943318
+      },
+      "milliseconds": 97.97085299987884
+    },
+    {
+      "id": "route-runtime-v2-train-1242",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0005118935287964313,
+        "PLAN": 0.0012666919229933694,
+        "CODE": 0.9982214145482101
+      },
+      "milliseconds": 89.45627599996442
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-015",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999733430820095,
+        "PLAN": 6.681843276595332e-06,
+        "CODE": 1.9975074713990306e-05
+      },
+      "milliseconds": 87.14415700023892
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-021",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9997586959619003,
+        "PLAN": 0.00011826529654655856,
+        "CODE": 0.00012303874155311084
+      },
+      "milliseconds": 87.25624999988213
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-022",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.06212671054364151,
+        "PLAN": 1.334203098713979e-05,
+        "CODE": 0.9378599474253713
+      },
+      "milliseconds": 87.71970699990561
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-029",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999580354041945,
+        "PLAN": 1.2311339391052278e-05,
+        "CODE": 2.9653256414509592e-05
+      },
+      "milliseconds": 87.47870499973942
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-036",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999738052530226,
+        "PLAN": 1.2158448801741569e-05,
+        "CODE": 1.4036298175670945e-05
+      },
+      "milliseconds": 86.945791999824
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-037",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999971837767648,
+        "PLAN": 1.379812891898506e-06,
+        "CODE": 1.4364103432823477e-06
+      },
+      "milliseconds": 86.64819300020099
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-046",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999885777338814,
+        "PLAN": 6.921918087559272e-05,
+        "CODE": 4.500348031032504e-05
+      },
+      "milliseconds": 87.0843950001472
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-049",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999107788724418,
+        "PLAN": 4.538596614162032e-05,
+        "CODE": 4.383516141635143e-05
+      },
+      "milliseconds": 87.01591399994868
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-057",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999917651329347,
+        "PLAN": 1.9233701644739763e-05,
+        "CODE": 6.311496900839824e-05
+      },
+      "milliseconds": 90.43640699974276
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-065",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999171280797519,
+        "PLAN": 4.188826675583975e-05,
+        "CODE": 4.098365349225741e-05
+      },
+      "milliseconds": 87.35737200004223
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-073",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9997301559077909,
+        "PLAN": 0.0001075793967573157,
+        "CODE": 0.0001622646954518242
+      },
+      "milliseconds": 85.84395700017922
+    },
+    {
+      "id": "route-v10-provided_csv",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9995405462703906,
+        "PLAN": 2.6331468572404472e-05,
+        "CODE": 0.00043312226103690073
+      },
+      "milliseconds": 88.33101299978807
+    },
+    {
+      "id": "route-v10-repo_json",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9965891405270588,
+        "PLAN": 1.632979404524545e-05,
+        "CODE": 0.003394529678895859
+      },
+      "milliseconds": 88.18166799983373
+    },
+    {
+      "id": "v3-route-train-003",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.47712627830632587,
+        "PLAN": 0.0004969711989894562,
+        "CODE": 0.5223767504946847
+      },
+      "milliseconds": 89.71126500000537
+    },
+    {
+      "id": "v3-route-train-009",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.010283840076805145,
+        "PLAN": 0.0009384593649420507,
+        "CODE": 0.9887777005582526
+      },
+      "milliseconds": 86.58666099972834
+    },
+    {
+      "id": "v3-route-train-012",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.994481298226697,
+        "PLAN": 1.9859353627382606e-05,
+        "CODE": 0.005498842419675842
+      },
+      "milliseconds": 90.53153100012423
+    },
+    {
+      "id": "v3-route-train-016",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0001543345952908352,
+        "PLAN": 0.00010686230086544048,
+        "CODE": 0.9997388031038438
+      },
+      "milliseconds": 84.54967899979238
+    },
+    {
+      "id": "v3-route-train-021",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.02388589006106799,
+        "PLAN": 0.02310537409466248,
+        "CODE": 0.9530087358442696
+      },
+      "milliseconds": 84.24079299993537
+    },
+    {
+      "id": "v3-route-train-022",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.6105163311382303,
+        "PLAN": 0.10246071739488016,
+        "CODE": 0.28702295146688944
+      },
+      "milliseconds": 86.81160800006182
+    },
+    {
+      "id": "v3-route-train-030",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.8566134862705986e-06,
+        "PLAN": 0.9994073939421292,
+        "CODE": 0.0005907494443845613
+      },
+      "milliseconds": 89.73108600002888
+    },
+    {
+      "id": "v3-route-train-036",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 9.203419158894144e-06,
+        "PLAN": 0.9999774383568303,
+        "CODE": 1.3358224010890485e-05
+      },
+      "milliseconds": 92.73694300009083
+    },
+    {
+      "id": "v3-route-train-039",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.9053686539645885e-08,
+        "PLAN": 0.9999999040683313,
+        "CODE": 4.6877982132405886e-08
+      },
+      "milliseconds": 92.12222099995415
+    },
+    {
+      "id": "v3-route-train-044",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.792181978175018e-05,
+        "PLAN": 0.9989107827254969,
+        "CODE": 0.0010612954547212009
+      },
+      "milliseconds": 92.12272900003882
+    },
+    {
+      "id": "v3-route-train-047",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 5.8630255123648466e-06,
+        "PLAN": 0.9999882498256383,
+        "CODE": 5.887148849460657e-06
+      },
+      "milliseconds": 90.3048810000655
+    },
+    {
+      "id": "v3-route-train-048",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 0.00042818258436114307,
+        "PLAN": 0.9987529822699709,
+        "CODE": 0.0008188351456679318
+      },
+      "milliseconds": 93.57762199988429
+    },
+    {
+      "id": "v3-route-train-050",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 9.24236193928675e-10,
+        "PLAN": 0.9999999957206358,
+        "CODE": 3.3551280435479263e-09
+      },
+      "milliseconds": 93.77940500007753
+    },
+    {
+      "id": "v3-route-train-056",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.998761860719822,
+        "PLAN": 6.375189957251542e-05,
+        "CODE": 0.0011743873806056046
+      },
+      "milliseconds": 87.4913010002274
+    },
+    {
+      "id": "v3-route-train-064",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999996294626,
+        "PLAN": 1.2159275561962746e-10,
+        "CODE": 2.4894465519668605e-10
+      },
+      "milliseconds": 89.82743100023072
+    },
+    {
+      "id": "v3-route-train-070",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9998585809055636,
+        "PLAN": 6.961164332436365e-05,
+        "CODE": 7.180745111221934e-05
+      },
+      "milliseconds": 87.66002399988793
+    },
+    {
+      "id": "v3-route-train-071",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999021571112792,
+        "PLAN": 2.3570327043056756e-05,
+        "CODE": 7.427256167773688e-05
+      },
+      "milliseconds": 84.11786799979382
+    },
+    {
+      "id": "v3-route-train-072",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9921354901791666,
+        "PLAN": 0.004956134022113976,
+        "CODE": 0.002908375798719422
+      },
+      "milliseconds": 88.05549299995619
+    },
+    {
+      "id": "v3-route-train-075",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999707825192002,
+        "PLAN": 1.170896700724167e-05,
+        "CODE": 1.7508513792330634e-05
+      },
+      "milliseconds": 95.45356999979049
+    },
+    {
+      "id": "v3-route-train-076",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999594343960254,
+        "PLAN": 1.952566990237199e-05,
+        "CODE": 2.103993407223959e-05
+      },
+      "milliseconds": 98.76919399994222
+    }
+  ],
+  "lora": [
+    {
+      "id": "delivery-adversarial-v7-011a",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.994831295607889,
+        "CHALLENGE": 0.005168704392111162
+      },
+      "milliseconds": 83.2668900002318
+    },
+    {
+      "id": "delivery-adversarial-v7-011b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9740893736316764,
+        "CHALLENGE": 0.025910626368323766
+      },
+      "milliseconds": 82.90794300000925
+    },
+    {
+      "id": "delivery-adversarial-v7-014b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04735366850734949,
+        "CHALLENGE": 0.9526463314926504
+      },
+      "milliseconds": 82.44203300000663
+    },
+    {
+      "id": "delivery-adversarial-v7-022a",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9940424325542561,
+        "CHALLENGE": 0.0059575674457440515
+      },
+      "milliseconds": 83.09523700017962
+    },
+    {
+      "id": "delivery-adversarial-v7-022b",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.058066656058064964,
+        "CHALLENGE": 0.941933343941935
+      },
+      "milliseconds": 80.86914999967121
+    },
+    {
+      "id": "delivery-batch-01-040",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7617444126180035,
+        "CHALLENGE": 0.23825558738199654
+      },
+      "milliseconds": 83.93482499968741
+    },
+    {
+      "id": "delivery-batch-02-001",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9818634121603498,
+        "CHALLENGE": 0.018136587839650144
+      },
+      "milliseconds": 83.073886999955
+    },
+    {
+      "id": "delivery-batch-02-010",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.45827770141043983,
+        "CHALLENGE": 0.5417222985895601
+      },
+      "milliseconds": 82.70665100008046
+    },
+    {
+      "id": "delivery-batch-02-011",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7669491910414531,
+        "CHALLENGE": 0.23305080895854688
+      },
+      "milliseconds": 84.54904600012014
+    },
+    {
+      "id": "delivery-batch-02-019",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.99618449749848,
+        "CHALLENGE": 0.0038155025015200236
+      },
+      "milliseconds": 82.81673100009357
+    },
+    {
+      "id": "delivery-batch-02-044",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8871814124567421,
+        "CHALLENGE": 0.112818587543258
+      },
+      "milliseconds": 82.8255309997985
+    },
+    {
+      "id": "delivery-batch-02-056",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.5503713780450592,
+        "CHALLENGE": 0.4496286219549408
+      },
+      "milliseconds": 85.66567199977726
+    },
+    {
+      "id": "delivery-batch-03-013",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.329765367106407,
+        "CHALLENGE": 0.670234632893593
+      },
+      "milliseconds": 81.51446299962117
+    },
+    {
+      "id": "delivery-batch-03-014",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.005884981196331359,
+        "CHALLENGE": 0.9941150188036687
+      },
+      "milliseconds": 84.66247100022883
+    },
+    {
+      "id": "delivery-batch-03-026",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.40732804722608573,
+        "CHALLENGE": 0.5926719527739143
+      },
+      "milliseconds": 81.9282919997022
+    },
+    {
+      "id": "delivery-batch-03-033",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.027185677394790126,
+        "CHALLENGE": 0.97281432260521
+      },
+      "milliseconds": 82.47609399995781
+    },
+    {
+      "id": "delivery-batch-03-044",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8169630758691575,
+        "CHALLENGE": 0.1830369241308424
+      },
+      "milliseconds": 83.37118300005386
+    },
+    {
+      "id": "delivery-batch-03-066",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7221301245748025,
+        "CHALLENGE": 0.27786987542519753
+      },
+      "milliseconds": 80.33454699989306
+    },
+    {
+      "id": "delivery-batch-04-033",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.804970424484216,
+        "CHALLENGE": 0.195029575515784
+      },
+      "milliseconds": 86.41972200030068
+    },
+    {
+      "id": "delivery-batch-04-035",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9973712168360251,
+        "CHALLENGE": 0.0026287831639749217
+      },
+      "milliseconds": 83.04935299975114
+    },
+    {
+      "id": "delivery-batch-04-066",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.5082908421474124,
+        "CHALLENGE": 0.4917091578525876
+      },
+      "milliseconds": 86.01478099990345
+    },
+    {
+      "id": "delivery-batch-04-071",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9961597388475251,
+        "CHALLENGE": 0.003840261152474973
+      },
+      "milliseconds": 85.65176299998711
+    },
+    {
+      "id": "delivery-batch-05-008",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7975254037048153,
+        "CHALLENGE": 0.20247459629518472
+      },
+      "milliseconds": 84.42710600002101
+    },
+    {
+      "id": "delivery-batch-05-009",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.4536650666447586,
+        "CHALLENGE": 0.5463349333552415
+      },
+      "milliseconds": 84.32201499999792
+    },
+    {
+      "id": "delivery-batch-05-053",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.03265986641570676,
+        "CHALLENGE": 0.9673401335842934
+      },
+      "milliseconds": 86.34777699990082
+    },
+    {
+      "id": "delivery-batch-05-061",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0007726370657311269,
+        "CHALLENGE": 0.9992273629342688
+      },
+      "milliseconds": 80.91543099999399
+    },
+    {
+      "id": "delivery-batch-06-012",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6720004362284885,
+        "CHALLENGE": 0.3279995637715115
+      },
+      "milliseconds": 84.75835299987011
+    },
+    {
+      "id": "delivery-batch-06-021",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.02985441784233876,
+        "CHALLENGE": 0.9701455821576611
+      },
+      "milliseconds": 83.97869600003105
+    },
+    {
+      "id": "delivery-batch-06-061",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04146314920457666,
+        "CHALLENGE": 0.9585368507954233
+      },
+      "milliseconds": 83.54564699993716
+    },
+    {
+      "id": "delivery-train-068",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6340490388630131,
+        "CHALLENGE": 0.36595096113698694
+      },
+      "milliseconds": 82.62907700009237
+    },
+    {
+      "id": "delivery-train-613",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.06443534156343521,
+        "CHALLENGE": 0.9355646584365649
+      },
+      "milliseconds": 79.313435000131
+    },
+    {
+      "id": "delivery-train-642",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6898109027780016,
+        "CHALLENGE": 0.31018909722199833
+      },
+      "milliseconds": 82.15306600004624
+    },
+    {
+      "id": "delivery-v10-format_missing",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8442086640002539,
+        "CHALLENGE": 0.1557913359997461
+      },
+      "milliseconds": 83.45525499998985
+    },
+    {
+      "id": "en31-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.03652931955056315,
+        "CHALLENGE": 0.963470680449437
+      },
+      "milliseconds": 84.09987900040505
+    },
+    {
+      "id": "en31-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8601230900341884,
+        "CHALLENGE": 0.13987690996581156
+      },
+      "milliseconds": 82.43405299981532
+    },
+    {
+      "id": "en31-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.010803510123272379,
+        "CHALLENGE": 0.9891964898767276
+      },
+      "milliseconds": 87.35194199971374
+    },
+    {
+      "id": "en31-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6183526054695715,
+        "CHALLENGE": 0.38164739453042856
+      },
+      "milliseconds": 88.90230099996188
+    },
+    {
+      "id": "en34-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9839495323354585,
+        "CHALLENGE": 0.016050467664541428
+      },
+      "milliseconds": 85.39856800007328
+    },
+    {
+      "id": "en34-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0023488710203692256,
+        "CHALLENGE": 0.9976511289796308
+      },
+      "milliseconds": 84.4171350004217
+    },
+    {
+      "id": "en34-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.997942643625836,
+        "CHALLENGE": 0.0020573563741640823
+      },
+      "milliseconds": 85.37698700001783
+    },
+    {
+      "id": "en39-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.20191667787330758,
+        "CHALLENGE": 0.7980833221266924
+      },
+      "milliseconds": 84.3995539999014
+    },
+    {
+      "id": "en39-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7788767371076935,
+        "CHALLENGE": 0.2211232628923066
+      },
+      "milliseconds": 84.48904599981688
+    },
+    {
+      "id": "en39-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8928553448757289,
+        "CHALLENGE": 0.107144655124271
+      },
+      "milliseconds": 87.7177769998525
+    },
+    {
+      "id": "en42-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.14117347821184098,
+        "CHALLENGE": 0.858826521788159
+      },
+      "milliseconds": 84.00323600017146
+    },
+    {
+      "id": "en42-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8507868933764234,
+        "CHALLENGE": 0.14921310662357662
+      },
+      "milliseconds": 84.3424419999792
+    },
+    {
+      "id": "en42-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8464832142115951,
+        "CHALLENGE": 0.15351678578840497
+      },
+      "milliseconds": 81.81289899994226
+    },
+    {
+      "id": "en42-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.12147054676827863,
+        "CHALLENGE": 0.8785294532317213
+      },
+      "milliseconds": 82.32092799971724
+    },
+    {
+      "id": "en43-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.3624433922976892,
+        "CHALLENGE": 0.6375566077023108
+      },
+      "milliseconds": 86.16878200018618
+    },
+    {
+      "id": "en43-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.3947686465638744,
+        "CHALLENGE": 0.6052313534361256
+      },
+      "milliseconds": 84.80159400005505
+    },
+    {
+      "id": "en43-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.009795502478910678,
+        "CHALLENGE": 0.9902044975210893
+      },
+      "milliseconds": 86.2770889998501
+    },
+    {
+      "id": "en43-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.900519535835779,
+        "CHALLENGE": 0.09948046416422103
+      },
+      "milliseconds": 84.72137599983398
+    },
+    {
+      "id": "en43-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.053236217459011685,
+        "CHALLENGE": 0.9467637825409883
+      },
+      "milliseconds": 84.96057000002111
+    },
+    {
+      "id": "en44-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8189623209200998,
+        "CHALLENGE": 0.1810376790799001
+      },
+      "milliseconds": 86.22984300018288
+    },
+    {
+      "id": "en44-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.20376005269549116,
+        "CHALLENGE": 0.7962399473045089
+      },
+      "milliseconds": 86.97268700007044
+    },
+    {
+      "id": "en44-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9873295858468142,
+        "CHALLENGE": 0.012670414153185941
+      },
+      "milliseconds": 84.25075099967216
+    },
+    {
+      "id": "en44-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0010458804497896165,
+        "CHALLENGE": 0.9989541195502104
+      },
+      "milliseconds": 88.55932500000563
+    },
+    {
+      "id": "en44-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6316114463032271,
+        "CHALLENGE": 0.36838855369677304
+      },
+      "milliseconds": 88.03468199994313
+    },
+    {
+      "id": "en50-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0007342519678362354,
+        "CHALLENGE": 0.9992657480321638
+      },
+      "milliseconds": 84.83490300022822
+    },
+    {
+      "id": "en50-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9848758874764341,
+        "CHALLENGE": 0.015124112523566009
+      },
+      "milliseconds": 85.22894200041264
+    },
+    {
+      "id": "en50-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.980049746771439,
+        "CHALLENGE": 0.019950253228560914
+      },
+      "milliseconds": 83.82570200001283
+    },
+    {
+      "id": "v3-delivery-train-006",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04043682333658313,
+        "CHALLENGE": 0.9595631766634168
+      },
+      "milliseconds": 90.34504900000684
+    },
+    {
+      "id": "v3-delivery-train-007",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.021934828048525184,
+        "CHALLENGE": 0.9780651719514749
+      },
+      "milliseconds": 89.28824499980692
+    },
+    {
+      "id": "v3-delivery-train-008",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8991988442947872,
+        "CHALLENGE": 0.10080115570521285
+      },
+      "milliseconds": 87.3569979999047
+    },
+    {
+      "id": "v3-delivery-train-026",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9405998921709707,
+        "CHALLENGE": 0.05940010782902941
+      },
+      "milliseconds": 87.5468340000225
+    },
+    {
+      "id": "v3-delivery-train-031",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6977700273675816,
+        "CHALLENGE": 0.30222997263241824
+      },
+      "milliseconds": 84.55917699984639
+    },
+    {
+      "id": "v3-delivery-train-036",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9268517031330339,
+        "CHALLENGE": 0.07314829686696615
+      },
+      "milliseconds": 87.76162699996348
+    },
+    {
+      "id": "v3-delivery-train-039",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7071063238695217,
+        "CHALLENGE": 0.29289367613047834
+      },
+      "milliseconds": 87.25003600011405
+    },
+    {
+      "id": "v3-delivery-train-041",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.21714373061864656,
+        "CHALLENGE": 0.7828562693813534
+      },
+      "milliseconds": 88.17108800030837
+    },
+    {
+      "id": "zh09-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 3.816452915723144e-05,
+        "CHALLENGE": 0.9999618354708428
+      },
+      "milliseconds": 85.33205399999133
+    },
+    {
+      "id": "zh09-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9763426662937772,
+        "CHALLENGE": 0.02365733370622283
+      },
+      "milliseconds": 87.64242400002331
+    },
+    {
+      "id": "zh09-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.2672885650471458,
+        "CHALLENGE": 0.7327114349528541
+      },
+      "milliseconds": 88.97379300015018
+    },
+    {
+      "id": "zh09-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.696181391620652,
+        "CHALLENGE": 0.303818608379348
+      },
+      "milliseconds": 87.4471120000635
+    },
+    {
+      "id": "zh09-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8114315774445108,
+        "CHALLENGE": 0.1885684225554893
+      },
+      "milliseconds": 88.3332899998095
+    },
+    {
+      "id": "zh11-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.49851483543395203,
+        "CHALLENGE": 0.501485164566048
+      },
+      "milliseconds": 89.36969100022907
+    },
+    {
+      "id": "zh11-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04978940693368811,
+        "CHALLENGE": 0.9502105930663118
+      },
+      "milliseconds": 88.03538399979516
+    },
+    {
+      "id": "zh11-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.08648440942253446,
+        "CHALLENGE": 0.9135155905774656
+      },
+      "milliseconds": 94.62015899998732
+    },
+    {
+      "id": "zh11-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.04718356219747674,
+        "CHALLENGE": 0.9528164378025233
+      },
+      "milliseconds": 97.04396899996937
+    },
+    {
+      "id": "zh11-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9891994501705261,
+        "CHALLENGE": 0.01080054982947391
+      },
+      "milliseconds": 98.19055399975696
+    },
+    {
+      "id": "zh14-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.008122494729284918,
+        "CHALLENGE": 0.991877505270715
+      },
+      "milliseconds": 89.30004000012559
+    },
+    {
+      "id": "zh14-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9769903010783278,
+        "CHALLENGE": 0.023009698921672195
+      },
+      "milliseconds": 92.6396200002273
+    },
+    {
+      "id": "zh14-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9597411051997977,
+        "CHALLENGE": 0.04025889480020234
+      },
+      "milliseconds": 95.81077200027721
+    },
+    {
+      "id": "zh14-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.03991547626276171,
+        "CHALLENGE": 0.9600845237372384
+      },
+      "milliseconds": 98.80359599992516
+    },
+    {
+      "id": "zh14-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9989277854028071,
+        "CHALLENGE": 0.0010722145971929803
+      },
+      "milliseconds": 130.85200700015776
+    },
+    {
+      "id": "zh17-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.0682770627453045,
+        "CHALLENGE": 0.9317229372546955
+      },
+      "milliseconds": 121.73455199990713
+    },
+    {
+      "id": "zh17-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.00631018335465589,
+        "CHALLENGE": 0.9936898166453441
+      },
+      "milliseconds": 107.29700699994282
+    },
+    {
+      "id": "zh17-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.3108517321548846,
+        "CHALLENGE": 0.6891482678451153
+      },
+      "milliseconds": 115.00529400018422
+    },
+    {
+      "id": "zh17-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.818445728178046,
+        "CHALLENGE": 0.18155427182195405
+      },
+      "milliseconds": 111.40644199986127
+    },
+    {
+      "id": "zh21-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8809824809665986,
+        "CHALLENGE": 0.11901751903340149
+      },
+      "milliseconds": 102.34235300004002
+    },
+    {
+      "id": "zh21-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.6247330322379938,
+        "CHALLENGE": 0.3752669677620063
+      },
+      "milliseconds": 107.52602699994895
+    },
+    {
+      "id": "zh21-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.024254272858306364,
+        "CHALLENGE": 0.9757457271416936
+      },
+      "milliseconds": 108.089702000143
+    },
+    {
+      "id": "zh21-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.07738977492017139,
+        "CHALLENGE": 0.9226102250798285
+      },
+      "milliseconds": 92.05264699994586
+    },
+    {
+      "id": "zh21-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9997977645293934,
+        "CHALLENGE": 0.0002022354706067179
+      },
+      "milliseconds": 88.96364300017012
+    },
+    {
+      "id": "zh23-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.10315934446427061,
+        "CHALLENGE": 0.8968406555357294
+      },
+      "milliseconds": 95.28119300011895
+    },
+    {
+      "id": "zh23-train-fail0",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9693662632203541,
+        "CHALLENGE": 0.030633736779645968
+      },
+      "milliseconds": 92.2521349998533
+    },
+    {
+      "id": "zh23-train-fail1",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "CHALLENGE",
+      "scores": {
+        "RELEASE": 0.002304959616747862,
+        "CHALLENGE": 0.9976950403832521
+      },
+      "milliseconds": 89.14109699981054
+    },
+    {
+      "id": "zh23-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.8838015155242396,
+        "CHALLENGE": 0.11619848447576045
+      },
+      "milliseconds": 97.89797499979613
+    },
+    {
+      "id": "zh25-probe-fail",
+      "task": "delivery",
+      "expected": "CHALLENGE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.7579710761128208,
+        "CHALLENGE": 0.24202892388717925
+      },
+      "milliseconds": 85.86566799976936
+    },
+    {
+      "id": "zh25-probe-pass",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9680498867911137,
+        "CHALLENGE": 0.031950113208886424
+      },
+      "milliseconds": 87.2105560001728
+    },
+    {
+      "id": "zh25-train-pass0",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9986388992043647,
+        "CHALLENGE": 0.0013611007956353086
+      },
+      "milliseconds": 86.27014200010308
+    },
+    {
+      "id": "zh25-train-pass1",
+      "task": "delivery",
+      "expected": "RELEASE",
+      "predicted": "RELEASE",
+      "scores": {
+        "RELEASE": 0.9895745064948245,
+        "CHALLENGE": 0.010425493505175572
+      },
+      "milliseconds": 97.05474199972741
+    },
+    {
+      "id": "route-curated-train-002",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999901069027,
+        "PLAN": 3.9815725449403355e-09,
+        "CODE": 5.911524841044643e-09
+      },
+      "milliseconds": 106.41474400017614
+    },
+    {
+      "id": "route-curated-train-004",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999977001492,
+        "PLAN": 9.863827758736786e-10,
+        "CODE": 1.3134679542280789e-09
+      },
+      "milliseconds": 102.78637900000831
+    },
+    {
+      "id": "route-curated-train-006",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999023255082,
+        "PLAN": 5.009771158912264e-08,
+        "CODE": 4.757678029089409e-08
+      },
+      "milliseconds": 101.75133500024458
+    },
+    {
+      "id": "route-curated-train-007",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9981887810261002,
+        "PLAN": 0.0002253447089303185,
+        "CODE": 0.0015858742649694827
+      },
+      "milliseconds": 99.51087000035841
+    },
+    {
+      "id": "route-curated-train-014",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.0869081372756925e-08,
+        "PLAN": 0.9999994714551268,
+        "CODE": 5.07675791728639e-07
+      },
+      "milliseconds": 101.89760799994474
+    },
+    {
+      "id": "route-curated-train-035",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 8.190500534330416e-05,
+        "PLAN": 0.00014762464398995257,
+        "CODE": 0.9997704703506667
+      },
+      "milliseconds": 96.78427100016052
+    },
+    {
+      "id": "route-heldout-v7-018",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.6875917895141237e-06,
+        "PLAN": 0.9999834962077572,
+        "CODE": 1.3816200453348224e-05
+      },
+      "milliseconds": 89.3707639997956
+    },
+    {
+      "id": "route-heldout-v7-028",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.6036207069049407e-05,
+        "PLAN": 1.0781828234022095e-05,
+        "CODE": 0.999973181964697
+      },
+      "milliseconds": 89.25488700015194
+    },
+    {
+      "id": "route-runtime-v2-train-001",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9220112673924243,
+        "PLAN": 0.00042336801135931516,
+        "CODE": 0.0775653645962163
+      },
+      "milliseconds": 98.91370300010749
+    },
+    {
+      "id": "route-runtime-v2-train-005",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999698026516891,
+        "PLAN": 1.1896895447318373e-05,
+        "CODE": 1.830045286338822e-05
+      },
+      "milliseconds": 96.16932700009784
+    },
+    {
+      "id": "route-runtime-v2-train-013",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999995129898,
+        "PLAN": 1.9896796699278904e-10,
+        "CODE": 2.880422039750661e-10
+      },
+      "milliseconds": 94.0698340000381
+    },
+    {
+      "id": "route-runtime-v2-train-024",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999201507047,
+        "PLAN": 3.83814235290355e-08,
+        "CODE": 4.146787170084953e-08
+      },
+      "milliseconds": 88.31862900024134
+    },
+    {
+      "id": "route-runtime-v2-train-030",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999997918414876,
+        "PLAN": 9.943185186552912e-08,
+        "CODE": 1.0872666065741279e-07
+      },
+      "milliseconds": 92.46552200011138
+    },
+    {
+      "id": "route-runtime-v2-train-031",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999950703605551,
+        "PLAN": 1.711035138380457e-06,
+        "CODE": 3.218604306451244e-06
+      },
+      "milliseconds": 96.96929699975954
+    },
+    {
+      "id": "route-runtime-v2-train-039",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999988288835,
+        "PLAN": 4.4951090364027005e-10,
+        "CODE": 7.216055700129522e-10
+      },
+      "milliseconds": 120.84097299975838
+    },
+    {
+      "id": "route-runtime-v2-train-040",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999885586609367,
+        "PLAN": 5.083113264645332e-06,
+        "CODE": 6.358225798655252e-06
+      },
+      "milliseconds": 103.24955799978852
+    },
+    {
+      "id": "route-runtime-v2-train-044",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999300232275672,
+        "PLAN": 2.377433606089233e-05,
+        "CODE": 4.62024363719552e-05
+      },
+      "milliseconds": 93.93746100022327
+    },
+    {
+      "id": "route-runtime-v2-train-047",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9984492090903709,
+        "PLAN": 0.0004981770511701414,
+        "CODE": 0.0010526138584590456
+      },
+      "milliseconds": 88.57721200001833
+    },
+    {
+      "id": "route-runtime-v2-train-048",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999999999620317,
+        "PLAN": 1.619944664528002e-10,
+        "CODE": 2.1768853800610474e-10
+      },
+      "milliseconds": 87.2421460003352
+    },
+    {
+      "id": "route-runtime-v2-train-1003",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.642003030131878e-07,
+        "PLAN": 0.9999980406779978,
+        "CODE": 1.4951216990584624e-06
+      },
+      "milliseconds": 93.06927399984488
+    },
+    {
+      "id": "route-runtime-v2-train-1007",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.567926042765014e-09,
+        "PLAN": 0.9999999116631733,
+        "CODE": 8.376890063191498e-08
+      },
+      "milliseconds": 92.94069999987187
+    },
+    {
+      "id": "route-runtime-v2-train-1009",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.437982145026916e-08,
+        "PLAN": 0.999999753572837,
+        "CODE": 2.1204734150325701e-07
+      },
+      "milliseconds": 92.81678699971962
+    },
+    {
+      "id": "route-runtime-v2-train-1010",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 7.037272491721e-10,
+        "PLAN": 0.9999999954733043,
+        "CODE": 3.822968465064526e-09
+      },
+      "milliseconds": 92.99802099985754
+    },
+    {
+      "id": "route-runtime-v2-train-1017",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.4731952935454625e-09,
+        "PLAN": 0.999999992910025,
+        "CODE": 5.616779719906426e-09
+      },
+      "milliseconds": 97.97079999998459
+    },
+    {
+      "id": "route-runtime-v2-train-1022",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 9.534563875268377e-10,
+        "PLAN": 0.9999999979119876,
+        "CODE": 1.1345560103488627e-09
+      },
+      "milliseconds": 94.58823499971913
+    },
+    {
+      "id": "route-runtime-v2-train-1024",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.790914216971379e-07,
+        "PLAN": 0.999992533378448,
+        "CODE": 7.0875301303523515e-06
+      },
+      "milliseconds": 94.36815900016882
+    },
+    {
+      "id": "route-runtime-v2-train-1029",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.4364180650756773e-07,
+        "PLAN": 0.9999963926144956,
+        "CODE": 3.4637436977792534e-06
+      },
+      "milliseconds": 92.56153000023915
+    },
+    {
+      "id": "route-runtime-v2-train-1034",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.8030834500325055e-08,
+        "PLAN": 0.9999999630453309,
+        "CODE": 1.892383446190095e-08
+      },
+      "milliseconds": 92.6563719999649
+    },
+    {
+      "id": "route-runtime-v2-train-1035",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.3758053438273275e-09,
+        "PLAN": 0.9999999305023379,
+        "CODE": 6.612185666598665e-08
+      },
+      "milliseconds": 91.64530899988677
+    },
+    {
+      "id": "route-runtime-v2-train-1036",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 5.631330986056235e-06,
+        "PLAN": 0.9988087618862488,
+        "CODE": 0.0011856067827652036
+      },
+      "milliseconds": 92.91151799970976
+    },
+    {
+      "id": "route-runtime-v2-train-1043",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.2242847524175877e-08,
+        "PLAN": 0.9999995677782721,
+        "CODE": 4.0997888038292897e-07
+      },
+      "milliseconds": 96.55716700035555
+    },
+    {
+      "id": "route-runtime-v2-train-1044",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.3674606235984924e-08,
+        "PLAN": 0.9999993830991996,
+        "CODE": 6.032261940961819e-07
+      },
+      "milliseconds": 95.05840400015586
+    },
+    {
+      "id": "route-runtime-v2-train-1049",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.061427754709745e-09,
+        "PLAN": 0.9999999790089404,
+        "CODE": 1.7929631769355408e-08
+      },
+      "milliseconds": 94.32216699997298
+    },
+    {
+      "id": "route-runtime-v2-train-1056",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.54990402650725e-08,
+        "PLAN": 0.9999999452071818,
+        "CODE": 3.9293777775869024e-08
+      },
+      "milliseconds": 95.05226400005995
+    },
+    {
+      "id": "route-runtime-v2-train-1059",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 7.517327261797309e-09,
+        "PLAN": 0.9999999848626049,
+        "CODE": 7.620067726807861e-09
+      },
+      "milliseconds": 99.31746699976429
+    },
+    {
+      "id": "route-runtime-v2-train-1063",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.863673126512242e-10,
+        "PLAN": 0.9999999976191609,
+        "CODE": 1.8944717582999262e-09
+      },
+      "milliseconds": 104.7186050000164
+    },
+    {
+      "id": "route-runtime-v2-train-1079",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.232521169752587e-06,
+        "PLAN": 0.999581792199544,
+        "CODE": 0.0004139752792863626
+      },
+      "milliseconds": 103.11192800008939
+    },
+    {
+      "id": "route-runtime-v2-train-1089",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.807183671915725e-08,
+        "PLAN": 0.999999901689575,
+        "CODE": 5.023858834679992e-08
+      },
+      "milliseconds": 103.57124199981627
+    },
+    {
+      "id": "route-runtime-v2-train-1091",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.4339283025067786e-06,
+        "PLAN": 0.9999517530781025,
+        "CODE": 4.581299359505763e-05
+      },
+      "milliseconds": 100.59086199999001
+    },
+    {
+      "id": "route-runtime-v2-train-1092",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 2.5730870868320633e-06,
+        "PLAN": 0.9999900511183986,
+        "CODE": 7.375794514637617e-06
+      },
+      "milliseconds": 140.74654599971836
+    },
+    {
+      "id": "route-runtime-v2-train-1106",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 5.115836182021125e-07,
+        "PLAN": 0.9999291320409397,
+        "CODE": 7.035637544222652e-05
+      },
+      "milliseconds": 121.17390100002012
+    },
+    {
+      "id": "route-runtime-v2-train-1111",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 6.1651630072049515e-09,
+        "PLAN": 0.9999999745033323,
+        "CODE": 1.9331504592919197e-08
+      },
+      "milliseconds": 139.15595200023745
+    },
+    {
+      "id": "route-runtime-v2-train-1112",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 7.84705139143934e-07,
+        "PLAN": 0.9999960258902019,
+        "CODE": 3.1894046588620674e-06
+      },
+      "milliseconds": 122.11222099995211
+    },
+    {
+      "id": "route-runtime-v2-train-1125",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00020886659203753848,
+        "PLAN": 0.0003763792400833321,
+        "CODE": 0.9994147541678791
+      },
+      "milliseconds": 126.79749800008722
+    },
+    {
+      "id": "route-runtime-v2-train-1136",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.000714826069724559,
+        "PLAN": 0.0006219662143169042,
+        "CODE": 0.9986632077159586
+      },
+      "milliseconds": 107.85725000005186
+    },
+    {
+      "id": "route-runtime-v2-train-1141",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.000237946167925939,
+        "PLAN": 1.586978217445622e-05,
+        "CODE": 0.9997461840498997
+      },
+      "milliseconds": 122.74290300001667
+    },
+    {
+      "id": "route-runtime-v2-train-1159",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 5.774197122189703e-05,
+        "PLAN": 5.763790581403225e-05,
+        "CODE": 0.999884620122964
+      },
+      "milliseconds": 104.56011399992349
+    },
+    {
+      "id": "route-runtime-v2-train-1160",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0007789224515814477,
+        "PLAN": 0.0010636390574413903,
+        "CODE": 0.9981574384909772
+      },
+      "milliseconds": 102.80375000002095
+    },
+    {
+      "id": "route-runtime-v2-train-1163",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0940381372506671,
+        "PLAN": 0.0019829384456779733,
+        "CODE": 0.9039789243036549
+      },
+      "milliseconds": 102.28083799984233
+    },
+    {
+      "id": "route-runtime-v2-train-1164",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.001304516035042877,
+        "PLAN": 0.0008974464642140694,
+        "CODE": 0.997798037500743
+      },
+      "milliseconds": 104.32279499991637
+    },
+    {
+      "id": "route-runtime-v2-train-1166",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0004189542749944501,
+        "PLAN": 0.0015976494739034595,
+        "CODE": 0.997983396251102
+      },
+      "milliseconds": 106.34363000008307
+    },
+    {
+      "id": "route-runtime-v2-train-1167",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9759727154339732,
+        "PLAN": 0.00047175568704543717,
+        "CODE": 0.023555528878981415
+      },
+      "milliseconds": 119.81299199987916
+    },
+    {
+      "id": "route-runtime-v2-train-1169",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 8.644993998325236e-06,
+        "PLAN": 2.510764986031304e-05,
+        "CODE": 0.9999662473561414
+      },
+      "milliseconds": 118.44504200007577
+    },
+    {
+      "id": "route-runtime-v2-train-1180",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.07676799660970392,
+        "PLAN": 0.0003831279948642129,
+        "CODE": 0.9228488753954319
+      },
+      "milliseconds": 140.1053919998958
+    },
+    {
+      "id": "route-runtime-v2-train-1185",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 3.539124117037079e-06,
+        "PLAN": 0.0006507794800732023,
+        "CODE": 0.9993456813958097
+      },
+      "milliseconds": 119.29253500011328
+    },
+    {
+      "id": "route-runtime-v2-train-1188",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00017548112641056654,
+        "PLAN": 0.00016663258948815756,
+        "CODE": 0.9996578862841013
+      },
+      "milliseconds": 105.19848799958709
+    },
+    {
+      "id": "route-runtime-v2-train-1198",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 8.286520797382304e-06,
+        "PLAN": 0.9996845474681627,
+        "CODE": 0.0003071660110400503
+      },
+      "milliseconds": 110.22421400002713
+    },
+    {
+      "id": "route-runtime-v2-train-1205",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 9.137513707986132e-05,
+        "PLAN": 9.222064351599755e-05,
+        "CODE": 0.9998164042194042
+      },
+      "milliseconds": 124.24359800024831
+    },
+    {
+      "id": "route-runtime-v2-train-1212",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 4.476322881308541e-06,
+        "PLAN": 4.1759386016065364e-06,
+        "CODE": 0.9999913477385171
+      },
+      "milliseconds": 117.66511499990884
+    },
+    {
+      "id": "route-runtime-v2-train-1213",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 1.3682366919960405e-05,
+        "PLAN": 1.332811448380426e-05,
+        "CODE": 0.9999729895185964
+      },
+      "milliseconds": 116.92204199971457
+    },
+    {
+      "id": "route-runtime-v2-train-1218",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00019894437492003347,
+        "PLAN": 0.00032404831271126716,
+        "CODE": 0.9994770073123688
+      },
+      "milliseconds": 98.7767920000806
+    },
+    {
+      "id": "route-runtime-v2-train-1223",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0012165847543515694,
+        "PLAN": 0.004847623550720471,
+        "CODE": 0.993935791694928
+      },
+      "milliseconds": 105.22212399973796
+    },
+    {
+      "id": "route-runtime-v2-train-1224",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 6.773111549410681e-06,
+        "PLAN": 7.2795625120421485e-06,
+        "CODE": 0.9999859473259387
+      },
+      "milliseconds": 116.10619100019903
+    },
+    {
+      "id": "route-runtime-v2-train-1227",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0001200142925219104,
+        "PLAN": 0.00011930511830595619,
+        "CODE": 0.9997606805891722
+      },
+      "milliseconds": 110.20565399985571
+    },
+    {
+      "id": "route-runtime-v2-train-1231",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 8.134955340374692e-05,
+        "PLAN": 0.00010842831996116824,
+        "CODE": 0.999810222126635
+      },
+      "milliseconds": 103.48072499982663
+    },
+    {
+      "id": "route-runtime-v2-train-1233",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 7.723686165221635e-05,
+        "PLAN": 0.9958372363439479,
+        "CODE": 0.004085526794399838
+      },
+      "milliseconds": 97.6583199999368
+    },
+    {
+      "id": "route-runtime-v2-train-1242",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.0004638317078919539,
+        "PLAN": 0.001201421957862546,
+        "CODE": 0.9983347463342456
+      },
+      "milliseconds": 103.04816999996547
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-015",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999984014685333,
+        "PLAN": 5.188686568364936e-06,
+        "CODE": 1.079662809867648e-05
+      },
+      "milliseconds": 98.70269100019868
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-021",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999902959594329,
+        "PLAN": 4.2540676416363414e-06,
+        "CODE": 5.449972925496071e-06
+      },
+      "milliseconds": 90.27844499996718
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-022",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9975322218631798,
+        "PLAN": 6.988225937400691e-05,
+        "CODE": 0.0023978958774462053
+      },
+      "milliseconds": 96.39412099977562
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-029",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.999999998179582,
+        "PLAN": 8.55093466799526e-10,
+        "CODE": 9.653244585499616e-10
+      },
+      "milliseconds": 96.58992399999988
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-036",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999899357289947,
+        "PLAN": 4.310827580058234e-06,
+        "CODE": 5.753443425214611e-06
+      },
+      "milliseconds": 94.93162499984464
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-037",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999985428998,
+        "PLAN": 7.403757287455803e-10,
+        "CODE": 7.167243999642321e-10
+      },
+      "milliseconds": 93.29033499989237
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-046",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999799056377688,
+        "PLAN": 6.4602254906622836e-06,
+        "CODE": 1.3634136740443296e-05
+      },
+      "milliseconds": 89.45409199986898
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-049",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999958492377936,
+        "PLAN": 2.0666081845147177e-06,
+        "CODE": 2.0841540218168013e-06
+      },
+      "milliseconds": 89.81712699960553
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-057",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999885962510403,
+        "PLAN": 2.796096442091632e-06,
+        "CODE": 8.607652517633834e-06
+      },
+      "milliseconds": 93.46974200025215
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-065",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999990952003883,
+        "PLAN": 4.4353189501786667e-07,
+        "CODE": 4.6126771668964144e-07
+      },
+      "milliseconds": 91.74729999995179
+    },
+    {
+      "id": "route-runtime-v2-train-direct2-073",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999474668468502,
+        "PLAN": 1.9515011294539138e-05,
+        "CODE": 3.3018141855299386e-05
+      },
+      "milliseconds": 88.98338300014075
+    },
+    {
+      "id": "route-v10-provided_csv",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999646841839003,
+        "PLAN": 2.730299950242416e-06,
+        "CODE": 3.258551614963596e-05
+      },
+      "milliseconds": 92.39091900008134
+    },
+    {
+      "id": "route-v10-repo_json",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9998651917582277,
+        "PLAN": 2.3332481779732994e-06,
+        "CODE": 0.00013247499359426748
+      },
+      "milliseconds": 88.23705199984033
+    },
+    {
+      "id": "v3-route-train-003",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999997059877802,
+        "PLAN": 1.7218802665616753e-09,
+        "CODE": 2.9229033946025975e-07
+      },
+      "milliseconds": 93.85379000013927
+    },
+    {
+      "id": "v3-route-train-009",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.09391120178272346,
+        "PLAN": 0.001109009471027064,
+        "CODE": 0.9049797887462494
+      },
+      "milliseconds": 89.15209599990703
+    },
+    {
+      "id": "v3-route-train-012",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9626108468381509,
+        "PLAN": 7.951398015813935e-06,
+        "CODE": 0.03738120176383337
+      },
+      "milliseconds": 96.25835199994981
+    },
+    {
+      "id": "v3-route-train-016",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.00026447790085713465,
+        "PLAN": 0.00013879136247521389,
+        "CODE": 0.9995967307366677
+      },
+      "milliseconds": 89.81669900003908
+    },
+    {
+      "id": "v3-route-train-021",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.004494262716383342,
+        "PLAN": 0.004311164614444637,
+        "CODE": 0.991194572669172
+      },
+      "milliseconds": 88.99920199974076
+    },
+    {
+      "id": "v3-route-train-022",
+      "task": "route",
+      "expected": "CODE",
+      "predicted": "CODE",
+      "scores": {
+        "DIRECT": 0.46420105514716,
+        "PLAN": 0.0012719192790361976,
+        "CODE": 0.5345270255738037
+      },
+      "milliseconds": 90.54499500007296
+    },
+    {
+      "id": "v3-route-train-030",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.558975099047391e-07,
+        "PLAN": 0.9999947418232851,
+        "CODE": 5.102279205047028e-06
+      },
+      "milliseconds": 94.8641069999212
+    },
+    {
+      "id": "v3-route-train-036",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 3.3440358144160217e-06,
+        "PLAN": 0.9999704409215463,
+        "CODE": 2.6215042639477993e-05
+      },
+      "milliseconds": 96.57830700007253
+    },
+    {
+      "id": "v3-route-train-039",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.194006140890517e-09,
+        "PLAN": 0.9999999919612205,
+        "CODE": 3.844773438798189e-09
+      },
+      "milliseconds": 123.0999750000592
+    },
+    {
+      "id": "v3-route-train-044",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 1.1492579602364113e-05,
+        "PLAN": 0.999272489211732,
+        "CODE": 0.0007160182086656003
+      },
+      "milliseconds": 121.21414899957017
+    },
+    {
+      "id": "v3-route-train-047",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.4856374301240636e-06,
+        "PLAN": 0.9999900703906789,
+        "CODE": 5.443971890894739e-06
+      },
+      "milliseconds": 119.51544800012925
+    },
+    {
+      "id": "v3-route-train-048",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 6.39404959414606e-08,
+        "PLAN": 0.9999999254083534,
+        "CODE": 1.0651150712528362e-08
+      },
+      "milliseconds": 122.60925900000075
+    },
+    {
+      "id": "v3-route-train-050",
+      "task": "route",
+      "expected": "PLAN",
+      "predicted": "PLAN",
+      "scores": {
+        "DIRECT": 4.325908490469661e-10,
+        "PLAN": 0.9999999961209494,
+        "CODE": 3.4464597666942927e-09
+      },
+      "milliseconds": 120.443594000335
+    },
+    {
+      "id": "v3-route-train-056",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9927223803403029,
+        "PLAN": 0.00014262518509116758,
+        "CODE": 0.007134994474606099
+      },
+      "milliseconds": 114.31101200014382
+    },
+    {
+      "id": "v3-route-train-064",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999991930677,
+        "PLAN": 2.838964986999732e-10,
+        "CODE": 5.230357649202351e-10
+      },
+      "milliseconds": 117.29840800035163
+    },
+    {
+      "id": "v3-route-train-070",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999998510464274,
+        "PLAN": 7.65185379206129e-08,
+        "CODE": 7.243503479262517e-08
+      },
+      "milliseconds": 114.67575899996518
+    },
+    {
+      "id": "v3-route-train-071",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999980630385,
+        "PLAN": 9.36882169562143e-10,
+        "CODE": 1.0000793452371947e-09
+      },
+      "milliseconds": 107.48229299997547
+    },
+    {
+      "id": "v3-route-train-072",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9981880278448451,
+        "PLAN": 5.868273394705286e-05,
+        "CODE": 0.0017532894212078133
+      },
+      "milliseconds": 111.05288299995664
+    },
+    {
+      "id": "v3-route-train-075",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999333881573,
+        "PLAN": 2.1808427854305863e-08,
+        "CODE": 4.4803414954063495e-08
+      },
+      "milliseconds": 117.34223800021937
+    },
+    {
+      "id": "v3-route-train-076",
+      "task": "route",
+      "expected": "DIRECT",
+      "predicted": "DIRECT",
+      "scores": {
+        "DIRECT": 0.9999999967470841,
+        "PLAN": 1.1248328897996393e-09,
+        "CODE": 2.128082953627936e-09
+      },
+      "milliseconds": 117.28440600018075
+    }
+  ]
+}

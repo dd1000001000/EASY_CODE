@@ -61,7 +61,8 @@ def local_timings(rows: list[dict], python: str) -> tuple[dict, float, str]:
             if value.get("type") != "result" or value.get("id") != row["id"]:
                 raise RuntimeError(f"Laya inference failed for {row['id']}: {value}")
             timings[row["id"]] = {"ms": round(elapsed_ms, 2),
-                                  "input_tokens": value["inputTokens"]}
+                                  "input_tokens": value["inputTokens"],
+                                  "model_sha256": ready["modelSha256"]}
             if index % 25 == 0:
                 print(f"Laya timing: {index}/{len(rows)}", flush=True)
         return timings, round(cold_ms, 2), ready["device"]
@@ -92,9 +93,16 @@ def report(rows: list[dict], recorded: dict, cold_ms: float | None, device: str 
            glm_batch_ms: float | None, workers: int) -> dict:
     if len(recorded) != len(rows):
         raise ValueError(f"Need {len(rows)} measured cases; found {len(recorded)}")
+    hashes = {row["laya"].get("model_sha256") for row in recorded.values()}
+    if len(hashes) != 1:
+        raise ValueError("Timing records mix local models; rerun --refresh-local")
     output = {"cases": len(rows), "glm_concurrency": workers,
               "laya_cold_start_ms": cold_ms, "laya_device": device,
               "tasks": {}}
+    # Old recorded controls have no per-row fingerprint. Preserve their existing
+    # summary provenance; a fresh comparison still requires an identified model.
+    if None not in hashes:
+        output["local_model_sha256"] = next(iter(hashes))
     if glm_batch_ms is not None:
         output["glm_batch_ms"] = glm_batch_ms
     for task in ("route", "delivery", "overall"):
@@ -131,6 +139,7 @@ def main() -> None:
         os.replace(pending, TIMINGS)
         output = report(rows, refreshed, cold_ms, device, None, args.workers)
         output.update(local_backend="onnx-fp32", glm_source="historical recorded API timings",
+                      local_model_sha256=next(iter(local.values()))["model_sha256"],
                       previous_local=previous.get("previous_local", {"cold_start_ms": previous["laya_cold_start_ms"],
                                              "tasks": {task: previous["tasks"][task]["laya"] for task in previous["tasks"]}}))
         SUMMARY.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
@@ -143,8 +152,8 @@ def main() -> None:
         previous = json.loads(SUMMARY.read_text(encoding="utf-8")) if SUMMARY.exists() else {}
         output = report(rows, recorded, previous.get("laya_cold_start_ms"),
                         previous.get("laya_device"), None, args.workers)
-        for key in ("previous_local", "local_backend", "glm_source", "glm_batch_ms"):
-            if key in previous:
+        for key in ("previous_local", "local_backend", "local_model_sha256", "glm_source", "glm_batch_ms"):
+            if key in previous and key not in output:
                 output[key] = previous[key]
         SUMMARY.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(output, indent=2))

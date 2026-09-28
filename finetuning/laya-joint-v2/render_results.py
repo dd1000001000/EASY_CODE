@@ -1,138 +1,64 @@
-"""Render the saved SFT report without loading models or running evaluation."""
-from __future__ import annotations
-
+"""Matched upstream / full SFT / LoRA accuracy, all CPU FP32 ONNX."""
 import argparse
 import json
 from pathlib import Path
-
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import numpy as np
-from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
+from compare_backends import flatten
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REPORT = HERE.parents[1] / "model-weights/laya-multilingual/joint-v2/report.json"
-TASKS = {"route": ("DIRECT", "PLAN", "CODE"), "delivery": ("RELEASE", "CHALLENGE")}
-BLUE = "#2C7BE5"
-GREEN = "#16A879"
-GRAY = "#A3A09A"
-INK = "#181B20"
-MUTED = "#727780"
+ROOT = HERE.parents[1]
 
-
-def read_results(path: Path) -> dict:
-    results = json.loads(path.read_text(encoding="utf-8"))["held_out_test"]
-    onnx = path.with_name("onnx-evaluation.json")
-    if onnx.exists():
-        results["onnx"] = json.loads(onnx.read_text(encoding="utf-8"))["by_task"]
-    for stage in results:
-        for task, labels in TASKS.items():
-            item = results[stage][task]
+def read_results(paths):
+    results = {name: json.loads(path.read_text(encoding="utf-8")) for name, path in paths.items()}
+    reference = next(iter(results.values()))
+    keys = flatten(reference).keys()
+    for name, report in results.items():
+        if report["backend"] != "onnx-fp32-cpu" or report["dataset_sha256"] != reference["dataset_sha256"]:
+            raise ValueError("Comparisons require the same dataset and CPU FP32 ONNX backend")
+        if flatten(report).keys() != keys:
+            raise ValueError("Comparisons require identical cases and answer orders")
+        for task in ("route", "delivery"):
+            item = report["by_task"][task]
             matrix = item["confusion"]
-            total = sum(matrix[actual][predicted] for actual in labels for predicted in labels)
-            correct = sum(matrix[label][label] for label in labels)
-            if total != item["total_orders"] or correct != item["correct_orders"]:
-                raise ValueError(f"Confusion counts disagree with saved metrics: {stage}/{task}")
-            if abs(correct / total - item["accuracy"]) > 1e-9:
-                raise ValueError(f"Accuracy disagrees with saved counts: {stage}/{task}")
+            total = sum(sum(row.values()) for row in matrix.values())
+            correct = sum(matrix[label][label] for label in matrix)
+            if (total != item["total_orders"] or correct != item["correct_orders"]
+                    or abs(correct / total - item["accuracy"]) > 1e-9):
+                raise ValueError(f"Confusion counts disagree: {name}/{task}")
     return results
 
-
-def render(results: dict, output: Path, backends=None) -> None:
+def render(results, output):
     output.mkdir(parents=True, exist_ok=True)
-    trained = results.get("onnx", results["trained"])
-    with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
-                         "text.color": INK, "axes.labelcolor": MUTED,
-                         "xtick.color": MUTED, "ytick.color": MUTED,
-                         "svg.fonttype": "none", "savefig.facecolor": "white"}):
-        fig = plt.figure(figsize=(14, 10.8), facecolor="white")
-        fig.text(.075, .951, "Laya: fine-tuning and ONNX evaluation", fontsize=27, weight="bold")
-        fig.text(.075, .916, "Joint routing + delivery decisions", fontsize=15, color=MUTED)
-        fig.text(.075, .883,
-                 f"{trained['route']['cases']} routing cases × 6 answer orders   /   "
-                 f"{trained['delivery']['cases']} delivery cases × 2 answer orders", fontsize=11, color=MUTED)
-
-        fig.text(.075, .824, "Accuracy before and after SFT", fontsize=16, weight="bold")
-        trained_label = "SFT (ONNX CPU FP32)" if (backends or {}).get("trained") == "onnx-cpu-fp32" else "SFT (recorded BF16)"
-        stages = [("baseline", GRAY, "Upstream (recorded BF16)"), ("trained", BLUE, trained_label)]
-        if "onnx" in results:
-            stages.append(("onnx", GREEN, "SFT ONNX (CPU FP32 rerun)"))
-        fig.legend(handles=[Patch(facecolor=color, label=label) for _, color, label in stages],
-                   loc="upper left", bbox_to_anchor=(.068, .809), ncol=3,
-                   frameon=False, fontsize=9, handlelength=1.2)
-        ax = fig.add_axes([.075, .535, .51, .225])
-        for index, (stage, color, _) in enumerate(stages):
-            offset = (index - (len(stages) - 1) / 2) * .25
-            values = [results[stage][task]["accuracy"] for task in TASKS]
-            bars = ax.bar(np.arange(2) + offset, values, width=.22, color=color, zorder=3)
-            for bar, value in zip(bars, values):
-                ax.text(bar.get_x() + bar.get_width() / 2, value + .022, f"{value:.1%}",
-                        ha="center", fontsize=13, weight="bold" if stage == "trained" else "normal")
-        ax.set_xticks([0, 1], ["Routing", "Delivery"])
-        ax.set_ylim(0, 1.12)
-        ax.set_yticks([0, .25, .5, .75, 1])
-        ax.yaxis.set_major_formatter(PercentFormatter(1, decimals=0))
-        ax.grid(axis="y", color="#E9EAEC", linewidth=.8, zorder=0)
-        ax.tick_params(axis="both", length=0, pad=9)
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-        fig.text(.68, .824, "Measured improvement", fontsize=16, weight="bold")
-        for y, task, name in [(.713, "route", "routing accuracy"), (.586, "delivery", "delivery accuracy")]:
-            delta = 100 * (trained[task]["accuracy"] - results["baseline"][task]["accuracy"])
-            fig.text(.68, y, f"{delta:+.1f} pp", fontsize=31, weight="bold", color=GREEN)
-            fig.text(.68, y - .032, name, fontsize=12, weight="bold")
-            fig.text(.68, y - .059,
-                     f"{results['baseline'][task]['correct_orders']} → {trained[task]['correct_orders']} "
-                     f"correct / {trained[task]['total_orders']} evaluations", fontsize=10, color=MUTED)
-
-        fig.text(.075, .431, "Fine-tuned Laya: prediction breakdown", fontsize=16, weight="bold")
-        fig.text(.075, .400, "Rows = expected · columns = predicted · each cell shows count and row percentage",
-                 fontsize=10, color=MUTED)
-        for left, task, name in [(.16, "route", "Routing"), (.65, "delivery", "Delivery")]:
-            labels = TASKS[task]
-            counts = np.array([[trained[task]["confusion"][actual][predicted]
-                                for predicted in labels] for actual in labels])
-            shares = counts / counts.sum(axis=1, keepdims=True)
-            heat = fig.add_axes([left, .126, .255, .24])
-            heat.imshow(shares, cmap="Blues", vmin=0, vmax=1, interpolation="nearest")
-            heat.set_title(name, fontsize=13, weight="bold", pad=12)
-            heat.set_xticks(range(len(labels)), labels, fontsize=10)
-            heat.set_yticks(range(len(labels)), labels, fontsize=10)
-            heat.tick_params(axis="both", length=0, pad=9)
-            heat.set_xlabel("Predicted", fontsize=10, labelpad=10)
-            heat.set_ylabel("Expected", fontsize=10, labelpad=10)
-            heat.set_xticks(np.arange(-.5, len(labels), 1), minor=True)
-            heat.set_yticks(np.arange(-.5, len(labels), 1), minor=True)
-            heat.grid(which="minor", color="white", linewidth=3)
-            heat.tick_params(which="minor", bottom=False, left=False)
-            for spine in heat.spines.values():
-                spine.set_visible(False)
-            for i in range(len(labels)):
-                for j in range(len(labels)):
-                    color = "white" if shares[i, j] > .55 else INK
-                    heat.text(j, i - .08, str(counts[i, j]), ha="center", va="center",
-                              fontsize=19, weight="bold", color=color)
-                    heat.text(j, i + .2, f"{shares[i, j]:.1%}", ha="center", va="center",
-                              fontsize=11, color=color)
-        fig.text(.075, .035,
-                 "Full-parameter SFT retained. Archived training uses CUDA/BF16; the ONNX rerun uses CPU/FP32. Heatmaps show ONNX when available.",
-                 fontsize=9, color=MUTED)
+    with plt.rc_context({"font.family": "DejaVu Sans", "svg.fonttype": "none"}):
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+        fig.suptitle("Laya accuracy: upstream / full SFT / LoRA", fontsize=20, weight="bold")
+        for ax, task, title in zip(axes, ("route", "delivery"), ("Routing · 630 trials", "Delivery · 342 trials")):
+            values = [report["by_task"][task]["accuracy"] for report in results.values()]
+            bars = ax.bar(list(results), values, color=["#A3A09A", "#6A8CC7", "#2C7BE5"])
+            ax.bar_label(bars, labels=[f"{value:.2%}" for value in values], padding=6, fontsize=12)
+            ax.set_ylim(0, 1.13)
+            ax.yaxis.set_major_formatter(PercentFormatter(1))
+            ax.set_title(title, pad=18)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.set_axisbelow(True)
+            ax.grid(axis="y", alpha=.15)
+        fig.text(.5, .035, "Same 276 held-out cases and answer orders · all CPU FP32 ONNX · single training seed",
+                 ha="center", fontsize=10, color="#727780")
+        fig.subplots_adjust(top=.8, bottom=.15, wspace=.25)
         fig.savefig(output / "results.png", dpi=180)
         fig.savefig(output / "results.svg")
         svg = output / "results.svg"
         svg.write_text("\n".join(line.rstrip() for line in svg.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
         plt.close(fig)
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--current", type=Path, default=ROOT / "model-weights/laya-multilingual/joint-v2/onnx-evaluation.json")
+    parser.add_argument("--upstream", type=Path, default=HERE / "experiments/upstream-reference/onnx-evaluation.json")
+    parser.add_argument("--sft", type=Path, default=HERE / "experiments/full-sft-reference/onnx-evaluation.json")
     parser.add_argument("--output", type=Path, default=HERE / "assets")
     args = parser.parse_args()
-    render(read_results(args.report), args.output,
-           json.loads(args.report.read_text(encoding="utf-8")).get("evaluation_backends"))
-    print(f"Charts saved to {args.output.resolve()}")
+    render(read_results({"Upstream": args.upstream, "Full SFT": args.sft, "LoRA": args.current}), args.output)

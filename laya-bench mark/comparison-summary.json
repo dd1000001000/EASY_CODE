@@ -1,0 +1,32 @@
+{
+  "cases": 200,
+  "model_sha256": "d9771f8c556acff3597d70f358749b5e02943fda5959abb778bf8383fcfa2fd7",
+  "glm": {
+    "prompt_tokens": 43932,
+    "completion_tokens": 32074,
+    "total_tokens": 76006
+  },
+  "lora": {
+    "cloud_tokens": 0,
+    "input_text_tokens": 7242
+  },
+  "speed": {
+    "laya": {
+      "count": 200,
+      "mean_ms": 79.15,
+      "median_ms": 76.65,
+      "p95_ms": 98.34
+    },
+    "glm": {
+      "count": 200,
+      "mean_ms": 4177.79,
+      "median_ms": 3120.57,
+      "p95_ms": 9015.3
+    },
+    "glm_retrying_cases": 0,
+    "glm_invalid_or_error": 1
+  },
+  "cold_start_ms": 3683.17,
+  "glm_source": "Historical API response records and separate API timing run; no fresh requests",
+  "token_scope": "Local input-text tokens exclude fixed criteria/options; tokenizers differ"
+}

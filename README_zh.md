@@ -24,13 +24,13 @@ EASY CODE 是运行在本地的 AI 编程助手，同时提供终端和网页界
 
 安装程序会自动启用随包提供的**微调后 Laya（joint-v2）**：
 
-公开模型采用 FP32 ONNX，使用 CPU 推理，用户无需安装 PyTorch 或 CUDA。开发侧仍保留全参数微调。
+公开模型采用 FP32 ONNX，使用 CPU 推理，用户无需安装 PyTorch 或 CUDA。当前权重使用编码器 LoRA＋决策头训练，合并后导出 ONNX。开发侧默认使用 LoRA，全参数 SFT 保留为对照选项；用户无需安装 PEFT，合并后的推理模型体积不缩小。
 
 - **Auto 路由**：微调后 Laya 选择直接回答、Plan 或 Code，再由云端模型完成具体工作。
 - **交付检查**：微调后 Laya 对比用户需求和 Agent 的完成摘要。放行分数默认至少 **0.90**，可在运行配置中调整；未通过时要求 Agent 复查一次。
 - **共享本地服务**：多个 EASY CODE 会话共用模型实例，输入和选择记录在项目的 `.easycode/decision-traces/`。
 
-命令审批和独立 reviewer 继续生效。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[微调结果](./finetuning/laya-joint-v2/README.md)和 [微调后 Laya + GLM 实验](<./laya-bench mark/README.md>)。
+命令审批和独立 reviewer 继续生效。详见[设计与训练方法](./docs/TECHNICAL_DESIGN_ZH.md#61-实验性本地决策模型)、[未微调／SFT／LoRA 准确率](./finetuning/laya-joint-v2/README.md)和 [GLM API 与 LoRA 的 Token、速度对比](<./laya-bench mark/README.md>)。
 
 ## 安装
 

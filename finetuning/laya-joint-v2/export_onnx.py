@@ -1,4 +1,4 @@
-"""Export a full-parameter Laya checkpoint as a standalone CPU FP32 ONNX model."""
+"""Export a full or merged-LoRA Laya model as a standalone CPU FP32 ONNX graph."""
 from __future__ import annotations
 
 import argparse

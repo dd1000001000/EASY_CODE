@@ -18,7 +18,7 @@ distributed with their respective packages.
 
 ## Laya local decision model and choice encoding
 
-The bundled joint-v2 model is a full-parameter fine-tune of
+The bundled joint-v2 model is an encoder-LoRA plus choice-head fine-tune of
 [Convai Innovations Laya multilingual](https://huggingface.co/convaiinnovations/laya-multilingual),
 exported to FP32 ONNX. The choice sequence builder in
 `resources/laya-decision/runtime.py` adapts the choice-only path of Laya 0.3.20's

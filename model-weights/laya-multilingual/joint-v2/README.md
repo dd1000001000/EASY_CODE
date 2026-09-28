@@ -1,24 +1,32 @@
-# Final fine-tuned Laya checkpoint
+# Released Laya: merged LoRA ONNX
 
-`model/` is the FP32 ONNX fine-tuned Laya (joint-v2) checkpoint for the joint route and
-pre-delivery experiment. It was trained from the upstream Laya multilingual
-checkpoint with full-parameter supervised fine-tuning (SFT) on two labeled
-choice tasks. The [training and evaluation guide](../../../finetuning/laya-joint-v2/README.md)
-provides the upstream GitHub and Hugging Face links, a pinned download command,
-and instructions to run the held-out test using the bundled checkpoint.
-The `model.onnx` and tokenizer files are tracked with Git LFS. `onnx_manifest.json`
-records graph, tokenizer and config hashes. Training stays full-parameter SFT;
-PyTorch weights are not included in this published model directory. The upstream
-Laya multilingual model card lists the Apache-2.0 license.
+`model/` contains EASY CODE's current FP32 ONNX local decision model for Auto
+routing and a one-time pre-delivery check. It was trained from the pinned
+original multilingual Laya using **encoder LoRA plus a fully trained choice
+head**, not full-parameter encoder fine-tuning.
 
-Fine-tuned Laya training data, code, provenance, accuracies, and confusion matrices (with separately labeled pre-fine-tuning baseline results):
-[`../../../finetuning/laya-joint-v2/README.md`](../../../finetuning/laya-joint-v2/README.md).
-The archived training evaluation is in `report.json`; the current CPU ONNX rerun
-is in `onnx-evaluation.json` (routing 600/630, delivery 239/342).
+LoRA rank 8, alpha 16, dropout 0.05; adapter/head learning rates 1e-4 / 1e-5.
+Validation selected 3 epochs, followed by refit on 1,105 development cases.
+The adapter is merged into the encoder before export. Runtime needs only
+ONNX Runtime and tokenizers, not PyTorch or PEFT. LoRA does not reduce the
+merged FP32 graph's size.
 
-EASY CODE uses this checkpoint for local Auto routing and a one-time
-pre-delivery reminder. Runtime completion checks and independent review
-continue to apply. The delivery classifier compares the user request with
-the main agent's own summary. If local inference fails, Auto routing uses
-the existing cloud controller; Code delivery reports the issue and proceeds
-through the existing completion checks.
+`onnx_manifest.json` records weight/tokenizer/config hashes and the training
+recipe. The ONNX and tokenizer JSON are Git LFS assets. No adapter, original
+base safetensors or full-SFT backup is shipped in this directory.
+
+Current CPU ONNX evaluation: **590/630 routing (93.65%)** and **247/342 delivery
+(72.22%)**. All 972 answer orders use the fixed 276 held-out cases. Full SFT
+previously achieved 95.24% / 69.88%, so this release involves a trade-off.
+See [the training guide](../../../finetuning/laya-joint-v2/README.md) for the
+untrained / full-SFT / LoRA comparison and reproduction instructions.
+
+`report.json` is the LoRA training report; `onnx-evaluation.json` evaluates the
+current released graph. Previous full-SFT reports are archived under
+`finetuning/laya-joint-v2/experiments/full-sft-reference/`. The complete old
+release is backed up locally at `F:\models\easy-code-laya-full-sft-20260928`.
+
+Command approvals, independent review and runtime completion checks are
+unchanged. If local inference fails, Auto falls back to the cloud controller;
+delivery reports the issue and continues through the existing completion checks.
+The upstream model is licensed under Apache-2.0.

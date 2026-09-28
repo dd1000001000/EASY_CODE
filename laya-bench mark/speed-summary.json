@@ -1,15 +1,16 @@
 {
   "cases": 200,
   "glm_concurrency": 4,
-  "laya_cold_start_ms": 3708.74,
+  "local_model_sha256": "d9771f8c556acff3597d70f358749b5e02943fda5959abb778bf8383fcfa2fd7",
+  "laya_cold_start_ms": 3683.17,
   "laya_device": "cpu",
   "tasks": {
     "route": {
       "laya": {
         "count": 100,
-        "mean_ms": 100.17,
-        "median_ms": 100.84,
-        "p95_ms": 105.58
+        "mean_ms": 83.39,
+        "median_ms": 80.09,
+        "p95_ms": 103.85
       },
       "glm": {
         "count": 100,
@@ -23,9 +24,9 @@
     "delivery": {
       "laya": {
         "count": 100,
-        "mean_ms": 90.02,
-        "median_ms": 89.76,
-        "p95_ms": 95.37
+        "mean_ms": 74.91,
+        "median_ms": 73.38,
+        "p95_ms": 87.38
       },
       "glm": {
         "count": 100,
@@ -39,9 +40,9 @@
     "overall": {
       "laya": {
         "count": 200,
-        "mean_ms": 95.1,
-        "median_ms": 94.73,
-        "p95_ms": 104.74
+        "mean_ms": 79.15,
+        "median_ms": 76.65,
+        "p95_ms": 98.34
       },
       "glm": {
         "count": 200,

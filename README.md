@@ -24,13 +24,13 @@ The application, history and fine-tuned Laya decisions run locally. Your selecte
 
 Installation enables the bundled **fine-tuned Laya (joint-v2)** automatically:
 
-The published model uses FP32 ONNX with a CPU-only runtime; end users do not need PyTorch or CUDA. Full-parameter training remains in the developer workflow.
+The published model uses FP32 ONNX with a CPU-only runtime; end users do not need PyTorch or CUDA. The release uses encoder LoRA plus a trained choice head, merged before ONNX export. LoRA is the default training method; full SFT remains an explicit comparison option. End users do not need PEFT, and the merged inference model is not smaller.
 
 - **Auto routing:** Fine-tuned Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
 - **Delivery check:** Fine-tuned Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once.
 - **Shared local service:** multiple EASY CODE sessions share a model instance. Inputs and decisions are saved locally in the project's `.easycode/decision-traces/`.
 
-Command approval and independent review continue to apply. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [fine-tuning results](./finetuning/laya-joint-v2/README.md) and [Fine-tuned Laya + GLM experiment](<./laya-bench mark/README.md>).
+Command approval and independent review continue to apply. See the [design and training method](./docs/TECHNICAL_DESIGN.md#61-experimental-local-decision-model), [upstream / SFT / LoRA accuracy](./finetuning/laya-joint-v2/README.md) and [GLM API vs LoRA tokens and speed](<./laya-bench mark/README.md>).
 
 ## Install
 

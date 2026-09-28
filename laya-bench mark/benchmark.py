@@ -1,4 +1,4 @@
-"""Compare local Laya, GLM Coding Plan, and a confidence-gated cascade.
+"""Compare released LoRA inference with recorded GLM Coding Plan calls.
 
 The API key is read from stdin, never from argv or a file. Run from any cwd.
 """
@@ -25,7 +25,6 @@ RESULTS = HERE / "results.jsonl"
 ROUTE_PILOT = HERE / "route-pilot.jsonl"
 ENDPOINT = "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"
 MODEL = "glm-5.3-flash"
-THRESHOLD = 0.90
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -172,8 +171,7 @@ def run(rows: list[dict], python: str, key: str) -> None:
         return
     missing = [row for row in rows if row["id"] not in prior]
     local = local_results(missing, python)
-    # A GLM-only result is reused for the cascade fallback: no second billed
-    # API request is needed to estimate the identical per-case decision.
+    # Store GLM observations once; local-model updates do not repeat API calls.
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(glm_one, row, key): row for row in missing}
         for index, future in enumerate(as_completed(futures), 1):
@@ -202,30 +200,6 @@ def archive_and_reset_route() -> None:
     print("Archived the first route prompt run; retaining delivery results.", flush=True)
 
 
-def score(rows: list[dict], task: str, method: str) -> dict:
-    subset = [row for row in rows if row["task"] == task]
-    chosen = []
-    fallbacks = 0
-    for row in subset:
-        local = row["laya"]
-        confidence = float(local["scores"][local["decision"]])
-        fallback = confidence < THRESHOLD
-        if method == "Laya":
-            decision = local["decision"]
-        elif method == "GLM":
-            decision = row["glm"]["decision"]
-        else:
-            fallbacks += fallback
-            decision = row["glm"]["decision"] if fallback else local["decision"]
-        chosen.append(decision)
-    correct = sum(choice == row["expected"] for row, choice in zip(subset, chosen))
-    labels = list(QUESTIONS[task]["crit"])
-    matrix = {actual: {pred: sum(row["expected"] == actual and choice == pred
-                                for row, choice in zip(subset, chosen)) for pred in labels}
-              for actual in labels}
-    invalid = sum(choice is None for choice in chosen)
-    return {"count": len(subset), "correct": correct, "accuracy": correct / len(subset),
-            "fallbacks": fallbacks, "invalid": invalid, "matrix": matrix}
 
 
 def report() -> None:
@@ -236,10 +210,8 @@ def report() -> None:
         raise ValueError("Need all 200 unique results before writing the report")
     if any(not row["glm"]["usage_reported"] for row in rows):
         raise ValueError("Cannot chart complete cloud costs with missing token usage")
-    metrics = {task: {method: score(rows, task, method)
-                      for method in ("Laya", "GLM", "Cascade")}
-               for task in ("route", "delivery")}
-    render_report(HERE, rows, metrics, THRESHOLD)
+    speed = json.loads((HERE / "speed-summary.json").read_text(encoding="utf-8"))
+    render_report(HERE, rows, speed)
     print("Report ready:", HERE / "README.md")
 
 

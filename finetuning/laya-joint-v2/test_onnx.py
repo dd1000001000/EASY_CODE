@@ -1,5 +1,6 @@
 """Real-model ONNX checks; run with the minimal inference environment."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -17,7 +18,8 @@ from worker import decide, trim_to_model, QUESTIONS
 class OnnxChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.agent = OnnxAgent(ROOT / "model-weights/laya-multilingual/joint-v2/model")
+        cls.agent = OnnxAgent(Path(os.environ.get(
+            "EASY_CODE_TEST_ONNX_MODEL", str(ROOT / "model-weights/laya-multilingual/joint-v2/model"))))
 
     def test_no_training_framework_imported(self):
         self.assertNotIn("torch", sys.modules)

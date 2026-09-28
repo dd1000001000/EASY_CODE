@@ -25,7 +25,7 @@ flowchart TD
 | Local application | Coordinate models, tools, tasks and cancellation | Node.js, TypeScript |
 | Interfaces | Terminal interaction, browser projects, live progress and approvals | CLI; Vue 3, Element Plus; VS Code terminal integration |
 | Model access | Provider selection, capabilities, streaming and usage accounting | Configurable model registry; compatible Chat Completions/Responses protocols |
-| Local decisions | Auto routing and a one-time delivery check | Multilingual encoder and choice head; full-parameter joint SFT; FP32 ONNX CPU inference; shared local IPC service |
+| Local decisions | Auto routing and a one-time delivery check | Multilingual encoder and choice head; encoder LoRA plus choice-head training; merged FP32 ONNX CPU inference; shared local IPC service |
 | Execution control | Authorization, command lifecycle, cancellation and cleanup | Structured tools, independent approval agent, native OS sandbox |
 | Persistence | Conversations, projects, events, memory and recovery snapshots | SQLite, JSONL event journals, checkpoints, attachment/evidence files |
 | Retrieval | Find relevant history and memory | SQLite FTS5 text search, local vector search, ONNX embedding model, Orama |
@@ -259,7 +259,7 @@ Runtime selects routing by highest score. For delivery, a highest-scoring `RELEA
 
 ### 6.2 Teacher data and joint supervised fine-tuning
 
-All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses **SFT (supervised fine-tuning)**: both the encoder and choice head are trained with cross-entropy against the correct option. Routing and delivery contribute equal total weight to the training loss.
+All examples originate from the **GPT-6 Luna teacher model**, then are curated into EASY CODE-style user requests and completion summaries. Training uses supervised choice cross-entropy with **encoder LoRA plus a trained choice head**. The original encoder and action head remain frozen; only encoder adapters and the choice head are updated. Routing and delivery contribute equal total weight to the training loss.
 
 | Dataset | Routing | Delivery | Total |
 | --- | ---: | ---: | ---: |
@@ -274,12 +274,13 @@ The training process is:
 1. Start from the recorded upstream multilingual checkpoint and validate dataset hashes.
 2. Train both tasks together, giving routing and delivery equal aggregate loss weight despite their different example counts.
 3. Shuffle examples **and candidate-answer order every epoch** to train across option positions.
-4. Select the epoch count using validation performance across answer permutations, prioritizing correct answers in every order. The recorded run selected **5 epochs**.
-5. Restart from the original checkpoint, refit on all 1,105 development cases for those 5 epochs, then evaluate the frozen test set.
+4. Select the epoch count using validation performance across answer permutations, prioritizing correct answers in every order. The recorded run selected **3 epochs**.
+5. Restart from the original checkpoint, refit on all 1,105 development cases for those 3 epochs, merge the adapters, then evaluate the frozen test set through ONNX.
 
 | Training parameter | Recorded value |
 | --- | --- |
-| Encoder / choice-head learning rate | `2e-6` / `1e-5` |
+| LoRA rank / alpha / dropout | 8 / 16 / 0.05 |
+| LoRA / choice-head learning rate | `1e-4` / `1e-5` |
 | Optimizer / weight decay | AdamW / `0.01` |
 | Effective / micro batch size | 16 / 4 |
 | Precision and memory management | BF16; gradient checkpointing |
@@ -292,7 +293,7 @@ The [training guide](../finetuning/laya-joint-v2/README.md) provides upstream Gi
 
 The model's **1,024-token window covers the complete serialized decision**, including criteria and options. Runtime first removes recognized sensitive values, reserves room for those fixed instructions, and truncates oversized input in the **middle**, retaining its beginning and end with an omission marker. It checks the resulting token count again. This is separate from the cloud model's much larger context window.
 
-Installation creates an owned Python environment at `Data/runtimes/laya-decision-onnx`, with ONNX Runtime and tokenizers, without PyTorch, Transformers or CUDA. The worker verifies the ONNX model and tokenizer manifest and runs on CPU. Training remains full-parameter SFT and exports the complete encoder and decision heads as FP32 ONNX. Full uninstall removes the owned runtime. A custom environment can be selected with `EASY_CODE_LAYA_PYTHON`.
+Installation creates an owned Python environment at `Data/runtimes/laya-decision-onnx`, with ONNX Runtime and tokenizers, without PyTorch, Transformers or CUDA. The worker verifies the ONNX model and tokenizer manifest and runs on CPU. Training defaults to encoder LoRA plus choice-head training, merged and exported as a complete FP32 ONNX model. End users do not need PEFT; merging does not shrink the inference model. Full SFT remains an explicit control option; the fine-tuning guide records parameters and reproduction steps. Full uninstall removes the owned runtime. A custom environment can be selected with `EASY_CODE_LAYA_PYTHON`.
 
 Concurrent EASY CODE processes with the same user, runtime and worker version share one service over a Windows named pipe or private Unix socket. One model instance handles requests serially; closing or canceling one client does not kill another client's work. The service unloads after inactivity or when its last client leaves, and can restart on demand.
 
@@ -311,16 +312,29 @@ The once-per-task delivery challenge survives pause/resume. After a challenge, t
 
 ### 6.4 Measured results
 
-![Fine-tuned Laya versus the upstream baseline: accuracy and confusion matrices](../finetuning/laya-joint-v2/assets/results.png)
+![Upstream, full SFT and LoRA accuracy](../finetuning/laya-joint-v2/assets/results.png)
 
-| Held-out evaluation | Upstream (archived BF16) | Joint SFT (archived BF16) | Joint SFT ONNX (CPU FP32 rerun) |
+| Held-out evaluation | No fine-tuning | Full SFT | LoRA (current release) |
 | --- | ---: | ---: | ---: |
-| Routing accuracy | 50.2% | 95.1% | **95.24%** |
-| Delivery accuracy | 57.3% | 69.3% | **69.88%** |
+| Routing accuracy | 50.00% | 95.24% | **93.65%** |
+| Delivery accuracy | 57.60% | 69.88% | **72.22%** |
 
-Results use highest-score predictions: 105 routing cases in all six option orders and 171 delivery cases in both orders. The runtime's 0.9 delivery threshold applies after prediction. ONNX was correct for 600/630 routing and 239/342 delivery evaluations, including every order for 95/105 and 112/171 cases respectively. All 972 choices match the PyTorch CPU FP32 reference. The small difference from the archived CUDA/BF16 report is not a training improvement.
+All three use CPU FP32 ONNX on the same 276 held-out cases and 972 answer-order trials.
+Upstream and current LoRA were rerun; full SFT uses the saved evaluation of the previous weights.
+LoRA is correct for 590/630 routing and 247/342 delivery trials. Relative to full SFT,
+routing drops 1.59 percentage points and delivery rises 2.34 points. This single configuration
+is a trade-off, not a claim that every metric is unchanged. The runtime's 0.9 delivery
+threshold applies after highest-score prediction.
 
-A separate [200-case fine-tuned Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when fine-tuned Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. The product currently routes by highest score and applies the 0.9 threshold to delivery `RELEASE` decisions. The token comparison describes this experiment.
+The separate [GLM API vs LoRA token/speed report](<../laya-bench mark/README.md>) compares
+only cloud tokens and decision latency on the same 200 inputs; no cascade is presented.
+GLM uses historical API observations; LoRA is freshly rerun locally. LoRA incurs zero
+cloud tokens but still tokenizes and computes locally. Tokenizers and prompt templates
+differ, so local input counts and cloud usage are not interchangeable.
+
+See the [fine-tuning guide](../finetuning/laya-joint-v2/README.md) for training data,
+default parameters and reproduction. The release uses encoder LoRA plus choice-head
+training; the original full-SFT ONNX has a local backup and archived evaluation.
 
 ## 7. History, context and long-term memory
 
