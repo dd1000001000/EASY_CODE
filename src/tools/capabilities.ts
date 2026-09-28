@@ -82,8 +82,8 @@ const BUILTIN_POLICIES = {
     resultClass: "subagent_control" },
   send_parent_message: { effects: ["agent_control"], modes: ALL_MODES, roles: CHILD,
     controlPlane: true, resultClass: "subagent_control" },
-  find_file_editors: { effects: ["workspace_read"], modes: ORCHESTRATION_MODES, roles: BOTH, idempotent: true },
-  send_thread_message: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: BOTH, controlPlane: true },
+  find_file_editors: { effects: ["workspace_read"], modes: ORCHESTRATION_MODES, roles: MAIN, idempotent: true },
+  send_thread_message: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: MAIN, controlPlane: true },
   submit_task_result: { effects: ["agent_control"], modes: ORCHESTRATION_MODES, roles: CHILD,
     controlPlane: true, resultClass: "task_control" },
   compact_context: { effects: ["context_control"], modes: ALL_MODES, roles: BOTH,
@@ -110,7 +110,6 @@ const PLAN_CHILD_TOOLS = new Set<string>([
   "read_file", "search_files", "list_skills", "read_skill", "read_memory",
   "search_context", "recall_context", "compact_context", "send_parent_message",
   "submit_task_result",
-  "find_file_editors", "send_thread_message",
 ]);
 const TOOL_EFFECTS = new Set<ToolEffect>([
   "workspace_read", "workspace_write", "process_execute", "process_control",

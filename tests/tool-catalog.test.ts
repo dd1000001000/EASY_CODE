@@ -82,6 +82,60 @@ function state(): SessionState {
 }
 
 describe("extensible tool capabilities", () => {
+  it("reserves cross-thread coordination for the main agent while retaining child-to-parent messages", () => {
+    const names = ["find_file_editors", "send_thread_message"];
+    const tools = [...names, "send_parent_message"].map(name => builtin(name));
+    for (const mode of ["plan", "code"] as const) {
+      for (const orchestrationAvailable of [false, true]) {
+        assert.deepEqual(availableAgentTools(tools, {
+          mode, role: "main_agent", orchestrationAvailable,
+        }).map(tool => tool.name), names);
+        assert.deepEqual(availableAgentTools(tools, {
+          mode, role: "subagent", orchestrationAvailable,
+        }).map(tool => tool.name), ["send_parent_message"]);
+      }
+    }
+    assert.deepEqual(availableAgentTools(tools, {
+      mode: "auto", role: "main_agent", orchestrationAvailable: true,
+    }), []);
+  });
+
+  it("does not execute cross-thread tools invented by a child model", async () => {
+    for (const mode of ["plan", "code"] as const) {
+      let executions = 0;
+      let requests = 0;
+      const names = ["find_file_editors", "send_thread_message"];
+      const tools = names.map(name => ({ ...builtin(name), execute: async () => {
+        executions += 1;
+        return { ok: true, summary: "must not execute" };
+      } }));
+      const events: Array<{ type: string; payload: unknown }> = [];
+      const runtime = new AgentRuntime({
+        provider: { name: "fixture", model: "fixture", complete: async request => {
+          requests += 1;
+          assert.deepEqual(request.tools ?? [], []);
+          return { message: { role: "assistant", content: null, tool_calls: names.map(name => ({
+            id: `call_${name}`, type: "function", function: { name, arguments: "{}" },
+          })) } };
+        } },
+        agentIdentity: { role: "subagent", agentId: "child", assignedTaskId: "task" },
+        toolCatalog: snapshotToolSet(tools), contextManager: new ContextManager(),
+        buildSystemPrompt: async () => "rules", getWorkspaceSummary: async () => "workspace",
+        searchMemories: async () => [], appendEvent: async event => { events.push(event); },
+        requestApproval: async () => false,
+      });
+      await runtime.run({ ...state(), mode }, "Investigate the assigned task", {
+        maxSteps: 1, maxContextChars: 100_000, maxOutputChars: 8_000,
+        commandTimeoutMs: 1_000, approvalPolicy: "never",
+      });
+      assert.equal(requests, 1);
+      assert.equal(executions, 0);
+      const results = events.filter(event => event.type === "tool.result");
+      assert.equal(results.length, 2);
+      for (const event of results) assert.match(JSON.stringify(event.payload), /tool_not_available/u);
+    }
+  });
+
   it("preserves the existing builtin mode and role boundaries declaratively", () => {
     const names = ["read_file", "read_document", "read_image", "propose_plan", "manage_tasks", "submit_task_result"];
     const tools = names.map((name) => builtin(name));

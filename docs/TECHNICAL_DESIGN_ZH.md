@@ -128,7 +128,7 @@ Agent 使用带文件夹标识的路径区分来源，例如 `api/...` 和 `web/
 
 ### 3.4 跨 Thread 协作
 
-Plan 和 Code 模式提供两个工具：`find_file_editors` 按工作区相对路径查询相关 Thread；`send_thread_message` 只接收目标 Thread ID 和正文。发送方 Thread ID 由 Runtime 附加，对方使用同一个工具回复。同一系统用户、同一数据目录下的多个 EASY CODE 进程共享本地收件箱。
+Plan 和 Code 模式下仅主 Agent 可用两个工具：`find_file_editors` 按工作区相对路径查询相关 Thread；`send_thread_message` 只接收目标 Thread ID 和正文。子 Agent 通过 `send_parent_message` 汇报协调需求，由主 Agent 负责跨 Thread 沟通。发送方 Thread ID 由 Runtime 附加，对方使用同一个工具回复。同一系统用户、同一数据目录下的多个 EASY CODE 进程共享本地收件箱。
 
 所有通过工具目录执行的工具，包括内部工具和 MCP 工具，都在执行前后扫描工作区。主 Agent、子 Agent 和 reviewer 的工具复用该观察层。失败、取消也执行收尾扫描；后台命令真正结束时额外扫描一次。记录只表示“操作期间观察到文件变化”，不判断变化来自用户、当前 Agent 还是其他进程，不自动通知冲突、不建立文件所有权锁。
 

@@ -128,7 +128,7 @@ Stop active work before deletion and back up any history you need.
 
 ### 3.4 Cross-Thread collaboration
 
-Plan and Code agents can use `find_file_editors` with a workspace-relative path, then `send_thread_message` with a target Thread ID and a message. Runtime adds the sender Thread ID, so replies use the same tool. Separate EASY CODE processes share the local inbox when they use the same OS user and data directory.
+The main agent in Plan and Code can use `find_file_editors` with a workspace-relative path, then `send_thread_message` with a target Thread ID and a message. Subagents report coordination needs through `send_parent_message`; the main agent handles cross-Thread communication. Runtime adds the sender Thread ID, so replies use the same tool. Separate EASY CODE processes share the local inbox when they use the same OS user and data directory.
 
 Every tool executed through the catalog, including internal and MCP tools, receives a before/after workspace scan. Main agents, children and reviewer tools share this observation layer. Failed and canceled operations are scanned too. Background commands receive an additional scan when they settle. These records mean only that a file changed during an operation; simultaneous user edits or other processes are not attributed to an author. No conflict notifications or file-ownership locks are created.
 
