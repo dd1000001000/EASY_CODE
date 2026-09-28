@@ -108,6 +108,7 @@ export interface AgentPresentationPort {
   showReasoning(id: number | "last"): boolean;
   showAdjustment(id: number | "last"): boolean;
   addQueuedAdjustment(sequence: number, text: string, images?: readonly Readonly<ImageAttachment>[]): void;
+  peerMessage?(threadId: string, text: string, outgoing?: boolean): void;
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean;
   startActivity(text: string, kind?: UIActivityKind, toolName?: string): string | undefined;
   stopActivity(activityId?: string): void;

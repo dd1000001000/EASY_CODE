@@ -2103,6 +2103,15 @@ export class Terminal implements AppInteractionPort {
     return true;
   }
 
+  peerMessage(senderThreadId: string, text: string, outgoing = false): void {
+    const body = redactSensitiveInformation(sanitizeCommandOutput(
+      `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`));
+    if (this.inlineShellActive) {
+      this.commitTranscript({ kind: "assistant", id: `peer_${Date.now()}_${Math.random()}`, text: body });
+      this.refresh();
+    } else this.write(`${body}\n\n`);
+  }
+
   /** Retain one durable user adjustment and present it as ordinary user input. */
   addQueuedAdjustment(
     id: number,

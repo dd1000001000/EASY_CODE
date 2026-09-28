@@ -51,10 +51,14 @@ import { UpdateFileTool } from "./update-file.js";
 import { WriteMemoryTool } from "./write-memory.js";
 import { WebSearchTool } from "./web-search.js";
 import { FetchWebpageTool } from "./fetch-webpage.js";
+import type { CoordinationStore } from "../coordination/store.js";
+import { FindFileEditorsTool, SendThreadMessageTool } from "./thread-coordination.js";
 
 type BoundTask = Pick<TaskNode, "id" | "status" | "completionChecks"> & Pick<Partial<TaskNode>, "title">;
 
 export interface BuiltinToolSourceOptions {
+  readonly profile?: "benchmark";
+  readonly coordination?: CoordinationStore;
   readonly workspace: WorkspaceManager;
   readonly memoryManager?: MemoryManager;
   readonly subagentControl?: SubagentControl;
@@ -99,6 +103,8 @@ export class BuiltinToolSource implements ToolSource {
       limits: this.options.limits,
     });
     const tools: AgentTool[] = [
+      ...(this.options.coordination && this.options.limits?.coordinationEnabled !== false
+        ? [new FindFileEditorsTool(workspace, this.options.coordination), new SendThreadMessageTool(this.options.coordination)] : []),
       new ReadFileTool(workspace, this.options.threadResourceStore),
       ...(this.options.threadDocumentService
         ? [new ReadDocumentTool(workspace, this.options.threadDocumentService)]
@@ -149,7 +155,7 @@ export class BuiltinToolSource implements ToolSource {
         this.options.parentMessage.binding, this.options.parentMessage.post,
         this.options.limits?.subagentParentMessageMaxChars,
       )] : []),
-    ].map((tool) => {
+    ].filter(tool => this.options.profile !== "benchmark" || !BENCHMARK_DISABLED_TOOLS.has(tool.name)).map((tool) => {
       bindBuiltinToolMetadata(tool);
       if (tool.mutating) {
         const execute = tool.execute.bind(tool);
@@ -165,3 +171,13 @@ export class BuiltinToolSource implements ToolSource {
       : tools;
   }
 }
+
+// One policy for main/child catalogs. Trial-local memory, task orchestration
+// and parent/child messages remain available; cross-trial services do not.
+export const BENCHMARK_DISABLED_TOOLS: ReadonlySet<string> = new Set([
+  "find_file_editors", "send_thread_message", "name_thread",
+  "list_skills", "read_skill", "create_skill", "modify_skill", "delete_skill",
+  "web_search", "fetch_webpage", "fetch_artifact",
+  "list_mcp_servers", "save_local_mcp_server", "save_remote_mcp_server",
+  "disable_mcp_server", "remove_mcp_server",
+]);

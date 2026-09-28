@@ -3,6 +3,9 @@ import asyncio
 import importlib.util
 from pathlib import Path
 import uuid
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 spec = importlib.util.spec_from_file_location("split_environment", Path(__file__).resolve().parents[1] / "benchmarks/swebench_verified/split_environment.py")
 module = importlib.util.module_from_spec(spec)

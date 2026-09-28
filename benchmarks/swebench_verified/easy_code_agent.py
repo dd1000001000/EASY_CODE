@@ -34,11 +34,14 @@ from harbor.environments.docker.docker import DockerEnvironment
 from harbor.models.agent.context import AgentContext
 from harbor.models.task.config import NetworkMode, NetworkPolicy
 from benchmarks.swebench_verified.split_environment import SplitBenchmarkEnvironment
+from benchmarks.swebench_verified.host_paths import host_path
 
 
 _REMOTE_PACKAGE = "/tmp/easy-code-agent.tgz"
 _REMOTE_DATA_DIR = "/logs/agent/easy-code-data"
 _REMOTE_CACHE_DIR = "/tmp/easy-code-cache"
+_REMOTE_LAYA_DIR = "/opt/easy-code-laya"
+_REMOTE_LAYA_PYTHON = f"{_REMOTE_LAYA_DIR}/runtimes/laya-decision-onnx/bin/python"
 _REMOTE_MODEL_DIR = (
     f"{_REMOTE_CACHE_DIR}/models/paraphrase-multilingual-MiniLM-L12-v2"
 )
@@ -318,12 +321,12 @@ class EasyCodeAgent(BaseInstalledAgent):
             environment,
             command=(
                 "if [ -f /etc/alpine-release ]; then"
-                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep gcc musl-dev linux-headers;"
+                "  apk add --no-cache bash ca-certificates curl git nodejs npm ripgrep gcc musl-dev linux-headers python3 py3-pip;"
                 " elif command -v apt-get >/dev/null 2>&1; then"
                 "  apt-get update && DEBIAN_FRONTEND=noninteractive "
-                "apt-get install -y ca-certificates curl git ripgrep gcc libc6-dev linux-libc-dev;"
+                "apt-get install -y ca-certificates curl git ripgrep gcc libc6-dev linux-libc-dev python3 python3-venv;"
                 " elif command -v yum >/dev/null 2>&1; then"
-                "  yum install -y ca-certificates curl git ripgrep gcc glibc-devel kernel-headers;"
+                "  yum install -y ca-certificates curl git ripgrep gcc glibc-devel kernel-headers python3 python3-pip;"
                 " else"
                 '  echo "No supported package manager was found" >&2; exit 1;'
                 " fi"
@@ -363,12 +366,17 @@ export EASY_CODE_CACHE_DIR={shlex.quote(_REMOTE_CACHE_DIR)}
 global_root="$(npm root --global)"
 test -f "$global_root/easy-code-agent/dist/sandbox/benchmark-backend.js" || {{ echo "This adapter requires the split-container EASY CODE build; rebuild and repack the supplied npm archive." >&2; exit 78; }}
 node "$global_root/easy-code-agent/scripts/embedding-model.cjs" verify
+# Prepare only the inference runtime, not desktop integrations/native sandbox.
+# It belongs to the disposable image, never to the copied task checkpoint.
+EASY_CODE_BOOTSTRAP_PYTHON=/usr/bin/python3 EASY_CODE_DATA_DIR={shlex.quote(_REMOTE_LAYA_DIR)} node "$global_root/easy-code-agent/scripts/prepare-laya.cjs"
 easy-code --version
 echo 'EASY CODE controller installed; offline task container isolation is verified by the host adapter before execution.'
 """.strip()
 
-        result = await self.exec_as_root(
-            environment,
+        # Capture complete diagnostics before classifying failure. Harbor's
+        # exec_as_root raises with only the beginning of a long install log.
+        result = await environment.exec(
+            user="root",
             command=self._bash(install_script),
             timeout_sec=600,
         )
@@ -465,6 +473,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                             _BENCHMARK_BASE_URL_ENV: _BENCHMARK_BASE_URL,
                             "EASY_CODE_DATA_DIR": _REMOTE_DATA_DIR,
                             "EASY_CODE_CACHE_DIR": _REMOTE_CACHE_DIR,
+                            "EASY_CODE_LAYA_PYTHON": _REMOTE_LAYA_PYTHON,
                             "EASY_CODE_OUTER_SANDBOX": "harbor",
                             "EASY_CODE_ORCHESTRATION_ENABLED": str(
                                 _BENCHMARK_ORCHESTRATION_ENABLED
@@ -498,6 +507,7 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
                 self._require_success("EASY CODE benchmark run", result)
             finally:
                 try:
+                    await split_environment.return_host_ownership(_REMOTE_DATA_DIR)
                     if not workspace_exported:
                         await split_environment.export_workspace()
                         workspace_exported = True
@@ -615,8 +625,8 @@ echo 'EASY CODE controller installed; offline task container isolation is verifi
     def _prepare_trial(self, binding: dict[str, Any]) -> bool:
         """Restore only the generation cryptographically bound to this trial."""
 
-        local_stage = self._adapter_logs_dir / "easy-code-checkpoint"
-        local_data = self._adapter_logs_dir / "easy-code-data"
+        local_stage = host_path(self._adapter_logs_dir) / "easy-code-checkpoint"
+        local_data = host_path(self._adapter_logs_dir) / "easy-code-data"
         local_binding = local_stage / "binding.json"
         if local_data.exists():
             if not local_binding.is_file():
@@ -839,8 +849,8 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
                 destination.unlink()
 
     def _persist_checkpoint(self, binding: dict[str, Any]) -> str | None:
-        data_dir = self._adapter_logs_dir / "easy-code-data"
-        stage_dir = self._adapter_logs_dir / "easy-code-checkpoint"
+        data_dir = host_path(self._adapter_logs_dir) / "easy-code-data"
+        stage_dir = host_path(self._adapter_logs_dir) / "easy-code-checkpoint"
         if not data_dir.is_dir() or not (stage_dir / "workspace.json").is_file():
             return None
         self._require_binding(stage_dir / "binding.json", binding)
@@ -1129,7 +1139,7 @@ rm -f "$stage/changed.list" "$stage/untracked.list"
             raise RuntimeError("The benchmark trial key is invalid.")
         # Keep the physical segment short enough for Windows Docker benchmark
         # roots while the binding and manifest retain the full 256-bit key.
-        return self._checkpoint_root / trial_key[:32]
+        return host_path(self._checkpoint_root) / trial_key[:32]
 
     @staticmethod
     def _require_binding(path: Path, expected: dict[str, Any]) -> None:

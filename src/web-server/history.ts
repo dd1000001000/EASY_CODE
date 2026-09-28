@@ -35,6 +35,7 @@ function toolDetails(value: unknown): WebEntry["toolDetails"] {
 export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   const entries: WebEntry[] = [];
   const pendingToolCalls = new Map<string, WebEntry>();
+  const peerCalls = new Map<string, { target: string; text: string }>();
   const turnStartedAt = new Map<string, number>();
   const turnCompletedAt = new Map<string, number>();
   for (const event of events) {
@@ -74,9 +75,13 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
         append(event, "user", message.content, "", imageLabels(message.images));
       }
     } else if (event.type === "turn.steering.queued") {
-      const message = object(object(payload?.entry)?.message);
+      const queued = object(payload?.entry);
+      const message = object(queued?.message);
       if (message?.role === "user" && typeof message.content === "string") {
-        append(event, "user", message.content, "", imageLabels(message.images));
+        if (queued?.source === "peer_message") {
+          const entry = append(event, "assistant", `From Thread ${queued.senderThreadId} · Agent\n${message.content}`);
+          if (entry) entry.peerThreadId = String(queued.senderThreadId);
+        } else append(event, "user", message.content, "", imageLabels(message.images));
       }
     } else if (event.type === "message.assistant" || event.type === "message.assistant.synthetic") {
       const message = object(event.payload);
@@ -87,6 +92,13 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
     } else if (event.type === "tool.call") {
       const call = object(event.payload);
       const fn = object(call?.function);
+      if (fn?.name === "send_thread_message" && typeof call?.id === "string" && typeof fn.arguments === "string") {
+        try {
+          const input = object(JSON.parse(fn.arguments));
+          if (typeof input?.targetThreadId === "string" && typeof input.message === "string")
+            peerCalls.set(call.id, { target: input.targetThreadId, text: input.message });
+        } catch { /* Invalid calls have no outgoing message. */ }
+      }
       if (typeof fn?.name === "string") {
         const entry = append(event, "tool", `Calling ${fn.name}`, ":call", undefined, undefined, fn.name, "running");
         if (entry && typeof call?.id === "string") pendingToolCalls.set(call.id, entry);
@@ -98,6 +110,12 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
       const completed = event.phase === "completed";
       const text = `${completed ? "✓" : "✗"} ${name} — ${event.phase ?? "completed"}`;
       const callId = typeof payload?.callId === "string" ? payload.callId : undefined;
+      const sent = callId ? peerCalls.get(callId) : undefined;
+      if (sent && completed) {
+        const entry = append(event, "assistant", `To Thread ${sent.target} · queued\n${sent.text}`, ":peer");
+        if (entry) entry.peerThreadId = sent.target;
+      }
+      if (callId) peerCalls.delete(callId);
       const pending = callId ? pendingToolCalls.get(callId) : undefined;
       if (pending) {
         pending.text = safe(text);
@@ -113,7 +131,7 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   }
   for (const [turnId, completedAt] of turnCompletedAt) {
     const turnEntries = entries.filter(entry => entry.turnId === turnId);
-    const finalAnswer = [...turnEntries].reverse().find(entry => entry.kind === "assistant");
+    const finalAnswer = [...turnEntries].reverse().find(entry => entry.kind === "assistant" && !entry.peerThreadId);
     const terminal = finalAnswer ?? turnEntries.at(-1);
     if (!terminal) continue;
     for (const entry of turnEntries) {

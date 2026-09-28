@@ -359,6 +359,11 @@ export class WebInteraction implements AppInteractionPort {
     this.adjustmentNumber = Math.max(sequence, this.adjustmentNumber);
     this.append("user", text, images as ImageAttachment[]);
   }
+  peerMessage(senderThreadId: string, text: string, outgoing = false): void {
+    const id = this.append("assistant", `${outgoing ? "To" : "From"} Thread ${senderThreadId} · ${outgoing ? "queued" : "Agent"}\n${text}`);
+    const entry = this.entryById.get(id);
+    if (entry) { entry.peerThreadId = senderThreadId; this.emit({ kind: "entry.replace", entry }); }
+  }
   finalizeStreamedAnswer(text: string, timing?: Readonly<CompletedTurnTiming>): boolean {
     const completedAt = timing?.completedAt ?? Date.now();
     const answerId = this.currentAnswerId ?? this.append("assistant", text);

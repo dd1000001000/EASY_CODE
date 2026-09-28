@@ -99,7 +99,7 @@ export function groupConversationTurns(entries: readonly WebEntry[]): Conversati
   return [...grouped].map(([id, turnEntries]) => {
     const request = turnEntries.find(entry => entry.kind === "user");
     const finalAnswer = [...turnEntries].reverse().find(entry =>
-      entry.kind === "assistant" && (entry.answerState === "finalizing" || entry.answerState === "confirmed"));
+      entry.kind === "assistant" && !entry.peerThreadId && (entry.answerState === "finalizing" || entry.answerState === "confirmed"));
     const terminal = turnEntries.find(entry => entry.turnCompletedAt !== undefined);
     const completedAt = terminal?.turnCompletedAt;
     const processEntries = turnEntries.filter(entry => entry !== request && entry !== finalAnswer);

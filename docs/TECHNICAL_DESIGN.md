@@ -126,6 +126,18 @@ Conversations can run in parallel but still share project folders. Coordinated w
 
 Stop active work before deletion and back up any history you need.
 
+### 3.4 Cross-Thread collaboration
+
+Plan and Code agents can use `find_file_editors` with a workspace-relative path, then `send_thread_message` with a target Thread ID and a message. Runtime adds the sender Thread ID, so replies use the same tool. Separate EASY CODE processes share the local inbox when they use the same OS user and data directory.
+
+Every tool executed through the catalog, including internal and MCP tools, receives a before/after workspace scan. Main agents, children and reviewer tools share this observation layer. Failed and canceled operations are scanned too. Background commands receive an additional scan when they settle. These records mean only that a file changed during an operation; simultaneous user edits or other processes are not attributed to an author. No conflict notifications or file-ownership locks are created.
+
+Scans compare paths, sizes, timestamps and file identities without reading source bodies. They include untracked and Git-ignored files, but skip symbolic links, Git internals, EASY CODE runtime data, and configurable dependency/build directory names. File-count and time limits bound scanning; incomplete regions are not reported as deletions. Observation failures leave the original tool result intact. Queries use relative paths; the shared SQLite index uses normalized absolute paths, so separate Worktrees remain separate.
+
+Peer messages reuse the adjustment admission, ordering, journaling and recovery path. They are marked as Agent collaboration, kept out of the user-requirement ledger, and never grant approval. Unlike user adjustments, they do not cancel an active model request. Delivery occurs before a model request, after a tool batch, or before finalization. Inactive or finalized Threads retain messages until their next run; sending does not wake them. CLI and Web render messages with the other Thread's identity. Internal message IDs prevent duplicate admission after a crash.
+
+Runtime settings are documented in `config.example.toml`: collaboration is enabled by default, scans are limited to 100,000 files and 5 seconds per scan, messages to 4,000 characters and 12 sends per turn, with up to four messages admitted at a boundary. Observation and admitted-message indexes are retained for 30 days; unadmitted messages are retained. The development storage schema has no upgrade path from earlier layouts.
+
 ## 4. How a task progresses
 
 A typical task follows: receive requirements → choose a workflow → gather relevant information → request a model response → authorize and execute tools → retain results → verify → report the outcome or remaining work.

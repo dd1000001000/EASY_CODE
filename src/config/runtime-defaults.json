@@ -1,4 +1,12 @@
 {
+  "coordinationEnabled": true,
+  "coordinationExcludeDirectories": ["node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", ".cache"],
+  "coordinationScanMaxFiles": 100000,
+  "coordinationScanTimeoutMs": 5000,
+  "coordinationMessageMaxChars": 4000,
+  "coordinationMessagesPerTurn": 12,
+  "coordinationMessagesPerBoundary": 4,
+  "coordinationRetentionDays": 30,
   "steps": { "none": 40, "low": 40, "medium": 40, "high": 80 },
   "approvalInputChars": 24000,
   "approvalOutputTokens": 1024,

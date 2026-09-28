@@ -43,6 +43,8 @@ export type BuiltinToolName =
   | "remove_mcp_server"
   | "manage_subagents"
   | "send_parent_message"
+  | "find_file_editors"
+  | "send_thread_message"
   | "submit_task_result"
   | "compact_context"
   | "read_memory"
@@ -868,6 +870,8 @@ export interface PlanReviewState {
 
 /** One independently persisted user follow-up targeting an active main turn. */
 export interface TurnSteeringEntry {
+  source: "user_adjust" | "peer_message";
+  senderThreadId?: string;
   id: string;
   /** Monotonic per-Thread FIFO sequence assigned by ThreadStore. */
   sequence: number;
@@ -879,6 +883,7 @@ export interface TurnSteeringEntry {
 
 /** Exact pending prefix coalesced into one model-visible user message. */
 export interface TurnSteeringBatch {
+  source: "user_adjust" | "peer_message";
   entries: TurnSteeringEntry[];
   throughSequence: number;
   message: Extract<ChatMessage, { role: "user" }>;

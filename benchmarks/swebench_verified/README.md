@@ -39,7 +39,10 @@ request budgets still apply; the isolated stagnation reviewer remains enabled.
 Orchestration is included in checkpoint identity; use a new job for this profile
 instead of resuming results from a different package/profile.
 
-- Windows 10/11 with Docker Desktop using the WSL 2 Linux-container backend.
+- Windows 10/11 with Docker Desktop using the WSL 2 Linux-container backend,
+  or Linux/WSL with access to Docker. Enable Docker Desktop's Ubuntu integration
+  for WSL, and keep the WSL launcher home/temp/checkpoints on its native Linux
+  filesystem so private credential permissions are enforceable.
 - An x86-64 host. SWE-bench images are not uniformly portable to ARM.
 - At least 16 GB RAM and 8 CPU cores are recommended.
 - Allow at least 120 GB free for Docker images and benchmark artifacts.
@@ -49,6 +52,26 @@ instead of resuming results from a different package/profile.
 
 Docker is required; EASY CODE's own process sandbox is not a replacement for
 the repository-specific SWE-bench images and grading environment.
+
+### Runtime profile
+
+The adapter runs Code mode with GLM Coding Plan / `glm-5.3-flash` / High.
+Installation prepares and probes the bundled fine-tuned Laya ONNX runtime in
+the disposable image before model-phase networking is restricted. Laya is used
+for final delivery judgment; Code mode bypasses Auto routing. The independent
+reviewer still uses the cloud model. Inference dependencies require a Python
+3.10–3.14 interpreter in the task image and are not copied into checkpoints.
+
+Benchmark catalogs disable public web/download tools, external MCP and MCP
+configuration, cross-thread coordination, skills, and thread naming. Workspace
+observation scans are also disabled. File tools, offline commands, context
+tools, trial-local memory, DAG/subagents, and task-local parent/child messages
+remain enabled. No host or unrelated trial memory is imported.
+
+On Linux, private bridge requests and completed Runtime logs are handed back to
+the host UID/GID without world-writable permissions. Windows checkpoint copies
+use extended-length filesystem paths. Workers remain offline, use private IPC,
+and have no Docker socket, bridge, credentials, or Runtime-data mount.
 
 ## Keep benchmark data on F:
 
@@ -350,6 +373,15 @@ external verifier material. Worker root-filesystem installs, new symlinks/device
 `.git` and Runtime directories are not exported/checkpointed.
 Restore verifier networking only after all command leases close without quarantine.
 Windows copies use tar streams, so Windows symlink privileges are not required.
+Archive exports use a binary pipe and publish only after a complete tar check.
+Imports validate headers, file payloads and end markers before dispatch. Transfers
+remain bounded to 768 MiB / 300 seconds; errors include Docker stderr. A failed
+import can partially change its destination and is not automatically replayed.
+
+Offline archive regression, using an already installed task image:
+`python scripts/smoke-benchmark-archives.py --image <local-task-image> --parallel 3`.
+It compares file hashes after concurrent roundtrips and removes only its own
+temporary containers and volumes. No model requests are made.
 
 The adapter creates this boundary before staging the API key. Changing just an
 environment variable is insufficient: Runtime also requires the host-mounted

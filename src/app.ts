@@ -127,6 +127,7 @@ import { AgentRuntime, type ProviderContextSnapshot } from "./runtime/agent.js";
 import { LocalLayaClient } from "./local-decision/client.js";
 import { appendLocalDecisionFallbackTrace, appendLocalDecisionTrace } from "./local-decision/trace.js";
 import { TurnSteeringAttemptNotifier } from "./runtime/turn-steering-notifier.js";
+import { WorkspaceToolObserver } from "./coordination/observer.js";
 import { NativeSandboxBackend } from "./sandbox/native-backend.js";
 import { NativeSandboxStartupService } from "./sandbox/native-startup.js";
 import {
@@ -599,6 +600,7 @@ export class EasyCodeApp {
   private memoryMaintenanceWork?: Promise<void>;
   private activeTurnController?: AbortController;
   private activeTurnSteering?: ActiveTurnSteering;
+  private readonly toolObservers = new Set<WorkspaceToolObserver>();
   private sandboxSetupDeferred = false;
 
   private constructor(
@@ -669,6 +671,7 @@ export class EasyCodeApp {
       { backgroundVectors: true, limits: config.limits },
     );
     this.threadStore = new ThreadStore(storage);
+    this.threadStore.coordination.prune(config.limits.coordinationRetentionDays);
     this.subagentMessages = new SubagentMessageMailbox(this.threadStore);
     this.executionEnvironments = new ExecutionEnvironmentManager({
       logicalWorkspaceRoot: workspace.root,
@@ -1605,6 +1608,9 @@ export class EasyCodeApp {
   }
 
   close(): void {
+    if ([...this.toolObservers].some(observer => observer.hasPending)) {
+      throw new Error("Background tool observations are pending; use closeAsync() to finish recording them.");
+    }
     if (this.memoryMaintenanceWork) {
       throw new Error("Cannot close synchronously while background memory maintenance is running; use closeAsync().");
     }
@@ -1694,6 +1700,7 @@ export class EasyCodeApp {
     } catch (error) {
       cleanupErrors.push(error);
     }
+    await Promise.all([...this.toolObservers].map(observer => observer.drain()));
     try {
       await this.clearPendingImages();
       await this.imageStore.shutdown();
@@ -2161,15 +2168,16 @@ export class EasyCodeApp {
       ...(steeringNotifier
         ? {
             steeringNotifier,
-            takeSteering: async ({ threadId, turnId }: {
+            takeSteering: async ({ threadId, turnId, boundary }: {
               threadId: string;
               turnId: string;
-            }) => this.threadStore.drainTurnSteering(threadId, turnId),
+              boundary: import("./core/types.js").TurnSteeringBoundary;
+            }) => this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
             sealSteering: async ({ threadId, turnId }: {
               threadId: string;
               turnId: string;
             }) => this.terminal.sealCurrentRequestSteering(
-              () => this.threadStore.sealTurnSteering(threadId, turnId),
+              () => this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
             ),
             hasPendingSteering: async ({ threadId, turnId }: {
               threadId: string;
@@ -2178,6 +2186,10 @@ export class EasyCodeApp {
             onSteeringApplied: (
               batch: Readonly<TurnSteeringBatch>,
             ) => {
+              if (batch.source === "peer_message") {
+                for (const entry of batch.entries) this.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
+                return;
+              }
               const first = batch.entries[0]?.sequence;
               const last = batch.throughSequence;
               const range = first === last ? `#${last}` : `#${first}-#${last}`;
@@ -2195,6 +2207,10 @@ export class EasyCodeApp {
         }
       },
       onToolCompleted: async (_state, toolName, result, displayName, details) => {
+        if (toolName === "send_thread_message" && result.ok) {
+          const sent = result.data as { targetThreadId: string; message: string };
+          this.terminal.peerMessage?.(sent.targetThreadId, sent.message, true);
+        }
         this.terminal.toolCompleted(
           displayName ?? toolName,
           result.ok,
@@ -2597,8 +2613,10 @@ export class EasyCodeApp {
       const mutationLock = activeEnvironment.descriptor.kind === "shared"
         ? this.workspaceMutationLock
         : new WorkspaceMutationLock();
-      childToolCatalog = new ToolCatalog();
+      childToolCatalog = this.observedToolCatalog(childWorkspace, childCommandRuntime);
       childToolCatalog.registerSource(new BuiltinToolSource({
+        profile: this.trustedOuterSandbox ? "benchmark" : undefined,
+        coordination: this.threadStore.coordination,
         workspace: childWorkspace,
         skillStore: SkillStore.forProject(childWorkspace.root, this.config.dataDir,
           this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
@@ -2623,7 +2641,7 @@ export class EasyCodeApp {
           },
         },
       }));
-      for (const factory of this.toolSourceFactories ?? []) {
+      for (const factory of this.trustedOuterSandbox ? [] : this.toolSourceFactories ?? []) {
         childToolCatalog.registerSource(await factory({
           workspaceRoot: childWorkspace.root,
           threadId: request.record.childThreadId,
@@ -2664,6 +2682,8 @@ export class EasyCodeApp {
         assignedTaskId: request.task.id,
       };
       const runtime = new AgentRuntime({
+        takeSteering: async ({ threadId, turnId, boundary }) => this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
+        sealSteering: async ({ threadId, turnId }) => this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
         onModelRequestStart: () => request.reportActivity("thinking"),
         onModelRequestEnd: () => request.reportActivity("working"),
         onToolExecutionStart: (toolName) => request.reportActivity("tool", toolName),
@@ -4896,6 +4916,15 @@ export class EasyCodeApp {
     }
   }
 
+  private observedToolCatalog(workspace: WorkspaceManager, runtime: CommandRuntime): ToolCatalog {
+    if (this.trustedOuterSandbox) return new ToolCatalog();
+    const observer = new WorkspaceToolObserver(workspace, this.threadStore.coordination, this.config.limits,
+      message => this.terminal.warning(message), id => runtime.whenSettled(id),
+      [this.config.dataDir, this.config.cacheDir, this.config.configDir]);
+    this.toolObservers.add(observer);
+    return new ToolCatalog(observer);
+  }
+
   private async mainToolCatalogSnapshot(): Promise<Readonly<ToolCatalogSnapshot>> {
     if (!this.trustedOuterSandbox) {
       this.mcpAutoConnectPromise ??= this.connectEnabledMcpServers();
@@ -4918,14 +4947,17 @@ export class EasyCodeApp {
         }
         downloadBroker = await broker;
       }
-      catalog = new ToolCatalog();
+      const commandRuntime = this.createCommandRuntime(this.workspace);
+      catalog = this.observedToolCatalog(this.workspace, commandRuntime);
       catalog.registerSource(new BuiltinToolSource({
+        profile: this.trustedOuterSandbox ? "benchmark" : undefined,
+        coordination: this.threadStore.coordination,
         workspace: this.workspace,
         skillStore: SkillStore.forProject(this.workspace.root, this.config.dataDir,
           this.state.projectId ?? workspaceIdFromRoot(this.workspace.root)),
         memoryManager: this.memoryManager,
         subagentControl: this.subagentCoordinator,
-        commandRuntime: this.createCommandRuntime(this.workspace),
+        commandRuntime,
         downloadBroker,
         limits: this.config.limits,
         mutationLock: this.workspaceMutationLock,
@@ -4939,7 +4971,7 @@ export class EasyCodeApp {
         }),
       }));
       if (!this.trustedOuterSandbox) catalog.registerSource(new McpToolSource(this.mcp()));
-      for (const factory of this.toolSourceFactories ?? []) {
+      for (const factory of this.trustedOuterSandbox ? [] : this.toolSourceFactories ?? []) {
         catalog.registerSource(await factory({
           workspaceRoot: this.workspace.root,
           threadId,

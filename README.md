@@ -16,6 +16,7 @@ EASY CODE is a local AI coding assistant for the terminal and browser. Give it a
 - **Control execution:** Auto, Plan and Code workflows; manual approval, an independent approval agent or explicit Full access; native command sandboxing.
 - **Continue longer tasks:** resume conversations, recall earlier evidence and use global/project memory with automatic context management.
 - **Delegate when useful:** optional dependency-based task graphs and child agents, plus independent investigation of repeated verification failures.
+- **Collaborate across Threads:** in Plan or Code, agents can query which other Threads observed a file changing and exchange local messages through the adjustment inbox. File queries use workspace-relative paths.
 - **Extend your workflow:** reusable Skills, MCP tools, VS Code terminal integration, English and Simplified Chinese interfaces.
 
 The application, history and fine-tuned Laya decisions run locally. Your selected cloud model still handles coding and answers; relevant task context is sent to that provider.

@@ -49,7 +49,9 @@ function batch(sequence: number, text: string): TurnSteeringBatch {
       `[Steering ${sequence}]\n${text}`,
   };
   return {
+    source: "user_adjust",
     entries: [{
+      source: "user_adjust",
       id: `steering_${sequence}`,
       sequence,
       targetTurnId: "turn_active",
@@ -73,6 +75,33 @@ function options(signal?: AbortSignal) {
 }
 
 describe("AgentRuntime turn steering", () => {
+  it("delivers peer context without adding a user requirement or canceling the provider", async () => {
+    const peer = batch(1, "A peer explanation, not a user request");
+    peer.source = "peer_message";
+    peer.entries[0]!.source = "peer_message";
+    peer.entries[0]!.senderThreadId = "thread_peer";
+    peer.message = { role: "user", content: "RUNTIME_PEER_MESSAGES: From Thread thread_peer: explanation" };
+    let pending: TurnSteeringBatch | undefined = peer;
+    let calls = 0;
+    const state = runtimeState();
+    const runtime = new AgentRuntime({
+      provider: { name: "deepseek", model: "mock", complete: async request => {
+        calls++;
+        assert.ok(request.messages.some(message => message.content?.includes("RUNTIME_PEER_MESSAGES")));
+        assert.equal(request.signal?.aborted ?? false, false);
+        return { message: { role: "assistant", content: "Done", tool_calls: [] } };
+      } },
+      toolCatalog: snapshotToolSet([]), contextManager: new ContextManager(),
+      buildSystemPrompt: async () => "system", getWorkspaceSummary: async () => "workspace",
+      searchMemories: async () => [], appendEvent: async () => {}, requestApproval: async () => false,
+      takeSteering: async () => { const result = pending; pending = undefined; return result; },
+      sealSteering: async () => undefined,
+    });
+    const result = await runtime.run(state, "User requirement", options());
+    assert.equal(result.text, "Done"); assert.equal(calls, 1);
+    assert.ok(state.userMessageIndices.every(index => !state.messages[index]!.content?.includes("RUNTIME_PEER_MESSAGES")));
+  });
+
   it("rejects a partially wired steering lifecycle", () => {
     const provider: ModelProvider = {
       name: "deepseek",

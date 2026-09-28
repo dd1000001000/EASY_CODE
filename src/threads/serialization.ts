@@ -376,10 +376,13 @@ function isTurnSteeringEntry(value: unknown): value is TurnSteeringEntry {
     "targetTurnId",
     "message",
     "queuedAt",
+    "source",
+    "senderThreadId",
   ])) {
     return false;
   }
   return (
+    (value.source === "user_adjust" || (value.source === "peer_message" && typeof value.senderThreadId === "string")) &&
     typeof value.id === "string" &&
     /^[A-Za-z0-9._-]{1,256}$/u.test(value.id) &&
     Number.isSafeInteger(value.sequence) &&

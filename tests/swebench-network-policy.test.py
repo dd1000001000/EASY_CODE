@@ -31,7 +31,8 @@ class DockerFixture:
 
 install_node = next(node for node in agent.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "install")
 install_namespace = {"BaseEnvironment": object, "EasyCodeBenchmarkDockerEnvironment": DockerFixture, "shlex": shlex,
-                     "_REMOTE_PACKAGE": "/tmp/package.tgz", "_REMOTE_MODEL_DIR": "/tmp/model", "_REMOTE_CACHE_DIR": "/tmp/cache"}
+                     "_REMOTE_PACKAGE": "/tmp/package.tgz", "_REMOTE_MODEL_DIR": "/tmp/model", "_REMOTE_CACHE_DIR": "/tmp/cache",
+                     "_REMOTE_LAYA_DIR": "/opt/easy-code-laya"}
 exec(compile(ast.Module(body=[install_node], type_ignores=[]), str(SOURCE), "exec"), install_namespace)
 install = install_namespace["install"]
 
@@ -58,15 +59,39 @@ class InstallationTests(unittest.IsolatedAsyncioTestCase):
         owner = SimpleNamespace(exec_as_root=execute, _package_path="package", _model_directory="model",
                                 _bash=lambda script: script, _record_output=lambda *args: None,
                                 _require_success=lambda *args: None)
-        await install(owner, DockerFixture())
+        environment = DockerFixture()
+        environment.exec = execute
+        await install(owner, environment)
         script = commands[-1]
         self.assertNotIn("harbor-sandbox.c", script)
         self.assertNotIn("easy-code sandbox doctor", script)
         self.assertIn("dist/sandbox/benchmark-backend.js", script)
         self.assertIn("rebuild and repack", script)
         self.assertIn("controller", script)
+        self.assertIn('EASY_CODE_DATA_DIR=/opt/easy-code-laya node "$global_root/easy-code-agent/scripts/prepare-laya.cjs"', script)
+        self.assertIn("EASY_CODE_BOOTSTRAP_PYTHON=/usr/bin/python3", script)
+        self.assertIn("python3-venv", commands[0])
         self.assertNotIn("Mandatory inner sandbox", script)
         self.assertNotIn("--privileged", script)
+
+    async def test_install_failure_is_recorded_before_it_is_reported(self):
+        events = []
+        async def dependencies(*args, **kwargs):
+            return SimpleNamespace(return_code=0)
+        async def failed_install(**kwargs):
+            self.assertEqual(kwargs["user"], "root")
+            return SimpleNamespace(return_code=1, stdout="setup output", stderr="specific Laya failure")
+        def record(name, result):
+            events.append((name, result.stderr))
+        def require_success(name, result):
+            self.assertEqual(events, [("install.log", "specific Laya failure")])
+            raise RuntimeError("installation failed")
+        environment = DockerFixture()
+        environment.exec = failed_install
+        owner = SimpleNamespace(exec_as_root=dependencies, _package_path="package", _model_directory="model",
+                                _bash=lambda script: script, _record_output=record, _require_success=require_success)
+        with self.assertRaisesRegex(RuntimeError, "installation failed"):
+            await install(owner, environment)
 
 
 ipc_node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_validate_private_ipc")

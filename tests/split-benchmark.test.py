@@ -8,10 +8,12 @@ import json
 import tarfile
 import tempfile
 import unittest
+import sys
 from unittest.mock import patch
 from types import SimpleNamespace
 
 SOURCE = Path(__file__).parents[1] / "benchmarks/swebench_verified"
+sys.path.insert(0, str(SOURCE.parents[1]))
 spec = importlib.util.spec_from_file_location("split_environment", SOURCE / "split_environment.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -19,6 +21,28 @@ Split = module.SplitBenchmarkEnvironment
 
 
 class WorkerBoundaryTests(unittest.TestCase):
+    def test_handover_is_scoped_private_and_does_not_follow_links(self):
+        split = Split(None)
+        calls = []
+        async def docker(*args, **kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        split.docker = docker
+        try:
+            split.host_owner = {"uid": 1000, "gid": 1001}
+            asyncio.run(split.return_host_ownership("/logs/agent/easy-code-data"))
+            script = calls[0][-1]
+            self.assertIn("chown -hR -P 1000:1001", script)
+            self.assertIn("test ! -L", script)
+            self.assertNotIn("chmod", script)
+            with self.assertRaises(ValueError):
+                asyncio.run(split.return_host_ownership("/testbed"))
+            split.host_owner = None
+            asyncio.run(split.return_host_ownership("/logs/agent/easy-code-data"))
+            self.assertEqual(len(calls), 1)
+        finally:
+            split._temp.cleanup()
+
     def test_split_containers_override_inherited_compose_main_labels(self):
         split = Split(None)
         try:
@@ -280,7 +304,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
 
         split.docker = docker
         await split.close()
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len([call for call in calls if call[0] != "inspect"]), 5)
         self.assertFalse(split.root.exists())
 
     async def test_cleanup_failure_is_reported_after_attempting_all_owned_resources(self):
@@ -295,7 +319,7 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         try:
             with self.assertRaisesRegex(RuntimeError, "cleanup was not confirmed"):
                 await split.close()
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(len([call for call in calls if call[0] != "inspect"]), 5)
             self.assertTrue(split.root.exists())
         finally:
             split._temp.cleanup()

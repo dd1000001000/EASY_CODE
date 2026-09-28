@@ -73,6 +73,10 @@ export function toolDisplayDetails(tool: AgentTool | undefined, toolName: string
   }
 
   if (toolName === "name_thread") return detail("Thread title", string(input?.title));
+  if (toolName === "find_file_editors") return detail("File", string(input?.path));
+  if (toolName === "send_thread_message") return [
+    ...detail("To Thread", string(input?.targetThreadId)), ...detail("Message", string(input?.message)),
+  ];
 
   if (toolName === "manage_tasks") {
     const action = string(input?.action);

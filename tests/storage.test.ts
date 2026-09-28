@@ -185,10 +185,10 @@ describe("storage", () => {
           )
           .get();
         assert.deepEqual(identity, {
-          schema_version: 6,
-          schema_id: "easy-code-0.1.0-multi-root-projects",
+          schema_version: 7,
+          schema_id: "easy-code-0.1.0-thread-coordination",
         });
-        assert.equal(reopened.db.pragma("user_version", { simple: true }), 6);
+        assert.equal(reopened.db.pragma("user_version", { simple: true }), 7);
       } finally {
         reopened.close();
       }

@@ -56,6 +56,8 @@ import { CreateSkillTool, DeleteSkillTool, ListSkillsTool, ModifySkillTool, Read
 import { WebSearchTool } from "../src/tools/web-search.js";
 import { FetchWebpageTool } from "../src/tools/fetch-webpage.js";
 import { DocumentConverter, ThreadDocumentService, ThreadResourceStore } from "../src/resources/index.js";
+import { FindFileEditorsTool, SendThreadMessageTool } from "../src/tools/thread-coordination.js";
+import type { CoordinationStore } from "../src/coordination/store.js";
 
 function actualDefinitions() {
   const workspace = {} as WorkspaceManager;
@@ -68,6 +70,8 @@ function actualDefinitions() {
     completionChecks: ["verified"],
   } as unknown as TaskNode;
   return [
+    new FindFileEditorsTool(workspace, {} as CoordinationStore).definition,
+    new SendThreadMessageTool({} as CoordinationStore).definition,
     new CompactContextTool().definition,
     new CreateFileTool(workspace).definition,
     new CreateSkillTool(workspace, skills).definition,
@@ -126,6 +130,7 @@ describe("Prompt Bundle tool metadata", () => {
       "disable_mcp_server",
       "fetch_artifact",
       "fetch_webpage",
+      "find_file_editors",
       "list_mcp_servers",
       "list_skills",
       "manage_subagents",
@@ -149,6 +154,7 @@ describe("Prompt Bundle tool metadata", () => {
       "search_files",
       "select_mode",
       "send_parent_message",
+      "send_thread_message",
       "start_command",
       "submit_task_result",
       "update_file",

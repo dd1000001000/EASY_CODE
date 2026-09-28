@@ -1047,6 +1047,8 @@ export class AgentRuntime {
       !Number.isSafeInteger(batch.throughSequence) ||
       batch.throughSequence <= state.steeringWatermark ||
       batch.entries.length === 0 ||
+      (batch.source !== "user_adjust" && batch.source !== "peer_message") ||
+      batch.entries.some(entry => entry.source !== batch.source) ||
       batch.entries[batch.entries.length - 1]?.sequence !== batch.throughSequence ||
       batch.message.role !== "user"
     ) {
@@ -1070,7 +1072,7 @@ export class AgentRuntime {
         ? { images: batchImages.map((image) => ({ ...image })) }
         : {}),
     });
-    appendSteeringLedgerEntry(
+    if (batch.source === "user_adjust") appendSteeringLedgerEntry(
       state,
       steeringMessageIndex,
       batch.message.content,
@@ -1083,7 +1085,7 @@ export class AgentRuntime {
     );
     state.steeringWatermark = batch.throughSequence;
     state.updatedAt = new Date().toISOString();
-    if (memoryContext) {
+    if (memoryContext && batch.source === "user_adjust") {
       const provenance = batch.entries.map((entry) => {
         const labels = (entry.message.images ?? []).map((image) => image.label).join(", ");
         return [entry.message.content, labels ? `[Attachments: ${labels}]` : ""]
@@ -1713,15 +1715,15 @@ export class AgentRuntime {
           payload: followUp,
         });
       }
+      await this.takeAndApplySteering(
+        state,
+        turnId,
+        "before_model",
+        turnImages,
+        false,
+        memoryContext,
+      );
       if (agentIdentity.role === "main_agent") {
-        await this.takeAndApplySteering(
-          state,
-          turnId,
-          "before_model",
-          turnImages,
-          false,
-          memoryContext,
-        );
         const shared = this.dependencies.taskBudget?.snapshot();
         const sharedRemaining = shared?.maxRequests === null || shared === undefined
           ? undefined
@@ -2986,7 +2988,7 @@ export class AgentRuntime {
       if (completedVerificationPhase) await this.closeContextPhase(state, turnId);
       else if (investigationExchangeStart(state.messages) !== undefined)
         await this.closeContextPhase(state, turnId, "investigation");
-      if (!steeringAppliedBetweenTools && agentIdentity.role === "main_agent") {
+      if (!steeringAppliedBetweenTools) {
         steeringAppliedBetweenTools = Boolean(await this.takeAndApplySteering(
           state,
           turnId,

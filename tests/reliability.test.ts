@@ -152,7 +152,7 @@ describe("delivery reliability", () => {
         reviews++;
         if (reviews === 1) {
           assert.equal(seals, 0);
-          pending = { entries: [{ id: "late", sequence: 1, targetTurnId: "turn_active",
+          pending = { source: "user_adjust", entries: [{ source: "user_adjust", id: "late", sequence: 1, targetTurnId: "turn_active",
             message: { role: "user", content: "late adjustment" }, queuedAt: "now" }],
             throughSequence: 1, message: { role: "user", content: "late adjustment" } };
         }

@@ -19,6 +19,7 @@ export interface WebEntry {
   turnCompletedAt?: number;
   /** Presentation state for assistant output; only Runtime completion may set confirmed. */
   answerState?: WebAnswerState;
+  peerThreadId?: string;
   toolName?: string;
   toolStatus?: "running" | "completed" | "failed";
   images?: readonly Pick<ImageAttachment, "id" | "label" | "mediaType">[];

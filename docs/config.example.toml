@@ -14,6 +14,15 @@ worktree_base_mode = "current-snapshot"
 # approval_model = "glm-5.3-flash"
 
 [limits]
+# Cross-Thread collaboration (same OS user and EASY CODE data directory).
+coordination_enabled = true
+coordination_exclude_directories = ["node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".next", ".cache"]
+coordination_scan_max_files = 100000
+coordination_scan_timeout_ms = 5000
+coordination_message_max_chars = 4000
+coordination_messages_per_turn = 12
+coordination_messages_per_boundary = 4
+coordination_retention_days = 30
 max_context_chars = 250000
 max_active_context_chars = 250000
 # Default 1M model window. Known catalog windows cap this value conservatively.

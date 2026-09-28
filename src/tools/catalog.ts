@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { AgentTool, ToolRuntimeMetadata } from "../core/types.js";
 import { canonicalJson } from "../prompt-bundle/index.js";
 import { toolMetadata, validateToolMetadata } from "./capabilities.js";
+import type { WorkspaceToolObserver } from "../coordination/observer.js";
 
 class ImmutableMap<K, V> implements ReadonlyMap<K, V> {
   readonly #values: Map<K, V>;
@@ -98,7 +99,7 @@ function deepFreezeJson(value: unknown): unknown {
 }
 
 /** Preserve executable state in the source object while freezing request-visible identity and schema. */
-function snapshotTool(tool: AgentTool): AgentTool {
+function snapshotTool(tool: AgentTool, observer?: WorkspaceToolObserver): AgentTool {
   const metadata = toolMetadata(tool);
   const frozenMetadata = Object.freeze({
     ...metadata,
@@ -115,7 +116,8 @@ function snapshotTool(tool: AgentTool): AgentTool {
     metadata: frozenMetadata,
     ...(tool.approvalTarget ? { approvalTarget: tool.approvalTarget } : {}),
     ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
-    execute: (input: unknown, context: Parameters<AgentTool["execute"]>[1]) => tool.execute(input, context),
+    execute: (input: unknown, context: Parameters<AgentTool["execute"]>[1]) => observer
+      ? observer.execute(tool, input, context) : tool.execute(input, context),
   });
 }
 
@@ -186,6 +188,7 @@ function validateSourceTool(source: Readonly<ToolSource>, tool: Readonly<AgentTo
 
 /** Mutable source manager that publishes immutable per-request snapshots. */
 export class ToolCatalog {
+  constructor(private readonly observer?: WorkspaceToolObserver) {}
   private readonly sources = new Map<string, ToolSource>();
   private readonly startedSources = new Set<string>();
   private revision = 0;
@@ -225,7 +228,7 @@ export class ToolCatalog {
         if (ids.has(metadata.identity.id)) throw new Error(`Duplicate stable tool id ${metadata.identity.id}`);
         names.add(tool.name);
         ids.add(metadata.identity.id);
-        const view = snapshotTool(tool);
+        const view = snapshotTool(tool, this.observer);
         tools.push(view);
         partialBindings.push({
           toolId: metadata.identity.id,

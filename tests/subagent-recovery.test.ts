@@ -412,6 +412,7 @@ describe("subagent task journal recovery", () => {
         threadStore: { value: threads },
         executionEnvironments: { value: executionEnvironments },
         commandRuntimes: { value: new Map() },
+        toolObservers: { value: new Set() },
         workspaceMutationLock: { value: new WorkspaceMutationLock() },
         memoryManager: {
           value: { searchHybrid: async () => [] },

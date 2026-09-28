@@ -21,6 +21,8 @@ import uuid
 import hashlib
 import posixpath
 
+from benchmarks.swebench_verified.workspace_archive import copy_archive_in, copy_archive_out
+
 
 class SplitBenchmarkEnvironment:
     def __init__(self, original, resource_limits=None):
@@ -36,6 +38,7 @@ class SplitBenchmarkEnvironment:
         self._temp = tempfile.TemporaryDirectory(prefix="easy-code-command-control-")
         self.root = Path(self._temp.name)
         self.bridge = self.root / "bridge"
+        self.host_owner = {"uid": os.getuid(), "gid": os.getgid()} if os.name == "posix" else None
         self.bridge.mkdir()
         (self.bridge / "commands").mkdir()
         self.stopping = False
@@ -124,8 +127,9 @@ class SplitBenchmarkEnvironment:
             if str(selected.stdout or "").strip() != main:
                 raise RuntimeError("Harbor main Compose binding changed after split setup")
             obj.worker_id = info["Id"]
-            (obj.bridge / "binding.json").write_text(json.dumps({"version": 1,
-                "workerId": obj.worker_id, "network": "none", "resources": obj.resources}), encoding="utf-8")
+            (obj.bridge / "binding.json").write_text(json.dumps({"version": 2,
+                "workerId": obj.worker_id, "network": "none", "resources": obj.resources,
+                "hostOwner": obj.host_owner}), encoding="utf-8")
             obj.broker = asyncio.create_task(obj.serve())
             return obj
         except BaseException:
@@ -177,6 +181,16 @@ class SplitBenchmarkEnvironment:
 
     async def upload_dir(self, source_path, target_path):
         await self.docker("cp", str(source_path) + "/.", f"{self.controller}:{target_path}")
+
+    async def return_host_ownership(self, root):
+        """Return only adapter-owned binds; never traverse project/symlink targets."""
+        if root not in ("/logs/agent/easy-code-data", "/opt/easy-code-command-bridge"):
+            raise ValueError("Not an adapter-owned bind")
+        if self.host_owner is None:
+            return
+        uid, gid = self.host_owner["uid"], self.host_owner["gid"]
+        await self.docker("exec", self.controller, "/bin/sh", "-c",
+            f'test ! -L "{root}" && {{ test ! -d "{root}" || chown -hR -P {uid}:{gid} -- "{root}"; }}')
 
     async def serve(self):
         handled = set()
@@ -390,28 +404,8 @@ class SplitBenchmarkEnvironment:
         await self.docker("exec", self.main, "/bin/sh", "-c", cleanup)
         await asyncio.to_thread(self.copy_archive_in, self.main, clean)
 
-    @staticmethod
-    def copy_archive_out(container, target, root="/testbed"):
-        # Preserve Unix symlinks inside a tar stream; Windows need not create them.
-        with target.open("wb") as out, tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(["docker", "cp", f"{container}:{root}/.", "-"], stdout=out, stderr=err)
-            deadline = time.monotonic() + 300
-            try:
-                while proc.poll() is None:
-                    if out.tell() > 768 * 1024 * 1024 or time.monotonic() > deadline:
-                        raise RuntimeError("Workspace archive exceeded its transfer budget")
-                    time.sleep(0.05)
-                if proc.returncode:
-                    raise RuntimeError("Docker workspace archive transfer failed")
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
-                    proc.wait()
-
-    @staticmethod
-    def copy_archive_in(container, source, root="/testbed"):
-        with source.open("rb") as stream:
-            subprocess.run(["docker", "cp", "-", f"{container}:{root}"], stdin=stream, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=300, check=True)
+    copy_archive_out = staticmethod(copy_archive_out)
+    copy_archive_in = staticmethod(copy_archive_in)
 
     @staticmethod
     def dependency_member(member):
@@ -508,6 +502,15 @@ class SplitBenchmarkEnvironment:
                 await self.broker
             except Exception as error:
                 errors.append(f"command broker: {error}")
+        # A canceled request can still contain controller-owned private files.
+        # Hand them back before removing the only process able to chown them.
+        if self.host_owner is not None:
+            try:
+                running = await self.docker("inspect", "--format", "{{.State.Running}}", self.controller, check=False)
+                if running.returncode == 0 and running.stdout.strip() == "true":
+                    await self.return_host_ownership("/opt/easy-code-command-bridge")
+            except Exception as error:
+                errors.append(f"bridge ownership: {error}")
         await remove("rm", "--force", self.controller)
         await remove("volume", "rm", self.volume)
         await remove("volume", "rm", self.git_volume)
@@ -517,5 +520,11 @@ class SplitBenchmarkEnvironment:
             await remove("image", "rm", environment["image"])
         await remove("image", "rm", self.image)
         if errors:
+            # Keep diagnostic packets if container cleanup is uncertain.
             raise RuntimeError("Benchmark cleanup was not confirmed: " + "; ".join(errors))
-        self._temp.cleanup()
+        try:
+            self._temp.cleanup()
+        except Exception as error:
+            errors.append(f"temporary bridge cleanup: {error}")
+        if errors:
+            raise RuntimeError("Benchmark cleanup was not confirmed: " + "; ".join(errors))

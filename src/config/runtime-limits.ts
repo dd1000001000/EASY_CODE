@@ -4,6 +4,14 @@ import defaults from "./runtime-defaults.json" with { type: "json" };
 const integer = (min: number, max: number) => z.number().int().min(min).max(max);
 /** Operational budgets. Parser/security ceilings remain non-configurable. */
 export const runtimeLimitsSchema = z.object({
+  coordinationEnabled: z.boolean(),
+  coordinationExcludeDirectories: z.array(z.string().min(1).max(128).regex(/^[^\\/]+$/u)).max(100),
+  coordinationScanMaxFiles: integer(100, 1000000),
+  coordinationScanTimeoutMs: integer(100, 60000),
+  coordinationMessageMaxChars: integer(256, 32000),
+  coordinationMessagesPerTurn: integer(1, 100),
+  coordinationMessagesPerBoundary: integer(1, 32),
+  coordinationRetentionDays: integer(1, 365),
   steps: z.object({ none: integer(1, 1000), low: integer(1, 1000),
     medium: integer(1, 1000), high: integer(1, 1000) }).strict(),
   maxContextChars: integer(4096, 2000000),

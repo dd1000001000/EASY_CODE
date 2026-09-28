@@ -7,6 +7,17 @@ import shutil
 import tempfile
 from collections.abc import Callable
 import unittest
+import importlib.util
+import hashlib
+import json
+import re
+import uuid
+from typing import Any
+
+path_spec = importlib.util.spec_from_file_location("host_paths", Path(__file__).parents[1] / "benchmarks/swebench_verified/host_paths.py")
+path_module = importlib.util.module_from_spec(path_spec)
+path_spec.loader.exec_module(path_module)
+host_path = path_module.host_path
 
 
 SOURCE = Path(__file__).parents[1] / "benchmarks/swebench_verified/easy_code_agent.py"
@@ -22,6 +33,9 @@ method_names = {
     "_assert_regular_tree",
     "_install_workspace_checkpoint",
     "_discover_main_thread_id",
+    "_persist_checkpoint", "_checkpoint_directory", "_require_binding", "_read_json_object",
+    "_write_json_atomic", "_file_manifest", "_verify_generation", "_prune_generations",
+    "_prepare_trial",
 }
 methods = [
     node
@@ -36,6 +50,9 @@ fixture_class = ast.ClassDef(
     decorator_list=[],
 )
 namespace = {
+    "host_path": host_path, "os": os, "Any": Any, "hashlib": hashlib, "uuid": uuid, "re": re,
+    "_CHECKPOINT_SCHEMA_VERSION": 1, "_MAX_CHECKPOINT_GENERATIONS": 3,
+    "_GENERATION_PATTERN": re.compile(r"^[0-9a-f]{32}$"),
     "Path": Path,
     "Callable": Callable,
     "statlib": statlib,
@@ -67,6 +84,34 @@ EasyCodeAgent = namespace["EasyCodeAgent"]
 
 
 class CheckpointTreePolicyTests(unittest.TestCase):
+    def test_checkpoint_copies_and_verifies_paths_over_350_characters(self):
+        temporary = tempfile.mkdtemp(prefix="easy-long-checkpoint-")
+        root = host_path(Path(temporary))
+        try:
+            owner = EasyCodeAgent()
+            owner._adapter_logs_dir = Path(temporary) / "adapter"
+            owner._checkpoint_root = Path(temporary) / "checkpoints"
+            data = root / "adapter" / "easy-code-data"
+            nested = Path("command-output") / ("a" * 80) / ("b" * 80) / ("c" * 80) / "stdout.txt"
+            (data / nested).parent.mkdir(parents=True)
+            (data / nested).write_text("complete command output", encoding="utf-8")
+            binding = {"trialKey": "f" * 64}
+            stage = root / "adapter" / "easy-code-checkpoint"
+            stage.mkdir()
+            (stage / "binding.json").write_text(json.dumps(binding), encoding="utf-8")
+            (stage / "workspace.json").write_text("{}", encoding="utf-8")
+            generation = owner._persist_checkpoint(binding)
+            stored = owner._checkpoint_directory(binding) / "g" / generation
+            owner._verify_generation(stored, binding)
+            self.assertEqual((stored / "d" / nested).read_text(encoding="utf-8"), "complete command output")
+            owner._adapter_logs_dir = Path(temporary) / "resumed-adapter"
+            owner._prepare_restored_data = lambda directory: None  # No database in this filesystem fixture.
+            self.assertTrue(owner._prepare_trial(binding))
+            restored = host_path(owner._adapter_logs_dir) / "easy-code-data" / nested
+            self.assertEqual(restored.read_text(encoding="utf-8"), "complete command output")
+        finally:
+            shutil.rmtree(root)
+
     def test_installs_downloaded_checkpoint_and_removes_stale_optional_files(self):
         with tempfile.TemporaryDirectory(prefix="easy-checkpoint-install-") as temporary:
             root = Path(temporary)

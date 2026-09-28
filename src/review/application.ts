@@ -1,4 +1,5 @@
 import path from "node:path";
+import { WorkspaceToolObserver } from "../coordination/observer.js";
 import { readFile } from "node:fs/promises";
 import { recordUserRequirement } from "../context/user-requirements.js";
 import type { ModelProvider, SessionState, ToolContext, ChatMessage, EventRecord } from "../core/types.js";
@@ -188,8 +189,11 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
     recordLifecycle: (_context, commandId, type, payload) => durableReviewWrite(() => deps.store.appendEvent(threadId,
       { type, turnId: id, payload: { commandId, detail: payload } })),
   });
-  const catalog = new ToolCatalog();
-  catalog.registerSource(new BuiltinToolSource({ workspace, commandRuntime: runtime, limits: deps.limits }));
+  const observer = deps.offline ? undefined : new WorkspaceToolObserver(workspace, deps.store.coordination, deps.limits,
+    deps.status, commandId => runtime.whenSettled(commandId), deps.dataDir ? [deps.dataDir] : []);
+  const catalog = new ToolCatalog(observer);
+  catalog.registerSource(new BuiltinToolSource({ workspace, commandRuntime: runtime, limits: deps.limits,
+    profile: deps.offline ? "benchmark" : undefined }));
   try {
     const tools = (await catalog.snapshot()).tools.filter(tool =>
       ["read_file", "search_files", "run_command", "read_memory", "search_context", "recall_context"].includes(tool.name));
@@ -259,7 +263,7 @@ async function runWorkspaceReviewAttempt(input: WorkspaceReviewRequest, deps: Wo
       await emit({ type: "unavailable", id, reason: bounded(String(error), 1800) }); }
   } finally {
     try { await runtime.cancelAll(); } catch (error) { throw new ReviewCleanupError(error); }
-    finally { await catalog.close(); durableReviewWrite(() => deps.store.releaseThreadLease(lease)); }
+    finally { await observer?.drain(); await catalog.close(); durableReviewWrite(() => deps.store.releaseThreadLease(lease)); }
   }
   await emit({ type: "applied", id, fresh: await fresh().catch(() => false) });
   return { decision: input.signal?.aborted ? "interrupted" : get().report ? get().fresh ? "reported" : "inconclusive" : "unavailable",

@@ -14,6 +14,8 @@
     "benchmarks/swebench_verified/__init__.py",
     "benchmarks/swebench_verified/easy_code_agent.py",
     "benchmarks/swebench_verified/split_environment.py",
+    "benchmarks/swebench_verified/workspace_archive.py",
+    "benchmarks/swebench_verified/host_paths.py",
     "benchmarks/swebench_verified/sandbox-resources.json",
     "benchmarks/swebench_verified/README.md",
     "benchmarks/swebench_verified/run.ps1",

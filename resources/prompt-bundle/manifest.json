@@ -370,6 +370,10 @@
       "sha256": "sha256:aab3f52f9ee817ef0811ea1edb9e9abba4272eadd238e67c83b19c1cb659dc1e",
       "bytes": 508
     },
+    "tools/find_file_editors.json": {
+      "sha256": "sha256:a5774b877c695601e0996b1775f9aa6bb58b54e10d7ce519f81dffe271575db1",
+      "bytes": 729
+    },
     "tools/list_mcp_servers.json": {
       "sha256": "sha256:e679c82f0adf1a5a75c1402c4734c7c21339ec841cb8fcaee962b71957b2b7aa",
       "bytes": 409
@@ -462,6 +466,10 @@
       "sha256": "sha256:571ab6f0d7740c477dc8da3ce9242cabd7926e6116b72abde0292291633a50e4",
       "bytes": 798
     },
+    "tools/send_thread_message.json": {
+      "sha256": "sha256:bd9c8f7613d9b928ba9015f20773fb3487cefd0a200d7f5020c1e09d7e902edc",
+      "bytes": 913
+    },
     "tools/start_command.json": {
       "sha256": "sha256:3968adb2672f3c2690b08ff2acf51f1e4ddcabf3b97043c3efb841f28483c246",
       "bytes": 3297
@@ -528,6 +536,11 @@
       "path": "tools/fetch_webpage.json",
       "contractVersion": "1.0.0",
       "contentHash": "sha256:aab3f52f9ee817ef0811ea1edb9e9abba4272eadd238e67c83b19c1cb659dc1e"
+    },
+    "find_file_editors": {
+      "path": "tools/find_file_editors.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:a5774b877c695601e0996b1775f9aa6bb58b54e10d7ce519f81dffe271575db1"
     },
     "list_mcp_servers": {
       "path": "tools/list_mcp_servers.json",
@@ -644,6 +657,11 @@
       "contractVersion": "1.0.0",
       "contentHash": "sha256:571ab6f0d7740c477dc8da3ce9242cabd7926e6116b72abde0292291633a50e4"
     },
+    "send_thread_message": {
+      "path": "tools/send_thread_message.json",
+      "contractVersion": "1.0.0",
+      "contentHash": "sha256:bd9c8f7613d9b928ba9015f20773fb3487cefd0a200d7f5020c1e09d7e902edc"
+    },
     "start_command": {
       "path": "tools/start_command.json",
       "contractVersion": "1.2.0",
@@ -670,5 +688,5 @@
       "contentHash": "sha256:f09419179c58817c0dbe763a1bcb79c12731240b0db75d873fedb03e8b40f11a"
     }
   },
-  "bundleHash": "sha256:9dad1ee92eb5e37f8dc376690153b2de9d49ba5bb14bad6b8ee6f7adce00d34c"
+  "bundleHash": "sha256:1d652ab6b3652a59e74f2fff09a1db5eaeef745f701bd6f3c1a4c1b9ce45a57b"
 }

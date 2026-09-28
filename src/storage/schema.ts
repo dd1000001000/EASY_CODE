@@ -4,18 +4,18 @@ interface SchemaSection {
   readonly sql: string;
 }
 
-const CURRENT_SCHEMA_VERSION = 6;
-const CURRENT_SCHEMA_ID = "easy-code-0.1.0-multi-root-projects";
+const CURRENT_SCHEMA_VERSION = 7;
+const CURRENT_SCHEMA_ID = "easy-code-0.1.0-thread-coordination";
 
 const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
   {
     sql: `
       CREATE TABLE easy_code_schema (
-        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 6),
+        schema_version INTEGER PRIMARY KEY CHECK(schema_version = 7),
         schema_id TEXT NOT NULL UNIQUE
       );
       INSERT INTO easy_code_schema(schema_version, schema_id)
-      VALUES (6, 'easy-code-0.1.0-multi-root-projects');
+      VALUES (7, 'easy-code-0.1.0-thread-coordination');
 
       CREATE TABLE threads (
         id TEXT PRIMARY KEY,
@@ -37,6 +37,32 @@ const CURRENT_SCHEMA_SECTIONS: readonly SchemaSection[] = [
 
       CREATE INDEX threads_workspace_updated_idx
         ON threads(workspace_id, updated_at DESC);
+
+      CREATE TABLE file_observations (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL,
+        call_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        PRIMARY KEY(thread_id, call_id, path)
+      );
+      CREATE INDEX file_observations_path_idx ON file_observations(path, observed_at DESC);
+      CREATE INDEX file_observations_retention_idx ON file_observations(observed_at);
+      CREATE TABLE peer_messages (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        sender_thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        sender_turn_id TEXT NOT NULL,
+        target_thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        text TEXT NOT NULL,
+        queued_at TEXT NOT NULL,
+        admitted INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX peer_messages_inbox_idx ON peer_messages(target_thread_id, admitted, sequence);
+      CREATE INDEX peer_messages_sender_turn_idx ON peer_messages(sender_thread_id, sender_turn_id);
 
       CREATE TABLE projects (
         id TEXT PRIMARY KEY,

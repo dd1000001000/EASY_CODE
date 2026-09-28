@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chown, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CommandExecutionBackend, PreparedCommand, SandboxExecutionRequest } from "./types.js";
@@ -6,10 +6,21 @@ import { benchmarkResultSchema } from "./benchmark-result.js";
 import { executionCapabilities } from "./capabilities.js";
 
 export const BENCHMARK_BRIDGE_ROOT = "/opt/easy-code-command-bridge";
-export async function inspectBenchmarkBridge(): Promise<string> {
+export function benchmarkHostOwner(value: unknown): { uid: number; gid: number } | null {
+  if (value === null) return null; // Windows Docker binds use host ACLs, not POSIX ownership.
+  const owner = value as { uid?: number; gid?: number } | undefined;
+  if (!owner || !Number.isSafeInteger(owner.uid) || !Number.isSafeInteger(owner.gid) ||
+      owner.uid! < 0 || owner.gid! < 0) throw new Error("Invalid Benchmark host ownership binding");
+  return { uid: owner.uid!, gid: owner.gid! };
+}
+async function bridgeBinding() {
   const binding = JSON.parse(await readFile(path.join(BENCHMARK_BRIDGE_ROOT, "binding.json"), "utf8"));
-  if (process.platform !== "linux" || !binding || binding.version !== 1 || !/^[a-f0-9]{64}$/u.test(binding.workerId) ||
+  if (process.platform !== "linux" || !binding || binding.version !== 2 || !/^[a-f0-9]{64}$/u.test(binding.workerId) ||
       binding.network !== "none" || await realpath(BENCHMARK_BRIDGE_ROOT) !== BENCHMARK_BRIDGE_ROOT) throw new Error("Trusted Benchmark controller bridge is unavailable");
+  return benchmarkHostOwner(binding.hostOwner);
+}
+export async function inspectBenchmarkBridge(): Promise<string> {
+  await bridgeBinding();
   return "Benchmark bridge ready: container full access; external networking disabled; host-owned Docker supervisor.";
 }
 /** The bridge is mounted into the trusted controller ONLY. The offline worker
@@ -46,7 +57,7 @@ export class BenchmarkContainerBackend implements CommandExecutionBackend {
     const release = await BenchmarkContainerBackend.acquire(signal);
     let dir: string | undefined;
     try {
-    await inspectBenchmarkBridge();
+    const owner = await bridgeBinding();
     if (this.review && (!/^review_[a-f0-9-]{36}$/u.test(this.review.id) ||
         this.review.root !== `/tmp/easy-code-${this.review.id}/${this.review.actor}` || await realpath(this.review.root) !== this.review.root))
       throw new Error("Invalid benchmark review copy binding");
@@ -55,6 +66,12 @@ export class BenchmarkContainerBackend implements CommandExecutionBackend {
     await writeFile(path.join(dir, "request.pending"), JSON.stringify({ version: 1, commandId: request.commandId,
       program: request.command.executablePath, args: request.command.args, cwd: request.command.cwdAbsolute,
       environment: request.command.environment, timeoutMs: request.timeoutMs ?? 1200000, ...(this.review ? { review: this.review } : {}) }), { flag: "wx", mode: 0o600 });
+    // Transfer private files BEFORE publishing: the non-root host broker must
+    // be able to traverse/read them without opening access to other users.
+    if (owner) {
+      await chown(path.join(dir, "request.pending"), owner.uid, owner.gid);
+      await chown(dir, owner.uid, owner.gid);
+    }
     await rename(path.join(dir, "request.pending"), path.join(dir, "request.json"));
     const metadata: import("./types.js").SandboxExecutionMetadata = { ...this.describe(), ...(this.review ? { reviewEnvironmentUnchanged: false } : {}) };
     return { executablePath: process.execPath,

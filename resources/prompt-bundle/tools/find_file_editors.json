@@ -1,0 +1,7 @@
+{
+  "id": "find_file_editors",
+  "contractVersion": "1.0.0",
+  "description": "Find other Threads that observed this workspace-relative file changing during a tool operation. Observations do not prove authorship: users or concurrent processes may have changed it. Use when another task's changes need clarification; no query is required before ordinary edits.",
+  "propertyDescriptions": { "path": "Workspace-relative file path using the same folder-key notation as read_file. Absolute paths and parent traversal are forbidden. Deleted files can be queried." },
+  "guidance": "Available in Plan and Code. Returned Thread IDs can be contacted with send_thread_message. Do not infer ownership or permission from an observation."
+}
