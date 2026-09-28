@@ -24,7 +24,7 @@ describe("local Laya installation", () => {
     assert.throws(() => prepareLaya({
       dataDir: path.resolve("fixture-easy-code-data"),
       workerPath: path.resolve("fixture-worker.py"),
-      modelPath: path.resolve("missing-model.safetensors"),
+      modelPath: path.resolve("missing-model.onnx"),
       python: { program: "bootstrap-python", prefix: [] },
       existsSync: target => target.endsWith("fixture-worker.py"),
       mkdirSync: () => undefined,
@@ -35,7 +35,7 @@ describe("local Laya installation", () => {
   it("creates a private runtime, installs pinned dependencies, verifies a decision and reuses it", () => {
     const dataDir = path.resolve("fixture-easy-code-data");
     const workerPath = path.resolve("fixture-worker.py");
-    const modelPath = path.resolve("fixture-model.safetensors");
+    const modelPath = path.resolve("fixture-model.onnx");
     let pythonExists = false;
     const calls: string[][] = [];
     const options = {
@@ -50,25 +50,26 @@ describe("local Laya installation", () => {
           return { status: 0, stdout: "3.11\n", stderr: "" };
         if (args.includes("pip")) return { status: 0, stdout: "", stderr: "" };
         return { status: 0, stderr: "", stdout: [
-          JSON.stringify({ type: "ready", modelSha256: "test", device: "cpu" }),
+          JSON.stringify({ type: "ready", modelSha256: "test", device: "cpu", backend: "onnx-fp32" }),
           JSON.stringify({ type: "result", id: "install-smoke", decision: "CODE" }),
         ].join("\n") };
       },
     };
     const installed = prepareLaya(options);
     assert.equal(installed.reused, false);
-    assert.equal(installed.runtime, path.join(dataDir, "runtimes", "laya-decision"));
-    assert.ok(calls.some(call => call.includes("laya==0.3.20") && call.includes("torch==2.8.0")));
+    assert.equal(installed.runtime, path.join(dataDir, "runtimes", "laya-decision-onnx"));
+    assert.ok(calls.some(call => call.some(arg => arg.startsWith("onnxruntime==")) && call.includes("tokenizers==0.23.2")));
+    assert.ok(!calls.flat().some(arg => /^(torch|laya)==/u.test(arg)));
     const callCount = calls.length;
     const reused = prepareLaya(options);
     assert.equal(reused.reused, true);
     assert.equal(calls.length, callCount + 1);
   });
-  it("selects a wheel-supported PyTorch pin for Python 3.14", () => {
+  it("selects a wheel-supported ONNX pin for Python 3.10", () => {
     const calls: string[][] = [];
     let installed = false;
     const workerPath = path.resolve("fixture-worker.py");
-    const modelPath = path.resolve("fixture-model.safetensors");
+    const modelPath = path.resolve("fixture-model.onnx");
     prepareLaya({
       dataDir: path.resolve("fixture-easy-code-data"), workerPath, modelPath,
       python: { program: "bootstrap-python", prefix: [] },
@@ -78,15 +79,15 @@ describe("local Laya installation", () => {
       run: (program, args) => {
         calls.push([program, ...args]);
         if (args.includes("import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"))
-          return { status: 0, stdout: "3.14\n", stderr: "" };
+          return { status: 0, stdout: "3.10\n", stderr: "" };
         if (args.includes("pip")) { installed = true; return { status: 0, stdout: "", stderr: "" }; }
         if (!installed) return { status: 1, stdout: "", stderr: "worker not yet installed" };
         return { status: 0, stderr: "", stdout: [
-          JSON.stringify({ type: "ready", modelSha256: "test", device: "cpu" }),
+          JSON.stringify({ type: "ready", modelSha256: "test", device: "cpu", backend: "onnx-fp32" }),
           JSON.stringify({ type: "result", id: "install-smoke", decision: "CODE" }),
         ].join("\n") };
       },
     });
-    assert.ok(calls.some(call => call.includes("torch==2.9.0")));
+    assert.ok(calls.some(call => call.includes("onnxruntime==1.23.2")));
   });
 });

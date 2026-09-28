@@ -388,7 +388,7 @@ describe("VS Code extension installer", () => {
       decisionRuntimeOptions: { dataDir: decisionDataDir },
       prepareDecisionRuntime: async () => {
         order.push("laya");
-        return { runtime: path.join(decisionDataDir, "runtimes", "laya-decision"),
+        return { runtime: path.join(decisionDataDir, "runtimes", "laya-decision-onnx"),
           python: "python", reused: false };
       },
       recordResource: async () => undefined,

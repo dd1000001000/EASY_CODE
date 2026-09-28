@@ -1,0 +1,21 @@
+{
+  "format": "easy-code-laya-onnx-v1",
+  "precision": "fp32",
+  "opset": 20,
+  "source_sha256": "00d2ec29c124ee87d9158a870c4283544808f511915be24f8a4eb4005ee7139f",
+  "files": {
+    "model.onnx": "144338b6a0620bfaf0b4848bb85337438de2f9d08d91bb22827505660feb061e",
+    "rl_agent_config.json": "595769e06484c95cf7cf164507a14efafb09da6f38ad6375cda417b3de47d3c7",
+    "tokenizer/tokenizer.json": "609d8f4c067cd3950f88594c5a802616cea245823836ef5848ee4fc40aab5b6f",
+    "tokenizer/tokenizer_config.json": "2c0c4d82d4b4bc6b4ac40b2375e067a1645f78b381a9774248d47915f33d751f"
+  },
+  "training": {
+    "training": "joint-route-delivery-v2",
+    "epochs": 5,
+    "seed": 20260925,
+    "rows": 1105,
+    "task_balance": "equal_total_weight",
+    "dataset_manifest_sha256": "c31ee207413276bd72d1a60d478caa115a73476e1a220dcf1029fdad804fc32e",
+    "original_dataset_manifest_sha256": "93e32d7072b677cd095dfeedcb4f419c513709479e35f49298abba53ea44ea36"
+  }
+}

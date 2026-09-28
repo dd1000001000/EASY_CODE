@@ -1,0 +1,26 @@
+{
+  "date": "2026-09-28",
+  "model_sha256": "144338b6a0620bfaf0b4848bb85337438de2f9d08d91bb22827505660feb061e",
+  "source_model_sha256": "00d2ec29c124ee87d9158a870c4283544808f511915be24f8a4eb4005ee7139f",
+  "dataset_sha256": "09aec40980e676da39fdca0e69127eb587d058ed7406e17880a55cd146a50439",
+  "runtime": {"onnxruntime": "1.24.3", "tokenizers": "0.23.2", "device": "cpu", "precision": "fp32"},
+  "windows_vs_pytorch_cpu": {
+    "evaluations": 972,
+    "changed_decisions": 0,
+    "max_probability_difference": 0.000015566658851884352
+  },
+  "wsl_linux_vs_windows": {
+    "evaluations": 972,
+    "changed_decisions": 0,
+    "max_probability_difference": 1.1102230246251565e-16
+  },
+  "runtime_tests": {"windows": "8/8 passed", "wsl_ubuntu": "8/8 passed"},
+  "export_validation": "Passed both tasks at short and maximum-length input, plus a mixed padded batch; both output heads agree at atol=rtol=1e-4",
+  "installer": "Fresh isolated Windows environment installed through prepare-laya.cjs and completed the real model smoke test",
+  "limitations": [
+    "Full-parameter training code was updated, but the model was exported from the existing trained checkpoint, not retrained.",
+    "macOS was not tested.",
+    "The 200-case GLM responses and timings are archived observations, not fresh API calls.",
+    "End-to-end historical PyTorch timing and current ONNX timing are not a controlled backend-only comparison."
+  ]
+}

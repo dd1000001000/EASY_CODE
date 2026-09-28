@@ -25,7 +25,7 @@ flowchart TD
 | Local application | Coordinate models, tools, tasks and cancellation | Node.js, TypeScript |
 | Interfaces | Terminal interaction, browser projects, live progress and approvals | CLI; Vue 3, Element Plus; VS Code terminal integration |
 | Model access | Provider selection, capabilities, streaming and usage accounting | Configurable model registry; compatible Chat Completions/Responses protocols |
-| Local decisions | Auto routing and a one-time delivery check | Multilingual encoder and choice head; joint SFT; Python/PyTorch; shared local IPC service |
+| Local decisions | Auto routing and a one-time delivery check | Multilingual encoder and choice head; full-parameter joint SFT; FP32 ONNX CPU inference; shared local IPC service |
 | Execution control | Authorization, command lifecycle, cancellation and cleanup | Structured tools, independent approval agent, native OS sandbox |
 | Persistence | Conversations, projects, events, memory and recovery snapshots | SQLite, JSONL event journals, checkpoints, attachment/evidence files |
 | Retrieval | Find relevant history and memory | SQLite FTS5 text search, local vector search, ONNX embedding model, Orama |
@@ -292,7 +292,7 @@ The [training guide](../finetuning/laya-joint-v2/README.md) provides upstream Gi
 
 The model's **1,024-token window covers the complete serialized decision**, including criteria and options. Runtime first removes recognized sensitive values, reserves room for those fixed instructions, and truncates oversized input in the **middle**, retaining its beginning and end with an omission marker. It checks the resulting token count again. This is separate from the cloud model's much larger context window.
 
-Installation creates an owned Python environment at `Data/runtimes/laya-decision`, with pinned `laya==0.3.20` and PyTorch 2.8.0 (2.9.0 for Python 3.14). The worker validates the model hash and uses CUDA when available, otherwise CPU. Full uninstall removes the owned runtime. A custom environment can be selected with `EASY_CODE_LAYA_PYTHON`.
+Installation creates an owned Python environment at `Data/runtimes/laya-decision-onnx`, with ONNX Runtime and tokenizers, without PyTorch, Transformers or CUDA. The worker verifies the ONNX model and tokenizer manifest and runs on CPU. Training remains full-parameter SFT and exports the complete encoder and decision heads as FP32 ONNX. Full uninstall removes the owned runtime. A custom environment can be selected with `EASY_CODE_LAYA_PYTHON`.
 
 Concurrent EASY CODE processes with the same user, runtime and worker version share one service over a Windows named pipe or private Unix socket. One model instance handles requests serially; closing or canceling one client does not kill another client's work. The service unloads after inactivity or when its last client leaves, and can restart on demand.
 
@@ -313,12 +313,12 @@ The once-per-task delivery challenge survives pause/resume. After a challenge, t
 
 ![Fine-tuned Laya versus the upstream baseline: accuracy and confusion matrices](../finetuning/laya-joint-v2/assets/results.png)
 
-| Held-out evaluation | Laya before EASY CODE fine-tuning | Fine-tuned Laya (joint SFT) |
-| --- | ---: | ---: |
-| Routing accuracy | 50.2% | **95.1%** |
-| Delivery accuracy | 57.3% | **69.3%** |
+| Held-out evaluation | Upstream (archived BF16) | Joint SFT (archived BF16) | Joint SFT ONNX (CPU FP32 rerun) |
+| --- | ---: | ---: | ---: |
+| Routing accuracy | 50.2% | 95.1% | **95.24%** |
+| Delivery accuracy | 57.3% | 69.3% | **69.88%** |
 
-The baseline and fine-tuned Laya results use highest-score predictions: 105 routing cases in all six option orders and 171 delivery cases in both orders. The runtime's 0.9 delivery threshold applies after the model prediction. Matrix counts represent 630 and 342 order-specific evaluations. Fine-tuned Laya was correct in every routing order for 95/105 cases; delivery for 110/171.
+Results use highest-score predictions: 105 routing cases in all six option orders and 171 delivery cases in both orders. The runtime's 0.9 delivery threshold applies after prediction. ONNX was correct for 600/630 routing and 239/342 delivery evaluations, including every order for 95/105 and 112/171 cases respectively. All 972 choices match the PyTorch CPU FP32 reference. The small difference from the archived CUDA/BF16 report is not a training improvement.
 
 A separate [200-case fine-tuned Laya + GLM experiment](<../laya-bench mark/README.md>) sends either task to GLM when fine-tuned Laya's top score is below 0.9. It achieved **88.5% overall accuracy**, versus **91.5% for GLM alone**, using **84.6% fewer cloud tokens** (11,716 versus 76,006). It reuses recorded GLM answers and usage for the fallback cases. The product currently routes by highest score and applies the 0.9 threshold to delivery `RELEASE` decisions. The token comparison describes this experiment.
 

@@ -25,7 +25,10 @@ MUTED = "#727780"
 
 def read_results(path: Path) -> dict:
     results = json.loads(path.read_text(encoding="utf-8"))["held_out_test"]
-    for stage in ("baseline", "trained"):
+    onnx = path.with_name("onnx-evaluation.json")
+    if onnx.exists():
+        results["onnx"] = json.loads(onnx.read_text(encoding="utf-8"))["by_task"]
+    for stage in results:
         for task, labels in TASKS.items():
             item = results[stage][task]
             matrix = item["confusion"]
@@ -38,29 +41,33 @@ def read_results(path: Path) -> dict:
     return results
 
 
-def render(results: dict, output: Path) -> None:
+def render(results: dict, output: Path, backends=None) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    trained = results["trained"]
+    trained = results.get("onnx", results["trained"])
     with plt.rc_context({"font.family": "DejaVu Sans", "font.size": 11,
                          "text.color": INK, "axes.labelcolor": MUTED,
                          "xtick.color": MUTED, "ytick.color": MUTED,
                          "svg.fonttype": "none", "savefig.facecolor": "white"}):
         fig = plt.figure(figsize=(14, 10.8), facecolor="white")
-        fig.text(.075, .951, "Fine-tuned Laya vs. upstream baseline", fontsize=27, weight="bold")
+        fig.text(.075, .951, "Laya: fine-tuning and ONNX evaluation", fontsize=27, weight="bold")
         fig.text(.075, .916, "Joint routing + delivery decisions", fontsize=15, color=MUTED)
         fig.text(.075, .883,
                  f"{trained['route']['cases']} routing cases × 6 answer orders   /   "
                  f"{trained['delivery']['cases']} delivery cases × 2 answer orders", fontsize=11, color=MUTED)
 
         fig.text(.075, .824, "Accuracy before and after SFT", fontsize=16, weight="bold")
-        fig.legend(handles=[Patch(facecolor=GRAY, label="Laya before EASY CODE fine-tuning"),
-                            Patch(facecolor=BLUE, label="Fine-tuned Laya (joint SFT)")],
-                   loc="upper left", bbox_to_anchor=(.068, .809), ncol=2,
-                   frameon=False, fontsize=10, handlelength=1.2)
+        trained_label = "SFT (ONNX CPU FP32)" if (backends or {}).get("trained") == "onnx-cpu-fp32" else "SFT (recorded BF16)"
+        stages = [("baseline", GRAY, "Upstream (recorded BF16)"), ("trained", BLUE, trained_label)]
+        if "onnx" in results:
+            stages.append(("onnx", GREEN, "SFT ONNX (CPU FP32 rerun)"))
+        fig.legend(handles=[Patch(facecolor=color, label=label) for _, color, label in stages],
+                   loc="upper left", bbox_to_anchor=(.068, .809), ncol=3,
+                   frameon=False, fontsize=9, handlelength=1.2)
         ax = fig.add_axes([.075, .535, .51, .225])
-        for offset, stage, color in [(-.17, "baseline", GRAY), (.17, "trained", BLUE)]:
+        for index, (stage, color, _) in enumerate(stages):
+            offset = (index - (len(stages) - 1) / 2) * .25
             values = [results[stage][task]["accuracy"] for task in TASKS]
-            bars = ax.bar(np.arange(2) + offset, values, width=.29, color=color, zorder=3)
+            bars = ax.bar(np.arange(2) + offset, values, width=.22, color=color, zorder=3)
             for bar, value in zip(bars, values):
                 ax.text(bar.get_x() + bar.get_width() / 2, value + .022, f"{value:.1%}",
                         ha="center", fontsize=13, weight="bold" if stage == "trained" else "normal")
@@ -112,10 +119,12 @@ def render(results: dict, output: Path) -> None:
                     heat.text(j, i + .2, f"{shares[i, j]:.1%}", ha="center", va="center",
                               fontsize=11, color=color)
         fig.text(.075, .035,
-                 "Fine-tuned Laya joint-v2 · Full-parameter SFT · GPT-6 Luna-sourced data · Darker cells = larger share within a row",
+                 "Full-parameter SFT retained. Archived training uses CUDA/BF16; the ONNX rerun uses CPU/FP32. Heatmaps show ONNX when available.",
                  fontsize=9, color=MUTED)
         fig.savefig(output / "results.png", dpi=180)
         fig.savefig(output / "results.svg")
+        svg = output / "results.svg"
+        svg.write_text("\n".join(line.rstrip() for line in svg.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
         plt.close(fig)
 
 
@@ -124,5 +133,6 @@ if __name__ == "__main__":
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--output", type=Path, default=HERE / "assets")
     args = parser.parse_args()
-    render(read_results(args.report), args.output)
+    render(read_results(args.report), args.output,
+           json.loads(args.report.read_text(encoding="utf-8")).get("evaluation_backends"))
     print(f"Charts saved to {args.output.resolve()}")

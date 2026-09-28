@@ -1,15 +1,15 @@
 {
   "cases": 200,
   "glm_concurrency": 4,
-  "laya_cold_start_ms": 8919.74,
+  "laya_cold_start_ms": 3708.74,
   "laya_device": "cpu",
   "tasks": {
     "route": {
       "laya": {
         "count": 100,
-        "mean_ms": 127.69,
-        "median_ms": 127.94,
-        "p95_ms": 137.28
+        "mean_ms": 100.17,
+        "median_ms": 100.84,
+        "p95_ms": 105.58
       },
       "glm": {
         "count": 100,
@@ -23,9 +23,9 @@
     "delivery": {
       "laya": {
         "count": 100,
-        "mean_ms": 119.24,
-        "median_ms": 118.87,
-        "p95_ms": 124.64
+        "mean_ms": 90.02,
+        "median_ms": 89.76,
+        "p95_ms": 95.37
       },
       "glm": {
         "count": 100,
@@ -39,9 +39,9 @@
     "overall": {
       "laya": {
         "count": 200,
-        "mean_ms": 123.46,
-        "median_ms": 122.37,
-        "p95_ms": 135.64
+        "mean_ms": 95.1,
+        "median_ms": 94.73,
+        "p95_ms": 104.74
       },
       "glm": {
         "count": 200,
@@ -51,6 +51,31 @@
       },
       "glm_retrying_cases": 0,
       "glm_invalid_or_error": 1
+    }
+  },
+  "local_backend": "onnx-fp32",
+  "glm_source": "historical recorded API timings",
+  "previous_local": {
+    "cold_start_ms": 8919.74,
+    "tasks": {
+      "route": {
+        "count": 100,
+        "mean_ms": 127.69,
+        "median_ms": 127.94,
+        "p95_ms": 137.28
+      },
+      "delivery": {
+        "count": 100,
+        "mean_ms": 119.24,
+        "median_ms": 118.87,
+        "p95_ms": 124.64
+      },
+      "overall": {
+        "count": 200,
+        "mean_ms": 123.46,
+        "median_ms": 122.37,
+        "p95_ms": 135.64
+      }
     }
   }
 }

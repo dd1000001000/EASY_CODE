@@ -4,8 +4,6 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import os
-import shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -124,19 +122,3 @@ def configure(agent, encoder_lr: float, head_lr: float):
         {"params": encoder, "lr": encoder_lr},
         {"params": choice, "lr": head_lr}], weight_decay=.01)
     return optimizer, encoder + choice
-
-
-def save_checkpoint(agent, folder: Path, source: Path, metadata: dict) -> None:
-    from safetensors.torch import save_file
-
-    folder.mkdir(parents=True, exist_ok=True)
-    for name in ("encoder", "tokenizer"):
-        if not (folder / name).exists():
-            shutil.copytree(source / name, folder / name)
-    shutil.copy2(source / "rl_agent_config.json", folder / "rl_agent_config.json")
-    pending = folder / "model.safetensors.pending"
-    save_file({name: weight.detach().contiguous().cpu()
-               for name, weight in agent.model.state_dict().items()}, pending)
-    os.replace(pending, folder / "model.safetensors")
-    (folder / "training_metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

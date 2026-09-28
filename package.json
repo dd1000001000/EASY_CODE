@@ -22,6 +22,8 @@
     "resources/prompt-bundle",
     "resources/laya-decision/questions.json",
     "resources/laya-decision/worker.py",
+    "resources/laya-decision/runtime.py",
+    "resources/laya-decision/LICENSE-LAYA",
     "model-weights/laya-multilingual/joint-v2/model",
     "resources/models.default.toml",
     "resources/document-converter",

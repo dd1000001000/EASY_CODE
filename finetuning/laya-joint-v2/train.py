@@ -160,15 +160,21 @@ def main() -> None:
         refit_history.append({"epoch": epoch, "train_loss": loss})
         print(json.dumps({"stage": "refit_epoch", **refit_history[-1]}), flush=True)
     checkpoint = output / "model"
-    common.save_checkpoint(final_agent, checkpoint, source,
+    # Full-parameter training; release only the ONNX inference graph.
+    del optimizer, parameters
+    from export_onnx import export_agent
+    export_agent(final_agent, checkpoint, source,
                            {"training": "joint-route-delivery-v2", "epochs": best_epoch,
                             "seed": args.seed, "rows": len(development),
                             "task_balance": "equal_total_weight",
                             "dataset_manifest_sha256": common.digest(DATA / "manifest.json")})
-    del optimizer, parameters, final_agent
+    del final_agent
     torch.cuda.empty_cache()
-    selected = laya.load(str(checkpoint), device="cuda")
-    selected_test = common.evaluate(selected, splits["test"])
+    from evaluate import evaluate as evaluate_onnx
+    from runtime import OnnxAgent
+    selected = OnnxAgent(checkpoint)
+    selected_test = evaluate_onnx(selected, splits["test"])
+    del selected
     baseline = laya.load(str(source), device="cuda")
     baseline_test = common.evaluate(baseline, splits["test"])
     report = {"status": "complete", "scope": "joint-route-delivery", "seed": args.seed,
@@ -179,6 +185,7 @@ def main() -> None:
               "test_used_for_selection": False,
               "selection_criterion": "macro_all_orders_correct_then_macro_accuracy_then_loss",
               "objective": "uniform_cross_entropy_equal_total_task_weight",
+              "evaluation_backends": {"baseline": "pytorch-cuda-bf16", "trained": "onnx-cpu-fp32"},
               "hyperparameters": {"max_epochs": args.max_epochs, "patience": args.patience,
                                   "encoder_lr": args.encoder_lr, "head_lr": args.head_lr,
                                   "effective_batch": 16, "micro_batch": 4},

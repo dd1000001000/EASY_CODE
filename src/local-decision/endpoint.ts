@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { lstat, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +22,11 @@ export interface SharedLayaEndpoint {
 /** The exact worker, Python environment, user and data root define one pool. */
 export function sharedLayaEndpoint(options: SharedLayaOptions): SharedLayaEndpoint {
   const workerDigest = createHash("sha256").update(readFileSync(options.workerPath)).digest("hex");
+  const directory = path.dirname(options.workerPath);
+  const dependencies = [path.join(directory, "runtime.py"), path.join(directory, "questions.json"),
+    path.resolve(directory, "../../model-weights/laya-multilingual/joint-v2/model/onnx_manifest.json")];
+  const dependencyDigests = dependencies.filter(existsSync).map(file =>
+    createHash("sha256").update(readFileSync(file)).digest("hex"));
   const identity = createHash("sha256").update(JSON.stringify({
     protocol: LOCAL_DECISION_PROTOCOL,
     user: os.userInfo().username,
@@ -29,11 +34,12 @@ export function sharedLayaEndpoint(options: SharedLayaOptions): SharedLayaEndpoi
     dataDir: path.resolve(options.dataDir),
     python: path.resolve(options.python),
     workerDigest,
+    dependencyDigests,
   })).digest("hex").slice(0, 24);
   if (process.platform === "win32")
     return { identity, address: `\\\\.\\pipe\\easy-code-laya-${identity}` };
-  const directory = path.join(os.tmpdir(), `easy-code-laya-${process.getuid?.() ?? "user"}-${identity}`);
-  return { identity, address: path.join(directory, "service.sock"), directory };
+  const socketDirectory = path.join(os.tmpdir(), `easy-code-laya-${process.getuid?.() ?? "user"}-${identity}`);
+  return { identity, address: path.join(socketDirectory, "service.sock"), directory: socketDirectory };
 }
 
 /** A private parent keeps Unix socket names and input away from other users. */

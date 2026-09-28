@@ -243,18 +243,43 @@ def report() -> None:
     print("Report ready:", HERE / "README.md")
 
 
+def refresh_local(python: str) -> None:
+    """Rerun all local decisions; retain cloud observations as historical controls."""
+    rows = prepare()
+    recorded = read_jsonl(RESULTS)
+    prior = {row["id"]: row for row in recorded}
+    if len(prior) != len(rows) or len(recorded) != len(rows):
+        raise ValueError("Need the complete recorded GLM control before local refresh")
+    for row in rows:
+        if any(prior[row["id"]][key] != row[key] for key in ("task", "input", "expected")):
+            raise ValueError("Historical control does not match the frozen case")
+    local = local_results(rows, python)
+    pending = RESULTS.with_suffix(".pending")
+    with pending.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            old = prior[row["id"]]
+            item = {**row, "laya": local[row["id"]], "glm": old["glm"],
+                    "previous_laya": old.get("previous_laya", old["laya"]),
+                    "local_backend": "onnx-fp32", "glm_source": "historical recorded API response"}
+            handle.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+    os.replace(pending, RESULTS)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--prepare", action="store_true")
     group.add_argument("--run", action="store_true")
     group.add_argument("--report", action="store_true")
+    group.add_argument("--refresh-local", action="store_true")
     group.add_argument("--probe-id")
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--rerun-route", action="store_true")
     args = parser.parse_args()
     if args.prepare:
         print("Frozen cases:", len(prepare()))
+    elif args.refresh_local:
+        refresh_local(args.python)
     elif args.run:
         if args.rerun_route:
             archive_and_reset_route()

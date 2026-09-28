@@ -24,6 +24,8 @@ The application, history and fine-tuned Laya decisions run locally. Your selecte
 
 Installation enables the bundled **fine-tuned Laya (joint-v2)** automatically:
 
+The published model uses FP32 ONNX with a CPU-only runtime; end users do not need PyTorch or CUDA. Full-parameter training remains in the developer workflow.
+
 - **Auto routing:** Fine-tuned Laya chooses a direct answer, Plan or Code. Your cloud model performs the selected work.
 - **Delivery check:** Fine-tuned Laya compares the request with the agent's completion summary. A release requires a score of at least **0.90**, configurable in runtime settings. Otherwise, the agent is asked to recheck once.
 - **Shared local service:** multiple EASY CODE sessions share a model instance. Inputs and decisions are saved locally in the project's `.easycode/decision-traces/`.

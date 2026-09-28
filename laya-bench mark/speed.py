@@ -113,11 +113,29 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", required=True, help="Python executable with the installed Laya runtime")
     parser.add_argument("--workers", type=int, default=4, help="Concurrent GLM requests (default: 4)")
+    parser.add_argument("--refresh-local", action="store_true", help="Rerun ONNX timing and retain historical GLM timing")
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 8:
         parser.error("--workers must be between 1 and 8")
     rows = benchmark.prepare()
     recorded = {item["id"]: item for item in benchmark.read_jsonl(TIMINGS)} if TIMINGS.exists() else {}
+    if args.refresh_local:
+        if set(recorded) != {row["id"] for row in rows}:
+            raise ValueError("Need all historical GLM timings before local refresh")
+        previous = json.loads(SUMMARY.read_text(encoding="utf-8"))
+        local, cold_ms, device = local_timings(rows, args.python)
+        refreshed = {row["id"]: {**recorded[row["id"]], "laya": local[row["id"]],
+                                "previous_laya": recorded[row["id"]].get("previous_laya", recorded[row["id"]]["laya"])} for row in rows}
+        pending = TIMINGS.with_suffix(".pending")
+        pending.write_text("".join(json.dumps(item, separators=(",", ":")) + "\n" for item in refreshed.values()), encoding="utf-8")
+        os.replace(pending, TIMINGS)
+        output = report(rows, refreshed, cold_ms, device, None, args.workers)
+        output.update(local_backend="onnx-fp32", glm_source="historical recorded API timings",
+                      previous_local=previous.get("previous_local", {"cold_start_ms": previous["laya_cold_start_ms"],
+                                             "tasks": {task: previous["tasks"][task]["laya"] for task in previous["tasks"]}}))
+        SUMMARY.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(output, indent=2))
+        return
     if any(item["id"] not in {row["id"] for row in rows} for item in recorded.values()):
         raise ValueError("Timing file contains an unknown case ID")
     missing = [row for row in rows if row["id"] not in recorded]
@@ -125,6 +143,10 @@ def main() -> None:
         previous = json.loads(SUMMARY.read_text(encoding="utf-8")) if SUMMARY.exists() else {}
         output = report(rows, recorded, previous.get("laya_cold_start_ms"),
                         previous.get("laya_device"), None, args.workers)
+        for key in ("previous_local", "local_backend", "glm_source", "glm_batch_ms"):
+            if key in previous:
+                output[key] = previous[key]
+        SUMMARY.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(output, indent=2))
         return
     local, cold_ms, device = local_timings(missing, args.python)

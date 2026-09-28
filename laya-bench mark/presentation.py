@@ -11,11 +11,17 @@ from matplotlib.ticker import PercentFormatter
 
 
 METHODS = ("Laya", "GLM", "Cascade")
-LABELS = {"Laya": "Fine-tuned Laya", "GLM": "GLM", "Cascade": "Fine-tuned Laya + GLM"}
+LABELS = {"Laya": "Laya ONNX", "GLM": "GLM (recorded)", "Cascade": "ONNX + recorded GLM"}
 COLORS = {"Laya": "#2C7BE5", "GLM": "#A3A09A", "Cascade": "#16A879"}
 INK = "#181B20"
 MUTED = "#727780"
 GRID = "#E9EAEC"
+
+
+def save_svg(fig, path):
+    with plt.rc_context({"svg.fonttype": "none"}):
+        fig.savefig(path)
+    path.write_text("\n".join(line.rstrip() for line in path.read_text(encoding="utf-8").splitlines()) + "\n", encoding="utf-8")
 
 
 def render_report(folder: Path, rows: list[dict], metrics: dict, threshold: float) -> None:
@@ -42,7 +48,7 @@ def render_report(folder: Path, rows: list[dict], metrics: dict, threshold: floa
                          "xtick.color": MUTED, "ytick.color": MUTED,
                          "svg.fonttype": "none", "savefig.facecolor": "white"}):
         fig = plt.figure(figsize=(15, 10.2), facecolor="white")
-        fig.text(.065, .948, "Fine-tuned Laya + GLM", fontsize=30, weight="bold")
+        fig.text(.065, .948, "Laya ONNX + recorded GLM", fontsize=30, weight="bold")
         fig.text(.065, .91, f"100 routing + 100 delivery cases  ·  Local confidence gate {threshold:.2f}",
                  fontsize=13, color=MUTED)
 
@@ -111,7 +117,7 @@ def render_report(folder: Path, rows: list[dict], metrics: dict, threshold: floa
             latency_ax.annotate(f"{remote:.2f}s", (remote, y), xytext=(0, 13),
                                 textcoords="offset points", ha="center", fontsize=10)
         latency_ax.set_xscale("log")
-        latency_ax.set_xlim(.075, 15)
+        latency_ax.set_xlim(min(.03, warm_laya * .6), 15)
         latency_ax.set_xticks([.1, .3, 1, 3, 10], ["0.1s", "0.3s", "1s", "3s", "10s"])
         latency_ax.set_yticks([2, 1, 0], ["Routing", "Delivery", "Overall"])
         latency_ax.set_ylim(-.5, 2.55)
@@ -122,16 +128,20 @@ def render_report(folder: Path, rows: list[dict], metrics: dict, threshold: floa
 
         fig.text(.065, .052,
                  f"Fine-tuned Laya joint-v2 · Warm CPU latency excludes {speed['laya_cold_start_ms'] / 1000:.1f}s cold load. "
-                 "Cascade latency was not directly measured.", fontsize=9, color=MUTED)
+                 "GLM observations are historical; cascade latency is not measured.", fontsize=9, color=MUTED)
         fig.savefig(folder / "benchmark-overview.png", dpi=180)
-        fig.savefig(folder / "benchmark-overview.svg")
+        save_svg(fig, folder / "benchmark-overview.svg")
         plt.close(fig)
 
     lines = [
-        "# Fine-tuned Laya + GLM", "",
+        "# Fine-tuned Laya ONNX + recorded GLM", "",
         f"100 routing + 100 delivery cases. Fine-tuned Laya (joint-v2) decides first; "
         f"confidence below **{threshold:.2f}** sends the case to GLM.", "",
         "![Fine-tuned Laya benchmark: accuracy, speed, and cloud tokens](benchmark-overview.png)", "",
+        "![PyTorch to ONNX comparison](speed-overview.png)", "",
+        "Local decisions and timings were rerun with the published ONNX model. GLM responses, "
+        "token usage and API timings are retained historical controls, not fresh API calls. "
+        "Previous PyTorch timing is also historical; it is not a controlled backend-only speed comparison.", "",
         f"Fine-tuned Laya's warm CPU decision median was **{warm_laya:.3f}s**, versus "
         f"**{glm_api:.2f}s** for a GLM API decision (**{speed_ratio:.1f}×**). "
         f"The cascade used **{tokens['Cascade']:,}** rather than **{tokens['GLM']:,}** "
@@ -143,5 +153,40 @@ def render_report(folder: Path, rows: list[dict], metrics: dict, threshold: floa
         "Cascade latency was not directly measured. "
         "[Decision results](results.jsonl) · [Per-case timings](speed-results.jsonl) · "
         "[Speed summary](speed-summary.json).", "",
+        "Reproduce local reruns: `python benchmark.py --refresh-local --python <onnx-python>`, "
+        "`python speed.py --refresh-local --python <onnx-python>`, then `python benchmark.py --report`. "
+        "Plotting requires matplotlib; the model runtime needs only ONNX Runtime and tokenizers.", "",
     ]
     (folder / "README.md").write_text("\n".join(lines), encoding="utf-8")
+    render_migration(folder, rows, speed)
+
+
+def render_migration(folder, rows, speed):
+    previous = speed.get("previous_local")
+    if not previous or not all("previous_laya" in row for row in rows):
+        return
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), layout="constrained")
+    fig.suptitle("Laya: recorded PyTorch vs ONNX rerun", fontsize=20, weight="bold")
+    colors = [COLORS["GLM"], COLORS["Laya"]]
+    for ax, task in zip(axes[0], ("route", "delivery")):
+        subset = [row for row in rows if row["task"] == task]
+        values = [sum(row[key]["decision"] == row["expected"] for row in subset) / len(subset)
+                  for key in ("previous_laya", "laya")]
+        bars = ax.bar(["PyTorch (recorded)", "ONNX FP32"], values, color=colors)
+        ax.bar_label(bars, labels=[f"{value:.1%}" for value in values], padding=5)
+        ax.set_ylim(0, 1.12)
+        ax.yaxis.set_major_formatter(PercentFormatter(1))
+        ax.set_title(f"{task.title()} accuracy · 100 cases")
+    for ax, values, title in [
+        (axes[1, 0], [previous["tasks"]["overall"]["median_ms"], speed["tasks"]["overall"]["laya"]["median_ms"]], "Warm median · ms (lower is better)"),
+        (axes[1, 1], [previous["cold_start_ms"] / 1000, speed["laya_cold_start_ms"] / 1000], "Cold startup · seconds (lower is better)")]:
+        bars = ax.bar(["PyTorch (recorded)", "ONNX FP32"], values, color=colors)
+        ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=5)
+        ax.set_ylim(0, max(values) * 1.2)
+        ax.set_title(title)
+    for ax in axes.flat:
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.supxlabel("200 frozen inputs · timing includes tokenization and IPC · historical timings use earlier runtime settings", fontsize=9)
+    fig.savefig(folder / "speed-overview.png", dpi=180)
+    save_svg(fig, folder / "speed-overview.svg")
+    plt.close(fig)

@@ -18,6 +18,9 @@ describe("shared Laya endpoint identity", () => {
         first.address);
       await writeFile(workerPath, "version two");
       assert.notEqual(sharedLayaEndpoint(options).address, first.address);
+      const updated = sharedLayaEndpoint(options).address;
+      await writeFile(path.join(root, "runtime.py"), "new ONNX runtime");
+      assert.notEqual(sharedLayaEndpoint(options).address, updated);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("does not carry provider credentials into the long-lived service", () => {

@@ -1,32 +1,21 @@
 """Line-oriented, tool-free local inference for EASY CODE's two Laya decisions."""
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import sys
 from pathlib import Path
 
-os.environ.setdefault("USE_TF", "0")
+from runtime import OnnxAgent, build_sequence, pack_inputs, probabilities
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL = ROOT / "model-weights/laya-multilingual/joint-v2/model"
 QUESTIONS = json.loads((Path(__file__).parent / "questions.json").read_text(encoding="utf-8"))
-EXPECTED_SHA256 = "00d2ec29c124ee87d9158a870c4283544808f511915be24f8a4eb4005ee7139f"
 MAX_SOURCE_CHARS = 100_000
 OMISSION = "\n[... middle omitted for local decision ...]\n"
 
 
 def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
-
-
-def weight_hash(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def trim_chars(text: str) -> tuple[str, bool]:
@@ -38,8 +27,6 @@ def trim_chars(text: str) -> tuple[str, bool]:
 
 
 def trim_to_model(agent, raw: str, question: dict) -> tuple[str, int, bool]:
-    from laya.common import build_sequence
-
     text, clipped = trim_chars(raw)
     tokenizer = agent.tok
     empty, markers = build_sequence(tokenizer, "", question,
@@ -75,9 +62,6 @@ def trim_to_model(agent, raw: str, question: dict) -> tuple[str, int, bool]:
 
 
 def decide(agent, request: dict) -> dict:
-    import torch
-    from laya.common import build_sequence
-
     task = request.get("task")
     raw = request.get("input")
     if task not in QUESTIONS or not isinstance(raw, str) or not raw.strip():
@@ -92,33 +76,18 @@ def decide(agent, request: dict) -> dict:
                                   head_max_len=agent.cfg["head_max_len"])
     if len(markers) != len(options):
         raise ValueError("Decision options were truncated")
-    device = agent.device
-    with torch.inference_mode():
-        logits, _ = agent.model(
-            input_ids=torch.tensor([ids], dtype=torch.long, device=device),
-            attention_mask=torch.ones((1, len(ids)), dtype=torch.long, device=device),
-            marker_pos=torch.tensor([markers], dtype=torch.long, device=device),
-            marker_mask=torch.ones((1, len(markers)), dtype=torch.bool, device=device),
-            qtype=torch.zeros((1,), dtype=torch.long, device=device),
-        )
-        probabilities = logits[0, :len(options)].float().softmax(-1).cpu().tolist()
-    winner = max(range(len(options)), key=lambda index: probabilities[index])
+    logits, _ = agent.infer(pack_inputs([(ids, markers)], agent.tok.pad_token_id))
+    scores = probabilities(logits[0, :len(options)]).tolist()
+    winner = max(range(len(options)), key=lambda index: scores[index])
     return {"task": task, "input": text, "inputTokens": input_tokens,
             "truncated": truncated, "optionOrder": options,
-            "scores": dict(zip(options, probabilities)), "decision": options[winner]}
+            "scores": dict(zip(options, scores)), "decision": options[winner]}
 
 
 def main() -> None:
-    import laya
-    import torch
-
-    weight = MODEL / "model.safetensors"
-    if not weight.is_file() or weight_hash(weight) != EXPECTED_SHA256:
-        raise RuntimeError("Bundled fine-tuned Laya checkpoint is missing or has the wrong hash")
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    agent = laya.load(str(MODEL), device=device)
-    agent.model.eval()
-    emit({"type": "ready", "modelSha256": EXPECTED_SHA256, "device": device})
+    agent = OnnxAgent(MODEL)
+    emit({"type": "ready", "modelSha256": agent.model_sha256, "device": agent.device,
+          "backend": "onnx-fp32"})
     for line in sys.stdin:
         request = None
         try:

@@ -1,0 +1,84 @@
+[
+  {
+    "task": "route",
+    "text": "Hello world.",
+    "order": [
+      2,
+      1,
+      0
+    ],
+    "sha256": "6c9508d7b7c7d722983f3535c2a651b5c24f5629dd0df0c6343b9ee436118c8b"
+  },
+  {
+    "task": "route",
+    "text": "中文任务：检查代码并修复。",
+    "order": [
+      2,
+      1,
+      0
+    ],
+    "sha256": "f5d2efbae4295e7e2f7ea452202ee147ec8e2e53f810664db52e44b6ef4d156c"
+  },
+  {
+    "task": "route",
+    "text": "quoted <mask> and emoji 🐕",
+    "order": [
+      2,
+      1,
+      0
+    ],
+    "sha256": "756c4fc48a68ccad0c28c474447428b2a0eed6cbab8d3db3202ae6989621d4be"
+  },
+  {
+    "task": "route",
+    "order": [
+      2,
+      1,
+      0
+    ],
+    "sha256": "5343e88c3eb07f7b70adf7e6faf16a2067de0f56a8f9578be297e6c08ef3926b",
+    "repeat_text": "long input ",
+    "repeat_count": 1200,
+    "text_prefix": "begin ",
+    "text_suffix": " end"
+  },
+  {
+    "task": "delivery",
+    "text": "Hello world.",
+    "order": [
+      1,
+      0
+    ],
+    "sha256": "d2ec56249313895bbeac59aa58c65eafe90ad2f019e01b7f9af249c576cdadab"
+  },
+  {
+    "task": "delivery",
+    "text": "中文任务：检查代码并修复。",
+    "order": [
+      1,
+      0
+    ],
+    "sha256": "5cb28880d2728ae2af2ab063251930bc19f6ed5f3eb742a9cd4daccc136bc315"
+  },
+  {
+    "task": "delivery",
+    "text": "quoted <mask> and emoji 🐕",
+    "order": [
+      1,
+      0
+    ],
+    "sha256": "5b4f4ac15cb6bd03cc0d39db9a2dcf167bafae42618e0edc044c52b37b77a3b9"
+  },
+  {
+    "task": "delivery",
+    "order": [
+      1,
+      0
+    ],
+    "sha256": "b0d6769507ed181b828de8362457bd21f508af12909c1996ce7f897c57ddf763",
+    "repeat_text": "long input ",
+    "repeat_count": 1200,
+    "text_prefix": "begin ",
+    "text_suffix": " end"
+  }
+]

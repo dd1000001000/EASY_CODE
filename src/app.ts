@@ -2049,7 +2049,7 @@ export class EasyCodeApp {
           idleMs: this.config.limits.layaIdleTimeoutMs,
         }, { dataDir: this.config.dataDir,
           python: process.env.EASY_CODE_LAYA_PYTHON || path.join(this.config.dataDir,
-            "runtimes", "laya-decision", process.platform === "win32" ? "Scripts/python.exe" : "bin/python") });
+            "runtimes", "laya-decision-onnx", process.platform === "win32" ? "Scripts/python.exe" : "bin/python") });
         return this.localLayaClient.decide(task, input, signal);
       },
       recordLocalDecision: trace => appendLocalDecisionTrace(this.workspace.root, trace),
