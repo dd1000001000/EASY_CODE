@@ -14,14 +14,9 @@ import type { AppInteractionPort, UserSubmission } from "./ui/interaction-port.j
 import { DECISION_TIMEOUT_MS } from "./ui/decision-timeout.js";
 import { compactionRunning } from "./ui/compaction.js";
 import { helpText, parseModelCommand, parseSlashCommand } from "./cli/slash-command.js";
-import {
-  SystemKeyringCredentialStore,
-  apiKeyConfigKey,
-  storeVerifiedApiKey,
-  type ApiKeyCredentialStore,
-} from "./config/credentials.js";
+import { SystemKeyringCredentialStore, type ApiKeyCredentialStore } from "./config/credentials.js";
 import { loadEasyCodeConfig } from "./config/loader.js";
-import { readLastModel, writeLastModel } from "./config/last-model.js";
+import { readLastModel } from "./config/last-model.js";
 import { executeLanguageCommand, readLanguage } from "./i18n/language.js";
 import { languageName, translate } from "./i18n/catalog.js";
 import { McpConfigStore, USER_MCP_CONFIG_PATH } from "./mcp/config.js";
@@ -65,7 +60,6 @@ import type {
   ResultArtifact,
   ResultArtifactRef,
 } from "./core/types.js";
-import { THINKING_EFFORTS } from "./core/types.js";
 import {
   ImageStore,
   MAX_IMAGES_PER_MODEL_REQUEST,
@@ -87,9 +81,7 @@ import { activePromptBundleBinding, ensurePromptBundle } from "./prompt-bundle/i
 import { deleteThreadTree } from "./threads/delete-thread.js";
 import { ThreadTitleStore } from "./threads/thread-title.js";
 import {
-  DEFAULT_MODEL_IDS,
   PROVIDER_CATALOG,
-  modelsForProvider,
   providerLabel,
   requireCatalogModel,
   requireVisionModel,
@@ -165,6 +157,7 @@ import {
   messagePreview,
 } from "./app/text.js";
 import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
+import { ModelSelection, type ModelSelectionContext } from "./app/model-selection.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
 export {
@@ -626,7 +619,7 @@ export class EasyCodeApp {
         for (const imagePath of options.imagePaths ?? []) {
           await app.queueImagePath(imagePath, false);
         }
-        if (!harborProviderApiKey) app.rememberLastModel();
+        if (!harborProviderApiKey) app.modelSelection.rememberLastModel();
       } catch (error) {
         const setupErrors: unknown[] = [error];
         try {
@@ -726,7 +719,7 @@ export class EasyCodeApp {
         this.memoryManager.expireDueMemories(GLOBAL_MEMORY_WORKSPACE_ID);
         maintenance.enqueueCompleted(this.state.threadId);
         if (!maintenance.hasPending(this.state.threadId)) return;
-        this.requireProviderApiKey(this.state.provider);
+        this.modelSelection.requireProviderApiKey(this.state.provider);
         const provider = createProvider(this.effectiveConfig(), this.state.provider, this.state.model);
         await maintenance.processNext(this.state.threadId, this.state, provider, controller.signal);
       } catch {
@@ -760,7 +753,7 @@ export class EasyCodeApp {
   }
   async selectHostedModel(): Promise<void> {
     this.assertNoRunningSubagents("switch models or thinking effort");
-    await this.selectModelFromPicker(false);
+    await this.modelSelection.selectModelFromPicker(false);
   }
   async selectHostedApproval(): Promise<void> {
     this.assertNoRunningCommands("change command execution mode");
@@ -1161,23 +1154,23 @@ export class EasyCodeApp {
         if (!provider || command.args.length !== 1 || !supportedProviders.includes(provider)) {
           throw new Error(`Usage: /provider ${supportedProviders.join("|")}`);
         }
-        this.requireProviderApiKey(provider);
+        this.modelSelection.requireProviderApiKey(provider);
         const model = requireCatalogModel(provider, this.config.providers[provider]!.model).id;
-        this.commitModelSelection(provider, model, "Provider switched to");
+        this.modelSelection.commitModelSelection(provider, model, "Provider switched to");
         return false;
       }
       case "model": {
         this.assertNoRunningSubagents("switch models or thinking effort");
         const request = parseModelCommand(command.args);
         if (request.action === "select") {
-          await this.selectModelFromPicker(true);
+          await this.modelSelection.selectModelFromPicker(true);
           return false;
         }
 
         const provider = request.provider ?? this.state.provider;
         const model = requireCatalogModel(provider, request.model).id;
-        this.requireProviderApiKey(provider);
-        this.commitModelSelection(provider, model, "Model switched to", request.thinkingEffort);
+        this.modelSelection.requireProviderApiKey(provider);
+        this.modelSelection.commitModelSelection(provider, model, "Model switched to", request.thinkingEffort);
         return false;
       }
       case "orchestration": {
@@ -1647,7 +1640,7 @@ export class EasyCodeApp {
       );
     }
     await this.drainPendingSubagentArtifacts(this.state.threadId);
-    this.requireProviderApiKey(this.state.provider);
+    this.modelSelection.requireProviderApiKey(this.state.provider);
     if (images.length) this.requireCurrentModelVision();
     validateImageAttachmentCollection(images);
     validateProviderImageAttachments(this.state.provider, images);
@@ -3299,7 +3292,7 @@ export class EasyCodeApp {
       thinkingEffort: this.state.thinkingEffort,
     };
     if (this.startupInteraction === "select-model") {
-      const selected = await this.selectProviderAndModel();
+      const selected = await this.modelSelection.selectProviderAndModel();
       if (!selected) {
         this.terminal.info(translate(readLanguage(this.storage), "cli.startupModelCanceled"));
         return false;
@@ -3307,10 +3300,15 @@ export class EasyCodeApp {
       selection = selected;
     }
 
-    if (!(await this.ensureProviderApiKey(selection.provider))) return false;
+    if (!(await this.modelSelection.ensureProviderApiKey(selection.provider))) return false;
 
     if (this.startupInteraction === "select-model") {
-      this.commitModelSelection(selection.provider, selection.model, "Selected", selection.thinkingEffort);
+      this.modelSelection.commitModelSelection(
+        selection.provider,
+        selection.model,
+        "Selected",
+        selection.thinkingEffort,
+      );
     } else {
       const applied = thinkingEffortIsApplied(selection.provider, selection.model, selection.thinkingEffort);
       const language = readLanguage(this.storage);
@@ -3436,168 +3434,6 @@ export class EasyCodeApp {
       );
     } else {
       this.terminal.warning(translate(language, "cli.fullAccessEnabled"));
-    }
-  }
-
-  private async selectModelFromPicker(announceCancellation: boolean): Promise<void> {
-    const selection = await this.selectProviderAndModel();
-    if (!selection) {
-      if (announceCancellation) this.terminal.info(translate(readLanguage(this.storage), "cli.modelCanceled"));
-      return;
-    }
-    if (!(await this.ensureProviderApiKey(selection.provider))) return;
-    await this.handleSlashCommand(`/model ${selection.provider} ${selection.model} ${selection.thinkingEffort}`);
-  }
-
-  private async selectProviderAndModel(): Promise<
-    | {
-        provider: ProviderName;
-        model: string;
-        thinkingEffort: ThinkingEffort;
-      }
-    | undefined
-  > {
-    const provider = await this.terminal.selectProvider(
-      PROVIDER_CATALOG.map((entry) => ({
-        provider: entry.provider,
-        label: entry.label,
-        apiKeyConfigured: Boolean(this.config.providers[entry.provider]?.apiKey),
-      })),
-      this.state.provider,
-    );
-    if (!provider) return undefined;
-
-    const configuredModel = this.config.providers[provider]!.model;
-    const initialModel = resolveCatalogModel(provider, configuredModel)?.id ?? DEFAULT_MODEL_IDS[provider];
-    const model = await this.terminal.selectModel(providerLabel(provider), modelsForProvider(provider), initialModel);
-    if (!model) return undefined;
-    const canonicalModel = requireCatalogModel(provider, model).id;
-    const language = readLanguage(this.storage);
-    const thinkingEffort = await this.terminal.selectThinkingEffort(
-      providerLabel(provider),
-      canonicalModel,
-      THINKING_EFFORTS.map((effort) => ({
-        id: effort,
-        label: translate(
-          language,
-          effort === "none"
-            ? "ui.effortNone"
-            : effort === "low"
-              ? "ui.effortLow"
-              : effort === "medium"
-                ? "ui.effortMedium"
-                : "ui.effortHigh",
-        ),
-        applied: thinkingEffortIsApplied(provider, canonicalModel, effort),
-      })),
-      this.state.thinkingEffort,
-    );
-    if (!thinkingEffort) return undefined;
-    return { provider, model: canonicalModel, thinkingEffort };
-  }
-
-  private async ensureProviderApiKey(provider: ProviderName): Promise<boolean> {
-    if (this.config.providers[provider]?.apiKey) return true;
-    if (!this.credentialStore) {
-      throw new Error(
-        `No ${provider} API key is configured, and the system credential store is unavailable. ` +
-          `Run easy-code config set ${apiKeyConfigKey(provider)}.`,
-      );
-    }
-    const language = readLanguage(this.storage);
-    this.terminal.info(translate(language, "cli.missingApiKey", { provider: providerLabel(provider) }));
-    let value: string;
-    try {
-      value = await this.terminal.readSecret(
-        translate(language, "cli.enterApiKey", { provider: providerLabel(provider) }),
-      );
-    } catch (error) {
-      if (error instanceof Error && error.message === "API key input was canceled.") {
-        this.terminal.info(translate(language, "cli.apiKeyCanceled"));
-        return false;
-      }
-      throw error;
-    }
-    const normalized = await storeVerifiedApiKey(
-      this.credentialStore,
-      provider,
-      value,
-      this.config.providers[provider]?.baseUrl,
-    );
-    this.config.providers[provider]!.apiKey = normalized;
-    this.terminal.success(translate(language, "cli.apiKeySaved", { key: apiKeyConfigKey(provider) }));
-    return true;
-  }
-
-  private commitModelSelection(
-    provider: ProviderName,
-    model: string,
-    verb = "Model switched to",
-    thinkingEffort = this.state.thinkingEffort,
-  ): void {
-    const canonicalModel = requireCatalogModel(provider, model).id;
-    const previous = {
-      stateProvider: this.state.provider,
-      stateModel: this.state.model,
-      stateThinkingEffort: this.state.thinkingEffort,
-      configProvider: this.config.provider,
-      configModel: this.config.providers[provider]!.model,
-      configThinkingEffort: this.config.thinkingEffort,
-      dirty: this.dirty,
-    };
-    try {
-      this.state.provider = provider;
-      this.state.model = canonicalModel;
-      this.state.thinkingEffort = thinkingEffort;
-      this.config.provider = provider;
-      this.config.providers[provider]!.model = canonicalModel;
-      this.config.thinkingEffort = thinkingEffort;
-      this.dirty = true;
-      this.save();
-    } catch (error) {
-      this.state.provider = previous.stateProvider;
-      this.state.model = previous.stateModel;
-      this.state.thinkingEffort = previous.stateThinkingEffort;
-      this.config.provider = previous.configProvider;
-      this.config.providers[provider]!.model = previous.configModel;
-      this.config.thinkingEffort = previous.configThinkingEffort;
-      this.dirty = previous.dirty;
-      throw error;
-    }
-    this.rememberLastModel();
-    this.syncTerminalView();
-    const applied = thinkingEffortIsApplied(provider, canonicalModel, thinkingEffort);
-    const language = readLanguage(this.storage);
-    const verbKey =
-      verb === "Selected"
-        ? "cli.selectedModel"
-        : verb === "Provider switched to"
-          ? "cli.providerSwitched"
-          : "cli.modelSwitched";
-    this.terminal.success(
-      translate(language, verbKey, {
-        provider: providerLabel(provider),
-        model: canonicalModel,
-        effort: thinkingEffort,
-        suffix: applied ? "" : translate(language, "cli.notAppliedSuffix"),
-      }),
-    );
-    if (this.pendingImages.length && !modelSupportsVision(provider, canonicalModel)) {
-      this.terminal.info(translate(language, "cli.imagesUnsupported", { count: this.pendingImages.length }));
-    }
-  }
-
-  private rememberLastModel(): void {
-    try {
-      writeLastModel(this.storage, {
-        provider: this.state.provider,
-        model: this.state.model,
-        thinkingEffort: this.state.thinkingEffort,
-      });
-    } catch (error) {
-      this.terminal.warning(
-        `Could not save the last-used model: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
   }
 
@@ -4192,7 +4028,7 @@ export class EasyCodeApp {
       recoveredStandaloneSubagents,
     };
     this.save();
-    this.rememberLastModel();
+    this.modelSelection.rememberLastModel();
   }
 
   private requireThreadLease(): ThreadLease {
@@ -4371,14 +4207,6 @@ export class EasyCodeApp {
       agents.filter((agent) => agent.status === "running" || agent.status === "stopping"),
       taskGraph,
       concurrencyLimit,
-    );
-  }
-
-  private requireProviderApiKey(provider: ProviderName): void {
-    if (this.config.providers[provider]?.apiKey) return;
-    throw new Error(
-      `No ${provider} API key is configured. Run ` +
-        `easy-code config set ${apiKeyConfigKey(provider)} (saved to the system credential store), then restart EASY CODE.`,
     );
   }
 
@@ -4927,5 +4755,42 @@ export class EasyCodeApp {
 
   private showMcpServers(requested?: { serverId: string; action: string }): Promise<void> {
     return this.mcpServers.showMcpServers(requested);
+  }
+
+  private modelSelectionInstance?: ModelSelection;
+  private get modelSelection(): ModelSelection {
+    return (this.modelSelectionInstance ??= new ModelSelection(this.modelSelectionContext()));
+  }
+  private modelSelectionContext(): ModelSelectionContext {
+    const app = this;
+    return {
+      get config() {
+        return app.config;
+      },
+      get credentialStore() {
+        return app.credentialStore;
+      },
+      get dirty() {
+        return app.dirty;
+      },
+      set dirty(value) {
+        app.dirty = value;
+      },
+      handleSlashCommand: (...args) => app.handleSlashCommand(...args),
+      get pendingImages() {
+        return app.pendingImages;
+      },
+      save: (...args) => app.save(...args),
+      get state() {
+        return app.state;
+      },
+      get storage() {
+        return app.storage;
+      },
+      syncTerminalView: (...args) => app.syncTerminalView(...args),
+      get terminal() {
+        return app.terminal;
+      },
+    };
   }
 }
