@@ -9,19 +9,25 @@ const MAX_TRACE_BYTES = 8 * 1024 * 1024;
 const RETAINED_ROTATIONS = 4;
 let currentUserSid: Promise<string> | undefined;
 
+// Resolve system tools absolutely: a PATH lookup can find Git Bash's GNU whoami, which rejects /user.
+function windowsSystemTool(name: string): string {
+  return path.win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", name);
+}
+
 async function privateWindowsAcl(target: string, directory: boolean): Promise<void> {
   if (process.platform !== "win32") return;
-  currentUserSid ??= execFileAsync("whoami", ["/user", "/fo", "csv", "/nh"], { timeout: 5000, windowsHide: true }).then(
-    (result) => {
-      const sid = result.stdout.match(/S-1-5-\d+(?:-\d+)+/u)?.[0];
-      if (!sid) throw new Error("Could not identify the current Windows account for decision traces");
-      return sid;
-    },
-  );
+  currentUserSid ??= execFileAsync(windowsSystemTool("whoami.exe"), ["/user", "/fo", "csv", "/nh"], {
+    timeout: 5000,
+    windowsHide: true,
+  }).then((result) => {
+    const sid = result.stdout.match(/S-1-5-\d+(?:-\d+)+/u)?.[0];
+    if (!sid) throw new Error("Could not identify the current Windows account for decision traces");
+    return sid;
+  });
   const sid = await currentUserSid;
   const rights = directory ? "(OI)(CI)F" : "F";
   await execFileAsync(
-    "icacls",
+    windowsSystemTool("icacls.exe"),
     [target, "/inheritance:r", "/grant:r", `*${sid}:${rights}`, "/grant:r", `*S-1-5-18:${rights}`],
     { timeout: 10000, windowsHide: true },
   );
