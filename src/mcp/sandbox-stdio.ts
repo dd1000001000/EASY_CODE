@@ -36,6 +36,7 @@ export class SandboxedMcpStdioTransport implements Transport {
   private execution?: Promise<ExecutionEnd>;
   private active = false;
   private closed = false;
+  private closeWork?: Promise<void>;
 
   get isActive(): boolean {
     return this.active && !this.closed;
@@ -95,7 +96,7 @@ export class SandboxedMcpStdioTransport implements Transport {
         const encoded = notification.params?.deltaBase64;
         if (typeof encoded !== "string" || encoded.length > this.limits.mcpStdioMaxMessageBytes * 2) {
           this.onerror?.(new Error("MCP server emitted an oversized output delta"));
-          void this.close();
+          void this.close().catch((error) => this.onerror?.(error instanceof Error ? error : new Error(String(error))));
           return;
         }
         const bytes = Buffer.from(encoded, "base64");
@@ -109,7 +110,9 @@ export class SandboxedMcpStdioTransport implements Transport {
           }
         } catch (error) {
           this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-          void this.close();
+          void this.close().catch((closeError) =>
+            this.onerror?.(closeError instanceof Error ? closeError : new Error(String(closeError))),
+          );
         }
       });
       const target = resolved.launch ?? { executablePath: resolved.executablePath, args: resolved.args };
@@ -192,11 +195,17 @@ export class SandboxedMcpStdioTransport implements Transport {
     );
   }
 
-  async close(): Promise<void> {
-    if (this.closed) return;
+  close(): Promise<void> {
+    // Every caller must join the same teardown: a second close() waits for the
+    // in-flight one and inherits its outcome instead of reporting success early.
     const wasActive = this.active;
     this.closed = true;
     this.active = false;
+    this.closeWork ??= this.performClose(wasActive);
+    return this.closeWork;
+  }
+
+  private async performClose(wasActive: boolean): Promise<void> {
     this.stopNotifications?.();
     const service = this.service;
     this.service = undefined;
