@@ -138,6 +138,48 @@ function fixture() {
   };
 }
 describe("completed-phase compaction transactions", () => {
+  it("reports an empty manual compaction as nothing to summarize rather than a budget failure", async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "easy-code-compaction-empty-"));
+    const storage = createStorage(directory);
+    try {
+      const store = new ThreadStore(storage);
+      const state = store.create({
+        threadId: "empty_manual",
+        workspaceRoot: directory,
+        mode: "code",
+        provider: "deepseek",
+        model: "test",
+        thinkingEffort: "high",
+      });
+      const manager = new ContextManager();
+      manager.configureTokenBudget(options.maxContextTokens, fixtureLimits);
+      let calls = 0;
+      await assert.rejects(
+        runCompactionTransaction({
+          state,
+          manager,
+          turnId: "manual_turn",
+          maxContextChars: options.maxContextChars,
+          required: true,
+          maxRequests: 2,
+          limits: fixtureLimits,
+          nextRequest: envelope,
+          append: async (event) => store.appendEvent(state.threadId, event),
+          complete: async () => {
+            calls++;
+            return candidate();
+          },
+          manual: { summaryContext: () => [] },
+        }),
+        /No uncompacted history is available to summarize/u,
+      );
+      assert.equal(calls, 0);
+      assert.equal(state.compactedMessageCount, 0);
+    } finally {
+      storage.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it("replays the accepted field budget rather than clipping new summaries to legacy/default limits", async () => {
     const f = fixture();
     try {

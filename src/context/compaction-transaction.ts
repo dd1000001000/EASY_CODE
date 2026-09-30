@@ -416,6 +416,9 @@ export async function runCompactionTransaction(input: {
   if (input.skipSummary || reconciliationPending(state))
     return recover("Summary bypassed during capacity recovery; deterministic recovery required.");
 
+  if (input.manual && state.messages.length <= state.compactedMessageCount)
+    return recover("No uncompacted history is available to summarize.");
+
   // Pick a boundary BEFORE asking the model. An impossible empty-summary lower
   // bound advances locally; no model request is spent chasing an impossible target.
   const boundaries = input.manual
@@ -453,7 +456,7 @@ export async function runCompactionTransaction(input: {
   // Missing a soft target never invalidates a useful, capacity-safe handoff.
   const last = boundaries.at(-1);
   const end = selected ?? (last !== undefined && boundaryCapacity(last).fits ? last : undefined);
-  if (!end) return recover("No retained complete-exchange tail fits the input budget.");
+  if (end === undefined) return recover("No retained complete-exchange tail fits the input budget.");
   if (tx?.status !== "pending") {
     if (!state.compactionControl?.seed && input.maxRequests !== undefined && input.maxRequests <= 0)
       return recover("No summary request budget is available.");
