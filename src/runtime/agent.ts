@@ -1,6 +1,14 @@
 import { CommandEnvironmentQuarantined } from "../sandbox/environment-fault.js";
 import { safeToolDisplayDetails, toolDisplayDetails } from "./tool-display-details.js";
 import {
+  gateToolCall,
+  recoverToolFailure,
+  subagentLifecycleError,
+  validateTaskGraphEffect,
+  type ToolEffects,
+  type ToolInvocationOutcome,
+} from "./tool-call-effects.js";
+import {
   MAX_MEMORY_MUTATIONS_PER_TURN,
   type AgentMode,
   type AgentRole,
@@ -23,7 +31,6 @@ import {
   type ProviderStreamEvent,
   type SessionState,
   type SubagentLifecycleUpdate,
-  type SubagentAssignmentSnapshot,
   type SubagentTaskReport,
   type TaskGraph,
   type ToolDefinition,
@@ -101,10 +108,6 @@ import {
   activeTask,
   cloneTaskGraph,
   taskGraphOperationSchema,
-  validateTaskGraphTransition,
-  subagentTaskOperationSchema,
-  validateSubagentTaskTransition,
-  type SubagentTaskOperation,
   type TaskGraphTransitionOperation,
 } from "../tasks/task-graph.js";
 import { createId } from "../utils/ids.js";
@@ -124,7 +127,7 @@ import { autoRouteCapabilitySummary } from "./auto-route-capabilities.js";
 import { createProviderAttemptSignal } from "./provider-attempt-signal.js";
 import type { TurnSteeringAttemptNotifier } from "./turn-steering-notifier.js";
 import { toolFailure } from "../tools/base.js";
-import { normalizeToolFailure, protocolToolFailure, toolResultForModel } from "../tools/errors.js";
+import { toolResultForModel } from "../tools/errors.js";
 import { ToolRecoveryBudget, ToolProtocolExhausted } from "./tool-recovery.js";
 import { availableAgentTools } from "../tools/capabilities.js";
 import { snapshotToolSet, type ToolCatalogSnapshot } from "../tools/catalog.js";
@@ -707,34 +710,6 @@ function appendSteeringLedgerEntry(state: SessionState, sourceMessageIndex: numb
     userCorrections: [...(previous?.userCorrections.map((item) => ({ ...item })) ?? []), quote].slice(-32),
     supersededRequests: previous?.supersededRequests.map((item) => ({ ...item })) ?? [],
   };
-}
-
-function isSubagentAssignmentSnapshot(value: unknown): value is SubagentAssignmentSnapshot {
-  if (!value || typeof value !== "object") return false;
-  const assignment = value as Partial<SubagentAssignmentSnapshot>;
-  return (
-    (assignment.kind === "dag" || assignment.kind === "standalone") &&
-    typeof assignment.agentId === "string" &&
-    assignment.agentId.length > 0 &&
-    typeof assignment.taskId === "string" &&
-    assignment.taskId.length > 0 &&
-    typeof assignment.taskTitle === "string" &&
-    assignment.taskTitle.length > 0 &&
-    typeof assignment.taskDescription === "string" &&
-    assignment.taskDescription.length > 0 &&
-    Array.isArray(assignment.completionChecks) &&
-    assignment.completionChecks.length > 0 &&
-    assignment.completionChecks.every((check) => typeof check === "string" && check.length > 0) &&
-    typeof assignment.provider === "string" &&
-    typeof assignment.model === "string" &&
-    (assignment.thinkingEffort === "none" ||
-      assignment.thinkingEffort === "low" ||
-      assignment.thinkingEffort === "medium" ||
-      assignment.thinkingEffort === "high") &&
-    typeof assignment.createdAt === "string" &&
-    (assignment.kind === "standalone" ||
-      (typeof assignment.taskGraphId === "string" && assignment.taskGraphId.length > 0))
-  );
 }
 
 /** The runtime identity a turn runs under (main agent unless a child runtime was configured). */
@@ -3161,712 +3136,640 @@ export class AgentRuntime {
 
   /** Execute one model response's tool calls in order: gating, execution, and applying task-graph, subagent and plan effects. */
   private async executeToolCalls(ctx: ToolCallsContext, updates: ToolCallsState): Promise<void> {
+    const { agentIdentity, calls, state, turnId } = ctx;
+    for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
+      if (
+        agentIdentity.role === "main_agent" &&
+        (await this.dependencies.hasPendingSteering?.({
+          threadId: state.threadId,
+          turnId,
+        }))
+      ) {
+        await this.skipCallsForSteering(ctx, calls.slice(callIndex));
+        updates.steeringAppliedBetweenTools = true;
+        break;
+      }
+      await this.executeToolCall(ctx, updates, calls[callIndex]!);
+    }
+  }
+
+  /** Close the assistant's complete tool-call protocol before the durable steering application event adds a new user message. */
+  private async skipCallsForSteering(ctx: ToolCallsContext, skippedCalls: FunctionToolCall[]): Promise<void> {
+    const { memoryContext, options, progressResponseBase, state, step, turnId, turnImages } = ctx;
+    for (const skipped of skippedCalls) {
+      await this.dependencies.appendEvent({
+        threadId: state.threadId,
+        turnId,
+        stepId: `step_${step}`,
+        type: "tool.call",
+        phase: "requested",
+        payload: skipped,
+      });
+      const skippedResult: ToolExecutionResult = {
+        ok: false,
+        summary: "Tool call skipped because newer user steering arrived.",
+        error: "superseded_by_user_steering",
+      };
+      const skippedMessage: ChatMessage = {
+        role: "tool",
+        tool_call_id: skipped.id,
+        name: skipped.function.name,
+        content: resultForModel(skippedResult, options.maxOutputChars),
+      };
+      const skippedEventId = createId("event");
+      const skippedObservation = observeToolResult({
+        sourceEventId: skippedEventId,
+        sourceCallId: skipped.id,
+        scopeKey: progressScopeKey(state, turnId),
+        responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+        tool: skipped.function.name,
+        result: skippedResult,
+        verificationIntent: false,
+      });
+      await this.dependencies.appendEvent({
+        eventId: skippedEventId,
+        threadId: state.threadId,
+        turnId,
+        stepId: `step_${step}`,
+        type: "tool.result",
+        phase: "interrupted",
+        payload: {
+          callId: skipped.id,
+          tool: skipped.function.name,
+          message: skippedMessage,
+          progressObservation: skippedObservation,
+        },
+      });
+      state.progressGuard = foldProgressObservation(state.progressGuard, skippedObservation).state;
+      state.messages.push(skippedMessage);
+    }
+    await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext);
+  }
+
+  /** Run one tool call through gating, invocation, effect validation and recovery, then commit its result. */
+  private async executeToolCall(ctx: ToolCallsContext, updates: ToolCallsState, call: FunctionToolCall): Promise<void> {
+    const { state, step, toolGateway, turnId } = ctx;
+    const toolName = call.function.name as ToolName;
+    // The gateway is a run-level snapshot, while this one-shot tool can be
+    // withdrawn between requests; recheck its availability at execution.
+    const tool =
+      toolName === "name_thread" && !threadTitleUnclaimed(this.dependencies, state.threadId)
+        ? undefined
+        : toolGateway.get(toolName);
+    // Verification relies on recorded changes and actual command results;
+    // no whole-repository test baseline is captured or replayed.
+    const taskIdAtCall = activeTask(state.taskGraph)?.id;
+
+    await this.dependencies.appendEvent({
+      threadId: state.threadId,
+      turnId,
+      stepId: `step_${step}`,
+      type: "tool.call",
+      phase: "requested",
+      payload: call,
+    });
+
+    const invocation =
+      gateToolCall(
+        {
+          environmentFault: updates.environmentFault,
+          proposePlanBatched: ctx.proposePlanBatched,
+          submitTaskResultBatched: ctx.submitTaskResultBatched,
+        },
+        call,
+        tool,
+      ) ?? (await this.invokeTool(ctx, updates, call, tool!));
+    const effects = this.validateToolEffects(ctx, updates, toolName, invocation);
+    const recovered = recoverToolFailure(ctx.toolRecovery, toolName, effects.result);
+    if (recovered.environmentFault !== undefined) updates.environmentFault = recovered.environmentFault;
+    if (recovered.exhaustion) updates.requiredProtocolExhaustion = recovered.exhaustion;
+    let result = recovered.result;
+    if (this.dependencies.captureToolEvidence && toolName !== "write_memory") {
+      try {
+        result = {
+          ...result,
+          evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result),
+        };
+      } catch {
+        // The bounded journal result remains authoritative. Evidence
+        // archival is internal bookkeeping and should fail silently.
+      }
+    }
+    await this.commitToolResult(ctx, updates, call, tool, taskIdAtCall, { ...invocation, ...effects, result });
+  }
+
+  /** Prepare and invoke an exposed tool, turning any preparation or execution error into a failed result. */
+  private async invokeTool(
+    ctx: ToolCallsContext,
+    updates: ToolCallsState,
+    call: FunctionToolCall,
+    tool: AgentTool,
+  ): Promise<ToolInvocationOutcome> {
+    const { commandRetries, state, toolGateway } = ctx;
+    const toolName = call.function.name as ToolName;
+    let displayName = toolName;
+    let taskGraphOperation: TaskGraphTransitionOperation | undefined;
+    try {
+      const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
+      if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
+      const rawInput = preparedInvocation.input;
+      displayName = toolApprovalIdentity(
+        preparedInvocation.tool,
+        rawInput,
+        preparedInvocation.binding,
+        state.workspaceRoot,
+      ).label;
+      let input: unknown = rawInput;
+      if (toolName === "manage_tasks") {
+        const parsedOperation = taskGraphOperationSchema.parse(rawInput);
+        if (
+          (parsedOperation.action === "complete" || parsedOperation.action === "block") &&
+          this.dependencies.hasOpenCommandHandles?.()
+        ) {
+          updates.finishRejectedReason = backgroundCommandFinalizationInstruction();
+          throw new Error(updates.finishRejectedReason);
+        }
+        if (
+          parsedOperation.action === "create" &&
+          (this.dependencies.getOutstandingSubagents?.() ?? []).some((agent) => agent.assignmentKind === "standalone")
+        ) {
+          throw new Error("Collect every standalone child result before creating a task DAG.");
+        }
+        input = parsedOperation;
+        if (parsedOperation.action !== "list") {
+          taskGraphOperation = parsedOperation;
+        }
+      }
+      if (toolName === "submit_task_result" && this.dependencies.hasOpenCommandHandles?.()) {
+        updates.finishRejectedReason = backgroundCommandFinalizationInstruction();
+        throw new Error(updates.finishRejectedReason);
+      }
+      this.dependencies.onStatus?.(`Tool: ${displayName}`);
+      const toolContext = this.buildToolContext(ctx, call, displayName);
+      const waitAttempt = tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
+      let result: ToolExecutionResult;
+      try {
+        result =
+          reconciliationGate(state, tool.name, input) ??
+          commandRetries.before(tool.name, input) ??
+          (await toolGateway.invoke(
+            { ...preparedInvocation, input },
+            { ...toolContext, waitSignal: waitAttempt?.signal },
+            (name, execute) => this.withToolExecutionActivity(name, execute),
+          ));
+        result = commandRetries.after(tool.name, input, result);
+      } finally {
+        waitAttempt?.dispose();
+      }
+      return { result, displayName, taskGraphOperation, preparedSubagentLifecycle: result.subagentLifecycle };
+    } catch (error) {
+      return { result: toolFailure(error, `Tool ${displayName} failed.`), displayName, taskGraphOperation };
+    }
+  }
+
+  /** The Runtime services and budgets a tool invocation receives. */
+  private buildToolContext(ctx: ToolCallsContext, call: FunctionToolCall, displayName: string) {
     const {
       agentIdentity,
-      calls,
-      commandRetries,
       effectiveMode,
       imageNumbering,
-      memoryContext,
       options,
       ordinaryToolDefinitions,
-      progressResponseBase,
-      progressVerificationCommands,
       projectionHistory,
-      proposePlanBatched,
       state,
-      step,
-      stepImageAttachments,
-      submitTaskResultBatched,
-      toolGateway,
-      toolRecovery,
       turnId,
       turnImages,
     } = ctx;
-    let {
-      completedVerificationPhase,
-      environmentFault,
-      finishRejectedReason,
-      proposedPlan,
-      requiredProtocolExhaustion,
-      steeringAppliedBetweenTools,
-      submittedTaskReport,
-    } = updates;
-    try {
-      for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
-        const call = calls[callIndex]!;
-        if (
-          agentIdentity.role === "main_agent" &&
-          (await this.dependencies.hasPendingSteering?.({
-            threadId: state.threadId,
-            turnId,
-          }))
-        ) {
-          // Close the assistant's complete tool-call protocol before the
-          // durable steering application event adds a new user message.
-          for (const skipped of calls.slice(callIndex)) {
-            await this.dependencies.appendEvent({
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "tool.call",
-              phase: "requested",
-              payload: skipped,
-            });
-            const skippedResult: ToolExecutionResult = {
-              ok: false,
-              summary: "Tool call skipped because newer user steering arrived.",
-              error: "superseded_by_user_steering",
-            };
-            const skippedMessage: ChatMessage = {
-              role: "tool",
-              tool_call_id: skipped.id,
-              name: skipped.function.name,
-              content: resultForModel(skippedResult, options.maxOutputChars),
-            };
-            const skippedEventId = createId("event");
-            const skippedObservation = observeToolResult({
-              sourceEventId: skippedEventId,
-              sourceCallId: skipped.id,
-              scopeKey: progressScopeKey(state, turnId),
-              responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
-              tool: skipped.function.name,
-              result: skippedResult,
-              verificationIntent: false,
-            });
-            await this.dependencies.appendEvent({
-              eventId: skippedEventId,
-              threadId: state.threadId,
-              turnId,
-              stepId: `step_${step}`,
-              type: "tool.result",
-              phase: "interrupted",
-              payload: {
-                callId: skipped.id,
-                tool: skipped.function.name,
-                message: skippedMessage,
-                progressObservation: skippedObservation,
-              },
-            });
-            state.progressGuard = foldProgressObservation(state.progressGuard, skippedObservation).state;
-            state.messages.push(skippedMessage);
+    const toolName = call.function.name as ToolName;
+    return {
+      limits: this.dependencies.limits,
+      resultTokenBudget: this.dependencies.contextManager.tokenCapacity
+        ? Math.max(
+            0,
+            this.dependencies.contextManager.tokenCapacity.inputCapacity -
+              this.dependencies.contextManager.estimateRequestTokens(projectionHistory, ordinaryToolDefinitions) -
+              (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens,
+          )
+        : undefined,
+      resultCharBudget: this.dependencies.contextManager.tokenCapacity
+        ? undefined
+        : Math.max(
+            0,
+            this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
+              JSON.stringify(projectionHistory).length -
+              estimateToolDefinitionsChars(ordinaryToolDefinitions) -
+              (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens * 2,
+          ),
+      orchestrationEnabled: options.orchestrationEnabled,
+      isOrchestrationEnabled: options.isOrchestrationEnabled,
+      workspaceRoot: state.workspaceRoot,
+      ...(toolName === "run_command" || toolName === "start_command"
+        ? { validationPriorChanges: state.changes.map((change) => ({ ...change })) }
+        : {}),
+      mode: effectiveMode,
+      selectedMode: state.mode,
+      threadId: state.threadId,
+      turnId,
+      approvalPolicy: options.approvalPolicy,
+      commandExecutionMode: options.commandExecutionMode,
+      isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
+      unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
+      requestApproval: this.dependencies.requestApproval,
+      signal: options.signal,
+      reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
+        const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
+        const amount =
+          typeof update.progress === "number"
+            ? `${update.progress}${typeof update.total === "number" ? `/${update.total}` : ""}`
+            : undefined;
+        this.dependencies.onStatus?.([`Tool: ${displayName}`, amount, detail].filter(Boolean).join(" · "));
+      },
+      commandTimeoutMs: options.commandTimeoutMs,
+      maxOutputChars: options.maxOutputChars,
+      agentRole: agentIdentity.role,
+      ...(agentIdentity.role === "subagent"
+        ? {
+            agentId: agentIdentity.agentId,
+            assignedTaskId: agentIdentity.assignedTaskId,
           }
-          await this.takeAndApplySteering(state, turnId, "between_tools", turnImages, false, memoryContext);
-          steeringAppliedBetweenTools = true;
-          break;
-        }
-        const toolName = call.function.name as ToolName;
-        // The gateway is a run-level snapshot, while this one-shot tool can be
-        // withdrawn between requests; recheck its availability at execution.
-        const tool =
-          toolName === "name_thread" && !threadTitleUnclaimed(this.dependencies, state.threadId)
-            ? undefined
-            : toolGateway.get(toolName);
-        let displayName = toolName;
-        // Verification relies on recorded changes and actual command results;
-        // no whole-repository test baseline is captured or replayed.
-        const taskIdAtCall = activeTask(state.taskGraph)?.id;
-        let taskGraphOperation: TaskGraphTransitionOperation | undefined;
-        let subagentTaskOperation: SubagentTaskOperation | undefined;
-        let result: ToolExecutionResult;
-        let preparedSubagentLifecycle: SubagentLifecycleUpdate | undefined;
-        let preparedSubagentLifecycleRolledBack = false;
-
-        await this.dependencies.appendEvent({
-          threadId: state.threadId,
-          turnId,
-          stepId: `step_${step}`,
-          type: "tool.call",
-          phase: "requested",
-          payload: call,
-        });
-
-        if (environmentFault && tool?.mutating) {
-          result = toolFailure(
-            new CommandEnvironmentQuarantined(environmentFault),
-            "Tool skipped: environment quarantined; task paused.",
-          );
-        } else if (proposePlanBatched) {
-          result = {
-            ok: false,
-            summary: "propose_plan must be the only tool call in a model response.",
-            error: "propose_plan_must_be_exclusive",
-          };
-        } else if (submitTaskResultBatched) {
-          result = {
-            ok: false,
-            summary: "submit_task_result must be the only tool call in a model response.",
-            error: "submit_task_result_must_be_exclusive",
-          };
-        } else if (!tool) {
-          result = {
-            ok: false,
-            summary: `Tool ${call.function.name} is not available in the current mode.`,
-            error: "tool_not_available",
-            failure: protocolToolFailure(
-              "tool_not_available",
-              "Use only currently exposed tools. This call was not executed; permissions have not changed.",
-            ),
-          };
-        } else {
-          try {
-            const preparedInvocation = toolGateway.prepare(toolName, call.function.arguments);
-            if (!preparedInvocation) throw new Error(`Tool ${toolName} is not available`);
-            const rawInput = preparedInvocation.input;
-            displayName = toolApprovalIdentity(
-              preparedInvocation.tool,
-              rawInput,
-              preparedInvocation.binding,
-              state.workspaceRoot,
-            ).label;
-            let input: unknown = rawInput;
-            if (toolName === "manage_tasks") {
-              const parsedOperation = taskGraphOperationSchema.parse(rawInput);
-              if (
-                (parsedOperation.action === "complete" || parsedOperation.action === "block") &&
-                this.dependencies.hasOpenCommandHandles?.()
-              ) {
-                finishRejectedReason = backgroundCommandFinalizationInstruction();
-                throw new Error(finishRejectedReason);
-              }
-              if (
-                parsedOperation.action === "create" &&
-                (this.dependencies.getOutstandingSubagents?.() ?? []).some(
-                  (agent) => agent.assignmentKind === "standalone",
-                )
-              ) {
-                throw new Error("Collect every standalone child result before creating a task DAG.");
-              }
-              input = parsedOperation;
-              if (parsedOperation.action !== "list") {
-                taskGraphOperation = parsedOperation;
-              }
-            }
-            if (toolName === "submit_task_result" && this.dependencies.hasOpenCommandHandles?.()) {
-              finishRejectedReason = backgroundCommandFinalizationInstruction();
-              throw new Error(finishRejectedReason);
-            }
-            this.dependencies.onStatus?.(`Tool: ${displayName}`);
-            const toolContext = {
-              limits: this.dependencies.limits,
-              resultTokenBudget: this.dependencies.contextManager.tokenCapacity
-                ? Math.max(
-                    0,
-                    this.dependencies.contextManager.tokenCapacity.inputCapacity -
-                      this.dependencies.contextManager.estimateRequestTokens(
-                        projectionHistory,
-                        ordinaryToolDefinitions,
-                      ) -
-                      (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens,
-                  )
-                : undefined,
-              resultCharBudget: this.dependencies.contextManager.tokenCapacity
-                ? undefined
-                : Math.max(
-                    0,
-                    this.dependencies.contextManager.activeCharBudget(options.maxContextChars) -
-                      JSON.stringify(projectionHistory).length -
-                      estimateToolDefinitionsChars(ordinaryToolDefinitions) -
-                      (this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS).contextSafetyReserveTokens * 2,
-                  ),
-              orchestrationEnabled: options.orchestrationEnabled,
-              isOrchestrationEnabled: options.isOrchestrationEnabled,
-              workspaceRoot: state.workspaceRoot,
-              ...(toolName === "run_command" || toolName === "start_command"
-                ? { validationPriorChanges: state.changes.map((change) => ({ ...change })) }
-                : {}),
-              mode: effectiveMode,
-              selectedMode: state.mode,
-              threadId: state.threadId,
-              turnId,
-              approvalPolicy: options.approvalPolicy,
-              commandExecutionMode: options.commandExecutionMode,
-              isUnrestrictedHostAccessActive: options.isUnrestrictedHostAccessActive,
-              unrestrictedHostAccessEpoch: options.unrestrictedHostAccessEpoch,
-              requestApproval: this.dependencies.requestApproval,
-              signal: options.signal,
-              reportProgress: (update: { message?: string; progress?: number; total?: number }) => {
-                const detail = update.message?.replace(/[\u0000-\u001F\u007F]/gu, " ").slice(0, 240);
-                const amount =
-                  typeof update.progress === "number"
-                    ? `${update.progress}${typeof update.total === "number" ? `/${update.total}` : ""}`
-                    : undefined;
-                this.dependencies.onStatus?.([`Tool: ${displayName}`, amount, detail].filter(Boolean).join(" · "));
-              },
-              commandTimeoutMs: options.commandTimeoutMs,
-              maxOutputChars: options.maxOutputChars,
-              agentRole: agentIdentity.role,
-              ...(agentIdentity.role === "subagent"
-                ? {
-                    agentId: agentIdentity.agentId,
-                    assignedTaskId: agentIdentity.assignedTaskId,
-                  }
-                : {}),
-              thinkingEffort: state.thinkingEffort,
-              provider: state.provider,
-              model: state.model,
-              toolCallId: call.id,
-              searchProjectMemory: this.dependencies.searchMemories,
-              recordMemoryRecall: (memoryIds: readonly string[]) =>
-                this.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
-              recallContext: async (input: { evidenceId: string; offset: number; limit: number }) =>
-                recallThreadContext(
-                  state,
-                  input,
-                  this.dependencies.readToolEvidence
-                    ? (id, offset, limit) => this.dependencies.readToolEvidence!(state, id, offset, limit)
-                    : undefined,
-                  this.dependencies.limits,
-                ),
-              ...(this.dependencies.getLayeredContext
-                ? {
-                    searchHistory: async (query: string, limit: number) => {
-                      const history = await this.dependencies.getLayeredContext!({
-                        state,
-                        query,
-                        queries: [query],
-                        beforeMessageIndex: state.messages.length,
-                      });
-                      return (history.evidence ?? []).slice(0, limit).map((hit) => ({
-                        id: hit.id,
-                        title: hit.title.slice(0, 160),
-                        preview: hit.content.slice(0, 400),
-                        historical: true as const,
-                      }));
-                    },
-                  }
-                : {}),
-              ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
-              recordCommand: (entry: CommandAuditEntry) => {
-                const taskId = state.taskGraph ? activeTask(state.taskGraph)?.id : undefined;
-                const scopedEntry: CommandAuditEntry = {
-                  ...entry,
-                  sourceAgentRole: agentIdentity.role,
-                  sourceScopeKey: state.taskGraph
-                    ? `${state.threadId}/${state.taskGraph.id}/${taskId ?? "none"}`
-                    : `${state.threadId}/intent:${state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? turnId}`,
-                  ...(agentIdentity.role === "subagent" ? { sourceAgentId: agentIdentity.agentId } : {}),
-                  ...(taskId ? { sourceTaskId: taskId } : {}),
-                };
-                state.commands.push(scopedEntry);
-                this.dependencies.recordCommand?.(turnId, scopedEntry);
-              },
-              ...(this.dependencies.attachImage
-                ? {
-                    attachImage: async (image: { absolutePath: string; sourceName?: string }) => {
-                      if (turnImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
-                        throw new Error(`A turn can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
-                      }
-                      assertThreadImageNumberAvailable(imageNumbering.next);
-                      const attachment = await this.dependencies.attachImage?.({
-                        threadId: state.threadId,
-                        label: `Image #${imageNumbering.next}`,
-                        absolutePath: image.absolutePath,
-                        sourceName: image.sourceName,
-                      });
-                      if (!attachment) {
-                        throw new Error("Image attachment storage is unavailable.");
-                      }
-                      try {
-                        validateImageAttachmentCollection([...turnImages, attachment]);
-                        validateProviderImageAttachments(this.dependencies.provider.name, [attachment]);
-                      } catch (error) {
-                        await this.dependencies.discardImage?.(state.threadId, attachment).catch(() => undefined);
-                        throw error;
-                      }
-                      turnImages.push(attachment);
-                      imageNumbering.next += 1;
-                      return attachment;
-                    },
-                  }
-                : {}),
-            };
-            const waitAttempt =
-              tool.name === "poll_command" ? this.dependencies.steeringNotifier?.openAttempt() : undefined;
-            try {
-              result =
-                reconciliationGate(state, tool.name, input) ??
-                commandRetries.before(tool.name, input) ??
-                (await toolGateway.invoke(
-                  { ...preparedInvocation, input },
-                  { ...toolContext, waitSignal: waitAttempt?.signal },
-                  (name, execute) => this.withToolExecutionActivity(name, execute),
-                ));
-              result = commandRetries.after(tool.name, input, result);
-            } finally {
-              waitAttempt?.dispose();
-            }
-            preparedSubagentLifecycle = result.subagentLifecycle;
-          } catch (error) {
-            result = toolFailure(error, `Tool ${displayName} failed.`);
-          }
-        }
-
-        if (
-          toolName === "write_memory" &&
-          result.ok &&
-          result.memoryMutation &&
-          memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
-        ) {
-          result = {
-            ok: false,
-            summary: `A turn can stage at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory changes.`,
-            error: "memory_mutation_limit_reached",
-          };
-        }
-
-        let taskGraphUpdate: TaskGraph | undefined;
-        if (result.ok && result.taskGraphUpdate) {
-          try {
-            if (toolName === "manage_tasks" && taskGraphOperation) {
-              taskGraphUpdate = validateTaskGraphTransition(
-                state.taskGraph,
-                taskGraphOperation,
-                result.taskGraphUpdate,
-                turnId,
-              );
-            } else if (toolName === "manage_subagents" && result.subagentTaskOperation) {
-              subagentTaskOperation = subagentTaskOperationSchema.parse(result.subagentTaskOperation);
-              taskGraphUpdate = validateSubagentTaskTransition(
-                state.taskGraph,
-                subagentTaskOperation,
-                result.taskGraphUpdate,
-                turnId,
-              );
-            } else {
-              throw new Error("Only an authorized manage_tasks or manage_subagents call may update the task DAG");
-            }
-          } catch (error) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected an invalid task DAG transition.",
-              error: error instanceof Error ? error.message : String(error),
-            };
-          }
-        } else if (result.ok && taskGraphOperation) {
-          result = {
-            ok: false,
-            summary: "Runtime rejected a missing task DAG transition.",
-            error: "manage_tasks did not return an authoritative task DAG update",
-          };
-        }
-
-        if (result.ok && result.subagentLifecycle) {
-          const lifecycle = result.subagentLifecycle;
-          const requiresBinding = lifecycle.action === "activate" || lifecycle.action === "observe";
-          const assignment = result.subagentAssignment;
-          let lifecycleError: string | undefined;
-          if (toolName !== "manage_subagents") {
-            lifecycleError = "Only manage_subagents may change child lifecycle state";
-          } else if (requiresBinding) {
-            if (!isSubagentAssignmentSnapshot(assignment) || assignment.agentId !== lifecycle.agentId) {
-              lifecycleError = "The child lifecycle transition is missing its exact Runtime binding";
-            } else if (assignment.kind === "dag") {
-              if (
-                !taskGraphUpdate ||
-                !subagentTaskOperation ||
-                assignment.taskGraphId !== taskGraphUpdate.id ||
-                assignment.taskId !== subagentTaskOperation.taskId ||
-                assignment.agentId !== subagentTaskOperation.agentId ||
-                (lifecycle.action === "activate" && subagentTaskOperation.action !== "claim") ||
-                (lifecycle.action === "observe" && subagentTaskOperation.action === "claim")
-              ) {
-                lifecycleError =
-                  "A DAG child lifecycle transition requires its matching authoritative task-DAG transition";
-              }
-            } else if (taskGraphUpdate || subagentTaskOperation) {
-              lifecycleError = "A standalone child lifecycle transition must not update the task DAG";
-            }
-          } else if (taskGraphUpdate || subagentTaskOperation || assignment) {
-            lifecycleError = "Follow-up and stop lifecycle transitions must not alter the child binding or task DAG";
-          }
-          if (lifecycleError) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected an invalid subagent lifecycle transition.",
-              error: lifecycleError,
-            };
-          }
-        } else if (result.ok && result.subagentAssignment) {
-          result = {
-            ok: false,
-            summary: "Runtime rejected an unpaired child assignment.",
-            error: "A child assignment requires an activate or observe lifecycle transition",
-          };
-        }
-
-        if (result.ok && result.subagentTaskReport) {
-          const report = result.subagentTaskReport;
-          if (
-            toolName !== "submit_task_result" ||
-            agentIdentity.role !== "subagent" ||
-            report.taskId !== agentIdentity.assignedTaskId
-          ) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected an unauthorized child task result.",
-              error: "invalid_subagent_task_result",
-            };
-          } else {
-            submittedTaskReport = report;
-          }
-        } else if (result.ok && toolName === "submit_task_result") {
-          result = {
-            ok: false,
-            summary: "Runtime rejected a missing child task result.",
-            error: "submit_task_result did not return a structured result",
-          };
-        }
-
-        let planReviewUpdate: SessionState["planReview"] | undefined;
-        if (result.ok && result.planProposal) {
-          try {
-            if (toolName !== "propose_plan" || effectiveMode !== "plan") {
-              throw new Error("Only propose_plan may submit a proposal in Plan mode");
-            }
-            if ((this.dependencies.getOutstandingSubagents?.() ?? []).length > 0) {
-              throw new Error("Outstanding child assignments must be collected before proposing a plan");
-            }
-            if (state.taskGraph && state.taskGraph.status !== "completed")
-              throw new Error("Finish the planning task DAG before proposing a plan");
-            planReviewUpdate = createPlanReviewState(result.planProposal, turnId, state.planReview);
-          } catch (error) {
-            result = {
-              ok: false,
-              summary: "Runtime rejected an invalid plan proposal.",
-              error: error instanceof Error ? error.message : String(error),
-            };
-          }
-        } else if (result.ok && toolName === "propose_plan") {
-          result = {
-            ok: false,
-            summary: "Runtime rejected a missing plan proposal.",
-            error: "propose_plan did not return a structured proposal",
-          };
-        }
-        if (!result.ok && toolName === "submit_task_result") {
-          submittedTaskReport = undefined;
-        }
-
-        result = normalizeToolFailure(result);
-        if (toolName === "write_memory" && !result.ok && result.failure) {
-          // Long-term memory is a best-effort projection of completed work. A
-          // malformed or unsupported proposal must never consume the shared
-          // tool-protocol budget or turn a successfully completed coding task
-          // into a paused task. Keep the per-call failure visible, skip only
-          // that proposal, and let the model deliver its result.
-          result = {
-            ...result,
-            failure: {
-              ...result.failure,
-              recovery: "none",
-              instruction:
-                `${result.failure.instruction} This memory proposal was skipped. ` +
-                "Do not retry it solely for memory maintenance; continue the task or provide the final answer.",
+        : {}),
+      thinkingEffort: state.thinkingEffort,
+      provider: state.provider,
+      model: state.model,
+      toolCallId: call.id,
+      searchProjectMemory: this.dependencies.searchMemories,
+      recordMemoryRecall: (memoryIds: readonly string[]) =>
+        this.dependencies.recordMemoryRecall?.(state.threadId, turnId, memoryIds),
+      recallContext: async (input: { evidenceId: string; offset: number; limit: number }) =>
+        recallThreadContext(
+          state,
+          input,
+          this.dependencies.readToolEvidence
+            ? (id, offset, limit) => this.dependencies.readToolEvidence!(state, id, offset, limit)
+            : undefined,
+          this.dependencies.limits,
+        ),
+      ...(this.dependencies.getLayeredContext
+        ? {
+            searchHistory: async (query: string, limit: number) => {
+              const history = await this.dependencies.getLayeredContext!({
+                state,
+                query,
+                queries: [query],
+                beforeMessageIndex: state.messages.length,
+              });
+              return (history.evidence ?? []).slice(0, limit).map((hit) => ({
+                id: hit.id,
+                title: hit.title.slice(0, 160),
+                preview: hit.content.slice(0, 400),
+                historical: true as const,
+              }));
             },
-          };
-          toolRecovery.succeed(toolName);
-        }
-        if (result.failure?.code === "command_environment_quarantined") {
-          environmentFault = result.error ?? result.failure.instruction;
-        }
-        if (result.ok) toolRecovery.succeed(toolName);
-        // Ordinary tools share field-level repair guidance; mutations are never auto-replayed.
-        // Internal context maintenance owns its own durable correction budget.
-        if (result.failure?.recovery === "correct_arguments") {
-          const recovery = toolRecovery.fail(toolName);
-          result = {
-            ...result,
-            failure: {
-              ...result.failure,
-              instruction: `${result.failure.instruction} Correction attempts remaining: ${recovery.remaining}.`,
-              ...(recovery.remaining === 0 ? { recovery: "none" as const } : {}),
-            },
-          };
-          if (recovery.remaining === 0) requiredProtocolExhaustion = { tool: toolName, attempt: recovery.attempt };
-        }
-
-        if (this.dependencies.captureToolEvidence && toolName !== "write_memory") {
-          try {
-            result = {
-              ...result,
-              evidenceId: this.dependencies.captureToolEvidence(state, call.id, toolName, result),
-            };
-          } catch {
-            // The bounded journal result remains authoritative. Evidence
-            // archival is internal bookkeeping and should fail silently.
           }
-        }
-        let projectionIntent: string | undefined;
-        if (toolName === "run_command" || toolName === "start_command") {
-          try {
-            projectionIntent = JSON.parse(call.function.arguments).intent;
-          } catch {
-            /* invalid arguments were not executed */
-          }
-        }
-        const projected = projectToolResult(result, this.dependencies.limits, {
-          intent: projectionIntent,
-          previousMessages: projectionHistory,
-        });
-        const projectionLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
-        const readData = result.data as
-          | { path?: unknown; content?: unknown; contentHash?: unknown; startLine?: unknown; endLine?: unknown }
-          | undefined;
-        const versionedRead =
-          result.ok &&
-          toolName === "read_file" &&
-          readData &&
-          typeof readData.path === "string" &&
-          typeof readData.content === "string" &&
-          typeof readData.contentHash === "string" &&
-          /^[a-f0-9]{64}$/u.test(readData.contentHash) &&
-          Number.isSafeInteger(readData.startLine) &&
-          Number.isSafeInteger(readData.endLine);
-        const isMcpResult = tool?.metadata?.identity.sourceId === "mcp";
-        const resultChars = versionedRead
-          ? projectionLimits.maxReadResultTokens * 8 + 4096
-          : toolName === "search_files"
-            ? projectionLimits.searchMaxResultTokens * 8 + 4096
-            : isMcpResult
-              ? options.maxOutputChars
-              : (this.dependencies.limits?.maxToolResultChars ?? options.maxOutputChars);
-        const toolMessage: ChatMessage = {
-          role: "tool",
-          tool_call_id: call.id,
-          name: call.function.name,
-          content: resultForModel(projected, resultChars),
+        : {}),
+      ...(state.taskGraph ? { taskGraph: cloneTaskGraph(state.taskGraph) } : {}),
+      recordCommand: (entry: CommandAuditEntry) => {
+        const taskId = state.taskGraph ? activeTask(state.taskGraph)?.id : undefined;
+        const scopedEntry: CommandAuditEntry = {
+          ...entry,
+          sourceAgentRole: agentIdentity.role,
+          sourceScopeKey: state.taskGraph
+            ? `${state.threadId}/${state.taskGraph.id}/${taskId ?? "none"}`
+            : `${state.threadId}/intent:${state.contextIntentLedger?.latestRequest.sourceMessageIndex ?? turnId}`,
+          ...(agentIdentity.role === "subagent" ? { sourceAgentId: agentIdentity.agentId } : {}),
+          ...(taskId ? { sourceTaskId: taskId } : {}),
         };
-        const toolResultEventId = createId("event");
-        const verification = commandVerificationClassification(
-          toolName,
-          call.function.arguments,
-          progressVerificationCommands,
-          result,
-        );
-        const progressCommandData =
-          result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : undefined;
-        if (
-          verification.intent &&
-          (toolName === "run_command" || toolName === "start_command") &&
-          typeof progressCommandData?.commandId === "string"
-        ) {
-          progressVerificationCommands.set(progressCommandData.commandId, verification.kind ?? "custom");
-        }
-        const progressObservation = observeToolResult({
-          sourceEventId: toolResultEventId,
-          sourceCallId: call.id,
-          scopeKey: taskIdAtCall ? `thread:${state.threadId}/task:${taskIdAtCall}` : progressScopeKey(state, turnId),
-          responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
-          tool: call.function.name,
-          result,
-          verificationIntent: verification.intent,
-          investigationPolicy: {
-            minimum: projectionLimits.progressInvestigationMinSamples,
-            ratio: projectionLimits.progressInvestigationRepeatRatio,
-            window: projectionLimits.progressInvestigationWindowResponses,
-            review: projectionLimits.progressInvestigationReviewEnabled,
-          },
-          ...(verification.kind ? { verificationKind: verification.kind } : {}),
-        });
-        const rollbackPreparedSubagent = (): void => {
-          if (!preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
-          preparedSubagentLifecycleRolledBack = true;
-          try {
-            this.dependencies.onSubagentLifecycleRollback?.(preparedSubagentLifecycle);
-          } catch {
-            // A local reservation cleanup hook must not replace the durable tool result/error.
-          }
-        };
-        if (!result.ok) rollbackPreparedSubagent();
-        const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
-        const contextReconciliation = reconciliationObservation(state, toolName, result);
-        let displayDetails: ReturnType<typeof safeToolDisplayDetails> = [];
-        try {
-          displayDetails = safeToolDisplayDetails(
-            toolDisplayDetails(tool, toolName, call.function.arguments, result, state),
-          );
-        } catch {
-          // Presentation metadata must never prevent a tool result from being committed.
-        }
-        try {
-          await this.dependencies.appendEvent({
-            eventId: toolResultEventId,
-            threadId: state.threadId,
-            turnId,
-            stepId: `step_${step}`,
-            type: "tool.result",
-            phase: result.ok ? "completed" : "failed",
-            payload: {
-              callId: call.id,
-              tool: call.function.name,
-              ...(toolGateway.catalog.bindings.get(call.function.name)
-                ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
-                : {}),
-              message: toolMessage,
-              ...(displayDetails.length ? { toolDetails: displayDetails } : {}),
-              progressObservation,
-              ...(contextCommand ? { contextCommand } : {}),
-              ...(contextReconciliation ? { contextReconciliation } : {}),
-              outputProjection: {
-                capturedResultChars: JSON.stringify(result.data ?? null).length,
-                modelResultChars: toolMessage.content.length,
-              },
-              ...(result.failure ? { failure: result.failure } : {}),
-              ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
-              ...(taskGraphUpdate && taskGraphOperation ? { taskGraph: taskGraphUpdate, taskGraphOperation } : {}),
-              ...(taskGraphUpdate && subagentTaskOperation
-                ? { taskGraph: taskGraphUpdate, subagentTaskOperation }
-                : {}),
-              ...(result.ok && result.subagentLifecycle ? { subagentLifecycle: result.subagentLifecycle } : {}),
-              ...(result.ok && result.subagentAssignment ? { subagentAssignment: result.subagentAssignment } : {}),
-              ...(result.ok && result.subagentMessageId ? { subagentMessageId: result.subagentMessageId } : {}),
-              ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
+        state.commands.push(scopedEntry);
+        this.dependencies.recordCommand?.(turnId, scopedEntry);
+      },
+      ...(this.dependencies.attachImage
+        ? {
+            attachImage: async (image: { absolutePath: string; sourceName?: string }) => {
+              if (turnImages.length >= MAX_IMAGES_PER_MODEL_REQUEST) {
+                throw new Error(`A turn can contain at most ${MAX_IMAGES_PER_MODEL_REQUEST} images.`);
+              }
+              assertThreadImageNumberAvailable(imageNumbering.next);
+              const attachment = await this.dependencies.attachImage?.({
+                threadId: state.threadId,
+                label: `Image #${imageNumbering.next}`,
+                absolutePath: image.absolutePath,
+                sourceName: image.sourceName,
+              });
+              if (!attachment) {
+                throw new Error("Image attachment storage is unavailable.");
+              }
+              try {
+                validateImageAttachmentCollection([...turnImages, attachment]);
+                validateProviderImageAttachments(this.dependencies.provider.name, [attachment]);
+              } catch (error) {
+                await this.dependencies.discardImage?.(state.threadId, attachment).catch(() => undefined);
+                throw error;
+              }
+              turnImages.push(attachment);
+              imageNumbering.next += 1;
+              return attachment;
             },
-          });
-        } catch (error) {
-          rollbackPreparedSubagent();
-          throw error;
-        }
-        projectionHistory.push(toolMessage);
-        const progressFold = foldProgressObservation(state.progressGuard, progressObservation);
-        state.progressGuard = progressFold.state;
-        foldPendingOperations(state, {
-          tool: toolName,
-          contextCommand,
-          contextReconciliation,
-          ...(result.ok
-            ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment }
-            : {}),
-        });
-        completedVerificationPhase ||= progressFold.accepted && progressObservation.kind === "verification_terminal";
-        state.messages.push(toolMessage);
-        if (taskGraphUpdate) {
-          state.taskGraph = taskGraphUpdate;
-          state.updatedAt = new Date().toISOString();
-        }
-        if (planReviewUpdate) {
-          state.planReview = planReviewUpdate;
-          proposedPlan = planReviewUpdate.proposal;
-          state.updatedAt = new Date().toISOString();
-        }
-        if (result.ok && result.imageAttachments?.length) {
-          stepImageAttachments.push(...result.imageAttachments);
-        }
-        if (toolName === "write_memory" && result.ok && result.memoryMutation) {
-          memoryContext.mutations.push(result.memoryMutation);
-        }
-        await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
-      }
-    } finally {
-      updates.completedVerificationPhase = completedVerificationPhase;
-      updates.environmentFault = environmentFault;
-      updates.finishRejectedReason = finishRejectedReason;
-      updates.proposedPlan = proposedPlan;
-      updates.requiredProtocolExhaustion = requiredProtocolExhaustion;
-      updates.steeringAppliedBetweenTools = steeringAppliedBetweenTools;
-      updates.submittedTaskReport = submittedTaskReport;
+          }
+        : {}),
+    };
+  }
+
+  /** Check the state changes a tool result claims (memory, task DAG, child lifecycle, task report, plan) before any is applied. */
+  private validateToolEffects(
+    ctx: ToolCallsContext,
+    updates: ToolCallsState,
+    toolName: ToolName,
+    invocation: ToolInvocationOutcome,
+  ): ToolEffects {
+    const { agentIdentity, effectiveMode, memoryContext, state, turnId } = ctx;
+    let result = invocation.result;
+    if (
+      toolName === "write_memory" &&
+      result.ok &&
+      result.memoryMutation &&
+      memoryContext.mutations.length >= MAX_MEMORY_MUTATIONS_PER_TURN
+    ) {
+      result = {
+        ok: false,
+        summary: `A turn can stage at most ${MAX_MEMORY_MUTATIONS_PER_TURN} memory changes.`,
+        error: "memory_mutation_limit_reached",
+      };
     }
+
+    const taskGraphEffect = validateTaskGraphEffect(state, turnId, toolName, invocation.taskGraphOperation, result);
+    result = taskGraphEffect.result;
+    const { taskGraphUpdate, subagentTaskOperation } = taskGraphEffect;
+
+    if (result.ok && result.subagentLifecycle) {
+      const lifecycleError = subagentLifecycleError(
+        toolName,
+        result.subagentLifecycle,
+        result.subagentAssignment,
+        taskGraphUpdate,
+        subagentTaskOperation,
+      );
+      if (lifecycleError) {
+        result = {
+          ok: false,
+          summary: "Runtime rejected an invalid subagent lifecycle transition.",
+          error: lifecycleError,
+        };
+      }
+    } else if (result.ok && result.subagentAssignment) {
+      result = {
+        ok: false,
+        summary: "Runtime rejected an unpaired child assignment.",
+        error: "A child assignment requires an activate or observe lifecycle transition",
+      };
+    }
+
+    if (result.ok && result.subagentTaskReport) {
+      const report = result.subagentTaskReport;
+      if (
+        toolName !== "submit_task_result" ||
+        agentIdentity.role !== "subagent" ||
+        report.taskId !== agentIdentity.assignedTaskId
+      ) {
+        result = {
+          ok: false,
+          summary: "Runtime rejected an unauthorized child task result.",
+          error: "invalid_subagent_task_result",
+        };
+      } else {
+        updates.submittedTaskReport = report;
+      }
+    } else if (result.ok && toolName === "submit_task_result") {
+      result = {
+        ok: false,
+        summary: "Runtime rejected a missing child task result.",
+        error: "submit_task_result did not return a structured result",
+      };
+    }
+
+    let planReviewUpdate: SessionState["planReview"] | undefined;
+    if (result.ok && result.planProposal) {
+      try {
+        if (toolName !== "propose_plan" || effectiveMode !== "plan") {
+          throw new Error("Only propose_plan may submit a proposal in Plan mode");
+        }
+        if ((this.dependencies.getOutstandingSubagents?.() ?? []).length > 0) {
+          throw new Error("Outstanding child assignments must be collected before proposing a plan");
+        }
+        if (state.taskGraph && state.taskGraph.status !== "completed")
+          throw new Error("Finish the planning task DAG before proposing a plan");
+        planReviewUpdate = createPlanReviewState(result.planProposal, turnId, state.planReview);
+      } catch (error) {
+        result = {
+          ok: false,
+          summary: "Runtime rejected an invalid plan proposal.",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    } else if (result.ok && toolName === "propose_plan") {
+      result = {
+        ok: false,
+        summary: "Runtime rejected a missing plan proposal.",
+        error: "propose_plan did not return a structured proposal",
+      };
+    }
+    if (!result.ok && toolName === "submit_task_result") {
+      updates.submittedTaskReport = undefined;
+    }
+    return { result, taskGraphUpdate, subagentTaskOperation, planReviewUpdate };
+  }
+
+  /** Project a result into the model-facing tool message and classify it for the progress guard. */
+  private toolResultRecord(
+    ctx: ToolCallsContext,
+    call: FunctionToolCall,
+    tool: AgentTool | undefined,
+    taskIdAtCall: string | undefined,
+    result: ToolExecutionResult,
+  ) {
+    const { options, progressResponseBase, progressVerificationCommands, projectionHistory, state, step, turnId } = ctx;
+    const toolName = call.function.name as ToolName;
+    let projectionIntent: string | undefined;
+    if (toolName === "run_command" || toolName === "start_command") {
+      try {
+        projectionIntent = JSON.parse(call.function.arguments).intent;
+      } catch {
+        /* invalid arguments were not executed */
+      }
+    }
+    const projected = projectToolResult(result, this.dependencies.limits, {
+      intent: projectionIntent,
+      previousMessages: projectionHistory,
+    });
+    const projectionLimits = this.dependencies.limits ?? DEFAULT_RUNTIME_LIMITS;
+    const readData = result.data as
+      { path?: unknown; content?: unknown; contentHash?: unknown; startLine?: unknown; endLine?: unknown } | undefined;
+    const versionedRead =
+      result.ok &&
+      toolName === "read_file" &&
+      readData &&
+      typeof readData.path === "string" &&
+      typeof readData.content === "string" &&
+      typeof readData.contentHash === "string" &&
+      /^[a-f0-9]{64}$/u.test(readData.contentHash) &&
+      Number.isSafeInteger(readData.startLine) &&
+      Number.isSafeInteger(readData.endLine);
+    const isMcpResult = tool?.metadata?.identity.sourceId === "mcp";
+    const resultChars = versionedRead
+      ? projectionLimits.maxReadResultTokens * 8 + 4096
+      : toolName === "search_files"
+        ? projectionLimits.searchMaxResultTokens * 8 + 4096
+        : isMcpResult
+          ? options.maxOutputChars
+          : (this.dependencies.limits?.maxToolResultChars ?? options.maxOutputChars);
+    const toolMessage: ChatMessage = {
+      role: "tool",
+      tool_call_id: call.id,
+      name: call.function.name,
+      content: resultForModel(projected, resultChars),
+    };
+    const toolResultEventId = createId("event");
+    const verification = commandVerificationClassification(
+      toolName,
+      call.function.arguments,
+      progressVerificationCommands,
+      result,
+    );
+    const progressCommandData =
+      result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : undefined;
+    if (
+      verification.intent &&
+      (toolName === "run_command" || toolName === "start_command") &&
+      typeof progressCommandData?.commandId === "string"
+    ) {
+      progressVerificationCommands.set(progressCommandData.commandId, verification.kind ?? "custom");
+    }
+    const progressObservation = observeToolResult({
+      sourceEventId: toolResultEventId,
+      sourceCallId: call.id,
+      scopeKey: taskIdAtCall ? `thread:${state.threadId}/task:${taskIdAtCall}` : progressScopeKey(state, turnId),
+      responseOrdinal: progressResponseOrdinal(progressResponseBase, step),
+      tool: call.function.name,
+      result,
+      verificationIntent: verification.intent,
+      investigationPolicy: {
+        minimum: projectionLimits.progressInvestigationMinSamples,
+        ratio: projectionLimits.progressInvestigationRepeatRatio,
+        window: projectionLimits.progressInvestigationWindowResponses,
+        review: projectionLimits.progressInvestigationReviewEnabled,
+      },
+      ...(verification.kind ? { verificationKind: verification.kind } : {}),
+    });
+    return { toolMessage, toolResultEventId, progressObservation };
+  }
+
+  /** Journal the tool result, then apply its accepted effects to the session; a prepared child reservation is rolled back on failure. */
+  private async commitToolResult(
+    ctx: ToolCallsContext,
+    updates: ToolCallsState,
+    call: FunctionToolCall,
+    tool: AgentTool | undefined,
+    taskIdAtCall: string | undefined,
+    outcome: ToolInvocationOutcome & ToolEffects,
+  ): Promise<void> {
+    const { memoryContext, projectionHistory, state, step, stepImageAttachments, toolGateway, turnId } = ctx;
+    const { result, displayName, taskGraphOperation, taskGraphUpdate, subagentTaskOperation, planReviewUpdate } =
+      outcome;
+    const toolName = call.function.name as ToolName;
+    const { toolMessage, toolResultEventId, progressObservation } = this.toolResultRecord(
+      ctx,
+      call,
+      tool,
+      taskIdAtCall,
+      result,
+    );
+    let preparedSubagentLifecycleRolledBack = false;
+    const rollbackPreparedSubagent = (): void => {
+      if (!outcome.preparedSubagentLifecycle || preparedSubagentLifecycleRolledBack) return;
+      preparedSubagentLifecycleRolledBack = true;
+      try {
+        this.dependencies.onSubagentLifecycleRollback?.(outcome.preparedSubagentLifecycle);
+      } catch {
+        // A local reservation cleanup hook must not replace the durable tool result/error.
+      }
+    };
+    if (!result.ok) rollbackPreparedSubagent();
+    const contextCommand = pendingCommandObservation(toolName, result, taskIdAtCall);
+    const contextReconciliation = reconciliationObservation(state, toolName, result);
+    let displayDetails: ReturnType<typeof safeToolDisplayDetails> = [];
+    try {
+      displayDetails = safeToolDisplayDetails(
+        toolDisplayDetails(tool, toolName, call.function.arguments, result, state),
+      );
+    } catch {
+      // Presentation metadata must never prevent a tool result from being committed.
+    }
+    try {
+      await this.dependencies.appendEvent({
+        eventId: toolResultEventId,
+        threadId: state.threadId,
+        turnId,
+        stepId: `step_${step}`,
+        type: "tool.result",
+        phase: result.ok ? "completed" : "failed",
+        payload: {
+          callId: call.id,
+          tool: call.function.name,
+          ...(toolGateway.catalog.bindings.get(call.function.name)
+            ? { toolBinding: toolGateway.catalog.bindings.get(call.function.name) }
+            : {}),
+          message: toolMessage,
+          ...(displayDetails.length ? { toolDetails: displayDetails } : {}),
+          progressObservation,
+          ...(contextCommand ? { contextCommand } : {}),
+          ...(contextReconciliation ? { contextReconciliation } : {}),
+          outputProjection: {
+            capturedResultChars: JSON.stringify(result.data ?? null).length,
+            modelResultChars: toolMessage.content.length,
+          },
+          ...(result.failure ? { failure: result.failure } : {}),
+          ...(taskIdAtCall ? { taskId: taskIdAtCall } : {}),
+          ...(taskGraphUpdate && taskGraphOperation ? { taskGraph: taskGraphUpdate, taskGraphOperation } : {}),
+          ...(taskGraphUpdate && subagentTaskOperation ? { taskGraph: taskGraphUpdate, subagentTaskOperation } : {}),
+          ...(result.ok && result.subagentLifecycle ? { subagentLifecycle: result.subagentLifecycle } : {}),
+          ...(result.ok && result.subagentAssignment ? { subagentAssignment: result.subagentAssignment } : {}),
+          ...(result.ok && result.subagentMessageId ? { subagentMessageId: result.subagentMessageId } : {}),
+          ...(planReviewUpdate ? { planReview: planReviewUpdate } : {}),
+        },
+      });
+    } catch (error) {
+      rollbackPreparedSubagent();
+      throw error;
+    }
+    projectionHistory.push(toolMessage);
+    const progressFold = foldProgressObservation(state.progressGuard, progressObservation);
+    state.progressGuard = progressFold.state;
+    foldPendingOperations(state, {
+      tool: toolName,
+      contextCommand,
+      contextReconciliation,
+      ...(result.ok
+        ? { subagentLifecycle: result.subagentLifecycle, subagentAssignment: result.subagentAssignment }
+        : {}),
+    });
+    updates.completedVerificationPhase ||=
+      progressFold.accepted && progressObservation.kind === "verification_terminal";
+    state.messages.push(toolMessage);
+    if (taskGraphUpdate) {
+      state.taskGraph = taskGraphUpdate;
+      state.updatedAt = new Date().toISOString();
+    }
+    if (planReviewUpdate) {
+      state.planReview = planReviewUpdate;
+      updates.proposedPlan = planReviewUpdate.proposal;
+      state.updatedAt = new Date().toISOString();
+    }
+    if (result.ok && result.imageAttachments?.length) {
+      stepImageAttachments.push(...result.imageAttachments);
+    }
+    if (toolName === "write_memory" && result.ok && result.memoryMutation) {
+      memoryContext.mutations.push(result.memoryMutation);
+    }
+    await this.dependencies.onToolCompleted?.(state, call.function.name, result, displayName, displayDetails);
   }
 
   private async closeContextPhase(
