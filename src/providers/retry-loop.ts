@@ -109,9 +109,19 @@ export function retryableStatus(statusCode: number): boolean {
   return statusCode === 408 || statusCode === 409 || statusCode === 425 || statusCode === 429 || statusCode >= 500;
 }
 
+export function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/** The request id a provider returned, formatted as an error-message suffix. */
+export function requestIdSuffix(headers: Record<string, string | string[] | undefined>): string {
+  const requestId = headerValue(headers["x-request-id"] ?? headers["request-id"]);
+  return requestId ? ` (request ${requestId})` : "";
+}
+
 /** Retry-After as a delay in milliseconds, capped at 30 seconds. */
 export function parseRetryAfter(value: string | string[] | undefined): number | undefined {
-  const raw = Array.isArray(value) ? value[0] : value;
+  const raw = headerValue(value);
   if (!raw) return undefined;
   const seconds = Number(raw);
   if (Number.isFinite(seconds) && seconds >= 0) {

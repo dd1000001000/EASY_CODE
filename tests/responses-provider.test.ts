@@ -124,6 +124,44 @@ describe("Responses provider", () => {
     await cancelDuringBackoff("deepseek");
   });
 
+  it("waits for Retry-After when present and otherwise uses exponential backoff", async () => {
+    const backoff = async (headers: Record<string, string>): Promise<{ delays: number[]; message: string }> => {
+      const config = createDefaultEasyCodeConfig(process.cwd());
+      config.providers["openai-like"]!.apiKey = "test-key";
+      config.providers["openai-like"]!.maxRetries = 1;
+      const delays: number[] = [];
+      const provider = createProvider(config, "openai-like", undefined, {
+        transport: async () => ({
+          statusCode: 429,
+          headers,
+          body: JSON.stringify({ error: { message: "slow down" } }),
+        }),
+        sleep: async (delayMs) => {
+          delays.push(delayMs);
+        },
+        random: () => 0.5,
+      });
+      const error = await provider.complete({ messages: [{ role: "user", content: "hello" }] }).then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+      assert.ok(error instanceof ProviderError);
+      return { delays, message: error.message };
+    };
+
+    activateModelRegistry(RESPONSES_REGISTRY, "responses test registry");
+    try {
+      const advised = await backoff({ "retry-after": "2", "x-request-id": "req_123" });
+      assert.deepEqual(advised.delays, [2_000]);
+      assert.match(advised.message, /HTTP 429 \(request req_123\): slow down/u);
+      const unadvised = await backoff({});
+      assert.deepEqual(unadvised.delays, [500]);
+      assert.match(unadvised.message, /HTTP 429: slow down/u);
+    } finally {
+      activateModelRegistry(PACKAGED_MODEL_REGISTRY_SOURCE, "packaged test registry");
+    }
+  });
+
   it("uses registry capabilities to omit unsupported native tools", async () => {
     activateModelRegistry(
       RESPONSES_REGISTRY.replace("tool_calling = true", "tool_calling = false"),

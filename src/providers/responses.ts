@@ -24,7 +24,7 @@ import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } fr
 import { ProviderError, redactImageDataUrls, streamProviderError, type ProviderProgress } from "./errors.js";
 import { postJsonWithNode, type JsonPostResponse } from "./http-transport.js";
 import type { ProviderRuntimeOptions } from "./openai-compatible.js";
-import { abortableSleep, retryableStatus, runWithRetries } from "./retry-loop.js";
+import { abortableSleep, parseRetryAfter, requestIdSuffix, retryableStatus, runWithRetries } from "./retry-loop.js";
 import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 import { isRecord } from "../utils/guards.js";
 
@@ -459,13 +459,19 @@ export class ResponsesProvider implements ModelProvider {
 
   private parse(response: JsonPostResponse): ProviderResponse {
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw new ProviderError(`${this.name} API returned HTTP ${response.statusCode}: ${apiError(response.body)}`, {
-        provider: this.name,
-        code: "http_error",
-        statusCode: response.statusCode,
-        retryable: retryableStatus(response.statusCode),
-        secrets: [this.config.apiKey],
-      });
+      const suffix = requestIdSuffix(response.headers);
+      throw new ProviderError(
+        `${this.name} API returned HTTP ${response.statusCode}${suffix}: ${apiError(response.body)}`,
+        {
+          provider: this.name,
+          code: "http_error",
+          statusCode: response.statusCode,
+          retryable: retryableStatus(response.statusCode),
+          // Without Retry-After the retry loop falls back to exponential backoff.
+          retryAfterMs: parseRetryAfter(response.headers["retry-after"]),
+          secrets: [this.config.apiKey],
+        },
+      );
     }
     let decoded: unknown;
     try {

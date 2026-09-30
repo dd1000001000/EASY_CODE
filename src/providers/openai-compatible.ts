@@ -19,7 +19,7 @@ import { providerImageCompatibilityIssue, validateProviderImageAttachments } fro
 import { thinkingEffortBufferedTimeoutMs, thinkingEffortStreamIdleTimeoutMs } from "../models/thinking.js";
 import { ProviderError, redactImageDataUrls, streamProviderError, type ProviderProgress } from "./errors.js";
 import { postJsonWithNode, type JsonPostResponse, type JsonPostTransport } from "./http-transport.js";
-import { abortableSleep, parseRetryAfter, retryableStatus, runWithRetries } from "./retry-loop.js";
+import { abortableSleep, parseRetryAfter, requestIdSuffix, retryableStatus, runWithRetries } from "./retry-loop.js";
 import { ServerSentEventDecoder, isEventStreamContentType, type ServerSentEvent } from "./sse.js";
 import { isRecord } from "../utils/guards.js";
 
@@ -643,8 +643,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (response.statusCode < 200 || response.statusCode >= 300) {
       const retryable = retryableStatus(response.statusCode);
       const apiMessage = extractApiErrorMessage(response.body);
-      const requestId = headerValue(response.headers["x-request-id"] ?? response.headers["request-id"]);
-      const suffix = requestId ? ` (request ${requestId})` : "";
+      const suffix = requestIdSuffix(response.headers);
       throw new ProviderError(`${this.name} API returned HTTP ${response.statusCode}${suffix}: ${apiMessage}`, {
         provider: this.name,
         code: "http_error",
@@ -781,8 +780,4 @@ function extractApiErrorMessage(body: string): string {
   }
   const trimmed = body.trim();
   return trimmed ? trimmed.slice(0, 1_000) : "No error details were returned";
-}
-
-function headerValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
 }
