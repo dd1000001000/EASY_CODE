@@ -16,6 +16,44 @@ function appProbe(): EasyCodeApp {
 }
 
 describe("host-neutral request entry", () => {
+  it("makes manual compaction exclusive in both directions and releases the lock on cancellation", async () => {
+    const app = appProbe();
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    let signal: AbortSignal | undefined;
+    let saved = 0;
+    Object.assign(app, {
+      state: { threadId: "compact_test" },
+      hasRunningCommands: () => false,
+      subagentCoordinator: { hasUnfinished: () => false, hasOutstanding: () => false },
+      terminal: { setCurrentRequest() {}, clearCurrentRequest() {}, compactionProgress() {}, warning() {} },
+      activeContextCharLimit: () => 100_000,
+      save: () => { saved++; }, syncTerminalView() {},
+      createRuntime: async () => ({ compactSession: async (_state: unknown, options: { signal: AbortSignal }) => {
+        signal = options.signal;
+        await pending;
+        return { phase: "cancelled" };
+      } }),
+    });
+    const compact = app.handleSlashCommand("/compact");
+    assert.equal(app.isCompacting(), true);
+    assert.equal(app.isRequestActive(), true);
+    await assert.rejects(app.submitUserMessage("Run tests"), /compaction/);
+    await assert.rejects(app.submitAdjustment("Continue"), /compaction/);
+    await assert.rejects(app.handleSlashCommand("/compact"), /compaction/);
+    await assert.rejects(app.handleSlashCommand("/model"), /compaction/);
+    assert.equal(app.cancelActiveRequest(), true);
+    assert.equal(signal?.aborted, true);
+    finish();
+    await compact;
+    assert.equal(app.isCompacting(), false);
+    assert.equal(app.isRequestActive(), false);
+    assert.equal(saved, 1);
+    Object.assign(app, { activeTurnController: new AbortController() });
+    await assert.rejects(app.handleSlashCommand("/compact"), /idle/);
+    await assert.rejects(app.submitAdjustment("/compact"), /idle/);
+  });
+
   it("accepts one turn, exposes cancellation, and releases ownership after completion", async () => {
     const app = appProbe();
     const internal = app as unknown as TurnProbe;

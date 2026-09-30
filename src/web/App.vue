@@ -14,6 +14,8 @@ import Composer from "./components/Composer.vue";
 import CommandPanel from "./components/CommandPanel.vue";
 import MessageRail from "./components/MessageRail.vue";
 import ConversationTurn from "./components/ConversationTurn.vue";
+import CompactionStatus from "./components/CompactionStatus.vue";
+import { compactionRunning } from "../ui/compaction.js";
 
 const view = ref<WebView>({ session: null, entries: [], tasks: null, subagents: [], activities: [], review: null, decision: null, busy: false });
 const history = ref<WebHistoryState>({ epoch: "", hasEarlier: false, markers: [] });
@@ -79,6 +81,7 @@ function pickEmptyThreadTitle(): void {
 }
 
 const session = computed(() => view.value.session);
+const compacting = computed(() => compactionRunning(view.value.compaction));
 const displayedEntries = computed(() => archiveEntries.value ?? view.value.entries);
 const conversationEntries = computed(() => displayedEntries.value.filter(isConversationEntry));
 const conversationTurns = computed(() => groupConversationTurns(conversationEntries.value));
@@ -399,6 +402,7 @@ async function returnToLatest(): Promise<void> {
 }
 async function send(text: string, imageIds: string[], resourceIds: string[]): Promise<void> {
   if (!activeThread.value) return;
+  if (compacting.value) { composer.value?.failed(); return; }
   if (archiveEntries.value) await returnToLatest();
   const threadId = activeThread.value;
   const command = webCommandName(text);
@@ -407,7 +411,7 @@ async function send(text: string, imageIds: string[], resourceIds: string[]): Pr
     error.value = t("ui.waitCurrent");
     return;
   }
-  if (command) beginCommandOutput(`/${command}`); else resetCommandOutput();
+  if (command && command !== "compact") beginCommandOutput(`/${command}`); else resetCommandOutput();
   try {
     const route = view.value.busy ? "/api/adjustment" : "/api/message";
     await request(route, { threadId, text, imageIds, resourceIds });
@@ -428,6 +432,7 @@ async function executePanelCommand(text: string): Promise<void> {
 }
 function openCommand(name: string): void {
   if (!commands.value.some(command => command.name === name) || !activeThread.value || view.value.busy) return;
+  if (name === "compact") { void send("/compact", [], []); return; }
   commandPanelName.value = name;
   void executePanelCommand(name === "memory" ? "/memory short 8" : `/${name}`);
 }
@@ -695,7 +700,8 @@ function noticePreview(text: string): string {
           <div class="command-output-body"><pre v-for="entry in commandOutput" :key="entry.id">{{ entry.text }}</pre></div>
         </ElCard>
       </div>
-      <Composer ref="composer" :busy="view.busy" :thread-id="activeThread" :model-label="modelLabel" :approval-label="approvalLabel" :orchestration-label="orchestrationLabel" :mode-label="modeLabel" :settings-disabled="!activeThread || view.busy || switching || !!view.decision" :decision="selectedCommand?.name === 'mcp' ? null : view.decision" :commands="commands" @send="send" @stop="stop" @select-model="chooseSetting('model')" @select-approval="chooseSetting('approval')" @select-orchestration="chooseSetting('orchestration')" @select-mode="chooseSetting('mode')" @open-command="openCommand" @submit-decision="decide" @error="error = $event">
+      <CompactionStatus v-if="view.compaction" :progress="view.compaction" />
+      <Composer ref="composer" :compacting="compacting" :busy="view.busy" :thread-id="activeThread" :model-label="modelLabel" :approval-label="approvalLabel" :orchestration-label="orchestrationLabel" :mode-label="modeLabel" :settings-disabled="!activeThread || view.busy || switching || !!view.decision" :decision="selectedCommand?.name === 'mcp' ? null : view.decision" :commands="commands" @send="send" @stop="stop" @select-model="chooseSetting('model')" @select-approval="chooseSetting('approval')" @select-orchestration="chooseSetting('orchestration')" @select-mode="chooseSetting('mode')" @open-command="openCommand" @submit-decision="decide" @error="error = $event">
         <template #command-panel><CommandPanel v-if="selectedCommand" :command="selectedCommand" :commands="commands" :entries="commandOutput" :decision="view.decision" :running="!!activeThread && runningThreadIds.has(activeThread)" @execute="executePanelCommand" @close="closeCommand" @decide="decide" @cancel-external="cancelExternalCommand" /></template>
       </Composer>
     </main>

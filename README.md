@@ -91,6 +91,7 @@ If local Laya inference fails, Auto uses cloud routing; Code delivery reports th
 | Choose approval mode | `/approval` | Approval control below the input |
 | Enable child agents | `/orchestration on` | DAG/agents control |
 | Inspect task, context and usage | `/status`, `/context`, `/usage` | Same commands or their panels |
+| Deeply compact context | `/compact` while idle | `/compact`, with a progress indicator and before/after text size |
 | Inspect memory | `/memory long project` | Same command or memory panel |
 | Continue a saved task | `/sessions`, `/resume <thread-id>` | Open its conversation in the sidebar |
 | Discover more commands | `/help` | Type `/` or open help |

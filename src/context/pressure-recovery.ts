@@ -116,7 +116,7 @@ async function commit(input: RecoveryInput, event: Eviction): Promise<void> {
 }
 
 /** Cheap first pass. A batch of parallel tools shares ONE output allowance. */
-export async function referenceToolOutputs(input: RecoveryInput, underPressure: boolean): Promise<boolean> {
+export async function referenceToolOutputs(input: RecoveryInput, underPressure: boolean, mode: "automatic" | "manual" = "automatic"): Promise<boolean> {
   const { state } = input;
   if (!completeExchange(state.messages)) return false;
   const limits = input.limits ?? DEFAULT_RUNTIME_LIMITS;
@@ -151,9 +151,9 @@ export async function referenceToolOutputs(input: RecoveryInput, underPressure: 
       const oldLarge = underPressure && index < protectedStart && !protectedRecall && !recovering &&
         (message.content?.length ?? 0) >= limits.contextToolReferenceMinChars;
       const referenceTokens = message.role === "tool" ? estimatedTokens(toolOutputReference(message, index).content ?? "") : size;
-      if ((oldLarge || tokens > limits.contextToolBatchTokens) && size > referenceTokens &&
+      if ((mode === "manual" || oldLarge || tokens > limits.contextToolBatchTokens) && size > referenceTokens &&
           !state.pressureRecovery?.toolReferences.includes(index)) {
-        if (oldLarge && tokens <= limits.contextToolBatchTokens && references.size &&
+        if (mode !== "manual" && oldLarge && tokens <= limits.contextToolBatchTokens && references.size &&
             projectedUsage / initialCapacity.capacity <= limits.contextReferenceTargetRatio) continue;
         references.add(index);
         tokens -= size - referenceTokens;

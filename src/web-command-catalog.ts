@@ -13,6 +13,7 @@ export const WEB_COMMAND_DESCRIPTIONS: Partial<Record<SlashCommandName, string>>
   mcp: "Manage connected MCP servers and authorization.",
   permissions: "Inspect sandbox permissions and revoke saved grants.",
   context: "Inspect the context window and compaction budget.",
+  compact: "Deeply compact the current conversation while it is idle.",
   usage: "Review provider-reported token usage.",
   memory: "Inspect short-term and scoped long-term memory.",
   help: "Browse available commands and their syntax.",

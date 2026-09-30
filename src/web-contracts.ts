@@ -4,10 +4,12 @@ import type { TaskGraphView } from "./tasks/task-graph.js";
 import type { SubagentView } from "./subagents/types.js";
 import type { InteractionChoice } from "./ui/interaction-port.js";
 import type { ThreadResourceAttachment } from "./resources/types.js";
+import type { CompactionProgress } from "./ui/compaction.js";
 
 export type WebEntryKind = "user" | "assistant" | "thinking" | "tool" | "info" | "success" | "warning" | "error" | "plan";
 export type WebAnswerState = "streaming" | "finalizing" | "confirmed";
 export interface WebEntry {
+  compaction?: CompactionProgress;
   id: string;
   kind: WebEntryKind;
   text: string;
@@ -48,6 +50,7 @@ export interface WebDecision {
   plan?: PlanProposal;
 }
 export interface WebView {
+  compaction?: CompactionProgress | null;
   session: UISessionInfo | null;
   entries: readonly WebEntry[];
   tasks: TaskGraphView | null;

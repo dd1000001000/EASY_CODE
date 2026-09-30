@@ -87,6 +87,7 @@ export interface RequestInputOptions {
 
 /** Runtime-to-user notifications; no ANSI, stdin, or browser protocol here. */
 export interface AgentPresentationPort {
+  compactionProgress?(progress: import("./compaction.js").CompactionProgress): void;
   write(text: string): void;
   info(text: string): void;
   success(text: string): void;

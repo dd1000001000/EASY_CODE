@@ -3,6 +3,7 @@ import { redactSensitiveInformation } from "../memory/sensitive.js";
 import { sanitizeTerminalText } from "../ui/render/layout.js";
 import type { WebEntry, WebEntryKind } from "../web-contracts.js";
 import { safeToolDisplayDetails } from "../runtime/tool-display-details.js";
+import { compactionLabel, type CompactionProgress } from "../ui/compaction.js";
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -36,6 +37,7 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   const entries: WebEntry[] = [];
   const pendingToolCalls = new Map<string, WebEntry>();
   const peerCalls = new Map<string, { target: string; text: string }>();
+  const compactions = new Map<string, WebEntry>();
   const turnStartedAt = new Map<string, number>();
   const turnCompletedAt = new Map<string, number>();
   for (const event of events) {
@@ -69,6 +71,24 @@ export function projectWebHistory(events: readonly EventRecord[]): WebEntry[] {
   };
   for (const event of events) {
     const payload = object(event.payload);
+    if (event.type === "context.manual.started" || event.type === "context.manual.finished") {
+      if (typeof payload?.operationId !== "string" || typeof payload.beforeChars !== "number") continue;
+      const progress = { ...payload } as unknown as CompactionProgress;
+      if (event.type === "context.manual.started") {
+        progress.phase = "cancelled";
+        progress.reason = "Compaction was interrupted before completion.";
+      }
+      const existing = compactions.get(progress.operationId);
+      if (existing) {
+        existing.compaction = progress;
+        existing.text = compactionLabel(progress);
+        existing.kind = progress.phase === "completed" ? "success" : "warning";
+      } else {
+        const entry = append(event, progress.phase === "completed" ? "success" : "warning", compactionLabel(progress));
+        if (entry) { entry.compaction = progress; compactions.set(progress.operationId, entry); }
+      }
+      continue;
+    }
     if (event.type === "message.user") {
       const message = object(payload?.message);
       if (message?.role === "user" && typeof message.content === "string") {

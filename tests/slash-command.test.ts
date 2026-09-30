@@ -9,6 +9,12 @@ import {
 } from "../src/cli/slash-command.js";
 
 describe("parseSlashCommand", () => {
+  it("recognizes manual compaction and includes it in help and completion", () => {
+    assert.equal(parseSlashCommand("/compact")?.name, "compact");
+    assert.equal(completeSlashCommandPrefix("/comp", 5)?.replacement, "/compact");
+    assert.match(helpText(), /\/compact/);
+    assert.match(helpText("zh_cn"), /\/compact/);
+  });
   it("parses a command and arguments", () => {
     assert.deepEqual(parseSlashCommand(" /mode code "), {
       name: "mode",

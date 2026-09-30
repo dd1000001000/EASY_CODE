@@ -360,6 +360,7 @@ describe("loopback Web service", () => {
     let approvalSelections = 0;
     let orchestrationSelections = 0;
     let modeSelections = 0;
+    let compacting = false;
     const app = {
       dataDirectory: () => directory,
       sessionInfo: () => ({ workspaceRoot: directory, threadId: "thread_test" }),
@@ -367,7 +368,7 @@ describe("loopback Web service", () => {
       closeAsync: async () => {},
       startHostedSession() {},
       cancelActiveRequest: () => false,
-      isRequestActive: () => false,
+      isRequestActive: () => compacting, isCompacting: () => compacting,
       threadEvents: () => [],
       workspaceThreads: () => [],
       pendingPlan: () => undefined,
@@ -428,7 +429,8 @@ describe("loopback Web service", () => {
       assert.equal(commandResponse.status, 200);
       const commandEntries = (await commandResponse.json() as { commands: { name: string; description: string }[] }).commands;
       const commandNames = commandEntries.map(command => command.name);
-      assert.equal(commandEntries.length, 9);
+      assert.equal(commandEntries.length, 10);
+      assert.ok(commandNames.includes("compact"));
       for (const command of commandEntries) assert.ok(command.description.length > 10, `/${command.name} needs an English description`);
       for (const name of ["model", "provider", "approval", "orchestration", "mode", "image", "clear", "workspace", "sessions", "new", "resume", "exit",
         "tasks", "agents", "commands", "thinking", "adjustment"])
@@ -438,6 +440,13 @@ describe("loopback Web service", () => {
         method: "POST", headers: { Cookie: cookie!, Origin: origin, "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      compacting = true;
+      assert.equal((await post("/api/message", { threadId: "thread_test", text: "Continue" })).status, 400);
+      assert.equal((await post("/api/message", { threadId: "thread_test", text: "/compact" })).status, 400);
+      assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "Continue" })).status, 400);
+      assert.equal((await post("/api/decision", { threadId: "thread_test", id: "decision" })).status, 400);
+      compacting = false;
+      assert.equal((await post("/api/adjustment", { threadId: "thread_test", text: "/compact" })).status, 400);
       const changedLanguage = await post("/api/command", { text: "/language zh_cn" });
       assert.equal(changedLanguage.status, 200);
       assert.equal((await changedLanguage.json() as { language: string }).language, "zh_cn");
@@ -519,7 +528,7 @@ describe("loopback Web service", () => {
         sessionInfo: () => ({ workspaceRoot: root, threadId: "thread_new" }),
         startHostedSession: () => threadPort.resetForNewThread({ workspaceRoot: root, threadId: "thread_new" } as Parameters<WebInteraction["resetForNewThread"]>[0]), threadEvents: () => [], allThreads: () => [],
         closeAsync: async () => {}, cancelActiveRequest: () => false,
-        isRequestActive: () => false, pendingPlan: () => undefined,
+        isRequestActive: () => false, isCompacting: () => false, pendingPlan: () => undefined,
       } as unknown as EasyCodeApp;
     });
     try {
@@ -578,7 +587,7 @@ describe("loopback Web service", () => {
         sessionInfo: () => session,
         startHostedSession: () => port.resetForNewThread(session as Parameters<WebInteraction["resetForNewThread"]>[0]),
         threadEvents: () => [], allThreads: () => [], pendingPlan: () => undefined,
-        closeAsync: async () => {}, cancelActiveRequest: () => false, isRequestActive: () => false,
+        closeAsync: async () => {}, cancelActiveRequest: () => false, isRequestActive: () => false, isCompacting: () => false,
         submitUserMessage: async () => { if (threadId === "thread_parallel_1") await firstWork; return {}; },
       } as unknown as EasyCodeApp;
     });

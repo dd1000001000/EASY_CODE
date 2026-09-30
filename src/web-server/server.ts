@@ -561,8 +561,10 @@ export class EasyCodeWebServer {
     }
     if (pathname === "/api/adjustment") {
       const host = this.hostFor(input.threadId);
+      if (host.app.isCompacting()) throw new Error("Adjustments are unavailable during context compaction.");
       if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid adjustment text.");
       const command = parseSlashCommand(input.text);
+      if (command?.name === "compact") throw new Error("/compact is only available when the conversation is idle.");
       if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
         throw new Error(`/${command.name} is not available as a Web command.`);
       const images = this.takeImages(host, input.imageIds, false);
@@ -582,6 +584,7 @@ export class EasyCodeWebServer {
     if (pathname === "/api/cancel") { json(response, 200, { canceled: this.hostFor(input.threadId).app.cancelActiveRequest() }); return; }
     if (pathname === "/api/decision") {
       const host = this.hostFor(input.threadId);
+      if (host.app.isCompacting()) throw new Error("Wait for context compaction before answering a decision.");
       if (typeof input.id !== "string" || (input.value !== undefined && typeof input.value !== "string") ||
         (typeof input.value === "string" && input.value.length > 8192)) throw new Error("Invalid decision.");
       json(response, 200, { accepted: host.port.resolveDecision(input.id, input.value as string | undefined) }); return;

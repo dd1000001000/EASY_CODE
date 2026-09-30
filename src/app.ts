@@ -599,6 +599,7 @@ export class EasyCodeApp {
   private memoryMaintenanceController?: AbortController;
   private memoryMaintenanceWork?: Promise<void>;
   private activeTurnController?: AbortController;
+  private compacting = false;
   private activeTurnSteering?: ActiveTurnSteering;
   private readonly toolObservers = new Set<WorkspaceToolObserver>();
   private sandboxSetupDeferred = false;
@@ -1106,6 +1107,7 @@ export class EasyCodeApp {
       .filter(session => !this.threadStore.isBoundSubagentThread(session.threadId));
   }
   isRequestActive(): boolean { return this.activeTurnController !== undefined; }
+  isCompacting(): boolean { return this.compacting; }
 
   /** Project membership is immutable while any Thread-owned execution can
    * still observe or mutate its bound workspace revision. */
@@ -1337,6 +1339,7 @@ export class EasyCodeApp {
     images: readonly ImageAttachment[] = [],
     resources: readonly ThreadResourceAttachment[] = [],
   ): Promise<AgentRunResult> {
+    if (this.compacting) throw new Error("Wait for context compaction to finish before sending a message.");
     if (this.state.planReview) {
       throw new Error("Review the pending plan before starting another request.");
     }
@@ -1369,6 +1372,8 @@ export class EasyCodeApp {
     text: string,
     images: readonly ImageAttachment[] = [],
   ): Promise<number> {
+    if (this.compacting) throw new Error("Adjustments are unavailable during context compaction.");
+    if (parseSlashCommand(text)?.name === "compact") throw new Error("/compact is only available when the conversation is idle.");
     const active = this.activeTurnSteering;
     const turnId = this.state.activeTurnId;
     if (!active || !turnId || active.threadId !== this.state.threadId || active.controller.signal.aborted) {
@@ -1413,8 +1418,13 @@ export class EasyCodeApp {
   async handleSlashCommand(input: string): Promise<boolean> {
     const command = parseSlashCommand(input);
     if (!command) return false;
+    if (this.compacting) throw new Error("Wait for context compaction to finish before using commands.");
 
     switch (command.name) {
+      case "compact":
+        if (command.args.length) throw new Error("Usage: /compact");
+        await this.compactCurrentSession();
+        return false;
       case "language": {
         const result = executeLanguageCommand(this.storage, command.args);
         this.terminal.setLanguage?.(result.language);
@@ -1852,6 +1862,42 @@ export class EasyCodeApp {
     return true;
   }
 
+  private async compactCurrentSession(): Promise<void> {
+    if (this.isRequestActive()) throw new Error("/compact is only available when the conversation is idle.");
+    if (this.hasRunningCommands() || this.subagentCoordinator.hasUnfinished(this.state.threadId) ||
+        this.subagentCoordinator.hasOutstanding(this.state.threadId)) {
+      throw new Error("Wait for running commands and agents to finish before compacting.");
+    }
+    const controller = new AbortController();
+    this.activeTurnController = controller;
+    this.compacting = true;
+    const operationId = createId("compact");
+    const onInterrupt = () => controller.abort();
+    process.on("SIGINT", onInterrupt);
+    try {
+      this.terminal.setCurrentRequest("/compact", [], { onInterrupt });
+      this.terminal.compactionProgress?.({ operationId, phase: "preparing", beforeChars: 0 });
+      const runtime = await this.createRuntime(false);
+      const result = await runtime.compactSession(this.state, {
+        maxContextChars: this.activeContextCharLimit(), signal: controller.signal, operationId,
+        onProgress: progress => this.terminal.compactionProgress?.(progress),
+      });
+      if (result.reason) this.terminal.warning(result.reason);
+      this.dirty = true;
+    } catch (error) {
+      this.terminal.compactionProgress?.({ operationId, phase: controller.signal.aborted ? "cancelled" : "failed", beforeChars: 0,
+        reason: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      process.removeListener("SIGINT", onInterrupt);
+      this.compacting = false;
+      if (this.activeTurnController === controller) this.activeTurnController = undefined;
+      this.terminal.clearCurrentRequest();
+      this.save();
+      this.syncTerminalView();
+    }
+  }
+
   private async executePrompt(
     userInput: string,
     images: readonly ImageAttachment[] = [],
@@ -2029,7 +2075,7 @@ export class EasyCodeApp {
     const childrenRunning = this.subagentCoordinator.snapshot(this.state.threadId)
       .some((child) => child.status === "running" || child.status === "stopping");
     const reviewPending = this.state.reviewSessions?.some(session => session.status !== "applied");
-    const budget = childrenRunning || reviewPending ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
+    const budget = childrenRunning || reviewPending || this.compacting ? this.sharedTaskBudget(this.state.threadId) : this.newTaskBudget(this.state.threadId);
     this.taskBudgets.set(this.state.threadId, budget);
     const visionCapable = modelSupportsVision(this.state.provider, this.state.model);
     const provider = createProvider(

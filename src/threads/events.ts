@@ -52,6 +52,8 @@ export const CURRENT_JOURNAL_EVENT_TYPES = [
   "context.compaction.transport_failed",
   "context.history.evicted",
   "context.maintenance.checked",
+  "context.manual.started",
+  "context.manual.finished",
   "context.memory.gated",
   "context.memory.selected",
   "context.phase.closed",

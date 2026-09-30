@@ -153,6 +153,25 @@ function approvalRequest(): ApprovalRequest {
 }
 
 describe("Terminal runtime status routing", () => {
+  it("keeps compaction non-interactive, accepts cancellation and retains the final size bar", async () => {
+    const fixture = createInlineFixture();
+    let interrupts = 0;
+    try {
+      fixture.terminal.setCurrentRequest("/compact", [], { onInterrupt: () => { interrupts++; } });
+      fixture.terminal.compactionProgress({ operationId: "compact_test", phase: "summarizing", beforeChars: 10000 });
+      fixture.input.sendFromTerminal("should not become a message\r");
+      fixture.input.sendFromTerminal("\u0003");
+      await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(interrupts, 1);
+      fixture.terminal.compactionProgress({ operationId: "compact_test", phase: "completed", beforeChars: 10000, afterChars: 1000, outcome: "compacted" });
+      fixture.terminal.clearCurrentRequest();
+      const output = stripAnsi(fixture.outputText());
+      assert.match(output, /10,000 → 1,000/);
+      assert.match(output, /90\.0%/);
+      assert.match(output, /█/);
+      assert.doesNotMatch(output, /should not become a message/);
+    } finally { fixture.close(); }
+  });
   it("keeps only audited progress live and commits notices with useful severity", () => {
     const fixture = createInlineFixture();
     try {

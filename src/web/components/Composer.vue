@@ -14,7 +14,7 @@ interface DraftImage { id: string; label: string; mediaType: string; previewUrl:
 type DraftResource = (UploadedResource & { key: string; status: "ready" }) | {
   key: string; status: "uploading"; filename: string; mediaType: string; byteSize: number;
 };
-const props = defineProps<{ busy: boolean; threadId?: string; modelLabel: string; approvalLabel: string; orchestrationLabel: string; modeLabel: string; settingsDisabled: boolean; decision: WebDecision | null; commands: readonly WebCommandEntry[] }>();
+const props = defineProps<{ busy: boolean; compacting?: boolean; threadId?: string; modelLabel: string; approvalLabel: string; orchestrationLabel: string; modeLabel: string; settingsDisabled: boolean; decision: WebDecision | null; commands: readonly WebCommandEntry[] }>();
 const emit = defineEmits<{
   send: [text: string, imageIds: string[], resourceIds: string[]]; stop: []; error: [message: string];
   selectModel: []; selectApproval: []; selectOrchestration: []; selectMode: []; openCommand: [name: string]; submitDecision: [id: string, value: string | undefined];
@@ -37,7 +37,7 @@ const fileInput = ref<HTMLInputElement>();
 const commandSuggestionsRoot = ref<{ $el: HTMLElement }>();
 const dismissedCommandDraft = ref<string>();
 const hasContent = computed(() => Boolean(draft.value.trim() || images.value.length || resources.value.length || pastedTexts.value.length));
-const showStopButton = computed(() => composerPrimaryAction(props.busy, hasContent.value) === "stop");
+const showStopButton = computed(() => props.compacting || composerPrimaryAction(props.busy, hasContent.value) === "stop");
 const previewUrls = computed(() => images.value.map(image => image.previewUrl));
 const commandMatches = computed(() => props.threadId && !props.busy && !props.decision && draft.value !== dismissedCommandDraft.value
   ? props.commands.filter(command => matchingSlashCommands(draft.value, [command.name]).length > 0) : []);
@@ -68,7 +68,7 @@ watch(draft, value => {
 });
 
 async function addFiles(files: FileList | File[] | null): Promise<void> {
-  if (!props.threadId || !files?.length) return;
+  if (props.compacting || !props.threadId || !files?.length) return;
   const threadId = props.threadId;
   const selected = Array.from(files);
   let completed = 0;
@@ -115,6 +115,7 @@ async function addFiles(files: FileList | File[] | null): Promise<void> {
   }
 }
 function paste(event: ClipboardEvent): void {
+  if (props.compacting) { event.preventDefault(); return; }
   const files = [...(event.clipboardData?.files ?? [])];
   if (files.length) {
     event.preventDefault();
@@ -163,7 +164,7 @@ function removeText(id: string): void {
   else unboundPastedTexts = pastedTexts.value;
 }
 function send(): void {
-  if (!props.threadId || props.decision || sending.value || uploading.value || !hasContent.value) return;
+  if (props.compacting || !props.threadId || props.decision || sending.value || uploading.value || !hasContent.value) return;
   const text = composeMessage(draft.value, pastedTexts.value);
   if (text.length > MAX_MESSAGE_CHARACTERS) { emit("error", t("ui.tooLong")); return; }
   sending.value = true;
@@ -205,7 +206,7 @@ defineExpose({ sent, failed });
   <div class="composer-wrap">
     <div class="composer" :class="{ 'composer--unbound': !threadId }">
       <slot name="command-panel" />
-      <DecisionDialog v-if="decision" :decision="decision" @submit="(id, value) => emit('submitDecision', id, value)" />
+      <DecisionDialog v-if="decision && !compacting" :decision="decision" @submit="(id, value) => emit('submitDecision', id, value)" />
       <ElCard v-if="commandMatches.length" ref="commandSuggestionsRoot" class="composer-command-panel" shadow="always" :aria-label="t('ui.matchingCommands')">
         <ElScrollbar max-height="min(50vh, 360px)">
           <div class="composer-command-list">
@@ -218,27 +219,27 @@ defineExpose({ sent, failed });
           <TransitionGroup name="composer-attachment" tag="div" class="composer-attachments">
             <div v-for="image in images" :key="`image-${image.id}`" class="composer-image-card">
               <ElImage :src="image.previewUrl" :preview-src-list="previewUrls" fit="contain" :alt="image.label" />
-              <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="t('ui.removeNamedImage', { name: image.label })" @click="removeImage(image.id)" />
+              <ElButton class="attachment-remove" circle :icon="Close" :disabled="compacting || sending" :aria-label="t('ui.removeNamedImage', { name: image.label })" @click="removeImage(image.id)" />
             </div>
             <div v-for="resource in resources" :key="resource.key" class="composer-text-card" :class="{ 'composer-text-card--uploading': resource.status === 'uploading' }">
               <Loading v-if="resource.status === 'uploading'" class="composer-text-icon composer-upload-spinner" />
               <Document v-else class="composer-text-icon" />
               <div><strong>{{ resource.filename }}</strong><span>{{ Math.max(1, Math.ceil(resource.byteSize / 1024)) }} KB · {{ resource.status === "uploading" ? t('ui.preparingResource') : t('ui.readOnlyResource') }}</span></div>
-              <ElButton v-if="resource.status === 'ready'" class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="t('ui.removeResource')" @click="removeResource(resource.id)" />
+              <ElButton v-if="resource.status === 'ready'" class="attachment-remove" circle :icon="Close" :disabled="compacting || sending" :aria-label="t('ui.removeResource')" @click="removeResource(resource.id)" />
             </div>
             <div v-for="item in pastedTexts" :key="`text-${item.id}`" class="composer-text-card">
               <Document class="composer-text-icon" />
               <div><strong>{{ t('ui.pastedText') }} · {{ item.content.length }} {{ t('ui.chars') }}</strong><span>{{ pastedTextPreview(item.content) }}</span></div>
-              <ElButton class="attachment-remove" circle :icon="Close" :disabled="sending" :aria-label="t('ui.removeText')" @click="removeText(item.id)" />
+              <ElButton class="attachment-remove" circle :icon="Close" :disabled="compacting || sending" :aria-label="t('ui.removeText')" @click="removeText(item.id)" />
             </div>
           </TransitionGroup>
         </div>
       </Transition>
-      <div @paste.capture="paste" @keydown="keydown" @compositionstart="compositionStart" @compositionend="compositionEnd"><ElInput v-model="draft" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" :placeholder="busy ? t('ui.adjustTask') : t('ui.askAnything')" /></div>
+      <div @paste.capture="paste" @keydown="keydown" @compositionstart="compositionStart" @compositionend="compositionEnd"><ElInput :disabled="compacting" v-model="draft" type="textarea" :autosize="{ minRows: 2, maxRows: 10 }" :placeholder="compacting ? t('ui.compacting') : busy ? t('ui.adjustTask') : t('ui.askAnything')" /></div>
       <div class="composer-bottom">
         <div class="composer-tools">
-          <ElButton :icon="Plus" circle :title="t('ui.attachFiles')" :aria-label="t('ui.attachFiles')" :disabled="!threadId || uploading" @click="fileInput?.click()" />
-          <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.xml,.json,.yaml,.yml" multiple hidden :disabled="!threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
+          <ElButton :icon="Plus" circle :title="t('ui.attachFiles')" :aria-label="t('ui.attachFiles')" :disabled="compacting || !threadId || uploading" @click="fileInput?.click()" />
+          <input ref="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.pptx,.xls,.xlsx,.csv,.txt,.md,.markdown,.html,.htm,.xml,.json,.yaml,.yml" multiple hidden :disabled="compacting || !threadId" @change="addFiles(($event.target as HTMLInputElement).files)" />
           <ElButton class="composer-setting composer-approval" text :disabled="settingsDisabled" @click="emit('selectApproval')"><span class="composer-setting-label">{{ approvalLabel }}</span><CaretBottom /></ElButton>
           <ElButton class="composer-setting composer-orchestration" text :disabled="settingsDisabled" @click="emit('selectOrchestration')"><span class="composer-setting-label">{{ orchestrationLabel }}</span><CaretBottom /></ElButton>
           <ElButton class="composer-setting composer-mode" text :disabled="settingsDisabled" @click="emit('selectMode')"><span class="composer-setting-label">{{ modeLabel }}</span><CaretBottom /></ElButton>

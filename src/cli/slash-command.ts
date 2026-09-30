@@ -23,6 +23,7 @@ export const SLASH_COMMAND_NAMES = [
   "mcp",
   "permissions",
   "context",
+  "compact",
   "usage",
   "memory",
   "sessions",
@@ -183,6 +184,7 @@ EASY CODE 指令
   /resume [id]               恢复对话
   /new                       新建对话
   /clear                     清空终端显示
+  /compact                   深度压缩当前会话上下文
   /help                      显示帮助
   /exit                      保存并退出
 `;
@@ -228,6 +230,7 @@ EASY CODE commands
   /resume [id]               Pick or resume a thread
   /new                       Start a new thread
   /clear                     Clear the screen
+  /compact                   Deeply compact the current conversation
   /help                      Show help
   /exit                      Save and exit
 `;

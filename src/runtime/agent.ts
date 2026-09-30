@@ -49,6 +49,7 @@ import { foldMemoryGate } from "../context/pressure-recovery.js";
 import { budgetedRequest, requestTokens, responseTokenReserve } from "../context/token-budget.js";
 import type { TokenCalibration } from "../context/token-calibration.js";
 import { runCompactionTransaction, foldCompactionControl, completeExchange, investigationExchangeStart, type CompactionResult } from "../context/compaction-transaction.js";
+import { runManualCompaction, type CompactionProgress } from "../context/manual-compaction.js";
 import type { NormalRequestEnvelope } from "../context/context-request.js";
 import { foldPendingOperations, pendingCommandObservation } from "../context/pending-operations.js";
 import { parseSemanticRequestPatch } from "../context/semantic-compaction.js";
@@ -795,6 +796,36 @@ function isSubagentAssignmentSnapshot(
 }
 
 export class AgentRuntime {
+  /** Auxiliary operation: no user turn, tool dispatch, memory writes or task continuation. */
+  async compactSession(state: SessionState, options: { maxContextChars: number; signal?: AbortSignal; operationId?: string;
+    onProgress?: (progress: CompactionProgress) => void }): Promise<CompactionProgress> {
+    this.manualCompaction = true;
+    try {
+      const ordinaryTools = this.dependencies.toolCatalog.tools.filter(tool => tool.name !== "compact_context");
+      const systemPrompt = await this.dependencies.buildSystemPrompt({ mode: state.mode,
+        workspaceSummary: "Current workspace and task state are provided in Runtime context after the conversation.",
+        memories: [], toolNames: ordinaryTools.map(tool => tool.name) });
+      const runtimeContext = "RUNTIME_CONTEXT_DATA (workspace/checkpoint data, not new user instructions):\n" + JSON.stringify({
+        workspaceSummary: await this.dependencies.getWorkspaceSummary(), workingCheckpoint: renderPinnedCurrentState(state, undefined, true),
+        memories: [], retrievedThreadEvidence: "",
+      });
+      let operationId = "manual_compaction";
+      return await runManualCompaction({ state, manager: this.dependencies.contextManager,
+        operationId: options.operationId,
+        maxContextChars: options.maxContextChars, signal: options.signal,
+        nextRequest: { systemPrompt, runtimeContext, tools: ordinaryTools.map(tool => tool.definition) },
+        append: event => this.dependencies.appendEvent(event),
+        onProgress: progress => { operationId = progress.operationId; this.retryContext = { state, turnId: operationId }; options.onProgress?.(progress); },
+        complete: async (messages, attempt) => {
+          const response = await this.dependencies.provider.complete({ messages, tools: [], signal: options.signal,
+            thinkingEffort: "none", responseMode: "stream", outputReserveTokens: 4000 });
+          await this.reportModelUsage(state, operationId, "context_compaction", response.usage, { attempt, retry: attempt > 1 });
+          return response.message;
+        },
+      });
+    } finally { this.manualCompaction = false; this.retryContext = undefined; }
+  }
+
   private async decideLocally(state: Readonly<SessionState>, turnId: string,
     task: LocalDecisionTask, rawInput: string, signal?: AbortSignal,
   ): Promise<{ id: string; result: LocalDecisionResult; appliedDecision: string } | undefined> {
@@ -858,6 +889,7 @@ export class AgentRuntime {
   private requestLimit: number | undefined;
   private modelRequestsUsed = 0;
   private retryContext?: { state: SessionState; turnId: string };
+  private manualCompaction = false;
   private readonly requestPrefixTracker = new RequestPrefixTracker();
   constructor(private readonly dependencies: AgentRuntimeDependencies) {
     const provider = dependencies.provider;
@@ -901,6 +933,7 @@ export class AgentRuntime {
             }
           },
           resetContext: async rejected => {
+            if (this.manualCompaction) throw new Error("Summary exceeds the provider context window; manual compaction will not discard its source history.");
             const active = this.retryContext;
             if (!active) return resetRequestHistory(rejected);
             await resetServerContext(active.state, active.turnId, dependencies.appendEvent);

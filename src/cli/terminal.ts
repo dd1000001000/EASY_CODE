@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import { DEFAULT_RUNTIME_LIMITS } from "../config/runtime-limits.js";
 import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
+import { compactionLabel, compactionRunning, type CompactionProgress } from "../ui/compaction.js";
 import { translate } from "../i18n/catalog.js";
 import chalk from "chalk";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
@@ -335,6 +336,8 @@ export class Terminal implements AppInteractionPort {
   private progressSequence = 0;
   private activeActivityId?: string;
   private activitySequence = 0;
+  private compactionActivity?: string;
+  private compactionPhase?: string;
   private agentConcurrencyLimit?: number;
   /** Track DEC cursor visibility while EASY CODE owns the inline shell. */
   private terminalCursorVisible = true;
@@ -1458,6 +1461,25 @@ export class Terminal implements AppInteractionPort {
       process.removeListener("SIGINT", onInterrupt);
       if (this.externalOperationController === controller) this.externalOperationController = undefined;
     }
+  }
+
+  compactionProgress(progress: CompactionProgress): void {
+    if (compactionRunning(progress)) {
+      if (this.compactionPhase !== progress.phase) {
+        this.stopActivity(this.compactionActivity);
+        this.compactionActivity = this.startActivity(compactionLabel(progress, this.language === "zh_cn"), "model");
+        this.compactionPhase = progress.phase;
+        if (!this.isInteractive()) this.info(compactionLabel(progress, this.language === "zh_cn"));
+      }
+      return;
+    }
+    this.stopActivity(this.compactionActivity);
+    this.compactionActivity = undefined;
+    this.compactionPhase = undefined;
+    if (progress.afterChars === undefined) return;
+    const width = Math.max(4, Math.min(16, (process.stdout.columns ?? 80) - 64));
+    const bar = progress.phase === "completed" ? `[${"█".repeat(width)}]` : `[${"─".repeat(width)}]`;
+    this.write(`${bar} ${compactionLabel(progress, this.language === "zh_cn")}\n`);
   }
 
   write(text: string): void {

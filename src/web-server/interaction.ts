@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { compactionLabel, compactionRunning, type CompactionProgress } from "../ui/compaction.js";
 import type {
   ApprovalDecision, ApprovalRequest, AssistantPhase, FileDiffPresentation, ImageAttachment,
   PlanProposal, ProviderStreamEvent, ThinkingEffort,
@@ -54,6 +55,7 @@ export class WebInteraction implements AppInteractionPort {
   private listeners = new Set<(change: WebChange) => void>();
   private sequence = 0;
   private busy = false;
+  private compaction: CompactionProgress | null = null;
   private closed = false;
   private reasoningNumber = 0;
   private adjustmentNumber = 0;
@@ -113,6 +115,7 @@ export class WebInteraction implements AppInteractionPort {
     return () => this.listeners.delete(listener);
   }
   loadHistory(entries: readonly WebEntry[]): void {
+    this.compaction = [...entries].reverse().find(entry => entry.compaction)?.compaction ?? null;
     this.entries = entries.map(entry => ({ ...entry }));
     this.pendingToolEntries = [];
     for (let index = this.entries.length - 1; index >= 0; index -= 1) {
@@ -183,6 +186,7 @@ export class WebInteraction implements AppInteractionPort {
   }
   private view(): WebView {
     return {
+      compaction: this.compaction,
       session: this.session,
       entries: this.entries,
       tasks: this.tasks,
@@ -199,12 +203,22 @@ export class WebInteraction implements AppInteractionPort {
     const change: WebChange = { sequence: this.sequence, view,
       patch: patch ?? { kind: "state", state: {
         session: view.session, tasks: view.tasks, subagents: view.subagents,
-        activities: view.activities, review: view.review, decision: view.decision, busy: view.busy,
+        activities: view.activities, review: view.review, decision: view.decision, busy: view.busy, compaction: view.compaction,
       } } };
     for (const listener of this.listeners) listener(change);
   }
   private safe(text: string): string {
     return redactSensitiveInformation(sanitizeTerminalText(text, { allowSgr: false }));
+  }
+  compactionProgress(progress: CompactionProgress): void {
+    this.compaction = { ...progress };
+    if (!compactionRunning(progress) && progress.afterChars !== undefined) {
+      const id = this.append(progress.phase === "completed" ? "success" : "warning", compactionLabel(progress, this.language === "zh_cn"));
+      const entry = this.entryById.get(id)!;
+      entry.compaction = { ...progress };
+      this.emit({ kind: "entry.replace", entry });
+    }
+    this.emit();
   }
   private append(kind: WebEntryKind, text: string, images?: readonly ImageAttachment[],
     toolDetails?: WebEntry["toolDetails"], toolName?: string, toolStatus?: WebEntry["toolStatus"]): string {

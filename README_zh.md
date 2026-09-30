@@ -91,6 +91,7 @@ easy-code --workspace "/path/to/project"
 | 选择审批模式 | `/approval` | 输入框下方审批控件 |
 | 开启子 Agent | `/orchestration on` | DAG／agents 控件 |
 | 查看任务、上下文和用量 | `/status`、`/context`、`/usage` | 同名命令或对应面板 |
+| 深度压缩上下文 | 空闲时执行 `/compact` | `/compact`，显示压缩状态及前后文本量 |
 | 查看项目记忆 | `/memory long project` | 同名命令或记忆面板 |
 | 继续已有任务 | `/sessions`、`/resume <thread-id>` | 在侧栏打开对应对话 |
 | 查看更多命令 | `/help` | 输入 `/` 或打开帮助 |
