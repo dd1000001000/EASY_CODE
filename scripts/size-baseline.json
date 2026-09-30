@@ -5,7 +5,6 @@
   "src/cli/menu-selector.ts#selectMenuIndex.<anonymous>": 331,
   "src/cli/terminal.ts": 3328,
   "src/memory/memory-manager.ts#MemoryManager.commitModelMutations": 302,
-  "src/review/application.ts#runWorkspaceReviewAttempt": 420,
   "src/runtime/agent.ts": 4114,
   "src/threads/event-replay.ts#recoverFromEvents": 306
 }
