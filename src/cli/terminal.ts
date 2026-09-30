@@ -1,16 +1,17 @@
-import readline from "node:readline";
-import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
-import {
-  compactionActivityLabel,
-  compactionLabel,
-  compactionRunning,
-  type CompactionProgress,
-} from "../ui/compaction.js";
-import { translate } from "../i18n/catalog.js";
+import { TerminalDecisions, type TerminalDecisionsContext } from "./terminal-decisions.js";
+import { TerminalDisclosureViewer, type TerminalDisclosureViewerContext } from "./terminal-disclosure-viewer.js";
+import { TerminalInputOwnership, type TerminalInputOwnershipContext } from "./terminal-input-ownership.js";
+import { classifyStatus } from "./terminal-status.js";
+import type {
+  ActiveDisclosureViewer,
+  BusyInputOwner,
+  CurrentTurnDisclosure,
+  StableStatusKind,
+} from "./terminal-types.js";
+
 import chalk from "chalk";
+import readline from "node:readline";
 import { sanitizeCommandOutput } from "../command/output-stream.js";
-import { redactSensitiveInformation } from "../memory/sensitive.js";
-import { redactImageDataUrls } from "../providers/errors.js";
 import type {
   ApprovalDecision,
   ApprovalRequest,
@@ -20,61 +21,24 @@ import type {
   ProviderStreamEvent,
   ThinkingEffort,
 } from "../core/types.js";
-import { selectApproval } from "./approval-selector.js";
-import { DECISION_TIMEOUT_MS } from "../ui/decision-timeout.js";
-import { formatCommandApprovalPrefix } from "../command/approval.js";
-import { formatPlanProposal, sanitizePlanText } from "../plans/plan.js";
-import { readSecretInput } from "../config/secret-input.js";
-import { renderFileDiff } from "./file-diff.js";
-import { completeSlashCommandPrefix } from "./slash-command.js";
-import {
-  PrivateOscInputFilter,
-  readPrompt,
-  type PromptInput,
-  type PromptInputSession,
-  type PromptSubmission,
-} from "./prompt-input.js";
-import { ReasoningRegistry, renderReasoningBody, renderReasoningMarker, type ReasoningBlock } from "./reasoning.js";
-import { AdjustmentRegistry, renderAdjustmentBody, type AdjustmentBlock } from "./adjustment.js";
-import { ModelStreamRenderer } from "./model-stream-renderer.js";
-import {
-  disclosureAnchorScreenRow,
-  disclosureComposerLines,
-  disclosureDocumentNodes,
-  disclosureEditorInput,
-  disclosureFooterLines,
-  disclosureHeaderLines,
-  disclosureTarget,
-  formatSubmittedRequest,
-  formatUserTranscriptEntry,
-  registryIdFromVirtualNode,
-  renderDisclosureFrameWithPosition,
-  type DisclosureKind,
-  type TerminalViewOptions,
-} from "./disclosure-render.js";
-import {
-  selectModel,
-  selectProvider,
-  selectThinkingEffort,
-  type ModelSelectorInput,
-  type ModelSelectorOutput,
-  type ModelSelectorChoice,
-  type ProviderSelectorChoice,
-  type ThinkingEffortSelectorChoice,
-} from "./model-selector.js";
-import { renderTaskGraph } from "./task-graph.js";
-import type { TaskGraphView } from "../tasks/task-graph.js";
-import { renderSubagents } from "./subagents.js";
+import { translate } from "../i18n/catalog.js";
+import { DEFAULT_LANGUAGE, type Language } from "../i18n/language.js";
+import { redactSensitiveInformation } from "../memory/sensitive.js";
+import { formatPlanProposal } from "../plans/plan.js";
+import { redactImageDataUrls } from "../providers/errors.js";
 import type { SubagentView } from "../subagents/types.js";
-import { renderMenu, selectMenuIndex, type MenuSelectorOverlay } from "./menu-selector.js";
-import { createVsCodeMenuBridge } from "./vscode-menu-bridge.js";
+import type { TaskGraphView } from "../tasks/task-graph.js";
+import {
+  compactionActivityLabel,
+  compactionLabel,
+  compactionRunning,
+  type CompactionProgress,
+} from "../ui/compaction.js";
 import type {
   UIActivityKind,
-  UIOverlayState,
   UIProgressItem,
   UIReviewPhase,
   UISessionInfo,
-  UITranscriptKind,
   UITranscriptEntry,
 } from "../ui/contracts.js";
 import type {
@@ -85,119 +49,43 @@ import type {
   PlanReviewInputOptions,
   TimedChoiceOptions,
 } from "../ui/interaction-port.js";
-import { applyEvent, createUIState } from "../ui/store.js";
+import { displayWidth, truncateToWidth } from "../ui/render/layout.js";
 import { ScreenWriter } from "../ui/render/screen-writer.js";
+import { renderComposerStatusRegion, renderLiveRegion, renderSessionHeader } from "../ui/render/view.js";
+import { applyEvent, createUIState } from "../ui/store.js";
 import {
   FULL_SCREEN_EXIT_SEQUENCE,
-  FullScreenWriter,
-  applyDisclosureViewCommand,
   clearDisclosureViewTarget,
   createDisclosureViewState,
-  renderDisclosureView,
-  replaceDisclosureViewNodes,
-  resizeDisclosureView,
   scrollDisclosureViewToEnd,
-  toggleDisclosureView,
-  updateDisclosureViewChrome,
-  type DisclosureViewFrame,
-  type DisclosureViewState,
 } from "../ui/tui/index.js";
-import { TuiInputCore, type TuiInputEvent } from "./tui-input.js";
-import { displayWidth, stripAnsi, truncateToWidth } from "../ui/render/layout.js";
+import { AdjustmentRegistry, renderAdjustmentBody, type AdjustmentBlock } from "./adjustment.js";
+import { formatUserTranscriptEntry, type DisclosureKind, type TerminalViewOptions } from "./disclosure-render.js";
+import { renderFileDiff } from "./file-diff.js";
 import {
-  renderComposerStatusRegion,
-  renderFixedBottomRegions,
-  renderLiveRegion,
-  renderSessionHeader,
-} from "../ui/render/view.js";
+  type ModelSelectorChoice,
+  type ProviderSelectorChoice,
+  type ThinkingEffortSelectorChoice,
+} from "./model-selector.js";
+import { ModelStreamRenderer } from "./model-stream-renderer.js";
+import {
+  PrivateOscInputFilter,
+  type PromptInput,
+  type PromptInputSession,
+  type PromptSubmission,
+} from "./prompt-input.js";
+import { ReasoningRegistry, renderReasoningBody, renderReasoningMarker, type ReasoningBlock } from "./reasoning.js";
+import { renderSubagents } from "./subagents.js";
+import { renderTaskGraph } from "./task-graph.js";
+import { createVsCodeMenuBridge } from "./vscode-menu-bridge.js";
 
-export type { PlanReviewDecision, PlanReviewInputOptions, CurrentRequestOptions } from "../ui/interaction-port.js";
-
-interface BusyInputOwner {
-  readonly filter: PrivateOscInputFilter;
-  readonly wasRaw: boolean;
-  readonly wasFlowing: boolean;
-  readonly onError: () => void;
-}
-
-interface CurrentTurnDisclosure {
-  readonly entry: Readonly<UITranscriptEntry>;
-  readonly reasoning?: Readonly<ReasoningBlock>;
-  readonly adjustment?: Readonly<AdjustmentBlock>;
-}
-
-interface DeferredTranscriptCommit {
-  readonly id?: string;
-  text: string;
-}
-
-interface ActiveDisclosureViewer {
-  readonly writer: FullScreenWriter;
-  readonly input: TuiInputCore;
-  state: DisclosureViewState;
-  frame: DisclosureViewFrame;
-  /** The disclosure currently selected inside the permanent conversation. */
-  kind?: DisclosureKind;
-  registryId?: number;
-  /** Canonical readline editor whose pixels are projected by this view. */
-  suspendedSession?: PromptInputSession;
-  /** The readline lifecycle ended while its alternate-screen view was open. */
-  sessionReleased: boolean;
-  readonly wasRaw: boolean;
-  readonly wasFlowing: boolean;
-  readonly onData: (chunk: Buffer | string) => void;
-  readonly onError: (error: Error) => void;
-  readonly deferredCommits: DeferredTranscriptCommit[];
-  /** Primary prompt/composer changed while hidden by the alternate buffer. */
-  primaryDisplayDirty: boolean;
-  clearPrimaryOnClose?: boolean;
-  idleTimer?: NodeJS.Timeout;
-  repaintTimer?: NodeJS.Timeout;
-  closing: boolean;
-}
-
-type StableStatusKind = Extract<UITranscriptKind, "info" | "success" | "warning" | "error">;
-
-type StatusPresentation =
-  | { readonly destination: "live"; readonly kind: UIProgressItem["kind"] }
-  | { readonly destination: "stable"; readonly kind: StableStatusKind };
-
-/**
- * Runtime status defaults to durable scrollback. Only the finite, audited set
- * of in-flight messages is allowed into the replaceable live region, so a new
- * warning cannot silently disappear merely because it arrived through
- * `onStatus`.
- */
-function classifyStatus(text: string): StatusPresentation {
-  if (/^Tool:\s*\S/iu.test(text)) {
-    return { destination: "live", kind: "tool" };
-  }
-  if (/^Step\s+\d+(?:\/\d+)?:?\s*requesting\b/iu.test(text)) {
-    return { destination: "live", kind: "step" };
-  }
-  if (/^Auto mode is choosing how to handle this request\.\.\.$/iu.test(text)) {
-    return { destination: "live", kind: "status" };
-  }
-
-  if (
-    /^Model (?:response headers did not arrive|stream made no semantic progress)\b/iu.test(text) ||
-    /^Server rejected context capacity\b/iu.test(text)
-  ) {
-    return { destination: "stable", kind: "warning" };
-  }
-  if (/\b(?:error|failed|failure|fatal)\b/iu.test(text)) {
-    return { destination: "stable", kind: "error" };
-  }
-  return { destination: "stable", kind: "info" };
-}
+export type { CurrentRequestOptions, PlanReviewDecision, PlanReviewInputOptions } from "../ui/interaction-port.js";
 
 export class Terminal implements AppInteractionPort {
   private static readonly ACTIVITY_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
   // Human-readable elapsed time does not need an 80 ms repaint cadence. This
   // fixed UI cadence reduces ConPTY work without becoming runtime config.
   private static readonly ACTIVITY_INTERVAL_MS = 160;
-  private static readonly INPUT_OWNER_WATCHDOG_INTERVAL_MS = 250;
-  private static readonly INPUT_OWNER_GRACE_MS = 1_500;
 
   private rl?: readline.Interface;
   private closed = false;
@@ -322,17 +210,9 @@ export class Terminal implements AppInteractionPort {
     this.language = language;
     this.refresh();
   }
-
-  /**
-   * Current host-integration boundary for opening a retained disclosure.
-   * VS Code invokes it through the authenticated bridge; tests and future UI
-   * hosts can invoke the same semantic action without injecting terminal bytes.
-   */
+  /** Host integration boundary for opening a retained disclosure without injecting terminal input. */
   handleDisclosureToggle(kind: DisclosureKind, id: number): boolean {
-    if (!Number.isSafeInteger(id) || id <= 0) return false;
-    // A modal owns both the pixels and the input decision until it closes.
-    if (this.uiState.overlay || this.guardedInputActive) return false;
-    return this.openDisclosureViewer(kind, id);
+    return this.disclosure.handleDisclosureToggle(kind, id);
   }
 
   isInteractive(): boolean {
@@ -742,148 +622,6 @@ export class Terminal implements AppInteractionPort {
     });
   }
 
-  /**
-   * Read text that may contain a bracketed multiline paste. Plain readline
-   * treats every pasted newline as an immediate submission, so plan feedback
-   * must use the same atomic paste transport as the main composer. Images are
-   * intentionally rejected here; the optional clipboard-text fallback keeps
-   * native paste shortcuts useful across supported terminals.
-   */
-  private async multilineTextQuestion(
-    prompt: string,
-    captureText?: PlanReviewInputOptions["captureText"],
-  ): Promise<Pick<PromptSubmission, "text" | "pasteErrors"> | null> {
-    if (this.closed) return null;
-    if (this.rl || this.promptActive || this.guardedInputActive) {
-      throw new Error("A terminal prompt is already active.");
-    }
-    if (!this.input.isTTY || !(this.output as NodeJS.WriteStream).isTTY) {
-      const text = await this.question(prompt);
-      return text === null ? null : { text, pasteErrors: [] };
-    }
-    if (typeof this.input.setRawMode !== "function") {
-      this.warning("Multiline plan feedback requires terminal Raw Mode support.");
-      return null;
-    }
-
-    if (this.inlineShellActive) {
-      if (!this.disclosureViewer) this.screen?.clearLive();
-      this.uiState = applyEvent(this.uiState, {
-        type: "composer.patch",
-        patch: {
-          busy: false,
-          text: "",
-          cursor: 0,
-          placeholder: prompt.trim() || "Plan feedback…",
-          images: [],
-        },
-      });
-    }
-    this.promptActive = true;
-    const promptController = new AbortController();
-    this.activePromptController = promptController;
-    let ownedSession: PromptInputSession | undefined;
-    try {
-      const result = await readPrompt({
-        input: this.input,
-        output: this.output as import("./prompt-input.js").PromptOutput,
-        prompt: this.inlineShellActive ? this.composerPromptPrefix() : prompt,
-        signal: promptController.signal,
-        captureImage: async () => {
-          throw new Error("Images are not supported in plan feedback.");
-        },
-        captureText,
-        textOnlyPaste: true,
-        clearOnSubmit: this.inlineShellActive,
-        startSuspended: this.inlineShellActive,
-        onSessionReady: (session) => {
-          if (session) {
-            ownedSession = session;
-            this.activePromptSession = session;
-            if (this.inlineShellActive && !this.startPersistentViewer(session) && this.disclosureViewer) {
-              throw new Error("The persistent Request editor could not claim terminal input.");
-            }
-            return;
-          }
-          this.releaseDisclosurePromptSession(ownedSession);
-          if (this.activePromptSession === ownedSession) {
-            this.activePromptSession = undefined;
-          }
-        },
-        onDraftChange: (draft) => {
-          if (!this.inlineShellActive) return;
-          this.uiState = applyEvent(this.uiState, {
-            type: "composer.patch",
-            patch: {
-              text: draft.text,
-              cursor: draft.cursor,
-              images: [],
-            },
-          });
-          this.refresh();
-        },
-        ...(this.inlineShellActive
-          ? {
-              renderPrompt: () => this.composerPromptPrefix(),
-              renderBelow: () => this.composerPromptSuffix(),
-            }
-          : {}),
-      });
-      if (result === null) {
-        this.closed = true;
-        return null;
-      }
-      return { text: result.text, pasteErrors: result.pasteErrors };
-    } finally {
-      this.activePromptSession = undefined;
-      if (this.activePromptController === promptController) {
-        this.activePromptController = undefined;
-      }
-      this.promptActive = false;
-      this.reclaimPersistentViewerInput();
-      if (!this.closed) this.refresh();
-    }
-  }
-
-  private async planTextQuestion(
-    prompt: string,
-    captureText?: PlanReviewInputOptions["captureText"],
-  ): Promise<string | null> {
-    while (!this.closed) {
-      const submission = await this.multilineTextQuestion(prompt, captureText);
-      if (submission === null) return null;
-      if (submission.pasteErrors.length === 0) return submission.text;
-      this.warning(`Plan feedback paste failed: ${submission.pasteErrors.join("; ")}`);
-    }
-    return null;
-  }
-
-  private recordAcceptedPlanFeedback(feedback: string): void {
-    if (!this.inlineShellActive) return;
-    this.freezeCurrentTurnDisclosures();
-    // The next executePrompt receives an internal plan-revision instruction,
-    // but the user-authored feedback is the actual request row for the turn.
-    // Mark it as pending so setCurrentRequest neither excludes it nor exposes
-    // the internal control prompt in the disclosure transcript.
-    this.pendingRequestTranscriptStart = this.uiState.transcript.length;
-    this.uiState = applyEvent(this.uiState, {
-      type: "transcript.append",
-      entry: {
-        kind: "user",
-        text: feedback,
-        images: [],
-      },
-    });
-    const rendered = `${formatSubmittedRequest(feedback)}\n\n`;
-    if (this.disclosureViewer) {
-      this.disclosureViewer.state = scrollDisclosureViewToEnd(this.disclosureViewer.state);
-      this.disclosureViewer.deferredCommits.push({ text: rendered });
-      this.refreshDisclosureViewer(true);
-    } else {
-      this.screen?.commit(rendered);
-    }
-  }
-
   async readPrompt(
     prompt: string,
     options: {
@@ -892,427 +630,54 @@ export class Terminal implements AppInteractionPort {
       captureText?: (signal?: AbortSignal) => Promise<string | undefined>;
     },
   ): Promise<PromptSubmission | null> {
-    if (this.closed) return null;
-    if (this.rl || this.promptActive || this.guardedInputActive) {
-      throw new Error("A terminal prompt is already active.");
-    }
-    if (
-      !(this.input as NodeJS.ReadStream).isTTY ||
-      !(this.output as NodeJS.WriteStream).isTTY ||
-      typeof (this.input as NodeJS.ReadStream).setRawMode !== "function"
-    ) {
-      const text = await this.question(prompt);
-      return text === null ? null : { text, images: [], pasteErrors: [] };
-    }
-    this.promptActive = true;
-    if (this.inlineShellActive) {
-      if (!this.disclosureViewer) this.screen?.clearLive();
-      this.uiState = applyEvent(this.uiState, {
-        type: "composer.patch",
-        patch: {
-          busy: false,
-          text: "",
-          cursor: 0,
-          placeholder: "Type your request…",
-          images: [],
-        },
-      });
-    }
-    const promptController = new AbortController();
-    this.activePromptController = promptController;
-    let ownedSession: PromptInputSession | undefined;
-    try {
-      const result = await readPrompt({
-        input: this.input as import("./prompt-input.js").PromptInput,
-        output: this.output as import("./prompt-input.js").PromptOutput,
-        prompt: this.inlineShellActive ? this.composerPromptPrefix() : prompt,
-        initialImageCount: options.initialImageCount,
-        signal: promptController.signal,
-        captureImage: options.captureImage,
-        captureText: options.captureText,
-        completionProvider: (draft) => completeSlashCommandPrefix(draft.text, draft.cursor),
-        startSuspended: this.inlineShellActive,
-        onSessionReady: (session) => {
-          if (session) {
-            ownedSession = session;
-            this.activePromptSession = session;
-            if (this.inlineShellActive) {
-              if (!this.startPersistentViewer(session) && this.disclosureViewer) {
-                throw new Error("The persistent Request editor could not claim terminal input.");
-              }
-            } else {
-              this.setTerminalCursorVisible(true);
-            }
-            return;
-          }
-          this.releaseDisclosurePromptSession(ownedSession);
-          if (this.activePromptSession === ownedSession) {
-            this.activePromptSession = undefined;
-          }
-        },
-        onDraftChange: (draft) => {
-          if (!this.inlineShellActive) return;
-          this.uiState = applyEvent(this.uiState, {
-            type: "composer.patch",
-            patch: {
-              text: draft.text,
-              cursor: draft.cursor,
-              images: draft.images,
-              ...(draft.completionSuffix ? { completionSuffix: draft.completionSuffix } : {}),
-            },
-          });
-          this.refresh();
-          if (!this.disclosureViewer) this.setTerminalCursorVisible(true);
-        },
-        ...(this.inlineShellActive
-          ? {
-              renderPrompt: () => this.composerPromptPrefix(),
-              renderBelow: () => this.composerPromptSuffix(),
-              clearOnSubmit: true,
-            }
-          : {}),
-        onShowThinking: (id) => {
-          const shown = id === "last" ? this.showLatestReasoning() : this.showReasoning(id);
-          if (!shown) {
-            this.info(
-              id === "last"
-                ? "No Thinking content is available in this thread."
-                : `Thinking block #${id} is not available in this thread.`,
-            );
-          }
-        },
-      });
-      if (result === null) this.closed = true;
-      if (this.inlineShellActive && result !== null) {
-        // Close the previous expansion before printing the new input, without
-        // revoking retained Thinking links or moving their transcript entries.
-        this.freezeCurrentTurnDisclosures();
-        this.pendingRequestTranscriptStart = this.uiState.transcript.length;
-        this.uiState = applyEvent(this.uiState, {
-          type: "transcript.append",
-          entry: {
-            kind: "user",
-            text: result.text,
-            images: result.images,
-          },
-        });
-        const rendered = `${formatUserTranscriptEntry({
-          text: result.text,
-          images: result.images,
-        })}\n\n`;
-        if (this.disclosureViewer) {
-          this.disclosureViewer.state = scrollDisclosureViewToEnd(this.disclosureViewer.state);
-          this.disclosureViewer.deferredCommits.push({ text: rendered });
-          this.refreshDisclosureViewer(true);
-        } else {
-          this.screen?.commit(rendered);
-        }
-      }
-      return result;
-    } finally {
-      this.activePromptSession = undefined;
-      if (this.activePromptController === promptController) {
-        this.activePromptController = undefined;
-      }
-      this.promptActive = false;
-      this.reclaimPersistentViewerInput();
-      if (!this.closed) this.refresh();
-    }
+    return this.decisionController.readPrompt(prompt, options);
   }
-
   async selectProvider(
     choices: readonly ProviderSelectorChoice[],
     initialProvider: ProviderSelectorChoice["provider"],
   ): Promise<ProviderSelectorChoice["provider"] | undefined> {
-    if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive)
-      throw new Error("Provider selection cannot start while a prompt is active.");
-    return this.withPrivateProtocolFilteredInput((input) =>
-      selectProvider(choices, {
-        input: input as ModelSelectorInput,
-        output: this.output as ModelSelectorOutput,
-        initialProvider,
-        color: this.colorEnabled(),
-        ...(this.inlineShellActive
-          ? {
-              overlay: this.menuOverlay("provider-picker", "picker"),
-              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-            }
-          : {}),
-      }),
-    );
+    return this.decisionController.selectProvider(choices, initialProvider);
   }
-
   async selectModel(
     providerName: string,
     choices: readonly ModelSelectorChoice[],
     initialModel?: string,
   ): Promise<string | undefined> {
-    if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive)
-      throw new Error("Model selection cannot start while a prompt is active.");
-    return this.withPrivateProtocolFilteredInput((input) =>
-      selectModel(providerName, choices, {
-        input: input as ModelSelectorInput,
-        output: this.output as ModelSelectorOutput,
-        initialModel,
-        color: this.colorEnabled(),
-        ...(this.inlineShellActive
-          ? {
-              overlay: this.menuOverlay("model-picker", "picker"),
-              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-            }
-          : {}),
-      }),
-    );
+    return this.decisionController.selectModel(providerName, choices, initialModel);
   }
-
   async selectThinkingEffort(
     providerName: string,
     model: string,
     choices: readonly ThinkingEffortSelectorChoice[],
     initialEffort: ThinkingEffort,
   ): Promise<ThinkingEffort | undefined> {
-    if (this.closed) return Promise.resolve(undefined);
-    if (this.rl || this.promptActive || this.guardedInputActive)
-      throw new Error("Thinking effort selection cannot start while a prompt is active.");
-    return this.withPrivateProtocolFilteredInput((input) =>
-      selectThinkingEffort(providerName, model, choices, {
-        input: input as ModelSelectorInput,
-        output: this.output as ModelSelectorOutput,
-        initialEffort,
-        color: this.colorEnabled(),
-        ...(this.inlineShellActive
-          ? {
-              overlay: this.menuOverlay("thinking-picker", "picker"),
-              ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-            }
-          : {}),
-      }),
-    );
+    return this.decisionController.selectThinkingEffort(providerName, model, choices, initialEffort);
   }
-
   async readSecret(prompt: string): Promise<string> {
-    if (this.closed) return Promise.reject(new Error("Terminal input is closed."));
-    if (this.rl || this.promptActive || this.guardedInputActive || this.secretInputActive)
-      throw new Error("Secret input must be read before the prompt is opened.");
-    this.secretInputActive = true;
-    if (this.inlineShellActive) this.screen?.clearLive();
-    try {
-      return await this.withPrivateProtocolFilteredInput((input) =>
-        readSecretInput(input as ModelSelectorInput, this.output, prompt),
-      );
-    } finally {
-      this.secretInputActive = false;
-      // readSecretInput necessarily writes masked input directly. When the
-      // permanent frame owns the alternate buffer, force a cache-invalidating
-      // repaint so those direct pixels cannot remain embedded in the UI.
-      const viewer = this.disclosureViewer;
-      if (viewer && !viewer.closing) viewer.writer.clear();
-      this.refresh();
-    }
+    return this.decisionController.readSecret(prompt);
   }
 
+  private recordAcceptedPlanFeedback(feedback: string): void {
+    this.decisionController.recordAcceptedPlanFeedback(feedback);
+  }
   async approve(request: ApprovalRequest): Promise<ApprovalDecision> {
-    if (request.signal?.aborted) return "reject";
-    // Background approvals share the parent's UI even when the main agent has
-    // returned to its editable prompt. Preserve its draft and transfer stdin.
-    while (!this.closed && this.guardedInputActive && !request.signal?.aborted) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (this.closed || request.signal?.aborted) return "reject";
-    const idleSession = request.source && !this.busyPromptSession ? this.activePromptSession : undefined;
-    if (idleSession && idleSession.suspendInput()) {
-      this.activePromptSession = undefined;
-      this.promptActive = false;
-      try {
-        return await this.approve(request);
-      } finally {
-        if (!this.closed) {
-          this.activePromptSession = idleSession;
-          this.promptActive = true;
-          idleSession.resumeInput({ discardLeadingModalControls: true });
-        }
-      }
-    }
-    const title = redactSensitiveInformation(sanitizeCommandOutput(request.title)).replace(/\s+/gu, " ").trim();
-    const description = redactSensitiveInformation(sanitizeCommandOutput(request.description));
-    const preview = request.commandPreview
-      ? redactSensitiveInformation(sanitizeCommandOutput(request.commandPreview)).replace(/[\r\n]+/gu, " ")
-      : undefined;
-    // Approval is a security decision. Its complete description and resolved
-    // command are durable scrollback; the bounded selector card below is only
-    // a navigation aid and must never be the sole copy the user can inspect.
-    this.write(
-      chalk.yellow(`\nApproval required: ${title}\n`) +
-        `${description}\n` +
-        (request.network
-          ? `Network effect: ${request.network.effect}; destination: ${sanitizeCommandOutput(request.network.destination ?? "resolved when the command connects")}\n`
-          : "") +
-        (request.network
-          ? `Optional saved grant scope: ${sanitizeCommandOutput(formatCommandApprovalPrefix(request.commandPrefix))}\n`
-          : "") +
-        (preview ? chalk.gray(`Command: ${preview}\n`) : ""),
-    );
-
-    if (
-      this.closed ||
-      !this.isInteractive() ||
-      this.rl ||
-      (this.promptActive && !this.busyPromptSession) ||
-      this.guardedInputActive
-    ) {
-      return "reject";
-    }
-    const controller = new AbortController();
-    this.activeApprovalController = controller;
-    const onRequestAbort = () => controller.abort();
-    request.signal?.addEventListener("abort", onRequestAbort, { once: true });
-    if (request.signal?.aborted) controller.abort();
-    try {
-      return await this.withPrivateProtocolFilteredInput((input) =>
-        selectApproval(request.commandPrefix, {
-          signal: controller.signal,
-          input: input as ModelSelectorInput,
-          output: this.output as ModelSelectorOutput,
-          color: this.colorEnabled(),
-          ...(this.inlineShellActive
-            ? {
-                overlay: this.menuOverlay(request.id, "approval", request),
-                ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-              }
-            : {}),
-        }),
-      );
-    } catch {
-      return "reject";
-    } finally {
-      request.signal?.removeEventListener("abort", onRequestAbort);
-      if (this.activeApprovalController === controller) this.activeApprovalController = undefined;
-    }
+    return this.decisionController.approve(request);
   }
 
   showPlan(plan: Readonly<PlanProposal>): void {
     this.lastPlan = plan;
     this.write(`\n${formatPlanProposal(plan)}\n`);
   }
-
   async reviewPlan(options: Readonly<PlanReviewInputOptions> = {}): Promise<PlanReviewDecision> {
-    if (!this.isInteractive()) return { action: "defer" };
-    const plan = options.plan ?? this.lastPlan;
-    if (
-      plan &&
-      this.input.isTTY &&
-      (this.output as NodeJS.WriteStream).isTTY &&
-      typeof this.input.setRawMode === "function"
-    ) {
-      const choices = ["Yes, use Auto mode", "No, reject plan", "Adjust plan with feedback"];
-      const selection = await this.withPrivateProtocolFilteredInput((input) =>
-        selectMenuIndex(
-          choices.length,
-          0,
-          (selectedIndex) => renderMenu("Review proposed plan", choices, selectedIndex, this.colorEnabled()),
-          {
-            input,
-            output: this.output as ModelSelectorOutput,
-            color: this.colorEnabled(),
-            idleTimeoutMs: options.idleTimeoutMs ?? DECISION_TIMEOUT_MS,
-            idleSelectionIndex: 0,
-            ...(this.inlineShellActive ? { overlay: this.menuOverlay(plan.id, "plan-review", plan) } : {}),
-            ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-          },
-          "No plan review choices are available.",
-        ),
-      );
-      if (selection === undefined) return { action: "defer" };
-      if (selection === 0) return { action: "approve" };
-      if (selection === 1) return { action: "reject" };
-      const feedback = await this.planTextQuestion("Plan feedback > ", options.captureText);
-      if (feedback === null) return { action: "defer" };
-      const sanitized = sanitizePlanText(feedback);
-      if (!sanitized) return { action: "defer" };
-      this.recordAcceptedPlanFeedback(sanitized);
-      return { action: "adjust", feedback: sanitized };
-    }
-    while (!this.closed) {
-      this.write("\nWhat would you like to do?\n\n");
-      this.write("1. Yes, use Auto mode\n");
-      this.write("2. No, reject plan\n");
-      this.write("3. Type feedback and press Enter to adjust the plan\n\n");
-      const response = await this.planTextQuestion("Choose 1/2, or type feedback to adjust > ", options.captureText);
-      if (response === null) return { action: "defer" };
-      const answer = sanitizePlanText(response);
-      if (!answer) continue;
-      const normalized = answer.toLowerCase();
-      if (normalized === "1" || normalized === "y" || normalized === "yes") {
-        return { action: "approve" };
-      }
-      if (normalized === "2" || normalized === "n" || normalized === "no") {
-        return { action: "reject" };
-      }
-      if (normalized === "3") {
-        const feedback = await this.planTextQuestion("Plan feedback > ", options.captureText);
-        if (feedback === null) return { action: "defer" };
-        const sanitized = sanitizePlanText(feedback);
-        if (!sanitized) continue;
-        this.recordAcceptedPlanFeedback(sanitized);
-        return { action: "adjust", feedback: sanitized };
-      }
-      this.recordAcceptedPlanFeedback(answer);
-      return { action: "adjust", feedback: answer };
-    }
-    return { action: "defer" };
+    return this.decisionController.reviewPlan(options);
   }
-
   async selectChoice(
     title: string,
     choices: readonly InteractionChoice[],
     initialId?: string,
     timed?: Readonly<TimedChoiceOptions>,
   ): Promise<string | undefined> {
-    if (this.closed || choices.length === 0) return undefined;
-    if (!this.isInteractive() || (this.promptActive && !this.busyPromptSession) || this.guardedInputActive) {
-      return undefined;
-    }
-    const initialIndex = Math.max(
-      0,
-      choices.findIndex((choice) => choice.id === initialId),
-    );
-    const selection = await this.withPrivateProtocolFilteredInput((input) =>
-      selectMenuIndex(
-        choices.length,
-        initialIndex,
-        (selectedIndex) =>
-          renderMenu(
-            title,
-            choices.map((choice) => `${choice.label}${choice.detail ? `  [${choice.detail}]` : ""}`),
-            selectedIndex,
-            this.colorEnabled(),
-            512,
-          ),
-        {
-          input,
-          output: this.output as ModelSelectorOutput,
-          color: this.colorEnabled(),
-          ...(timed?.signal ? { signal: timed.signal } : {}),
-          ...(timed
-            ? {
-                idleTimeoutMs: timed.idleTimeoutMs,
-                idleSelectionIndex: choices.findIndex((choice) => choice.id === timed.idleChoiceId && !choice.disabled),
-              }
-            : {}),
-          ...(this.inlineShellActive
-            ? {
-                overlay: this.menuOverlay(`choice-${Date.now()}`, "picker"),
-                ...(this.vscodeMenuBridge ? { navigation: this.vscodeMenuBridge } : {}),
-              }
-            : {}),
-        },
-        `No choices are available for ${title}.`,
-      ),
-    );
-    const choice = selection === undefined ? undefined : choices[selection];
-    return choice?.disabled ? undefined : choice?.id;
+    return this.decisionController.selectChoice(title, choices, initialId, timed);
   }
 
   /** Keep Ctrl+C meaningful while an idle raw-mode shell awaits an external callback. */
@@ -1784,1101 +1149,59 @@ export class Terminal implements AppInteractionPort {
     rl?.close();
     if (rl) this.releaseReadlineInput(rl);
   }
-
   private ensureReadline(): readline.Interface {
-    if (this.closed) throw new Error("Terminal input is closed.");
-    if (!this.rl) {
-      const inputFilter = new PrivateOscInputFilter(this.input);
-      try {
-        // readline enables Raw Mode through the filter. Create it before
-        // piping process.stdin so Windows ConPTY never starts a cooked-mode
-        // read that would swallow the first arrow keys until Enter arrives.
-        const rl = readline.createInterface({
-          input: inputFilter,
-          output: this.output,
-          terminal: Boolean(this.input.isTTY) && Boolean((this.output as NodeJS.WriteStream).isTTY),
-        });
-        this.input.pipe(inputFilter);
-        this.rl = rl;
-        this.readlineInputFilter = inputFilter;
-      } catch (error) {
-        this.input.unpipe(inputFilter);
-        inputFilter.destroy();
-        throw error;
-      }
-    }
-    return this.rl;
+    return this.inputOwnership.ensureReadline();
   }
-
   private releaseReadlineInput(rl: readline.Interface): void {
-    if (this.rl !== rl) return;
-    this.rl = undefined;
-    const inputFilter = this.readlineInputFilter;
-    this.readlineInputFilter = undefined;
-    if (!inputFilter) return;
-    this.input.unpipe(inputFilter);
-    if (!inputFilter.destroyed) inputFilter.destroy();
+    return this.inputOwnership.releaseReadlineInput(rl);
   }
-
-  /**
-   * Keep the extension's no-newline private protocol responsive while a model
-   * request owns the visible composer. All ordinary input is deliberately
-   * drained; only Thinking toggles and Ctrl+C have busy-phase semantics.
-   */
   private startBusyComposer(): void {
-    const requestOptions = this.currentRequestOptions;
-    if (
-      !requestOptions?.onSteer ||
-      this.steeringAdmissionPaused ||
-      this.busyPromptController ||
-      !this.inlineShellActive ||
-      this.closed ||
-      this.promptActive ||
-      this.guardedInputActive ||
-      this.rl
-    ) {
-      return;
-    }
-
-    const generation = this.busyPromptGeneration + 1;
-    this.busyPromptGeneration = generation;
-    const controller = new AbortController();
-    this.busyPromptController = controller;
-    this.promptActive = true;
-    if (!this.disclosureViewer) this.screen?.clearLive();
-    let ownedSession: PromptInputSession | undefined;
-
-    const pendingCount = (delta: number): void => {
-      if (this.busyPromptGeneration !== generation) return;
-      this.uiState = applyEvent(this.uiState, {
-        type: "composer.patch",
-        patch: {
-          pendingSubmissions: Math.max(0, this.uiState.composer.pendingSubmissions + delta),
-        },
-      });
-      this.refresh();
-    };
-
-    const deliver = (submission: Readonly<PromptSubmission>): void => {
-      for (const error of submission.pasteErrors) {
-        this.writeStableStatus(`Steering paste failed: ${error}`, "error");
-      }
-      if (submission.text.trim().length === 0 && submission.images.length === 0) {
-        return;
-      }
-      pendingCount(1);
-      const queued = this.steeringDeliveryQueue.catch(() => undefined).then(() => requestOptions.onSteer?.(submission));
-      this.steeringDeliveryQueue = queued.then(
-        () => pendingCount(-1),
-        (error: unknown) => {
-          pendingCount(-1);
-          this.writeStableStatus(
-            `Unable to queue steering input: ${error instanceof Error ? error.message : String(error)}`,
-            "error",
-          );
-        },
-      );
-    };
-
-    void readPrompt({
-      input: this.input as import("./prompt-input.js").PromptInput,
-      output: this.output as import("./prompt-input.js").PromptOutput,
-      prompt: this.composerPromptPrefix(),
-      initialImageCount: requestOptions.initialImageCount ?? 0,
-      signal: controller.signal,
-      captureImage:
-        requestOptions.captureImage ??
-        (async () => {
-          throw new Error("Image steering is unavailable for this request.");
-        }),
-      captureText: requestOptions.captureText,
-      keepOpen: true,
-      onSubmit: (submission) => deliver(submission),
-      onInterrupt: () => this.signalCurrentRequestInterrupt(),
-      onDiscardImages: requestOptions.onDiscardImages,
-      renderPrompt: () => this.composerPromptPrefix(),
-      renderBelow: () => this.composerPromptSuffix(),
-      clearOnSubmit: true,
-      startSuspended: this.inlineShellActive,
-      onDraftChange: (draft) => {
-        if (this.busyPromptGeneration !== generation || this.currentRequestOptions !== requestOptions) return;
-        this.uiState = applyEvent(this.uiState, {
-          type: "composer.patch",
-          patch: {
-            text: draft.text,
-            cursor: draft.cursor,
-            images: draft.images,
-          },
-        });
-        this.refresh();
-        if (!this.disclosureViewer) this.setTerminalCursorVisible(true);
-      },
-      onSessionReady: (session) => {
-        if (!session) {
-          // Abort/cleanup can complete after stopBusyComposer advances the
-          // generation. The old session must still release its viewer lease;
-          // otherwise the next Request editor cannot be claimed synchronously.
-          this.releaseDisclosurePromptSession(ownedSession);
-          if (this.busyPromptSession === ownedSession) {
-            this.busyPromptSession = undefined;
-          }
-          if (this.activePromptSession === ownedSession) {
-            this.activePromptSession = undefined;
-          }
-          return;
-        }
-        if (this.busyPromptGeneration !== generation || this.currentRequestOptions !== requestOptions) {
-          throw new Error("The busy Request editor is no longer current.");
-        }
-        ownedSession = session;
-        this.busyPromptSession = session;
-        this.activePromptSession = session;
-        if (this.inlineShellActive) {
-          if (!this.startPersistentViewer(session) && this.disclosureViewer) {
-            throw new Error("The persistent Request editor could not claim terminal input.");
-          }
-        } else {
-          this.setTerminalCursorVisible(true);
-        }
-      },
-      onShowThinking: (id) => {
-        const shown = id === "last" ? this.showLatestReasoning() : this.showReasoning(id);
-        if (!shown) this.info("No Thinking content is available in this thread.");
-      },
-    })
-      .catch((error: unknown) => {
-        if (this.busyPromptGeneration !== generation || this.closed) return;
-        this.writeStableStatus(
-          `Busy input editor failed: ${error instanceof Error ? error.message : String(error)}`,
-          "error",
-        );
-      })
-      .finally(() => {
-        if (this.busyPromptGeneration !== generation) return;
-        this.busyPromptController = undefined;
-        if (this.busyPromptSession === ownedSession) this.busyPromptSession = undefined;
-        if (this.activePromptSession === ownedSession) this.activePromptSession = undefined;
-        this.promptActive = false;
-        if (this.currentRequestOptions === requestOptions && !this.closed) {
-          // Preserve Ctrl+C/Thinking controls if the richer editor becomes
-          // unavailable on a particular terminal.
-          this.startBusyInputOwner();
-        }
-      });
+    return this.inputOwnership.startBusyComposer();
   }
-
   private stopBusyComposer(): void {
-    const controller = this.busyPromptController;
-    const session = this.busyPromptSession;
-    if (!controller && !session) return;
-    this.busyPromptGeneration += 1;
-    this.busyPromptController = undefined;
-    this.busyPromptSession = undefined;
-    if (this.activePromptSession === session) this.activePromptSession = undefined;
-    controller?.abort();
-    this.promptActive = false;
+    return this.inputOwnership.stopBusyComposer();
   }
-
   private startBusyInputOwner(): void {
-    if (
-      this.busyInputOwner ||
-      this.disclosureViewer ||
-      !this.currentRequestOptions ||
-      !this.inlineShellActive ||
-      this.closed ||
-      this.promptActive ||
-      this.guardedInputActive ||
-      this.rl
-    ) {
-      return;
-    }
-
-    const wasRaw = Boolean(this.input.isRaw);
-    const wasFlowing = this.input.readableFlowing === true;
-    let filter!: PrivateOscInputFilter;
-    const onError = (): void => {
-      if (this.busyInputOwner?.filter !== filter) return;
-      this.failTerminalUi("request input owner", new Error("The busy input stream failed."));
-    };
-    filter = new PrivateOscInputFilter(this.input, () => {
-      if (
-        this.busyInputOwner?.filter !== filter ||
-        !this.currentRequestOptions ||
-        this.guardedInputActive ||
-        this.promptActive ||
-        this.rl
-      ) {
-        return;
-      }
-      this.signalCurrentRequestInterrupt();
-    });
-    this.busyInputOwner = { filter, wasRaw, wasFlowing, onError };
-    filter.on("error", onError);
-
-    try {
-      this.input.setRawMode?.(true);
-      this.input.pipe(filter);
-      // The control owner has no downstream UI. Flowing the readable side
-      // drains ordinary keys after the filter has inspected private controls.
-      filter.resume();
-      this.input.resume();
-    } catch (error) {
-      this.stopBusyInputOwner();
-      this.failTerminalUi("request input owner", error);
-    }
+    return this.inputOwnership.startBusyInputOwner();
   }
-
   private stopBusyInputOwner(): void {
-    const owner = this.busyInputOwner;
-    if (!owner) return;
-    this.busyInputOwner = undefined;
-    owner.filter.removeListener("error", owner.onError);
-    this.input.unpipe(owner.filter);
-    if (!owner.filter.destroyed) owner.filter.destroy();
-    try {
-      this.input.setRawMode?.(owner.wasRaw);
-    } catch {
-      // A disappearing TTY must not prevent the remaining cleanup.
-    }
-    if (owner.wasFlowing) this.input.resume();
-    else this.input.pause();
+    return this.inputOwnership.stopBusyInputOwner();
   }
-
   private async withPrivateProtocolFilteredInput<T>(action: (input: PrivateOscInputFilter) => Promise<T>): Promise<T> {
-    if (this.guardedInputActive) {
-      throw new Error("A terminal input operation is already active.");
-    }
-
-    // A modal selector is another projection inside the permanent shell, not
-    // a reason to leave its alternate buffer. Transfer stdin from the shell
-    // decoder to the selector while keeping the FullScreenWriter alive. This
-    // preserves the viewport and prevents VS Code from following a restored
-    // primary-buffer cursor to an unrelated scrollback position.
-    const persistentViewer = this.disclosureViewer;
-    if (persistentViewer && !persistentViewer.closing) {
-      this.guardedInputActive = true;
-      const wasRaw = Boolean(this.input.isRaw);
-      const wasFlowing = this.input.readableFlowing === true;
-      const inputFilter = new PrivateOscInputFilter(this.input);
-      let pending: Promise<T> | undefined;
-
-      if (persistentViewer.idleTimer) clearTimeout(persistentViewer.idleTimer);
-      persistentViewer.idleTimer = undefined;
-      persistentViewer.input.decoder.reset();
-
-      try {
-        this.input.pause();
-        this.input.removeListener("data", persistentViewer.onData);
-        this.input.removeListener("error", persistentViewer.onError);
-        // `action` installs its selector synchronously and reasserts Raw Mode
-        // before its first read. Do not toggle it once here and once there:
-        // duplicate Windows console transitions can themselves lose a key.
-        pending = action(inputFilter);
-        this.input.pipe(inputFilter);
-        this.input.resume();
-        return await pending;
-      } finally {
-        this.input.pause();
-        this.input.unpipe(inputFilter);
-        if (!inputFilter.destroyed) inputFilter.destroy();
-        this.guardedInputActive = false;
-
-        if (this.disclosureViewer === persistentViewer && !persistentViewer.closing && !this.closed) {
-          // Modal escape/control fragments belong to the selector and must
-          // never become text in the Request editor after ownership returns.
-          persistentViewer.input.decoder.reset();
-          persistentViewer.suspendedSession?.discardLeadingModalControls();
-          this.input.setRawMode?.(true);
-          this.input.on("data", persistentViewer.onData);
-          this.input.on("error", persistentViewer.onError);
-          // A resize may have been deferred while the modal owned stdin.
-          // Reconcile physical dimensions only after its filter is detached;
-          // if the terminal is now too short, close without dual consumers.
-          this.resizeDisclosureViewer();
-          this.input.resume();
-        } else {
-          try {
-            this.input.setRawMode?.(wasRaw);
-          } catch {
-            // A disappearing terminal must not prevent ownership cleanup.
-          }
-          if (wasFlowing) this.input.resume();
-          else this.input.pause();
-          if (!this.closed) this.startBusyInputOwner();
-        }
-      }
-    }
-
-    this.guardedInputActive = true;
-
-    // A busy steering editor is the sole normal stdin owner. Freeze its
-    // readline buffer before a modal selector attaches, then restore the same
-    // session after the selector has removed every listener. This preserves
-    // draft text/images/cursor without ever piping stdin to two consumers.
-    const suspendedBusySession = this.busyPromptSession;
-    const busyEditorSuspended = suspendedBusySession?.suspendInput() ?? false;
-    if (busyEditorSuspended) {
-      if (this.activePromptSession === suspendedBusySession) {
-        this.activePromptSession = undefined;
-      }
-      this.promptActive = false;
-    }
-
-    // A command approval normally interrupts the busy request owner. Borrow
-    // its already-piped raw input filter instead of tearing process.stdin down
-    // and immediately rebuilding it. Rapid raw-mode/pipe transitions can lose
-    // the first key on real Windows ConPTY terminals even though PassThrough
-    // tests look correct. The modal selector pauses the drain, owns the same
-    // filter temporarily, and hands it back after cleanup; extra key repeats
-    // are then drained by the busy owner rather than leaking into a later
-    // composer.
-    const borrowedOwner = this.busyInputOwner;
-    if (borrowedOwner && !borrowedOwner.filter.destroyed) {
-      borrowedOwner.filter.pause();
-      borrowedOwner.filter.resetPendingInput();
-      try {
-        return await action(borrowedOwner.filter);
-      } finally {
-        this.guardedInputActive = false;
-        if (
-          this.busyInputOwner === borrowedOwner &&
-          this.currentRequestOptions &&
-          !this.closed &&
-          !borrowedOwner.filter.destroyed
-        ) {
-          borrowedOwner.filter.resume();
-        } else {
-          // The request may have been replaced while the modal was open. Its
-          // setter cannot start a new owner while guarded input is active, so
-          // re-establish the current request's owner after releasing the guard.
-          this.startBusyInputOwner();
-        }
-      }
-    }
-
-    this.stopBusyInputOwner();
-    const wasRaw = Boolean(this.input.isRaw);
-    const wasFlowing = this.input.readableFlowing === true;
-    const inputFilter = new PrivateOscInputFilter(this.input);
-    let pending: Promise<T> | undefined;
-    try {
-      // A Windows console read inherits cooked/raw behavior when the read is
-      // first issued. Piping before Raw Mode therefore makes the first menu
-      // ignore arrows until Enter completes that cooked read. Acquire Raw Mode
-      // first, synchronously let the modal install its data listener, and only
-      // then start source flow into the filter.
-      this.input.pause();
-      if (!wasRaw) this.input.setRawMode?.(true);
-      pending = action(inputFilter);
-      this.input.pipe(inputFilter);
-      this.input.resume();
-      return await pending;
-    } finally {
-      this.input.pause();
-      this.input.unpipe(inputFilter);
-      if (!inputFilter.destroyed) inputFilter.destroy();
-      try {
-        if (!wasRaw) this.input.setRawMode?.(false);
-      } catch {
-        // Input restoration is best effort if the terminal disappeared.
-      }
-      if (wasFlowing) this.input.resume();
-      this.guardedInputActive = false;
-      if (
-        busyEditorSuspended &&
-        suspendedBusySession !== undefined &&
-        this.busyPromptSession === suspendedBusySession &&
-        this.currentRequestOptions?.onSteer &&
-        !this.closed
-      ) {
-        // The overlay cleanup may briefly paint the static busy card through
-        // ScreenWriter. Remove it before readline restores its saved rows.
-        this.screen?.clearLive();
-        this.promptActive = true;
-        this.activePromptSession = suspendedBusySession;
-        suspendedBusySession.resumeInput({
-          discardLeadingModalControls: true,
-        });
-      } else {
-        this.startBusyInputOwner();
-      }
-    }
+    return this.inputOwnership.withPrivateProtocolFilteredInput(action);
   }
-
-  /**
-   * Open one complete Thinking/Adjustment body in a managed alternate-screen
-   * transcript. The primary terminal remains untouched, so closing the viewer
-   * can restore the collapsed marker at exactly the same logical position.
-   */
   private openDisclosureViewer(kind: DisclosureKind, id: number): boolean {
-    if (this.uiState.overlay || this.guardedInputActive) return false;
-    if (!this.inlineShellActive || !this.isInteractive() || this.closed) {
-      return false;
-    }
-    if (!this.disclosureAvailable(kind, id)) {
-      const label = kind === "thinking" ? "Thinking block" : "Queued adjustment";
-      this.writeStableStatus(`${label} #${id} is historical or unavailable in the current terminal view.`, "info");
-      return false;
-    }
-
-    const current = this.disclosureViewer;
-    if (current) return this.switchDisclosureViewer(current, kind, id);
-
-    return this.startPersistentViewer(undefined, { kind, id });
+    return this.disclosure.openDisclosureViewer(kind, id);
   }
-
-  /**
-   * Start the single full-screen shell projection.
-   *
-   * The ordinary conversation and expanded disclosures share this writer;
-   * opening Thinking therefore changes only a virtual transcript node and
-   * never enters a second alternate screen.
-   */
   private startPersistentViewer(
     promptSession?: PromptInputSession,
     initialDisclosure?: Readonly<{ kind: DisclosureKind; id: number }>,
   ): boolean {
-    const existing = this.disclosureViewer;
-    if (existing) {
-      const attached = promptSession ? this.attachDisclosurePromptSession(existing, promptSession) : true;
-      if (!attached) return false;
-      return initialDisclosure
-        ? this.switchDisclosureViewer(existing, initialDisclosure.kind, initialDisclosure.id)
-        : true;
-    }
-
-    const rows = this.physicalRows();
-    if (rows < 9) {
-      if (initialDisclosure) {
-        this.writeStableStatus("The terminal needs at least 9 rows to open the managed conversation view.", "warning");
-      }
-      return false;
-    }
-
-    const priorBusyOwner = this.busyInputOwner;
-    const wasRaw = priorBusyOwner?.wasRaw ?? Boolean(this.input.isRaw);
-    const wasFlowing = priorBusyOwner?.wasFlowing ?? this.input.readableFlowing === true;
-    const suspendedSession = promptSession ?? this.activePromptSession;
-    const sessionSuspended =
-      suspendedSession?.suspendInput({
-        // A completed idle prompt can remain byte-for-byte intact in the hidden
-        // primary buffer. Busy UI is expected to keep changing, so retain its
-        // existing erase/redraw lifecycle.
-        preserveDisplay: !this.uiState.composer.busy,
-      }) ?? false;
-    if (suspendedSession && !sessionSuspended) return false;
-    if (sessionSuspended) {
-      if (this.activePromptSession === suspendedSession) {
-        this.activePromptSession = undefined;
-      }
-      this.promptActive = false;
-    } else {
-      this.stopBusyInputOwner();
-    }
-
-    const columns = this.physicalColumns();
-    const target = initialDisclosure ? disclosureTarget(initialDisclosure.kind, initialDisclosure.id) : undefined;
-    const nodes = disclosureDocumentNodes(
-      this.uiState.transcript,
-      this.retainedReasoningDisclosures,
-      this.streams,
-      initialDisclosure?.kind,
-      initialDisclosure?.id,
-    );
-    const headerLines = disclosureHeaderLines(this.uiState, this.viewOptions(), columns);
-    const composerLines = disclosureComposerLines(this.uiState, this.viewOptions(), columns, rows);
-    const footerLines = disclosureFooterLines(this.uiState, this.viewOptions(), columns, rows, composerLines);
-    let state: DisclosureViewState;
-    try {
-      state = createDisclosureViewState({
-        nodes,
-        ...(target ? { target } : {}),
-        columns,
-        rows,
-        headerLines,
-        composerLines,
-        footerLines,
-        ...(target
-          ? {
-              anchorScreenRow: disclosureAnchorScreenRow({
-                nodes,
-                target,
-                columns,
-                rows,
-                headerLines,
-                composerLines,
-                footerLines,
-              }),
-              expanded: true,
-            }
-          : {}),
-        preserveAnsi: true,
-      });
-    } catch (error) {
-      if (sessionSuspended && suspendedSession) {
-        this.promptActive = true;
-        this.activePromptSession = suspendedSession;
-        suspendedSession.resumeInput({ discardLeadingModalControls: true });
-      } else {
-        this.startBusyInputOwner();
-      }
-      this.writeStableStatus(
-        `Unable to open disclosure view: ${error instanceof Error ? error.message : String(error)}`,
-        "error",
-      );
-      return false;
-    }
-
-    const writer = new FullScreenWriter({
-      output: this.output as import("../ui/render/screen-writer.js").ScreenOutput,
-      columns: () => this.physicalColumns(),
-      rows: () => this.physicalRows(),
-      onFailure: (error) => this.failTerminalUi("full-screen renderer", error),
-    });
-    const tuiInput = new TuiInputCore({ focus: "viewer", mouseWheelLines: 3 });
-    let viewer!: ActiveDisclosureViewer;
-    const onData = (chunk: Buffer | string): void => {
-      if (this.disclosureViewer !== viewer || viewer.closing) return;
-      try {
-        const decoded = viewer.input.feed(chunk);
-        this.scheduleDisclosureInputFlush(viewer);
-        for (const event of decoded.events) {
-          this.handleDisclosureInput(viewer, event);
-          if (this.disclosureViewer !== viewer) break;
-        }
-      } catch (error) {
-        this.failTerminalUi("conversation input", error);
-      }
-    };
-    const onError = (error: Error): void => {
-      this.failTerminalUi("conversation input", error);
-    };
-    const rendered = renderDisclosureFrameWithPosition(state, this.uiState, this.viewOptions());
-    state = rendered.state;
-    const frame = rendered.frame;
-    viewer = {
-      writer,
-      input: tuiInput,
-      state,
-      frame,
-      ...(initialDisclosure
-        ? {
-            kind: initialDisclosure.kind,
-            registryId: initialDisclosure.id,
-          }
-        : {}),
-      ...(sessionSuspended && suspendedSession ? { suspendedSession } : {}),
-      sessionReleased: false,
-      wasRaw,
-      wasFlowing,
-      onData,
-      onError,
-      deferredCommits: [],
-      primaryDisplayDirty: false,
-      closing: false,
-    };
-    this.disclosureViewer = viewer;
-    if (initialDisclosure?.kind === "thinking") {
-      const block = this.reasoning.get(initialDisclosure.id);
-      if (block && this.uiState.live.thinking?.id !== initialDisclosure.id) {
-        this.uiState = applyEvent(this.uiState, {
-          type: "thinking.toggle",
-          panel: block,
-        });
-      }
-    } else if (initialDisclosure?.kind === "adjustment") {
-      this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
-    }
-
-    try {
-      this.input.pause();
-      this.input.setRawMode?.(true);
-      this.input.on("data", onData);
-      this.input.on("error", onError);
-      writer.render(frame.rows);
-      writer.enter();
-      if (this.closed) return false;
-      // FullScreenWriter owns DEC cursor visibility while the alternate
-      // buffer is active. Keep our cache synchronized with its hidden cursor.
-      this.terminalCursorVisible = false;
-      this.input.resume();
-      return true;
-    } catch (error) {
-      this.closeDisclosureViewer();
-      this.writeStableStatus(
-        `Unable to start disclosure view: ${error instanceof Error ? error.message : String(error)}`,
-        "error",
-      );
-      return false;
-    }
+    return this.disclosure.startPersistentViewer(promptSession, initialDisclosure);
   }
-
-  /** Attach a newly-created readline editor to the already-running shell. */
-  private attachDisclosurePromptSession(viewer: ActiveDisclosureViewer, session: PromptInputSession): boolean {
-    if (this.disclosureViewer !== viewer || viewer.closing) return false;
-    if (viewer.suspendedSession === session && !viewer.sessionReleased) {
-      return true;
-    }
-    if (viewer.suspendedSession && !viewer.sessionReleased) return false;
-    if (!session.suspendInput({ preserveDisplay: true })) return false;
-    viewer.suspendedSession = session;
-    viewer.sessionReleased = false;
-    if (this.activePromptSession === session) this.activePromptSession = undefined;
-    this.promptActive = false;
-    viewer.primaryDisplayDirty = true;
-    // suspendInput() pauses the shared readable after disconnecting readline.
-    // The persistent viewer is now the sole physical owner, so resume it here
-    // or the first paste/keypress after attachment would never be delivered.
-    this.input.resume();
-    this.refreshDisclosureViewer();
-    return true;
-  }
-
-  /** Detach a readline lifecycle that completed while the shell stays alive. */
   private releaseDisclosurePromptSession(session: PromptInputSession | undefined): void {
-    if (!session) return;
-    const viewer = this.disclosureViewer;
-    if (!viewer || viewer.suspendedSession !== session) return;
-    viewer.sessionReleased = true;
-    viewer.suspendedSession = undefined;
-    // readPrompt restores the Raw Mode it observed before the session was
-    // created. The permanent shell outlives that readline lifecycle, so take
-    // physical ownership back immediately for the next click/paste/keypress.
-    try {
-      this.input.setRawMode?.(true);
-    } catch {
-      // A disappearing terminal will be handled by the viewer's error path.
-    }
-    this.input.resume();
-    this.refreshDisclosureViewer();
+    return this.disclosure.releaseDisclosurePromptSession(session);
   }
-
-  /** Reassert ownership after readline restores the Raw Mode it inherited. */
   private reclaimPersistentViewerInput(): void {
-    const viewer = this.disclosureViewer;
-    if (!viewer || viewer.closing || this.closed) return;
-    try {
-      this.input.setRawMode?.(true);
-    } catch {
-      return;
-    }
-    this.input.resume();
+    return this.disclosure.reclaimPersistentViewerInput();
   }
-
   private closeDisclosureViewer(): void {
-    const viewer = this.disclosureViewer;
-    if (!viewer || viewer.closing) return;
-    viewer.closing = true;
-    this.disclosureViewer = undefined;
-    this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
-    if (viewer.idleTimer) clearTimeout(viewer.idleTimer);
-    viewer.idleTimer = undefined;
-    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
-    viewer.repaintTimer = undefined;
-
-    // A completed idle turn normally has no primary-buffer mutations while
-    // its disclosure is open. In that common path the prompt that was already
-    // present before DEC 1049 remains authoritative; repainting it after the
-    // buffer switch would make VS Code follow the cursor to scrollback bottom.
-    const preservePrimaryDisplay = Boolean(
-      viewer.suspendedSession &&
-      !viewer.sessionReleased &&
-      !this.closed &&
-      !this.uiState.composer.busy &&
-      !viewer.primaryDisplayDirty &&
-      viewer.deferredCommits.length === 0,
-    );
-
-    try {
-      this.input.pause();
-      this.input.removeListener("data", viewer.onData);
-      this.input.removeListener("error", viewer.onError);
-      viewer.writer.close();
-      // Clear the hidden primary buffer only after leaving the alternate one,
-      // before restoring the editor. Never replay text discarded by /clear.
-      if (viewer.clearPrimaryOnClose) this.screen?.clearScreen();
-      // The writer's paired exit sequence restores the physical cursor.
-      this.terminalCursorVisible = true;
-    } finally {
-      try {
-        this.input.setRawMode?.(viewer.wasRaw);
-      } catch {
-        // A disappearing terminal must not prevent prompt restoration.
-      }
-
-      if (viewer.suspendedSession && !viewer.sessionReleased && !this.closed) {
-        this.promptActive = true;
-        this.activePromptSession = viewer.suspendedSession;
-        viewer.suspendedSession.resumeInput({
-          discardLeadingModalControls: true,
-          preserveDisplay: preservePrimaryDisplay,
-          reacquireTerminalModes: true,
-        });
-        this.setTerminalCursorVisible(true);
-      } else {
-        if (viewer.wasFlowing) this.input.resume();
-        else this.input.pause();
-        if (!this.closed) this.startBusyInputOwner();
-      }
-
-      // Stable output produced while the alternate buffer was visible must be
-      // committed exactly once. When an editor session survived, route it
-      // through that session after restoration so its preserved draft is
-      // erased/redrawn around the output instead of being overwritten.
-      if (!this.closed) {
-        for (const commit of viewer.deferredCommits) {
-          if (this.activePromptSession) {
-            this.activePromptSession.writeAbove(commit.text);
-          } else {
-            this.screen?.commit(commit.text);
-          }
-        }
-      }
-      // With an untouched primary prompt there is nothing to redraw. Avoiding
-      // even a decorative footer refresh is what preserves the user's VS Code
-      // terminal scroll position on collapse.
-      if (!this.closed && !preservePrimaryDisplay) this.refresh();
-    }
+    return this.disclosure.closeDisclosureViewer();
   }
-
   private refreshDisclosureViewer(nodesChanged = false): void {
-    if (this.streams.deferDocumentRefresh(nodesChanged)) return;
-    const viewer = this.disclosureViewer;
-    if (!viewer || viewer.closing) return;
-    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
-    viewer.repaintTimer = undefined;
-    try {
-      // Keep the canonical document current even while a modal temporarily
-      // replaces its pixels. The overlay's close callback refreshes without a
-      // `nodesChanged` hint, so deferring this replacement would permanently
-      // lose any transcript rows committed during approval/model selection.
-      if (nodesChanged) {
-        const nodes = disclosureDocumentNodes(
-          this.uiState.transcript,
-          this.retainedReasoningDisclosures,
-          this.streams,
-          viewer.state.targetExpanded ? viewer.kind : undefined,
-          viewer.state.targetExpanded ? viewer.registryId : undefined,
-        );
-        const selected = viewer.state.target;
-        if (selected && !nodes.some((node) => node.id === selected.id && node.kind === selected.kind)) {
-          viewer.state = clearDisclosureViewTarget(viewer.state);
-          delete viewer.kind;
-          delete viewer.registryId;
-        }
-        viewer.state = replaceDisclosureViewNodes(viewer.state, nodes);
-      }
-      if (this.uiState.overlay) {
-        const columns = viewer.state.columns;
-        const rows = viewer.state.rows;
-        const headerLines = disclosureHeaderLines(this.uiState, this.viewOptions(), columns);
-        const footerLines = renderFixedBottomRegions(
-          this.uiState,
-          { ...this.viewOptions(), columns, rows },
-          Date.now(),
-          { totalRows: 1, detailRows: 0 },
-        ).lines;
-        const overlayRows = Math.max(1, rows - headerLines.length - footerLines.length);
-        const overlayText = renderLiveRegion(this.uiState, Date.now(), {
-          ...this.viewOptions(),
-          columns,
-          rows: overlayRows,
-        });
-        const overlayState = createDisclosureViewState({
-          nodes: [{ id: "overlay", kind: "text", text: overlayText }],
-          columns,
-          rows,
-          headerLines,
-          composerLines: [],
-          footerLines,
-          preserveAnsi: true,
-        });
-        viewer.frame = renderDisclosureView(overlayState);
-        viewer.writer.render(viewer.frame.rows);
-        return;
-      }
-      viewer.state = updateDisclosureViewChrome(viewer.state, {
-        headerLines: disclosureHeaderLines(this.uiState, this.viewOptions(), viewer.state.columns),
-        composerLines: disclosureComposerLines(
-          this.uiState,
-          this.viewOptions(),
-          viewer.state.columns,
-          viewer.state.rows,
-        ),
-      });
-      const rendered = renderDisclosureFrameWithPosition(viewer.state, this.uiState, this.viewOptions());
-      viewer.state = rendered.state;
-      viewer.frame = rendered.frame;
-      viewer.writer.render(viewer.frame.rows);
-    } catch (error) {
-      this.failTerminalUi("conversation renderer", error);
-    }
+    return this.disclosure.refreshDisclosureViewer(nodesChanged);
   }
-
   private resizeDisclosureViewer(): void {
-    const viewer = this.disclosureViewer;
-    if (!viewer || viewer.closing) return;
-    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
-    viewer.repaintTimer = undefined;
-    viewer.primaryDisplayDirty = true;
-    try {
-      const columns = this.physicalColumns();
-      const rows = this.physicalRows();
-      if (rows < 9) {
-        if (this.guardedInputActive || this.uiState.overlay) {
-          viewer.writer.resize(columns, rows);
-          viewer.writer.render([
-            chalk.cyan("EASY CODE"),
-            chalk.yellow("Enlarge the terminal to continue this selection."),
-          ]);
-          return;
-        }
-        this.closeDisclosureViewer();
-        return;
-      }
-      viewer.writer.resize(columns, rows);
-      const headerLines = disclosureHeaderLines(this.uiState, this.viewOptions(), columns);
-      const composerLines = disclosureComposerLines(this.uiState, this.viewOptions(), columns, rows);
-      const footerLines = disclosureFooterLines(this.uiState, this.viewOptions(), columns, rows, composerLines);
-      viewer.state = resizeDisclosureView(viewer.state, columns, rows, {
-        headerLines,
-        composerLines,
-        footerLines,
-      });
-      if (this.uiState.overlay) {
-        this.refreshDisclosureViewer();
-        return;
-      }
-      const rendered = renderDisclosureFrameWithPosition(viewer.state, this.uiState, this.viewOptions());
-      viewer.state = rendered.state;
-      viewer.frame = rendered.frame;
-      viewer.writer.render(viewer.frame.rows);
-    } catch (error) {
-      this.failTerminalUi("conversation resize", error);
-    }
+    return this.disclosure.resizeDisclosureViewer();
   }
-
-  /** Accumulate viewport movement immediately, but paint a burst only once. */
-  private scheduleDisclosureRepaint(viewer: ActiveDisclosureViewer): void {
-    if (viewer.repaintTimer || viewer.closing || this.disclosureViewer !== viewer) return;
-    viewer.repaintTimer = setTimeout(() => {
-      viewer.repaintTimer = undefined;
-      if (this.disclosureViewer === viewer && !viewer.closing) this.refreshDisclosureViewer();
-    }, 16);
-    viewer.repaintTimer.unref();
-  }
-
-  private handleDisclosureInput(viewer: ActiveDisclosureViewer, event: Readonly<TuiInputEvent>): void {
-    if (event.type === "input-error") {
-      this.writeStableStatus(event.message, "warning");
-      return;
-    }
-    if (event.type === "mouse") {
-      const mouse = event;
-      if (mouse.action === "wheel-up" || mouse.action === "wheel-down") {
-        viewer.state = applyDisclosureViewCommand(viewer.state, {
-          type: "scroll-lines",
-          lines: mouse.action === "wheel-up" ? -3 : 3,
-        });
-        this.scheduleDisclosureRepaint(viewer);
-        return;
-      }
-      if (mouse.action !== "press" || mouse.button !== "left") return;
-      // Hit testing must use the frame corresponding to the accumulated scroll.
-      if (viewer.repaintTimer) this.refreshDisclosureViewer();
-      if (this.disclosureViewer !== viewer) return;
-      const row = viewer.frame.visibleRows[mouse.row - 1];
-      if (!row || row.part !== "title" || !row.nodeId) return;
-      if (row.nodeKind !== "thinking" && row.nodeKind !== "adjustment") return;
-      const id = registryIdFromVirtualNode(row.nodeId, row.nodeKind);
-      if (id !== undefined) {
-        this.toggleDisclosureFromViewer(viewer, row.nodeKind, id);
-      }
-      return;
-    }
-    if (event.type === "key" && event.key === "page-up") {
-      viewer.state = applyDisclosureViewCommand(viewer.state, {
-        type: "page-up",
-      });
-      this.scheduleDisclosureRepaint(viewer);
-      return;
-    }
-    if (event.type === "key" && (event.key === "up" || event.key === "down")) {
-      // DEC alternate-scroll mode translates wheel movement into cursor keys
-      // without capturing mouse buttons. Treat those keys as viewport motion
-      // while the disclosure owns the screen; native drag selection remains
-      // entirely controlled by the terminal.
-      viewer.state = applyDisclosureViewCommand(viewer.state, {
-        type: "scroll-lines",
-        lines: event.key === "up" ? -1 : 1,
-      });
-      this.scheduleDisclosureRepaint(viewer);
-      return;
-    }
-    if (event.type === "key" && event.key === "page-down") {
-      viewer.state = applyDisclosureViewCommand(viewer.state, {
-        type: "page-down",
-      });
-      this.scheduleDisclosureRepaint(viewer);
-      return;
-    }
-    if (event.type === "key" && event.key === "interrupt") {
-      if (this.externalOperationController) {
-        if (!this.externalOperationController.signal.aborted) {
-          const error = new Error("External authorization canceled by user");
-          error.name = "AbortError";
-          this.externalOperationController.abort(error);
-        }
-      } else if (this.currentRequestOptions?.onInterrupt) {
-        this.signalCurrentRequestInterrupt();
-      } else {
-        this.activePromptController?.abort();
-      }
-      return;
-    }
-
-    const raw = disclosureEditorInput(event);
-    if (!raw) return;
-    if (viewer.suspendedSession?.feedInput(raw)) {
-      viewer.primaryDisplayDirty = true;
-    } else {
-      // A session can finish synchronously when Enter is forwarded. The
-      // permanent shell remains active while the next idle/busy editor is
-      // created and attached to the same viewport.
-      if (this.disclosureViewer === viewer && viewer.sessionReleased) {
-        this.refreshDisclosureViewer();
-      }
-    }
-  }
-
-  private toggleDisclosureFromViewer(viewer: ActiveDisclosureViewer, kind: DisclosureKind, id: number): void {
-    if (this.disclosureViewer !== viewer) return;
-    this.openDisclosureViewer(kind, id);
-  }
-
   private signalCurrentRequestInterrupt(): void {
-    if (this.currentRequestInterruptSignaled) return;
-    const interrupt = this.currentRequestOptions?.onInterrupt;
-    if (!interrupt) return;
-    this.currentRequestInterruptSignaled = true;
-    interrupt();
+    return this.inputOwnership.signalCurrentRequestInterrupt();
   }
-
-  /**
-   * Every active request must have exactly one semantic input path (editor,
-   * viewer, modal, or the Ctrl+C-only busy owner). Catching a lost hand-off is
-   * safer than leaving a live Runtime behind an inert terminal.
-   */
   private startInputOwnerWatchdog(): void {
-    this.stopInputOwnerWatchdog();
-    if (!this.inlineShellActive || !this.currentRequestOptions || this.closed) return;
-    this.inputOwnerWatchdog = setInterval(() => {
-      if (this.closed || !this.currentRequestOptions) {
-        this.stopInputOwnerWatchdog();
-        return;
-      }
-      if (this.guardedInputActive) {
-        this.inputOwnerMissingSince = undefined;
-        return;
-      }
-      const hasOwner = Boolean(this.disclosureViewer || this.promptActive || this.busyInputOwner || this.rl);
-      if (hasOwner) {
-        this.inputOwnerMissingSince = undefined;
-        if ((this.disclosureViewer || this.busyInputOwner) && this.input.readableFlowing !== true) {
-          try {
-            this.input.resume();
-          } catch (error) {
-            this.failTerminalUi("input ownership", error);
-          }
-        }
-        return;
-      }
-      const now = Date.now();
-      this.inputOwnerMissingSince ??= now;
-      if (now - this.inputOwnerMissingSince >= Terminal.INPUT_OWNER_GRACE_MS) {
-        this.failTerminalUi("input ownership", new Error("No terminal input owner remained for the active request."));
-      }
-    }, Terminal.INPUT_OWNER_WATCHDOG_INTERVAL_MS);
-    this.inputOwnerWatchdog.unref();
+    return this.inputOwnership.startInputOwnerWatchdog();
   }
-
   private stopInputOwnerWatchdog(): void {
-    if (this.inputOwnerWatchdog) clearInterval(this.inputOwnerWatchdog);
-    this.inputOwnerWatchdog = undefined;
-    this.inputOwnerMissingSince = undefined;
-  }
-
-  private switchDisclosureViewer(viewer: ActiveDisclosureViewer, kind: DisclosureKind, id: number): boolean {
-    if (this.disclosureViewer !== viewer || !this.disclosureAvailable(kind, id)) {
-      return false;
-    }
-    if (viewer.repaintTimer) clearTimeout(viewer.repaintTimer);
-    viewer.repaintTimer = undefined;
-    try {
-      const target = disclosureTarget(kind, id);
-      const sameTarget = viewer.kind === kind && viewer.registryId === id;
-      const nextExpanded = sameTarget ? !viewer.state.targetExpanded : true;
-      const nodes = disclosureDocumentNodes(
-        this.uiState.transcript,
-        this.retainedReasoningDisclosures,
-        this.streams,
-        nextExpanded ? kind : undefined,
-        nextExpanded ? id : undefined,
-      );
-      const selected = viewer.state.target;
-      if (selected && !nodes.some((node) => node.id === selected.id && node.kind === selected.kind)) {
-        viewer.state = clearDisclosureViewTarget(viewer.state);
-      }
-      viewer.state = replaceDisclosureViewNodes(viewer.state, nodes);
-      viewer.state = toggleDisclosureView(viewer.state, target, nextExpanded);
-      viewer.kind = kind;
-      viewer.registryId = id;
-      if (kind === "thinking" && viewer.state.targetExpanded) {
-        const block = this.reasoning.get(id);
-        this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
-        if (block) {
-          this.uiState = applyEvent(this.uiState, {
-            type: "thinking.toggle",
-            panel: block,
-          });
-        }
-      } else {
-        this.uiState = applyEvent(this.uiState, { type: "thinking.hide" });
-      }
-      const rendered = renderDisclosureFrameWithPosition(viewer.state, this.uiState, this.viewOptions());
-      viewer.state = rendered.state;
-      viewer.frame = rendered.frame;
-      viewer.writer.render(viewer.frame.rows);
-      return true;
-    } catch (error) {
-      this.failTerminalUi("disclosure renderer", error);
-      return false;
-    }
-  }
-
-  private scheduleDisclosureInputFlush(viewer: ActiveDisclosureViewer): void {
-    if (viewer.idleTimer) clearTimeout(viewer.idleTimer);
-    viewer.idleTimer = undefined;
-    if (!viewer.input.decoder.awaitingInput) return;
-    viewer.idleTimer = setTimeout(() => {
-      viewer.idleTimer = undefined;
-      if (this.disclosureViewer !== viewer || viewer.closing) return;
-      // Discard an incomplete OSC/paste packet so the next click or wheel
-      // packet starts from a clean boundary instead of freezing the viewer.
-      const flushed = viewer.input.flushIncomplete();
-      for (const event of flushed.events) {
-        this.handleDisclosureInput(viewer, event);
-        if (this.disclosureViewer !== viewer) break;
-      }
-    }, 1_500);
-    viewer.idleTimer.unref();
-  }
-
-  private disclosureAvailable(kind: DisclosureKind, id: number): boolean {
-    const retained = kind === "thinking" ? this.reasoning.get(id) : this.adjustments.get(id);
-    if (!retained) return false;
-    if (kind === "thinking") return this.retainedReasoningDisclosures.has(`thinking_${id}`);
-    return this.currentTurnDisclosures.some((segment) => segment.adjustment?.id === id);
+    return this.inputOwnership.stopInputOwnerWatchdog();
   }
 
   private physicalColumns(): number {
@@ -3057,66 +1380,6 @@ export class Terminal implements AppInteractionPort {
     } else {
       this.write(entry.text);
     }
-  }
-
-  private menuOverlay(
-    id: string,
-    kind: UIOverlayState["kind"],
-    payload?: Readonly<ApprovalRequest> | Readonly<PlanProposal>,
-  ): MenuSelectorOverlay {
-    return {
-      render: (lines) => {
-        // A picker has no text caret. Hide the physical cursor before painting
-        // it so ScreenWriter's live-region anchor is not exposed as a white
-        // block/dot inside Progress when the VS Code terminal loses focus.
-        this.setTerminalCursorVisible(false);
-        const plain = lines.map((line) => stripAnsi(line));
-        const renderedRows = plain.slice(1, -1);
-        const selectedIndex = Math.max(
-          0,
-          renderedRows.findIndex((line) => /^\s*›/u.test(line)),
-        );
-        const rows = renderedRows.map((line, index) => ({
-          id: `${id}-${index}`,
-          label: line.replace(/^\s*[› ]\s?/u, "").trim(),
-        }));
-        const common = {
-          id,
-          title: plain[0]?.trim() || "Select",
-          rows,
-          selectedIndex,
-          hint: plain[plain.length - 1]?.trim() || "Use ↑/↓ to move, Enter to confirm, or Esc to cancel",
-        };
-        let overlay: UIOverlayState;
-        if (kind === "approval") {
-          overlay = {
-            ...common,
-            kind,
-            request: payload as Readonly<ApprovalRequest>,
-          };
-        } else if (kind === "plan-review") {
-          overlay = {
-            ...common,
-            kind,
-            proposal: payload as Readonly<PlanProposal>,
-          };
-        } else {
-          overlay = { ...common, kind: "picker" };
-        }
-        this.uiState = applyEvent(this.uiState, {
-          type: "overlay.show",
-          overlay,
-        });
-        this.refresh();
-      },
-      clear: () => {
-        this.uiState = applyEvent(this.uiState, {
-          type: "overlay.hide",
-          id,
-        });
-        this.refresh();
-      },
-    };
   }
 
   private syncTerminalCursorVisibility(): void {
@@ -3302,6 +1565,339 @@ export class Terminal implements AppInteractionPort {
     } catch {
       // There is no further safe UI channel when stderr is unavailable.
     }
+  }
+
+  private disclosureInstance?: TerminalDisclosureViewer;
+  private get disclosure(): TerminalDisclosureViewer {
+    return (this.disclosureInstance ??= new TerminalDisclosureViewer(this.disclosureContext()));
+  }
+  private disclosureContext(): TerminalDisclosureViewerContext {
+    const host = this;
+    return {
+      get activePromptController() {
+        return host.activePromptController;
+      },
+      get activePromptSession() {
+        return host.activePromptSession;
+      },
+      set activePromptSession(value) {
+        host.activePromptSession = value;
+      },
+      get adjustments() {
+        return host.adjustments;
+      },
+      get busyInputOwner() {
+        return host.busyInputOwner;
+      },
+      get closed() {
+        return host.closed;
+      },
+      get currentRequestOptions() {
+        return host.currentRequestOptions;
+      },
+      get currentTurnDisclosures() {
+        return host.currentTurnDisclosures;
+      },
+      get disclosureViewer() {
+        return host.disclosureViewer;
+      },
+      set disclosureViewer(value) {
+        host.disclosureViewer = value;
+      },
+      get externalOperationController() {
+        return host.externalOperationController;
+      },
+      failTerminalUi: (...args) => host.failTerminalUi(...args),
+      get guardedInputActive() {
+        return host.guardedInputActive;
+      },
+      get inlineShellActive() {
+        return host.inlineShellActive;
+      },
+      get input() {
+        return host.input;
+      },
+      isInteractive: (...args) => host.isInteractive(...args),
+      get output() {
+        return host.output;
+      },
+      physicalColumns: (...args) => host.physicalColumns(...args),
+      physicalRows: (...args) => host.physicalRows(...args),
+      get promptActive() {
+        return host.promptActive;
+      },
+      set promptActive(value) {
+        host.promptActive = value;
+      },
+      get reasoning() {
+        return host.reasoning;
+      },
+      refresh: (...args) => host.refresh(...args),
+      get retainedReasoningDisclosures() {
+        return host.retainedReasoningDisclosures;
+      },
+      get screen() {
+        return host.screen;
+      },
+      setTerminalCursorVisible: (...args) => host.setTerminalCursorVisible(...args),
+      signalCurrentRequestInterrupt: (...args) => host.signalCurrentRequestInterrupt(...args),
+      startBusyInputOwner: (...args) => host.startBusyInputOwner(...args),
+      stopBusyInputOwner: (...args) => host.stopBusyInputOwner(...args),
+      get streams() {
+        return host.streams;
+      },
+      get terminalCursorVisible() {
+        return host.terminalCursorVisible;
+      },
+      set terminalCursorVisible(value) {
+        host.terminalCursorVisible = value;
+      },
+      get uiState() {
+        return host.uiState;
+      },
+      set uiState(value) {
+        host.uiState = value;
+      },
+      viewOptions: (...args) => host.viewOptions(...args),
+      writeStableStatus: (...args) => host.writeStableStatus(...args),
+    };
+  }
+
+  private inputOwnershipInstance?: TerminalInputOwnership;
+  private get inputOwnership(): TerminalInputOwnership {
+    return (this.inputOwnershipInstance ??= new TerminalInputOwnership(this.inputOwnershipContext()));
+  }
+  private inputOwnershipContext(): TerminalInputOwnershipContext {
+    const host = this;
+    return {
+      get activePromptSession() {
+        return host.activePromptSession;
+      },
+      set activePromptSession(value) {
+        host.activePromptSession = value;
+      },
+      get busyInputOwner() {
+        return host.busyInputOwner;
+      },
+      set busyInputOwner(value) {
+        host.busyInputOwner = value;
+      },
+      get busyPromptController() {
+        return host.busyPromptController;
+      },
+      set busyPromptController(value) {
+        host.busyPromptController = value;
+      },
+      get busyPromptGeneration() {
+        return host.busyPromptGeneration;
+      },
+      set busyPromptGeneration(value) {
+        host.busyPromptGeneration = value;
+      },
+      get busyPromptSession() {
+        return host.busyPromptSession;
+      },
+      set busyPromptSession(value) {
+        host.busyPromptSession = value;
+      },
+      get closed() {
+        return host.closed;
+      },
+      composerPromptPrefix: (...args) => host.composerPromptPrefix(...args),
+      composerPromptSuffix: (...args) => host.composerPromptSuffix(...args),
+      get currentRequestInterruptSignaled() {
+        return host.currentRequestInterruptSignaled;
+      },
+      set currentRequestInterruptSignaled(value) {
+        host.currentRequestInterruptSignaled = value;
+      },
+      get currentRequestOptions() {
+        return host.currentRequestOptions;
+      },
+      get disclosureViewer() {
+        return host.disclosureViewer;
+      },
+      failTerminalUi: (...args) => host.failTerminalUi(...args),
+      get guardedInputActive() {
+        return host.guardedInputActive;
+      },
+      set guardedInputActive(value) {
+        host.guardedInputActive = value;
+      },
+      info: (...args) => host.info(...args),
+      get inlineShellActive() {
+        return host.inlineShellActive;
+      },
+      get input() {
+        return host.input;
+      },
+      get inputOwnerMissingSince() {
+        return host.inputOwnerMissingSince;
+      },
+      set inputOwnerMissingSince(value) {
+        host.inputOwnerMissingSince = value;
+      },
+      get inputOwnerWatchdog() {
+        return host.inputOwnerWatchdog;
+      },
+      set inputOwnerWatchdog(value) {
+        host.inputOwnerWatchdog = value;
+      },
+      get output() {
+        return host.output;
+      },
+      get promptActive() {
+        return host.promptActive;
+      },
+      set promptActive(value) {
+        host.promptActive = value;
+      },
+      get readlineInputFilter() {
+        return host.readlineInputFilter;
+      },
+      set readlineInputFilter(value) {
+        host.readlineInputFilter = value;
+      },
+      refresh: (...args) => host.refresh(...args),
+      releaseDisclosurePromptSession: (...args) => host.releaseDisclosurePromptSession(...args),
+      resizeDisclosureViewer: (...args) => host.resizeDisclosureViewer(...args),
+      get rl() {
+        return host.rl;
+      },
+      set rl(value) {
+        host.rl = value;
+      },
+      get screen() {
+        return host.screen;
+      },
+      setTerminalCursorVisible: (...args) => host.setTerminalCursorVisible(...args),
+      showLatestReasoning: (...args) => host.showLatestReasoning(...args),
+      showReasoning: (...args) => host.showReasoning(...args),
+      startPersistentViewer: (...args) => host.startPersistentViewer(...args),
+      get steeringAdmissionPaused() {
+        return host.steeringAdmissionPaused;
+      },
+      get steeringDeliveryQueue() {
+        return host.steeringDeliveryQueue;
+      },
+      set steeringDeliveryQueue(value) {
+        host.steeringDeliveryQueue = value;
+      },
+      get uiState() {
+        return host.uiState;
+      },
+      set uiState(value) {
+        host.uiState = value;
+      },
+      writeStableStatus: (...args) => host.writeStableStatus(...args),
+    };
+  }
+
+  private decisionControllerInstance?: TerminalDecisions;
+  private get decisionController(): TerminalDecisions {
+    return (this.decisionControllerInstance ??= new TerminalDecisions(this.decisionControllerContext()));
+  }
+  private decisionControllerContext(): TerminalDecisionsContext {
+    const host = this;
+    return {
+      recordAcceptedPlanFeedback: (feedback) => host.recordAcceptedPlanFeedback(feedback),
+      get activeApprovalController() {
+        return host.activeApprovalController;
+      },
+      set activeApprovalController(value) {
+        host.activeApprovalController = value;
+      },
+      get activePromptController() {
+        return host.activePromptController;
+      },
+      set activePromptController(value) {
+        host.activePromptController = value;
+      },
+      get activePromptSession() {
+        return host.activePromptSession;
+      },
+      set activePromptSession(value) {
+        host.activePromptSession = value;
+      },
+      get busyPromptSession() {
+        return host.busyPromptSession;
+      },
+      get closed() {
+        return host.closed;
+      },
+      set closed(value) {
+        host.closed = value;
+      },
+      colorEnabled: (...args) => host.colorEnabled(...args),
+      composerPromptPrefix: (...args) => host.composerPromptPrefix(...args),
+      composerPromptSuffix: (...args) => host.composerPromptSuffix(...args),
+      get disclosureViewer() {
+        return host.disclosureViewer;
+      },
+      freezeCurrentTurnDisclosures: (...args) => host.freezeCurrentTurnDisclosures(...args),
+      get guardedInputActive() {
+        return host.guardedInputActive;
+      },
+      info: (...args) => host.info(...args),
+      get inlineShellActive() {
+        return host.inlineShellActive;
+      },
+      get input() {
+        return host.input;
+      },
+      isInteractive: (...args) => host.isInteractive(...args),
+      get lastPlan() {
+        return host.lastPlan;
+      },
+      get output() {
+        return host.output;
+      },
+      get pendingRequestTranscriptStart() {
+        return host.pendingRequestTranscriptStart;
+      },
+      set pendingRequestTranscriptStart(value) {
+        host.pendingRequestTranscriptStart = value;
+      },
+      get promptActive() {
+        return host.promptActive;
+      },
+      set promptActive(value) {
+        host.promptActive = value;
+      },
+      question: (...args) => host.question(...args),
+      reclaimPersistentViewerInput: (...args) => host.reclaimPersistentViewerInput(...args),
+      refresh: (...args) => host.refresh(...args),
+      refreshDisclosureViewer: (...args) => host.refreshDisclosureViewer(...args),
+      releaseDisclosurePromptSession: (...args) => host.releaseDisclosurePromptSession(...args),
+      get rl() {
+        return host.rl;
+      },
+      get screen() {
+        return host.screen;
+      },
+      get secretInputActive() {
+        return host.secretInputActive;
+      },
+      set secretInputActive(value) {
+        host.secretInputActive = value;
+      },
+      setTerminalCursorVisible: (...args) => host.setTerminalCursorVisible(...args),
+      showLatestReasoning: (...args) => host.showLatestReasoning(...args),
+      showReasoning: (...args) => host.showReasoning(...args),
+      startPersistentViewer: (...args) => host.startPersistentViewer(...args),
+      get uiState() {
+        return host.uiState;
+      },
+      set uiState(value) {
+        host.uiState = value;
+      },
+      get vscodeMenuBridge() {
+        return host.vscodeMenuBridge;
+      },
+      withPrivateProtocolFilteredInput: (...args) => host.withPrivateProtocolFilteredInput(...args),
+      write: (...args) => host.write(...args),
+      warning: (...args) => host.warning(...args),
+    };
   }
 }
 
