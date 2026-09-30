@@ -131,6 +131,29 @@ interface CommandAuthorizationContext {
   readonly unrestricted: boolean;
 }
 
+/** Where an authorized command runs. Target resolution may move it to the host before approval; then it is fixed. */
+interface CommandTarget {
+  hostAccess: boolean;
+  executionBackend: CommandExecutionBackend;
+  resolved: ResolvedCommand;
+  readonly containerExecution: boolean;
+  readonly networkEnabled: boolean;
+  readonly resolverOptions: { unrestrictedHostAccess: boolean; unrestrictedCommands: boolean; networkEnabled: boolean };
+  readonly boundaryScope: string;
+  readonly boundaryHostPrefix: string | undefined;
+  readonly boundaryCommandFamily: string;
+  readonly boundaryIncidentKey: string;
+  boundaryGrantConsumed: boolean;
+  capabilityEscalation: string | undefined;
+}
+
+/** One invocation's network approval; the first answer, including a denial, is reused for every later connection. */
+interface CommandNetworkApproval {
+  approve(destination?: string): Promise<boolean>;
+  /** The command approval already covered network access. */
+  grant(): void;
+}
+
 type AuthorizeCommandFlow =
   | {
       kind: "next";
@@ -875,10 +898,85 @@ export class CommandRuntime {
 
   /** Resolve the execution backend and permission profile, apply boundary grants, policy and approvals (including network), and build the sandbox request; returns early with a refusal result when execution must not start. */
   private async authorizeCommand(ctx: CommandAuthorizationContext): Promise<AuthorizeCommandFlow> {
-    const { benchmark, commandId, context, hooks, input, startedAt, unrestricted } = ctx;
+    const { benchmark, commandId, context, input, startedAt, unrestricted } = ctx;
+    const targetFlow = await this.resolveCommandTarget(ctx);
+    if (targetFlow.kind === "return") return targetFlow;
+    const { target } = targetFlow;
+    const { containerExecution, executionBackend, hostAccess, networkEnabled, resolved } = target;
+    const networkOperation = inspectNetworkOperation(resolved);
+    const classified = this.policy.classify(input, resolved, "code", networkEnabled);
+    const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
+    const commandNetwork = hostAccess || (Boolean(networkOperation) && networkEnabled);
+    // PATH and executable bytes belong to the offline worker, not controller.
+    // Without host-attested bytes, use one-shot approval, never a fake digest.
+    const prefix =
+      executionBackend.approvalPrefix?.(resolved, context, commandNetwork) ??
+      (containerExecution ? `once:v1:${sha256(commandId)}` : commandGrantPrefix(resolved, scope, commandNetwork));
+    const fingerprint = this.policy.approvalFingerprint(resolved, classified);
+
+    // A single approval authorizes this invocation, not the entire Thread.
+    // Cache denial too: a command cannot generate an approval-prompt loop.
+    const networkApprovalController = new AbortController();
+    const networkSignal = context.signal
+      ? AbortSignal.any([context.signal, networkApprovalController.signal])
+      : networkApprovalController.signal;
+    const network = this.networkApproval(ctx, target, { scope, fingerprint, networkOperation, networkSignal });
+
+    if (!unrestricted && !benchmark && !target.boundaryGrantConsumed) {
+      const refusal = await this.requestCommandApproval(ctx, target, classified, {
+        scope,
+        commandNetwork,
+        prefix,
+        fingerprint,
+        networkOperation,
+      });
+      if (refusal) return refusal;
+      if (commandNetwork) network.grant();
+    }
+    let policyDecision: CommandPolicyDecision = {
+      ...classified,
+      effect: "allow",
+      reason: benchmark
+        ? "Container execution; external network boundary remains"
+        : unrestricted
+          ? "Full access"
+          : target.boundaryGrantConsumed
+            ? "Exact one-shot host approval consumed after sandbox boundary denial"
+            : "Command and requested permissions approved",
+      matchedRule: target.boundaryGrantConsumed ? "approved.boundary_once" : `approved.${scope}`,
+    };
+
+    if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
+      policyDecision = {
+        ...policyDecision,
+        effect: "deny",
+        reason: "Host full-access authorization was revoked before the command started",
+        matchedRule: "deny.unrestricted_revoked",
+      };
+      return {
+        kind: "return",
+        value: this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend),
+      };
+    }
+    return this.prepareAuthorizedLaunch(ctx, target, policyDecision, {
+      fingerprint,
+      network,
+      networkSignal,
+      networkApprovalController,
+    });
+  }
+
+  /**
+   * Resolve the command for its execution scope. A consumed one-shot boundary grant, or a sandbox that lacks a
+   * required capability when host escalation is allowed, moves the command to the host before approval.
+   */
+  private async resolveCommandTarget(
+    ctx: CommandAuthorizationContext,
+  ): Promise<{ kind: "target"; target: CommandTarget } | Extract<AuthorizeCommandFlow, { kind: "return" }>> {
+    const { benchmark, commandId, context, input, startedAt, unrestricted } = ctx;
     const containerExecution = benchmark || this.options.networkProfile === "review_offline";
-    let hostAccess = !containerExecution && (unrestricted || input.executionScope === "host");
-    let executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
+    const hostAccess = !containerExecution && (unrestricted || input.executionScope === "host");
+    const executionBackend = hostAccess ? this.unrestrictedExecutionBackend : this.executionBackend;
     this.assertEnvironmentSafe(executionBackend);
     let resolved: ResolvedCommand;
     const networkEnabled = !benchmark && this.options.networkProfile !== "review_offline";
@@ -899,34 +997,39 @@ export class CommandRuntime {
         value: this.resolutionFailure(commandId, startedAt, input, error, context, executionBackend),
       };
     }
-    const boundaryScope = this.boundaryStore.scope(context);
-    let boundaryHostPrefix =
-      !containerExecution && !unrestricted ? commandGrantPrefix(resolved, "host", true) : undefined;
-    let boundaryCommandFamily = sha256(JSON.stringify({ cwd: resolved.cwdAbsolute }));
-    let boundaryIncidentKey = boundaryCommandFamily;
-    let boundaryGrantConsumed = false;
+    const boundaryCommandFamily = sha256(JSON.stringify({ cwd: resolved.cwdAbsolute }));
+    const target: CommandTarget = {
+      hostAccess,
+      executionBackend,
+      resolved,
+      containerExecution,
+      networkEnabled,
+      resolverOptions,
+      boundaryScope: this.boundaryStore.scope(context),
+      boundaryHostPrefix: !containerExecution && !unrestricted ? commandGrantPrefix(resolved, "host", true) : undefined,
+      boundaryCommandFamily,
+      boundaryIncidentKey: boundaryCommandFamily,
+      boundaryGrantConsumed: false,
+      capabilityEscalation: undefined,
+    };
+    const { boundaryHostPrefix, boundaryScope } = target;
     if (!hostAccess && boundaryHostPrefix && this.boundaryStore.consumeHostGrant(boundaryScope, boundaryHostPrefix)) {
       // A user approved this exact command after its previous sandbox denial.
       // The grant is consumed before resolution/dispatch and cannot be replayed.
-      boundaryGrantConsumed = true;
-      hostAccess = true;
-      executionBackend = this.unrestrictedExecutionBackend;
-      this.assertEnvironmentSafe(executionBackend);
-      resolverOptions.unrestrictedHostAccess = true;
-      resolved = await this.resolver.resolve(input, resolverOptions);
+      target.boundaryGrantConsumed = true;
+      await this.moveCommandToHost(target, input);
       this.options.recordLifecycle?.(context, commandId, "command.boundary_grant_consumed", {
         fingerprint: sha256(boundaryHostPrefix),
         execution: "not_started",
       });
     }
-    let capabilityEscalation: string | undefined;
-    const capabilities = executionBackend.describe().capabilities;
+    const capabilities = target.executionBackend.describe().capabilities;
     const required =
       input.requiredCapabilities ??
       (capabilities && this.limits.sandboxVerificationRequiresLoopback && ["test", "verify"].includes(input.intent)
         ? ["loopback_tcp" as const]
         : []);
-    if (!hostAccess && !containerExecution && this.limits.sandboxAllowHostEscalation) {
+    if (!target.hostAccess && !containerExecution && this.limits.sandboxAllowHostEscalation) {
       try {
         if (capabilities?.features.process_tree === "blocked")
           throw new SandboxCapabilityError(["process_tree"], capabilities);
@@ -935,12 +1038,8 @@ export class CommandRuntime {
         if (!(error instanceof SandboxCapabilityError)) throw error;
         // No target or worker exists yet. Propose the broader scope BEFORE
         // approval so an old workspace grant can never authorize this launch.
-        capabilityEscalation = error.message;
-        hostAccess = true;
-        executionBackend = this.unrestrictedExecutionBackend;
-        this.assertEnvironmentSafe(executionBackend);
-        resolverOptions.unrestrictedHostAccess = true;
-        resolved = await this.resolver.resolve(input, resolverOptions);
+        target.capabilityEscalation = error.message;
+        await this.moveCommandToHost(target, input);
         this.options.recordLifecycle?.(context, commandId, "command.host_escalation_requested", {
           required,
           capabilities,
@@ -948,140 +1047,159 @@ export class CommandRuntime {
         });
       }
     }
-    const networkOperation = inspectNetworkOperation(resolved);
-    let policyDecision = this.policy.classify(input, resolved, "code", networkEnabled);
-    const scope = containerExecution ? "container" : hostAccess ? "host" : "workspace";
-    const commandNetwork = hostAccess || (Boolean(networkOperation) && networkEnabled);
-    // PATH and executable bytes belong to the offline worker, not controller.
-    // Without host-attested bytes, use one-shot approval, never a fake digest.
-    const prefix =
-      executionBackend.approvalPrefix?.(resolved, context, commandNetwork) ??
-      (containerExecution ? `once:v1:${sha256(commandId)}` : commandGrantPrefix(resolved, scope, commandNetwork));
-    const fingerprint = this.policy.approvalFingerprint(resolved, policyDecision);
+    return { kind: "target", target };
+  }
 
-    // A single approval authorizes this invocation, not the entire Thread.
-    // Cache denial too: a command cannot generate an approval-prompt loop.
+  /** Switch the target to the host backend and re-resolve the command with host access. */
+  private async moveCommandToHost(target: CommandTarget, input: RunCommandInput): Promise<void> {
+    target.hostAccess = true;
+    target.executionBackend = this.unrestrictedExecutionBackend;
+    this.assertEnvironmentSafe(target.executionBackend);
+    target.resolverOptions.unrestrictedHostAccess = true;
+    target.resolved = await this.resolver.resolve(input, target.resolverOptions);
+  }
+
+  /** The invocation's network approval: asked at most once, when the network gate first sees a connection. */
+  private networkApproval(
+    ctx: CommandAuthorizationContext,
+    target: CommandTarget,
+    request: {
+      scope: "host" | "container" | "workspace";
+      fingerprint: string;
+      networkOperation: ReturnType<typeof inspectNetworkOperation>;
+      networkSignal: AbortSignal;
+    },
+  ): CommandNetworkApproval {
+    const { commandId, context } = ctx;
+    const { executionBackend, networkEnabled, resolved } = target;
+    const { fingerprint, networkOperation, networkSignal, scope } = request;
     let networkApproval: Promise<boolean> | undefined;
-    const networkApprovalController = new AbortController();
-    const networkSignal = context.signal
-      ? AbortSignal.any([context.signal, networkApprovalController.signal])
-      : networkApprovalController.signal;
-    const approveNetwork = (destination?: string): Promise<boolean> =>
-      (networkApproval ??= (async () => {
-        const effect = networkOperation?.effect ?? "unknown";
-        if (!networkEnabled) return false;
-        const prefix =
-          executionBackend.approvalPrefix?.(resolved, context, true) ?? commandGrantPrefix(resolved, scope, true);
-        let granted = false;
-        try {
-          granted = await requestNetworkApproval(
-            { ...context, signal: networkSignal },
-            {
-              id: `${fingerprint}:network`,
-              title: `Network: ${resolved.program}`,
-              description: `${networkOperation?.description ?? "Unclassified program requests network access"}. This approval covers this command and its children. Downloads/uploads may expose data or change remote state.`,
-              risk: effect === "read" ? "read" : "external",
-              commandPrefix: prefix,
-              commandPreview: commandPreview(resolved),
-              network: { effect, ...(destination ? { destination } : {}) },
-              command: {
-                executable: resolved.executablePath,
-                args: resolved.args,
-                cwd: resolved.cwdAbsolute,
-                scope,
-                network: true,
+    return {
+      grant: () => {
+        networkApproval = Promise.resolve(true);
+      },
+      approve: (destination?: string): Promise<boolean> =>
+        (networkApproval ??= (async () => {
+          const effect = networkOperation?.effect ?? "unknown";
+          if (!networkEnabled) return false;
+          const prefix =
+            executionBackend.approvalPrefix?.(resolved, context, true) ?? commandGrantPrefix(resolved, scope, true);
+          let granted = false;
+          try {
+            granted = await requestNetworkApproval(
+              { ...context, signal: networkSignal },
+              {
+                id: `${fingerprint}:network`,
+                title: `Network: ${resolved.program}`,
+                description: `${networkOperation?.description ?? "Unclassified program requests network access"}. This approval covers this command and its children. Downloads/uploads may expose data or change remote state.`,
+                risk: effect === "read" ? "read" : "external",
+                commandPrefix: prefix,
+                commandPreview: commandPreview(resolved),
+                network: { effect, ...(destination ? { destination } : {}) },
+                command: {
+                  executable: resolved.executablePath,
+                  args: resolved.args,
+                  cwd: resolved.cwdAbsolute,
+                  scope,
+                  network: true,
+                },
               },
-            },
-          );
-          this.options.recordLifecycle?.(context, commandId, "network.authorization", {
-            effect,
-            granted,
-            ...(destination ? { destination } : {}),
-          });
-        } catch {
-          granted = false;
-        }
-        return granted && !networkSignal.aborted;
-      })());
-
-    const shouldAsk = !unrestricted && !benchmark && !boundaryGrantConsumed;
-    if (shouldAsk) {
-      let approved = false;
-      let approvalUnavailable = false;
-      try {
-        approved = await context.requestApproval({
-          id: fingerprint,
-          signal: context.signal,
-          title: `${capabilityEscalation ? "Run outside sandbox: " : "Run "}${resolved.program}`,
-          description: `${capabilityEscalation ? `${capabilityEscalation} Requesting HOST execution with host filesystem and network permissions, not sandbox execution. ` : ""}${input.reason ?? "Execute requested command"}. Environment=${scope}; network=${commandNetwork}; cwd=${resolved.cwdAbsolute}; exact approval=${fingerprint}`,
-          risk: hostAccess ? "system" : policyDecision.risk,
-          // This value is produced by CommandResolver after PATH lookup and
-          // realpath canonicalization. The UI must never derive a reusable
-          // grant by parsing the redacted human-readable preview below.
-          commandPrefix: prefix,
-          allowPrompt: context.approvalPolicy !== "never",
-          command: {
-            executable: resolved.executablePath,
-            args: resolved.args,
-            cwd: resolved.cwdAbsolute,
-            scope,
-            network: commandNetwork,
-          },
-          ...(commandNetwork ? { network: { effect: networkOperation?.effect ?? "unknown" } } : {}),
-          commandPreview: commandPreview(resolved),
-        });
-      } catch {
-        approvalUnavailable = true;
-        approved = false;
-      }
-      if (!approved) {
-        policyDecision = {
-          ...policyDecision,
-          effect: "deny",
-          reason: `${policyDecision.reason}; approval ${approvalUnavailable ? "could not be obtained" : "was not granted"}`,
-        };
-        return {
-          kind: "return",
-          value: this.denied(
-            commandId,
-            startedAt,
-            resolved,
-            policyDecision,
-            context,
-            executionBackend,
-            "approval",
-            approvalUnavailable ? "approval_unavailable" : "approval_not_granted",
-          ),
-        };
-      }
-      if (commandNetwork) networkApproval = Promise.resolve(true);
-    }
-    policyDecision = {
-      ...policyDecision,
-      effect: "allow",
-      reason: benchmark
-        ? "Container execution; external network boundary remains"
-        : unrestricted
-          ? "Full access"
-          : boundaryGrantConsumed
-            ? "Exact one-shot host approval consumed after sandbox boundary denial"
-            : "Command and requested permissions approved",
-      matchedRule: boundaryGrantConsumed ? "approved.boundary_once" : `approved.${scope}`,
+            );
+            this.options.recordLifecycle?.(context, commandId, "network.authorization", {
+              effect,
+              granted,
+              ...(destination ? { destination } : {}),
+            });
+          } catch {
+            granted = false;
+          }
+          return granted && !networkSignal.aborted;
+        })()),
     };
+  }
 
-    if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) {
-      policyDecision = {
-        ...policyDecision,
-        effect: "deny",
-        reason: "Host full-access authorization was revoked before the command started",
-        matchedRule: "deny.unrestricted_revoked",
-      };
-      return {
-        kind: "return",
-        value: this.denied(commandId, startedAt, resolved, policyDecision, context, executionBackend),
-      };
+  /** Ask for this exact invocation; a refusal or an unavailable approver ends it as denied. */
+  private async requestCommandApproval(
+    ctx: CommandAuthorizationContext,
+    target: CommandTarget,
+    classified: CommandPolicyDecision,
+    request: {
+      scope: "host" | "container" | "workspace";
+      commandNetwork: boolean;
+      prefix: string;
+      fingerprint: string;
+      networkOperation: ReturnType<typeof inspectNetworkOperation>;
+    },
+  ): Promise<Extract<AuthorizeCommandFlow, { kind: "return" }> | undefined> {
+    const { commandId, context, input, startedAt } = ctx;
+    const { capabilityEscalation, executionBackend, hostAccess, resolved } = target;
+    const { commandNetwork, fingerprint, networkOperation, prefix, scope } = request;
+    let approved = false;
+    let approvalUnavailable = false;
+    try {
+      approved = await context.requestApproval({
+        id: fingerprint,
+        signal: context.signal,
+        title: `${capabilityEscalation ? "Run outside sandbox: " : "Run "}${resolved.program}`,
+        description: `${capabilityEscalation ? `${capabilityEscalation} Requesting HOST execution with host filesystem and network permissions, not sandbox execution. ` : ""}${input.reason ?? "Execute requested command"}. Environment=${scope}; network=${commandNetwork}; cwd=${resolved.cwdAbsolute}; exact approval=${fingerprint}`,
+        risk: hostAccess ? "system" : classified.risk,
+        // This value is produced by CommandResolver after PATH lookup and
+        // realpath canonicalization. The UI must never derive a reusable
+        // grant by parsing the redacted human-readable preview below.
+        commandPrefix: prefix,
+        allowPrompt: context.approvalPolicy !== "never",
+        command: {
+          executable: resolved.executablePath,
+          args: resolved.args,
+          cwd: resolved.cwdAbsolute,
+          scope,
+          network: commandNetwork,
+        },
+        ...(commandNetwork ? { network: { effect: networkOperation?.effect ?? "unknown" } } : {}),
+        commandPreview: commandPreview(resolved),
+      });
+    } catch {
+      approvalUnavailable = true;
+      approved = false;
     }
+    if (approved) return undefined;
+    const policyDecision: CommandPolicyDecision = {
+      ...classified,
+      effect: "deny",
+      reason: `${classified.reason}; approval ${approvalUnavailable ? "could not be obtained" : "was not granted"}`,
+    };
+    return {
+      kind: "return",
+      value: this.denied(
+        commandId,
+        startedAt,
+        resolved,
+        policyDecision,
+        context,
+        executionBackend,
+        "approval",
+        approvalUnavailable ? "approval_unavailable" : "approval_not_granted",
+      ),
+    };
+  }
 
+  /**
+   * Build the sandbox request for an approved command, check sandbox compatibility, confirm the command material did
+   * not change while approval was pending, and open the network gate.
+   */
+  private async prepareAuthorizedLaunch(
+    ctx: CommandAuthorizationContext,
+    target: CommandTarget,
+    policyDecision: CommandPolicyDecision,
+    approval: {
+      fingerprint: string;
+      network: CommandNetworkApproval;
+      networkSignal: AbortSignal;
+      networkApprovalController: AbortController;
+    },
+  ): Promise<AuthorizeCommandFlow> {
+    const { commandId, context, hooks, input, startedAt, unrestricted } = ctx;
+    const { containerExecution, executionBackend, hostAccess, networkEnabled, resolved, resolverOptions } = target;
     const timeout = hooks.background
       ? resolveBackgroundCommandTimeoutBudget(input.timeoutMs, this.limits)
       : resolveCommandTimeoutBudget(input.timeoutMs, context.commandTimeoutMs, policyDecision.capability, this.limits);
@@ -1149,14 +1267,14 @@ export class CommandRuntime {
       : containerExecution
         ? this.resolver.resolveContainer(input)
         : await this.resolver.resolve(input, resolverOptions);
-    if (this.policy.approvalFingerprint(fresh, policyDecision) !== fingerprint) {
+    if (this.policy.approvalFingerprint(fresh, policyDecision) !== approval.fingerprint) {
       throw new Error("Command material changed while awaiting approval; request again");
     }
     const networkGateOptions = {
-      signal: networkSignal,
+      signal: approval.networkSignal,
       authorize: async (host: string, port: number) => {
         if (unrestricted && !(context.isUnrestrictedHostAccessActive?.() ?? true)) return false;
-        return approveNetwork(`${host}:${port}`);
+        return approval.network.approve(`${host}:${port}`);
       },
       record: (host: string, port: number, outcome: string) =>
         this.options.recordLifecycle?.(context, commandId, "network.connection", { host, port, outcome }),
@@ -1176,12 +1294,12 @@ export class CommandRuntime {
       outputs: {
         executionBackend,
         resolved,
-        boundaryScope,
-        boundaryHostPrefix,
-        boundaryCommandFamily,
-        boundaryIncidentKey,
+        boundaryScope: target.boundaryScope,
+        boundaryHostPrefix: target.boundaryHostPrefix,
+        boundaryCommandFamily: target.boundaryCommandFamily,
+        boundaryIncidentKey: target.boundaryIncidentKey,
         policyDecision,
-        networkApprovalController,
+        networkApprovalController: approval.networkApprovalController,
         timeout,
         sandboxRequest,
         networkGate,

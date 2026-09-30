@@ -4,7 +4,6 @@
   "src/cli/menu-selector.ts#selectMenuIndex": 365,
   "src/cli/menu-selector.ts#selectMenuIndex.<anonymous>": 331,
   "src/cli/terminal.ts": 3328,
-  "src/command/runtime.ts#CommandRuntime.authorizeCommand": 314,
   "src/memory/memory-manager.ts#MemoryManager.commitModelMutations": 302,
   "src/review/application.ts#runWorkspaceReviewAttempt": 420,
   "src/runtime/agent.ts": 4114,
