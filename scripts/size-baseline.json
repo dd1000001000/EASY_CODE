@@ -16,6 +16,5 @@
   "src/runtime/agent.ts#AgentRuntime.prepareStepRequest": 356,
   "src/runtime/agent.ts#AgentRuntime.resolveTurnMode": 387,
   "src/runtime/agent.ts#AgentRuntime.run": 682,
-  "src/threads/event-replay.ts#recoverFromEvents": 306,
-  "src/web-server/server.ts#EasyCodeWebServer.api": 401
+  "src/threads/event-replay.ts#recoverFromEvents": 306
 }

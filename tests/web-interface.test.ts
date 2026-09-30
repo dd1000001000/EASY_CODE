@@ -693,6 +693,19 @@ describe("loopback Web service", () => {
       assert.equal(((await localizedState.json()) as { language: string }).language, "zh_cn");
       assert.equal((await post("/api/command", { text: "/language fr_fr" })).status, 400);
       assert.equal((await post("/api/command", { text: "/mode code" })).status, 400);
+      // Only the read routes answer GET; everything else is POST, and the JSON body is validated
+      // before an unknown route is rejected.
+      const get = (route: string) => fetch(`${origin}${route}`, { headers: { Cookie: cookie! } });
+      assert.equal((await get("/api/unknown")).status, 405);
+      assert.equal((await get("/api/message")).status, 405);
+      assert.equal((await post("/api/unknown", {})).status, 404);
+      assert.equal((await post("/api/state", {})).status, 404);
+      const plainText = await fetch(`${origin}/api/unknown`, {
+        method: "POST",
+        headers: { Cookie: cookie!, Origin: origin, "Content-Type": "text/plain" },
+        body: "not json",
+      });
+      assert.equal(plainText.status, 400);
       assert.equal((await post("/api/message", { threadId: "thread_test", text: "/language en_us" })).status, 200);
       for (const name of [
         "model",

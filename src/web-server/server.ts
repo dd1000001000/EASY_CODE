@@ -117,6 +117,9 @@ function openBrowser(url: string): void {
   child.unref();
 }
 
+type JsonInput = Record<string, unknown>;
+type PostRoute = (input: JsonInput, response: ServerResponse) => void | Promise<void>;
+
 export class EasyCodeWebServer {
   private readonly token = randomBytes(32).toString("base64url");
   private readonly cookie = randomBytes(32).toString("base64url");
@@ -133,6 +136,59 @@ export class EasyCodeWebServer {
   private readonly projectStorage: EasyCodeStorage;
   private broadcastLanguageValue: Language = "en_us";
   private readonly dataDir: string;
+  // api() tries GET reads, then raw-body uploads, then JSON POST routes. The JSON body is read
+  // (and validated) before an unknown POST route is rejected.
+  private readonly getRoutes = new Map<string, (request: IncomingMessage, response: ServerResponse) => void>([
+    ["/api/state", (_request, response) => json(response, 200, this.snapshot())],
+    ["/api/history", (request, response) => this.apiHistory(request, response)],
+    ["/api/commands", (_request, response) => this.apiCommands(response)],
+    ["/api/events", (request, response) => this.apiEvents(request, response)],
+  ]);
+  private readonly uploadRoutes = new Map<
+    string,
+    (request: IncomingMessage, response: ServerResponse) => Promise<void>
+  >([
+    ["/api/image", (request, response) => this.apiUploadImage(request, response)],
+    ["/api/resource", (request, response) => this.apiUploadResource(request, response)],
+  ]);
+  private readonly postRoutes = new Map<string, PostRoute>([
+    ["/api/command", (input, response) => this.apiLanguageCommand(input, response)],
+    ["/api/folder/pick", (_input, response) => this.apiPickFolder(response)],
+    ["/api/image/discard", (input, response) => this.apiDiscardImage(input, response)],
+    ["/api/resource/discard", (input, response) => this.apiDiscardResource(input, response)],
+    [
+      "/api/ui/command/cancel",
+      (input, response) =>
+        json(response, 200, { canceled: this.hostFor(input.threadId).port.cancelExternalOperation() }),
+    ],
+    ["/api/ui/model", this.selectHostedSetting((app) => app.selectHostedModel())],
+    ["/api/ui/approval", this.selectHostedSetting((app) => app.selectHostedApproval())],
+    ["/api/ui/orchestration", this.selectHostedSetting((app) => app.selectHostedOrchestration())],
+    ["/api/ui/mode", this.selectHostedSetting((app) => app.selectHostedMode())],
+    ["/api/message", (input, response) => this.apiMessage(input, response)],
+    ["/api/adjustment", (input, response) => this.apiAdjustment(input, response)],
+    [
+      "/api/cancel",
+      (input, response) => json(response, 200, { canceled: this.hostFor(input.threadId).app.cancelActiveRequest() }),
+    ],
+    ["/api/decision", (input, response) => this.apiDecision(input, response)],
+    ["/api/plan", (input, response) => this.apiPlan(input, response)],
+    ["/api/thread", (input, response) => this.apiThread(input, response)],
+    ["/api/project/add", (input, response) => this.apiAddProject(input, response)],
+    ["/api/project/folder/add", (input, response) => this.apiAddFolder(input, response)],
+    ["/api/project/folder/remove", (input, response) => this.apiRemoveFolder(input, response)],
+    ["/api/project/folder/primary", (input, response) => this.apiSetPrimaryFolder(input, response)],
+    ["/api/project/edit", (input, response) => this.apiEditProject(input, response)],
+    ["/api/project/rename", (input, response) => this.apiRenameProject(input, response)],
+    ["/api/thread/rename", (input, response) => this.apiRenameThread(input, response)],
+    ["/api/thread/delete", (input, response) => this.apiDeleteThread(input, response)],
+    ["/api/project/delete", (input, response) => this.apiDeleteProject(input, response)],
+    [
+      "/api/external-cancel",
+      (input, response) =>
+        json(response, 200, { canceled: this.hostFor(input.threadId).port.cancelExternalOperation() }),
+    ],
+  ]);
 
   constructor(
     private app: EasyCodeApp | undefined,
@@ -549,405 +605,404 @@ export class EasyCodeWebServer {
   }
 
   private async api(pathname: string, request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (pathname === "/api/state" && request.method === "GET") {
-      json(response, 200, this.snapshot());
-      return;
-    }
-    if (pathname === "/api/history" && request.method === "GET") {
-      const params = new URL(request.url ?? pathname, this.origin).searchParams;
-      const host = this.hostFor(params.get("threadId"));
-      const epoch = params.get("epoch");
-      if (!epoch || epoch !== host.port.historyState().epoch)
-        throw new Error("History changed; refresh the conversation.");
-      const before = params.get("before") ?? undefined;
-      const after = params.get("after") ?? undefined;
-      const around = params.get("around") ?? undefined;
-      if ([before, after, around].some((cursor) => cursor && cursor.length > 200))
-        throw new Error("Invalid history cursor.");
-      const page = host.port.historyPage({ before, after, around });
-      json(response, 200, { threadId: host.app.sessionInfo().threadId, epoch, ...page });
-      return;
-    }
-    if (pathname === "/api/commands" && request.method === "GET") {
-      json(response, 200, {
-        commands: SLASH_COMMAND_NAMES.filter(
-          (name) => !WEB_UNAVAILABLE_SLASH_COMMANDS.has(name) && WEB_COMMAND_DESCRIPTIONS[name],
-        ).map((name) => ({ name, description: WEB_COMMAND_DESCRIPTIONS[name] })),
-      });
-      return;
-    }
-    if (pathname === "/api/events" && request.method === "GET") {
-      response.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-store",
-        Connection: "keep-alive",
-      });
-      this.streams.add(response);
-      response.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
-      const heartbeat = setInterval(() => {
-        this.broadcastLanguage();
-        if (!response.destroyed) response.write(": heartbeat\n\n");
-      }, 25_000);
-      request.once("close", () => {
-        clearInterval(heartbeat);
-        this.streams.delete(response);
-      });
+    const read = request.method === "GET" ? this.getRoutes.get(pathname) : undefined;
+    if (read) {
+      read(request, response);
       return;
     }
     if (request.method !== "POST") {
       json(response, 405, { error: "Method not allowed." });
       return;
     }
-    if (pathname === "/api/image") {
-      const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
-      if (host.staged.size >= 20) throw new Error("Too many staged images.");
-      const contentType = request.headers["content-type"]?.split(";")[0];
-      if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(contentType ?? ""))
-        throw new Error("Unsupported image type.");
-      const data = await body(request, MAX_UPLOAD_BYTES);
-      const image = await host.app.importHostedImage(
-        data,
-        host.app.nextHostedImageLabel(host.staged.size),
-        "browser-upload",
-      );
-      try {
-        validateImageAttachmentCollection([...host.staged.values(), image]);
-      } catch (error) {
-        await host.app.discardHostedImage(image);
-        throw error;
-      }
-      host.staged.set(image.id, image);
-      json(response, 200, { image: { id: image.id, label: image.label, mediaType: image.mediaType } });
-      return;
-    }
-    if (pathname === "/api/resource") {
-      const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
-      if (host.stagedResources.size >= 20) throw new Error("Too many staged documents.");
-      const mediaType = request.headers["content-type"]?.split(";")[0]?.toLowerCase() || "application/octet-stream";
-      const encodedName = request.headers["x-easy-code-filename"];
-      if (typeof encodedName !== "string") throw new Error("Document filename is required.");
-      let filename: string;
-      try {
-        filename = decodeURIComponent(encodedName);
-      } catch {
-        throw new Error("Invalid document filename.");
-      }
-      const data = await body(request, host.app.hostedDocumentMaxBytes());
-      const resource = await host.app.importHostedDocument(data, filename, mediaType);
-      host.stagedResources.set(resource.id, resource);
-      json(response, 200, { resource });
+    const upload = this.uploadRoutes.get(pathname);
+    if (upload) {
+      await upload(request, response);
       return;
     }
     const input = await jsonBody(request);
-    if (
+    const route =
       pathname === "/api/command" ||
       (pathname === "/api/message" &&
         typeof input.text === "string" &&
         parseSlashCommand(input.text)?.name === "language")
-    ) {
-      if (Array.isArray(input.imageIds) && input.imageIds.length) {
-        throw new Error("Send /language without attached images.");
-      }
-      const command = typeof input.text === "string" ? parseSlashCommand(input.text) : null;
-      if (command?.name !== "language") throw new Error("Only /language is available without a conversation.");
-      const result = executeLanguageCommand(this.projectStorage, command.args);
-      if (result.changed) this.broadcastLanguage();
-      json(response, 200, result);
+        ? this.postRoutes.get("/api/command")
+        : this.postRoutes.get(pathname);
+    if (!route) {
+      json(response, 404, { error: "Unknown API route." });
       return;
     }
-    if (pathname === "/api/folder/pick") {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6 * 60_000);
-      try {
-        json(response, 200, { path: (await pickLocalFolder(controller.signal)) ?? null });
-      } finally {
-        clearTimeout(timeout);
-      }
-      return;
-    }
-    if (pathname === "/api/image/discard") {
-      const host = this.hostFor(input.threadId);
-      if (typeof input.id !== "string") throw new Error("Invalid image ID.");
-      const image = host.staged.get(input.id);
-      if (image) {
-        await host.app.discardHostedImage(image);
-        host.staged.delete(input.id);
-      }
-      json(response, 200, { discarded: Boolean(image) });
-      return;
-    }
-    if (pathname === "/api/resource/discard") {
-      const host = this.hostFor(input.threadId);
-      if (typeof input.id !== "string") throw new Error("Invalid resource ID.");
-      const resource = host.stagedResources.get(input.id);
-      if (resource) {
-        await host.app.discardHostedResource(resource);
-        host.stagedResources.delete(input.id);
-      }
-      json(response, 200, { discarded: Boolean(resource) });
-      return;
-    }
-    if (pathname === "/api/ui/command/cancel") {
-      const host = this.hostFor(input.threadId);
-      json(response, 200, { canceled: host.port.cancelExternalOperation() });
-      return;
-    }
-    if (
-      pathname === "/api/ui/model" ||
-      pathname === "/api/ui/approval" ||
-      pathname === "/api/ui/orchestration" ||
-      pathname === "/api/ui/mode"
-    ) {
+    await route(input, response);
+  }
+
+  /** Change a hosted conversation setting through its interactive selector; only while the conversation is idle. */
+  private selectHostedSetting(select: (app: EasyCodeApp) => Promise<void>): PostRoute {
+    return (input, response) => {
       const host = this.hostFor(input.threadId);
       if (host.running || host.app.isRequestActive()) throw new Error("Wait for the current request to finish.");
-      this.run(host, () =>
-        pathname === "/api/ui/model"
-          ? host.app.selectHostedModel()
-          : pathname === "/api/ui/approval"
-            ? host.app.selectHostedApproval()
-            : pathname === "/api/ui/orchestration"
-              ? host.app.selectHostedOrchestration()
-              : host.app.selectHostedMode(),
-      );
+      this.run(host, () => select(host.app));
       json(response, 202, { accepted: true });
-      return;
+    };
+  }
+
+  /** A page of the conversation history, anchored to the epoch the client last saw. */
+  private apiHistory(request: IncomingMessage, response: ServerResponse): void {
+    const params = new URL(request.url ?? "/api/history", this.origin).searchParams;
+    const host = this.hostFor(params.get("threadId"));
+    const epoch = params.get("epoch");
+    if (!epoch || epoch !== host.port.historyState().epoch)
+      throw new Error("History changed; refresh the conversation.");
+    const before = params.get("before") ?? undefined;
+    const after = params.get("after") ?? undefined;
+    const around = params.get("around") ?? undefined;
+    if ([before, after, around].some((cursor) => cursor && cursor.length > 200))
+      throw new Error("Invalid history cursor.");
+    const page = host.port.historyPage({ before, after, around });
+    json(response, 200, { threadId: host.app.sessionInfo().threadId, epoch, ...page });
+  }
+
+  /** Slash commands the Web composer offers. */
+  private apiCommands(response: ServerResponse): void {
+    json(response, 200, {
+      commands: SLASH_COMMAND_NAMES.filter(
+        (name) => !WEB_UNAVAILABLE_SLASH_COMMANDS.has(name) && WEB_COMMAND_DESCRIPTIONS[name],
+      ).map((name) => ({ name, description: WEB_COMMAND_DESCRIPTIONS[name] })),
+    });
+  }
+
+  /** Server-sent event stream: an initial snapshot, then broadcasts and heartbeats. */
+  private apiEvents(request: IncomingMessage, response: ServerResponse): void {
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    });
+    this.streams.add(response);
+    response.write(`event: snapshot\ndata: ${JSON.stringify(this.snapshot())}\n\n`);
+    const heartbeat = setInterval(() => {
+      this.broadcastLanguage();
+      if (!response.destroyed) response.write(": heartbeat\n\n");
+    }, 25_000);
+    request.once("close", () => {
+      clearInterval(heartbeat);
+      this.streams.delete(response);
+    });
+  }
+
+  /** Stage an uploaded image for the next message. */
+  private async apiUploadImage(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
+    if (host.staged.size >= 20) throw new Error("Too many staged images.");
+    const contentType = request.headers["content-type"]?.split(";")[0];
+    if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(contentType ?? ""))
+      throw new Error("Unsupported image type.");
+    const data = await body(request, MAX_UPLOAD_BYTES);
+    const image = await host.app.importHostedImage(
+      data,
+      host.app.nextHostedImageLabel(host.staged.size),
+      "browser-upload",
+    );
+    try {
+      validateImageAttachmentCollection([...host.staged.values(), image]);
+    } catch (error) {
+      await host.app.discardHostedImage(image);
+      throw error;
     }
-    if (pathname === "/api/message") {
-      const host = this.hostFor(input.threadId);
-      if (host.running || host.app.isRequestActive())
-        throw new Error("A request is already running; use the adjustment composer.");
-      if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid message text.");
-      if (
-        parseSlashCommand(input.text) &&
-        ((Array.isArray(input.imageIds) && input.imageIds.length) ||
-          (Array.isArray(input.resourceIds) && input.resourceIds.length))
-      ) {
-        throw new Error("Send slash commands without attachments; attachments remain available in the composer.");
-      }
-      const images = this.takeImages(host, input.imageIds, false);
-      const resources = this.takeResources(host, input.resourceIds, false);
-      for (const image of images) host.staged.delete(image.id);
-      for (const resource of resources) host.stagedResources.delete(resource.id);
-      if (!input.text.trim() && !images.length && !resources.length)
-        throw new Error("A message needs text or an attachment.");
-      if (parseSlashCommand(input.text) && !images.length) {
-        const command = parseSlashCommand(input.text);
-        if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
-          throw new Error(`/${command.name} is not available as a Web command.`);
-        this.run(host, async () => {
-          const exit = await host.app.handleSlashCommand(input.text as string);
-          if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
-        });
-      } else {
-        host.port.presentUser(input.text, images, resources);
-        this.run(host, async () => {
-          await host.app.submitUserMessage(
-            (input.text as string) || "Analyze the attached resource(s).",
-            images,
-            resources,
-          );
-        });
-      }
-      json(response, 202, { accepted: true });
-      return;
+    host.staged.set(image.id, image);
+    json(response, 200, { image: { id: image.id, label: image.label, mediaType: image.mediaType } });
+  }
+
+  /** Stage an uploaded document for the next message. */
+  private async apiUploadResource(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const host = this.hostFor(request.headers["x-easy-code-thread-id"]);
+    if (host.stagedResources.size >= 20) throw new Error("Too many staged documents.");
+    const mediaType = request.headers["content-type"]?.split(";")[0]?.toLowerCase() || "application/octet-stream";
+    const encodedName = request.headers["x-easy-code-filename"];
+    if (typeof encodedName !== "string") throw new Error("Document filename is required.");
+    let filename: string;
+    try {
+      filename = decodeURIComponent(encodedName);
+    } catch {
+      throw new Error("Invalid document filename.");
     }
-    if (pathname === "/api/adjustment") {
-      const host = this.hostFor(input.threadId);
-      if (host.app.isCompacting()) throw new Error("Adjustments are unavailable during context compaction.");
-      if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid adjustment text.");
+    const data = await body(request, host.app.hostedDocumentMaxBytes());
+    const resource = await host.app.importHostedDocument(data, filename, mediaType);
+    host.stagedResources.set(resource.id, resource);
+    json(response, 200, { resource });
+  }
+
+  /** /language works without a conversation, so it bypasses the hosted thread. */
+  private apiLanguageCommand(input: JsonInput, response: ServerResponse): void {
+    if (Array.isArray(input.imageIds) && input.imageIds.length) {
+      throw new Error("Send /language without attached images.");
+    }
+    const command = typeof input.text === "string" ? parseSlashCommand(input.text) : null;
+    if (command?.name !== "language") throw new Error("Only /language is available without a conversation.");
+    const result = executeLanguageCommand(this.projectStorage, command.args);
+    if (result.changed) this.broadcastLanguage();
+    json(response, 200, result);
+  }
+
+  private async apiPickFolder(response: ServerResponse): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6 * 60_000);
+    try {
+      json(response, 200, { path: (await pickLocalFolder(controller.signal)) ?? null });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async apiDiscardImage(input: JsonInput, response: ServerResponse): Promise<void> {
+    const host = this.hostFor(input.threadId);
+    if (typeof input.id !== "string") throw new Error("Invalid image ID.");
+    const image = host.staged.get(input.id);
+    if (image) {
+      await host.app.discardHostedImage(image);
+      host.staged.delete(input.id);
+    }
+    json(response, 200, { discarded: Boolean(image) });
+  }
+
+  private async apiDiscardResource(input: JsonInput, response: ServerResponse): Promise<void> {
+    const host = this.hostFor(input.threadId);
+    if (typeof input.id !== "string") throw new Error("Invalid resource ID.");
+    const resource = host.stagedResources.get(input.id);
+    if (resource) {
+      await host.app.discardHostedResource(resource);
+      host.stagedResources.delete(input.id);
+    }
+    json(response, 200, { discarded: Boolean(resource) });
+  }
+
+  /** Submit a message or slash command to an idle conversation. */
+  private apiMessage(input: JsonInput, response: ServerResponse): void {
+    const host = this.hostFor(input.threadId);
+    if (host.running || host.app.isRequestActive())
+      throw new Error("A request is already running; use the adjustment composer.");
+    if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid message text.");
+    if (
+      parseSlashCommand(input.text) &&
+      ((Array.isArray(input.imageIds) && input.imageIds.length) ||
+        (Array.isArray(input.resourceIds) && input.resourceIds.length))
+    ) {
+      throw new Error("Send slash commands without attachments; attachments remain available in the composer.");
+    }
+    const images = this.takeImages(host, input.imageIds, false);
+    const resources = this.takeResources(host, input.resourceIds, false);
+    for (const image of images) host.staged.delete(image.id);
+    for (const resource of resources) host.stagedResources.delete(resource.id);
+    if (!input.text.trim() && !images.length && !resources.length)
+      throw new Error("A message needs text or an attachment.");
+    if (parseSlashCommand(input.text) && !images.length) {
       const command = parseSlashCommand(input.text);
-      if (command?.name === "compact") throw new Error("/compact is only available when the conversation is idle.");
       if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
         throw new Error(`/${command.name} is not available as a Web command.`);
-      const images = this.takeImages(host, input.imageIds, false);
-      const resources = this.takeResources(host, input.resourceIds, false);
-      for (const image of images) host.staged.delete(image.id);
-      for (const resource of resources) host.stagedResources.delete(resource.id);
-      let sequence: number;
-      const resourceNotice = resources.length
-        ? `\n\nAttached read-only Thread resources:\n${resources.map((resource) => `- ${resource.filename}: ${resource.uri}`).join("\n")}\nUse read_file with these exact paths.`
-        : "";
-      try {
-        sequence = await host.app.submitAdjustment(`${input.text}${resourceNotice}`, images);
-      } catch (error) {
-        for (const image of images) host.staged.set(image.id, image);
-        for (const resource of resources) host.stagedResources.set(resource.id, resource);
-        throw error;
-      }
-      json(response, 200, { sequence });
-      return;
+      this.run(host, async () => {
+        const exit = await host.app.handleSlashCommand(input.text as string);
+        if (exit) host.port.info("Use Ctrl+C in the EASY CODE terminal to stop the Web server.");
+      });
+    } else {
+      host.port.presentUser(input.text, images, resources);
+      this.run(host, async () => {
+        await host.app.submitUserMessage(
+          (input.text as string) || "Analyze the attached resource(s).",
+          images,
+          resources,
+        );
+      });
     }
-    if (pathname === "/api/cancel") {
-      json(response, 200, { canceled: this.hostFor(input.threadId).app.cancelActiveRequest() });
-      return;
+    json(response, 202, { accepted: true });
+  }
+
+  /** Queue steering for the running request. */
+  private async apiAdjustment(input: JsonInput, response: ServerResponse): Promise<void> {
+    const host = this.hostFor(input.threadId);
+    if (host.app.isCompacting()) throw new Error("Adjustments are unavailable during context compaction.");
+    if (typeof input.text !== "string" || input.text.length > 200_000) throw new Error("Invalid adjustment text.");
+    const command = parseSlashCommand(input.text);
+    if (command?.name === "compact") throw new Error("/compact is only available when the conversation is idle.");
+    if (command && WEB_UNAVAILABLE_SLASH_COMMANDS.has(command.name))
+      throw new Error(`/${command.name} is not available as a Web command.`);
+    const images = this.takeImages(host, input.imageIds, false);
+    const resources = this.takeResources(host, input.resourceIds, false);
+    for (const image of images) host.staged.delete(image.id);
+    for (const resource of resources) host.stagedResources.delete(resource.id);
+    let sequence: number;
+    const resourceNotice = resources.length
+      ? `\n\nAttached read-only Thread resources:\n${resources.map((resource) => `- ${resource.filename}: ${resource.uri}`).join("\n")}\nUse read_file with these exact paths.`
+      : "";
+    try {
+      sequence = await host.app.submitAdjustment(`${input.text}${resourceNotice}`, images);
+    } catch (error) {
+      for (const image of images) host.staged.set(image.id, image);
+      for (const resource of resources) host.stagedResources.set(resource.id, resource);
+      throw error;
     }
-    if (pathname === "/api/decision") {
-      const host = this.hostFor(input.threadId);
-      if (host.app.isCompacting()) throw new Error("Wait for context compaction before answering a decision.");
-      if (
-        typeof input.id !== "string" ||
-        (input.value !== undefined && typeof input.value !== "string") ||
-        (typeof input.value === "string" && input.value.length > 8192)
-      )
-        throw new Error("Invalid decision.");
-      json(response, 200, { accepted: host.port.resolveDecision(input.id, input.value as string | undefined) });
-      return;
-    }
-    if (pathname === "/api/plan") {
-      const host = this.hostFor(input.threadId);
-      if (host.running) throw new Error("Another session operation is running.");
-      if (input.action !== "approve" && input.action !== "reject" && input.action !== "adjust")
-        throw new Error("Invalid plan decision.");
-      const decision =
-        input.action === "adjust"
-          ? { action: "adjust" as const, feedback: String(input.feedback ?? "").trim() }
-          : ({ action: input.action } as { action: "approve" | "reject" });
-      if (decision.action === "adjust" && !decision.feedback) throw new Error("Plan feedback is required.");
-      this.run(host, () => host.app.reviewHostedPlan(decision));
-      json(response, 202, { accepted: true });
-      return;
-    }
-    if (pathname === "/api/thread") {
-      const threads = this.allThreads();
-      if (input.action === "new") {
-        const project =
-          typeof input.projectId === "string"
-            ? this.projects.get(input.projectId)
-            : this.app?.sessionInfo().projectId
-              ? this.projects.get(this.app.sessionInfo().projectId!)
-              : undefined;
-        if (!project) throw new Error("Choose a project folder first.");
-        if (!project.ready) throw new Error("Attach at least one folder before creating a conversation.");
-        await this.switchSession(project.id);
-      } else if (input.action === "resume" && typeof input.threadId === "string") {
-        const thread = threads.find((item) => item.threadId === input.threadId);
-        if (!thread) throw new Error("Conversation not found.");
-        await this.switchSession(thread.workspaceId, thread.threadId);
-      } else throw new Error("Invalid Thread action.");
-      json(response, 200, { accepted: true });
-      return;
-    }
-    if (pathname === "/api/project/add") {
-      if (input.name !== undefined && typeof input.name !== "string") throw new Error("Invalid project name.");
-      if (this.transitioning) throw new Error("A project is already opening.");
-      this.transitioning = true;
-      try {
-        const project = this.projects.create(typeof input.name === "string" ? input.name : "Untitled project");
-        await this.leaveCurrentSession();
-        json(response, 200, { project });
-        return;
-      } finally {
-        this.transitioning = false;
-      }
-    }
-    if (pathname === "/api/project/folder/add") {
-      if (typeof input.projectId !== "string" || typeof input.path !== "string")
-        throw new Error("Choose a project and local folder.");
-      await assertDataDirectoryOutsideWorkspace(this.dataDir, input.path);
-      const folder = await this.mutateProjectFolders(input.projectId, () =>
-        this.projects.addFolder(input.projectId as string, input.path as string),
-      );
-      json(response, 200, { folder, project: this.projects.get(input.projectId) });
-      return;
-    }
-    if (pathname === "/api/project/folder/remove") {
-      if (typeof input.projectId !== "string" || typeof input.folderId !== "string")
-        throw new Error("Invalid project folder.");
-      await this.mutateProjectFolders(input.projectId, () =>
-        this.projects.removeFolder(input.projectId as string, input.folderId as string),
-      );
-      json(response, 200, { project: this.projects.get(input.projectId) });
-      return;
-    }
-    if (pathname === "/api/project/folder/primary") {
-      if (typeof input.projectId !== "string" || typeof input.folderId !== "string")
-        throw new Error("Invalid project folder.");
-      await this.mutateProjectFolders(input.projectId, () =>
-        this.projects.setPrimaryFolder(input.projectId as string, input.folderId as string),
-      );
-      json(response, 200, { project: this.projects.get(input.projectId) });
-      return;
-    }
-    if (pathname === "/api/project/edit") {
-      if (
-        typeof input.projectId !== "string" ||
-        typeof input.name !== "string" ||
-        !Array.isArray(input.retainedFolderIds) ||
-        !input.retainedFolderIds.every((value) => typeof value === "string") ||
-        !Array.isArray(input.addedFolderPaths) ||
-        !input.addedFolderPaths.every((value) => typeof value === "string") ||
-        (input.primaryFolderId !== undefined && typeof input.primaryFolderId !== "string") ||
-        (input.primaryFolderPath !== undefined && typeof input.primaryFolderPath !== "string")
-      ) {
-        throw new Error("Invalid project edit.");
-      }
-      for (const folderPath of input.addedFolderPaths as string[]) {
-        await assertDataDirectoryOutsideWorkspace(this.dataDir, folderPath);
-      }
-      const project = await this.mutateProjectFolders(input.projectId, () =>
-        this.projects.editProject(input.projectId as string, {
-          name: input.name as string,
-          retainedFolderIds: input.retainedFolderIds as string[],
-          addedFolderPaths: input.addedFolderPaths as string[],
-          ...(typeof input.primaryFolderId === "string" ? { primaryFolderId: input.primaryFolderId } : {}),
-          ...(typeof input.primaryFolderPath === "string" ? { primaryFolderPath: input.primaryFolderPath } : {}),
-        }),
-      );
+    json(response, 200, { sequence });
+  }
+
+  private apiDecision(input: JsonInput, response: ServerResponse): void {
+    const host = this.hostFor(input.threadId);
+    if (host.app.isCompacting()) throw new Error("Wait for context compaction before answering a decision.");
+    if (
+      typeof input.id !== "string" ||
+      (input.value !== undefined && typeof input.value !== "string") ||
+      (typeof input.value === "string" && input.value.length > 8192)
+    )
+      throw new Error("Invalid decision.");
+    json(response, 200, { accepted: host.port.resolveDecision(input.id, input.value as string | undefined) });
+  }
+
+  private apiPlan(input: JsonInput, response: ServerResponse): void {
+    const host = this.hostFor(input.threadId);
+    if (host.running) throw new Error("Another session operation is running.");
+    if (input.action !== "approve" && input.action !== "reject" && input.action !== "adjust")
+      throw new Error("Invalid plan decision.");
+    const decision =
+      input.action === "adjust"
+        ? { action: "adjust" as const, feedback: String(input.feedback ?? "").trim() }
+        : ({ action: input.action } as { action: "approve" | "reject" });
+    if (decision.action === "adjust" && !decision.feedback) throw new Error("Plan feedback is required.");
+    this.run(host, () => host.app.reviewHostedPlan(decision));
+    json(response, 202, { accepted: true });
+  }
+
+  /** Open a new conversation in a project, or resume an existing one. */
+  private async apiThread(input: JsonInput, response: ServerResponse): Promise<void> {
+    const threads = this.allThreads();
+    if (input.action === "new") {
+      const project =
+        typeof input.projectId === "string"
+          ? this.projects.get(input.projectId)
+          : this.app?.sessionInfo().projectId
+            ? this.projects.get(this.app.sessionInfo().projectId!)
+            : undefined;
+      if (!project) throw new Error("Choose a project folder first.");
+      if (!project.ready) throw new Error("Attach at least one folder before creating a conversation.");
+      await this.switchSession(project.id);
+    } else if (input.action === "resume" && typeof input.threadId === "string") {
+      const thread = threads.find((item) => item.threadId === input.threadId);
+      if (!thread) throw new Error("Conversation not found.");
+      await this.switchSession(thread.workspaceId, thread.threadId);
+    } else throw new Error("Invalid Thread action.");
+    json(response, 200, { accepted: true });
+  }
+
+  private async apiAddProject(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (input.name !== undefined && typeof input.name !== "string") throw new Error("Invalid project name.");
+    if (this.transitioning) throw new Error("A project is already opening.");
+    this.transitioning = true;
+    try {
+      const project = this.projects.create(typeof input.name === "string" ? input.name : "Untitled project");
+      await this.leaveCurrentSession();
       json(response, 200, { project });
       return;
+    } finally {
+      this.transitioning = false;
     }
-    if (pathname === "/api/project/rename") {
-      if (typeof input.projectId !== "string" || typeof input.name !== "string")
-        throw new Error("Invalid project rename.");
-      this.projects.renameProject(input.projectId, input.name);
-      json(response, 200, { accepted: true });
-      return;
+  }
+
+  private async apiAddFolder(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (typeof input.projectId !== "string" || typeof input.path !== "string")
+      throw new Error("Choose a project and local folder.");
+    await assertDataDirectoryOutsideWorkspace(this.dataDir, input.path);
+    const folder = await this.mutateProjectFolders(input.projectId, () =>
+      this.projects.addFolder(input.projectId as string, input.path as string),
+    );
+    json(response, 200, { folder, project: this.projects.get(input.projectId) });
+  }
+
+  private async apiRemoveFolder(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (typeof input.projectId !== "string" || typeof input.folderId !== "string")
+      throw new Error("Invalid project folder.");
+    await this.mutateProjectFolders(input.projectId, () =>
+      this.projects.removeFolder(input.projectId as string, input.folderId as string),
+    );
+    json(response, 200, { project: this.projects.get(input.projectId) });
+  }
+
+  private async apiSetPrimaryFolder(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (typeof input.projectId !== "string" || typeof input.folderId !== "string")
+      throw new Error("Invalid project folder.");
+    await this.mutateProjectFolders(input.projectId, () =>
+      this.projects.setPrimaryFolder(input.projectId as string, input.folderId as string),
+    );
+    json(response, 200, { project: this.projects.get(input.projectId) });
+  }
+
+  private async apiEditProject(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (
+      typeof input.projectId !== "string" ||
+      typeof input.name !== "string" ||
+      !Array.isArray(input.retainedFolderIds) ||
+      !input.retainedFolderIds.every((value) => typeof value === "string") ||
+      !Array.isArray(input.addedFolderPaths) ||
+      !input.addedFolderPaths.every((value) => typeof value === "string") ||
+      (input.primaryFolderId !== undefined && typeof input.primaryFolderId !== "string") ||
+      (input.primaryFolderPath !== undefined && typeof input.primaryFolderPath !== "string")
+    ) {
+      throw new Error("Invalid project edit.");
     }
-    if (pathname === "/api/thread/rename") {
-      if (typeof input.threadId !== "string" || typeof input.name !== "string")
-        throw new Error("Invalid conversation rename.");
-      const thread = this.allThreads().find((item) => item.threadId === input.threadId);
-      if (!thread) throw new Error("Conversation not found.");
-      this.projects.renameThread(thread, input.name);
-      json(response, 200, { accepted: true });
-      return;
+    for (const folderPath of input.addedFolderPaths as string[]) {
+      await assertDataDirectoryOutsideWorkspace(this.dataDir, folderPath);
     }
-    if (pathname === "/api/thread/delete") {
-      if (typeof input.threadId !== "string" || input.confirmThreadId !== input.threadId)
-        throw new Error("Confirm the exact conversation ID to delete.");
-      const thread = this.allThreads().find((item) => item.threadId === input.threadId);
-      if (!thread) throw new Error("Conversation not found.");
-      await this.prepareDelete(thread.threadId);
-      const deleted = this.deleteConversation(thread.threadId);
-      json(response, 200, { deleted });
-      return;
+    const project = await this.mutateProjectFolders(input.projectId, () =>
+      this.projects.editProject(input.projectId as string, {
+        name: input.name as string,
+        retainedFolderIds: input.retainedFolderIds as string[],
+        addedFolderPaths: input.addedFolderPaths as string[],
+        ...(typeof input.primaryFolderId === "string" ? { primaryFolderId: input.primaryFolderId } : {}),
+        ...(typeof input.primaryFolderPath === "string" ? { primaryFolderPath: input.primaryFolderPath } : {}),
+      }),
+    );
+    json(response, 200, { project });
+  }
+
+  private apiRenameProject(input: JsonInput, response: ServerResponse): void {
+    if (typeof input.projectId !== "string" || typeof input.name !== "string")
+      throw new Error("Invalid project rename.");
+    this.projects.renameProject(input.projectId, input.name);
+    json(response, 200, { accepted: true });
+  }
+
+  private apiRenameThread(input: JsonInput, response: ServerResponse): void {
+    if (typeof input.threadId !== "string" || typeof input.name !== "string")
+      throw new Error("Invalid conversation rename.");
+    const thread = this.allThreads().find((item) => item.threadId === input.threadId);
+    if (!thread) throw new Error("Conversation not found.");
+    this.projects.renameThread(thread, input.name);
+    json(response, 200, { accepted: true });
+  }
+
+  private async apiDeleteThread(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (typeof input.threadId !== "string" || input.confirmThreadId !== input.threadId)
+      throw new Error("Confirm the exact conversation ID to delete.");
+    const thread = this.allThreads().find((item) => item.threadId === input.threadId);
+    if (!thread) throw new Error("Conversation not found.");
+    await this.prepareDelete(thread.threadId);
+    const deleted = this.deleteConversation(thread.threadId);
+    json(response, 200, { deleted });
+  }
+
+  private async apiDeleteProject(input: JsonInput, response: ServerResponse): Promise<void> {
+    if (typeof input.projectId !== "string") throw new Error("Invalid project ID.");
+    const project = this.projects.get(input.projectId);
+    if (input.confirmProjectId !== project.id) throw new Error("Confirm the exact project ID to remove.");
+    const threads = this.allThreads().filter((item) => item.workspaceId === project.id);
+    const busy = new Set(this.busyThreadIds());
+    if (threads.some((thread) => busy.has(thread.threadId)))
+      throw new Error("Stop the project's active conversations before removing it.");
+    for (const thread of threads) {
+      if (!this.allThreads().some((item) => item.threadId === thread.threadId)) continue;
+      await this.prepareDelete(thread.threadId, project.id);
+      this.deleteConversation(thread.threadId);
     }
-    if (pathname === "/api/project/delete") {
-      if (typeof input.projectId !== "string") throw new Error("Invalid project ID.");
-      const project = this.projects.get(input.projectId);
-      if (input.confirmProjectId !== project.id) throw new Error("Confirm the exact project ID to remove.");
-      const threads = this.allThreads().filter((item) => item.workspaceId === project.id);
-      const busy = new Set(this.busyThreadIds());
-      if (threads.some((thread) => busy.has(thread.threadId)))
-        throw new Error("Stop the project's active conversations before removing it.");
-      for (const thread of threads) {
-        if (!this.allThreads().some((item) => item.threadId === thread.threadId)) continue;
-        await this.prepareDelete(thread.threadId, project.id);
-        this.deleteConversation(thread.threadId);
-      }
-      this.projectStorage.db
-        .prepare<[string]>("DELETE FROM memories WHERE workspace_id = ? AND scope = 'project'")
-        .run(project.id);
-      this.projects.forgetProject(project.id);
-      await this.deleteProjectResources(project.id);
-      json(response, 200, { removed: project.id, deletedThreads: threads.length });
-      return;
-    }
-    if (pathname === "/api/external-cancel") {
-      json(response, 200, { canceled: this.hostFor(input.threadId).port.cancelExternalOperation() });
-      return;
-    }
-    json(response, 404, { error: "Unknown API route." });
+    this.projectStorage.db
+      .prepare<[string]>("DELETE FROM memories WHERE workspace_id = ? AND scope = 'project'")
+      .run(project.id);
+    this.projects.forgetProject(project.id);
+    await this.deleteProjectResources(project.id);
+    json(response, 200, { removed: project.id, deletedThreads: threads.length });
   }
 
   private async clearStaged(host: HostedThread): Promise<void> {
