@@ -34,23 +34,17 @@ import type {
   ApprovalRequest,
   ApprovalPolicyName,
   ChatMessage,
-  CommandAuditEntry,
   CommandExecutionMode,
   EasyCodeConfig,
   EventRecord,
-  FileChangeRecord,
   ImageAttachment,
   PlanProposal,
   ProviderStreamEvent,
   ProviderName,
   SessionState,
   ThinkingEffort,
-  ToolPresentation,
-  ToolContext,
   TurnSteeringBatch,
   TurnSteeringEntry,
-  ResultArtifact,
-  ResultArtifactRef,
 } from "./core/types.js";
 import {
   ImageStore,
@@ -66,7 +60,6 @@ import {
 import { LocalEmbeddingModel } from "./memory/embedding-model.js";
 import { GLOBAL_MEMORY_WORKSPACE_ID, MemoryManager, projectMemoryIdFromRoot } from "./memory/memory-manager.js";
 import { MemoryMaintenance } from "./memory/maintenance.js";
-import { redactSensitiveInformation } from "./memory/sensitive.js";
 import { MemoryVectorIndex } from "./memory/vector-index.js";
 import { formatPlanProposal } from "./plans/plan.js";
 import { activePromptBundleBinding, ensurePromptBundle } from "./prompt-bundle/index.js";
@@ -116,13 +109,8 @@ import type { UISessionInfo } from "./ui/contracts.js";
 import type { PlanReviewDecision } from "./ui/interaction-port.js";
 import { taskGraphView } from "./tasks/task-graph.js";
 import { createId } from "./utils/ids.js";
-import { foldPendingOperations } from "./context/pending-operations.js";
 import { WorkspaceManager, type WorkspaceRestoreSummary } from "./workspace/manager.js";
-import {
-  ExecutionEnvironmentManager,
-  type ActiveExecutionEnvironment,
-  type HandoffDestination,
-} from "./workspace/execution-environment.js";
+import { ExecutionEnvironmentManager } from "./workspace/execution-environment.js";
 import type { ProjectWorkspace } from "./projects/types.js";
 import { ProjectIndex } from "./web-server/projects.js";
 import {
@@ -143,7 +131,6 @@ import {
   stripPasteFailureMarkers,
   stripImageMarkers,
   renderPromptBundleText,
-  promptBundleText,
   parseQuotedArguments,
 } from "./app/text.js";
 import { McpServerController, type McpServerControllerContext } from "./app/mcp-servers.js";
@@ -151,6 +138,7 @@ import { ModelSelection, type ModelSelectionContext } from "./app/model-selectio
 import { ApprovalReviewer, type ApprovalReviewerContext } from "./app/approval-reviewer.js";
 import { ApprovalFlow, type ApprovalFlowContext } from "./app/approval-flow.js";
 import { InfoCommands, type InfoCommandsContext } from "./app/info-commands.js";
+import { SubagentHost, type SubagentHostContext } from "./app/subagent-host.js";
 
 // Re-exported so the package entry (src/index.ts `export *`) keeps its public API.
 export {
@@ -158,6 +146,7 @@ export {
   repairInterruptedTurn,
   type ResumeRecoverySummary,
 } from "./app/thread-recovery.js";
+export { attributeSubagentCommandAudit } from "./app/subagent-host.js";
 
 export interface EasyCodeAppOptions {
   workspaceRoot?: string;
@@ -203,20 +192,6 @@ export interface ToolSourceFactoryContext {
 }
 
 export type ToolSourceFactory = (context: Readonly<ToolSourceFactoryContext>) => ToolSource | Promise<ToolSource>;
-
-/** Add durable parent-thread attribution without mutating a child's private audit record. */
-export function attributeSubagentCommandAudit(
-  entry: Readonly<CommandAuditEntry>,
-  source: { agentId: string; taskId: string },
-): CommandAuditEntry {
-  return {
-    ...entry,
-    args: [...entry.args],
-    sourceAgentRole: "subagent",
-    sourceAgentId: source.agentId,
-    sourceTaskId: source.taskId,
-  };
-}
 
 interface ExecutePromptOptions {
   modeOverride?: "plan" | "code";
@@ -375,7 +350,7 @@ export class EasyCodeApp {
         if (this.state.threadId === parentThreadId) this.infoCommands.printSubagents();
       },
       pendingMessages: (parentThreadId, agentIds) => this.subagentMessages.pending(parentThreadId, agentIds),
-      handoff: (artifact, destination) => this.handoffSubagentResult(artifact, destination),
+      handoff: (artifact, destination) => this.subagentHost.handoffSubagentResult(artifact, destination),
     });
   }
 
@@ -619,7 +594,7 @@ export class EasyCodeApp {
           // A later startup step may fail after a validated recovery batch has
           // started. Pause and await every child before releasing the parent
           // lease/storage so no orphan process keeps issuing tools.
-          await app.pauseSubagentsForResume();
+          await app.subagentHost.pauseSubagentsForResume();
         } catch (pauseError) {
           setupErrors.push(pauseError);
         }
@@ -745,7 +720,7 @@ export class EasyCodeApp {
     return this.terminalSessionInfo();
   }
   async selectHostedModel(): Promise<void> {
-    this.assertNoRunningSubagents("switch models or thinking effort");
+    this.subagentHost.assertNoRunningSubagents("switch models or thinking effort");
     await this.modelSelection.selectModelFromPicker(false);
   }
   async selectHostedApproval(): Promise<void> {
@@ -756,7 +731,7 @@ export class EasyCodeApp {
     await this.updateOrchestration([], false);
   }
   async selectHostedMode(): Promise<void> {
-    this.assertNoRunningSubagents("switch modes");
+    this.subagentHost.assertNoRunningSubagents("switch modes");
     const language = readLanguage(this.storage);
     const selected = await this.terminal.selectChoice(
       translate(language, "ui.mode"),
@@ -1113,7 +1088,7 @@ export class EasyCodeApp {
         return false;
       }
       case "mode": {
-        this.assertNoRunningSubagents("switch modes");
+        this.subagentHost.assertNoRunningSubagents("switch modes");
         const mode = command.args[0] as AgentMode | undefined;
         if (!mode || !["plan", "auto", "code"].includes(mode)) {
           throw new Error("Usage: /mode plan|auto|code");
@@ -1141,7 +1116,7 @@ export class EasyCodeApp {
         return false;
       }
       case "provider": {
-        this.assertNoRunningSubagents("switch providers");
+        this.subagentHost.assertNoRunningSubagents("switch providers");
         const provider = command.args[0] as ProviderName | undefined;
         const supportedProviders = PROVIDER_CATALOG.map((entry) => entry.provider);
         if (!provider || command.args.length !== 1 || !supportedProviders.includes(provider)) {
@@ -1153,7 +1128,7 @@ export class EasyCodeApp {
         return false;
       }
       case "model": {
-        this.assertNoRunningSubagents("switch models or thinking effort");
+        this.subagentHost.assertNoRunningSubagents("switch models or thinking effort");
         const request = parseModelCommand(command.args);
         if (request.action === "select") {
           await this.modelSelection.selectModelFromPicker(true);
@@ -1386,7 +1361,7 @@ export class EasyCodeApp {
       cleanupErrors.push(error);
     }
     try {
-      await this.pauseSubagentsForResume();
+      await this.subagentHost.pauseSubagentsForResume();
     } catch (error) {
       cleanupErrors.push(error);
     }
@@ -1632,7 +1607,7 @@ export class EasyCodeApp {
         "This thread has unfinished DAG/subagent work. Select /approval → Approve for me or Full access before continuing; no child has been started by this request.",
       );
     }
-    await this.drainPendingSubagentArtifacts(this.state.threadId);
+    await this.subagentHost.drainPendingSubagentArtifacts(this.state.threadId);
     this.modelSelection.requireProviderApiKey(this.state.provider);
     if (images.length) this.requireCurrentModelVision();
     validateImageAttachmentCollection(images);
@@ -1985,7 +1960,7 @@ export class EasyCodeApp {
         if (result.ok && result.subagentLifecycle) {
           const artifacts = this.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
           if (artifacts) {
-            await this.mergeSubagentArtifacts(_state, artifacts);
+            await this.subagentHost.mergeSubagentArtifacts(_state, artifacts);
             mergedSubagentArtifacts = artifacts;
           }
         }
@@ -2022,7 +1997,8 @@ export class EasyCodeApp {
         this.subagentCoordinator.rollbackLifecycle(update);
       },
       getOutstandingSubagents: () => this.subagentCoordinator.outstanding(this.state.threadId),
-      collectReadySubagents: (state, turnId, signal) => this.collectReadySubagentResults(state, turnId, signal),
+      collectReadySubagents: (state, turnId, signal) =>
+        this.subagentHost.collectReadySubagentResults(state, turnId, signal),
       requestApproval: async (request) => {
         return this.requestToolApproval(request);
       },
@@ -2157,875 +2133,6 @@ export class EasyCodeApp {
           }
         : {}),
     });
-  }
-
-  private async runSubagent(request: SubagentExecutionRequest): Promise<SubagentExecutionOutcome> {
-    let activeEnvironment: ActiveExecutionEnvironment | undefined;
-    let childWorkspace: WorkspaceManager | undefined;
-    let childToolCatalog: ToolCatalog | undefined;
-    let childState: SessionState | undefined;
-    let childLease: ThreadLease | undefined;
-    const presentations: ToolPresentation[] = [];
-    let dependencyArtifacts: ResultArtifactRef[] = [];
-    let persistedChangeCount = 0;
-    const persistedCommandIds = new Set<string>();
-
-    const persistChildState = (): void => {
-      if (!childState || !childWorkspace) return;
-      childState.filesRead = new Map(childWorkspace.getReadVersions().map((version) => [version.path, version]));
-      childState.changes = childWorkspace.getChangeSet();
-      this.threadStore.save(childState);
-    };
-    const persistProgress = (): void => {
-      if (!childState || !childWorkspace || !activeEnvironment) return;
-      const allChanges = childWorkspace.getChangeSet();
-      const changes = allChanges.slice(persistedChangeCount);
-      const commands = childState.commands.filter((entry) => !persistedCommandIds.has(entry.id));
-      if (changes.length || commands.length) {
-        this.recordSubagentProgress(request, changes, commands, activeEnvironment.descriptor.kind === "shared");
-        persistedChangeCount = allChanges.length;
-        for (const entry of commands) persistedCommandIds.add(entry.id);
-      }
-      persistChildState();
-    };
-
-    try {
-      const dependencyTasks = request.task.dependencies.map((taskId) => {
-        const dependency = this.state.taskGraph?.tasks.find((task) => task.id === taskId);
-        if (!dependency || dependency.status !== "completed") {
-          throw new Error(`DAG dependency ${taskId} is not completed`);
-        }
-        return dependency;
-      });
-      dependencyArtifacts = dependencyTasks.flatMap((dependency) =>
-        dependency.resultArtifact ? [dependency.resultArtifact] : [],
-      );
-      if (dependencyArtifacts.length > 0 && dependencyArtifacts.length !== dependencyTasks.length) {
-        throw new Error(
-          "This DAG mixes isolated result artifacts with dependencies that have no Runtime artifact; integrate them before starting the child",
-        );
-      }
-      for (const artifact of dependencyArtifacts) {
-        if (!request.task.dependencies.includes(artifact.taskId)) {
-          throw new Error(`Artifact ${artifact.id} is not bound to a declared dependency`);
-        }
-      }
-      const existingChild = this.threadStore.get(request.record.childThreadId);
-      const hasDurableChildBinding = this.threadStore.isBoundSubagentThread(request.record.childThreadId);
-      try {
-        const savedEnvironment = await this.executionEnvironments.loadEnvironment(request.record.environmentId);
-        if (
-          !samePath(savedEnvironment.logicalWorkspaceRoot, this.workspace.root) ||
-          savedEnvironment.requestedIsolation !== request.record.requestedIsolation ||
-          (savedEnvironment.agentId !== undefined && savedEnvironment.agentId !== request.record.id) ||
-          (savedEnvironment.parentThreadId !== undefined &&
-            savedEnvironment.parentThreadId !== request.record.parentThreadId) ||
-          (savedEnvironment.childThreadId !== undefined &&
-            savedEnvironment.childThreadId !== request.record.childThreadId) ||
-          (savedEnvironment.taskId !== undefined && savedEnvironment.taskId !== request.task.id)
-        ) {
-          throw new Error(
-            `Execution environment ${request.record.environmentId} does not match its durable child binding`,
-          );
-        }
-        activeEnvironment = await this.executionEnvironments.restore(request.record.environmentId);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        if (existingChild || hasDurableChildBinding) {
-          throw new Error(
-            `Execution environment ${request.record.environmentId} is missing for an existing durable child session; refusing to create a different checkout`,
-          );
-        }
-        activeEnvironment = await this.executionEnvironments.provision({
-          agentId: request.record.id,
-          parentThreadId: request.record.parentThreadId,
-          childThreadId: request.record.childThreadId,
-          taskId: request.task.id,
-          environmentId: request.record.environmentId,
-          requestedIsolation: request.record.requestedIsolation,
-          dependencyArtifacts,
-        });
-      }
-      childWorkspace = activeEnvironment.workspace;
-      if (activeEnvironment.descriptor.kind === "shared" && this.workspace.folders.length > 1) {
-        childWorkspace = await WorkspaceManager.create(this.currentProjectWorkspace()!);
-        activeEnvironment = { ...activeEnvironment, workspace: childWorkspace };
-      }
-      await this.prepareProjectSandbox(childWorkspace);
-      request.reportEnvironment(activeEnvironment.descriptor);
-
-      if (existingChild) {
-        if (!samePath(existingChild.workspaceRoot, childWorkspace.root)) {
-          throw new Error(`Child thread ${request.record.childThreadId} is bound to a different execution root`);
-        }
-        childLease = this.threadStore.acquireThreadLease(existingChild.threadId);
-        repairInterruptedTurn(this.threadStore, existingChild);
-        childWorkspace.restorePersistedState(existingChild.filesRead, existingChild.changes);
-        childState = existingChild;
-      } else {
-        childState = this.threadStore.create({
-          threadId: request.record.childThreadId,
-          workspaceRoot: childWorkspace.root,
-          projectId: this.state.projectId,
-          workspaceRevision: this.state.workspaceRevision,
-          workspaceFolders: this.state.workspaceFolders?.map((folder) => ({ ...folder })),
-          primaryWorkspaceFolderId: this.state.primaryWorkspaceFolderId,
-          mode: request.record.mode,
-          provider: request.record.provider,
-          model: request.record.model,
-          thinkingEffort: request.record.thinkingEffort,
-          promptBundle: activePromptBundleBinding(),
-          modelRegistryHash: this.state.modelRegistryHash,
-          goal: request.task.title,
-          constraints: [`Parent thread: ${request.record.parentThreadId}`, `Assigned task: ${request.task.id}`],
-        });
-        childLease = this.threadStore.acquireThreadLease(childState.threadId);
-      }
-      childState.mode = request.record.mode;
-      childState.provider = request.record.provider;
-      childState.model = request.record.model;
-      childState.thinkingEffort = request.record.thinkingEffort;
-
-      const bindingPayload = {
-        agentId: request.record.id,
-        parentThreadId: request.record.parentThreadId,
-        childThreadId: request.record.childThreadId,
-        taskId: request.task.id,
-        mode: request.record.mode,
-        environment: activeEnvironment.descriptor,
-      };
-      const childEvents = this.threadStore.journal(request.record.childThreadId).read();
-      let existingBinding: (typeof childEvents)[number] | undefined;
-      for (let index = childEvents.length - 1; index >= 0; index -= 1) {
-        if (childEvents[index]?.type === "subagent.session_bound") {
-          existingBinding = childEvents[index];
-          break;
-        }
-      }
-      if (existingBinding) {
-        const payload = existingBinding.payload as Record<string, unknown>;
-        const environment = payload.environment as Record<string, unknown> | undefined;
-        if (
-          payload.agentId !== request.record.id ||
-          payload.parentThreadId !== request.record.parentThreadId ||
-          payload.childThreadId !== request.record.childThreadId ||
-          payload.taskId !== request.task.id ||
-          payload.mode !== request.record.mode ||
-          environment?.id !== request.record.environmentId
-        ) {
-          throw new Error(`Child thread ${request.record.childThreadId} has a conflicting durable binding`);
-        }
-      } else {
-        this.threadStore.appendEvent(request.record.parentThreadId, {
-          type: "subagent.environment_bound",
-          turnId: request.record.createdByTurnId,
-          phase: "completed",
-          payload: bindingPayload,
-        });
-        this.threadStore.appendEvent(request.record.childThreadId, {
-          type: "subagent.session_bound",
-          phase: "completed",
-          payload: bindingPayload,
-        });
-      }
-      const runningEnvironment = await this.executionEnvironments.markRunning(activeEnvironment.descriptor.id);
-      activeEnvironment = {
-        descriptor: runningEnvironment,
-        workspace: childWorkspace,
-      };
-      request.reportEnvironment(runningEnvironment);
-
-      const childConfig = this.effectiveConfig();
-      const childPromptStartedAt = new Date();
-      childConfig.workspaceRoot = childWorkspace.root;
-      childConfig.mode = request.record.mode;
-      childConfig.provider = request.record.provider;
-      childConfig.thinkingEffort = request.record.thinkingEffort;
-      childConfig.providers[request.record.provider]!.model = request.record.model;
-      const provider = createProvider(childConfig, request.record.provider, request.record.model);
-      const childCommandRuntime = this.createCommandRuntime(childWorkspace);
-      const mutationLock =
-        activeEnvironment.descriptor.kind === "shared" ? this.workspaceMutationLock : new WorkspaceMutationLock();
-      childToolCatalog = this.observedToolCatalog(childWorkspace, childCommandRuntime);
-      childToolCatalog.registerSource(
-        new BuiltinToolSource({
-          profile: this.trustedOuterSandbox ? "benchmark" : undefined,
-          coordination: this.threadStore.coordination,
-          workspace: childWorkspace,
-          skillStore: SkillStore.forProject(
-            childWorkspace.root,
-            this.config.dataDir,
-            this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-          ),
-          commandRuntime: childCommandRuntime,
-          limits: this.config.limits,
-          mutationLock,
-          boundTask: request.task,
-          parentMessage: {
-            binding: {
-              agentId: request.record.id,
-              childThreadId: request.record.childThreadId,
-              parentThreadId: request.record.parentThreadId,
-              taskId: request.task.id,
-              taskTitle: request.task.title,
-            },
-            post: (message, childThreadId, toolCallId) => {
-              if (request.signal.aborted) throw new Error("The child is no longer running");
-              const posted = this.subagentMessages.post(
-                request.record.parentThreadId,
-                message,
-                childThreadId,
-                toolCallId,
-              );
-              this.subagentCoordinator.notifyMessage(request.record.parentThreadId);
-              return posted;
-            },
-          },
-        }),
-      );
-      for (const factory of this.trustedOuterSandbox ? [] : (this.toolSourceFactories ?? [])) {
-        childToolCatalog.registerSource(
-          await factory({
-            workspaceRoot: childWorkspace.root,
-            threadId: request.record.childThreadId,
-            role: "subagent",
-            agentId: request.record.id,
-            assignedTaskId: request.task.id,
-          }),
-        );
-      }
-      const toolCatalog = await childToolCatalog.snapshot();
-      const workspaceId = this.state.projectId ?? workspaceIdFromRoot(this.workspace.root);
-      const projectMemoryId = this.state.projectId ?? projectMemoryIdFromRoot(this.workspace.root);
-      const assignment = json({
-        agentId: request.record.id,
-        childThreadId: request.record.childThreadId,
-        environmentId: request.record.environmentId,
-        isolation: activeEnvironment.descriptor.kind,
-        mode: request.record.mode,
-        assignmentKind: request.record.assignmentKind,
-        ...(request.record.taskGraphId ? { taskGraphId: request.record.taskGraphId } : {}),
-        task: {
-          id: request.task.id,
-          title: request.task.title,
-          description: request.task.description,
-          dependencies: request.task.dependencies,
-          inputs: request.task.inputs,
-          expectedArtifacts: request.task.expectedArtifacts,
-          completionChecks: request.task.completionChecks,
-          failureHandling: request.task.failureHandling,
-        },
-        parentInstructions: request.record.instructions,
-      });
-      const childCommandOwner = {
-        threadId: request.record.childThreadId,
-        agentRole: "subagent" as const,
-        agentId: request.record.id,
-        assignedTaskId: request.task.id,
-      };
-      const runtime = new AgentRuntime({
-        takeSteering: async ({ threadId, turnId, boundary }) =>
-          this.threadStore.drainTurnSteering(threadId, turnId, this.config.limits, boundary !== "after_model"),
-        sealSteering: async ({ threadId, turnId }) =>
-          this.threadStore.sealTurnSteering(threadId, turnId, this.config.limits),
-        onModelRequestStart: () => request.reportActivity("thinking"),
-        onModelRequestEnd: () => request.reportActivity("working"),
-        onToolExecutionStart: (toolName) => request.reportActivity("tool", toolName),
-        onToolExecutionEnd: () => request.reportActivity("working"),
-        provider,
-        limits: this.config.limits,
-        taskBudget: this.sharedTaskBudget(request.record.parentThreadId),
-        tokenCalibration: new TokenCalibration(
-          JSON.stringify([provider.name, provider.model, childConfig.providers[provider.name]!.baseUrl]),
-          this.storage,
-        ),
-        toolCatalog,
-        visionAvailable: false,
-        authorizeToolExecution: (request) => this.authorizeCatalogToolCall(request),
-        agentIdentity: {
-          role: "subagent",
-          agentId: request.record.id,
-          assignedTaskId: request.task.id,
-        },
-        contextManager: new ContextManager(),
-        hasOpenCommandHandles: () => childCommandRuntime.hasOpenCommandHandles(childCommandOwner),
-        getEnvironmentFault: () => childCommandRuntime.environmentFault(),
-        buildSystemPrompt: async ({
-          mode,
-          workspaceSummary,
-          memories,
-          workingCheckpoint,
-          retrievedThreadEvidence,
-          toolNames,
-        }) => {
-          const base = await buildSystemPrompt({
-            config: childConfig,
-            workspaceFolders: childWorkspace!.folders,
-            skillStore: SkillStore.forProject(
-              childWorkspace!.root,
-              this.config.dataDir,
-              this.state.projectId ?? workspaceIdFromRoot(this.workspace.root),
-            ),
-            now: childPromptStartedAt,
-            mode,
-            workspaceSummary,
-            memories,
-            ...(workingCheckpoint ? { workingCheckpoint } : {}),
-            ...(retrievedThreadEvidence ? { retrievedThreadEvidence } : {}),
-            availableTools: toolNames,
-            commandExecutionMode: this.commandExecutionMode,
-          });
-          const environmentKind = activeEnvironment?.descriptor.kind ?? "unknown";
-          const executionEnvironment =
-            this.commandExecutionMode === "unrestricted"
-              ? renderPromptBundleText("agents/child-environment-unrestricted.md", {
-                  environmentKind,
-                })
-              : renderPromptBundleText("agents/child-environment-sandboxed.md", {
-                  environmentKind,
-                });
-          const approvalBehavior = promptBundleText(
-            this.commandExecutionMode === "unrestricted"
-              ? "agents/child-approval-unrestricted.md"
-              : "agents/child-approval-sandboxed.md",
-          );
-          const childContract = renderPromptBundleText("agents/child-contract.md", {
-            executionEnvironment,
-            approvalBehavior,
-            assignment,
-          });
-          return `${base}\n\n${childContract}`;
-        },
-        getWorkspaceSummary: async () => json(childWorkspace?.getManifestSummary()),
-        captureToolEvidence: (state, callId, tool, result) =>
-          this.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
-        readToolEvidence: (state, id, offset, limit) =>
-          this.memoryManager.evidenceStore.read(workspaceId, state.threadId, id, offset, limit),
-        searchMemories: async (query, options) =>
-          this.memoryManager.searchScoped(
-            projectMemoryId,
-            `${request.task.title}\n${request.task.description}\n${query}`,
-            {
-              workspaceRoot: childWorkspace?.root,
-              limit: options?.limit ?? this.config.limits.memorySearchLimit,
-              includeInactive: options?.includeInactive,
-              readOnly: true,
-              scope: options?.scope,
-              includeGlobalPreferences: options === undefined,
-            },
-          ),
-        memoryGeneration: () => this.memoryManager.scopeGenerationKey(projectMemoryId),
-        getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
-          const checkpoint = await this.contextArtifactIndex.checkpoint(workspaceId, state);
-          const hits = await this.contextArtifactIndex.search(
-            workspaceId,
-            state.threadId,
-            `${request.task.title}\n${request.task.description}\n${query}`,
-            { beforeMessageIndex, queries, limit: this.config.limits.memorySearchLimit },
-          );
-          return {
-            workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
-            evidence: hits,
-            ...(hits.length ? { retrievedThreadEvidence: renderRetrievedContext(hits) } : {}),
-          };
-        },
-        checkpointContext: async (state) => {
-          if (childWorkspace && childState) {
-            await childWorkspace.fullConsistencyCheck();
-            childState.filesRead = new Map(childWorkspace.getReadVersions().map((version) => [version.path, version]));
-            childState.changes = childWorkspace.getChangeSet();
-          }
-          await this.contextArtifactIndex.checkpoint(workspaceId, state);
-        },
-        appendEvent: async (event) => {
-          const { threadId, ...input } = event;
-          if (threadId !== request.record.childThreadId) {
-            throw new Error("Child Runtime attempted to append to a different thread");
-          }
-          this.threadStore.appendEvent(threadId, input);
-        },
-        recordCommand: (turnId, entry) => {
-          this.threadStore.recordToolAudit(request.record.childThreadId, turnId, entry);
-        },
-        onModelUsage: async (record) => {
-          this.threadStore.appendEvent(request.record.childThreadId, {
-            type: "model.usage",
-            phase: "completed",
-            payload: record,
-          });
-          // Keep the historical parent aggregate while the child owns its full event.
-          this.threadStore.appendEvent(request.record.parentThreadId, {
-            type: "model.usage",
-            phase: "completed",
-            payload: record,
-          });
-          if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
-        },
-        requestApproval: (approval) =>
-          this.requestSubagentApproval(approval, {
-            agentId: request.record.id,
-            taskId: request.task.id,
-          }),
-        takeAdditionalInstructions: request.drainFollowUps,
-        onToolCompleted: async (_state, _toolName, result) => {
-          if (result.presentation) presentations.push(result.presentation);
-          persistProgress();
-          if (
-            activeEnvironment?.descriptor.kind === "worktree" &&
-            childWorkspace &&
-            !childCommandRuntime.hasRunningCommands()
-          ) {
-            const checkpoint = await this.executionEnvironments.checkpoint(activeEnvironment);
-            activeEnvironment = {
-              descriptor: checkpoint,
-              workspace: childWorkspace,
-            };
-            request.reportEnvironment(checkpoint);
-          }
-        },
-      });
-
-      const result = await (async () => {
-        try {
-          return await runtime.run(
-            childState,
-            existingChild ? promptBundleText("agents/child-resume.md") : promptBundleText("agents/child-start.md"),
-            {
-              maxModelRequests: this.maxModelRequests,
-              maxContextChars: this.config.limits.maxContextChars,
-              maxOutputChars: this.config.limits.maxOutputChars,
-              maxContextTokens: this.config.limits.maxContextTokens || undefined,
-              commandTimeoutMs: this.config.limits.commandTimeoutMs,
-              approvalPolicy: this.config.approvalPolicy,
-              commandExecutionMode: this.commandExecutionMode,
-              isUnrestrictedHostAccessActive: () => this.commandExecutionMode === "unrestricted",
-              unrestrictedHostAccessEpoch: () => this.hostAccessEpoch,
-              signal: request.signal,
-            },
-          );
-        } finally {
-          // Never checkpoint or finalize an isolated checkout while a command
-          // can still mutate it. Normally the child polls every handle to a
-          // terminal state; this closes the lifecycle if it answers early or
-          // the provider fails mid-turn.
-          await childCommandRuntime.cancelAll(childCommandOwner);
-        }
-      })();
-      persistProgress();
-      if (request.isPauseRequested()) {
-        const pausedEnvironment = await this.executionEnvironments.checkpoint(activeEnvironment, "ready");
-        request.reportEnvironment(pausedEnvironment);
-        return {
-          reason: "interrupted",
-          error: "Child execution was paused for a resumable parent shutdown.",
-          changes: childWorkspace.getChangeSet(),
-          commands: [...childState.commands],
-          presentations,
-          environment: pausedEnvironment,
-        };
-      }
-      // Cancellation observed before finalization wins. Once finalization has
-      // started, a verified terminal report wins over a concurrent shutdown so
-      // the durable artifact and terminal reason cannot disagree.
-      const stoppedBeforeFinalize = request.signal.aborted;
-      const acceptedReport = stoppedBeforeFinalize ? undefined : result.subagentTaskReport;
-      const resultArtifact = await this.executionEnvironments.finalize(activeEnvironment, {
-        agentId: request.record.id,
-        taskId: request.task.id,
-        accepted: acceptedReport?.outcome === "completed",
-        parentArtifactIds: dependencyArtifacts.map((artifact) => artifact.id),
-      });
-      const finalEnvironment = await this.executionEnvironments.loadEnvironment(activeEnvironment.descriptor.id);
-      request.reportEnvironment(finalEnvironment);
-      const outcome: SubagentExecutionOutcome = {
-        ...(acceptedReport ? { report: acceptedReport } : {}),
-        reason: stoppedBeforeFinalize
-          ? "stopped"
-          : acceptedReport?.outcome === "completed"
-            ? "completed"
-            : acceptedReport?.outcome === "blocked"
-              ? "blocked"
-              : result.reason === "paused"
-                ? "needs_parent_decision"
-                : "failed",
-        ...(!acceptedReport ? { error: redactSensitiveInformation(result.text).slice(0, 2_000) } : {}),
-        changes: childWorkspace.getChangeSet(),
-        commands: [...childState.commands],
-        presentations,
-        environment: finalEnvironment,
-        resultArtifact,
-      };
-      this.recordSubagentOutcome(request, outcome);
-      return outcome;
-    } catch (error) {
-      try {
-        persistProgress();
-      } catch {
-        // The child journal already contains every previously completed step.
-      }
-      if (request.isPauseRequested()) {
-        let pausedEnvironment = activeEnvironment?.descriptor;
-        if (activeEnvironment) {
-          try {
-            pausedEnvironment = await this.executionEnvironments.checkpoint(activeEnvironment, "ready");
-            request.reportEnvironment(pausedEnvironment);
-          } catch {
-            // Keep the registered checkout. Resume will validate it before use.
-          }
-        }
-        return {
-          reason: "interrupted",
-          error: "Child execution was paused for a resumable parent shutdown.",
-          changes: childWorkspace?.getChangeSet() ?? [],
-          commands: [...(childState?.commands ?? [])],
-          presentations,
-          ...(pausedEnvironment ? { environment: pausedEnvironment } : {}),
-        };
-      }
-      let retainedArtifact: ResultArtifact | undefined;
-      let finalEnvironment = activeEnvironment?.descriptor;
-      if (activeEnvironment) {
-        try {
-          retainedArtifact = await this.executionEnvironments.finalize(activeEnvironment, {
-            agentId: request.record.id,
-            taskId: request.task.id,
-            accepted: false,
-            parentArtifactIds: dependencyArtifacts.map((artifact) => artifact.id),
-          });
-          finalEnvironment = await this.executionEnvironments.loadEnvironment(activeEnvironment.descriptor.id);
-          request.reportEnvironment(finalEnvironment);
-        } catch {
-          // Preserve the original execution failure. Provisioning metadata is
-          // already durable and may still be inspected or recovered.
-        }
-      }
-      const outcome: SubagentExecutionOutcome = {
-        reason: request.signal.aborted ? "stopped" : "failed",
-        error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)).slice(0, 2_000),
-        changes: childWorkspace?.getChangeSet() ?? [],
-        commands: [...(childState?.commands ?? [])],
-        presentations,
-        ...(finalEnvironment ? { environment: finalEnvironment } : {}),
-        ...(retainedArtifact ? { resultArtifact: retainedArtifact } : {}),
-      };
-      try {
-        this.recordSubagentOutcome(request, outcome);
-      } catch {
-        // The coordinator still exposes the in-memory terminal state.
-      }
-      return outcome;
-    } finally {
-      if (childToolCatalog) {
-        try {
-          await childToolCatalog.close();
-        } catch {
-          // The source is process-local today. Future external sources must not
-          // prevent durable child cleanup if their shutdown fails.
-        }
-      }
-      if (childWorkspace && childWorkspace !== this.workspace) {
-        // A recovery shell can exist before process-local command state has
-        // been hydrated; durable child cleanup must remain safe in that case.
-        const childCommandRuntime = this.commandRuntimes?.get(childWorkspace);
-        if (childCommandRuntime && !childCommandRuntime.hasRunningCommands()) {
-          this.commandRuntimes.delete(childWorkspace);
-        }
-      }
-      if (childLease) {
-        try {
-          this.threadStore.releaseThreadLease(childLease);
-        } catch {
-          // The child journal remains authoritative and stale leases are
-          // reclaimed through the existing dead-process recovery path.
-        }
-      }
-    }
-  }
-
-  private recordSubagentProgress(
-    request: SubagentExecutionRequest,
-    changes: readonly FileChangeRecord[],
-    commands: readonly CommandAuditEntry[],
-    mergeIntoParent: boolean,
-  ): void {
-    const attributedCommands = commands.map((entry) =>
-      attributeSubagentCommandAudit(entry, {
-        agentId: request.record.id,
-        taskId: request.task.id,
-      }),
-    );
-    this.threadStore.recordSubagentArtifacts(request.record.parentThreadId, request.record.createdByTurnId, {
-      agentId: request.record.id,
-      taskId: request.task.id,
-      changes,
-      commands: attributedCommands,
-      mergeIntoParent,
-    });
-    if (this.state.threadId !== request.record.parentThreadId) return;
-    if (!mergeIntoParent) {
-      this.dirty = true;
-      return;
-    }
-
-    const knownStateChanges = new Set(
-      this.state.changes.map((change) =>
-        [change.timestamp, change.path, change.operation, change.beforeHash ?? "", change.afterHash ?? ""].join("|"),
-      ),
-    );
-    const knownWorkspaceChanges = new Set(
-      this.workspace
-        .getChangeSet()
-        .map((change) =>
-          [change.timestamp, change.path, change.operation, change.beforeHash ?? "", change.afterHash ?? ""].join("|"),
-        ),
-    );
-    for (const change of changes) {
-      const key = [
-        change.timestamp,
-        change.path,
-        change.operation,
-        change.beforeHash ?? "",
-        change.afterHash ?? "",
-      ].join("|");
-      if (!knownStateChanges.has(key)) {
-        this.state.changes.push({ ...change });
-        knownStateChanges.add(key);
-      }
-      if (!knownWorkspaceChanges.has(key)) {
-        this.workspace.recordChange(change);
-        this.workspace.invalidateReadVersion(change.path);
-        knownWorkspaceChanges.add(key);
-      }
-    }
-    const knownCommands = new Set(this.state.commands.map((entry) => entry.id));
-    for (const entry of attributedCommands) {
-      if (knownCommands.has(entry.id)) continue;
-      this.state.commands.push(entry);
-      knownCommands.add(entry.id);
-    }
-    this.dirty = true;
-  }
-
-  private recordSubagentOutcome(request: SubagentExecutionRequest, outcome: SubagentExecutionOutcome): void {
-    this.threadStore.recordSubagentResult(request.record.parentThreadId, request.record.createdByTurnId, {
-      agentId: request.record.id,
-      taskId: request.task.id,
-      reason: outcome.reason,
-      ...(outcome.report ? { report: outcome.report } : {}),
-      ...(outcome.error ? { error: outcome.error } : {}),
-      ...(outcome.environment ? { environment: outcome.environment } : {}),
-      ...(outcome.resultArtifact ? { resultArtifact: outcome.resultArtifact } : {}),
-    });
-    if (this.state.threadId === request.record.parentThreadId) this.dirty = true;
-  }
-
-  /**
-   * Collect terminal children at a Runtime boundary. This is intentionally not
-   * represented as a model-authored tool call: the child already completed,
-   * and collecting its durable result is control-plane bookkeeping.
-   */
-  private async collectReadySubagentResults(
-    state: SessionState,
-    turnId: string,
-    signal?: AbortSignal,
-  ): Promise<number> {
-    return this.workspaceMutationLock.runExclusive(async () => {
-      let collected = 0;
-      const terminal = new Set(["completed", "blocked", "needs_parent_decision", "failed", "stopped", "interrupted"]);
-      for (;;) {
-        const candidate = this.subagentCoordinator
-          .outstanding(state.threadId)
-          .find((record) => terminal.has(record.status));
-        if (!candidate) break;
-        const context: ToolContext = {
-          workspaceRoot: state.workspaceRoot,
-          mode: "code",
-          threadId: state.threadId,
-          turnId,
-          approvalPolicy: this.config.approvalPolicy,
-          commandExecutionMode: this.commandExecutionMode,
-          requestApproval: async () => false,
-          signal,
-          commandTimeoutMs: this.config.limits.commandTimeoutMs,
-          maxOutputChars: this.config.limits.maxOutputChars,
-          agentRole: "main_agent",
-          thinkingEffort: state.thinkingEffort,
-          limits: this.config.limits,
-          taskGraph: state.taskGraph,
-        };
-        const result = await this.subagentCoordinator.wait(
-          {
-            action: "wait",
-            agentIds: [candidate.id],
-            timeoutMs: 0,
-          },
-          context,
-        );
-        if (!result.ok || !result.subagentLifecycle || !result.subagentAssignment) break;
-        const data =
-          result.data && typeof result.data === "object"
-            ? (result.data as { result?: { summary?: string }; error?: string })
-            : undefined;
-        const message: ChatMessage = {
-          role: "user",
-          content:
-            "RUNTIME_SUBAGENT_RESULT_COLLECTED (authoritative child lifecycle, not a new user requirement)\n" +
-            JSON.stringify({
-              agentId: candidate.id,
-              taskId: candidate.taskId,
-              status: candidate.status,
-              summary: data?.result?.summary,
-              error: data?.error,
-            }),
-        };
-        const payload = {
-          tool: "manage_subagents",
-          subagentLifecycle: result.subagentLifecycle,
-          subagentAssignment: result.subagentAssignment,
-          ...(result.taskGraphUpdate ? { taskGraph: result.taskGraphUpdate } : {}),
-          ...(result.subagentTaskOperation ? { subagentTaskOperation: result.subagentTaskOperation } : {}),
-          message,
-        };
-        this.threadStore.appendEvent(state.threadId, {
-          type: "subagent.collected",
-          turnId,
-          phase: "completed",
-          payload,
-        });
-        foldPendingOperations(state, payload);
-        if (result.taskGraphUpdate) state.taskGraph = result.taskGraphUpdate;
-        state.messages.push(message);
-        const artifacts = this.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
-        if (artifacts) {
-          await this.mergeSubagentArtifacts(state, artifacts);
-          this.subagentCoordinator.finalizeArtifactMerge(artifacts.agentId);
-        }
-        collected += 1;
-        this.dirty = true;
-      }
-      if (collected > 0) {
-        this.syncWorkspaceState();
-        this.save();
-      }
-      return collected;
-    }, signal);
-  }
-
-  private async mergeSubagentArtifacts(state: SessionState, artifacts: ObservedSubagentArtifacts): Promise<void> {
-    const isolated = artifacts.environment?.kind === "worktree";
-    if (!isolated) {
-      const knownChanges = new Set(
-        this.workspace
-          .getChangeSet()
-          .map((change) => [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|")),
-      );
-      for (const change of artifacts.changes) {
-        const key = [change.timestamp, change.path, change.operation, change.afterHash ?? ""].join("|");
-        if (knownChanges.has(key)) continue;
-        this.workspace.recordChange(change);
-        this.workspace.invalidateReadVersion(change.path);
-        knownChanges.add(key);
-      }
-      await this.workspace.refreshManifest();
-    }
-
-    const knownCommands = new Set(state.commands.map((entry) => entry.id));
-    for (const entry of artifacts.commands) {
-      if (knownCommands.has(entry.id)) continue;
-      const attributedEntry = attributeSubagentCommandAudit(entry, {
-        agentId: artifacts.agentId,
-        taskId: artifacts.taskId,
-      });
-      state.commands.push(attributedEntry);
-      this.threadStore.recordToolAudit(state.threadId, state.activeTurnId, attributedEntry);
-      knownCommands.add(entry.id);
-    }
-    for (const presentation of artifacts.presentations) {
-      if (presentation.type !== "file_diff") continue;
-      try {
-        this.terminal.fileDiff(presentation);
-      } catch {
-        this.terminal.info(
-          `Subagent ${artifacts.agentId} changed ${presentation.path}, but its diff preview could not be rendered.`,
-        );
-      }
-    }
-    this.dirty = true;
-    this.terminal.info(
-      `Collected subagent ${artifacts.agentId} for task ${artifacts.taskId}: ` +
-        `${artifacts.changes.length} change(s), ${artifacts.commands.length} command(s)` +
-        (isolated && artifacts.resultArtifact
-          ? `; result ${artifacts.resultArtifact.id} is ready for DAG lineage or handoff.`
-          : "."),
-    );
-  }
-
-  private async handoffSubagentResult(
-    artifact: Readonly<ResultArtifact>,
-    destination: HandoffDestination,
-  ): Promise<ResultArtifact> {
-    const handoffId = createId("handoff");
-    this.threadStore.appendEvent(this.state.threadId, {
-      type: "subagent.handoff_requested",
-      turnId: this.state.activeTurnId,
-      phase: "started",
-      payload: {
-        handoffId,
-        agentId: artifact.agentId,
-        taskId: artifact.taskId,
-        artifactId: artifact.id,
-        destination,
-      },
-    });
-    try {
-      const before = destination.type === "local" ? await this.workspace.captureSnapshot() : undefined;
-      const delivered = await this.executionEnvironments.handoff(artifact, destination);
-      if (destination.type === "local" && before) {
-        const after = await this.workspace.captureSnapshot();
-        this.workspace.applyRuntimeSnapshots(before, after);
-        this.syncWorkspaceState();
-      }
-      let cleanedEnvironment: string | undefined;
-      if (delivered.status === "delivered") {
-        try {
-          const cleaned = await this.executionEnvironments.cleanup(delivered.environmentId);
-          if (cleaned.status === "removed") cleanedEnvironment = cleaned.id;
-        } catch {
-          // Delivery is already durable; a busy Worktree remains recoverable
-          // and may be cleaned by a later maintenance pass.
-        }
-      }
-      this.threadStore.appendEvent(this.state.threadId, {
-        type: "subagent.handoff_completed",
-        turnId: this.state.activeTurnId,
-        phase: "completed",
-        payload: {
-          handoffId,
-          agentId: delivered.agentId,
-          taskId: delivered.taskId,
-          artifactId: delivered.id,
-          artifact: delivered,
-          ...(cleanedEnvironment ? { cleanedEnvironment } : {}),
-        },
-      });
-      this.dirty = true;
-      return delivered;
-    } catch (error) {
-      this.threadStore.appendEvent(this.state.threadId, {
-        type: "subagent.handoff_failed",
-        turnId: this.state.activeTurnId,
-        phase: "failed",
-        payload: {
-          handoffId,
-          agentId: artifact.agentId,
-          taskId: artifact.taskId,
-          artifactId: artifact.id,
-          error: redactSensitiveInformation(error instanceof Error ? error.message : String(error)).slice(0, 2_000),
-        },
-      });
-      this.dirty = true;
-      throw error;
-    }
   }
 
   private requireCurrentModelVision(): void {
@@ -3283,104 +2390,6 @@ export class EasyCodeApp {
     );
   }
 
-  private restoreSubagents(): number {
-    const assignments = this.threadStore.subagentAssignments(this.state.threadId);
-    const preparedAgentIds: string[] = [];
-    let restored = 0;
-    try {
-      for (const entry of assignments) {
-        const { assignment } = entry;
-        if (this.subagentCoordinator.hasAgent(assignment.agentId, this.state.threadId)) {
-          continue;
-        }
-        const task =
-          assignment.kind === "dag"
-            ? this.state.taskGraph?.tasks.find(
-                (candidate) =>
-                  candidate.id === assignment.taskId &&
-                  candidate.owner === "subagent" &&
-                  candidate.assignedAgentId === assignment.agentId &&
-                  candidate.status === "in_progress",
-              )
-            : undefined;
-        if (assignment.kind === "dag" && !task && !entry.observed) {
-          // Do not resurrect a child against a different current graph.
-          continue;
-        }
-        let durable = this.threadStore.latestSubagentResult(this.state.threadId, assignment.agentId, assignment.taskId);
-        const stopped = this.threadStore.hasCommittedSubagentStop(this.state.threadId, assignment.agentId);
-        if (stopped && durable?.reason !== "stopped") {
-          const event = this.threadStore.recordSubagentResult(this.state.threadId, entry.createdByTurnId, {
-            agentId: assignment.agentId,
-            taskId: assignment.taskId,
-            reason: "stopped",
-            error: "The parent had durably requested cancellation before recovery.",
-          });
-          durable = {
-            agentId: assignment.agentId,
-            taskId: assignment.taskId,
-            reason: "stopped",
-            error: "The parent had durably requested cancellation before recovery.",
-            timestamp: event.timestamp,
-          };
-        }
-        if (!durable) {
-          if (entry.observed) continue;
-          this.subagentCoordinator.restore(
-            {
-              parentThreadId: this.state.threadId,
-              createdByTurnId: entry.createdByTurnId,
-              assignment,
-              ...(task ? { task } : {}),
-            },
-            { deferActivation: true },
-          );
-          preparedAgentIds.push(assignment.agentId);
-          restored += 1;
-          continue;
-        }
-        const recoveredArtifact = durable.resultArtifact
-          ? (this.threadStore.latestSubagentHandoffArtifact(this.state.threadId, durable.resultArtifact.id) ??
-            durable.resultArtifact)
-          : undefined;
-        const recovered = {
-          parentThreadId: this.state.threadId,
-          createdByTurnId: entry.createdByTurnId,
-          assignment,
-          ...(task ? { task } : {}),
-          reason: durable.reason,
-          ...(durable.report ? { report: durable.report } : {}),
-          ...(durable.error ? { error: durable.error } : {}),
-          ...(durable.environment ? { environment: durable.environment } : {}),
-          ...(recoveredArtifact ? { resultArtifact: recoveredArtifact } : {}),
-          finishedAt: durable.timestamp,
-          observed: entry.observed,
-        };
-        if (assignment.childThreadId && assignment.environmentId) {
-          this.subagentCoordinator.restore(recovered, { deferActivation: true });
-          preparedAgentIds.push(assignment.agentId);
-          restored += 1;
-        } else if (assignment.kind === "standalone") {
-          this.subagentCoordinator.restoreStandalone({ ...recovered, assignment }, { deferActivation: true });
-          preparedAgentIds.push(assignment.agentId);
-          restored += 1;
-        }
-      }
-    } catch (error) {
-      try {
-        this.subagentCoordinator.rollbackRestored(preparedAgentIds);
-      } catch (rollbackError) {
-        throw new AggregateError(
-          [error, rollbackError],
-          "Child-session recovery failed and its prepared batch could not be rolled back",
-        );
-      }
-      throw error;
-    }
-    if (this.commandExecutionMode !== "manual") this.subagentCoordinator.activateRestored(preparedAgentIds);
-    return restored;
-  }
-
   private announceResumeRecovery(): void {
     const recovery = this.pendingResumeRecovery;
     if (!recovery) return;
@@ -3565,7 +2574,7 @@ export class EasyCodeApp {
 
   private async replaceProjectWorkspace(descriptor: ProjectWorkspace): Promise<void> {
     this.assertNoRunningCommands("change project folders");
-    this.assertNoRunningSubagents("change project folders");
+    this.subagentHost.assertNoRunningSubagents("change project folders");
     if (this.activeTurnController)
       throw new Error("Wait for the current request to finish before changing project folders.");
     if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
@@ -3619,7 +2628,7 @@ export class EasyCodeApp {
     // Validate the live project before persisting a new membership revision;
     // otherwise a rejected hot swap could leave storage ahead of this Thread.
     this.assertNoRunningCommands("change project folders");
-    this.assertNoRunningSubagents("change project folders");
+    this.subagentHost.assertNoRunningSubagents("change project folders");
     if (this.activeTurnController)
       throw new Error("Wait for the current request to finish before changing project folders.");
     if (this.pendingPlan()) throw new Error("Resolve the proposed plan before changing project folders.");
@@ -3668,7 +2677,7 @@ export class EasyCodeApp {
     let currentChildrenPaused = false;
     try {
       currentChildrenPaused = true;
-      await this.pauseSubagentsForResume();
+      await this.subagentHost.pauseSubagentsForResume();
       await this.cancelRunningCommands();
       this.threadStore.releaseThreadLease(previousLease);
     } catch (error) {
@@ -3682,7 +2691,7 @@ export class EasyCodeApp {
       }
       if (currentChildrenPaused) {
         try {
-          this.restorePausedCurrentThread(previousThreadId);
+          this.subagentHost.restorePausedCurrentThread(previousThreadId);
         } catch (restoreError) {
           recoveryErrors.push(restoreError);
         }
@@ -3795,7 +2804,7 @@ export class EasyCodeApp {
     let currentChildrenPaused = false;
     try {
       currentChildrenPaused = true;
-      await this.pauseSubagentsForResume();
+      await this.subagentHost.pauseSubagentsForResume();
       await this.cancelRunningCommands();
       this.save();
       releasedOrphanedSubagents = releaseOrphanedSubagentTasks(this.threadStore, recovered);
@@ -3812,7 +2821,7 @@ export class EasyCodeApp {
       }
       if (currentChildrenPaused) {
         try {
-          this.restorePausedCurrentThread(previousThreadId);
+          this.subagentHost.restorePausedCurrentThread(previousThreadId);
         } catch (restoreError) {
           recoveryErrors.push(restoreError);
         }
@@ -3860,38 +2869,6 @@ export class EasyCodeApp {
       throw new Error("The active thread lease is unavailable");
     }
     return this.threadLease;
-  }
-
-  private assertNoRunningSubagents(action: string): void {
-    if (this.subagentCoordinator.hasOutstanding(this.state.threadId)) {
-      throw new Error(
-        `Cannot ${action} while a child assignment is still outstanding. Continue the task so the main agent can wait for or stop and collect it first.`,
-      );
-    }
-  }
-
-  private async pauseSubagentsForResume(): Promise<void> {
-    const threadId = this.state.threadId;
-    await this.subagentCoordinator.pause(threadId);
-    this.save();
-  }
-
-  /** Re-arm only workers paused by a failed thread transition. */
-  private restorePausedCurrentThread(threadId: string): void {
-    if (this.state.threadId !== threadId) {
-      throw new Error("Cannot restore paused children after the parent thread changed");
-    }
-    this.subagentCoordinator.discardPausedJobs(threadId);
-    this.restoreSubagents();
-  }
-
-  private async drainPendingSubagentArtifacts(threadId: string): Promise<void> {
-    for (const artifacts of this.subagentCoordinator.pendingArtifactMerges(threadId)) {
-      await this.mergeSubagentArtifacts(this.state, artifacts);
-      this.syncWorkspaceState();
-      this.save();
-      this.subagentCoordinator.finalizeArtifactMerge(artifacts.agentId);
-    }
   }
 
   private save(): void {
@@ -4383,5 +3360,93 @@ export class EasyCodeApp {
         return app.workspace;
       },
     };
+  }
+
+  private subagentHostInstance?: SubagentHost;
+  private get subagentHost(): SubagentHost {
+    return (this.subagentHostInstance ??= new SubagentHost(this.subagentHostContext()));
+  }
+  private subagentHostContext(): SubagentHostContext {
+    const app = this;
+    return {
+      authorizeCatalogToolCall: (...args) => app.authorizeCatalogToolCall(...args),
+      get commandExecutionMode() {
+        return app.commandExecutionMode;
+      },
+      get commandRuntimes() {
+        return app.commandRuntimes;
+      },
+      get config() {
+        return app.config;
+      },
+      get contextArtifactIndex() {
+        return app.contextArtifactIndex;
+      },
+      createCommandRuntime: (...args) => app.createCommandRuntime(...args),
+      currentProjectWorkspace: (...args) => app.currentProjectWorkspace(...args),
+      get dirty() {
+        return app.dirty;
+      },
+      set dirty(value) {
+        app.dirty = value;
+      },
+      effectiveConfig: (...args) => app.effectiveConfig(...args),
+      get executionEnvironments() {
+        return app.executionEnvironments;
+      },
+      get hostAccessEpoch() {
+        return app.hostAccessEpoch;
+      },
+      get maxModelRequests() {
+        return app.maxModelRequests;
+      },
+      get memoryManager() {
+        return app.memoryManager;
+      },
+      observedToolCatalog: (...args) => app.observedToolCatalog(...args),
+      prepareProjectSandbox: (...args) => app.prepareProjectSandbox(...args),
+      requestSubagentApproval: (...args) => app.requestSubagentApproval(...args),
+      save: (...args) => app.save(...args),
+      sharedTaskBudget: (...args) => app.sharedTaskBudget(...args),
+      get state() {
+        return app.state;
+      },
+      get storage() {
+        return app.storage;
+      },
+      get subagentCoordinator() {
+        return app.subagentCoordinator;
+      },
+      get subagentMessages() {
+        return app.subagentMessages;
+      },
+      syncWorkspaceState: (...args) => app.syncWorkspaceState(...args),
+      get terminal() {
+        return app.terminal;
+      },
+      get threadStore() {
+        return app.threadStore;
+      },
+      get toolSourceFactories() {
+        return app.toolSourceFactories;
+      },
+      get trustedOuterSandbox() {
+        return app.trustedOuterSandbox;
+      },
+      get workspace() {
+        return app.workspace;
+      },
+      get workspaceMutationLock() {
+        return app.workspaceMutationLock;
+      },
+    };
+  }
+
+  private runSubagent(request: SubagentExecutionRequest): Promise<SubagentExecutionOutcome> {
+    return this.subagentHost.runSubagent(request);
+  }
+
+  private restoreSubagents(): number {
+    return this.subagentHost.restoreSubagents();
   }
 }

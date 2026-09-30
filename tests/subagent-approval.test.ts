@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { EasyCodeApp, attributeSubagentCommandAudit } from "../src/app.js";
+import { EasyCodeApp } from "../src/app.js";
+import { attributeSubagentCommandAudit } from "../src/app/subagent-host.js";
 import { Terminal } from "../src/cli/terminal.js";
 import type { ApprovalDecision, ApprovalRequest, CommandAuditEntry } from "../src/core/types.js";
 import { createStorage } from "../src/storage/database.js";
