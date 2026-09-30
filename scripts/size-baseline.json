@@ -1,5 +1,4 @@
 {
   "src/app.ts": 3162,
-  "src/cli/terminal.ts": 3328,
-  "src/runtime/agent.ts": 4114
+  "src/cli/terminal.ts": 3328
 }
