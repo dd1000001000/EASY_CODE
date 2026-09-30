@@ -1,7 +1,5 @@
 {
   "src/app.ts": 3162,
-  "src/app/runtime-assembly.ts#RuntimeAssembly.createRuntime": 401,
-  "src/app/subagent-host.ts#SubagentHost.runSubagent": 582,
   "src/benchmarks/swebench.ts#registerSweBenchCommands": 433,
   "src/cli/menu-selector.ts#selectMenuIndex": 365,
   "src/cli/menu-selector.ts#selectMenuIndex.<anonymous>": 331,

@@ -13,13 +13,14 @@ import { isCommandApprovalPrefixGranted } from "../command/approval.js";
 import { ApprovalQueue, type ApprovalReview } from "../command/approval-agent.js";
 import { canGrantCommandPrefix } from "../command/approval.js";
 import { CommandRuntime } from "../command/runtime.js";
-import { ContextArtifactIndex, renderContextCheckpoint, renderRetrievedContext } from "../context/artifact-index.js";
+import { ContextArtifactIndex } from "../context/artifact-index.js";
 import { ContextManager } from "../context/manager.js";
 import type {
   ApprovalRequest,
   CommandExecutionMode,
   EasyCodeConfig,
   ImageAttachment,
+  ModelProvider,
   ProviderStreamEvent,
   SessionState,
   TurnSteeringBatch,
@@ -31,7 +32,7 @@ import { modelSupportsVision, USER_MODEL_REGISTRY_PATH } from "../models/catalog
 import { buildSystemPrompt } from "../prompts/builder.js";
 import { createProvider } from "../providers/factory.js";
 import { TokenCalibration } from "../context/token-calibration.js";
-import { AgentRuntime, type ProviderContextSnapshot } from "../runtime/agent.js";
+import { AgentRuntime, type AgentRuntimeDependencies, type ProviderContextSnapshot } from "../runtime/agent.js";
 import { LocalLayaClient } from "../local-decision/client.js";
 import { appendLocalDecisionFallbackTrace, appendLocalDecisionTrace } from "../local-decision/trace.js";
 import { TurnSteeringAttemptNotifier } from "../runtime/turn-steering-notifier.js";
@@ -47,6 +48,7 @@ import { WorkspaceManager } from "../workspace/manager.js";
 import { json } from "./text.js";
 import { InfoCommands } from "./info-commands.js";
 import { SubagentHost } from "./subagent-host.js";
+import { runtimeContextDependencies } from "./runtime-context.js";
 
 /** What RuntimeAssembly needs from its host; live values are forwarded through getters. */
 export interface RuntimeAssemblyContext {
@@ -123,43 +125,7 @@ export class RuntimeAssembly {
 
     return new AgentRuntime({
       provider,
-      localDecision: (task, input, signal) => {
-        this.ctx.localLayaClient ??= new LocalLayaClient(
-          {
-            startupMs: this.ctx.config.limits.layaStartupTimeoutMs,
-            decisionMs: this.ctx.config.limits.layaDecisionTimeoutMs,
-            idleMs: this.ctx.config.limits.layaIdleTimeoutMs,
-          },
-          {
-            dataDir: this.ctx.config.dataDir,
-            python:
-              process.env.EASY_CODE_LAYA_PYTHON ||
-              path.join(
-                this.ctx.config.dataDir,
-                "runtimes",
-                "laya-decision-onnx",
-                process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
-              ),
-          },
-        );
-        return this.ctx.localLayaClient.decide(task, input, signal);
-      },
-      recordLocalDecision: (trace) => appendLocalDecisionTrace(this.ctx.workspace.root, trace),
-      recordLocalDecisionFallback: (trace) => appendLocalDecisionFallbackTrace(this.ctx.workspace.root, trace),
-      deliveryChallengeAlreadyUsed: (threadId) => {
-        const events = this.ctx.threadStore.journal(threadId).read();
-        for (let index = events.length - 1; index >= 0; index -= 1) {
-          const event = events[index];
-          if (event?.type === "decision.delivery.challenge_requested") return true;
-          const completedReason =
-            event?.payload && typeof event.payload === "object" && "reason" in event.payload
-              ? event.payload.reason
-              : undefined;
-          if (event?.type === "turn.completed" && (completedReason === "success" || completedReason === "planned"))
-            return false;
-        }
-        return false;
-      },
+      ...this.localDecisionDependencies(),
       limits: this.ctx.config.limits,
       taskBudget: budget,
       tokenCalibration: new TokenCalibration(
@@ -208,34 +174,22 @@ export class RuntimeAssembly {
           ...(planReview ? { planReview } : {}),
         }),
       getWorkspaceSummary: async () => json(this.ctx.workspace.getManifestSummary()),
-      searchMemories: async (query, options) =>
-        this.ctx.memoryManager.searchScoped(projectMemoryId, query, {
+      ...runtimeContextDependencies(
+        {
+          memoryManager: this.ctx.memoryManager,
+          contextArtifactIndex: this.ctx.contextArtifactIndex,
+          limits: this.ctx.config.limits,
+        },
+        {
+          workspaceId,
+          projectMemoryId,
           workspaceRoot: this.ctx.workspace.root,
-          limit: options?.limit ?? this.ctx.config.limits.memorySearchLimit,
-          includeInactive: options?.includeInactive,
-          scope: options?.scope,
-          includeGlobalPreferences: options === undefined,
-        }),
-      memoryGeneration: () => this.ctx.memoryManager.scopeGenerationKey(projectMemoryId),
+          // The main thread can recall evidence archived by the review sessions it started.
+          evidenceOwner: sharedReviewEvidenceOwner,
+        },
+      ),
       recordMemoryRecall: (threadId, turnId, memoryIds) =>
         this.ctx.memoryManager.recordRecall(threadId, turnId, memoryIds),
-      captureToolEvidence: (state, callId, tool, result) =>
-        this.ctx.memoryManager.evidenceStore.capture(workspaceId, state.threadId, callId, tool, result),
-      readToolEvidence: (state, id, offset, limit) =>
-        this.ctx.memoryManager.evidenceStore.read(workspaceId, sharedReviewEvidenceOwner(state, id), id, offset, limit),
-      getLayeredContext: async ({ state, query, beforeMessageIndex, queries }) => {
-        const checkpoint = await this.ctx.contextArtifactIndex.checkpoint(workspaceId, state);
-        const hits = await this.ctx.contextArtifactIndex.search(workspaceId, state.threadId, query, {
-          beforeMessageIndex,
-          queries,
-          limit: this.ctx.config.limits.memorySearchLimit,
-        });
-        return {
-          workingCheckpoint: renderContextCheckpoint(checkpoint.checkpoint),
-          evidence: hits,
-          ...(hits.length ? { retrievedThreadEvidence: renderRetrievedContext(hits) } : {}),
-        };
-      },
       checkpointContext: async (state) => {
         await this.ctx.workspace.fullConsistencyCheck();
         this.ctx.syncWorkspaceState();
@@ -257,43 +211,7 @@ export class RuntimeAssembly {
         this.ctx.threadStore.appendEvent(threadId, input);
         this.ctx.dirty = true;
       },
-      ...(steeringNotifier
-        ? {
-            steeringNotifier,
-            takeSteering: async ({
-              threadId,
-              turnId,
-              boundary,
-            }: {
-              threadId: string;
-              turnId: string;
-              boundary: import("../core/types.js").TurnSteeringBoundary;
-            }) =>
-              this.ctx.threadStore.drainTurnSteering(
-                threadId,
-                turnId,
-                this.ctx.config.limits,
-                boundary !== "after_model",
-              ),
-            sealSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
-              this.ctx.terminal.sealCurrentRequestSteering(() =>
-                this.ctx.threadStore.sealTurnSteering(threadId, turnId, this.ctx.config.limits),
-              ),
-            hasPendingSteering: async ({ threadId, turnId }: { threadId: string; turnId: string }) =>
-              this.ctx.threadStore.hasPendingTurnSteering(threadId, turnId),
-            onSteeringApplied: (batch: Readonly<TurnSteeringBatch>) => {
-              if (batch.source === "peer_message") {
-                for (const entry of batch.entries)
-                  this.ctx.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
-                return;
-              }
-              const first = batch.entries[0]?.sequence;
-              const last = batch.throughSequence;
-              const range = first === last ? `#${last}` : `#${first}-#${last}`;
-              this.ctx.terminal.success(`Applied adjustment${first === last ? "" : "s"} ${range}.`);
-            },
-          }
-        : {}),
+      ...(steeringNotifier ? this.steeringDependencies(steeringNotifier) : {}),
       recordCommand: (turnId, entry) => {
         this.ctx.threadStore.recordToolAudit(this.ctx.state.threadId, turnId, entry);
         this.ctx.dirty = true;
@@ -303,55 +221,8 @@ export class RuntimeAssembly {
           await this.ctx.imageStore.commit(threadId, attachment);
         }
       },
-      onToolCompleted: async (_state, toolName, result, displayName, details) => {
-        if (toolName === "send_thread_message" && result.ok) {
-          const sent = result.data as { targetThreadId: string; message: string };
-          this.ctx.terminal.peerMessage?.(sent.targetThreadId, sent.message, true);
-        }
-        this.ctx.terminal.toolCompleted(displayName ?? toolName, result.ok, result.summary, result.error, details);
-        if (toolName === "name_thread" && result.ok) {
-          const title = (result.data as { title?: unknown } | undefined)?.title;
-          if (typeof title === "string") this.ctx.terminal.threadTitleChanged?.(title);
-        }
-        let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
-        if (result.ok && result.subagentLifecycle) {
-          const artifacts = this.ctx.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
-          if (artifacts) {
-            await this.ctx.subagentHost.mergeSubagentArtifacts(_state, artifacts);
-            mergedSubagentArtifacts = artifacts;
-          }
-        }
-        this.ctx.syncWorkspaceState();
-        this.ctx.save();
-        if (mergedSubagentArtifacts) {
-          this.ctx.subagentCoordinator.finalizeArtifactMerge(mergedSubagentArtifacts.agentId);
-        }
-        if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
-          try {
-            this.ctx.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
-          } catch {
-            this.ctx.terminal.info(
-              "The task DAG was updated successfully, but its terminal view could not be rendered.",
-            );
-          }
-        }
-        if (toolName === "manage_subagents" && result.ok) {
-          try {
-            this.ctx.infoCommands.printSubagents();
-          } catch {
-            this.ctx.terminal.info(
-              "The child-agent state was updated successfully, but its terminal view could not be rendered.",
-            );
-          }
-        }
-        if (result.ok && result.presentation?.type === "file_diff") {
-          try {
-            this.ctx.terminal.fileDiff(result.presentation);
-          } catch {
-            this.ctx.terminal.info("The file was updated successfully, but the diff preview could not be rendered.");
-          }
-        }
-      },
+      onToolCompleted: (state, toolName, result, displayName, details) =>
+        this.onToolCompleted(state, toolName, result, displayName, details),
       onSubagentLifecycleRollback: (update) => {
         this.ctx.subagentCoordinator.rollbackLifecycle(update);
       },
@@ -361,77 +232,248 @@ export class RuntimeAssembly {
       requestApproval: async (request) => {
         return this.ctx.requestToolApproval(request);
       },
-      runReviewSession: async (input) =>
-        this.ctx.workspaceMutationLock.runExclusive(async () => {
-          // A background writer outlives its run_command lock; do not snapshot it.
-          if (this.ctx.hasRunningCommands())
-            return {
-              decision: "unavailable" as const,
-              requests: 0,
-              reused: true,
-              reason: "A supervised command is still running; observe its terminal result before review.",
-            };
-          const reviewUiId = this.ctx.terminal.startReview();
-          try {
-            return await runWorkspaceReview(input, {
-              workspace: this.ctx.workspace,
-              store: this.ctx.threadStore,
-              memory: this.ctx.memoryManager,
-              index: this.ctx.contextArtifactIndex,
-              provider,
-              budget,
-              limits: this.ctx.config.limits,
-              sensitivePaths: [
-                this.ctx.config.configDir,
-                this.ctx.config.dataDir,
-                this.ctx.config.cacheDir,
-                USER_MODEL_REGISTRY_PATH,
-                USER_MCP_CONFIG_PATH,
-              ],
-              dataDir: this.ctx.config.dataDir,
-              lifecycleDirectory: path.join(this.ctx.config.dataDir, "review-command-leases"),
-              offline: this.ctx.trustedOuterSandbox === "harbor",
-              status: (text) => this.ctx.terminal.status(text),
-              onProgress: (progress) => this.ctx.terminal.updateReview(reviewUiId, progress.phase),
-              approve: async (context, request) =>
-                this.ctx.approvalQueue.run(async () => {
-                  if (request.signal?.aborted || request.command?.scope === "host") return false;
-                  const saved = this.ctx.threadStore.recover(context.threadId);
-                  if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
-                  // Review permissions do not inherit main-thread Full access.
-                  const decision = await this.ctx.reviewApproval(request);
-                  this.ctx.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
-                  let vote = decision.decision;
-                  if (vote === "reject") {
-                    if (this.ctx.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY)
-                      return false;
-                    vote = await this.ctx.terminal.approve({
-                      ...request,
-                      description: `${request.description}\nApproval reviewer: ${decision.reason}`,
-                    });
-                  }
-                  if (request.signal?.aborted) return false;
-                  if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
-                    this.ctx.threadStore.recordCommandApprovalPrefixGrant(
-                      context.threadId,
-                      request.commandPrefix,
-                      context.turnId,
-                    );
-                  return vote !== "reject";
-                }),
-            });
-          } finally {
-            this.ctx.terminal.stopReview(reviewUiId);
-          }
-        }, input.signal),
-      onStatus: (status) => this.ctx.terminal.status(status),
-      onCompactionProgress: (progress) => {
-        this.ctx.autoCompacting = progress.mode === "automatic" && compactionRunning(progress);
-        this.ctx.terminal.compactionProgress?.(progress);
+      runReviewSession: async (input) => this.runReviewSession(input, provider, budget),
+      onModelUsage: async (record) => {
+        this.ctx.threadStore.appendEvent(this.ctx.state.threadId, {
+          type: "model.usage",
+          phase: "completed",
+          payload: record,
+        });
+        this.ctx.dirty = true;
       },
       onModeSelected: (mode) => {
         this.ctx.config.mode = mode;
         this.ctx.syncTerminalView();
+      },
+      onProviderContext: (snapshot) => {
+        if (snapshot.threadId === this.ctx.state.threadId) {
+          this.ctx.lastProviderContext = snapshot;
+          this.ctx.syncTerminalView();
+        }
+      },
+      ...this.presentationCallbacks(presentReasoning),
+      ...(visionCapable
+        ? {
+            attachImage: (input: { threadId: string; label: string; absolutePath: string; sourceName?: string }) =>
+              this.ctx.imageStore.importFile(
+                input.threadId,
+                input.label,
+                input.absolutePath,
+                input.sourceName,
+                this.ctx.workspace.root,
+              ),
+            discardImage: (threadId: string, attachment: ImageAttachment) =>
+              this.ctx.imageStore.remove(threadId, attachment),
+          }
+        : {}),
+    });
+  }
+
+  /** The optional local Laya classifier, its decision traces, and the one-challenge-per-delivery rule. */
+  private localDecisionDependencies(): Pick<
+    AgentRuntimeDependencies,
+    "localDecision" | "recordLocalDecision" | "recordLocalDecisionFallback" | "deliveryChallengeAlreadyUsed"
+  > {
+    return {
+      localDecision: (task, input, signal) => {
+        this.ctx.localLayaClient ??= new LocalLayaClient(
+          {
+            startupMs: this.ctx.config.limits.layaStartupTimeoutMs,
+            decisionMs: this.ctx.config.limits.layaDecisionTimeoutMs,
+            idleMs: this.ctx.config.limits.layaIdleTimeoutMs,
+          },
+          {
+            dataDir: this.ctx.config.dataDir,
+            python:
+              process.env.EASY_CODE_LAYA_PYTHON ||
+              path.join(
+                this.ctx.config.dataDir,
+                "runtimes",
+                "laya-decision-onnx",
+                process.platform === "win32" ? "Scripts/python.exe" : "bin/python",
+              ),
+          },
+        );
+        return this.ctx.localLayaClient.decide(task, input, signal);
+      },
+      recordLocalDecision: (trace) => appendLocalDecisionTrace(this.ctx.workspace.root, trace),
+      recordLocalDecisionFallback: (trace) => appendLocalDecisionFallbackTrace(this.ctx.workspace.root, trace),
+      deliveryChallengeAlreadyUsed: (threadId) => {
+        const events = this.ctx.threadStore.journal(threadId).read();
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index];
+          if (event?.type === "decision.delivery.challenge_requested") return true;
+          const completedReason =
+            event?.payload && typeof event.payload === "object" && "reason" in event.payload
+              ? event.payload.reason
+              : undefined;
+          if (event?.type === "turn.completed" && (completedReason === "success" || completedReason === "planned"))
+            return false;
+        }
+        return false;
+      },
+    };
+  }
+
+  /** Mid-turn user adjustments and peer messages, delivered through the thread's steering queue. */
+  private steeringDependencies(
+    steeringNotifier: TurnSteeringAttemptNotifier,
+  ): Pick<
+    AgentRuntimeDependencies,
+    "steeringNotifier" | "takeSteering" | "sealSteering" | "hasPendingSteering" | "onSteeringApplied"
+  > {
+    return {
+      steeringNotifier,
+      takeSteering: async ({ threadId, turnId, boundary }) =>
+        this.ctx.threadStore.drainTurnSteering(threadId, turnId, this.ctx.config.limits, boundary !== "after_model"),
+      sealSteering: async ({ threadId, turnId }) =>
+        this.ctx.terminal.sealCurrentRequestSteering(() =>
+          this.ctx.threadStore.sealTurnSteering(threadId, turnId, this.ctx.config.limits),
+        ),
+      hasPendingSteering: async ({ threadId, turnId }) => this.ctx.threadStore.hasPendingTurnSteering(threadId, turnId),
+      onSteeringApplied: (batch: Readonly<TurnSteeringBatch>) => {
+        if (batch.source === "peer_message") {
+          for (const entry of batch.entries)
+            this.ctx.terminal.peerMessage?.(entry.senderThreadId!, entry.message.content);
+          return;
+        }
+        const first = batch.entries[0]?.sequence;
+        const last = batch.throughSequence;
+        const range = first === last ? `#${last}` : `#${first}-#${last}`;
+        this.ctx.terminal.success(`Applied adjustment${first === last ? "" : "s"} ${range}.`);
+      },
+    };
+  }
+
+  /** Present a finished tool call and apply its child-agent effects before saving. */
+  private async onToolCompleted(
+    ...[state, toolName, result, displayName, details]: Parameters<
+      NonNullable<AgentRuntimeDependencies["onToolCompleted"]>
+    >
+  ): Promise<void> {
+    if (toolName === "send_thread_message" && result.ok) {
+      const sent = result.data as { targetThreadId: string; message: string };
+      this.ctx.terminal.peerMessage?.(sent.targetThreadId, sent.message, true);
+    }
+    this.ctx.terminal.toolCompleted(displayName ?? toolName, result.ok, result.summary, result.error, details);
+    if (toolName === "name_thread" && result.ok) {
+      const title = (result.data as { title?: unknown } | undefined)?.title;
+      if (typeof title === "string") this.ctx.terminal.threadTitleChanged?.(title);
+    }
+    let mergedSubagentArtifacts: ObservedSubagentArtifacts | undefined;
+    if (result.ok && result.subagentLifecycle) {
+      const artifacts = this.ctx.subagentCoordinator.commitLifecycle(result.subagentLifecycle);
+      if (artifacts) {
+        await this.ctx.subagentHost.mergeSubagentArtifacts(state, artifacts);
+        mergedSubagentArtifacts = artifacts;
+      }
+    }
+    this.ctx.syncWorkspaceState();
+    this.ctx.save();
+    if (mergedSubagentArtifacts) {
+      this.ctx.subagentCoordinator.finalizeArtifactMerge(mergedSubagentArtifacts.agentId);
+    }
+    if ((toolName === "manage_tasks" || toolName === "manage_subagents") && result.ok && result.taskGraphUpdate) {
+      try {
+        this.ctx.terminal.taskGraph(taskGraphView(result.taskGraphUpdate));
+      } catch {
+        this.ctx.terminal.info("The task DAG was updated successfully, but its terminal view could not be rendered.");
+      }
+    }
+    if (toolName === "manage_subagents" && result.ok) {
+      try {
+        this.ctx.infoCommands.printSubagents();
+      } catch {
+        this.ctx.terminal.info(
+          "The child-agent state was updated successfully, but its terminal view could not be rendered.",
+        );
+      }
+    }
+    if (result.ok && result.presentation?.type === "file_diff") {
+      try {
+        this.ctx.terminal.fileDiff(result.presentation);
+      } catch {
+        this.ctx.terminal.info("The file was updated successfully, but the diff preview could not be rendered.");
+      }
+    }
+  }
+
+  /** Run an independent workspace review under the workspace mutation lock. */
+  private runReviewSession(
+    input: Parameters<NonNullable<AgentRuntimeDependencies["runReviewSession"]>>[0],
+    provider: ModelProvider,
+    budget: TaskBudget,
+  ): ReturnType<NonNullable<AgentRuntimeDependencies["runReviewSession"]>> {
+    return this.ctx.workspaceMutationLock.runExclusive(async () => {
+      // A background writer outlives its run_command lock; do not snapshot it.
+      if (this.ctx.hasRunningCommands())
+        return {
+          decision: "unavailable" as const,
+          requests: 0,
+          reused: true,
+          reason: "A supervised command is still running; observe its terminal result before review.",
+        };
+      const reviewUiId = this.ctx.terminal.startReview();
+      try {
+        return await runWorkspaceReview(input, {
+          workspace: this.ctx.workspace,
+          store: this.ctx.threadStore,
+          memory: this.ctx.memoryManager,
+          index: this.ctx.contextArtifactIndex,
+          provider,
+          budget,
+          limits: this.ctx.config.limits,
+          sensitivePaths: [
+            this.ctx.config.configDir,
+            this.ctx.config.dataDir,
+            this.ctx.config.cacheDir,
+            USER_MODEL_REGISTRY_PATH,
+            USER_MCP_CONFIG_PATH,
+          ],
+          dataDir: this.ctx.config.dataDir,
+          lifecycleDirectory: path.join(this.ctx.config.dataDir, "review-command-leases"),
+          offline: this.ctx.trustedOuterSandbox === "harbor",
+          status: (text) => this.ctx.terminal.status(text),
+          onProgress: (progress) => this.ctx.terminal.updateReview(reviewUiId, progress.phase),
+          approve: async (context, request) =>
+            this.ctx.approvalQueue.run(async () => {
+              if (request.signal?.aborted || request.command?.scope === "host") return false;
+              const saved = this.ctx.threadStore.recover(context.threadId);
+              if (isCommandApprovalPrefixGranted(saved.commandApprovalPrefixes, request.commandPrefix)) return true;
+              // Review permissions do not inherit main-thread Full access.
+              const decision = await this.ctx.reviewApproval(request);
+              this.ctx.threadStore.appendEvent(context.threadId, { type: "approval.reviewed", payload: decision });
+              let vote = decision.decision;
+              if (vote === "reject") {
+                if (this.ctx.trustedOuterSandbox || request.allowPrompt === false || !process.stdin.isTTY) return false;
+                vote = await this.ctx.terminal.approve({
+                  ...request,
+                  description: `${request.description}\nApproval reviewer: ${decision.reason}`,
+                });
+              }
+              if (request.signal?.aborted) return false;
+              if (vote === "allow_prefix" && canGrantCommandPrefix(request.commandPrefix))
+                this.ctx.threadStore.recordCommandApprovalPrefixGrant(
+                  context.threadId,
+                  request.commandPrefix,
+                  context.turnId,
+                );
+              return vote !== "reject";
+            }),
+        });
+      } finally {
+        this.ctx.terminal.stopReview(reviewUiId);
+      }
+    }, input.signal);
+  }
+
+  /** Transient terminal presentation: status, activity spinners, streamed output and reasoning. */
+  private presentationCallbacks(presentReasoning: boolean): Partial<AgentRuntimeDependencies> {
+    return {
+      onStatus: (status) => this.ctx.terminal.status(status),
+      onCompactionProgress: (progress) => {
+        this.ctx.autoCompacting = progress.mode === "automatic" && compactionRunning(progress);
+        this.ctx.terminal.compactionProgress?.(progress);
       },
       onModelRequestStart: (text) => this.ctx.terminal.startActivity(text, "model"),
       onModelRequestEnd: (activityToken) => {
@@ -443,20 +485,6 @@ export class RuntimeAssembly {
       onToolExecutionEnd: (_toolName, activityToken) => {
         if (typeof activityToken === "string") {
           this.ctx.terminal.stopActivity(activityToken);
-        }
-      },
-      onModelUsage: async (record) => {
-        this.ctx.threadStore.appendEvent(this.ctx.state.threadId, {
-          type: "model.usage",
-          phase: "completed",
-          payload: record,
-        });
-        this.ctx.dirty = true;
-      },
-      onProviderContext: (snapshot) => {
-        if (snapshot.threadId === this.ctx.state.threadId) {
-          this.ctx.lastProviderContext = snapshot;
-          this.ctx.syncTerminalView();
         }
       },
       onModelStream: (event: Readonly<ProviderStreamEvent>) => {
@@ -478,20 +506,6 @@ export class RuntimeAssembly {
             },
           }
         : {}),
-      ...(visionCapable
-        ? {
-            attachImage: (input: { threadId: string; label: string; absolutePath: string; sourceName?: string }) =>
-              this.ctx.imageStore.importFile(
-                input.threadId,
-                input.label,
-                input.absolutePath,
-                input.sourceName,
-                this.ctx.workspace.root,
-              ),
-            discardImage: (threadId: string, attachment: ImageAttachment) =>
-              this.ctx.imageStore.remove(threadId, attachment),
-          }
-        : {}),
-    });
+    };
   }
 }
